@@ -240,6 +240,24 @@ class TestGatewayConfigRoundtrip:
             for record in caplog.records
         )
 
+    def test_from_dict_empty_uses_audio_input_default(self):
+        config = GatewayConfig.from_dict({})
+
+        assert config.audio_input_mode == "auto"
+
+    def test_from_dict_audio_input_mode_prefers_top_level_then_nested_sections(self):
+        assert GatewayConfig.from_dict({"agent": {"audio_input_mode": "stt"}}).audio_input_mode == "stt"
+        assert GatewayConfig.from_dict({"gateway": {"audio_input_mode": "native"}}).audio_input_mode == "native"
+        assert (
+            GatewayConfig.from_dict(
+                {
+                    "audio_input_mode": "native",
+                    "agent": {"audio_input_mode": "stt"},
+                    "gateway": {"audio_input_mode": "stt"},
+                }
+            ).audio_input_mode
+            == "native"
+        )
 
     def test_roundtrip_preserves_unauthorized_dm_behavior(self):
         config = GatewayConfig(
@@ -315,6 +333,31 @@ class TestLoadGatewayConfig:
 
         assert config.default_reset_policy.mode == "none"
 
+    def test_audio_input_mode_from_top_level_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "audio_input_mode: native\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.audio_input_mode == "native"
+
+    def test_audio_input_mode_from_nested_gateway_config_yaml(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n  audio_input_mode: stt\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.audio_input_mode == "stt"
 
     def test_explicit_session_reset_opt_in_is_honored(self, tmp_path, monkeypatch):
         """Users who explicitly opt in to auto-reset keep their policy."""

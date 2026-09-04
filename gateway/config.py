@@ -1220,6 +1220,7 @@ class GatewayConfig:
                 else None
             )
 
+        raw_gateway = data.get("gateway")
         audio_input_mode = data.get("audio_input_mode")
         if audio_input_mode is None:
             raw_agent = data.get("agent")
@@ -1234,7 +1235,6 @@ class GatewayConfig:
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
         multiplex_profiles = data.get("multiplex_profiles")
-        raw_gateway = data.get("gateway")
         nested_gateway = raw_gateway if isinstance(raw_gateway, dict) else {}
         if "multiplex_profile_allowlist" in data:
             multiplex_profile_allowlist = data.get("multiplex_profile_allowlist")
@@ -1480,6 +1480,11 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["stt_echo_transcripts"] = yaml_cfg["stt_echo_transcripts"]
             elif isinstance(gateway_section, dict) and "stt_echo_transcripts" in gateway_section:
                 gw_data["stt_echo_transcripts"] = gateway_section["stt_echo_transcripts"]
+
+            if "audio_input_mode" in yaml_cfg:
+                gw_data["audio_input_mode"] = yaml_cfg["audio_input_mode"]
+            elif isinstance(gateway_section, dict) and "audio_input_mode" in gateway_section:
+                gw_data["audio_input_mode"] = gateway_section["audio_input_mode"]
 
             gateway_cfg = yaml_cfg.get("gateway")
 

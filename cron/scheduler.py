@@ -7341,36 +7341,50 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
         _finish_unstarted("Fire claim ownership lost before execution started.")
         return True
 
+    if owns_fire_claim is None:
+        logger.warning(
+            "Job '%s': fire claim ownership could not be verified before execution; "
+            "aborting as unverifiable (not claiming loss)",
+            job_id,
+        )
+        _finish_unstarted(
+            "Fire claim ownership could not be validated before execution started."
+        )
+        return True
+
     def _heartbeat_loop() -> None:
         last_confirmed = time.monotonic()
         while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
             try:
-                if not heartbeat_fire_claim(job_id, expected_owner=owner):
-                    lost_ownership.set()
-                    logger.warning(
-                        "Job '%s': fire claim ownership lost; interrupting stale run",
-                        job_id,
-                    )
-                    return
-                last_confirmed = time.monotonic()
+                claim = heartbeat_fire_claim(job_id, expected_owner=owner)
             except Exception:
                 logger.debug(
                     "Job '%s': fire_claim heartbeat failed",
                     job_id,
                     exc_info=True,
                 )
-                if (
-                    time.monotonic() - last_confirmed
-                    >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS
-                ):
-                    lost_ownership.set()
-                    logger.warning(
-                        "Job '%s': fire_claim could not be renewed within %.1fs; "
-                        "interrupting uncertain run",
-                        job_id,
-                        _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS,
-                    )
-                    return
+                claim = None
+            if claim is False:
+                lost_ownership.set()
+                logger.warning(
+                    "Job '%s': fire claim ownership lost; interrupting stale run",
+                    job_id,
+                )
+                return
+            if claim is True:
+                last_confirmed = time.monotonic()
+            elif (
+                time.monotonic() - last_confirmed
+                >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS
+            ):
+                lost_ownership.set()
+                logger.warning(
+                    "Job '%s': fire_claim could not be renewed within %.1fs; "
+                    "interrupting uncertain run",
+                    job_id,
+                    _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS,
+                )
+                return
 
     heartbeat_thread = threading.Thread(
         target=heartbeat_context.run,
@@ -7525,8 +7539,7 @@ def _run_one_job_body(
         if fire_owner is None:
             return False
         try:
-            if heartbeat_fire_claim(job["id"], expected_owner=fire_owner):
-                return False
+            claim = heartbeat_fire_claim(job["id"], expected_owner=fire_owner)
         except Exception:
             logger.debug(
                 "Job '%s': fire_claim ownership validation failed",
@@ -7534,9 +7547,15 @@ def _run_one_job_body(
                 exc_info=True,
             )
             return False
-        if fire_claim_lost is not None:
-            fire_claim_lost.set()
-        return True
+        if claim is True:
+            return False
+        if claim is False:
+            if fire_claim_lost is not None:
+                fire_claim_lost.set()
+            return True
+        # claim is None — could not verify. Do NOT claim loss without a
+        # positive observation (same fail-closed lie as the heartbeat path).
+        return False
 
     execution_id = job.get("execution_id")
     if not execution_id:
@@ -7660,7 +7679,7 @@ def _run_one_job_body(
             # interruption through the owner-fenced terminal write.
             if fire_owner is not None and heartbeat_fire_claim(
                 job["id"], expected_owner=fire_owner,
-            ):
+            ) is True:
                 mark_job_run(
                     job["id"],
                     False,
@@ -7851,7 +7870,7 @@ def _run_one_job_body(
             # discarding silently (lingering claim + stale last_status).
             if fire_owner is not None and heartbeat_fire_claim(
                 job["id"], expected_owner=fire_owner,
-            ):
+            ) is True:
                 mark_job_run(
                     job["id"],
                     False,

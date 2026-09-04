@@ -3785,10 +3785,25 @@ def _sweep_completed_oneshots(
     return removed
 
 
-def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
+def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> Optional[bool]:
+    """Confirm or refresh an active ``fire_claim`` for ``expected_owner``.
+
+    Returns tri-state so callers can distinguish a *positively observed* loss
+    from a transient failure to verify:
+
+    - ``True`` — the claim is still owned by ``expected_owner`` and was
+      refreshed.
+    - ``False`` — ownership is positively observed to have changed (the claim
+      is absent or belongs to another owner). Callers may interrupt the run.
+    - ``None`` — ownership could NOT be verified (the per-job fire fence could
+      not be acquired within ``_JOBS_LOCK_TIMEOUT_SECONDS``). This is NOT
+      evidence of loss: under memory/CPU starvation a healthy owner can fail
+      to reach the lock. Callers should treat ``None`` as "unknown" and feed
+      the existing grace path, not the immediate-kill path.
+    """
     with _fire_job_lock(job_id) as acquired:
         if not acquired:
-            return False
+            return None
         return _heartbeat_fire_claim_locked(
             job_id,
             expected_owner=expected_owner,

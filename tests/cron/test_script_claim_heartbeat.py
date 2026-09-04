@@ -547,6 +547,110 @@ def test_repeated_heartbeat_errors_cancel_after_bounded_grace(monkeypatch):
     assert calls >= 3
 
 
+def test_unverifiable_fire_claim_not_killed_immediately(monkeypatch):
+    """A None (could-not-verify) heartbeat must NOT interrupt a live run.
+
+    The original defect treated lock-timeout as ownership loss and killed a
+    healthy run. Tri-state None means "could not verify", which routes to the
+    grace path: the run keeps going until grace expires.
+    """
+    import cron.scheduler as scheduler
+
+    calls = 0
+
+    def heartbeat(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return True
+        return None  # fire fence could not be acquired (starvation), not theft
+
+    body_entered = threading.Event()
+    body_finished = threading.Event()
+
+    def run_body(_job, **kwargs):
+        body_entered.set()
+        # Give the heartbeat thread time to run at least twice with None
+        # results. The old code killed the run after the first None; the
+        # fixed code must still be alive here.
+        time.sleep(0.1)
+        body_finished.set()
+        return True
+
+    job = {
+        "id": "unverifiable-heartbeat",
+        "fire_claim": {"at": "2026-07-12T12:00:00+00:00", "by": "owner"},
+    }
+    monkeypatch.setattr(scheduler, "heartbeat_fire_claim", heartbeat)
+    monkeypatch.setattr(scheduler, "_run_one_job_body", run_body)
+    monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(scheduler, "_FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS", 5.0)
+
+    assert scheduler.run_one_job(job) is True
+    assert body_entered.is_set()
+    assert body_finished.is_set()
+    assert calls >= 3
+
+
+def test_unverifiable_fire_claim_cancels_after_bounded_grace(monkeypatch):
+    """Sustained None (unverifiable) past grace must still cancel the run."""
+    import cron.scheduler as scheduler
+
+    calls = 0
+
+    def heartbeat(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return True
+        return None
+
+    def run_body(_job, **kwargs):
+        assert kwargs["fire_claim_lost"].wait(timeout=0.5)
+        return True
+
+    job = {
+        "id": "unverifiable-grace",
+        "fire_claim": {"at": "2026-07-12T12:00:00+00:00", "by": "owner"},
+    }
+    monkeypatch.setattr(scheduler, "heartbeat_fire_claim", heartbeat)
+    monkeypatch.setattr(scheduler, "_run_one_job_body", run_body)
+    monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(scheduler, "_FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS", 0.03)
+
+    assert scheduler.run_one_job(job) is True
+    assert calls >= 3
+
+
+def test_initially_unverifiable_fire_claim_finishes_without_running(monkeypatch):
+    """Unverifiable initial ownership must fail closed without claiming loss."""
+    import cron.scheduler as scheduler
+
+    run_body = MagicMock(return_value=True)
+    finish = MagicMock()
+    job = {
+        "id": "initially-unverifiable",
+        "execution_id": "unverifiable-execution",
+        "fire_claim": {"at": "2026-07-12T12:00:00+00:00", "by": "owner"},
+    }
+    monkeypatch.setattr(
+        scheduler,
+        "heartbeat_fire_claim",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(scheduler, "_run_one_job_body", run_body)
+    monkeypatch.setattr(scheduler, "finish_execution", finish)
+
+    assert scheduler.run_one_job(job) is True
+
+    run_body.assert_not_called()
+    finish.assert_called_once_with(
+        "unverifiable-execution",
+        success=False,
+        error="Fire claim ownership could not be validated before execution started.",
+    )
+
+
 def test_terminal_owner_cas_failure_marks_ledger_ownership_lost(monkeypatch):
     """A replacement owner cannot leave the stale ledger recorded as success."""
     import cron.scheduler as scheduler

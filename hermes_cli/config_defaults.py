@@ -3105,6 +3105,19 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # File tools (read_file document conversion).
+    "file_tools": {
+        # Hosted OCR for scanned PDFs (pages with no text layer). Sends the
+        # document to Firecrawl's Parse endpoint through the bundled
+        # firecrawl-anydoc converter.
+        #   null (default) — hosted OCR runs only when FIRECRAWL_API_KEY is
+        #     set. The key is the consent signal for document egress.
+        #   true — hosted OCR always runs: with FIRECRAWL_API_KEY when set,
+        #     keyless (free tier, no account) when not.
+        #   false — hosted OCR fully off, even with a key.
+        "hosted_ocr": None,
+    },
+
     # Logging — controls file logging to ~/.hermes/logs/.
     # agent.log captures INFO+ (all agent activity); errors.log captures WARNING+.
     "logging": {

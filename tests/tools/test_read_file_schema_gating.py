@@ -53,8 +53,9 @@ class TestReadFileSchemaStatic(unittest.TestCase):
         self.assertEqual(o, {})  # base wording stands
 
     def test_hosted_ocr_available_gate_states(self):
-        """Maintainer decision: ONLY a direct FIRECRAWL_API_KEY unlocks —
-        not config true, not the Nous gateway."""
+        """Gate states: key unlocks (consent signal for egress),
+        config true unlocks keyless (opt-in free tier), false disables,
+        default (nothing set) stays key-gated as shipped in #97195."""
         import tools.read_extract as rx
 
         # direct key → True
@@ -67,22 +68,50 @@ class TestReadFileSchemaStatic(unittest.TestCase):
             with patch("hermes_cli.config.load_config_readonly",
                        return_value={"file_tools": {"hosted_ocr": False}}):
                 self.assertFalse(rx.hosted_ocr_available())
-        # config true WITHOUT key → False (key is the one gate)
+        # config true WITHOUT key → True (keyless opt-in)
         with patch.dict(rx.os.environ, {}, clear=False):
             rx.os.environ.pop("FIRECRAWL_API_KEY", None)
             with patch("hermes_cli.config.load_config_readonly",
                        return_value={"file_tools": {"hosted_ocr": True}}):
-                self.assertFalse(rx.hosted_ocr_available())
-        # nothing → False (Nous gateway alone must NOT unlock)
+                self.assertTrue(rx.hosted_ocr_available())
+        # nothing → False (default stays key-gated)
         with patch("hermes_cli.config.load_config_readonly",
                    return_value={}):
             rx.os.environ.pop("FIRECRAWL_API_KEY", None)
             self.assertFalse(rx.hosted_ocr_available())
 
+    def test_hosted_ocr_config_values_survive_hand_edited_yaml(self):
+        """Quoted strings from hand-edited YAML must not silently read as
+        auto: a quoted 'false' failing to disable an outbound call is the
+        expensive direction, and a quoted 'true' failing to opt in is a
+        silent no-op."""
+        import tools.read_extract as rx
+
+        # quoted 'false' with a key disables (strict is-checks missed it)
+        with patch.dict(rx.os.environ, {"FIRECRAWL_API_KEY": "fc-x"}):
+            with patch("hermes_cli.config.load_config_readonly",
+                       return_value={"file_tools": {"hosted_ocr": "false"}}):
+                self.assertFalse(rx.hosted_ocr_available())
+        # quoted 'true' without a key opts in (keyless)
+        rx.os.environ.pop("FIRECRAWL_API_KEY", None)
+        for raw in ("true", "yes", "1"):
+            with patch("hermes_cli.config.load_config_readonly",
+                       return_value={"file_tools": {"hosted_ocr": raw}}):
+                self.assertTrue(
+                    rx.hosted_ocr_available(), raw,
+                )
+        # anything unrecognized stays auto: no key means key-gated off
+        for raw in ("banana", 1, ["true"]):
+            with patch("hermes_cli.config.load_config_readonly",
+                       return_value={"file_tools": {"hosted_ocr": raw}}):
+                self.assertFalse(
+                    rx.hosted_ocr_available(), raw,
+                )
+
     def test_runtime_route_is_direct_key_only(self):
         """_hosted_ocr_config never resolves the Nous gateway: api_url is
         always None (anydoc defaults to api.firecrawl.dev) and enabled
-        tracks the key."""
+        tracks the key by default."""
         import tools.read_extract as rx
 
         with patch.dict(rx.os.environ, {"FIRECRAWL_API_KEY": "fc-x"}):
@@ -99,6 +128,53 @@ class TestReadFileSchemaStatic(unittest.TestCase):
         self.assertFalse(enabled)
         self.assertIsNone(key)
         self.assertIsNone(url)
+
+    def test_runtime_keyless_route_with_opt_in(self):
+        """file_tools.hosted_ocr: true with no key enables the keyless
+        route: the hosted attempt goes out with ocr='hosted' and no
+        api_key, so anydoc falls back to its keyless free tier."""
+        import tools.read_extract as rx
+
+        rx.os.environ.pop("FIRECRAWL_API_KEY", None)
+        with patch("hermes_cli.config.load_config_readonly",
+                   return_value={"file_tools": {"hosted_ocr": True}}):
+            enabled, key, url = rx._hosted_ocr_config()
+        self.assertTrue(enabled)
+        self.assertIsNone(key)
+        self.assertIsNone(url)
+        # And the extraction attempt omits api_key for keyless:
+        mod, calls = self._fake_mod_for_gate(hosted_result="KEYLESS TEXT")
+        with patch.object(rx, "_anydoc", return_value=mod),              patch.object(rx, "_hosted_ocr_config",
+                          return_value=(True, None, None)),              patch.object(rx.os.path, "getsize", return_value=10):
+            out = rx._extract_anydoc("scan.pdf")
+        self.assertEqual(out, "KEYLESS TEXT\n")
+        self.assertEqual(calls[1], {"ocr": "hosted"})
+
+    @staticmethod
+    def _fake_mod_for_gate(hosted_result=None):
+        """Shared fake anydoc module for gate tests (raises NeedsOcrError
+        on the plain call, returns hosted_result on the hosted call)."""
+        class NeedsOcrError(Exception):
+            def __init__(self, pages):
+                super().__init__("needs ocr")
+                self.pages = pages
+
+        calls = []
+
+        class Mod:
+            pass
+
+        mod = Mod()
+        mod.NeedsOcrError = NeedsOcrError
+
+        def to_markdown(path, **kw):
+            calls.append(kw)
+            if not kw:
+                raise NeedsOcrError([2, 3])
+            return hosted_result
+
+        mod.to_markdown = to_markdown
+        return mod, calls
 
     def test_coverage_warning_teaching_left_to_the_warning(self):
         """The response-time warning owns the recovery curriculum."""

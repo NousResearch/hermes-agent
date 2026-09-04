@@ -180,16 +180,46 @@ def _anydoc_missing_error(path: str) -> str:
     )
 
 
+def _coerce_hosted_ocr(value: Any) -> Optional[bool]:
+    """Tri-state coercion for ``file_tools.hosted_ocr``: True/False/None.
+
+    Hand-edited YAML regularly carries quoted strings ("true", "false")
+    where the strict ``is True``/``is False`` branches would silently read
+    them as auto: a quoted 'false' would not disable the outbound call and
+    a quoted 'true' would not opt in. Uses the same token table as
+    ``hermes config set`` (true/1/yes/on, false/0/no/off). Anything else
+    stays None (auto).
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"true", "1", "yes", "on"}:
+            return True
+        if v in {"false", "0", "no", "off"}:
+            return False
+    return None
+
+
 def _hosted_ocr_config() -> tuple:
     """Resolve hosted-OCR settings: (enabled, api_key, api_url).
 
-    Maintainer decision: the ONLY route is a direct ``FIRECRAWL_API_KEY``
-    (anydoc defaults api_url to https://api.firecrawl.dev). The Nous
-    managed gateway is NOT used — its Parse proxy was live-probed broken
-    (uniform HTTP 500, 2026-08-28) while scrape/search worked; revisit
-    when the gateway grows Parse support. ``file_tools.hosted_ocr``:
-    false disables even with a key; true/unset → enabled iff key
-    present. Never raises.
+    Hosted OCR sends scanned PDFs (pages with no text layer) to
+    Firecrawl's Parse endpoint through the bundled anydoc converter.
+    Resolution of ``file_tools.hosted_ocr``:
+      false  - fully disabled, even with a key.
+      true   - enabled. With ``FIRECRAWL_API_KEY`` when set, keyless
+               (free tier, no account) when not. anydoc itself falls
+               back from the key to keyless.
+      unset/null (default) - enabled only when ``FIRECRAWL_API_KEY`` is
+               set. The key stays the consent signal for document
+               egress, as decided in #97195.
+    The Nous managed gateway is not used: its Parse proxy was
+    live-probed broken (uniform HTTP 500, 2026-08-28) while
+    scrape/search worked. Revisit when the gateway grows Parse support.
+    Never raises.
     """
     api_key = os.environ.get("FIRECRAWL_API_KEY") or None
     enabled = api_key is not None
@@ -198,8 +228,12 @@ def _hosted_ocr_config() -> tuple:
 
         cfg = load_config_readonly()
         section = cfg.get("file_tools") if isinstance(cfg, dict) else None
-        if isinstance(section, dict) and section.get("hosted_ocr") is False:
-            enabled = False
+        if isinstance(section, dict):
+            setting = _coerce_hosted_ocr(section.get("hosted_ocr"))
+            if setting is False:
+                enabled = False
+            elif setting is True:
+                enabled = True
     except Exception:  # noqa: BLE001
         pass
     return enabled, api_key, None
@@ -208,26 +242,16 @@ def _hosted_ocr_config() -> tuple:
 def hosted_ocr_available() -> bool:
     """Public probe for read_file's schema line: is hosted OCR unlocked?
 
-    Maintainer decision: ONE gate — a direct ``FIRECRAWL_API_KEY`` in the
-    environment. Nothing else unlocks the "PDF (scanned or text)" wording
-    (not the Nous gateway — Parse proxy live-probed broken 2026-08-28 —
-    and not config assertions). ``file_tools.hosted_ocr: false`` still
-    disables. Env probe only — no network at schema-build time; a key
-    that fails at conversion time lands in the NEEDS-OCR warning.
+    Same resolution as ``_hosted_ocr_config``: a direct
+    ``FIRECRAWL_API_KEY`` unlocks (the consent signal for document
+    egress), ``file_tools.hosted_ocr: true`` unlocks without a key
+    (keyless free tier), ``false`` disables both. Env and config probe
+    only, no network at schema-build time. A route that fails at
+    conversion time lands in the NEEDS-OCR warning.
     """
     try:
-        if not os.environ.get("FIRECRAWL_API_KEY"):
-            return False
-        try:
-            from hermes_cli.config import load_config_readonly
-
-            cfg = load_config_readonly()
-            section = cfg.get("file_tools") if isinstance(cfg, dict) else None
-            if isinstance(section, dict) and section.get("hosted_ocr") is False:
-                return False
-        except Exception:  # noqa: BLE001
-            pass
-        return True
+        enabled, _api_key, _api_url = _hosted_ocr_config()
+        return enabled
     except Exception:  # noqa: BLE001
         return False
 

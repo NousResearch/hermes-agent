@@ -759,6 +759,21 @@ compression:
 #   mcp_result_size_chars: 50000   # per-result spillover threshold for mcp_* tools
 
 # =============================================================================
+# File tools (optional)
+# =============================================================================
+# read_file converts documents (PDF, Office, EPUB, and friends) through the
+# bundled firecrawl-anydoc converter. When a PDF page has no text layer
+# (a scan), Hermes can extract its text through Firecrawl's hosted OCR.
+# That sends the document to Firecrawl's Parse endpoint, so it is off by
+# default: it only runs when a FIRECRAWL_API_KEY is set in .env. Setting the
+# key is the consent signal for that upload.
+#
+# file_tools:
+#   hosted_ocr: null    # null (default): run hosted OCR only with FIRECRAWL_API_KEY
+#   # hosted_ocr: true  # always run: with the key when set, keyless (free) when not
+#   # hosted_ocr: false # fully off, even with a key
+
+# =============================================================================
 # Anthropic prompt caching TTL
 # =============================================================================
 # When prompt caching is active (Claude via OpenRouter or native Anthropic),

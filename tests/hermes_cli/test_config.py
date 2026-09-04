@@ -135,6 +135,17 @@ class TestLoadConfigDefaults:
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
 
+    def test_file_tools_hosted_ocr_key_is_registered(self, tmp_path):
+        # read_extract reads file_tools.hosted_ocr as the hosted-OCR switch.
+        # The key must exist in DEFAULT_CONFIG so the deep merge, hermes
+        # setup, and the example config know about it. Default None means
+        # auto (key-gated), which matches the pre-registration behavior
+        # where the section was simply absent.
+        assert DEFAULT_CONFIG["file_tools"]["hosted_ocr"] is None
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            assert config["file_tools"]["hosted_ocr"] is None
+
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config_path = tmp_path / "config.yaml"

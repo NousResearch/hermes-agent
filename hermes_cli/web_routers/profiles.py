@@ -584,6 +584,7 @@ def _merge_profile_tree(
     projects: List[Dict[str, Any]],
     profile: str,
     preview_limit: int,
+    default_cwd: Optional[str] = None,
 ) -> None:
     """Fold one profile's projects into the shared tree, keyed by folder.
 
@@ -592,10 +593,21 @@ def _merge_profile_tree(
     profile. Keying on the path rather than the id also folds a profile's
     declared project (``p_<hash>``) together with the auto entry another profile
     grows for the same folder. Sessions carry the owning profile instead, which
-    is what the row badge and the profile filter read; a group header never
-    claims a single owner.
+    is what the row badge and the profile filter read. ``defaultProfile`` is
+    only a launch-target hint from that profile's configured cwd; it does not
+    claim that every session in the merged group has one owner.
     """
+    default_path = Path(default_cwd).expanduser().resolve(strict=False) if default_cwd else None
+
     for project in projects:
+        project_path = project.get("path")
+        if default_path is not None and project_path:
+            try:
+                if Path(project_path).expanduser().resolve(strict=False) == default_path:
+                    project["defaultProfile"] = profile
+            except (OSError, RuntimeError):
+                pass
+
         for lane in (repo for r in project.get("repos") or [] for repo in r.get("groups") or []):
             for session in lane.get("sessions") or []:
                 session["profile"] = profile
@@ -615,6 +627,9 @@ def _merge_profile_tree(
         if existing.get("isAuto") and not project.get("isAuto"):
             existing, project = project, existing
             merged[key] = existing
+
+        if project.get("defaultProfile") and not existing.get("defaultProfile"):
+            existing["defaultProfile"] = project["defaultProfile"]
 
         repos: Dict[str, Dict[str, Any]] = {r["id"]: r for r in existing.get("repos") or []}
         _merge_by_id(repos, project.get("repos") or [], "groups")
@@ -680,6 +695,10 @@ def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000
 
         token = set_hermes_home_override(str(home))
         try:
+            from hermes_cli.config import load_config
+
+            terminal_config = load_config().get("terminal") or {}
+            default_cwd = str(terminal_config.get("cwd") or "").strip()
             tree, _active_id = gateway_server._build_project_tree(
                 db,
                 preview_limit=preview_limit,
@@ -687,7 +706,7 @@ def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000
                 session_limit=session_limit,
                 include_discovered=False,
             )
-            _merge_profile_tree(merged, tree["projects"], name, preview_limit)
+            _merge_profile_tree(merged, tree["projects"], name, preview_limit, default_cwd)
             scoped_session_ids.extend(tree["scoped_session_ids"])
         except Exception as exc:
             _warn_profile_read_error(name, exc)

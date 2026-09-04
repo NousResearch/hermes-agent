@@ -657,7 +657,9 @@ def _scroll(
 
     if not messages:
         return tool_error(
-            f"around_message_id {around_message_id} not in session_id {session_id}",
+            f"around_message_id {around_message_id} not in session_id {session_id}. "
+            "Omit around_message_id to read the whole session, or pass an id "
+            "returned by a previous discovery/scroll result.",
             success=False,
         )
 
@@ -1013,7 +1015,11 @@ def _session_search_impl(
             current_session_id = None
 
     # Scroll shape takes precedence — explicit anchor beats any query.
-    if (isinstance(session_id, str) and session_id.strip()) and around_message_id is not None:
+    # A falsy anchor is *no* anchor: message ids are AUTOINCREMENT rowids and
+    # start at 1, so 0 can never address a row. Clients that emit the full
+    # argument schema send around_message_id=0 to mean "unset" — the same way
+    # they send session_id="" — and must still reach the read shape below.
+    if (isinstance(session_id, str) and session_id.strip()) and around_message_id:
         return _scroll(
             db=db,
             session_id=session_id,

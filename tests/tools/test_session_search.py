@@ -444,6 +444,37 @@ class TestShapePrecedence:
         result = json.loads(session_search(session_id="s_oldest", db=db))
         assert result["mode"] == "read"
 
+    def test_zero_anchor_reads_instead_of_scrolling(self, db):
+        _seed_modpack_sessions(db)
+        # Message ids are AUTOINCREMENT rowids starting at 1, so 0 can never
+        # address a row. Clients that emit the full argument schema send
+        # around_message_id=0 to mean "unset" — the same way they send
+        # session_id="" — and must still land on the read shape.
+        result = json.loads(session_search(
+            session_id="s_oldest", around_message_id=0, db=db,
+        ))
+        assert result["success"] is True
+        assert result["mode"] == "read"
+
+    def test_full_schema_zero_defaults_still_read(self, db):
+        _seed_modpack_sessions(db)
+        # The complete argument object a tool-calling model typically emits.
+        result = json.loads(session_search(
+            session_id="s_oldest", around_message_id=0, query="", profile="",
+            role_filter="", limit=3, sort="newest", window=5, db=db,
+        ))
+        assert result["success"] is True
+        assert result["mode"] == "read"
+
+    def test_missing_anchor_error_says_how_to_recover(self, db):
+        _seed_modpack_sessions(db)
+        # A genuinely wrong anchor still errors, but actionably.
+        result = json.loads(session_search(
+            session_id="s_oldest", around_message_id=10**9, db=db,
+        ))
+        assert result["success"] is False
+        assert "omit around_message_id" in result["error"].lower()
+
 
 # =========================================================================
 # Read shape — dump a whole session by id (serves @session links)

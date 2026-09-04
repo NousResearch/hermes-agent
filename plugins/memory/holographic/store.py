@@ -83,9 +83,28 @@ _TRUST_MIN       =  0.0
 _TRUST_MAX       =  1.0
 
 # Entity extraction patterns
-_RE_CAPITALIZED  = re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b')
+# One or more title-case words. The trailing group is `*` (not `+`) so a lone
+# proper noun ("Michael") is also a candidate; single-token matches are then
+# filtered by the sentence-position + stopword heuristic in _extract_entities.
+_RE_CAPITALIZED  = re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b')
 _RE_DOUBLE_QUOTE = re.compile(r'"([^"]+)"')
 _RE_SINGLE_QUOTE = re.compile(r"'([^']+)'")
+
+# Common capitalized words that routinely open a sentence but are not proper
+# nouns. A single title-case token in sentence-initial position is only kept as
+# an entity when it is NOT one of these. This is a deliberately imperfect
+# heuristic (a proper-noun/POS source would be more robust) that trades a small
+# amount of residual noise for covering the dominant "Name prefers X" shape.
+_CAP_SENTENCE_STOPWORDS = frozenset({
+    "The", "A", "An", "This", "That", "These", "Those", "It", "Its",
+    "He", "She", "They", "We", "You", "His", "Her", "Their", "Our", "Your", "My",
+    "Please", "Remember", "Note", "Review", "Update", "Add", "Remove", "Delete",
+    "Create", "Make", "Set", "Use", "Check", "Ensure", "Consider", "Keep", "Let",
+    "Also", "Then", "Now", "Here", "There", "However", "Meanwhile", "Otherwise",
+    "When", "Where", "What", "Why", "How", "Who", "Which", "If", "But", "And",
+    "Or", "So", "Because", "Although", "Though", "While", "Since", "After",
+    "Before", "During", "Today", "Tomorrow", "Yesterday",
+})
 _RE_AKA          = re.compile(
     r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)',
     re.IGNORECASE,
@@ -449,7 +468,9 @@ class MemoryStore:
         """Extract entity candidates from text using simple regex rules.
 
         Rules applied (in order):
-        1. Capitalized multi-word phrases  e.g. "John Doe"
+        1. Capitalized phrases             e.g. "John Doe", or a lone
+           proper noun ("Michael") when it is not a sentence-initial
+           common word (see _CAP_SENTENCE_STOPWORDS)
         2. Double-quoted terms             e.g. "Python"
         3. Single-quoted terms             e.g. 'pytest'
         4. AKA patterns                    e.g. "Guido aka BDFL" -> two entities
@@ -466,7 +487,18 @@ class MemoryStore:
                 candidates.append(stripped)
 
         for m in _RE_CAPITALIZED.finditer(text):
-            _add(m.group(1))
+            phrase = m.group(1)
+            if " " not in phrase:
+                # Lone title-case token: keep it only when it is a plausible
+                # proper noun. A word mid-sentence (preceded by anything other
+                # than sentence-ending punctuation) is almost always a name;
+                # a sentence-initial word is ambiguous ("Michael" vs "Review"),
+                # so drop it when it is a known non-proper-noun opener.
+                preceding = text[: m.start(1)].rstrip()
+                sentence_initial = not preceding or preceding[-1] in ".!?"
+                if sentence_initial and phrase in _CAP_SENTENCE_STOPWORDS:
+                    continue
+            _add(phrase)
 
         for m in _RE_DOUBLE_QUOTE.finditer(text):
             _add(m.group(1))

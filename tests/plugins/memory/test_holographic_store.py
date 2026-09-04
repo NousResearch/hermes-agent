@@ -45,6 +45,47 @@ def db_path(tmp_path):
     return tmp_path / "memory_store.db"
 
 
+class TestEntityExtraction:
+    """_extract_entities must recover lone proper nouns (the dominant shape in a
+    personal fact store, e.g. "Michael prefers X") without regressing multi-word
+    phrases or admitting sentence-initial common words as spurious entities."""
+
+    def test_single_word_proper_noun_is_extracted(self, db_path):
+        store = MemoryStore(db_path)
+        try:
+            assert store._extract_entities("Michael prefers dark roast coffee.") == ["Michael"]
+            assert store._extract_entities("Anne maintains the memory vault.") == ["Anne"]
+        finally:
+            store.close()
+
+    def test_multi_word_phrase_is_not_split(self, db_path):
+        store = MemoryStore(db_path)
+        try:
+            # Must stay a single entity — not ["Michael Jones", "Michael", "Jones"].
+            assert store._extract_entities(
+                "Michael Jones prefers dark roast coffee."
+            ) == ["Michael Jones"]
+        finally:
+            store.close()
+
+    def test_mid_sentence_capital_is_kept(self, db_path):
+        store = MemoryStore(db_path)
+        try:
+            assert store._extract_entities("We spoke to Michael yesterday.") == ["Michael"]
+        finally:
+            store.close()
+
+    def test_sentence_initial_common_words_are_not_entities(self, db_path):
+        store = MemoryStore(db_path)
+        try:
+            assert store._extract_entities("The user likes coffee.") == []
+            assert store._extract_entities("Please remember this.") == []
+            assert store._extract_entities("Review the deployment guide.") == []
+            assert store._extract_entities("Update the backup plan.") == []
+        finally:
+            store.close()
+
+
 class TestSharedConnection:
     def test_same_path_shares_one_connection(self, db_path):
         a = MemoryStore(db_path)

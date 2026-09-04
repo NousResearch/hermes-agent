@@ -985,6 +985,7 @@ export function ChatBar({
     onInterrupt: haltRun,
     onSubmit,
     onTranscribeAudio,
+    pttActive: () => document.activeElement === editorRef.current,
     sessionId,
     target: scope.target
   })

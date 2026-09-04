@@ -26,6 +26,7 @@ export function useVoiceRecorder({
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>('idle')
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const startedAtRef = useRef(0)
+  const operationGenerationRef = useRef(0)
   const intervalRef = useRef<number | null>(null)
   const timeoutRef = useRef<number | null>(null)
 
@@ -41,22 +42,37 @@ export function useVoiceRecorder({
     }
   }
 
-  useEffect(() => () => clearTimers(), [])
+  useEffect(
+    () => () => {
+      operationGenerationRef.current += 1
+      clearTimers()
+    },
+    []
+  )
 
-  const stop = async () => {
+  const stop = async (autoSubmit = false): Promise<string | null> => {
+    const generation = operationGenerationRef.current
     clearTimers()
     const result = await handle.stop()
 
     if (!result) {
-      setVoiceStatus('idle')
+      if (generation === operationGenerationRef.current) {
+        setVoiceStatus('idle')
+      }
 
-      return
+      return null
     }
 
     if (!onTranscribeAudio) {
-      setVoiceStatus('idle')
+      if (generation === operationGenerationRef.current) {
+        setVoiceStatus('idle')
+      }
 
-      return
+      return null
+    }
+
+    if (generation !== operationGenerationRef.current) {
+      return null
     }
 
     setVoiceStatus('transcribing')
@@ -64,37 +80,65 @@ export function useVoiceRecorder({
     try {
       const transcript = (await onTranscribeAudio(result.audio)).trim()
 
+      if (generation !== operationGenerationRef.current) {
+        return null
+      }
+
       if (!transcript) {
         notify({ kind: 'warning', title: voiceCopy.noSpeechDetected, message: voiceCopy.tryRecordingAgain })
+      } else if (autoSubmit) {
+        // PTT submits through its composer seam after transcription resolves.
       } else {
         onTranscript(transcript)
       }
+
+      return transcript
     } catch (error) {
-      notifyError(error, voiceCopy.transcriptionFailed)
+      if (generation === operationGenerationRef.current) {
+        notifyError(error, voiceCopy.transcriptionFailed)
+      }
+
+      return null
     } finally {
-      setVoiceStatus('idle')
-      focusInput()
+      if (generation === operationGenerationRef.current) {
+        setVoiceStatus('idle')
+        focusInput()
+      }
     }
   }
 
-  const start = async () => {
+  const start = async (withTimeout = true): Promise<boolean> => {
     if (!onTranscribeAudio) {
       notify({ kind: 'warning', title: voiceCopy.unavailable, message: voiceCopy.transcriptionUnavailable })
 
-      return
+      return false
     }
 
     try {
-      await handle.start({ onError: error => notifyError(error, voiceCopy.recordingFailed) })
+      const started = await handle.start({ onError: error => notifyError(error, voiceCopy.recordingFailed) })
+
+      if (!started) {
+        setVoiceStatus('idle')
+
+        return false
+      }
+
       startedAtRef.current = Date.now()
       setElapsedSeconds(0)
       setVoiceStatus('recording')
       intervalRef.current = window.setInterval(() => setElapsedSeconds((Date.now() - startedAtRef.current) / 1000), 250)
-      const cap = Math.max(1, Math.min(Math.trunc(maxRecordingSeconds), 600))
-      timeoutRef.current = window.setTimeout(() => void stop(), cap * 1000)
+
+      if (withTimeout) {
+        const cap = Math.max(1, Math.min(Math.trunc(maxRecordingSeconds), 600))
+        timeoutRef.current = window.setTimeout(() => void stop(), cap * 1000)
+      }
+
+      return true
     } catch (error) {
       setVoiceStatus('idle')
       notifyError(error, voiceCopy.recordingFailed)
+
+      return false
     }
   }
 
@@ -106,11 +150,21 @@ export function useVoiceRecorder({
     }
   }
 
+  const startRecording = () => start(false)
+  const stopRecording = () => stop(true)
+
+  const cancelRecording = () => {
+    operationGenerationRef.current += 1
+    clearTimers()
+    handle.cancel()
+    setVoiceStatus('idle')
+  }
+
   const voiceActivityState: VoiceActivityState = {
     elapsedSeconds,
     level,
     status: voiceStatus
   }
 
-  return { dictate, voiceActivityState, voiceStatus }
+  return { dictate, startRecording, stopRecording, cancelRecording, voiceActivityState, voiceStatus }
 }

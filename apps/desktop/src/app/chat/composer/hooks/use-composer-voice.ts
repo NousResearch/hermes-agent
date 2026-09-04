@@ -15,13 +15,87 @@ import { $autoSpeakReplies, $voiceStopPhrase, setAutoSpeakReplies } from '@/stor
 import { resumeWakeAfterVoice } from '@/store/wake-word'
 
 import type { ComposerTarget } from '../focus'
-import { onComposerVoiceToggleRequest } from '../focus'
+import { getActiveComposer, onComposerVoiceToggleRequest } from '../focus'
 import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
 import { useAutoSpeakReplies } from './use-auto-speak-replies'
+import { useComposerPtt } from './use-composer-ptt'
 import { useVoiceConversation } from './use-voice-conversation'
 import { useVoiceRecorder } from './use-voice-recorder'
+
+interface WakePauseCoordinatorOptions {
+  pause: () => Promise<unknown> | unknown
+  resume: () => Promise<unknown> | unknown
+}
+
+interface WakePauseCoordinator {
+  barrier: () => Promise<void> | null
+  pause: () => Promise<void>
+  resume: () => Promise<void>
+}
+
+/** Serializes wake ownership so a pending pause cannot race a later resume. */
+export function createWakePauseCoordinator({ pause, resume }: WakePauseCoordinatorOptions): WakePauseCoordinator {
+  let generation = 0
+  let paused = false
+  let pauseBarrier: Promise<void> | null = null
+  let resumeGeneration: number | null = null
+  let resumePromise = Promise.resolve()
+
+  return {
+    barrier: () => pauseBarrier,
+    pause: () => {
+      const owner = ++generation
+      paused = true
+
+      const barrier = Promise.resolve()
+        .then(() => pause())
+        .then(() => undefined)
+        .catch(() => undefined)
+
+      pauseBarrier = barrier
+
+      return barrier.then(() => {
+        if (generation === owner && pauseBarrier === barrier && !paused) {
+          pauseBarrier = null
+        }
+      })
+    },
+    resume: () => {
+      if (!paused) {
+        return Promise.resolve()
+      }
+
+      const owner = generation
+      const barrier = pauseBarrier ?? Promise.resolve()
+      paused = false
+
+      if (resumeGeneration === owner) {
+        return resumePromise
+      }
+
+      resumeGeneration = owner
+      resumePromise = barrier
+        .then(() => {
+          if (generation !== owner) {
+            return
+          }
+
+          return Promise.resolve(resume()).then(() => undefined)
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          if (generation === owner && resumeGeneration === owner) {
+            resumeGeneration = null
+            pauseBarrier = null
+          }
+        })
+
+      return resumePromise
+    }
+  }
+}
 
 interface UseComposerVoiceArgs {
   busy: boolean
@@ -35,6 +109,7 @@ interface UseComposerVoiceArgs {
   onInterrupt?: () => Promise<void> | void
   onSubmit: ChatBarProps['onSubmit']
   onTranscribeAudio: ChatBarProps['onTranscribeAudio']
+  pttActive: () => boolean
   sessionId: string | null | undefined
   /** This composer's focus-bus key — voice toggles targeting another
    *  composer (or the active one, when not us) are ignored. */
@@ -57,6 +132,7 @@ export function useComposerVoice({
   onInterrupt,
   onSubmit,
   onTranscribeAudio,
+  pttActive,
   sessionId,
   target
 }: UseComposerVoiceArgs) {
@@ -67,12 +143,29 @@ export function useComposerVoice({
   const ownsWakeIndicatorRef = useRef(false)
   const voiceStartRequest = useStore($voiceConversationStartRequest)
 
-  const { dictate, voiceActivityState, voiceStatus } = useVoiceRecorder({
-    focusInput,
-    maxRecordingSeconds,
-    onTranscript: insertText,
-    onTranscribeAudio
-  })
+  const submitVoiceTurn = async (text: string) => {
+    if (busy) {
+      // Busy may begin after PTT starts. Keep the completed dictation visible
+      // as this composer's draft instead of silently dropping it or queueing it.
+      insertText(text)
+
+      return
+    }
+
+    triggerHaptic('submit')
+    resetBrowseState(sessionId)
+    clearDraft()
+    await onSubmit(text)
+  }
+
+  const { cancelRecording, dictate, startRecording, stopRecording, voiceActivityState, voiceStatus } = useVoiceRecorder(
+    {
+      focusInput,
+      maxRecordingSeconds,
+      onTranscript: insertText,
+      onTranscribeAudio
+    }
+  )
 
   /** Auto-speak selector: the latest unspoken reply only — a backlog collapses to the newest. */
   const pendingResponse = () => {
@@ -117,24 +210,16 @@ export function useComposerVoice({
     }
   }
 
-  const submitVoiceTurn = async (text: string) => {
-    if (busy) {
-      return
-    }
+  const wakeCoordinatorRef = useRef(
+    createWakePauseCoordinator({
+      pause: async () => {
+        await $gateway.get()?.request('wake.pause', {})
+      },
+      resume: () => resumeWakeAfterVoice()
+    })
+  )
 
-    triggerHaptic('submit')
-    resetBrowseState(sessionId)
-    clearDraft()
-    await onSubmit(text)
-  }
-
-  const wakePausedRef = useRef(false)
-  // Resolves once the in-flight wake.pause round-trip completes (mic released by
-  // the wake listener). The conversation awaits this before opening its own mic
-  // so the two never contend for the device — on Windows especially, opening the
-  // capture device while the wake listener still holds it makes getUserMedia
-  // fail and the conversation never starts listening.
-  const wakePauseBarrierRef = useRef<Promise<void> | null>(null)
+  const wakeCoordinator = wakeCoordinatorRef.current
 
   const conversation = useVoiceConversation({
     busy,
@@ -154,8 +239,8 @@ export function useComposerVoice({
     onTranscribeAudio,
     pendingResponse: pendingTurnResponse,
     // Before the conversation opens the mic, wait for any in-flight wake.pause
-    // to finish releasing the capture device (see wakePauseBarrierRef).
-    beforeMicOpen: () => wakePauseBarrierRef.current ?? undefined
+    // finish releasing the capture device (see wakeCoordinator).
+    beforeMicOpen: () => wakeCoordinator.barrier() ?? undefined
   })
 
   // eslint-disable-next-line no-restricted-syntax -- ownership token used only by unmount cleanup
@@ -205,36 +290,8 @@ export function useComposerVoice({
     }
   }, [disabled, target, voiceConversationActive, voiceStartRequest])
 
-  const resumeWakeIfPaused = useCallback(() => {
-    if (!wakePausedRef.current) {
-      return
-    }
-
-    wakePausedRef.current = false
-    wakePauseBarrierRef.current = null
-    // Reconcile, don't just resume: the wake word is a persistent setting, so
-    // ending a voice chat must re-arm the listener whenever config says
-    // enabled — including when the raw resume loses the mic-release race.
-    void resumeWakeAfterVoice()
-  }, [])
-
-  // The ref is a request token (did WE issue wake.pause?), not an atom mirror —
-  // it guards resumeWakeIfPaused from resuming a detector another surface owns.
-  const pauseWakeForVoice = useCallback(() => {
-    wakePausedRef.current = true
-
-    const barrier = (async () => {
-      try {
-        await $gateway.get()?.request('wake.pause', {})
-      } catch {
-        // No wake listener / older backend — nothing held the mic.
-      }
-    })()
-
-    wakePauseBarrierRef.current = barrier
-
-    return barrier
-  }, [])
+  const resumeWakeIfPaused = useCallback(() => wakeCoordinator.resume(), [wakeCoordinator])
+  const pauseWakeForVoice = useCallback(() => wakeCoordinator.pause(), [wakeCoordinator])
 
   useEffect(() => {
     if (voiceConversationActive) {
@@ -243,6 +300,40 @@ export function useComposerVoice({
       resumeWakeIfPaused()
     }
   }, [pauseWakeForVoice, resumeWakeIfPaused, voiceConversationActive])
+
+  useComposerPtt({
+    active: () => pttActive() && getActiveComposer() === target,
+    blocked: busy || disabled || voiceConversationActive,
+    cancel: () => {
+      cancelRecording()
+      resumeWakeIfPaused()
+    },
+    maxRecordingSeconds,
+    start: async () => {
+      await pauseWakeForVoice()
+
+      try {
+        const started = await startRecording()
+
+        if (!started) {
+          resumeWakeIfPaused()
+        }
+
+        return started
+      } catch (error) {
+        resumeWakeIfPaused()
+        throw error
+      }
+    },
+    stop: async () => {
+      try {
+        return await stopRecording()
+      } finally {
+        resumeWakeIfPaused()
+      }
+    },
+    submit: submitVoiceTurn
+  })
 
   // 'Say "stop" to end the voice chat.' notice when the conversation starts.
   // Phrase comes from voice.stop_phrases (first entry) so a custom phrase
@@ -264,7 +355,7 @@ export function useComposerVoice({
     }
   }, [t, voiceConversationActive])
 
-  useEffect(() => resumeWakeIfPaused, [resumeWakeIfPaused])
+  useEffect(() => () => void resumeWakeIfPaused(), [resumeWakeIfPaused])
 
   // Speech-output toggles are TTS warm-up / release signals. Entering a voice
   // conversation acquires this window's lease (pre-loads the engine so the

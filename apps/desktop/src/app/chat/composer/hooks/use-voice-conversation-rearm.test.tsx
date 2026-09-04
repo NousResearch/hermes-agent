@@ -27,6 +27,8 @@ const mocks = vi.hoisted(() => {
     cancel: vi.fn(),
     start: vi.fn(async (options: { onSilence: () => void }) => {
       onSilence = options.onSilence
+
+      return true
     }),
     stop: vi.fn(async () => ({
       audio: new Blob(['voice'], { type: 'audio/webm' }),

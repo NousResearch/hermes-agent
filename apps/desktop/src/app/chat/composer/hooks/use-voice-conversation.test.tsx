@@ -41,7 +41,7 @@ vi.mock('@/lib/thinking-sound', () => ({
 
 const micHandle = {
   cancel: vi.fn(),
-  start: vi.fn(async () => undefined),
+  start: vi.fn(async () => true),
   stop: vi.fn<() => Promise<MicRecording | null>>(async () => null)
 }
 
@@ -75,7 +75,13 @@ interface HookProps {
   busy: boolean
 }
 
-function renderConversation(overrides: { onInterrupt?: () => void; transcript?: string } = {}) {
+function renderConversation(
+  overrides: {
+    onInterrupt?: () => void
+    onTranscribeAudio?: (audio: Blob) => Promise<string>
+    transcript?: string
+  } = {}
+) {
   const onInterrupt = overrides.onInterrupt ?? vi.fn()
 
   // Mirrors the real app: submitting a turn makes the agent busy.
@@ -91,9 +97,11 @@ function renderConversation(overrides: { onInterrupt?: () => void; transcript?: 
   // ones are barge captures (the overridable transcript).
   let transcriptions = 0
 
-  const onTranscribeAudio = vi.fn(async () =>
-    transcriptions++ === 0 ? 'kick off the task' : (overrides.transcript ?? 'and another thing')
-  )
+  const onTranscribeAudio =
+    overrides.onTranscribeAudio ??
+    vi.fn(async () =>
+      transcriptions++ === 0 ? 'kick off the task' : (overrides.transcript ?? 'and another thing')
+    )
 
   const hook = renderHook(
     ({ busy }: HookProps) =>
@@ -138,7 +146,7 @@ describe('useVoiceConversation full-duplex barge-in', () => {
   beforeEach(() => {
     monitorCalls.length = 0
     vi.clearAllMocks()
-    micHandle.start.mockResolvedValue(undefined)
+    micHandle.start.mockResolvedValue(true)
     micHandle.stop.mockResolvedValue(null)
   })
 
@@ -155,6 +163,171 @@ describe('useVoiceConversation full-duplex barge-in', () => {
     await waitFor(() => expect(hook.result.current.status).toBe('thinking'))
     // busy=true + thinking → the full-duplex monitor must be live.
     await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
+  })
+
+  it('does not enter listening or arm a timeout when mic start is cancelled', async () => {
+    micHandle.start.mockResolvedValueOnce(false)
+    const { hook } = renderConversation()
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+
+    expect(hook.result.current.status).toBe('idle')
+    expect(micHandle.stop).not.toHaveBeenCalled()
+  })
+
+  it('does not submit a normal turn when the conversation ends during transcription', async () => {
+    let resolveTranscription!: (transcript: string) => void
+
+    const transcription = new Promise<string>(resolve => {
+      resolveTranscription = resolve
+    })
+
+    const { hook, onSubmit } = renderConversation({
+      onTranscribeAudio: vi.fn(async () => transcription)
+    })
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
+    micHandle.stop.mockResolvedValueOnce({
+      audio: new Blob(['q'], { type: 'audio/webm' }),
+      durationMs: 900,
+      heardSpeech: true
+    })
+
+    act(() => {
+      hook.result.current.stopTurn()
+    })
+    await waitFor(() => expect(hook.result.current.status).toBe('transcribing'))
+
+    await act(async () => {
+      await hook.result.current.end()
+      resolveTranscription('stale normal turn')
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(hook.result.current.status).toBe('idle')
+  })
+
+  it('does not submit a barge capture when the conversation ends during transcription', async () => {
+    let calls = 0
+    let resolveTranscription!: (transcript: string) => void
+
+    const transcription = new Promise<string>(resolve => {
+      resolveTranscription = resolve
+    })
+
+    const { hook, onSubmit } = renderConversation({
+      onTranscribeAudio: vi.fn(async () => {
+        calls += 1
+
+        return calls === 1 ? 'kick off the task' : transcription
+      })
+    })
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await enterThinking(hook)
+    await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
+    const monitor = monitorCalls.at(-1)
+    act(() => monitor?.onSpeech())
+    hook.rerender({ busy: false })
+
+    act(() => {
+      monitor?.onUtterance?.(new Blob(['x'], { type: 'audio/webm' }))
+    })
+    await waitFor(() => expect(hook.result.current.status).toBe('transcribing'))
+
+    await act(async () => {
+      await hook.result.current.end()
+      resolveTranscription('stale barge turn')
+    })
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit).not.toHaveBeenCalledWith('stale barge turn')
+    expect(hook.result.current.status).toBe('idle')
+  })
+
+  it('does not submit a barge capture when the conversation ends during interrupt settling', async () => {
+    const { hook, onSubmit } = renderConversation({ transcript: 'stale after wait' })
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await enterThinking(hook)
+    await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
+    const monitor = monitorCalls.at(-1)
+    act(() => monitor?.onSpeech())
+
+    vi.useFakeTimers()
+
+    try {
+      const submission = monitor?.onUtterance?.(new Blob(['x'], { type: 'audio/webm' }))
+      await Promise.resolve()
+      await act(async () => {
+        await hook.result.current.end()
+        vi.advanceTimersByTime(100)
+        await submission
+      })
+
+      expect(onSubmit).not.toHaveBeenCalledWith('stale after wait')
+      expect(hook.result.current.status).toBe('idle')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('allows a fresh generation to submit after a cancelled turn', async () => {
+    let calls = 0
+    let resolveTranscription!: (transcript: string) => void
+
+    const staleTranscription = new Promise<string>(resolve => {
+      resolveTranscription = resolve
+    })
+
+    const { hook, onSubmit } = renderConversation({
+      onTranscribeAudio: vi.fn(async () => {
+        calls += 1
+
+        if (calls === 1) {
+          return staleTranscription
+        }
+
+        return 'fresh turn'
+      })
+    })
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
+    micHandle.stop.mockResolvedValueOnce({
+      audio: new Blob(['q'], { type: 'audio/webm' }),
+      durationMs: 900,
+      heardSpeech: true
+    })
+    act(() => hook.result.current.stopTurn())
+    await waitFor(() => expect(hook.result.current.status).toBe('transcribing'))
+    await act(async () => {
+      await hook.result.current.end()
+      resolveTranscription('stale turn')
+    })
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
+    micHandle.stop.mockResolvedValueOnce({
+      audio: new Blob(['fresh'], { type: 'audio/webm' }),
+      durationMs: 900,
+      heardSpeech: true
+    })
+    await act(async () => hook.result.current.stopTurn())
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('fresh turn'))
   })
 
   it('interrupts the in-flight turn when speech trips mid-generation', async () => {

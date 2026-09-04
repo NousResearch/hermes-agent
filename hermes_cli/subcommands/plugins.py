@@ -54,6 +54,16 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         action="store_true",
         help="Install disabled (skip confirmation prompt); enable later with `hermes plugins enable <name>`",
     )
+    plugins_install.add_argument(
+        "--no-scan",
+        action="store_true",
+        help=(
+            "Skip the content security scan for a source you have already "
+            "verified; requires --ref <commit SHA> or an existing immutable "
+            "pin for the same source. Dangerous structural violations still "
+            "block."
+        ),
+    )
 
     plugins_search = plugins_subparsers.add_parser(
         "search", help="Search the community plugin index"

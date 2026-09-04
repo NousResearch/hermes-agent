@@ -41,6 +41,7 @@ from .settings import (
     _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_RETAIN_SOURCE,
     _DEFAULT_TIMEOUT, _HINDSIGHT_GLYPH, _MIN_CLIENT_VERSION, _MIN_VERSION_FOR_UPDATE_MODE_APPEND,
     _PROVIDER_DEFAULT_MODELS, _VALID_BUDGETS, _daemon_llm_provider,
+    _contains_term, _is_live_status_query, _is_simple_recall_query,
     _normalize_observation_scopes, _normalize_retain_tags, _parse_int_setting,
     _resolve_bank_id_template,
 )
@@ -433,6 +434,14 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "prefetch_retain_drain_timeout", "description": "Max seconds the background prefetch waits for the retain to become recall-visible (queue drain + server-side completion) before recalling anyway", "default": 10.0},
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
+            {"key": "recall_max_results", "description": "Ranked auto-recall result cap (0 keeps all)", "default": 0},
+            {"key": "recall_live_status_bypass", "description": "Opt-in English/German phrase heuristic to skip live-status auto-recall", "default": False},
+            {"key": "recall_simple_budget", "description": "Optional budget for short auto-recall queries", "default": "", "choices": ["", "low", "mid", "high"]},
+            {"key": "recall_simple_max_words", "description": "Short-query word limit (0 disables)", "default": 0},
+            {"key": "recall_document_tags", "description": "Base tags for optional document filtering", "default": []},
+            {"key": "recall_document_terms", "description": "Phrases enabling document filtering", "default": []},
+            {"key": "recall_document_tag_routes", "description": "Additional document tag to phrase-list mapping", "default": {}},
+            {"key": "recall_document_types", "description": "Fact types for document-filtered auto-recall", "default": ["world", "observation"]},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
@@ -765,6 +774,20 @@ class HindsightMemoryProvider(MemoryProvider):
         self._auto_recall = cfg.get("auto_recall", True)
         self._recall_sync = bool(cfg.get("recall_sync", False))
         self._recall_max_tokens = int(cfg.get("recall_max_tokens", 4096))
+        self._recall_max_results = max(0, _parse_int_setting(cfg.get("recall_max_results"), 0))
+        self._recall_live_status_bypass = cfg.get("recall_live_status_bypass") is True
+        simple_budget = cfg.get("recall_simple_budget", "")
+        self._recall_simple_budget = simple_budget if isinstance(simple_budget, str) and simple_budget in _VALID_BUDGETS else ""
+        self._recall_simple_max_words = max(0, _parse_int_setting(cfg.get("recall_simple_max_words"), 0))
+        self._recall_document_tags = _normalize_retain_tags(cfg.get("recall_document_tags"))
+        self._recall_document_terms = _normalize_retain_tags(cfg.get("recall_document_terms"))
+        routes = cfg.get("recall_document_tag_routes", {})
+        self._recall_document_tag_routes = {
+            tag.strip(): _normalize_retain_tags(terms) for tag, terms in routes.items()
+            if isinstance(tag, str) and tag.strip()
+        } if isinstance(routes, dict) else {}
+        types = _normalize_retain_tags(cfg.get("recall_document_types", ["world", "observation"]))
+        self._recall_document_types = [t for t in types if t in ("world", "observation", "experience")] or ["world", "observation"]
         self._recall_max_input_chars = int(cfg.get("recall_max_input_chars", 800))
         # None -> observation-only (Hindsight's consolidated, deduplicated layer; raw
         # world/experience facts re-ship the evidence they summarize and burn the
@@ -841,33 +864,52 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.debug("Prefetch: skipped (%s)", why)
         return why is not None
 
-    def _recall(self, query: str) -> list:
+    def _recall(self, query: str, **overrides) -> list:
         kwargs: dict = {"bank_id": self._bank_id, "query": query, "budget": self._budget, "max_tokens": self._recall_max_tokens}
         if self._recall_tags:
             kwargs.update(tags=self._recall_tags, tags_match=self._recall_tags_match)
         if self._recall_types:
             kwargs["types"] = self._recall_types
+        kwargs.update(overrides)
         resp = self._run_hindsight_operation(lambda client: client.arecall(**kwargs))
         return resp.results or []
 
-    def _reflect(self, query: str) -> str | None:
+    def _reflect(self, query: str, *, budget: str | None = None) -> str | None:
         resp = self._run_hindsight_operation(
-            lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget)
+            lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=budget or self._budget)
         )
         return resp.text
 
     def _do_recall(self, query: str) -> tuple[str, int]:
         """One recall/reflect for *query* (background prefetch and ``recall_sync`` paths)
         -> (text, memory count); the count is 0 for reflect (synthesis) and on error."""
+        if self._recall_live_status_bypass and _is_live_status_query(query):
+            logger.debug("Recall: skipped by opt-in live-status phrase heuristic")
+            return "", 0
+        # Classify before truncation: a long/complex question must not become simple
+        # merely because its context-injection query is clipped.
+        overrides = {}
+        if self._recall_simple_budget and _is_simple_recall_query(query, self._recall_simple_max_words):
+            overrides["budget"] = self._recall_simple_budget
+        document_query = bool(self._recall_document_tags and self._recall_document_terms
+                              and _contains_term(query, self._recall_document_terms))
         if self._recall_max_input_chars:
             query = query[:self._recall_max_input_chars]
         try:
             if self._prefetch_method == "reflect":
                 logger.debug("Recall: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
-                return self._reflect(query) or "", 0
+                return self._reflect(query, **overrides) or "", 0
+            if document_query:
+                tags = list(self._recall_document_tags)
+                for tag, terms in self._recall_document_tag_routes.items():
+                    if _contains_term(query, terms) and tag not in tags:
+                        tags.append(tag)
+                overrides.update(tags=tags, tags_match="all", types=self._recall_document_types)
             logger.debug("Recall: calling recall (bank=%s, query_len=%d, budget=%s)",
                          self._bank_id, len(query), self._budget)
-            results = self._recall(query)
+            results = self._recall(query, **overrides)
+            if self._recall_max_results:
+                results = results[:self._recall_max_results]
             logger.debug("Recall: returned %d results", len(results))
             return "\n".join(f"- {r.text}" for r in results if r.text), len(results)
         except Exception as e:

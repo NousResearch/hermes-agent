@@ -1,19 +1,7 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-12T00:00:00Z",
+  "generated_at": "2026-08-14T00:00:00Z",
   "plugins": [
-    {
-      "name": "hermes-media-studio",
-      "description": "Media Studio — generative media workspace plugin for Hermes Desktop (fal + Krea, durable job queue, library).",
-      "author": "NousResearch",
-      "tags": ["media", "image-gen", "video-gen", "dashboard", "desktop"],
-      "repo": "NousResearch/hermes-media-studio",
-      "ref": "e8d59971d2b7901405b39dac7b03bdd616272d0d",
-      "homepage": "https://github.com/NousResearch/hermes-media-studio",
-      "capabilities": ["tools", "dashboard"],
-      "api_version": 1,
-      "added_at": "2026-08-12"
-    },
     {
       "name": "hermes-telegram-business",
       "description": "Observe-with-approval Telegram Business Mode (secretary bot) plugin — every drafted reply requires owner approval before it reaches the customer.",

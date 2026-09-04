@@ -512,7 +512,7 @@ Once you've found a plugin, install it by bare name — the name is resolved
 through the index to its `owner/repo` plus the index-pinned commit:
 
 ```bash
-hermes plugins install hermes-media-studio
+hermes plugins install hermes-telegram-business
 ```
 
 If a name matches more than one entry, the candidates are listed and nothing
@@ -521,25 +521,27 @@ index and keep working exactly as before. An explicit `--ref <sha>` always
 overrides the index pin.
 
 **How the index is fetched.** The index lives at a canonical URL
-(`https://raw.githubusercontent.com/NousResearch/hermes-plugin-index/main/index.json`,
+(`https://raw.githubusercontent.com/NousResearch/hermes-agent/main/hermes_cli/data/plugin_index.json`,
 overridable via `hermes config set plugins.index_url <url>`). Fetches are
 cached under `~/.hermes/cache/plugin_index.json` for 24 hours; when the
 remote is unreachable the stale cache is used, and when there is no cache at
 all a bundled seed copy ships with Hermes — so search works fully offline.
+If the remote fetch fails you will see a warning on stderr before the cached
+or bundled index is shown.
 
 **Index entry format.** Each entry is a JSON object:
 
 ```json
 {
-  "name": "hermes-media-studio",
-  "description": "Generative media workspace plugin.",
+  "name": "hermes-telegram-business",
+  "description": "Telegram secretary bot with owner approval.",
   "author": "NousResearch",
-  "tags": ["media", "image-gen"],
-  "repo": "NousResearch/hermes-media-studio",
-  "ref": "<40-char commit SHA>",
+  "tags": ["telegram", "gateway", "approvals", "messaging"],
+  "repo": "NousResearch/hermes-telegram-business",
+  "ref": "e905f3bc5eeaa5a9dab9bc5155601b3ebec75757",
   "subdir": null,
-  "homepage": "https://github.com/NousResearch/hermes-media-studio",
-  "capabilities": ["tools", "dashboard"],
+  "homepage": "https://github.com/NousResearch/hermes-telegram-business",
+  "capabilities": ["platform"],
   "api_version": 1,
   "added_at": "2026-08-12"
 }
@@ -549,11 +551,12 @@ all a bundled seed copy ships with Hermes — so search works fully offline.
 SHA, and optional `subdir` supports monorepos. The bundled seed file
 (`hermes_cli/data/plugin_index.json` in the repo) is the format reference.
 
-**Submitting a plugin.** The index is maintained as a plain JSON file —
-submit a pull request to the
-[hermes-plugin-index](https://github.com/NousResearch/hermes-plugin-index)
-repository adding your entry (name, description, author, tags, `owner/repo`,
-and a pinned commit SHA). Review covers the entry's *metadata* only.
+**Submitting a plugin.** The index is maintained as a plain JSON file in this
+repository — submit a pull request to
+[hermes-agent](https://github.com/NousResearch/hermes-agent) updating
+[`hermes_cli/data/plugin_index.json`](https://github.com/NousResearch/hermes-agent/blob/main/hermes_cli/data/plugin_index.json)
+with your entry (name, description, author, tags, `owner/repo`, and a pinned
+commit SHA). Review covers the entry's *metadata* only.
 
 :::warning Indexed ≠ audited
 Inclusion in the community index means the entry's metadata was reviewed —
@@ -575,14 +578,14 @@ description: STT + streaming TTS + approval relay
 author: hyper
 version: 1.0.0
 plugins:
-  - name: hermes-media-studio            # bare community-index name…
-    ref: e8d59971d2b7901405b39dac7b03bdd616272d0d
+  - name: hermes-telegram-business        # bare community-index name…
+    ref: e905f3bc5eeaa5a9dab9bc5155601b3ebec75757
   - repo: owner/approval-relay           # …or explicit owner/repo (or git URL)
     ref: 8f3c2d1a9b4e5f6071829304a5b6c7d8e9f00112
     subdir: plugins/relay                # optional monorepo path
 config:                                  # optional, non-secret seeds only
-  hermes-media-studio:
-    default_model: flux-3
+  hermes-telegram-business:
+    require_approval: true
 skills: []                               # declared list only (not auto-installed yet)
 ```
 

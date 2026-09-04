@@ -840,6 +840,7 @@ def init_agent(
             or agent._provider_model_requires_responses_api(
                 agent.model,
                 provider=agent.provider,
+                api_key=api_key,
             )
         )
     ):

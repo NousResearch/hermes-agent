@@ -4,19 +4,19 @@ import type * as React from 'react'
 import type { ComponentProps } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { ProfileTag } from '@/app/chat/profile-tag'
 import type { SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
 import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
-import type * as SessionStore from '@/store/session'
 import type * as LayoutStore from '@/store/layout'
+import type * as SessionStore from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
 
 import { SidebarSessionRow } from './session-row'
-import type { ProfileTag } from '@/app/chat/profile-tag'
 
 afterEach(cleanup)
 

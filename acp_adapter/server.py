@@ -12,7 +12,6 @@ import acp
 from acp.schema import (
     AgentCapabilities,
     AuthenticateResponse,
-    AuthMethod,
     ClientCapabilities,
     EmbeddedResourceContentBlock,
     ForkSessionResponse,
@@ -33,6 +32,13 @@ from acp.schema import (
     TextContentBlock,
     Usage,
 )
+
+# agent-client-protocol >=0.12 split AuthMethod into a typed union;
+# AuthMethodAgent carries the same id/name/description shape.
+try:
+    from acp.schema import AuthMethodAgent as _AuthMethod
+except ImportError:
+    from acp.schema import AuthMethod as _AuthMethod
 
 from acp_adapter.auth import detect_provider, has_provider
 from acp_adapter.events import (
@@ -103,7 +109,7 @@ class HermesACPAgent(acp.Agent):
         auth_methods = None
         if provider:
             auth_methods = [
-                AuthMethod(
+                _AuthMethod(
                     id=provider,
                     name=f"{provider} runtime credentials",
                     description=f"Authenticate Hermes using the currently configured {provider} runtime credentials.",

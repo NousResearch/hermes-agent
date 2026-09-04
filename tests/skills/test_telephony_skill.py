@@ -201,6 +201,17 @@ def test_diagnose_includes_decision_tree_and_saved_state(tmp_path: Path, monkeyp
     mod = load_module()
     hermes_home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    # run_agent loads ~/.hermes/.env into os.environ at import time; make sure
+    # real operator credentials can't leak into diagnose() and override state.
+    for key in (
+        "TWILIO_ACCOUNT_SID",
+        "TWILIO_AUTH_TOKEN",
+        "TWILIO_PHONE_NUMBER",
+        "BLAND_API_KEY",
+        "VAPI_API_KEY",
+        "VAPI_PHONE_NUMBER_ID",
+    ):
+        monkeypatch.delenv(key, raising=False)
     mod._save_state(
         {
             "version": 1,

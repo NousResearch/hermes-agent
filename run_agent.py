@@ -2960,6 +2960,11 @@ class AIAgent:
                 self._client_log_context(),
             )
             return client
+        # openai>=2.54 raises when the key is empty/missing; historically the
+        # agent constructed the client anyway and surfaced auth failures at
+        # request time. Keep that behavior with the existing placeholder.
+        if not client_kwargs.get("api_key"):
+            client_kwargs = {**client_kwargs, "api_key": "dummy-key"}
         client = OpenAI(**client_kwargs)
         logger.info(
             "OpenAI client created (%s, shared=%s) %s",

@@ -1316,6 +1316,41 @@ def test_profile_skills_404_unknown_profile(kanban_home, client):
     assert "not found" in r.json()["detail"]
 
 
+def test_profile_skills_rejects_traversal_names(kanban_home, client):
+    # normalize alone only lowercases/strips — it would happily pass `../../etc`
+    # through to get_profile_dir. validate_profile_name must gate the URL
+    # parameter before it reaches the filesystem; rejection reads as 404.
+    for bad in ("..", "../..", "../../etc", "a/b", "a%2Fb", ".hidden", "UPPER"):
+        r = client.get(f"/api/plugins/kanban/profiles/{bad}/skills")
+        assert r.status_code == 404, f"{bad!r} should be rejected, got {r.status_code}"
+
+
+def test_profile_skills_rejects_empty_name(kanban_home, client):
+    # normalize raises ValueError on whitespace-only input; the endpoint
+    # maps that to 404 rather than a 500.
+    r = client.get("/api/plugins/kanban/profiles/%20/skills")
+    assert r.status_code == 404
+
+
+def test_profile_skills_500_does_not_leak_paths(kanban_home, client, monkeypatch):
+    # The generic 500 detail must not echo the exception (which can carry
+    # internal paths) — log it server-side, return a fixed string. The
+    # endpoint imports iter_skill_index_files at call time
+    # (`from agent.skill_utils import ...`), so patching the module
+    # attribute intercepts the next request.
+    from agent import skill_utils as skill_utils_mod
+
+    def _explode(*args, **kwargs):
+        raise RuntimeError("secret path /Users/atlmapper/boom")
+
+    monkeypatch.setattr(skill_utils_mod, "iter_skill_index_files", _explode)
+    _make_skills(kanban_home, "translation")
+    r = client.get("/api/plugins/kanban/profiles/default/skills")
+    assert r.status_code == 500
+    assert "boom" not in r.json()["detail"]
+    assert r.json()["detail"] == "failed to list profile skills"
+
+
 # ---------------------------------------------------------------------------
 # Final result visibility for Done cards
 # ---------------------------------------------------------------------------

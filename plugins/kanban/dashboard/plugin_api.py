@@ -1511,31 +1511,6 @@ def auto_describe_profile(profile_name: str, payload: DescribeAutoBody):
     return {"ok": bool(outcome.ok), "profile": outcome.profile_name, "reason": outcome.reason, "description": outcome.description}
 
 
-_RE_PROFILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_RESERVED_PROFILE_NAMES = frozenset({"", ".", "..", "current"})
-
-
-def validate_profile_name(name: str) -> None:
-    """Reject a profile name that could escape the profile root.
-
-    ``normalize_profile_name`` only lowercases and strips, so a URL path
-    parameter like ``../../etc`` reaches ``get_profile_dir`` unharmed. This is
-    the one gate between a user-supplied path segment and the filesystem;
-    rejections raise 404 so a probe is indistinguishable from an unknown
-    profile.
-    """
-    if (
-        not name
-        or name in _RESERVED_PROFILE_NAMES
-        or name.startswith(".")
-        or "/" in name
-        or "\\" in name
-        or "\x00" in name
-        or not _RE_PROFILE_NAME.match(name)
-    ):
-        raise HTTPException(status_code=404, detail=f"profile '{name}' not found")
-
-
 @router.get("/profiles/{profile_name}/skills")
 def list_profile_skills(profile_name: str):
     """Return the skills installed for the named profile.
@@ -1552,7 +1527,10 @@ def list_profile_skills(profile_name: str):
         from hermes_cli import profiles as profiles_mod
 
         canon = profiles_mod.normalize_profile_name(profile_name)
-        validate_profile_name(canon)
+        # A profile name is a URL path parameter reaching the filesystem here,
+        # so validate BEFORE resolving: normalize alone only lowercases/strips
+        # and would happily pass `../../etc` through to get_profile_dir.
+        profiles_mod.validate_profile_name(canon)
         if canon == "default":
             from hermes_constants import get_hermes_home  # type: ignore
 
@@ -1594,6 +1572,9 @@ def list_profile_skills(profile_name: str):
         names.sort()
     except HTTPException:
         raise
+    except ValueError as exc:
+        # normalize/validate rejection (e.g. traversal characters, empty name)
+        raise HTTPException(status_code=404, detail=f"profile '{profile_name}' not found") from exc
     except Exception:
         # Log server-side; never echo the raw exception to API consumers.
         log.exception("failed to list profile skills for %r", profile_name)

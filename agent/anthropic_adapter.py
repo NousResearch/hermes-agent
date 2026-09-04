@@ -58,6 +58,12 @@ def _require_sdk(purpose: str, verb: str = "Install it with"):
 logger = logging.getLogger(__name__)
 
 THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
+# Manual thinking bills thought tokens against max_tokens, so max_tokens must stay strictly
+# above budget_tokens with room left for the visible reply. ``_MIN_THINKING_BUDGET`` is
+# Anthropic's documented floor for budget_tokens — below it the request is rejected, so a
+# budget that no longer fits drops thinking rather than sending an impossible one.
+_THINKING_REPLY_RESERVE = 4096
+_MIN_THINKING_BUDGET = 1024
 # Hermes effort -> Anthropic adaptive-thinking effort (output_config.effort). 4.7+ exposes
 # low/medium/high/xhigh/max; Opus/Sonnet 4.6 have no xhigh, so callers downgrade xhigh->max
 # there (see _supports_xhigh_effort). "minimal" is a legacy alias for low on every model.
@@ -485,12 +491,14 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
     return system
 
 
-def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max_tokens: int) -> Dict[str, Any]:
+def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max_tokens: int,
+                     context_length: Optional[int] = None) -> Dict[str, Any]:
     """Map ``reasoning_config`` to Anthropic thinking kwargs. Adaptive models (Claude 4.6+,
     Kimi/Moonshot) get ``thinking.type=adaptive`` + ``output_config.effort``; older models and
     manual-only compat endpoints (MiniMax) get budget_tokens. Haiku has no extended thinking. On
     4.7+ ``thinking.display`` defaults to "omitted", hiding the reasoning Hermes shows in its CLI,
-    so "summarized" is requested to keep the activity feed populated."""
+    so "summarized" is requested to keep the activity feed populated. On the budget_tokens path
+    the budget is fitted UNDER the output ceiling; see the comment there."""
     if reasoning_config.get("enabled") is False:
         # Adaptive models think by DEFAULT, so omitting the parameter is not a disable — the user
         # silently keeps paying. Mandatory-thinking models 400 on the disable, so they keep the
@@ -505,10 +513,22 @@ def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max
             adaptive_effort = "max"
         return {"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": adaptive_effort}}
     budget = THINKING_BUDGET.get(effort, 8000)
+    # Anthropic requires max_tokens > budget_tokens, so max_tokens is raised to cover the budget
+    # — but only as far as the model's own declared ceiling and the context window allow. Beyond
+    # that it is the BUDGET that shrinks: raising max_tokens past the ceiling instead 400s every
+    # turn ("max_tokens: 36096 > 32000" on a 32k-output model at xhigh) and made the caller's
+    # context-window clamp dead code for every thinking-enabled request.
+    limit = max(effective_max_tokens, _get_anthropic_max_output(model))
+    if context_length:
+        limit = min(limit, max(context_length - 1, 1))
+    max_tokens = min(max(effective_max_tokens, budget + _THINKING_REPLY_RESERVE), limit)
+    budget = min(budget, max_tokens - _THINKING_REPLY_RESERVE)
+    if budget < _MIN_THINKING_BUDGET:
+        return {}  # no room for a usable budget plus a reply — a plain request beats a hard 400
     return {
         "thinking": {"type": "enabled", "budget_tokens": budget},
         "temperature": 1,  # required when thinking is enabled on older models
-        "max_tokens": max(effective_max_tokens, budget + 4096),
+        "max_tokens": max_tokens,
     }
 
 
@@ -568,7 +588,7 @@ def build_anthropic_kwargs(
     # reasoning blocks stay populated — matching 4.6 behavior and preserving the activity-feed UX during
     # long tool runs.
     if reasoning_config and isinstance(reasoning_config, dict):
-        kwargs.update(_thinking_kwargs(reasoning_config, model, effective_max_tokens))
+        kwargs.update(_thinking_kwargs(reasoning_config, model, effective_max_tokens, context_length))
     # Safety net so upstream 4.6 -> 4.7 migrations don't need coordinated edits everywhere callers
     # (auxiliary_client, ...) set sampling params.
     if _forbids_sampling_params(model):

@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.anthropic_adapter import build_anthropic_client, build_anthropic_bedrock_client, build_anthropic_kwargs
+from agent.anthropic_adapter import THINKING_BUDGET, _get_anthropic_max_output, build_anthropic_client, build_anthropic_bedrock_client, build_anthropic_kwargs
 from agent.anthropic_credentials import _is_oauth_token, _refresh_oauth_token, _write_claude_code_credentials, is_claude_code_token_valid, read_claude_code_credentials, resolve_anthropic_token, run_oauth_setup_token
 from agent.anthropic_endpoints import _is_azure_anthropic_endpoint
 from agent.anthropic_message_convert import _to_plain_data, convert_messages_to_anthropic, convert_tools_to_anthropic, normalize_model_name
@@ -1892,3 +1892,60 @@ class TestFinalPayloadHasNoBlankTextBlocks:
         )
         image_blocks = [b for b in tool_result_block["content"] if b.get("type") == "image"]
         assert len(image_blocks) == 1
+
+
+# ---------------------------------------------------------------------------
+# Manual (budget_tokens) thinking stays inside the output ceiling
+# ---------------------------------------------------------------------------
+
+
+def _manual_thinking_models():
+    """Model names that reach the budget_tokens branch, derived from the module's own tables:
+    the legacy family list plus every catalog entry with its own ceiling. Haiku returns before
+    the branch and adaptive families take the other one, so both are filtered out."""
+    from agent.anthropic_adapter import (
+        _ANTHROPIC_OUTPUT_LIMITS, _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS,
+        _supports_adaptive_thinking,
+    )
+    names = list(_LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS) + list(_ANTHROPIC_OUTPUT_LIMITS)
+    return [m for m in dict.fromkeys(names) if "haiku" not in m and not _supports_adaptive_thinking(m)]
+
+
+class TestManualThinkingOutputBudget:
+    """Anthropic rejects ``max_tokens`` above the model's ceiling or the context window, and
+    requires ``max_tokens > budget_tokens``. Both must hold at once: the budget is what gives."""
+
+    @pytest.mark.parametrize("effort", sorted(THINKING_BUDGET))
+    def test_manual_thinking_never_exceeds_the_model_output_ceiling(self, effort):
+        thinking_seen = False
+        for model in _manual_thinking_models():
+            kwargs = build_anthropic_kwargs(
+                model=model,
+                messages=[{"role": "user", "content": "hi"}],
+                tools=None,
+                max_tokens=None,
+                reasoning_config={"enabled": True, "effort": effort},
+            )
+            ceiling = _get_anthropic_max_output(model)
+            assert kwargs["max_tokens"] <= ceiling, f"{model} @ {effort} asked for more than its ceiling"
+            if "thinking" in kwargs:
+                thinking_seen = True
+                budget = kwargs["thinking"]["budget_tokens"]
+                assert budget < kwargs["max_tokens"], f"{model} @ {effort} left no room for a reply"
+        assert thinking_seen, "every model dropped thinking — the invariant passed vacuously"
+
+    def test_manual_thinking_fits_inside_a_small_context_window(self):
+        """``context_length`` comes from the endpoint, so it binds regardless of the table."""
+        for context_length in (4000, 8000, 30000):
+            for model in _manual_thinking_models():
+                kwargs = build_anthropic_kwargs(
+                    model=model,
+                    messages=[{"role": "user", "content": "hi"}],
+                    tools=None,
+                    max_tokens=None,
+                    reasoning_config={"enabled": True, "effort": "high"},
+                    context_length=context_length,
+                )
+                assert kwargs["max_tokens"] < context_length, f"{model} overran a {context_length} window"
+                if "thinking" in kwargs:
+                    assert kwargs["thinking"]["budget_tokens"] < kwargs["max_tokens"]

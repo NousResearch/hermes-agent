@@ -4040,6 +4040,13 @@ DEFAULT_CONFIG = {
         # Ignored on macOS/Windows. Bridged to the HERMES_DESKTOP_PASSWORD_STORE
         # env var the Electron app reads, so an explicit env var still wins.
         "password_store": "auto",
+        # File-tree double-click behavior in the desktop app's Files panel:
+        #   "preview" - open the file in the built-in preview pane (default,
+        #               historical behavior).
+        #   "open"    - open the file with the OS default application via the
+        #               system file association; if the OS cannot open it,
+        #               falls back to revealing the file in the file manager.
+        "files_double_click": "preview",
         # macOS only: optional persistent code-signing identity (a cert in the
         # login keychain — a self-signed "Code Signing" cert from Keychain
         # Access works; no Apple Developer account needed) used to re-sign

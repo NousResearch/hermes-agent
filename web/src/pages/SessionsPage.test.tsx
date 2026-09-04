@@ -35,6 +35,8 @@ let container: HTMLDivElement;
 let root: Root;
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+// SessionsPage mounts several providers and lazy UI effects; hosted runners
+// can legitimately need more than Vitest's default five-second test budget.
 async function waitFor(cond: () => boolean, timeoutMs = 15_000) {
   const start = Date.now();
   while (!cond()) {

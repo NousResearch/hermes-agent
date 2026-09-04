@@ -5949,34 +5949,41 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self.db_path,
             context,
         )
-        try:
-            conn = _connect_tracked_db(
-                str(self.db_path),
-                check_same_thread=False,
-                timeout=1.0,
-                isolation_level=None,
-            )
-        except Exception as exc:
-            raise sqlite3.OperationalError(
-                f"state.db connection was closed while a {context} was still "
-                f"in flight (a session-teardown path called close() before "
-                f"this worker finished — #94736) and the automatic reopen "
-                f"failed: {exc}"
-            ) from exc
-        try:
-            conn.row_factory = sqlite3.Row
-            self._wal_active = (
-                apply_wal_with_fallback(conn, db_label="state.db") == "wal"
-            )
-            apply_database_pragmas(conn, db_label="state.db")
-            conn.execute("PRAGMA foreign_keys=ON")
-            self._fts_cjk_loaded = load_fts5_cjk_extension(conn)
-        except Exception as exc:
-            self._close_connection_quietly(conn)
-            raise sqlite3.OperationalError(
-                f"state.db reopen after close() succeeded but connection "
-                f"setup failed: {exc}"
-            ) from exc
+        # Acquire the process-global reopen lock for this database path to
+        # serialize self-heal reopens across all SessionDB instances sharing
+        # this database file. This prevents concurrent reopens from multiple
+        # SessionDB instances (e.g. cron + gateway) from corrupting the
+        # database via concurrent writers.
+        reopen_lock = _get_db_reopen_lock(self.db_path)
+        with reopen_lock:
+            try:
+                conn = _connect_tracked_db(
+                    str(self.db_path),
+                    check_same_thread=False,
+                    timeout=1.0,
+                    isolation_level=None,
+                )
+            except Exception as exc:
+                raise sqlite3.OperationalError(
+                    f"state.db connection was closed while a {context} was still "
+                    f"in flight (a session-teardown path called close() before "
+                    f"this worker finished — #94736) and the automatic reopen "
+                    f"failed: {exc}"
+                ) from exc
+            try:
+                conn.row_factory = sqlite3.Row
+                self._wal_active = (
+                    apply_wal_with_fallback(conn, db_label="state.db") == "wal"
+                )
+                apply_database_pragmas(conn, db_label="state.db")
+                conn.execute("PRAGMA foreign_keys=ON")
+                self._fts_cjk_loaded = load_fts5_cjk_extension(conn)
+            except Exception as exc:
+                self._close_connection_quietly(conn)
+                raise sqlite3.OperationalError(
+                    f"state.db reopen after close() succeeded but connection "
+                    f"setup failed: {exc}"
+                ) from exc
         # Schema was initialised by this instance's original open; the file
         # cannot have lost it, so no _init_schema here (no DDL races with
         # sibling processes during teardown).

@@ -104,7 +104,7 @@ def _make_packaged_executable(root: Path, monkeypatch) -> Path:
 
 def _staging_dir_from(cmd) -> Path:
     """Extract the ``-c.directories.output=<dir>`` electron-builder override
-    ``cmd_gui`` appends to ``npm run pack`` (stage-and-swap, #86443)."""
+    ``cmd_gui`` passes to the pack wrapper (stage-and-swap, #86443)."""
     for arg in cmd:
         if isinstance(arg, str) and arg.startswith("-c.directories.output="):
             return Path(arg.split("=", 1)[1])
@@ -121,12 +121,13 @@ def _packaged_exe_rel() -> Path:
 
 
 def _pack_into_staging(root: Path, content: str = "", returncode: int = 0):
-    """``subprocess.run`` side effect mimicking a real ``npm run pack``: lays
-    the packaged app down inside the STAGING dir named on the command line
-    (never in release/), then returns *returncode*. Non-pack commands (the
-    launch) return success."""
+    """``subprocess.run`` side effect mimicking the direct electron-builder
+    invocation: lays the packaged app down inside the STAGING dir named on the
+    command line (never in release/), then returns *returncode*. Other
+    commands (the vite build, the prebuilder patch, the launch) return
+    success."""
     def _run(cmd, **kwargs):
-        if len(cmd) >= 3 and cmd[1:3] == ["run", "pack"]:
+        if any("run-electron-builder.mjs" in str(part) for part in cmd):
             exe = _staging_dir_from(cmd) / _packaged_exe_rel()
             exe.parent.mkdir(parents=True, exist_ok=True)
             exe.write_text(content, encoding="utf-8")
@@ -154,6 +155,7 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
          patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.main_desktop._register_linux_desktop_entry"), \
+         patch("hermes_cli.main_desktop._tui_node_bin", return_value="/usr/bin/node"), \
          patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
@@ -166,20 +168,34 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     assert mock_install.call_args.kwargs["capture_output"] is False
     install_env = mock_install.call_args.kwargs["env"]
     assert install_env is not None and "PATH" in install_env
-    pack_cmd = mock_run.call_args_list[0].args[0]
-    assert pack_cmd[:4] == ["/usr/bin/npm", "run", "pack", "--"]
+    commands = [call.args[0] for call in mock_run.call_args_list]
+    # Phase 1 is a plain `npm run build`: the packaged flow must never forward
+    # the staging override through `npm run pack -- <arg>`, whose cmd.exe
+    # script chain mangles Windows profile paths (#103010).
+    assert commands[0][:3] == ["/usr/bin/npm", "run", "build"]
+    assert "--" not in commands[0]
+    assert all(cmd[1:3] != ["run", "pack"] for cmd in commands)
+    # Phase 2 runs electron-builder's wrapper directly, so the override rides a
+    # plain argv element and no shell ever re-parses it.
+    builder_cmd = commands[2]
+    assert "run-electron-builder.mjs" in builder_cmd[1]
+    assert builder_cmd[2] == "--dir"
+    # npm's `prebuilder` hook still runs ahead of the builder step.
+    assert "patch-electron-builder-mac-binary.mjs" in commands[1][1]
     # Stage-and-swap (#86443): the pack targets a staging dir beside release/,
     # never release/ itself.
-    staging = _staging_dir_from(pack_cmd)
+    staging = _staging_dir_from(builder_cmd)
     assert staging.parent == desktop_dir and staging.name.startswith(".staging-")
     assert not staging.exists()  # swapped into release/ and cleaned up
+    builder_env = mock_run.call_args_list[2].kwargs["env"]
+    assert builder_env["NODE_OPTIONS"] == "--max-old-space-size=16384"
     assert mock_run.call_args_list[0].kwargs["cwd"] == desktop_dir
-    launched = mock_run.call_args_list[1].args[0]
+    launched = mock_run.call_args_list[3].args[0]
     if sys.platform.startswith("linux"):
         assert launched == [str(packaged_exe), "--disable-setuid-sandbox"]
     else:
         assert launched == [str(packaged_exe)]
-    assert mock_run.call_args_list[1].kwargs["cwd"] == desktop_dir
+    assert mock_run.call_args_list[3].kwargs["cwd"] == desktop_dir
 
 
 def test_gui_install_env_prepends_managed_node_on_bare_path(tmp_path, monkeypatch):
@@ -317,6 +333,7 @@ def test_gui_does_not_retry_after_packaged_executable_exists(tmp_path, monkeypat
          patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main_desktop._purge_electron_build_cache", return_value=[Path("/c/electron.zip")]) as mock_purge, \
          patch("hermes_cli.main_desktop._redownload_electron_dist", return_value=True) as mock_dl, \
+         patch("hermes_cli.main_desktop._tui_node_bin", return_value="/usr/bin/node"), \
          patch("hermes_cli.main.subprocess.run", side_effect=pack_fail) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
@@ -325,10 +342,11 @@ def test_gui_does_not_retry_after_packaged_executable_exists(tmp_path, monkeypat
     # The live app was never touched by the failed pack (#86443).
     assert live_exe.read_text(encoding="utf-8") == "good build"
     assert not list((root / "apps" / "desktop").glob(".staging-*"))
-    # Neither destructive recovery runs, and there is exactly ONE pack attempt.
+    # Neither destructive recovery runs, and there is exactly ONE builder
+    # attempt (preceded by the vite build and the prebuilder patch).
     mock_purge.assert_not_called()
     mock_dl.assert_not_called()
-    assert mock_run.call_count == 1
+    assert mock_run.call_count == 3
     assert "Desktop GUI build failed" in capsys.readouterr().out
 
 
@@ -1088,6 +1106,49 @@ def test_desktop_launch_options_normalizes_ozone_hint(raw, expected):
     assert hint == expected
 
 
+def test_desktop_pack_staging_override_bypasses_npm_arg_chain(tmp_path, monkeypatch):
+    r"""Regression (#103010): ``npm run pack -- -c.directories.output=<path>``
+    forwarded the staging override through npm's cmd.exe script chain (pack is
+    a ``&&`` composite), which strips Windows profile-path characters such as
+    the apostrophe in ``C:\Users\r'y'z`` — electron-builder then died on the
+    mangled path. The override now rides a direct argv element to the wrapper
+    script, so no shell ever re-parses it and the profile dir arrives verbatim.
+    """
+    root = _make_desktop_tree(tmp_path / "r'y'z")
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
+         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main_desktop._register_linux_desktop_entry"), \
+         patch("hermes_cli.main_desktop._tui_node_bin", return_value="/usr/bin/node"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 0
+    commands = [call.args[0] for call in mock_run.call_args_list]
+    # Nothing hands a path-bearing argument to `npm run <script> --` anymore.
+    assert all(cmd[1:3] != ["run", "pack"] for cmd in commands)
+    builder_cmds = [c for c in commands if "run-electron-builder.mjs" in " ".join(map(str, c))]
+    assert len(builder_cmds) == 1
+    override = next(a for a in builder_cmds[0] if str(a).startswith("-c.directories.output="))
+    staging = Path(str(override).split("=", 1)[1])
+    # The apostrophe survives the whole Python -> node chain: the override
+    # names the staging dir under the profile dir verbatim, never a mangled
+    # ``ryz``-style path.
+    assert "r'y'z" in str(staging)
+    assert staging.parent == desktop_dir
+    assert staging.name.startswith(".staging-")
+
+
 def test_desktop_launch_options_ozone_hint_defaults_auto():
     with patch("hermes_cli.config.load_config", return_value={}):
         assert main_desktop._desktop_launch_options()[3] == "auto"
@@ -1111,11 +1172,12 @@ def test_gui_bridges_ozone_hint_to_launch_env(tmp_path, monkeypatch):
          patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.config.load_config", return_value=cfg), \
          patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
+         patch("hermes_cli.main_desktop._tui_node_bin", return_value="/usr/bin/node"), \
          patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
          pytest.raises(SystemExit):
         cli_main.cmd_gui(_ns())
 
-    launch_env = mock_run.call_args_list[1].kwargs["env"]
+    launch_env = mock_run.call_args_list[3].kwargs["env"]
     assert launch_env.get("ELECTRON_OZONE_PLATFORM_HINT") == "x11"
 
     monkeypatch.setenv("ELECTRON_OZONE_PLATFORM_HINT", "wayland")
@@ -1127,11 +1189,12 @@ def test_gui_bridges_ozone_hint_to_launch_env(tmp_path, monkeypatch):
          patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.config.load_config", return_value=cfg), \
          patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
+         patch("hermes_cli.main_desktop._tui_node_bin", return_value="/usr/bin/node"), \
          patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run2, \
          pytest.raises(SystemExit):
         cli_main.cmd_gui(_ns())
 
-    launch_env = mock_run2.call_args_list[1].kwargs["env"]
+    launch_env = mock_run2.call_args_list[3].kwargs["env"]
     assert launch_env.get("ELECTRON_OZONE_PLATFORM_HINT") == "wayland"
 
 
@@ -1344,6 +1407,7 @@ def _gui_build_patches(root: Path, run_side_effect):
         patch("hermes_cli.main_desktop._stop_desktop_processes_locking_build", return_value=[]),
         patch("hermes_cli.main_desktop._purge_electron_build_cache", return_value=[]),
         patch("hermes_cli.main_desktop._redownload_electron_dist", return_value=False),
+        patch("hermes_cli.main_desktop._tui_node_bin", return_value="/usr/bin/node"),
         patch("hermes_cli.main.subprocess.run", side_effect=run_side_effect),
     ]
 
@@ -1419,6 +1483,10 @@ def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, ca
     monkeypatch.setenv("ELECTRON_MIRROR", "https://example.test/electron/")
 
     def failing_pack(cmd, **kwargs):
+        # The vite build phase succeeds; the failure below belongs to the
+        # electron-builder step that carries the staging override.
+        if next((a for a in cmd if str(a).startswith("-c.directories.output=")), None) is None:
+            return subprocess.CompletedProcess(cmd, 0)
         # Mimic before-pack.mjs wiping appOutDir inside the OUTPUT dir it was
         # given, then dying (corrupt Electron zip → ENOENT on rename).
         out = _staging_dir_from(cmd) / _packaged_exe_rel().parts[0]
@@ -1473,6 +1541,8 @@ def test_gui_zero_exit_pack_without_artifact_keeps_previous_app(tmp_path, monkey
     live_exe.write_text("good build", encoding="utf-8")
 
     def empty_pack(cmd, **kwargs):
+        if next((a for a in cmd if str(a).startswith("-c.directories.output=")), None) is None:
+            return subprocess.CompletedProcess(cmd, 0)
         _staging_dir_from(cmd).mkdir(parents=True, exist_ok=True)
         return subprocess.CompletedProcess(cmd, 0)
 

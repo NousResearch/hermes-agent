@@ -303,9 +303,11 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
 
     def pack_into_staging(cmd, *args, **kwargs):
         # electron-builder honours -c.directories.output=<staging>; emulate a
-        # pack that "succeeds" but writes a truncated exe there.
+        # pack that "succeeds" but writes a truncated exe there. The vite build
+        # and the prebuilder patch carry no override and just succeed.
         out_flag = next((a for a in cmd if str(a).startswith("-c.directories.output=")), None)
-        assert out_flag is not None, "pack must be redirected into a staging dir"
+        if out_flag is None:
+            return subprocess.CompletedProcess(list(cmd), 0)
         staging = Path(str(out_flag).split("=", 1)[1])
         make_pe(staging / "win-unpacked" / "Hermes.exe", PE_AMD64, truncate_to=0x300)
         return subprocess.CompletedProcess(list(cmd), 0)
@@ -319,6 +321,7 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
          patch("hermes_cli.main_desktop._desktop_stamp_path", return_value=tmp_path / "stamp.json"), \
          patch("hermes_cli.main_desktop._write_desktop_build_stamp") as mock_stamp, \
          patch("hermes_cli.main_desktop._windows_native_machine", return_value="AMD64"), \
+         patch("hermes_cli.main_desktop._tui_node_bin", return_value="C:\\Program Files\\nodejs\\node.exe"), \
          patch("hermes_cli.main_desktop.subprocess.run", side_effect=pack_into_staging), \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())

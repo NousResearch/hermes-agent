@@ -2323,6 +2323,7 @@ def init_agent(
                 compression_threshold_tokens = None
         except (TypeError, ValueError):
             compression_threshold_tokens = None
+
     compression_checkpoint_required = is_truthy_value(
         _compression_cfg.get("checkpoint_required"), default=False
     )
@@ -2402,6 +2403,16 @@ def init_agent(
                 _native_threshold_raw,
             )
             codex_responses_compact_threshold = None
+    # Fallback: when native compaction is disabled but
+    # codex_responses_compact_threshold is configured, use it as the
+    # local compressor's absolute token cap so the user's intent is
+    # respected regardless of the compaction path.
+    if (
+        compression_threshold_tokens is None
+        and not codex_responses_native_compaction
+    ):
+        if codex_responses_compact_threshold is not None:
+            compression_threshold_tokens = codex_responses_compact_threshold
     # Opt-in idle compaction: compact a session up front when it resumes after
     # this many seconds of inactivity (0 = disabled). Time-based, so it
     # complements the size-based threshold above. Consumed by build_turn_context().

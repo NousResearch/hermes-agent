@@ -336,6 +336,128 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
 _DESKTOP_MCP_DISCOVERY_DELAY_S = 1.0
 
 
+def _ensure_desktop_gateway_running() -> None:
+    """Best-effort recovery of the user's messaging gateway after a desktop
+    (re)start (issue #83683).
+
+    The desktop backend is a JSON-RPC/WebSocket server, *not* the messaging
+    gateway (``hermes gateway run``).  On Windows the gateway is started by the
+    ``Hermes_Gateway`` scheduled task; on Linux/macOS by systemd/launchd.  A
+    desktop app restart can leave that gateway dead (reaped with no successor),
+    so WeChat/QQ/Telegram go silently offline.  If a supervisor is installed
+    (meaning the user opted into "start gateway on login/boot") but no gateway
+    is currently running, relaunch it using the platform-native path.  A stale
+    ``.gateway-planned-stop.json`` marker left by a previous unclean stop is
+    cleared first so the relaunch isn't blocked.
+
+    Everything here is best-effort: any failure is logged and swallowed so the
+    backend boot can never wedge on gateway recovery.  This routine pairs with
+    the reap-side fix that stops the reaper from killing a supervised gateway
+    in the first place (see ``_reap_unsupervised_gateway_orphans``); together
+    they cover the "reaped but never relaunched" symptom of #83683.
+    """
+    import time
+
+    # Let the backend and any externally-managed gateway settle before probing,
+    # and give a supervised gateway's own auto-start a chance to win the race.
+    time.sleep(3.0)
+    try:
+        # Explicit opt-out for users who manage the gateway fully externally.
+        if os.getenv("HERMES_DESKTOP_NO_GATEWAY_RELAUNCH", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            _log.info(
+                "Desktop gateway recovery skipped (HERMES_DESKTOP_NO_GATEWAY_RELAUNCH set)"
+            )
+            return
+        try:
+            from hermes_cli.config import load_config
+
+            _cfg = load_config() or {}
+            _gw_cfg = _cfg.get("gateway") if isinstance(_cfg.get("gateway"), dict) else {}
+            if _gw_cfg.get("relaunch_gateway_on_desktop_start") is False:
+                _log.info(
+                    "Desktop gateway recovery skipped "
+                    "(gateway.relaunch_gateway_on_desktop_start=false)"
+                )
+                return
+        except Exception:
+            # Default-on if config can't be read.
+            pass
+
+        from hermes_cli.gateway import (
+            find_gateway_pids,
+            is_macos,
+            is_windows,
+            supports_systemd_services,
+            get_systemd_unit_path,
+            get_launchd_plist_path,
+            systemd_start,
+            launchd_start,
+        )
+        from gateway.status import get_running_pid, clear_planned_stop_marker
+
+        # 1) Already running?  Nothing to do.
+        try:
+            if find_gateway_pids() or get_running_pid() is not None:
+                _log.info("Desktop gateway recovery: gateway already running; no action")
+                return
+        except Exception:
+            pass
+
+        # 2) Is a supervisor installed (=> user opted into auto-start)?
+        _supervisor_installed = False
+        try:
+            if supports_systemd_services():
+                _supervisor_installed = (
+                    get_systemd_unit_path(system=False).exists()
+                    or get_systemd_unit_path(system=True).exists()
+                )
+            elif is_macos():
+                _supervisor_installed = get_launchd_plist_path().exists()
+            elif is_windows():
+                from hermes_cli import gateway_windows
+
+                _supervisor_installed = gateway_windows.is_installed()
+        except Exception:
+            _supervisor_installed = False
+
+        if not _supervisor_installed:
+            _log.info(
+                "Desktop gateway recovery: no gateway supervisor installed; skipping relaunch"
+            )
+            return
+
+        # 3) Clear a stale planned-stop marker that would otherwise block the
+        #    gateway's own startup/shutdown state machine.
+        try:
+            clear_planned_stop_marker()
+        except Exception:
+            pass
+
+        # 4) Relaunch via the platform-native path.
+        _log.info(
+            "Desktop gateway recovery: supervisor installed but gateway not "
+            "running — relaunching"
+        )
+        try:
+            if supports_systemd_services():
+                systemd_start()
+            elif is_macos():
+                launchd_start()
+            elif is_windows():
+                from hermes_cli import gateway_windows
+
+                gateway_windows.start()
+        except Exception:
+            _log.exception("Desktop gateway recovery: relaunch failed")
+    except Exception:
+        _log.exception("Desktop gateway recovery: unexpected error")
+
+
 def _warm_gateway_module() -> None:
     """Pre-import heavy modules so the event loop is not stalled on first use.
 
@@ -515,6 +637,16 @@ async def _lifespan(app: "FastAPI"):
             name="desktop-cron-ticker",
         )
         cron_thread.start()
+        # Recover the user's messaging gateway if a desktop (re)start left it
+        # dead (issue #83683).  Runs detached so boot never blocks on it; the
+        # routine is fully best-effort and never raises into the lifespan.  Pairs
+        # with the reap-side fix that stops the reaper from killing a supervised
+        # gateway; this half relaunches one that is installed but not running.
+        threading.Thread(
+            target=_ensure_desktop_gateway_running,
+            daemon=True,
+            name="desktop-gateway-recover",
+        ).start()
 
     # Reap idle/dead keep-alive PTY sessions in the background (30-min TTL).
     pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))

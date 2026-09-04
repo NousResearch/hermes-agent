@@ -3260,6 +3260,16 @@ DEFAULT_CONFIG = {
         # crash/restart, as before.
         "delivery_ledger": True,
 
+        # Desktop gateway recovery (issue #83683). When the desktop app
+        # (HERMES_DESKTOP=1) starts its backend, Hermes checks whether a
+        # messaging-gateway supervisor is installed (systemd / launchd / the
+        # Windows "Hermes_Gateway" scheduled task) but the gateway process is
+        # not currently running, and — if so — relaunches it so WeChat/QQ/
+        # Telegram don't go silently offline after a desktop (re)start. Set to
+        # false to leave the gateway entirely to external management. The env
+        # var HERMES_DESKTOP_NO_GATEWAY_RELAUNCH=1 overrides this to off.
+        "relaunch_gateway_on_desktop_start": True,
+
         # Seconds the gateway waits for a single messaging platform to finish
         # connecting during startup (and on reconnect). Discord in particular
         # can blow past the old fixed 30s when an account has many slash

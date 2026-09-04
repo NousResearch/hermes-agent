@@ -60,16 +60,121 @@ def _build_auth_header(token: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _publish_headers(token: str, markdown: bool, *, auth_first: bool = True) -> Dict[str, str]:
+#: ntfy accepts at most three actions per message and silently drops the rest.
+MAX_ACTIONS = 3
+
+#: Action types ntfy understands. ``http`` is the one that lets a notification
+#: answer an approval without opening an app.
+_ACTION_TYPES = ("view", "broadcast", "http")
+
+
+def _sanitize_header_value(value: str) -> str:
+    """Strip CR/LF from a header value.
+
+    Not cosmetic. ``label`` and ``body`` can carry agent- or user-authored text,
+    and a bare newline in an HTTP header value is header injection: everything
+    after it is parsed as a new header by whatever sits between here and ntfy.
+    An agent that can name a cron job can therefore choose what headers this
+    adapter sends. Stripped rather than rejected, so a stray newline in a label
+    degrades to a slightly odd label instead of dropping the notification.
+    """
+    return value.replace("\r", " ").replace("\n", " ").strip()
+
+
+def _quote_action_value(value: str) -> str:
+    """Quote a value that contains ntfy's own delimiters.
+
+    Per ntfy's publish docs: "Values may be quoted with double quotes (") or
+    single quotes (') if the value itself contains commas or semicolons." An
+    unquoted comma in a label silently becomes the start of the next parameter,
+    which is how a JSON body loses half its fields.
+    """
+    v = _sanitize_header_value(value)
+    if not any(c in v for c in (",", ";", '"', "'")):
+        return v
+    if '"' not in v:
+        return f'"{v}"'
+    if "'" not in v:
+        return f"'{v}'"
+    # Both quote characters present: double-quote and escape the inner doubles.
+    return '"' + v.replace('"', '\\"') + '"'
+
+
+def _build_actions_header(actions: Any) -> str:
+    """Render ntfy's ``Actions`` header from a list of dicts.
+
+    Long format (``action=http, label=Approve, url=...``) rather than the short
+    positional one: the positional form depends on parameter ORDER, and a caller
+    that omits an optional middle value shifts everything after it.
+
+    Malformed entries are skipped, not raised. A notification that arrives
+    without its buttons is a degraded notification; one that raises inside the
+    send path is a missed alert, and this adapter's whole job is delivery.
+    """
+    if not isinstance(actions, (list, tuple)):
+        return ""
+    rendered = []
+    for a in actions:
+        if not isinstance(a, dict):
+            continue
+        kind = str(a.get("action") or "").strip().lower()
+        label = str(a.get("label") or "").strip()
+        if kind not in _ACTION_TYPES or not label:
+            continue
+        parts = [f"action={kind}", f"label={_quote_action_value(label)}"]
+        for key in ("url", "method", "body", "clear", "intent"):
+            if a.get(key) is None:
+                continue
+            val = a[key]
+            val = str(val).lower() if isinstance(val, bool) else str(val)
+            parts.append(f"{key}={_quote_action_value(val)}")
+        for hk, hv in (a.get("headers") or {}).items():
+            parts.append(f"headers.{_sanitize_header_value(str(hk))}={_quote_action_value(str(hv))}")
+        for ek, ev in (a.get("extras") or {}).items():
+            parts.append(f"extras.{_sanitize_header_value(str(ek))}={_quote_action_value(str(ev))}")
+        rendered.append(", ".join(parts))
+        if len(rendered) == MAX_ACTIONS:
+            # ntfy drops the rest silently; say so once rather than let a caller
+            # wonder why their fourth button never appears.
+            logger.warning("ntfy: more than %d actions supplied; extras dropped", MAX_ACTIONS)
+            break
+    return "; ".join(rendered)
+
+
+def _publish_headers(
+    token: str,
+    markdown: bool,
+    *,
+    auth_first: bool = True,
+    click: Optional[str] = None,
+    actions: Any = None,
+    title: Optional[str] = None,
+    priority: Optional[str] = None,
+) -> Dict[str, str]:
     """Headers for a publish POST: auth (if any), plain-text body, echo tag, optional X-Markdown.
 
     ``auth_first`` pins the header order each call site has always sent on the wire.
+
+    ``click`` and ``actions`` are optional and omitted entirely when empty, so
+    the bytes on the wire are unchanged for every existing caller.
     """
     auth = _build_auth_header(token)
     base = {"Content-Type": "text/plain; charset=utf-8", "X-Tags": _ECHO_TAG}
     headers = {**auth, **base} if auth_first else {**base, **auth}
     if markdown:
         headers["X-Markdown"] = "true"
+    if title:
+        headers["X-Title"] = _sanitize_header_value(str(title))
+    if priority:
+        headers["X-Priority"] = _sanitize_header_value(str(priority))
+    if click:
+        # Deep link. Any URI a phone can route — https://, or an app scheme such
+        # as perch:// — so a notification lands on the exact screen it is about.
+        headers["Click"] = _sanitize_header_value(str(click))
+    if actions:
+        rendered = _build_actions_header(actions)
+        if rendered:
+            headers["Actions"] = rendered
     return headers
 
 
@@ -287,7 +392,15 @@ class NtfyAdapter(BasePlatformAdapter):
         publish_topic = (metadata or {}).get("publish_topic") or self._publish_topic or chat_id
         if not self._http_client:
             return SendResult(success=False, error="HTTP client not initialized")
-        headers = _publish_headers(self._token, bool((self.config.extra or {}).get("markdown", False)))
+        meta = metadata or {}
+        headers = _publish_headers(
+            self._token,
+            bool((self.config.extra or {}).get("markdown", False)),
+            click=meta.get("click"),
+            actions=meta.get("actions"),
+            title=meta.get("title"),
+            priority=meta.get("priority"),
+        )
         if len(content) > self.MAX_MESSAGE_LENGTH:
             logger.warning(
                 "[%s] Message truncated from %d to %d chars (ntfy limit)",

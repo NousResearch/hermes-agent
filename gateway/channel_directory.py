@@ -87,11 +87,24 @@ def _apply_channel_aliases(platforms: Dict[str, Any]) -> None:
                     e["name"] = friendly
                     matched = True
             if not matched:
+                entry_type = "group" if chat_id.endswith("@g.us") else "dm"
+                thread_id = None
+                if plat_name == "telegram":
+                    base_chat_id, separator, candidate_thread_id = chat_id.rpartition(":")
+                    if (
+                        separator
+                        and base_chat_id.startswith("-")
+                        and candidate_thread_id.isdecimal()
+                    ):
+                        entry_type = "forum"
+                        thread_id = candidate_thread_id
+                    elif chat_id.startswith("-"):
+                        entry_type = "group"
                 entries.append({
                     "id": chat_id,
                     "name": friendly,
-                    "type": "group" if str(chat_id).endswith("@g.us") else "dm",
-                    "thread_id": None,
+                    "type": entry_type,
+                    "thread_id": thread_id,
                 })
 
 

@@ -16,6 +16,7 @@ def _make_adapter(
     exclusive_bot_mentions=None,
     ignored_threads=None,
     allowed_topics=None,
+    require_explicit_mention_topics=None,
     allow_from=None,
     group_allow_from=None,
     allowed_chats=None,
@@ -46,6 +47,8 @@ def _make_adapter(
         # environment; production adapters without this explicit key still fall
         # back to the env var.
         extra["allowed_topics"] = []
+    if require_explicit_mention_topics is not None:
+        extra["require_explicit_mention_topics"] = require_explicit_mention_topics
     if allow_from is not None:
         extra["allow_from"] = allow_from
     if group_allow_from is not None:
@@ -438,6 +441,68 @@ def test_allowed_topics_drop_other_forum_topics_before_other_gates():
     ) is False
 
 
+def test_allowed_topics_can_be_scoped_to_one_chat_topic_pair():
+    adapter = _make_adapter(
+        require_mention=False,
+        allowed_chats=["-100", "-200"],
+        allowed_topics=["-100:8"],
+    )
+
+    assert adapter._should_process_message(
+        _group_message("hello", chat_id=-100, thread_id=8)
+    ) is True
+    assert adapter._should_process_message(
+        _group_message("hello", chat_id=-200, thread_id=8)
+    ) is False
+
+
+def test_observed_group_context_honors_chat_scoped_topic_gate():
+    adapter = _make_adapter(
+        require_mention=True,
+        allowed_chats=["-100", "-200"],
+        group_allowed_chats=["-100", "-200"],
+        allowed_topics=["-100:8"],
+        observe_unmentioned_group_messages=True,
+    )
+
+    assert adapter._should_observe_unmentioned_group_message(
+        _group_message("context", chat_id=-100, thread_id=8)
+    ) is True
+    assert adapter._should_observe_unmentioned_group_message(
+        _group_message("context", chat_id=-200, thread_id=8)
+    ) is False
+
+
+def test_explicit_mention_topic_does_not_treat_reply_as_a_tag():
+    adapter = _make_adapter(
+        require_mention=True,
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        require_explicit_mention_topics=["-100:8"],
+        observe_unmentioned_group_messages=True,
+    )
+
+    reply = _group_message("continuing", chat_id=-100, thread_id=8, reply_to_bot=True)
+    assert adapter._should_process_message(reply) is False
+    assert adapter._should_observe_unmentioned_group_message(reply) is True
+
+    tagged_reply = _group_message(
+        "@hermes_bot continuing",
+        chat_id=-100,
+        thread_id=8,
+        reply_to_bot=True,
+    )
+    assert adapter._should_process_message(tagged_reply) is True
+    assert adapter._should_observe_unmentioned_group_message(tagged_reply) is False
+
+    # The setting is route-scoped: ordinary Telegram reply semantics remain
+    # unchanged in another topic served by the same profile.
+    other_topic_reply = _group_message(
+        "continuing", chat_id=-100, thread_id=9, reply_to_bot=True
+    )
+    assert adapter._should_process_message(other_topic_reply) is True
+
+
 def _forum_message(*, chat_id, thread_id, is_topic_message, is_forum, chat_type="supergroup"):
     """Build a message with independently-controlled topic/forum flags.
 
@@ -540,7 +605,8 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "  group_allowed_chats:\n"
         "    - \"-100\"\n"
         "  allowed_topics:\n"
-        "    - 8\n",
+        "    - 8\n"
+        '    - "-100:9"\n',
         encoding="utf-8",
     )
 
@@ -582,7 +648,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     assert tg_cfg.extra.get("mention_patterns") == [r"^\s*chompy\b"]
     assert tg_cfg.extra.get("allowed_chats") == ["-100"]
     assert tg_cfg.extra.get("group_allowed_chats") == ["-100"]
-    assert tg_cfg.extra.get("allowed_topics") == [8]
+    assert tg_cfg.extra.get("allowed_topics") == [8, "-100:9"]
     # free_response_chats is bridged to the env var only (not PlatformConfig.extra).
     # TELEGRAM_FREE_RESPONSE_CHATS is not a key that appears in developer .env
     # files, so asserting it via os.environ stays deterministic.

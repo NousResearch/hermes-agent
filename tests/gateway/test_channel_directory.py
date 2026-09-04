@@ -382,6 +382,26 @@ class TestChannelAliases:
             assert injected and injected[0]["type"] == "group"
 
 
+    def test_alias_injects_undiscovered_telegram_forum_topic(self, tmp_path):
+        """A pre-named Telegram topic retains its forum delivery metadata."""
+        target = "-1001234567890:3823"
+        cache_file = _write_directory(tmp_path, {"telegram": []})
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+             self._setup_aliases(
+                 tmp_path,
+                 {"telegram": {target: "EXL Deepfates Program"}},
+             ):
+            assert resolve_channel_name("telegram", "EXL Deepfates Program") == target
+            entries = load_directory()["platforms"]["telegram"]
+            injected = [entry for entry in entries if entry["id"] == target]
+            assert injected == [{
+                "id": target,
+                "name": "EXL Deepfates Program",
+                "type": "forum",
+                "thread_id": "3823",
+            }]
+
+
     def test_alias_persists_through_rebuild(self, tmp_path, monkeypatch):
         """build_channel_directory must bake aliases into the written file so
         they survive the periodic regeneration, not just live reads."""
@@ -397,4 +417,3 @@ class TestChannelAliases:
         names = [e["name"] for e in on_disk["platforms"]["whatsapp"]
                  if e["id"] == "120363@g.us"]
         assert names == ["general"]
-

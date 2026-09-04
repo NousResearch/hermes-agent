@@ -560,6 +560,15 @@ Hermes Agent works in Telegram group chats with a few considerations:
   - matches for one of your configured regex wake words in `telegram.mention_patterns`
 - In groups with multiple Hermes bots, `telegram.exclusive_bot_mentions` keeps routing deterministic. When a message explicitly mentions one or more Telegram bot usernames, only the mentioned bot profiles process it; other Hermes bots ignore it before reply and wake-word fallbacks run. This is enabled by default.
 - Renaming the bot's `@username` in BotFather is picked up automatically — Hermes follows the new handle for mention routing without a gateway restart. Collectible (Fragment) usernames that don't end in `bot` are supported too.
+- Use `telegram.allowed_topics` to limit a multi-forum profile to explicit routes. A bare topic ID such as `8` is the legacy form and applies in every otherwise-allowed chat; prefer a chat-scoped entry such as `"-1001234567890:8"` when the profile serves more than one forum.
+- To require a literal `@botusername` tag on every turn in selected topics, add exact routes under `telegram.extra.require_explicit_mention_topics`. In those topics, replying to a bot message or matching a wake-word pattern does not dispatch the agent unless the message also tags the bot:
+
+  ```yaml
+  telegram:
+    extra:
+      require_explicit_mention_topics:
+        - "-1001234567890:8"
+  ```
 - Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
 - If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
 

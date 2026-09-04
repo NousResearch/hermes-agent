@@ -4098,6 +4098,9 @@ async def get_status(profile: Optional[str] = None):
         # other detail that could carry secrets. The storage probe reuses the
         # gateway readiness state_db check (read-only, 1s-bounded) in an
         # executor so a wedged DB can't stall the event loop.
+        from hermes_state import get_storage_status
+
+        storage_status = get_storage_status(get_hermes_home() / "state.db")
         components: Dict[str, Any] = {
             "gateway": {
                 "status": "ok" if gateway_running and gateway_state in {"running", "draining"} else "degraded",
@@ -4109,9 +4112,16 @@ async def get_status(profile: Optional[str] = None):
             from gateway.readiness import _probe_state_db
 
             storage_check = await run_in_threadpool(_probe_state_db, get_hermes_home())
-            components["storage"] = {"status": storage_check.get("status", "degraded")}
+            components["storage"] = {
+                "status": (
+                    "degraded"
+                    if storage_status == "degraded"
+                    else storage_check.get("status", "degraded")
+                )
+            }
         except Exception:
             components["storage"] = {"status": "degraded"}
+        status["storage"] = storage_status
         platform_states = [
             str(value.get("state") or value.get("status") or "").lower()
             for value in gateway_platforms.values()
@@ -12615,7 +12625,13 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
     """
     import sqlite3
 
-    from hermes_state import SessionDB, is_malformed_schema_error
+    from hermes_state import (
+        SessionDB,
+        get_storage_status,
+        is_malformed_db_error,
+        is_malformed_schema_error,
+        mark_storage_degraded,
+    )
 
     if not read_only:
         return SessionDB(db_path=db_path, read_only=False)
@@ -12659,13 +12675,22 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
             # so route it through the same dispatch as malformed schema.
             is_malformed_schema_error(exc) or isinstance(exc, UnicodeDecodeError)
         ):
+            if is_malformed_db_error(exc):
+                mark_storage_degraded(db_path, exc)
             raise
-        SessionDB(db_path=db_path, read_only=False).close()
+        try:
+            SessionDB(db_path=db_path, read_only=False).close()
+        except (sqlite3.DatabaseError, UnicodeDecodeError) as heal_exc:
+            if is_malformed_db_error(heal_exc):
+                mark_storage_degraded(db_path, heal_exc)
+            raise
         try:
             return _open_probed()
         except (sqlite3.DatabaseError, UnicodeDecodeError) as still_stale:
             message = str(still_stale).lower()
             if "no such table" not in message and "no such column" not in message:
+                if is_malformed_db_error(still_stale):
+                    mark_storage_degraded(db_path, still_stale)
                 raise
             # The writable open succeeded but the store is STILL behind the
             # probe: reconciliation cannot fix this one. Serve reads without
@@ -12673,6 +12698,11 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
             # everything else works) and stop paying the writable init per
             # poll.
             _session_db_heal_exhausted.add(str(db_path))
+            if get_storage_status(db_path) != "degraded":
+                mark_storage_degraded(
+                    db_path,
+                    RuntimeError("session database schema recovery was exhausted"),
+                )
             if str(db_path) not in _session_db_heal_warned:
                 _session_db_heal_warned.add(str(db_path))
                 _log.warning(

@@ -155,7 +155,7 @@ class TestReloadEnv:
     def test_removes_deleted_known_vars(self, tmp_path):
         """reload_env() removes known Hermes vars not present in .env."""
         env_file = tmp_path / ".env"
-        env_file.write_text("")  # empty .env
+        env_file.write_text("", encoding="utf-8")  # empty .env
         # Pick a known key from OPTIONAL_ENV_VARS
         known_key = next(iter(OPTIONAL_ENV_VARS.keys()))
         with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
@@ -421,6 +421,29 @@ class TestWebServerEndpoints:
         assert response.status_code == 200
         assert response.json()["sessions"] == []
         assert response.json()["total"] == 0
+        assert response.json()["storage"] == "ok"
+
+    def test_storage_degraded_is_exposed_to_session_and_status_clients(self, monkeypatch):
+        import hermes_state
+
+        from hermes_constants import get_hermes_home
+        from hermes_state import mark_storage_degraded
+
+        monkeypatch.setattr(hermes_state, "_storage_status_by_path", {})
+
+        mark_storage_degraded(
+            get_hermes_home() / "state.db",
+            RuntimeError("database disk image is malformed"),
+        )
+
+        sessions = self.client.get("/api/sessions?limit=50&offset=0")
+        status = self.client.get("/api/status")
+
+        assert sessions.status_code == 200
+        assert sessions.json()["storage"] == "degraded"
+        assert status.status_code == 200
+        assert status.json()["storage"] == "degraded"
+        assert status.json()["components"]["storage"]["status"] == "degraded"
 
     @pytest.mark.parametrize(
         "missing_column", ["archived", "pinned", "last_activity_at"]
@@ -654,6 +677,7 @@ class TestWebServerEndpoints:
             web_server._open_session_db_at_path(db_path, read_only=True)
 
         assert opens == [True]
+        assert hermes_state.get_storage_status(db_path) == "degraded"
 
     def test_decode_error_triggers_writable_heal(self, tmp_path, monkeypatch):
         """UnicodeDecodeError — pysqlite failing to decode SQLite's own error
@@ -1874,13 +1898,13 @@ class TestWebServerEndpoints:
         # actually received the write.
         env_var = custom_endpoint_key_env("worker-proxy")
 
-        worker_cfg = (worker_home / "config.yaml").read_text()
+        worker_cfg = (worker_home / "config.yaml").read_text(encoding="utf-8")
         assert "worker-proxy" in worker_cfg
         assert env_var in worker_cfg
-        assert "sk-worker-secret" in (worker_home / ".env").read_text()
+        assert "sk-worker-secret" in (worker_home / ".env").read_text(encoding="utf-8")
 
         for leaked in (default_home / "config.yaml", default_home / ".env"):
-            text = leaked.read_text() if leaked.exists() else ""
+            text = leaked.read_text(encoding="utf-8") if leaked.exists() else ""
             assert "worker-proxy" not in text, f"endpoint leaked into default profile ({leaked.name})"
             assert "sk-worker-secret" not in text, f"credential leaked into default profile ({leaked.name})"
 
@@ -5361,7 +5385,7 @@ def test_mount_spa_dynamic_web_dist_recheck(tmp_path, monkeypatch):
 
     # 2. build created dynamically -> 200
     dist.mkdir(parents=True, exist_ok=True)
-    (dist / "index.html").write_text("<html><body>Test</body></html>")
+    (dist / "index.html").write_text("<html><body>Test</body></html>", encoding="utf-8")
     res2 = client.get("/")
     assert res2.status_code == 200
     assert "Test" in res2.text

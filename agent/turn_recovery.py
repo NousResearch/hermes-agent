@@ -726,7 +726,10 @@ def nonretryable_client_error_result(
             classified=classified, summary=_nonretryable_summary, messages=messages,
             api_call_count=api_call_count, provider=provider, base_url=base_url, model=model,
         )
-    return _failed_turn_result(_nonretryable_summary, messages, api_call_count, _nonretryable_summary)
+    result = _failed_turn_result(_nonretryable_summary, messages, api_call_count, _nonretryable_summary)
+    result["failure_reason"] = classified.reason.value
+    result["failure_retryable"] = bool(classified.retryable)
+    return result
 
 
 _STREAM_DROP_MARKERS = (

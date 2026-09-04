@@ -78,7 +78,7 @@ def test_show_session_status_prints_gateway_style_summary():
         "started_at": 1775791440,
     }
 
-    with patch("cli.display_hermes_home", return_value="~/.hermes"):
+    with patch("hermes_constants.display_hermes_home", return_value="~/.hermes"):
         cli_obj._show_session_status()
 
     printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
@@ -107,8 +107,8 @@ def test_show_session_status_includes_reasoning_approvals_context():
         "context_tokens": 50000, "context_length": 200000, "context_percent": 25,
     }
 
-    with patch("cli.display_hermes_home", return_value="~/.hermes"), \
-         patch("tools.approval._get_approval_mode", return_value="manual"), \
+    with patch("hermes_constants.display_hermes_home", return_value="~/.hermes"), \
+         patch("tools.approval_context._get_approval_mode", return_value="manual"), \
          patch("tools.approval.is_approval_bypass_active_for_session", return_value=False):
         cli_obj._show_session_status()
 

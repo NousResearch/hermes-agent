@@ -322,11 +322,19 @@ def _is_azure_foundry_responses(params: dict[str, Any]) -> bool:
 
 
 def _is_post_tool_replay(messages: Optional[list[dict[str, Any]]]) -> bool:
-    """True when ``messages`` end on a tool-result run issued by the preceding assistant turn.
+    """True when ``messages`` replay a completed tool-call history.
 
-    Azure Foundry rejects only this post-tool shape when encrypted reasoning is
-    replayed, so only the *trailing* messages are checked (a whole-history scan
-    would make suppression sticky). Call ids resolve like ``_chat_messages_to_responses_input``.
+    Azure Foundry rejects the payload shape where a prior assistant
+    ``function_call`` and its ``function_call_output`` are replayed alongside
+    an encrypted ``reasoning`` item (HTTP 400 ``invalid_payload``). This
+    includes ordinary later user follow-ups after the assistant has already
+    answered the tool result: the old tool history is still present on the
+    wire. Suppression is therefore scoped to Azure conversations with a
+    completed, paired tool exchange, not to all Responses requests.
+
+    Tool-call identity is resolved the same way
+    ``_chat_messages_to_responses_input`` resolves it, because the pairing
+    that matters is the one that reaches the wire.
     """
     from agent.codex_responses_adapter import _canonical_call_id_from_fc, _split_responses_tool_id
 
@@ -342,26 +350,27 @@ def _is_post_tool_replay(messages: Optional[list[dict[str, Any]]]) -> bool:
             ids.add(canonical)
         return ids
 
-    trailing = set()
-    for msg in reversed(messages or ()):
-        role = msg.get("role") if isinstance(msg, dict) else None
+    saw_tool_result = False
+    issued_tool_ids = set()
+    result_tool_ids = set()
+    for msg in messages or ():
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
         if role == "system":
             continue
         if role == "tool":
             ids = _pair_ids(msg.get("tool_call_id"))
-            if not ids:
-                return False
-            trailing |= ids
+            if ids:
+                saw_tool_result = True
+                result_tool_ids |= ids
             continue
-        # First non-tool message must be the assistant turn that issued the run.
-        if role != "assistant":
-            return False
-        return any(
-            trailing & _pair_ids(call.get("id"), call.get("call_id"))
-            for call in msg.get("tool_calls") or []
-            if isinstance(call, dict)
-        )
-    return False
+        if role == "assistant":
+            for call in msg.get("tool_calls") or []:
+                if isinstance(call, dict):
+                    issued_tool_ids |= _pair_ids(call.get("id"), call.get("call_id"))
+
+    return saw_tool_result and bool(issued_tool_ids & result_tool_ids)
 
 
 def _native_compaction_active(context_management: Any) -> bool:

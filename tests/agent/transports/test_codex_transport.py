@@ -406,17 +406,16 @@ class TestCodexBuildKwargs:
         assert "function_call_output" not in item_types
         assert kw.get("include") == ["reasoning.encrypted_content"]
 
-    def test_azure_foundry_user_turn_after_completed_tool_call_keeps_reasoning(
+    def test_azure_foundry_user_turn_after_completed_tool_call_suppresses_reasoning(
         self, transport
     ):
-        """Suppression must not stick for the rest of the conversation.
+        """A later follow-up still replays the earlier tool-heavy history.
 
-        The tool call completed and the assistant already answered; this turn
-        is a plain user follow-up whose payload ends on a user message, which
-        Foundry accepts. A predicate that scanned the whole history for any
-        tool call plus any tool result would suppress reasoning here — and on
-        every later turn — which is the all-turns behavior this scoping
-        exists to avoid.
+        Azure Foundry rejects encrypted reasoning when it is replayed alongside
+        any persisted function-call history, even after the assistant has
+        already answered the tool result and the current turn ends on a user
+        message. Suppress reasoning for the affected Azure conversation while
+        preserving function-call continuity.
         """
         messages = self._post_tool_messages() + [
             {
@@ -435,10 +434,10 @@ class TestCodexBuildKwargs:
             replay_encrypted_reasoning=True,
         )
         item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
-        assert "reasoning" in item_types
+        assert "reasoning" not in item_types
         assert "function_call" in item_types
         assert "function_call_output" in item_types
-        assert kw.get("include") == ["reasoning.encrypted_content"]
+        assert kw.get("include") == []
 
     def test_azure_foundry_parallel_tool_results_suppress_reasoning(self, transport):
         """A trailing run of parallel tool results is still the rejected shape."""

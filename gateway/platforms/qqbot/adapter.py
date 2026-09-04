@@ -3198,7 +3198,15 @@ class QQAdapter(BasePlatformAdapter):
         return stripped
 
     def _open_dm_opted_in(self) -> bool:
-        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+        # GATEWAY_ALLOW_ALL_USERS is authorization config, not a credential,
+        # but the same profile-isolation rule applies (#72348 class): under
+        # multiplexing os.environ holds the DEFAULT profile's opt-in, so a
+        # secondary profile with dm_policy=open must not inherit it. Route
+        # through the scoped resolver like every other QQ_* read.
+        if (
+            _resolve_qq_secret("GATEWAY_ALLOW_ALL_USERS", "").lower()
+            in {"true", "1", "yes"}
+        ):
             return True
         return _resolve_qq_secret("QQ_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
 

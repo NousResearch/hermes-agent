@@ -131,6 +131,18 @@ _CONTROL_WRAPPERS = (
     ("<ide_selection>", "</ide_selection>"),
 )
 
+# The hosted workspace prepends machine-authored metadata as a self-closing
+# tag. Strip one leading tag while preserving the user's following request.
+_LEADING_WORKSPACE_CONTEXT_RE = re.compile(
+    r"^<workspace_context\b(?:[^>\"']|\"[^\"]*\"|'[^']*')*/>\s*",
+    re.IGNORECASE,
+)
+
+
+def _strip_leading_workspace_context(text: str) -> str:
+    """Remove one hosted-workspace metadata tag before classifying the turn."""
+    return _LEADING_WORKSPACE_CONTEXT_RE.sub("", text.strip(), count=1).strip()
+
 # Hermes' own machine-authored openers. A compaction handoff or a resumed
 # session must not be titled after the scaffolding that carried it. The legacy
 # summary prefix comes from the compressor rather than a fourth local copy —
@@ -194,7 +206,7 @@ def strip_control_wrappers(text: str) -> str:
     """
     if not text:
         return ""
-    current = text.strip()
+    current = _strip_leading_workspace_context(text)
     # Bounded: each pass must remove at least one wrapper or we stop.
     for _ in range(len(_CONTROL_WRAPPERS) * 2):
         stripped = current
@@ -230,14 +242,15 @@ def _summarize_user_message(user_message: str) -> str:
     """
     if not user_message:
         return ""
+    normalized = _strip_leading_workspace_context(user_message)
     described = None
     try:
         from agent.skill_commands import describe_skill_invocation
 
-        described = describe_skill_invocation(user_message)
+        described = describe_skill_invocation(normalized)
     except Exception:
         logger.debug("Skill-scaffolding summary failed; titling raw", exc_info=True)
-    text = described if described is not None else user_message
+    text = described if described is not None else normalized
     return strip_control_wrappers(text)
 
 
@@ -249,10 +262,11 @@ def is_titleable_user_message(user_message: str) -> bool:
     """
     if not isinstance(user_message, str) or not user_message.strip():
         return False
+    normalized = _strip_leading_workspace_context(user_message)
     for prefix in _MACHINE_PREFIXES:
-        if user_message.lstrip().startswith(prefix):
+        if normalized.startswith(prefix):
             return False
-    return bool(_summarize_user_message(user_message).strip())
+    return bool(_summarize_user_message(normalized).strip())
 
 
 def derive_title(user_message: str) -> Optional[str]:

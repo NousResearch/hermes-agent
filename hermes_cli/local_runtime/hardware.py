@@ -33,6 +33,14 @@ _MARGIN_FRACTION = 0.09
 # UMA headroom: on unified-memory machines the model shares physical memory with the OS and every
 # app, so budget from RAM minus this fraction.
 _UMA_HEADROOM_FRACTION = 0.20
+# Discrete spill room: spilled weights live in host RAM alongside the OS and desktop. Planning
+# against ram_total with no headroom lets a ~21 GiB MoE "fit" a 30 GiB laptop and thrash-freeze
+# the session (#102865). UMA already discounts its pool by 20%; discrete host needs a larger
+# cut because the desktop cannot move off host RAM the way a model can share a UMA pool.
+# Live probes still use OS-available (already net of pressure). Floor covers compositor +
+# Electron + a browser tab on small boxes.
+_DISCRETE_RAM_HEADROOM_FRACTION = 0.40
+_DISCRETE_RAM_HEADROOM_FLOOR = 4 << 30
 
 # Engine-fallback gates for the unified-pool quirk — BOTH must hold, and no discrete card can
 # meet either: (1) the allocator's pool exceeds the smi report by well past rounding/ECC slack
@@ -250,6 +258,21 @@ def _uma_budget(base: int, total: int) -> HardwareBudget:
                           ram_available_bytes=0, uma=True)
 
 
+def _discrete_host_ram_bytes(ram_total: int, ram_avail: int, *, planning: bool) -> int:
+    """Host RAM the spill path may budget against.
+
+    Planning uses capacity minus desktop/OS headroom (mirrors VRAM margin + UMA headroom).
+    Live uses OS-available, which already reflects pressure.
+    """
+    if not planning:
+        return max(0, ram_avail)
+    headroom = max(
+        _DISCRETE_RAM_HEADROOM_FLOOR,
+        int(ram_total * _DISCRETE_RAM_HEADROOM_FRACTION),
+    )
+    return max(0, ram_total - headroom)
+
+
 def probe_budget(*, planning: bool = False) -> HardwareBudget:
     """Construct the budget per the source rules above.
 
@@ -292,5 +315,6 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
     margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))
     return HardwareBudget(usable_vram_bytes=max(0, (total if planning else free) - margin),
                           total_device_bytes=total,
-                          ram_available_bytes=ram_total if planning else ram_avail,
+                          ram_available_bytes=_discrete_host_ram_bytes(
+                              ram_total, ram_avail, planning=planning),
                           uma=False)

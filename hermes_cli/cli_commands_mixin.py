@@ -1949,7 +1949,12 @@ class CLICommandsMixin:
         preview = _ellipsize(prompt, 60)
         _cp(f"  {_t('background.started', number=task_num, preview=preview)}",
             f"  {_t('background.task_id', task_id=task_id)}", f"  {_t('background.keep_chatting')}\n")
-        turn_route = self._resolve_turn_agent_config(prompt)
+        previous_skip = getattr(self, "_skip_turn_routing", False)
+        self._skip_turn_routing = True
+        try:
+            turn_route = self._resolve_turn_agent_config(prompt)
+        finally:
+            self._skip_turn_routing = previous_skip
         runtime = turn_route["runtime"]
 
         def produce():
@@ -2112,7 +2117,12 @@ class CLICommandsMixin:
         history_snapshot = list(self.conversation_history or [])
         # Live agent → cache-parity fork (full context, warm cache reads).
         parent_agent = self.agent
-        turn_route = self._resolve_turn_agent_config(question)
+        previous_skip = getattr(self, "_skip_turn_routing", False)
+        self._skip_turn_routing = True
+        try:
+            turn_route = self._resolve_turn_agent_config(question)
+        finally:
+            self._skip_turn_routing = previous_skip
         runtime = turn_route["runtime"]
         main_runtime = {
             "model": turn_route["model"],

@@ -194,6 +194,8 @@ def test_combined_review_prompt_teaches_read_before_write():
 def _assert_lesson_layer_guidance(prompt: str, label: str) -> None:
     """Skill writes must be lessons (rule + why), not incident logs or per-session reference files."""
     lower = prompt.lower()
+    assert "specifications" in lower and "procedure" in lower, (
+        f"{label}: must state the primary purpose — how to do the task, to the user's specifications")
     assert "why" in lower and "rule" in lower, f"{label}: must ask for rule + why"
     assert "pr/issue numbers" in lower or "pr numbers" in lower, f"{label}: must ban PR/issue numbers as content"
     assert "one rule" in lower, f"{label}: must collapse repeated lessons into one rule"

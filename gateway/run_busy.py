@@ -114,6 +114,41 @@ class GatewayBusySessionMixin:
             logger.debug("FIFO overflow rescue failed for %s", session_key, exc_info=True)
             return None
 
+    def _promote_orphaned_overflow_on_unwind(self, session_key: str, source: Any) -> bool:
+        """Eager counterpart of ``_rescue_orphaned_overflow`` for the turn-unwind path.
+
+        ``_run_agent_drain_pending`` promotes the FIFO head only when the turn produced a result. A
+        turn that unwinds through an exception, cancellation, or early exit skips that site, and the
+        overflow is orphaned until the next inbound event triggers the lazy rescue (#99882) — which
+        for machine-generated follow-ups (plugin injections, delegation completions, /queue) may
+        never come. Promoting here lets the adapter's finally-block late-arrival drain
+        (``_finish_session_task`` → ``_spawn_drain_task``) run the next queued event now, in FIFO
+        order (#28503).
+
+        No-op when the slot is occupied (the success path already staged the next-up event there),
+        when the overflow is empty, or while draining (shutdown flush owns pending state). Never
+        raises: this runs inside a ``finally``.
+        """
+        try:
+            if self._draining:
+                return False
+            overflow = self._overflow_queue(session_key)
+            if not overflow:
+                return False
+            adapter = self._adapter_for_source(source)
+            pending_slot = getattr(adapter, "_pending_messages", None)
+            if not isinstance(pending_slot, dict) or session_key in pending_slot:
+                return False
+            pending_slot[session_key] = overflow.pop(0)
+            logger.info(
+                "Turn for session %s ended without draining — promoted queued follow-up so the FIFO "
+                "keeps flushing (%d still queued).", session_key, len(overflow),
+            )
+            return True
+        except Exception:
+            logger.debug("FIFO overflow promotion on unwind failed for %s", session_key, exc_info=True)
+            return False
+
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
         """True for synthetic /goal continuation turns (so pause/clear can spare real /queue items)."""

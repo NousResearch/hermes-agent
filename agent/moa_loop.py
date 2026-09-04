@@ -149,6 +149,7 @@ def _redact_trace_accounting(acct: Any) -> Any:
         model=acct.model,
         provider=acct.provider,
         temperature=acct.temperature,
+        rerouted=acct.rerouted,
     )
 
 
@@ -195,7 +196,8 @@ class _RefAccounting:
     carry the FULL reference input and output for trace persistence (the
     display ``text`` is a truncated preview and is not enough to audit what an
     advisor actually saw). They are only populated when tracing is on; they add
-    negligible cost otherwise.
+    negligible cost otherwise. ``rerouted`` marks a successful call served by
+    a route other than the configured reference slot.
     """
 
     __slots__ = (
@@ -208,6 +210,7 @@ class _RefAccounting:
         "model",
         "provider",
         "temperature",
+        "rerouted",
     )
 
     def __init__(
@@ -222,6 +225,7 @@ class _RefAccounting:
         model: str | None = None,
         provider: str | None = None,
         temperature: Any = None,
+        rerouted: bool = False,
     ):
         self.usage = usage
         self.cost_usd = cost_usd
@@ -232,6 +236,7 @@ class _RefAccounting:
         self.model = model
         self.provider = provider
         self.temperature = temperature
+        self.rerouted = rerouted
 
 # Per-tool-result character budget for the advisory reference view. Tool
 # results can be huge (a full diff, a 5000-line file dump); replaying them
@@ -571,7 +576,10 @@ def _run_reference(
         # Normalize provider aliases (github, github-copilot, github-models,
         # ...) through the auxiliary client's canonical alias table so slot
         # configs that spell Copilot differently still get the header.
-        from agent.auxiliary_client import _normalize_aux_provider
+        from agent.auxiliary_client import (
+            _normalize_aux_provider,
+            _normalize_resolved_model,
+        )
 
         if _normalize_aux_provider(str(runtime.get("provider") or "")) in (
             "copilot",
@@ -586,6 +594,7 @@ def _run_reference(
             # ``copilot-language-server`` integrator even though standalone
             # Copilot calls work.
             extra_headers = {"x-initiator": "user"}
+        route_info: dict[str, str] = {}
         response = call_llm(
             task="moa_reference",
             messages=messages,
@@ -594,16 +603,34 @@ def _run_reference(
             timeout=reference_timeout,
             reasoning_config=_slot_reasoning_config(slot),
             extra_headers=extra_headers,
+            route_info=route_info,
             **runtime,
         )
+        requested_provider = str(runtime.get("provider") or slot.get("provider") or "")
+        requested_model = str(runtime.get("model") or slot.get("model") or "")
+        actual_provider = route_info.get("provider") or requested_provider
+        actual_model = route_info.get("model") or requested_model
+        normalized_requested_provider = _normalize_aux_provider(requested_provider)
+        same_provider = (
+            _normalize_aux_provider(actual_provider) == normalized_requested_provider
+        )
+        expected_model = _normalize_resolved_model(requested_model, actual_provider)
+        rerouted = normalized_requested_provider != "auto" and (
+            not same_provider or actual_model != expected_model
+        )
+        if rerouted:
+            actual_slot = {**slot, "provider": actual_provider, "model": actual_model}
+            label = f"{label} -> {_slot_label(actual_slot)}"
         usage = CanonicalUsage()
         raw_usage = getattr(response, "usage", None)
         if raw_usage:
             try:
+                # Never interpret a fallback response using the failed route's
+                # wire mode; route_info does not expose the fallback api_mode.
                 usage = normalize_usage(
                     raw_usage,
-                    provider=runtime.get("provider"),
-                    api_mode=runtime.get("api_mode"),
+                    provider=actual_provider,
+                    api_mode=None if rerouted else runtime.get("api_mode"),
                 )
             except Exception:  # pragma: no cover - defensive
                 usage = CanonicalUsage()
@@ -615,12 +642,15 @@ def _run_reference(
         cost_status = None
         cost_source = None
         try:
+            # route_info exposes the fallback provider/model but not its
+            # endpoint or credentials, so do not attribute the failed route's
+            # endpoint-specific pricing to it.
             cost = estimate_usage_cost(
-                slot.get("model") or "",
+                actual_model,
                 usage,
-                provider=runtime.get("provider"),
-                base_url=runtime.get("base_url"),
-                api_key=runtime.get("api_key"),
+                provider=actual_provider,
+                base_url=None if rerouted else runtime.get("base_url"),
+                api_key=None if rerouted else runtime.get("api_key"),
             )
             cost_usd = cost.amount_usd
             cost_status = cost.status
@@ -635,9 +665,10 @@ def _run_reference(
             cost_source,
             messages=messages,
             output=_output_text,
-            model=slot.get("model"),
-            provider=runtime.get("provider") or slot.get("provider"),
+            model=actual_model,
+            provider=actual_provider,
             temperature=temperature,
+            rerouted=rerouted,
         )
         return label, _output_text, acct
     except Exception as exc:
@@ -1230,10 +1261,30 @@ def _failed_reference_labels(
     return [label for label, text, _accounting in reference_outputs if _is_failed_reference(text)]
 
 
-def _degraded_notice(failed_labels: list[str], policy: str) -> str:
-    if not failed_labels or policy.strip().lower() == "silent":
+def _rerouted_reference_labels(
+    reference_outputs: list[tuple[str, str, Any]],
+) -> list[str]:
+    return [
+        label
+        for label, _text, accounting in reference_outputs
+        if isinstance(accounting, _RefAccounting) and accounting.rerouted
+    ]
+
+
+def _degraded_notice(
+    failed_labels: list[str],
+    policy: str,
+    *,
+    rerouted_labels: list[str] | None = None,
+) -> str:
+    if policy.strip().lower() == "silent":
         return ""
-    return f"[Reference models unavailable: {', '.join(failed_labels)}]"
+    notices = []
+    if failed_labels:
+        notices.append(f"Reference models unavailable: {', '.join(failed_labels)}")
+    if rerouted_labels:
+        notices.append(f"Reference models rerouted: {', '.join(rerouted_labels)}")
+    return f"[{'; '.join(notices)}]" if notices else ""
 
 
 def aggregate_moa_context(
@@ -1285,6 +1336,7 @@ def aggregate_moa_context(
 
     successful_outputs = _successful_references(reference_outputs)
     failed_labels = _failed_reference_labels(reference_outputs)
+    rerouted_labels = _rerouted_reference_labels(reference_outputs)
 
     # 'full' privacy mode (moa.privacy_filter) also covers this one-shot /moa
     # synthesis path: advisor text is redacted before it reaches the
@@ -1304,7 +1356,11 @@ def aggregate_moa_context(
         f"Reference {idx} — {label}:\n{text}"
         for idx, (label, text, _accounting) in enumerate(successful_outputs, start=1)
     )
-    degraded = _degraded_notice(failed_labels, degraded_reference_policy)
+    degraded = _degraded_notice(
+        failed_labels,
+        degraded_reference_policy,
+        rerouted_labels=rerouted_labels,
+    )
     if degraded:
         joined = f"{joined}\n\n{degraded}" if joined else degraded
 
@@ -1391,7 +1447,7 @@ def aggregate_moa_context(
         "normal Hermes agent loop. You may call tools, continue reasoning, or "
         "finish normally.]\n"
         f"Aggregator: {agg_label}\n"
-        f"References: {', '.join(_slot_label(slot) for slot in reference_models)}\n\n"
+        f"References: {', '.join(label for label, _, _ in reference_outputs)}\n\n"
         f"{synthesis.strip()}"
     )
 
@@ -2249,6 +2305,7 @@ class MoAChatCompletions:
         agg_messages = [dict(m) for m in messages]
         successful_outputs = _successful_references(reference_outputs)
         failed_labels = _failed_reference_labels(reference_outputs)
+        rerouted_labels = _rerouted_reference_labels(reference_outputs)
         joined = ""
         _agg_refs: list = []
         if successful_outputs:
@@ -2268,7 +2325,11 @@ class MoAChatCompletions:
                 f"Reference {idx} — {label}:\n{text}"
                 for idx, (label, text, _usage) in enumerate(_agg_refs, start=1)
             )
-        degraded = _degraded_notice(failed_labels, degraded_reference_policy)
+        degraded = _degraded_notice(
+            failed_labels,
+            degraded_reference_policy,
+            rerouted_labels=rerouted_labels,
+        )
         if reference_outputs and not successful_outputs:
             # Every reference failed or was skipped: don't wrap a wall of
             # failure sentinels in "use the reference responses below"

@@ -152,6 +152,9 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         # Init auth failures live here because the failed manager is discarded.
         self._init_auth_failure: Optional[str] = None
         self._init_auth_notice_emitted = False
+        # Set when no user peer could be named (no runtime identity, no peerName); init is not retried.
+        self._init_peer_failure: Optional[str] = None
+        self._init_peer_notice_emitted = False
         self._cron_skipped = False  # cron and flush contexts disable the plugin entirely
 
     @property
@@ -262,8 +265,9 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
     def _run_session_init(self, label: str) -> bool:
         """Run _do_session_init with the deferred kwargs; on failure discard the manager
-        and (for auth failures) keep the detail for the one-time notice."""
+        and (for auth or unresolved-peer failures) keep the detail for the one-time notice."""
         from plugins.memory.honcho.session import HonchoAuthError
+        from plugins.memory.honcho.session_peers import HonchoPeerUnresolvedError
 
         init_kwargs = self._lazy_init_kwargs
         if init_kwargs is None:  # another init path already consumed the deferred kwargs
@@ -278,6 +282,10 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
                 # Keep the auth detail so the one-time notice survives the manager discard.
                 self._init_auth_failure = str(e)
                 detail = "authentication rejected"
+            elif isinstance(e, HonchoPeerUnresolvedError):
+                # A missing peerName does not heal mid-session, so drop the deferred kwargs and stop retrying.
+                self._init_peer_failure = str(e)
+                self._lazy_init_kwargs = self._lazy_init_session_id = None
             logger.warning("Honcho %s session init failed: %s", label, detail)
             return False
         self._lazy_init_kwargs = self._lazy_init_session_id = None
@@ -547,8 +555,8 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             if first_turn_base_deadline is not None and self._init_thread is not None:
                 self._init_thread.join(timeout=max(0.0, first_turn_base_deadline - time.monotonic()))
             if not self._session_ready():
-                # A failed auth init still owes the user the one-time notice.
-                return self._log_injection("session-not-ready", self._pop_auth_notice())
+                # A failed init still owes the user its one-time notice.
+                return self._log_injection("session-not-ready", self._pop_auth_notice() or self._pop_peer_notice())
 
         # Trivial turns start no work, but may consume a ready pending result.
         if self._is_trivial_prompt(query):
@@ -583,6 +591,14 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
                 f"token refresh failed, so memory sync and recall are paused. Reason: {msg}\n"
                 "Tell the user (once) that Honcho memory is paused and that running 'hermes honcho setup' "
                 "to re-authenticate will restore it.")
+
+    def _pop_peer_notice(self) -> str:
+        """One-time model-facing notice that no user peer could be named and memory is off."""
+        if self._init_peer_failure is None or self._init_peer_notice_emitted:
+            return ""
+        self._init_peer_notice_emitted = True
+        return (f"[Honcho memory status] Honcho memory is off for this session. {self._init_peer_failure}\n"
+                "Tell the user (once) that Honcho memory is off until honcho.json names a user peer.")
 
     def _truncate_to_budget(self, text: str) -> str:
         """Truncate text to the context_tokens budget (≈4 chars/token) at a word boundary."""
@@ -871,8 +887,9 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             if self._init_thread and self._init_thread.is_alive():
                 return tool_error("Honcho session is still initializing; try again shortly.")
             if not self._ensure_session():
-                return tool_error(f"Honcho memory authentication failed: {self._init_auth_failure}"
-                                  if self._init_auth_failure else "Honcho session could not be initialized.")
+                if self._init_auth_failure:
+                    return tool_error(f"Honcho memory authentication failed: {self._init_auth_failure}")
+                return tool_error(self._init_peer_failure or "Honcho session could not be initialized.")
         if not self._manager or not self._session_key:
             return tool_error("Honcho is not active for this session.")
         if (handler := self._TOOL_HANDLERS.get(tool_name)) is None:

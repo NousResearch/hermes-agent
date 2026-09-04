@@ -15,6 +15,11 @@ logger = logging.getLogger("plugins.memory.honcho.session")
 _PEER_ID_HASH_ESCALATION_LENGTHS = (8, 12, 16, 24, 32, 64)
 
 
+class HonchoPeerUnresolvedError(RuntimeError):
+    """No user peer can be named: the transport supplied no runtime identity and honcho.json
+    declares no peerName. Raised instead of minting a session-derived peer nobody declared."""
+
+
 class SessionPeersMixin:
     """Resolve user/assistant/observer peer IDs. Reads ``self._config`` and runtime identities only."""
 
@@ -64,8 +69,10 @@ class SessionPeersMixin:
 
     def _resolve_user_peer_id(self, key: str) -> str:
         """Honcho user peer ID for this manager/session. Order: pinned peerName -> alias of a
-        runtime identity -> (prefixed) runtime identity -> configured peerName -> session-key fallback."""
-        peer_name = self._cfg("peer_name")
+        runtime identity -> (prefixed) runtime identity -> configured peerName. Raises
+        HonchoPeerUnresolvedError when none applies: every peer must be one the operator declared
+        or one the transport supplied, never a name derived from the session key."""
+        peer_name = str(self._cfg("peer_name") or "").strip()
         if peer_name and self._cfg("pin_peer_name", False) is True:
             return self._sanitize_id(peer_name)
 
@@ -84,8 +91,9 @@ class SessionPeersMixin:
 
         if peer_name:
             return self._sanitize_id(peer_name)
-        channel, sep, chat_id = key.partition(":")
-        return self._sanitize_id(f"user-{channel}-{chat_id}" if sep else f"user-default-{key}")
+        raise HonchoPeerUnresolvedError(
+            f"Honcho has no user peer for session '{key}': the transport supplied no user identity and "
+            "honcho.json declares no peerName. Set one with 'hermes honcho peer --user <name>'.")
 
     def _resolve_peer_id(self, session: HonchoSession, peer: str | None) -> str:
         """Resolve a peer alias ('user'/'ai') or explicit peer ID to a concrete, non-empty peer ID."""

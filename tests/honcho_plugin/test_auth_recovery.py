@@ -874,7 +874,7 @@ def _wire_init(tmp_path, monkeypatch, client, *, recall_mode="hybrid", dead_refr
         monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h: None)
     cfg = HonchoClientConfig(
         host="hermes", api_key="hch-at-old", enabled=True, recall_mode=recall_mode,
-        timeout=0.5, session_strategy="per-session",
+        timeout=0.5, session_strategy="per-session", peer_name="operator",
     )
     monkeypatch.setattr(
         client_mod.HonchoClientConfig, "from_global_config", lambda *a, **k: cfg

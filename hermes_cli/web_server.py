@@ -18,6 +18,11 @@ import secrets
 import subprocess
 import sys
 import sysconfig
+
+try:
+    import faulthandler
+except ImportError:  # pragma: no cover - optional in exotic Python builds
+    faulthandler = None
 import threading
 import time
 import urllib.parse
@@ -1268,17 +1273,45 @@ def _on_server_started(
     # Loop heartbeat watchdog (CF-1): a 2s call_later tick whose drift equals
     # any GIL stall, so a stalled-loop WS drop is diagnosable from the log.
     # call_later (not a task) dies with the loop — nothing to cancel.
+    # The heartbeat logs drift AFTER recovery. A one-shot faulthandler watchdog
+    # runs on Python's internal watchdog thread, so a sustained GIL stall also
+    # captures every Python thread WHILE the stall is active: each healthy
+    # heartbeat re-arms the dump deadline, and repeat=False prevents duplicate
+    # dumps during one stall (#65388).
     _hb_interval = 2.0
     _hb_stall_threshold = 5.0
+    _hb_dump_delay = _hb_interval + _hb_stall_threshold
     _hb_loop = asyncio.get_running_loop()
+
+    def _arm_stall_dump() -> None:
+        try:
+            if faulthandler is not None:
+                faulthandler.dump_traceback_later(
+                    _hb_dump_delay,
+                    repeat=False,
+                    file=sys.stderr,
+                    exit=False,
+                )
+        except Exception as exc:  # best-effort diagnostic only
+            _log.debug("stall traceback watchdog unavailable: %s", exc)
+
+    def _cancel_stall_dump() -> None:
+        try:
+            if faulthandler is not None:
+                faulthandler.cancel_dump_traceback_later()
+        except Exception as exc:  # best-effort diagnostic only
+            _log.debug("stall traceback watchdog cleanup skipped: %s", exc)
 
     def _loop_heartbeat(expected: float) -> None:
         now = _hb_loop.time()
         drift = now - expected
         if drift > _hb_stall_threshold:
             _log.warning("event loop stalled %.1fs (GIL pressure suspected)", drift)
+        # Healthy tick: push the one-shot all-thread dump deadline out again.
+        _arm_stall_dump()
         _hb_loop.call_later(_hb_interval, _loop_heartbeat, now + _hb_interval)
 
+    _arm_stall_dump()
     _hb_loop.call_later(_hb_interval, _loop_heartbeat, _hb_loop.time() + _hb_interval)
 
 

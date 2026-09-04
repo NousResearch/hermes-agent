@@ -2642,6 +2642,48 @@ def _get_bot_chat_delivery_timeout() -> int:
         return 600
 
 
+# A bot-chat delivery subprocess is fenced out of the target profile's session
+# when another surface (CLI/TUI/Desktop) already owns it — the single-owner
+# session lease refuses a second writer. Retry a bounded number of times with
+# exponential backoff so a transient turn in flight doesn't drop scheduled
+# output, then give up with a clear error (#99956).
+#
+# Delays double each attempt (2s → 4s → 8s → 16s) for ~30s of total backoff,
+# enough for a bot mid-turn to finish without hanging the scheduler.
+_BOT_CHAT_LOCK_RETRY_ATTEMPTS = 5
+_BOT_CHAT_LOCK_RETRY_BASE_SECONDS = 2.0
+
+
+def _is_session_lock_refusal(text: str) -> bool:
+    """True when a bot-chat delivery failure is the single-owner session lease
+    refusing the subprocess (another surface owns the session, or the machine is
+    at its active-session cap) — transient contention a bounded retry can clear —
+    as opposed to auth/quota/config/model errors a retry cannot fix."""
+    lowered = (text or "").lower()
+    return "already has a live owner" in lowered or "active session limit" in lowered
+
+
+def _bot_chat_delivery_lock(profile: str):
+    """Per-profile turn lock for a cron bot-chat delivery.
+
+    Serializes with message_agent / relay delivery turns into the same profile
+    (mirrors ``tools.bot_mode_dm._delivery_lock``) so the scheduled subprocess is
+    not an uncoordinated writer. ``profile`` is ``""`` for the job's own profile,
+    whose lock key is the scheduler's own profile name; a named profile uses its
+    canonical name. Degrades to a no-op when the relay lock machinery is
+    unavailable rather than failing the delivery.
+    """
+    try:
+        from tools.bot_relay import acquire_turn_lock
+    except Exception:  # pragma: no cover — stripped installs / import guard
+        return contextlib.nullcontext()
+    home = Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
+    root = home.parent.parent if home.parent.name == "profiles" else home
+    if not profile:
+        profile = home.name if home.parent.name == "profiles" else "default"
+    return acquire_turn_lock(root, profile)
+
+
 def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]:
     """Deliver job output into a profile's canonical Bot Chat as an inbound turn.
 
@@ -2651,6 +2693,11 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
     bot receives the output as a real user-role message it can act on.
     Alternation-safe by construction: this is an inbound turn on the chat
     command lane, not a transcript splice.
+
+    The delivery turn runs under the per-profile relay turn lock (so it is
+    not an uncoordinated subprocess), and a single-owner session refusal —
+    the target profile already has a live CLI/TUI/Desktop surface — is
+    retried with backoff before giving up with a clear error (#99956).
 
     ``profile`` is ``""`` for the job's own profile (subprocess inherits this
     scheduler's HERMES_HOME) or a validated local profile name.  Returns None
@@ -2705,23 +2752,61 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
             "-Q", "--query-file", query_file,
         ]
 
-        result = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=_get_bot_chat_delivery_timeout(),
-            env=env,
-            creationflags=windows_hide_flags(),
-        )
-        if result.returncode != 0:
-            tail = (result.stderr or result.stdout or "").strip()[-500:]
-            msg = (
-                f"bot-chat delivery to profile "
-                f"'{profile or '(own)'}' failed (exit {result.returncode})"
-                + (f": {tail}" if tail else "")
-            )
-            logger.warning("Job '%s': %s", job_id, msg)
-            return msg
+        with _bot_chat_delivery_lock(profile):
+            result = None
+            last_tail = ""
+            for attempt in range(_BOT_CHAT_LOCK_RETRY_ATTEMPTS):
+                result = subprocess.run(
+                    argv,
+                    capture_output=True,
+                    text=True,
+                    timeout=_get_bot_chat_delivery_timeout(),
+                    env=env,
+                    creationflags=windows_hide_flags(),
+                )
+                if result.returncode == 0:
+                    break
+                last_tail = (result.stderr or result.stdout or "").strip()[-500:]
+                if (
+                    not _is_session_lock_refusal(last_tail)
+                    or attempt == _BOT_CHAT_LOCK_RETRY_ATTEMPTS - 1
+                ):
+                    break
+                delay = _BOT_CHAT_LOCK_RETRY_BASE_SECONDS * (2 ** attempt)
+                logger.warning(
+                    "Job '%s': bot-chat delivery to profile '%s' fenced by a live "
+                    "session; retrying in %.1fs (attempt %d/%d)",
+                    job_id,
+                    profile or "(own)",
+                    delay,
+                    attempt + 1,
+                    _BOT_CHAT_LOCK_RETRY_ATTEMPTS,
+                )
+                time.sleep(delay)
+
+            if result.returncode != 0:
+                lowered = last_tail.lower()
+                if "already has a live owner" in lowered:
+                    msg = (
+                        f"bot-chat delivery to profile '{profile or '(own)'}' "
+                        "skipped: the target's Bot Chat is open on another surface "
+                        "(CLI/TUI/Desktop). Close that session or retry the job later."
+                    )
+                elif "active session limit" in lowered:
+                    msg = (
+                        f"bot-chat delivery to profile '{profile or '(own)'}' "
+                        "skipped: the machine is at the active session limit. "
+                        "Retry when a session frees up."
+                    )
+                else:
+                    msg = (
+                        f"bot-chat delivery to profile "
+                        f"'{profile or '(own)'}' failed (exit {result.returncode})"
+                        + (f": {last_tail}" if last_tail else "")
+                    )
+                logger.warning("Job '%s': %s", job_id, msg)
+                return msg
+
         logger.info(
             "Job '%s': delivered to Bot Chat of profile '%s'",
             job_id, profile or "(own)",

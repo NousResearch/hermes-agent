@@ -3452,8 +3452,10 @@ class CLICommandsMixin:
         saved buffer (comment lines starting with ``#!`` stripped).
 
         Returns the composed prompt text, or an empty string if the editor
-        could not be launched or the buffer was left empty. Factored out so
-        the read-back/strip logic is unit-testable without spawning an editor.
+        could not be launched, exited with a non-zero status (the buffer may
+        be stale or unedited at that point), or the buffer was left empty.
+        Factored out so the read-back/strip logic is unit-testable without
+        spawning an editor.
         """
         import os
         import shlex
@@ -3475,11 +3477,18 @@ class CLICommandsMixin:
                 if initial_text:
                     fh.write(initial_text)
             try:
-                subprocess.call([*shlex.split(editor), path])
+                editor_argv = [*shlex.split(editor), path]
+            except ValueError:
+                return ""
+            try:
+                status = subprocess.call(editor_argv)
             except Exception:
-                # Fall back to a bare invocation (editor value may not be a
-                # simple argv-splittable string on some platforms).
-                subprocess.call(f"{editor} {shlex.quote(path)}", shell=True)
+                return ""
+            if status != 0:
+                # A non-zero exit means the editor did not complete its
+                # save-and-quit cycle (crash, :cq, signal). The buffer may
+                # still hold the seeded text, so treat it as a cancel.
+                return ""
             with open(path, "r", encoding="utf-8") as fh:
                 raw = fh.read()
         finally:

@@ -9016,6 +9016,40 @@ class TelegramAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    def _telegram_require_mention_chats(self) -> set[str]:
+        """Return chats where the normal mention trigger is required."""
+        raw = self.config.extra.get("require_mention_chats")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw or "").split(",") if part.strip()}
+
+    def _telegram_strict_mention_chats(self) -> set[str]:
+        """Return chats where only an explicit @bot mention may trigger a response."""
+        raw = self.config.extra.get("strict_mention_chats")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw or "").split(",") if part.strip()}
+
+    def _telegram_free_response_users(self) -> set[str]:
+        """Return user IDs that may respond in groups without a mention."""
+        raw = self.config.extra.get("free_response_users")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw or "").split(",") if part.strip()}
+
+    def _telegram_strict_mention_users(self) -> set[str]:
+        """Return user IDs that require an explicit @bot mention in groups."""
+        raw = self.config.extra.get("strict_mention_users")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw or "").split(",") if part.strip()}
+
+    @staticmethod
+    def _telegram_sender_id(message: Any) -> str:
+        sender = getattr(message, "from_user", None) or getattr(message, "sender_chat", None)
+        value = getattr(sender, "id", None)
+        return str(value) if value is not None else ""
+
     def _telegram_free_response_topics(self) -> set[str]:
         """Return topic-level free-response allowlist entries as ``<chat_id>:<thread_id>``.
 
@@ -9557,7 +9591,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         if self._telegram_is_free_response_topic(message):
             return False
-        if not self._telegram_require_mention():
+        if chat_id_str not in self._telegram_require_mention_chats() and not self._telegram_require_mention():
             return False
         if self._is_reply_to_bot(message):
             return False
@@ -9937,11 +9971,18 @@ class TelegramAdapter(BasePlatformAdapter):
 
         if guest_mention:
             return True
+        if chat_id_str in self._telegram_strict_mention_chats():
+            return self._message_mentions_bot(message)
+        sender_id = self._telegram_sender_id(message)
+        if sender_id in self._telegram_free_response_users():
+            return True
+        if sender_id in self._telegram_strict_mention_users():
+            return self._message_mentions_bot(message)
         if chat_id_str in self._telegram_free_response_chats():
             return True
         if self._telegram_is_free_response_topic(message):
             return True
-        if not self._telegram_require_mention():
+        if chat_id_str not in self._telegram_require_mention_chats() and not self._telegram_require_mention():
             return True
         if self._is_reply_to_bot(message):
             return True
@@ -11332,7 +11373,16 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         # extras seed intentionally omitted (shared-key loop bridges group_allowed_chats).
         if not _skip_env_bridge and not os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS"):
             os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
-    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "free_response_topics"):
+    for _key in (
+        "guest_mode",
+        "disable_link_previews",
+        "observe_unmentioned_group_messages",
+        "free_response_topics",
+        "require_mention_chats",
+        "strict_mention_chats",
+        "free_response_users",
+        "strict_mention_users",
+    ):
         if _key in telegram_cfg:
             extras.setdefault(_key, telegram_cfg[_key])
     # Pass through telegram-specific extra keys (e.g. base_url proxy override),

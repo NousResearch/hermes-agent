@@ -19,6 +19,30 @@ def _response(content="ok"):
     return SimpleNamespace(choices=[choice], usage=None, model="fake")
 
 
+def _capture_prepared_aggregator(monkeypatch, runtime, message):
+    from agent import moa_loop
+
+    captured = {}
+    monkeypatch.setattr(moa_loop, "_slot_runtime", lambda slot: runtime)
+    monkeypatch.setattr(
+        moa_loop,
+        "call_llm",
+        lambda **kwargs: captured.update(kwargs) or _response("acted"),
+    )
+    facade = moa_loop.MoAChatCompletions.__new__(moa_loop.MoAChatCompletions)
+    facade._agent = None
+    facade._pending_trace = None
+    prepared = {
+        "messages": [message],
+        "guidance": None,
+        "aggregator": {"provider": "custom", "model": "strict-model"},
+        "aggregator_temperature": None,
+    }
+
+    facade._call_prepared_aggregator(prepared, {})
+    return captured["messages"][0], prepared["messages"][0]
+
+
 class TestSlotRuntimeApiMode:
     """_slot_runtime should include api_mode when resolve_runtime_provider returns it."""
 
@@ -150,6 +174,42 @@ moa:
         "metadata": {"source": "caller"},
         "reasoning": {"effort": "none"},
     }
+
+
+def test_moa_aggregator_strips_internal_fields_for_chat_completions(monkeypatch):
+    """Persistence metadata must not reach strict chat-completions providers."""
+    wire_message, source_message = _capture_prepared_aggregator(
+        monkeypatch,
+        {
+            "provider": "custom",
+            "model": "strict-model",
+            "api_mode": "chat_completions",
+        },
+        {
+            "role": "user",
+            "content": "hello",
+            "_db_persisted": True,
+        },
+    )
+
+    assert "_db_persisted" not in wire_message
+    assert source_message["_db_persisted"] is True
+
+
+def test_moa_aggregator_defers_sanitization_when_api_mode_is_unresolved(monkeypatch):
+    """Unresolved routes may select a transport that needs replay metadata."""
+    reasoning_items = [{"type": "reasoning", "id": "item-1"}]
+    wire_message, _ = _capture_prepared_aggregator(
+        monkeypatch,
+        {"provider": "openai-codex", "model": "gpt-test"},
+        {
+            "role": "assistant",
+            "content": "working",
+            "codex_reasoning_items": reasoning_items,
+        },
+    )
+
+    assert wire_message["codex_reasoning_items"] == reasoning_items
 
 
 def test_one_shot_aggregate_moa_context_passes_slot_extra_body(monkeypatch):

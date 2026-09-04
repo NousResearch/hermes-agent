@@ -208,6 +208,8 @@ def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.
                 _apply_wal_companions(conn)
                 return "wal"
             if current_mode == "delete" and not require_wal and _database_has_content(conn):
+                if is_sqlite_wal_reset_vulnerable():
+                    _log_wal_reset_bug_once(db_label, kept_wal=False)
                 return "delete"
         configured = resolve_journal_mode()
     finally:

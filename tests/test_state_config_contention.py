@@ -97,7 +97,7 @@ def test_partial_config_import_cannot_invert_config_and_module_locks(tmp_path):
 
 @pytest.mark.parametrize("mode,require_wal", [("delete", False), ("wal", False), ("wal", True)])
 def test_existing_database_does_not_wait_for_config_writer(
-    tmp_path, monkeypatch, mode, require_wal
+    tmp_path, monkeypatch, caplog, mode, require_wal
 ):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
@@ -123,7 +123,11 @@ def test_existing_database_does_not_wait_for_config_writer(
     def opener():
         conn = sqlite3.connect(path)
         try:
-            selected = apply_wal_with_fallback(conn, require_wal=require_wal)
+            selected = apply_wal_with_fallback(
+                conn,
+                db_label=f"contention-{mode}-{require_wal}",
+                require_wal=require_wal,
+            )
             retained = conn.execute("SELECT value FROM retained").fetchone()[0]
             conn.execute("INSERT INTO retained VALUES ('during config write')")
             conn.commit()
@@ -142,6 +146,12 @@ def test_existing_database_does_not_wait_for_config_writer(
             release.set()
             worker.join(5)
     assert not worker.is_alive()
+    if mode == "delete":
+        assert any(
+            "WAL-reset corruption bug" in record.message
+            and "using journal_mode=DELETE" in record.message
+            for record in caplog.records
+        )
     assert config.load_config_readonly()["marker"] == "after replacement"
     with closing(sqlite3.connect(path)) as conn:
         assert conn.execute("SELECT COUNT(*) FROM retained").fetchone()[0] == 2

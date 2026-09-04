@@ -409,6 +409,10 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
 // administrative note into that slot; hide those (Runs still shows them).
 const isAdminSummary = (summary: string) => /^status changed to \w+ \(dashboard\/direct\)$/.test(summary)
 
+const attachmentUrl = (id: KanbanAttachment['id']) => `/api/plugins/kanban/attachments/${encodeURIComponent(String(id))}`
+
+const isImageAttachment = (attachment: KanbanAttachment) => attachment.content_type?.startsWith('image/')
+
 function AttachmentsSection({
   attachments,
   onUpload,
@@ -453,11 +457,23 @@ function AttachmentsSection({
       label={k.attachments(attachments.length)}
     >
       {attachments.length > 0 ? (
-        <ul className="flex flex-col gap-1">
+        <ul className="flex flex-col gap-2">
           {attachments.map(attachment => (
-            <li className="flex items-center gap-1.5 text-[0.75rem] text-(--ui-text-tertiary)" key={attachment.id}>
-              <Codicon name="file" size="0.75rem" />
-              {attachment.filename}
+            <li className="flex flex-col gap-1.5 text-[0.75rem] text-(--ui-text-tertiary)" key={attachment.id}>
+              {isImageAttachment(attachment) ? (
+                <a href={attachmentUrl(attachment.id)} rel="noreferrer" target="_blank">
+                  <img
+                    alt={attachment.filename}
+                    className="max-h-32 max-w-full rounded border border-(--ui-border) object-contain"
+                    loading="lazy"
+                    src={attachmentUrl(attachment.id)}
+                  />
+                </a>
+              ) : null}
+              <a className="flex items-center gap-1.5 hover:text-(--ui-text-primary)" href={attachmentUrl(attachment.id)} rel="noreferrer" target="_blank">
+                <Codicon name="file" size="0.75rem" />
+                {attachment.filename}
+              </a>
             </li>
           ))}
         </ul>

@@ -7289,9 +7289,13 @@ class SlackAdapter(BasePlatformAdapter):
             ).chat_postMessage(**kwargs)
             msg_ts = result.get("ts", "")
             if msg_ts:
-                team_id = self._metadata_team_id(metadata)
+                # Keyed on the channel id, not team id: Enterprise Grid /
+                # Slack Connect channels can report a different team id on
+                # the click payload than the one resolved here at send time
+                # (see _handle_approval_action), which would otherwise make
+                # every click's dedup lookup miss and silently no-op.
                 self._approval_resolved[
-                    self._workspace_message_marker(team_id, msg_ts)
+                    self._workspace_message_marker(chat_id, msg_ts)
                 ] = False
                 self._trim_oldest_dict_entries(
                     self._approval_resolved, self._APPROVAL_RESOLVED_MAX
@@ -7754,11 +7758,15 @@ class SlackAdapter(BasePlatformAdapter):
         choice = choice_map.get(action_id, "deny")
 
         # Prevent double-clicks — atomic pop; first caller gets False, others get True (default)
-        # Check both the workspace-scoped marker and the bare ts: the approval
-        # may have been stored without a team id (metadata-poor send path)
+        # Check both the channel-scoped marker and the bare ts: the approval
+        # may have been stored without a channel id (metadata-poor send path)
         # while the click event carries one, and that mismatch must not
-        # swallow a legitimate first click.
-        approval_key = self._workspace_message_marker(team_id, msg_ts)
+        # swallow a legitimate first click. Keyed on channel id rather than
+        # team id because Enterprise Grid / Slack Connect channels can report
+        # a different (but still non-empty) team id on the click payload than
+        # the one resolved at send time — a team-id key would then miss on
+        # every click and silently drop it (see send_exec_approval).
+        approval_key = self._workspace_message_marker(channel_id, msg_ts)
         if msg_ts in self._approval_resolved:
             approval_key = msg_ts
         if self._approval_resolved.pop(approval_key, True):

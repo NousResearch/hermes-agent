@@ -1744,6 +1744,7 @@ def register(ctx) -> None:
         cron_deliver_env_var="LINE_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send,
         allowed_users_env="LINE_ALLOWED_USERS",
+        group_allowed_chats_env="LINE_ALLOWED_GROUPS",
         allow_all_env="LINE_ALLOW_ALL_USERS",
         # LINE per-bubble cap is 5000; smart-chunker uses 4500.
         max_message_length=LINE_SAFE_BUBBLE_CHARS,

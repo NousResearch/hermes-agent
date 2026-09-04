@@ -242,6 +242,11 @@ class _KanbanDispatcher:
         total_running = 0
         board_with_ready = ""
         for slug in self._board_slugs():
+            # Honor dispatch quarantine: a known-corrupt board is not a
+            # READY/RUNNING stall, and reopening it every tick would undo
+            # tick_once_for_board's "stop retrying" contract.
+            if slug in self.disabled_corrupt_boards:
+                continue
             conn = None
             try:
                 conn = _kbc().connect(board=slug)

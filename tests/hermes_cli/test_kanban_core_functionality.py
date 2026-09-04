@@ -1117,7 +1117,8 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     # skips the dispatch connect because the corrupt board fingerprint is
     # disabled, but the ready/review probes still each connect. PR f55d94a1e
     # added the review-column probe alongside the existing ready-column
-    # probe, bumping this from 3 → 5.
+    # probe, bumping this from 3 → 5. The READY/RUNNING stall snapshot
+    # must honor the same quarantine and must not add connects.
     assert calls["connect"] == 5
 
 

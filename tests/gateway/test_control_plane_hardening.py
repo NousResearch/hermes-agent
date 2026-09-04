@@ -193,6 +193,46 @@ def test_stalled_dispatch_warns_after_one_interval_not_before():
     assert recovered is None
 
 
+def test_ready_running_snapshot_skips_quarantined_corrupt_board(monkeypatch):
+    """Stall probing must not reopen a board already quarantined as corrupt."""
+    from types import SimpleNamespace
+
+    from gateway.kanban_watchers_dispatcher import _DispatcherSettings, _KanbanDispatcher
+    from hermes_cli import kanban_db_connect as _kbc
+
+    calls = {"connect": 0}
+
+    def _boom(*_args, **_kwargs):
+        calls["connect"] += 1
+        raise AssertionError("quarantined board must not be reopened")
+
+    monkeypatch.setattr(_kbc, "connect", _boom)
+
+    kb = SimpleNamespace(
+        DEFAULT_BOARD="default",
+        list_boards=lambda include_archived=False: [{"slug": "default"}],
+        read_board_metadata=lambda slug: {"slug": slug},
+    )
+    settings = _DispatcherSettings(
+        interval=60.0,
+        max_spawn=None,
+        max_in_progress=None,
+        failure_limit=2,
+        stale_timeout_seconds=0,
+        reconcile_orphans=True,
+        default_assignee=None,
+        max_in_progress_per_profile=None,
+    )
+    dispatcher = _KanbanDispatcher(kb, settings)
+    dispatcher.disabled_corrupt_boards["default"] = (("fp", 1, 1), 0.0)
+
+    ready, running, board = dispatcher.ready_running_snapshot()
+    assert calls["connect"] == 0
+    assert ready == 0
+    assert running == 0
+    assert board == "default"
+
+
 def test_restart_handoff_persists_before_recovery_claim(tmp_path):
     path = tmp_path / ".restart_handoff.json"
     handoff = build_restart_handoff(

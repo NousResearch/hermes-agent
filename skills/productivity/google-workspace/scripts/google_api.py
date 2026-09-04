@@ -10,8 +10,9 @@ Usage:
   python google_api.py gmail get MESSAGE_ID
   python google_api.py gmail send --to user@example.com --subject "Hi" --body "Hello"
   python google_api.py gmail reply MESSAGE_ID --body "Thanks"
-  python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary]
+  python google_api.py calendar list [--start DATETIME] [--end DATETIME] [--calendar primary]
   python google_api.py calendar create --summary "Meeting" --start DATETIME --end DATETIME
+  python google_api.py calendar update EVENT_ID [--summary ...] [--start DATETIME] [--end DATETIME]
   python google_api.py drive search "budget report" [--max 10]
   python google_api.py contacts list [--max 20]
   python google_api.py sheets get SHEET_ID RANGE
@@ -551,6 +552,57 @@ def calendar_create(args):
         "htmlLink": result.get("htmlLink", ""),
     }, indent=2))
 
+
+
+def calendar_update(args):
+    """Patch an existing event in place (time, title, location, etc.).
+
+    Only the fields passed on the command line are changed; everything else on
+    the event is preserved, including its ID and attendee RSVPs. Prefer this
+    over delete-and-recreate when editing an event.
+    """
+    patch = {}
+    if args.summary:
+        patch["summary"] = args.summary
+    if args.start:
+        patch["start"] = {"dateTime": args.start}
+    if args.end:
+        patch["end"] = {"dateTime": args.end}
+    if args.location:
+        patch["location"] = args.location
+    if args.description:
+        patch["description"] = args.description
+
+    if not patch:
+        print(json.dumps({
+            "error": "nothing to update: pass at least one of --summary/--start/--end/--location/--description"
+        }))
+        return
+
+    if _gws_binary():
+        result = _run_gws(
+            ["calendar", "events", "patch"],
+            params={"calendarId": args.calendar, "eventId": args.event_id},
+            body=patch,
+        )
+        print(json.dumps({
+            "status": "updated",
+            "id": result.get("id", args.event_id),
+            "summary": result.get("summary", ""),
+            "htmlLink": result.get("htmlLink", ""),
+        }, indent=2))
+        return
+
+    service = build_service("calendar", "v3")
+    result = service.events().patch(
+        calendarId=args.calendar, eventId=args.event_id, body=patch
+    ).execute()
+    print(json.dumps({
+        "status": "updated",
+        "id": result["id"],
+        "summary": result.get("summary", ""),
+        "htmlLink": result.get("htmlLink", ""),
+    }, indent=2))
 
 
 def calendar_delete(args):
@@ -1113,6 +1165,16 @@ def main():
     p.add_argument("--attendees", default="", help="Comma-separated email addresses")
     p.add_argument("--calendar", default="primary")
     p.set_defaults(func=calendar_create)
+
+    p = cal_sub.add_parser("update")
+    p.add_argument("event_id")
+    p.add_argument("--summary", default="")
+    p.add_argument("--start", default="", help="New start (ISO 8601 with timezone)")
+    p.add_argument("--end", default="", help="New end (ISO 8601 with timezone)")
+    p.add_argument("--location", default="")
+    p.add_argument("--description", default="")
+    p.add_argument("--calendar", default="primary")
+    p.set_defaults(func=calendar_update)
 
     p = cal_sub.add_parser("delete")
     p.add_argument("event_id")

@@ -30,8 +30,8 @@ import pytest
 from cron.scheduler import (
     _deliver_result,
     _resolve_delivery_targets,
-    _target_mirror_eligible,
 )
+from cron.scheduler_delivery import _target_mirror_eligible
 
 
 @pytest.fixture(autouse=True)

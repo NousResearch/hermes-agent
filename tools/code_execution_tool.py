@@ -2200,20 +2200,50 @@ def _python_environment_prefix(python_path: str) -> str:
     return ""
 
 
+def _python_environment_root(python_path: str) -> str | None:
+    """Return the venv root *python_path* lives in, or None outside one.
+
+    Layout-only, no subprocess: ``<root>/bin/python`` (POSIX) or
+    ``<root>\\Scripts\\python.exe`` (Windows) with a ``pyvenv.cfg`` at the
+    root marks a venv. Conda envs and bare system interpreters have no
+    ``pyvenv.cfg`` and return None; callers fall back to the subprocess
+    probe for those.
+    """
+    bin_dir = os.path.dirname(os.path.abspath(python_path))
+    if os.path.basename(bin_dir).lower() not in ("bin", "scripts"):
+        return None
+    root = os.path.dirname(bin_dir)
+    if not os.path.isfile(os.path.join(root, "pyvenv.cfg")):
+        return None
+    return os.path.realpath(root)
+
+
 def _uses_hermes_python_environment(python_path: str) -> bool:
     """Whether *python_path* belongs to Hermes's active Python environment.
 
-    Short-circuits when *python_path* IS the running interpreter (by path or
-    realpath) — no subprocess probe on the default strict-mode path, and no
-    way for a flaky probe of ``sys.executable`` itself to break the invariant
-    that repo-root modules are importable in strict mode.  The realpath leg
-    also covers venvs whose bin/python resolves to the same binary (e.g.
-    ``uv run`` setting VIRTUAL_ENV without changing sys.prefix).
+    Short-circuits when *python_path* IS ``sys.executable`` — no subprocess
+    probe on the default strict-mode path, and no way for a flaky probe of
+    ``sys.executable`` itself to break the invariant that repo-root modules
+    are importable in strict mode.
+
+    A realpath match alone is NOT enough: on POSIX every venv created from
+    the same base python symlinks ``bin/python`` to that binary, so an
+    external project venv sharing Hermes's base interpreter realpaths equal
+    to ``sys.executable`` while being a different environment entirely.
+    Treating those as Hermes's env re-adds the repo root to the external
+    project's PYTHONPATH, the exact contamination project-mode isolation
+    exists to prevent. So the realpath leg only short-circuits when the
+    interpreter's venv root (from path layout + pyvenv.cfg, still no
+    subprocess) is Hermes's own ``sys.prefix``; anything else falls through
+    to the ``sys.prefix`` probe, which is the authority on environment
+    identity.
     """
-    if python_path == sys.executable or (
-        os.path.realpath(python_path) == os.path.realpath(sys.executable)
-    ):
+    if python_path == sys.executable:
         return True
+    if os.path.realpath(python_path) == os.path.realpath(sys.executable):
+        root = _python_environment_root(python_path)
+        if root is not None and root == os.path.realpath(sys.prefix):
+            return True
     return _python_environment_prefix(python_path) == os.path.realpath(sys.prefix)
 
 

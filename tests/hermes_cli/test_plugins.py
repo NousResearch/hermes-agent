@@ -1070,6 +1070,39 @@ class TestForceReloadSymmetry:
             {"context": "hi"}
         ]
 
+    def test_concurrent_hook_calls_do_not_drop_callback(self, monkeypatch):
+        """Ordinary overlap is not evidence that the first callback hung."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0
+        )
+
+        both_started = threading.Barrier(2)
+        calls = []
+
+        def callback(**kwargs):
+            calls.append(kwargs["call_id"])
+            both_started.wait(timeout=0.5)
+            return kwargs["call_id"]
+
+        mgr = PluginManager()
+        mgr._hooks["post_tool_call"] = [callback]
+        results = {}
+
+        def invoke(call_id):
+            results[call_id] = mgr.invoke_hook("post_tool_call", call_id=call_id)
+
+        first = threading.Thread(target=invoke, args=("first",))
+        second = threading.Thread(target=invoke, args=("second",))
+        first.start()
+        second.start()
+        first.join(timeout=2.0)
+        second.join(timeout=2.0)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert sorted(calls) == ["first", "second"]
+        assert results == {"first": ["first"], "second": ["second"]}
+
     def test_hook_exception_still_isolated_under_timeout_path(self, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0

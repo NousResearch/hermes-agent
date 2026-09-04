@@ -129,7 +129,9 @@ TOOLSETS = {
             "stack is absent (set HERMES_LOCAL_DIR to point at it)."
         ),
         "tools": ["hermes_local_ask", "hermes_knowledge",
-                  "hermes_market", "hermes_status"],
+                  "hermes_market", "hermes_status",
+                  "hermes_task", "hermes_schedule", "hermes_ops",
+                  "hermes_codex", "hermes_web"],
         "includes": []
     },
 

@@ -109,10 +109,15 @@ interface ModelOptionsRequest {
   sessionId?: null | string
 }
 
-export function modelOptionsQueryKey(profile: null | string | undefined, sessionId?: null | string) {
+export function modelOptionsQueryKey(
+  profile: null | string | undefined,
+  sessionId?: null | string,
+  ownerConnectionId?: null | string
+) {
   const profileKey = (profile ?? '').trim() || 'default'
+  const ownerKey = (ownerConnectionId ?? '').trim()
 
-  return ['model-options', profileKey, sessionId || 'global'] as const
+  return ['model-options', profileKey, sessionId || 'global', ...(ownerKey ? ['owner', ownerKey] : [])] as const
 }
 
 function hasSelectableModels(options: ModelOptionsResponse | null | undefined): boolean {
@@ -155,6 +160,12 @@ export async function requestModelOptions({
       params.explicit_only = true
     }
 
+    const profileKey = (profile ?? '').trim()
+
+    if (profileKey) {
+      params.profile = profileKey
+    }
+
     let gatewayError: unknown
     let gatewayOptions: ModelOptionsResponse | undefined
 
@@ -168,23 +179,26 @@ export async function requestModelOptions({
       return gatewayOptions
     }
 
-    // A connected Desktop gateway can occasionally return only the current
-    // provider/model (or an empty provider list) while its authenticated REST
-    // catalog is already populated. Recover through the same profile-scoped
-    // endpoint Settings uses, but keep the live session selection authoritative.
-    try {
-      const restOptions = await restModelOptions(explicitOnly, refresh, profile)
+    // An owner-routed dispatcher can name a different registry connection than
+    // the ambient REST client. Never recover that request through ambient REST:
+    // profile names are not unique across sources, so doing so can cache B's
+    // catalog under A's tile. Ambient gateway requests retain the compatibility
+    // recovery used by older backends with incomplete model.options responses.
+    if (!request) {
+      try {
+        const restOptions = await restModelOptions(explicitOnly, refresh, profile)
 
-      if (hasSelectableModels(restOptions)) {
-        return {
-          ...restOptions,
-          ...(gatewayOptions?.provider ? { provider: gatewayOptions.provider } : {}),
-          ...(gatewayOptions?.model ? { model: gatewayOptions.model } : {})
+        if (hasSelectableModels(restOptions)) {
+          return {
+            ...restOptions,
+            ...(gatewayOptions?.provider ? { provider: gatewayOptions.provider } : {}),
+            ...(gatewayOptions?.model ? { model: gatewayOptions.model } : {})
+          }
         }
+      } catch {
+        // Preserve the gateway result (or its original error) when the recovery
+        // path is unavailable.
       }
-    } catch {
-      // Preserve the gateway result (or its original error) when the recovery
-      // path is unavailable.
     }
 
     if (gatewayOptions) {

@@ -19,8 +19,8 @@ def finish_interrupted_run(job, execution_id, delivery_error):
     logger = scheduler.logger
     if delivery_error:
         try:
-            from cron.jobs import update_job
-            update_job(job['id'], {'last_delivery_error': delivery_error})
+            from cron.jobs import update_job, _sanitize_persisted_error
+            update_job(job['id'], {'last_delivery_error': _sanitize_persisted_error(delivery_error)})
         except Exception as exc:
             logger.debug('Failed recording delivery_error for interrupted job %s: %s', job['id'], exc, exc_info=True)
     scheduler.finish_execution(execution_id, success=False,

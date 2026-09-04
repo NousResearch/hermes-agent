@@ -1335,7 +1335,7 @@ export interface LocalCatalogModel {
   start_window?: number
   start_window_label?: string
   spilled?: boolean
-  /** Raw predicted decode tokens-per-second (rounded int). */
+  /** Predicted decode tokens-per-second, rounded to the display band. */
   predicted_tok_s?: number
   /** Display label e.g. "~30 tok/s". */
   predicted_tok_s_label?: string

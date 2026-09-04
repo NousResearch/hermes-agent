@@ -1105,6 +1105,8 @@ export const ja = defineLocale({
       pillFitsGpu: 'GPU に完全に収まります',
       pillUsesRam: 'システム RAM を使用',
       pillTooBig: 'このマシンには大きすぎます',
+      speedPillTip: 'このハードウェアでの予測デコード速度です。実測値ではありません。',
+      speedPillTipSlow: '快適な使用感の目安（約20 tok/s）を下回っています。',
       browseTitle: 'さらにモデルを探す',
       browseHint:
         'Hugging Face 全体を検索できます。ここでダウンロードしたモデルは自動でマシンに合わせて動作しますが、当方でのテストは行われていません。',

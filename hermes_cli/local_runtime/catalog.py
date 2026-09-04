@@ -288,20 +288,6 @@ def display_decode_tok_s(tok_s: float) -> int:
     return max(10, rounded)
 
 
-def speed_grade(tok_s: float) -> str:
-    """A small label for the displayed speed pill. The catalog already
-    uses PLEASANT_FLOOR_TOK_S for the recommendation gate; the UI grade
-    mirrors that floor plus a 'fast' tier above it. Names are stable so
-    i18n keys can pin them."""
-    if tok_s >= 60:
-        return "fast"
-    if tok_s >= PLEASANT_FLOOR_TOK_S:
-        return "pleasant"
-    if tok_s >= 10:
-        return "slow"
-    return "unusable"
-
-
 def recommended_entry(budget: HardwareBudget,
                       entries: "tuple[CatalogEntry, ...] | None" = None
                       ) -> "tuple[CatalogEntry, str] | None":

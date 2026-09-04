@@ -188,17 +188,3 @@ def test_display_decode_tok_s_rounds_to_nearest_5():
     assert display_decode_tok_s(60) == 60
     assert display_decode_tok_s(61) == 60
     assert display_decode_tok_s(63) == 65
-
-
-def test_speed_grade_thresholds():
-    """speed_grade returns stable tier names matching the pleasant floor."""
-    from hermes_cli.local_runtime.catalog import PLEASANT_FLOOR_TOK_S, speed_grade
-
-    assert speed_grade(80) == "fast"
-    assert speed_grade(60) == "fast"
-    assert speed_grade(59) == "pleasant"
-    assert speed_grade(PLEASANT_FLOOR_TOK_S) == "pleasant"
-    assert speed_grade(21) == "pleasant"
-    assert speed_grade(15) == "slow"
-    assert speed_grade(10) == "slow"
-    assert speed_grade(5) == "unusable"

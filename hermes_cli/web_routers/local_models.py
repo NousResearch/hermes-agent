@@ -558,6 +558,8 @@ def local_models_catalog():
         if choice is None:
             smallest = min(entry.variants, key=lambda v: v.size_bytes)
             smallest_total = entry.download_bytes(smallest)
+            speed = display_decode_tok_s(
+                predicted_decode_tok_s(entry, smallest, budget, spilled=True))
             row.update({
                 "fits": False,
                 "size_bytes": smallest_total,
@@ -565,6 +567,11 @@ def local_models_catalog():
                 "fit_summary": "Needs more memory than this machine has",
                 "fit_detail": (f"even the most compact build ({smallest.quant}, "
                                f"{_human_gb(smallest_total)}) exceeds GPU + system memory"),
+                # Still show the hypothetical host-memory decode estimate so
+                # an oversized model is comparable, while the red fit pill
+                # remains the authoritative runnable/not-runnable signal.
+                "predicted_tok_s": speed,
+                "predicted_tok_s_label": f"~{speed} tok/s",
             })
             entries.append(row)
             continue
@@ -580,6 +587,8 @@ def local_models_catalog():
                     + ub_logits_bytes(entry.n_vocab, mtp_capable=entry.mtp))
         decision = initial_window(profile, budget, overhead_bytes=overhead)
         download_total = entry.download_bytes(variant)
+        speed = display_decode_tok_s(
+            predicted_decode_tok_s(entry, variant, budget, spilled=bool(decision.spilled)))
         row.update({
             "fits": True,
             "model_id": variant.model_id,
@@ -588,11 +597,10 @@ def local_models_catalog():
             "size_bytes": download_total,
             "size_label": _human_gb(download_total),
             "variant_count": len(entry.variants),
-            # Predicted decode speed: raw float for the recommendation gate;
-            # display rounded value for the pill label; grade string for i18n.
-            "predicted_tok_s": round(predicted_decode_tok_s(
-                entry, variant, budget, spilled=bool(decision.spilled))),
-            "predicted_tok_s_label": f"~{display_decode_tok_s(predicted_decode_tok_s(entry, variant, budget, spilled=bool(decision.spilled)))} tok/s",
+            # The displayed value is intentionally the same value used for
+            # the UI tone; the estimate is only precise to a 5 tok/s band.
+            "predicted_tok_s": speed,
+            "predicted_tok_s_label": f"~{speed} tok/s",
         })
         if choice.reason_key == "best-large-window":
             row["quant_reason"] = (

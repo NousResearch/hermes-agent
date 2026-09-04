@@ -128,15 +128,17 @@ def _default_block_and_key(cfg: dict) -> tuple[dict, bool]:
     return cfg_get(cfg, "hosts", HOST, default={}), bool(cfg.get("apiKey") or os.environ.get("HONCHO_API_KEY"))
 
 
-def _resolve_api_key(cfg: dict) -> str:
-    """API key with host -> root -> env fallback. A self-hosted ``baseUrl`` without a key
-    yields ``"local"`` so credential guards accept it: the URL must be http/https (so
-    ``baseUrl: true`` can't pass) or a schemeless host:port (legacy ``localhost:8000``;
-    the SDK rejects those itself)."""
-    key = _host_block(cfg, _host_key()).get("apiKey") or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
+def _resolve_api_key(cfg: dict, block: dict | None = None) -> str:
+    """API key for ``block`` (default: the active host's block) with host -> root -> env fallback.
+    A self-hosted ``baseUrl`` without a key yields ``"local"`` so credential guards accept it: the
+    URL must be http/https (so ``baseUrl: true`` can't pass) or a schemeless host:port (legacy
+    ``localhost:8000``; the SDK rejects those itself)."""
+    block = _host_block(cfg, _host_key()) if block is None else block
+    key = block.get("apiKey") or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
     if key:
         return key
-    base_url = (cfg.get("baseUrl") or cfg.get("base_url") or os.environ.get("HONCHO_BASE_URL", "") or "").strip()
+    base_url = (block.get("baseUrl") or block.get("base_url") or cfg.get("baseUrl") or cfg.get("base_url")
+                or os.environ.get("HONCHO_BASE_URL", "") or "").strip()
     if not base_url:
         return key
     from urllib.parse import urlparse
@@ -232,8 +234,11 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
         new_block["pinUserPeer"] = default_block["pinPeerName"]
     # AI peer is profile-specific (bare profile name: Honcho peer IDs allow no dots);
     # workspace is shared so all profiles see the same context.
-    new_block.update(aiPeer=profile_name, workspace=_pref(default_block, cfg, "workspace") or HOST,
-                     enabled=default_block.get("enabled", True))
+    new_block.update(aiPeer=profile_name, workspace=_pref(default_block, cfg, "workspace") or HOST)
+    # The default host's apiKey is not inherited (#66125): without a credential of its own the block
+    # stays unenabled until 'hermes honcho setup --target-profile' signs the profile in.
+    if _resolve_api_key(cfg, new_block):
+        new_block["enabled"] = default_block.get("enabled", True)
     cfg.setdefault("hosts", {})[new_host] = new_block
     _write_config(cfg)
     _ensure_peer_exists(new_host)  # eager so the peer exists before first message
@@ -283,12 +288,22 @@ def sync_honcho_profiles_quiet() -> int:
     return _sync_profiles(verbose=False)
 
 
+def _no_credential_hint(host: str) -> str:
+    profile = _active_profile_name()
+    setup = "hermes honcho setup" + (f" --target-profile {profile}" if profile != "default" else "")
+    return (f"Honcho stays disabled: no API key or base URL is configured for this profile, and the default "
+            f"profile's key is not shared.\n  Run '{setup}' to sign in, or set apiKey on hosts.{host} in {_config_path()}.")
+
+
 def cmd_enable(args) -> None:
-    """Enable Honcho for the active profile."""
+    """Enable Honcho for the active profile. Refuses to write ``enabled: true`` for a block that
+    cannot authenticate, so an enabled block always has a credential behind it."""
     cfg = _read_config()
     host = _host_key()
     label = _label(host)
     block = cfg.setdefault("hosts", {}).setdefault(host, {})
+    if not _resolve_api_key(cfg, block):
+        return print(f"  {label}{_no_credential_hint(host)}\n")
     if block.get("enabled") is True:
         return print(f"  {label}Honcho is already enabled.\n")
     block["enabled"] = True

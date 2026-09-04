@@ -486,6 +486,9 @@ def _try_dispatch_background_run(
 
     def _runner() -> Dict[str, Any]:
         res = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
+        # A detached run can persist provider_backoff only at terminal
+        # completion, after the dispatch-time reconciliation already ran.
+        _notify_provider_jobs_changed_safe()
         return _manual_run_completion(res, job_id, job_name, deliver, started_at)
 
     dispatch = dispatch_async_delegation(

@@ -2578,16 +2578,28 @@ _OWNERSHIP_LOST_INTERRUPTED = "Interrupted by shutdown before terminal completio
 
 
 def _record_fire_ownership_lost(job_id: str, fire_owner: Optional[str], execution_id: str) -> None:
-    """Bookkeeping after fire-claim ownership loss. A transport-level cancel (dashboard drain) is
-    not a real loss — we still own the claim, so record the interruption via the owner-fenced
-    terminal write instead of leaving fire_claim/last_status stale; otherwise discard."""
-    if fire_owner is not None and heartbeat_fire_claim(job_id, expected_owner=fire_owner):
+    """Resolve cancellation against the tri-state fire-claim ownership verdict."""
+    ownership = (
+        heartbeat_fire_claim(job_id, expected_owner=fire_owner)
+        if fire_owner is not None
+        else False
+    )
+    if ownership is True:
         mark_job_run(job_id, False, _OWNERSHIP_LOST_INTERRUPTED, expected_fire_owner=fire_owner)
         finish_execution(execution_id, success=False, error=_OWNERSHIP_LOST_INTERRUPTED)
-    else:
+    elif ownership is False:
         finish_execution(
             execution_id, success=False,
             error="Fire claim ownership lost; stale result was discarded.")
+    else:
+        finish_execution(
+            execution_id,
+            success=False,
+            error=(
+                "Fire claim fence unavailable while resolving cancellation; "
+                "outcome uncertain."
+            ),
+        )
 
 
 def _classify_delivery_outcome(
@@ -2756,7 +2768,7 @@ def _save_compose_deliver(
     )
     try:
         with fence.side_effect_fence() as owns_delivery:
-            if not owns_delivery:
+            if not owns_delivery or fence.lost():
                 raise _FireClaimLostDuringSideEffect
             # Shutdown can begin after the pre-delivery check while this thread
             # waits for the fire fence. Re-check under the fence so a normal

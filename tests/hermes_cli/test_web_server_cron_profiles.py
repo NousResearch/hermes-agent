@@ -44,8 +44,6 @@ def _drain_queue(q):
 def test_dashboard_trigger_bypasses_backoff_without_forcing_job_state(monkeypatch):
     from datetime import datetime, timedelta, timezone
 
-    from hermes_cli import web_server
-
     until = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
     job = {
         "id": "job-a",
@@ -55,15 +53,15 @@ def test_dashboard_trigger_bypasses_backoff_without_forcing_job_state(monkeypatc
         "provider_backoff": {"until": until},
     }
     calls = []
-    monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda _job_id: "default")
-    monkeypatch.setattr(web_server, "_call_cron_for_profile", lambda *_args: job)
+    monkeypatch.setattr(_rt_cron, "_job_profile", lambda _job_id, _profile=None: "default")
+    monkeypatch.setattr(_rt_cron, "_call_cron_for_profile", lambda *_args: job)
     monkeypatch.setattr(
-        web_server,
+        _rt_cron,
         "_fire_cron_job_for_profile",
         lambda profile, job_id, **kwargs: calls.append((profile, job_id, kwargs)) or True,
     )
 
-    result = web_server._trigger_cron_job_sync("job-a")
+    result = _rt_cron._trigger_cron_job_sync("job-a")
 
     assert result == job
     assert calls == [
@@ -76,8 +74,6 @@ def test_dashboard_trigger_bypasses_backoff_without_forcing_job_state(monkeypatc
 
 
 def test_dashboard_manual_intent_allows_backoff_added_during_claim(monkeypatch):
-    from hermes_cli import web_server
-
     job = {
         "id": "job-race",
         "enabled": True,
@@ -85,15 +81,15 @@ def test_dashboard_manual_intent_allows_backoff_added_during_claim(monkeypatch):
         "last_run_at": None,
     }
     calls = []
-    monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda _job_id: "default")
-    monkeypatch.setattr(web_server, "_call_cron_for_profile", lambda *_args: job)
+    monkeypatch.setattr(_rt_cron, "_job_profile", lambda _job_id, _profile=None: "default")
+    monkeypatch.setattr(_rt_cron, "_call_cron_for_profile", lambda *_args: job)
     monkeypatch.setattr(
-        web_server,
+        _rt_cron,
         "_fire_cron_job_for_profile",
         lambda profile, job_id, **kwargs: calls.append((profile, job_id, kwargs)) or True,
     )
 
-    assert web_server._trigger_cron_job_sync("job-race") == job
+    assert _rt_cron._trigger_cron_job_sync("job-race") == job
     assert calls == [
         (
             "default",
@@ -110,7 +106,6 @@ def test_dashboard_backoff_snapshot_cannot_resume_concurrently_paused_job(
     from datetime import datetime, timedelta, timezone
 
     from cron import jobs as cron_jobs
-    from hermes_cli import web_server
 
     default_home = isolated_profiles["default"]
     now = datetime.now(timezone.utc)
@@ -145,13 +140,13 @@ def test_dashboard_backoff_snapshot_cannot_resume_concurrently_paused_job(
             )
             return isinstance(claimed, dict)
 
-    monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda _job_id: "default")
-    monkeypatch.setattr(web_server, "_call_cron_for_profile", call_cron)
-    monkeypatch.setattr(web_server, "_fire_cron_job_for_profile", pause_then_claim)
+    monkeypatch.setattr(_rt_cron, "_job_profile", lambda _job_id, _profile=None: "default")
+    monkeypatch.setattr(_rt_cron, "_call_cron_for_profile", call_cron)
+    monkeypatch.setattr(_rt_cron, "_fire_cron_job_for_profile", pause_then_claim)
     monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
 
     with pytest.raises(HTTPException, match="already running or was claimed"):
-        web_server._trigger_cron_job_sync(job["id"])
+        _rt_cron._trigger_cron_job_sync(job["id"])
 
     with cron_jobs.use_cron_store(default_home):
         persisted = cron_jobs.get_job(job["id"])

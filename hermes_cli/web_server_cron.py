@@ -267,7 +267,13 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-def _fire_cron_job_for_profile(profile: str, job_id: str, *, force: bool = False) -> bool:
+def _fire_cron_job_for_profile(
+    profile: str,
+    job_id: str,
+    *,
+    force: bool = False,
+    allow_provider_backoff: bool = False,
+) -> bool:
     """Run ONE due cron job for ``profile`` via the scheduler provider's ``fire_due``.
 
     DEPRECATED for NAS webhook fires — superseded by :func:`_forward_cron_fire_to_gateway`, since
@@ -276,9 +282,14 @@ def _fire_cron_job_for_profile(profile: str, job_id: str, *, force: bool = False
     and external callers on the web_deps late-binding seam; do not add new uses.
     """
     _profile_name, home = _cron_profile_home(profile)
-    from cron.scheduler_provider import provider_supports_force_fire, resolve_cron_scheduler
+    from cron.scheduler_provider import (
+        provider_supports_backoff_override,
+        provider_supports_force_fire,
+        resolve_cron_scheduler,
+    )
     with _cron_store_scope(home):
         provider = resolve_cron_scheduler()
+        fire_kwargs = {}
         if force:
             if not provider_supports_force_fire(provider):
                 raise HTTPException(
@@ -286,10 +297,28 @@ def _fire_cron_job_for_profile(profile: str, job_id: str, *, force: bool = False
                     detail=(
                         f"Cron provider '{getattr(provider, 'name', 'custom')}' "
                         "does not support atomic forced firing of paused jobs"))
-            return bool(provider.fire_due(job_id, adapters=None, loop=None, force=True))
-        return bool(provider.fire_due(
-            job_id, adapters=None, loop=None, allow_provider_backoff=True
-        ))
+            fire_kwargs["force"] = True
+        if allow_provider_backoff:
+            if provider_supports_backoff_override(provider):
+                fire_kwargs["allow_provider_backoff"] = True
+            else:
+                # Keep the historical call shape for legacy/custom providers.
+                # If an override is actually needed, fail rather than silently
+                # claiming that the manual trigger bypassed active backoff.
+                from cron import jobs as cron_jobs
+                from cron.rate_limit_backoff import provider_backoff_active
+
+                current = cron_jobs.get_job(job_id)
+                if current and provider_backoff_active(
+                    current, now=cron_jobs._hermes_now()
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"Cron provider '{getattr(provider, 'name', 'custom')}' "
+                            "does not support provider-backoff override"),
+                    )
+        return bool(provider.fire_due(job_id, adapters=None, loop=None, **fire_kwargs))
 
 
 def _profile_env_value(home: Path, key: str) -> str:

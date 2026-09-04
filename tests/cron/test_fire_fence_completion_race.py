@@ -270,3 +270,105 @@ def test_genuine_ownership_loss_still_fails_closed(monkeypatch):
             },
         )
     ]
+
+
+def test_ownership_loss_recording_distinguishes_fence_uncertainty(monkeypatch):
+    """A contended ownership probe is not a confirmed stale-owner loss."""
+    finished = []
+    marked = []
+    monkeypatch.setattr(scheduler, "heartbeat_fire_claim", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        scheduler,
+        "mark_job_run",
+        lambda *_a, **_kw: marked.append((_a, _kw)),
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "finish_execution",
+        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
+    )
+
+    scheduler._record_fire_ownership_lost("job-none", "owner-A", "exec-none")
+
+    assert marked == []
+    assert finished == [
+        (
+            "exec-none",
+            {
+                "success": False,
+                "error": (
+                    "Fire claim fence unavailable while resolving cancellation; "
+                    "outcome uncertain."
+                ),
+            },
+        )
+    ]
+
+
+def test_transport_cancel_while_waiting_for_delivery_fence_suppresses_send(monkeypatch):
+    """Cancellation won under the delivery fence cannot leak normal output."""
+    cancel = threading.Event()
+    fence_entries = 0
+    delivered = []
+    finished = []
+
+    @contextlib.contextmanager
+    def cancelling_fence(*_args, **_kwargs):
+        nonlocal fence_entries
+        fence_entries += 1
+        if fence_entries == 2:
+            cancel.set()
+        yield True
+
+    monkeypatch.setattr(
+        scheduler, "create_execution", lambda *_a, **_kw: {"id": "exec-cancel-race"}
+    )
+    monkeypatch.setattr(scheduler, "_launch_external_cron_worker", lambda *_a: False)
+    monkeypatch.setattr(scheduler, "claim_dispatch", lambda *_a, **_kw: True)
+    monkeypatch.setattr(scheduler, "mark_execution_running", lambda *_a: {})
+    monkeypatch.setattr(
+        scheduler, "run_job", lambda *_a, **_kw: (True, "out", "normal output", None)
+    )
+    monkeypatch.setattr(scheduler, "fire_claim_fence", cancelling_fence)
+    monkeypatch.setattr(scheduler, "heartbeat_fire_claim", lambda *_a, **_kw: True)
+    monkeypatch.setattr(scheduler, "save_job_output", lambda *_a: "out.md")
+    monkeypatch.setattr(
+        scheduler, "_deliver_result", lambda *_a, **_kw: delivered.append(True)
+    )
+    monkeypatch.setattr(scheduler, "mark_job_run", lambda *_a, **_kw: True)
+    monkeypatch.setattr(
+        scheduler,
+        "finish_execution",
+        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
+    )
+
+    with (
+        patch("agent.secret_scope.set_secret_scope", return_value=None),
+        patch("agent.secret_scope.build_profile_secret_scope", return_value=None),
+        patch("agent.secret_scope.reset_secret_scope"),
+        patch("tools.terminal_scope.install_profile_terminal_scope", return_value=None),
+        patch("tools.terminal_scope.reset_terminal_scope"),
+    ):
+        assert scheduler.run_one_job(
+            {
+                "id": "cancel-race",
+                "name": "cancel-race",
+                "deliver": "all",
+                "fire_claim": {
+                    "at": "2026-09-01T00:00:00+00:00",
+                    "by": "owner-A",
+                },
+            },
+            cancel_event=cancel,
+        ) is True
+
+    assert delivered == []
+    assert finished == [
+        (
+            "exec-cancel-race",
+            {
+                "success": False,
+                "error": "Interrupted by shutdown before terminal completion.",
+            },
+        )
+    ]

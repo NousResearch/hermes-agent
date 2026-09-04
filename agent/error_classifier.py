@@ -1342,6 +1342,14 @@ def _classify_by_status(
                 retryable=False,
                 should_fallback=True,
             )
+        # Cursor/Grok Bot has no OpenAI /chat/completions route. Retrying
+        # that 404 sleeps ~60s x 15 and looks like a hang with no tokens.
+        if "route post:/chat/completions not found" in error_msg:
+            return result_fn(
+                FailoverReason.unknown,
+                retryable=False,
+                should_fallback=False,
+            )
         # Generic 404 with no "model not found" signal — could be a wrong
         # endpoint path (common with local llama.cpp / Ollama / vLLM when
         # the URL is slightly misconfigured), a proxy routing glitch, or

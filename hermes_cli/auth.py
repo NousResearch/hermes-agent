@@ -282,6 +282,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="oauth_external",
         inference_base_url=DEFAULT_QWEN_BASE_URL,
     ),
+    "grokbot": ProviderConfig(
+        id="grokbot",
+        name="Grok Bot (Cursor sand)",
+        auth_type="oauth_external",
+        inference_base_url="https://api2.cursor.sh",
+    ),
     "lmstudio": ProviderConfig(
         id="lmstudio",
         name="LM Studio",
@@ -2833,6 +2839,7 @@ def resolve_provider(
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "free": "opencode-free", "opencode_free": "opencode-free",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
+        "grok-bot": "grokbot", "grokbot": "grokbot",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
         "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub",

@@ -1601,6 +1601,8 @@ _API_MODE_ALIASES = {
     "messages": "anthropic_messages",
     "bedrock": "bedrock_converse",
     "bedrock-converse": "bedrock_converse",
+    "connect_inference": "grokbot",
+    "grok-bot": "grokbot",
 }
 
 

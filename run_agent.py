@@ -5825,6 +5825,9 @@ class AIAgent:
             from agent.moa_loop import build_moa_facade
 
             return build_moa_facade(self, self.model)
+        from agent.transports.grokbot import grokbot_runtime_active, build_grokbot_client
+        if grokbot_runtime_active(self):
+            return build_grokbot_client(self)
         return self._create_openai_client(
             self._client_kwargs,
             reason=reason,
@@ -5947,6 +5950,9 @@ class AIAgent:
 
         primary_client = self._ensure_primary_openai_client(reason=reason)
         if self.provider == "moa":
+            return primary_client
+        from agent.transports.grokbot import grokbot_runtime_active
+        if grokbot_runtime_active(self) or type(primary_client).__name__ in {"GrokBotClient", "GrokbotClient"}:
             return primary_client
         if isinstance(primary_client, Mock):
             return primary_client

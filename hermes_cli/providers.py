@@ -82,6 +82,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://portal.qwen.ai/v1",
         base_url_env_var="HERMES_QWEN_BASE_URL",
     ),
+    "grokbot": HermesOverlay(
+        transport="grokbot",
+        auth_type="oauth_external",
+        base_url_override="https://api2.cursor.sh",
+    ),
     "lmstudio": HermesOverlay(
         transport="openai_chat",
         auth_type="api_key",
@@ -470,6 +475,7 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses",
     "bedrock_converse": "bedrock_converse",
+    "grokbot": "grokbot",
 }
 
 

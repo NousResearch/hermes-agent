@@ -3513,15 +3513,41 @@ def list_authenticated_providers(
                 model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
                 if hermes_slug in _MODELS_DEV_PREFERRED:
                     model_ids = _merge_with_models_dev(hermes_slug, model_ids)
+        overlay_yaml = None
+        if isinstance(user_providers, dict):
+            overlay_yaml = user_providers.get(hermes_slug) or user_providers.get(pid)
+            if not isinstance(overlay_yaml, dict):
+                overlay_yaml = None
+        if overlay_yaml:
+            yaml_models = _declared_model_ids(overlay_yaml.get("models"))
+            yaml_default = str(
+                overlay_yaml.get("default_model") or overlay_yaml.get("model") or ""
+            ).strip()
+            model_ids = list(dict.fromkeys(
+                ([yaml_default] if yaml_default else []) + yaml_models + list(model_ids or [])
+            ))
+        if not model_ids:
+            # Overlay with no catalog must not claim the slug. Otherwise a
+            # providers.<slug> yaml row is skipped and the picker drops this
+            # empty hermes row.
+            continue
         total = len(model_ids)
         if hermes_slug in _UNCAPPED_PICKER_PROVIDERS:
             top = model_ids  # Aggregator: show full catalog regardless of max_models
         else:
             top = model_ids[:max_models] if max_models is not None else model_ids
 
+        overlay_label = get_label(hermes_slug)
+        if overlay_yaml:
+            overlay_label = coerce_provider_id(overlay_yaml.get("name")) or overlay_label
+        if overlay_label == hermes_slug:
+            _reg = _auth_registry.get(hermes_slug) or _auth_registry.get(pid)
+            if _reg and getattr(_reg, "name", None):
+                overlay_label = _reg.name
+
         results.append({
             "slug": hermes_slug,
-            "name": get_label(hermes_slug),
+            "name": overlay_label,
             "is_current": hermes_slug == current_provider or pid == current_provider,
             "is_user_defined": False,
             "models": top,

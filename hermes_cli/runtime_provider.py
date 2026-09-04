@@ -438,6 +438,8 @@ _VALID_API_MODES = {
     # `model.openai_runtime == "codex_app_server"` AND provider in
     # {"openai", "openai-codex"}. Default is unchanged.
     "codex_app_server",
+    # Unofficial Cursor sand ConnectRPC. Opt-in via providers.grokbot api_mode.
+    "grokbot",
 }
 
 

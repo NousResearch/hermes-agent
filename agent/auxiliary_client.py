@@ -272,6 +272,9 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
         # Availability probe: credentials/base_url resolved — that is the
         # answer. Skip the openai import + httpx/SSL construction entirely.
         return _AuxProbeClientStub(api_key=api_key, base_url=base_url)
+    from agent.transports.grokbot import grokbot_runtime_active, build_grokbot_client
+    if grokbot_runtime_active(base_url=base_url):
+        return build_grokbot_client()
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
     # OpenCode Zen free tier: the keyless placeholder must never reach the
     # wire — the Zen relay serves free models anonymously but 401s any

@@ -2811,6 +2811,28 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     if (getattr(agent, "provider", "") or "").strip().lower() == "moa":
         from agent.moa_loop import build_moa_facade
         return build_moa_facade(agent, getattr(agent, "model", None) or "default")
+    grokbot_facade = None
+    try:
+        from agent.transports.grokbot import grokbot_runtime_active, build_grokbot_client
+        _gb_url = str(client_kwargs.get("base_url") or "")
+        if grokbot_runtime_active(agent, base_url=_gb_url):
+            grokbot_facade = build_grokbot_client
+    except Exception as exc:
+        _ra().logger.warning("Grok Bot facade import/build probe failed: %s", exc)
+    if grokbot_facade is not None:
+        return grokbot_facade(agent)
+    from urllib.parse import urlparse
+    _gb_url = str(client_kwargs.get("base_url") or getattr(agent, "base_url", "") or "")
+    _gb_prov = (getattr(agent, "provider", "") or "").strip().lower()
+    try:
+        _gb_host = (urlparse(_gb_url).hostname or "").lower()
+    except Exception:
+        _gb_host = ""
+    if _gb_prov in {"grokbot", "grok-bot"} or _gb_host == "api2.cursor.sh":
+        raise RuntimeError(
+            "Grok Bot facade unavailable; refusing OpenAI /chat/completions "
+            "against api2.cursor.sh (that route 404s and retries for minutes)."
+        )
     ssl_ca_cert = client_kwargs.pop("ssl_ca_cert", None)
     ssl_verify_cfg = client_kwargs.pop("ssl_verify", None)
     httpx_verify = resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg)

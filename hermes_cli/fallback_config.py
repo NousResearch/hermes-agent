@@ -40,6 +40,37 @@ def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
     return None
 
 
+def effective_runtime_provider(
+    entry: dict[str, Any] | None, runtime: dict[str, Any] | None
+) -> str:
+    """Provider identity to persist/display for a resolved fallback entry.
+
+    ``resolve_runtime_provider`` returns the bare billing class ``"custom"``
+    for every named ``providers:`` / ``custom_providers:`` entry; the entry's
+    configured id only survives in ``requested_provider``. Fallback resolvers
+    that persist ``runtime["provider"]`` as the agent identity therefore label
+    sessions/billing rows ``custom`` instead of the configured provider name —
+    while the manual ``/model`` switch path correctly persists the named id
+    (#98739). Same class as the delegation fix in ``tools/delegate_tool.py``.
+
+    Returns the entry's requested identity when the resolved provider is the
+    bare ``custom`` class; a genuinely ad-hoc endpoint (requested provider IS
+    ``custom``) keeps the bare class unchanged.
+    """
+    runtime = runtime or {}
+    resolved = str(runtime.get("provider") or "").strip()
+    if resolved.lower() != "custom":
+        return resolved
+    requested = str(
+        runtime.get("requested_provider")
+        or (entry or {}).get("provider")
+        or ""
+    ).strip()
+    if requested and requested.lower() != "custom":
+        return requested
+    return resolved
+
+
 def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
     if isinstance(raw, dict):
         candidates = [raw]

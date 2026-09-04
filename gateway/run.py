@@ -3576,7 +3576,10 @@ def _try_resolve_fallback_provider() -> dict | None:
             return None
         for entry in fb_list:
             try:
-                from hermes_cli.fallback_config import resolve_entry_api_key
+                from hermes_cli.fallback_config import (
+                    effective_runtime_provider,
+                    resolve_entry_api_key,
+                )
 
                 runtime = resolve_runtime_provider(
                     requested=entry.get("provider"),
@@ -3595,7 +3598,10 @@ def _try_resolve_fallback_provider() -> dict | None:
                 return {
                     "api_key": runtime.get("api_key"),
                     "base_url": runtime.get("base_url"),
-                    "provider": runtime.get("provider"),
+                    # Named custom entries resolve to the bare "custom"
+                    # billing class; persist the configured identity so the
+                    # UI/billing rows match the manual-switch path (#98739).
+                    "provider": effective_runtime_provider(entry, runtime),
                     "requested_provider": runtime.get("requested_provider"),
                     "api_mode": runtime.get("api_mode"),
                     "command": runtime.get("command"),

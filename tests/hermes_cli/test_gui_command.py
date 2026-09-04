@@ -428,6 +428,28 @@ class _FakeProc:
         self.killed = True
 
 
+def test_stop_desktop_build_lock_waits_after_force_kill(tmp_path, monkeypatch):
+    desktop_dir = tmp_path / "apps" / "desktop"
+    locker_exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
+    locker_exe.parent.mkdir(parents=True)
+    locker_exe.write_text("", encoding="utf-8")
+    monkeypatch.setattr(cli_main.sys, "platform", "win32")
+
+    locker = _FakeProc(101, str(locker_exe))
+    with patch("psutil.process_iter", return_value=[locker]), patch(
+        "psutil.wait_procs", side_effect=[([], [locker]), ([locker], [])]
+    ) as wait_procs:
+        stopped = cli_main._stop_desktop_processes_locking_build(desktop_dir)
+
+    assert stopped == [101]
+    assert locker.terminated is True
+    assert locker.killed is True
+    assert wait_procs.call_args_list == [
+        (([locker],), {"timeout": 5}),
+        (([locker],), {"timeout": 5}),
+    ]
+
+
 
 
 
@@ -1363,6 +1385,46 @@ def test_swap_staged_desktop_app_promotes_staged_tree_and_drops_previous(tmp_pat
     assert live_exe.read_text(encoding="utf-8") == "new"
     assert not staging.exists()
     assert sorted(p.name for p in (desktop_dir / "release").iterdir()) == [_packaged_exe_rel().parts[0]]
+
+
+def test_swap_staged_desktop_app_releases_lock_acquired_during_pack(
+    tmp_path, monkeypatch, caplog
+):
+    """A desktop relaunched during the long pack is stopped at promotion time."""
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    live_exe = desktop_dir / "release" / _packaged_exe_rel()
+    live_exe.parent.mkdir(parents=True)
+    live_exe.write_text("old", encoding="utf-8")
+    staging = cli_main._desktop_staging_dir(desktop_dir)
+    staged_exe = staging / _packaged_exe_rel()
+    staged_exe.parent.mkdir(parents=True)
+    staged_exe.write_text("new", encoding="utf-8")
+
+    locked = True
+    real_rename = cli_main.os.rename
+
+    def stop_locking_processes(path):
+        nonlocal locked
+        assert path == desktop_dir
+        locked = False
+        return [1234]
+
+    def rename_unless_locked(src, dst):
+        if Path(src) == live_exe.parent and locked:
+            raise PermissionError("[WinError 32] file is in use")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(
+        cli_main, "_stop_desktop_processes_locking_build", stop_locking_processes
+    )
+    monkeypatch.setattr(cli_main.os, "rename", rename_unless_locked)
+
+    promoted = cli_main._swap_staged_desktop_app(desktop_dir, staging)
+
+    assert promoted == live_exe
+    assert live_exe.read_text(encoding="utf-8") == "new"
+    assert "staged app promotion (pid 1234)" in caplog.text
 
 
 def test_swap_staged_desktop_app_without_staged_exe_keeps_live_app(tmp_path):

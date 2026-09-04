@@ -7116,6 +7116,14 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
         shutil.rmtree(previous, ignore_errors=True)
         moved_aside = False
         if live_root.exists():
+            # The app can relaunch while the staged pack is being built. Clear
+            # that fresh Windows executable lock at the promotion boundary.
+            stopped = _stop_desktop_processes_locking_build(desktop_dir)
+            if stopped:
+                logger.info(
+                    "stopped desktop processes before staged app promotion (pid %s)",
+                    ", ".join(map(str, stopped)),
+                )
             os.rename(live_root, previous)
             moved_aside = True
         try:
@@ -7749,11 +7757,15 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
         # Wait for the handles (and thus the file locks) to actually release.
         try:
             _, alive = psutil.wait_procs(victims, timeout=5)
+            killed = []
             for proc in alive:
                 try:
                     proc.kill()
+                    killed.append(proc)
                 except Exception:
                     continue
+            if killed:
+                psutil.wait_procs(killed, timeout=5)
         except Exception:
             pass
     return stopped

@@ -309,6 +309,126 @@ def test_browser_dialog_tool_end_to_end(chrome_cdp, supervisor_registry):
     assert "PYTEST-TOOL-END2END" in r["dialog"]["message"]
 
 
+def test_supervisor_snapshot_exposes_page_target_id(chrome_cdp, supervisor_registry):
+    """The attached page's target id is discoverable via the public snapshot.
+
+    This is the supervisor-backed target-discovery path for
+    ``browser_cdp(target_id=...)`` session reuse: agents read
+    ``page_target_id`` from ``browser_snapshot`` output (which embeds
+    ``SupervisorSnapshot.to_dict()``) instead of poking supervisor
+    internals.
+    """
+    cdp_url, _port = chrome_cdp
+    sv = supervisor_registry.get_or_start(
+        task_id="target-discovery-test", cdp_url=cdp_url
+    )
+    snap = sv.snapshot()
+    assert snap.active
+    assert snap.page_target_id, "snapshot must expose the attached page target id"
+    assert snap.to_dict().get("page_target_id") == snap.page_target_id
+    # The discovered id resolves to the live page session.
+    assert sv.resolve_target_session(snap.page_target_id)
+
+
+def test_browser_cdp_target_id_routes_via_supervisor(
+    chrome_cdp, supervisor_registry, monkeypatch
+):
+    """browser_cdp(target_id=...) reuses the live supervisor session.
+
+    Discovers the target purely through the public snapshot path — no
+    private supervisor attributes. The ``session_id`` field in the payload
+    is the regression signal: the stateless attach path never reports one,
+    so this test fails without supervisor routing.
+    """
+    cdp_url, _port = chrome_cdp
+    from tools import browser_cdp_tool as cdp_tool
+
+    monkeypatch.setattr(cdp_tool, "_resolve_cdp_endpoint", lambda: cdp_url)
+
+    sv = supervisor_registry.get_or_start(task_id="target-id-test", cdp_url=cdp_url)
+    snap = sv.snapshot()
+    assert snap.active
+    target_id = snap.page_target_id
+    assert target_id
+
+    result = cdp_tool.browser_cdp(
+        method="Runtime.evaluate",
+        params={"expression": "1 + 2", "returnByValue": True},
+        target_id=target_id,
+        task_id="target-id-test",
+    )
+    r = json.loads(result)
+    assert r.get("success") is True, f"expected success, got: {r}"
+    assert r.get("target_id") == target_id
+    assert r.get("session_id"), "supervisor route must report the reused session id"
+    assert r.get("session_id") == sv.resolve_target_session(target_id)
+    value = r.get("result", {}).get("result", {}).get("value")
+    assert value == 3, f"expected 3, got {value!r}"
+
+
+def test_browser_cdp_discovery_to_evaluate_rides_one_connection(
+    chrome_cdp, supervisor_registry, monkeypatch
+):
+    """The full reported workflow — Target.getTargets discovery, then
+    Runtime.evaluate on a discovered target_id — must ride the ONE
+    supervisor WebSocket end to end.
+
+    Per-WebSocket isolation check: the stateless ``_cdp_call`` is patched to
+    fail the test if anything reaches it, so both the discovery call
+    (browser-level, no sessionId) and the evaluate call (session-scoped)
+    are proven to go through the supervisor's connection — the only
+    arrangement in which discovery results are valid inputs for the
+    follow-up call on Browserless-style one-browser-per-connection
+    backends.
+    """
+    cdp_url, _port = chrome_cdp
+    from tools import browser_cdp_tool as cdp_tool
+
+    monkeypatch.setattr(cdp_tool, "_resolve_cdp_endpoint", lambda: cdp_url)
+
+    sv = supervisor_registry.get_or_start(
+        task_id="discovery-chain-test", cdp_url=cdp_url
+    )
+    assert sv.snapshot().active
+
+    async def _no_stateless(*args, **kwargs):
+        pytest.fail("stateless _cdp_call must not run while a supervisor is live")
+
+    monkeypatch.setattr(cdp_tool, "_cdp_call", _no_stateless)
+
+    # Step 1: discovery, browser-level on the supervisor connection.
+    discovery = json.loads(
+        cdp_tool.browser_cdp(
+            method="Target.getTargets",
+            task_id="discovery-chain-test",
+        )
+    )
+    assert discovery.get("success") is True, f"discovery failed: {discovery}"
+    assert discovery.get("connection") == "supervisor"
+    infos = discovery["result"]["targetInfos"]
+    page_ids = [t["targetId"] for t in infos if t.get("type") == "page"]
+    assert sv.snapshot().page_target_id in page_ids, (
+        "discovery must see the supervisor's own attached page — proof both "
+        "calls observe the same browser"
+    )
+
+    # Step 2: evaluate on a discovered target id, session-scoped on the
+    # same connection.
+    evaluate = json.loads(
+        cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            params={"expression": "6 * 7", "returnByValue": True},
+            target_id=sv.snapshot().page_target_id,
+            task_id="discovery-chain-test",
+        )
+    )
+    assert evaluate.get("success") is True, f"evaluate failed: {evaluate}"
+    assert evaluate.get("connection") == "supervisor"
+    assert evaluate.get("session_id")
+    value = evaluate.get("result", {}).get("result", {}).get("value")
+    assert value == 42, f"expected 42, got {value!r}"
+
+
 def test_browser_cdp_frame_id_real_oopif_smoke_documented():
     """Document that real-OOPIF E2E was manually verified — see PR #14540.
 

@@ -24,7 +24,10 @@ from tui_gateway.hosted_room_service import HostedRoomService
 
 
 @pytest.fixture
-def routes(tmp_path):
+def routes(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        PeerRunsHTTPClient, "revoke_grant_exact", lambda self, **kwargs: {"revoked": True}
+    )
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(
             installation_id="install-peer",

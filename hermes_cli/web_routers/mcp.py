@@ -10,6 +10,7 @@ working unchanged.
 """
 
 import asyncio  # noqa: F401 — used by handlers
+import html
 import logging
 import secrets  # noqa: F401
 import threading  # noqa: F401
@@ -338,6 +339,8 @@ async def mcp_oauth_callback(
     code: Optional[str] = None,
     state: Optional[str] = None,
     error: Optional[str] = None,
+    error_description: Optional[str] = None,
+    error_uri: Optional[str] = None,
 ):
     _gc_mcp_oauth_flows()
     with _mcp_oauth_flows_lock:
@@ -359,6 +362,14 @@ async def mcp_oauth_callback(
     )
     if flow is None:
         return HTMLResponse("<h1>OAuth flow expired</h1><p>Return to Hermes and try again.</p>", status_code=404)
+    # RFC 6749 §4.1.2.1 puts the diagnosable part of a rejection in
+    # ``error_description``/``error_uri``, not in ``error``. Carrying only the
+    # bare code left both the log and the browser page saying "Authorization
+    # failed" with no way to tell a denied consent from a bad redirect URI.
+    if error:
+        detail = " — ".join(part for part in (error, error_description, error_uri) if part)
+        _log.warning("MCP OAuth callback for %r rejected by provider: %s", server_name, detail)
+        error = detail
     try:
         flow.deliver_callback(code=code, state=state, error=error)
     except ValueError as exc:
@@ -370,7 +381,14 @@ async def mcp_oauth_callback(
             status_code=status_code,
         )
     if error:
-        return HTMLResponse("<h1>Authorization failed</h1><p>Return to Hermes for details.</p>", status_code=400)
+        # Show the provider's own reason here: this tab is often the only
+        # surface the user sees when authorizing from another machine.
+        return HTMLResponse(
+            "<h1>Authorization failed</h1>"
+            f"<p>{html.escape(error)}</p>"
+            "<p>Return to Hermes and try again.</p>",
+            status_code=400,
+        )
     return HTMLResponse("<h1>Authorization received</h1><p>You can close this tab and return to Hermes.</p>")
 
 

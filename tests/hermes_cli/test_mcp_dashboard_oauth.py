@@ -86,6 +86,78 @@ def test_hosted_callback_bypasses_gated_cookie_auth(monkeypatch):
     assert flow._callback == ("abc", "expected")
 
 
+def test_callback_surfaces_provider_error_description(monkeypatch, caplog):
+    """A rejection must name its reason, in the page and in the log.
+
+    RFC 6749 4.1.2.1 puts the diagnosable part in ``error_description`` /
+    ``error_uri``. Dropping them leaves the only surface the user sees when
+    authorizing from another machine saying just "Authorization failed", with
+    no way to tell a denied consent from a rejected redirect URI.
+    """
+    import asyncio
+    import logging
+
+    from starlette.testclient import TestClient
+
+    from hermes_cli import web_server
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-error",
+        server_name="reports",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/api/mcp/oauth/callback/reports",
+    )
+    asyncio.run(
+        flow.publish_authorization_url("https://idp.example/authorize?state=expected")
+    )
+    web_server._mcp_oauth_flows[flow.flow_id] = flow
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.web_server"):
+        response = TestClient(web_server.app).get(
+            "/api/mcp/oauth/callback/reports"
+            "?state=expected&error=invalid_request"
+            "&error_description=Redirect+URL+is+using+an+insecure+protocol"
+        )
+
+    assert response.status_code == 400
+    assert "invalid_request" in response.text
+    assert "Redirect URL is using an insecure protocol" in response.text
+    assert "rejected by provider" in caplog.text
+
+
+def test_callback_escapes_provider_error_text(monkeypatch):
+    """The provider controls this string, so it must not reach the page raw."""
+    import asyncio
+
+    from starlette.testclient import TestClient
+
+    from hermes_cli import web_server
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-escape",
+        server_name="reports",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/api/mcp/oauth/callback/reports",
+    )
+    asyncio.run(
+        flow.publish_authorization_url("https://idp.example/authorize?state=expected")
+    )
+    web_server._mcp_oauth_flows[flow.flow_id] = flow
+
+    response = TestClient(web_server.app).get(
+        "/api/mcp/oauth/callback/reports"
+        "?state=expected&error=bad&error_description=%3Cscript%3Ealert(1)%3C/script%3E"
+    )
+
+    assert response.status_code == 400
+    assert "<script>" not in response.text
+    assert "&lt;script&gt;" in response.text
+
+
 def test_hosted_auth_allows_same_server_name_in_different_profiles(tmp_path, monkeypatch):
     from hermes_cli import web_server
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow

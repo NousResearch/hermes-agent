@@ -309,10 +309,20 @@ stop_ui() { # error/manual outcomes keep the window up briefly so a watching
 # Outcomes mirror decideRelaunchOutcome: relaunch | skew | manual.
 GATE="" GATE_MSG=""
 linux_gate() {
-  local unpacked="$INSTALL_ROOT/apps/desktop/release/linux-unpacked" sb arg
+  # electron-builder emits an arch-suffixed unpacked dir on ARM64
+  # (linux-arm64-unpacked) but a bare linux-unpacked on x64. Accept BOTH
+  # anchored under THIS checkout's release dir (same trust domain, still
+  # path-segment-aware), then derive the target's own base for the
+  # chrome-sandbox checks (#94703).
+  local release_dir="$INSTALL_ROOT/apps/desktop/release"
+  local unpacked sb arg
   case "$RELAUNCH_TARGET" in
-    "$unpacked"/*) ;;
-    *) GATE=skew GATE_MSG="Backend updated, but the desktop app package (AppImage/deb/rpm) was not changed. Update or reinstall it to match."; return ;;
+    "$release_dir/linux-arm64-unpacked"/*)
+      unpacked="$release_dir/linux-arm64-unpacked" ;;
+    "$release_dir/linux-unpacked"/*)
+      unpacked="$release_dir/linux-unpacked" ;;
+    *)
+      GATE=skew GATE_MSG="Backend updated, but the desktop app package (AppImage/deb/rpm) was not changed. Update or reinstall it to match."; return ;;
   esac
 
   sb="$unpacked/chrome-sandbox"

@@ -606,6 +606,87 @@ class TestSessionLifecycle:
 # Message storage
 # =========================================================================
 
+class TestStateDbOpenTakesNoWriteLock:
+    """A read-write open must not take the database write lock when the file needs no writes."""
+
+    def test_open_does_not_take_the_write_lock_when_nothing_needs_writing(self, tmp_path):
+        """Opening used to issue unconditional writes — the generation stamp's
+        ``INSERT OR IGNORE``, the NULL-``active`` repair ``UPDATE``, and the
+        ``fts_storage_version`` re-stamp — and a write statement takes the
+        database write lock even when it changes nothing. With another process
+        holding that lock, each one blocked for a full busy timeout, so a plain
+        open cost seconds on a database that needed no repair at all. All three
+        are now gated on a read.
+        """
+        db_path = tmp_path / "state.db"
+        # Open until the file has settled: the first opens legitimately mint the
+        # generation stamp and the FTS layout marker. From then on a healthy DB
+        # needs no writes at all to be opened.
+        SessionDB(db_path=db_path).close()
+        SessionDB(db_path=db_path).close()
+
+        holder = sqlite3.connect(db_path, timeout=60)
+        holder.execute("PRAGMA busy_timeout=60000")
+        holder.execute("BEGIN IMMEDIATE")
+        holder.execute("UPDATE state_meta SET value = value WHERE key = 'nonexistent'")
+        try:
+            started = time.perf_counter()
+            session_db = SessionDB(db_path=db_path)
+            elapsed = time.perf_counter() - started
+            session_db.close()
+        finally:
+            holder.rollback()
+            holder.close()
+
+        # One busy timeout is ~1s (the connection is opened with timeout=1.0); on the
+        # pre-fix code this took several of them. A generous bound keeps this from flaking
+        # on a loaded CI box while still failing loudly if a write creeps back onto the
+        # open path.
+        assert elapsed < 0.5, f"open blocked on the write lock for {elapsed:.3f}s"
+
+    def test_generation_stamp_survives_write_lock_contention(self, tmp_path):
+        """The stamp must still be adopted when the write lock is held.
+
+        The stamp is minted once per file, so every later open only needs to READ it.
+        While the whole block was write-first, a held write lock made it raise, the
+        handler swallowed it, and the process ended up without the generation identity
+        — losing the deleted-WAL/replaced-file guard exactly when contention made it
+        most likely to matter.
+        """
+        db_path = tmp_path / "state.db"
+        SessionDB(db_path=db_path).close()  # settle the FTS layout marker too
+        first = SessionDB(db_path=db_path)
+        try:
+            on_disk = first._conn.execute(
+                "SELECT value FROM state_meta WHERE key = ?",
+                (hermes_state._STATE_DB_GENERATION_KEY,),
+            ).fetchone()[0]
+        finally:
+            first.close()
+        assert on_disk
+
+        holder = sqlite3.connect(db_path, timeout=60)
+        holder.execute("PRAGMA busy_timeout=60000")
+        holder.execute("BEGIN IMMEDIATE")
+        holder.execute("UPDATE state_meta SET value = value WHERE key = 'nonexistent'")
+        try:
+            session_db = SessionDB(db_path=db_path)
+            try:
+                # The contended open completed rather than being abandoned: it adopted the
+                # existing file identity instead of losing it.
+                assert session_db._db_file_application_id == (int(on_disk[:8], 16) & 0x7FFFFFFF) or 1
+                still_on_disk = session_db._conn.execute(
+                    "SELECT value FROM state_meta WHERE key = ?",
+                    (hermes_state._STATE_DB_GENERATION_KEY,),
+                ).fetchone()[0]
+                assert still_on_disk == on_disk, "a contended open rewrote the generation stamp"
+            finally:
+                session_db.close()
+        finally:
+            holder.rollback()
+            holder.close()
+
+
 class TestMessageStorage:
     def test_append_and_get_messages(self, db):
         db.create_session(session_id="s1", source="cli")

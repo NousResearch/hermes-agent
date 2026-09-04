@@ -86,6 +86,10 @@ class SessionSource:
     profile: Optional[str] = None
     # Transport-local fail-closed signal: explicit profile route whose target is not served.
     profile_route_rejected: bool = field(default=False, repr=False, compare=False)
+    # Live transport facts are never restored from session persistence.
+    is_one_to_one: Optional[bool] = field(default=None, repr=False, compare=False)
+    message_is_edit: bool = field(default=False, repr=False, compare=False)
+    message_had_attachments: bool = field(default=False, repr=False, compare=False)
     # Discord auto-thread metadata: explicit so pre-existing/renamed threads are never renamed.
     auto_thread_created: bool = False
     auto_thread_initial_name: Optional[str] = None
@@ -139,6 +143,7 @@ class SessionSource:
         if scope:
             d["scope_id"] = d["guild_id"] = scope
         _optional(self._OPTIONAL_POST_SCOPE)
+        d["is_bot"] = self.is_bot
         if self.auto_thread_created:
             d["auto_thread_created"] = True
         _optional(self._OPTIONAL_TAIL)
@@ -154,6 +159,7 @@ class SessionSource:
         return cls(
             platform=Platform(data["platform"]), chat_id=str(data["chat_id"]),
             chat_type=data.get("chat_type", "dm"),
+            is_bot=data.get("is_bot") if isinstance(data.get("is_bot"), bool) else False,
             scope_id=data.get("scope_id", data.get("guild_id")),
             auto_thread_created=bool(data.get("auto_thread_created", False)), **plain,
         )

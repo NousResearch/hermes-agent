@@ -689,12 +689,15 @@ class GatewayBusySessionMixin:
         return True
 
     # Slash name → handler method is ``_handle_<name>_command`` (``-`` → ``_``) except these.
-    _COMMAND_HANDLER_ALIASES = {"bg": "_handle_background_command", "sethome": "_handle_set_home_command"}
+    _COMMAND_HANDLER_ALIASES = {
+        "bg": "_handle_background_command", "sethome": "_handle_set_home_command",
+        "group": "_handle_rooms_command",
+    }
     # Ordinary slash handlers shared by idle and busy dispatch.
     _PLAIN_COMMANDS = (
         "status", "context", "restart", "approve", "deny", "pause", "agents", "bg", "btw",
         "kanban", "subgoal", "heartbeat", "busy", "yolo", "verbose", "footer", "help",
-        "commands", "profile", "update", "version",
+        "commands", "profile", "update", "version", "group",
     )
     # Dispatched only on the idle path (busy dispatch has its own allowlist).
     _IDLE_COMMANDS = (
@@ -907,12 +910,19 @@ class GatewayBusySessionMixin:
     def _check_slash_access(self, source: SessionSource, canonical_cmd: str) -> Optional[str]:
         """Denial message if ``source`` cannot run ``canonical_cmd``, else None (both dispatch paths
         use it so an in-flight agent can't bypass admin gating; no ``allow_admin_from`` → None)."""
-        from gateway.slash_access import policy_for_source as _policy_for_source
+        from gateway.group_chat_policy import policy_for_command
         if not canonical_cmd:
             return None
-        policy = _policy_for_source(self.config, source)
+        policy = policy_for_command(self, source, canonical_cmd)
         if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
             return None
+        from gateway.group_home_consent import slash_denial
+
+        group_denial = slash_denial(
+            canonical_cmd, command_prefix=self._typed_command_prefix_for(source)
+        )
+        if group_denial is not None:
+            return group_denial
         logger.info(
             "Slash command /%s denied for %s:%s (not admin, not in user_allowed_commands)",
             canonical_cmd, source.platform.value if source.platform else "?", source.user_id,
@@ -1061,7 +1071,7 @@ class GatewayBusySessionMixin:
                 choice, command, execute, session_key
             )
 
-        _p = self._typed_command_prefix_for(event.source.platform)
+        _p = self._typed_command_prefix_for(event.source)
         prompt_message = (
             f"⚠️ **Confirm /{command}**\n\n"
             f"{detail}\n\n"

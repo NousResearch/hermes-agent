@@ -453,7 +453,7 @@ class GatewayModelCommandsMixin:
             # "once" and "always" both proceed — selection guards have no persistent opt-out.
             return await self._commit_model_switch(result, ctx, source=ctx.source)
 
-        _p = self._typed_command_prefix_for(event.source.platform)
+        _p = self._typed_command_prefix_for(event.source)
         message = (
             f"⚠️ **{warning.title}**\n\n{warning.message}\n\n"
             f"_Text fallback: reply `{_p}approve` to switch or `{_p}cancel` to keep the current model._"
@@ -639,21 +639,62 @@ class GatewayModelCommandsMixin:
         return t("gateway.reasoning.set_session", effort=value)
 
     async def _try_send_choice_picker(
-        self, event: MessageEvent, session_key: str, title: str, choices: list, on_choice_selected,
+        self,
+        event: MessageEvent,
+        session_key: str,
+        title: str,
+        choices: list,
+        on_choice_selected,
+        *,
+        reusable: bool = False,
     ) -> bool:
-        """Send an interactive choice picker when the adapter *type* supports it (the /model gate);
-        a failed send returns False (text fallback) instead of erroring."""
+        """Send a native picker, or return False for the caller's text fallback.
+
+        reusable opts into ChoicePage/ChoiceProgress callback results. A str
+        still finishes the menu. No callback arity or one-shot call changes.
+        """
+        from gateway.choice_picker import ChoicePage
+
         adapter = self._adapter_for_source(event.source)
-        if adapter is None or getattr(type(adapter), "send_choice_picker", None) is None:
+        has_picker = (
+            adapter is not None
+            and getattr(type(adapter), "send_choice_picker", None) is not None
+        )
+        if not has_picker:
+            return False
+        if (
+            reusable
+            and getattr(type(adapter), "supports_choice_pages", False) is not True
+        ):
             return False
         try:
+            if reusable:
+                page = ChoicePage(title, choices)
+                choices = page.choices
+            metadata = dict(
+                self._thread_metadata_for_source(
+                    event.source, self._reply_anchor_for_event(event)
+                )
+                or {}
+            )
+            requester_user_id = getattr(event.source, "user_id", None)
+            if requester_user_id is not None:
+                metadata["requester_user_id"] = str(requester_user_id)
+            if reusable:
+                if not metadata.get("requester_user_id"):
+                    return False
+                metadata["choice_pages"] = True
             result = await adapter.send_choice_picker(
-                chat_id=event.source.chat_id, title=title, choices=choices, session_key=session_key,
-                on_choice_selected=on_choice_selected, metadata=self._reply_metadata(event),
+                chat_id=event.source.chat_id,
+                title=title,
+                choices=choices,
+                session_key=session_key,
+                on_choice_selected=on_choice_selected,
+                metadata=metadata,
             )
             return bool(getattr(result, "success", False))
-        except Exception as e:
-            logger.warning("send_choice_picker failed, falling back to text: %s", e)
+        except Exception as exc:
+            logger.warning("send_choice_picker failed, falling back to text: %s", exc)
             return False
 
     async def _handle_reasoning_command(self, event: MessageEvent) -> Optional[str]:

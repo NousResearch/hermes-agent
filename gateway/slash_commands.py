@@ -143,20 +143,11 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
     subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 
-def _home_thread_from_source(source) -> Optional[str]:
-    """The thread id /sethome should persist on the home target, or None.  Slack thread-per-message
-    keying stamps a top-level message's own id as ``source.thread_id`` (a session key, not a
-    location); persisting it would pin HOME to that ephemeral thread.  A thread id equal to the
-    message's own id is synthetic and dropped; a real thread (id = parent's) is kept."""
-    thread_id = getattr(source, "thread_id", None)
-    if not thread_id:
-        return None
-    synthetic = (getattr(source, "platform", None) == Platform.SLACK and getattr(source, "message_id", None)
-                 and str(thread_id) == str(source.message_id))
-    return None if synthetic else str(thread_id)
+from gateway.group_chat_slash import GroupChatSlashCommandsMixin
 
 
 class GatewaySlashCommandsMixin(
+    GroupChatSlashCommandsMixin,
     GatewayModelCommandsMixin,
     GatewaySessionCommandsMixin,
     GatewayStatusCommandsMixin,
@@ -267,11 +258,37 @@ class GatewaySlashCommandsMixin(
                                exc, exc_info=True)
         return None
 
-    def _typed_command_prefix_for(self, platform) -> str:
-        """The prefix users can always type to reach Hermes commands (adapter ``typed_command_prefix``,
-        default "/"). Slack and Matrix use "!" because typed "/" is blocked/reserved there; their
-        adapters rewrite "!command" to "/command"."""
-        adapter = self.adapters.get(platform) if getattr(self, "adapters", None) else None
+    def _typed_command_prefix_for(self, source_or_platform) -> str:
+        """Return the prefix users can always type to reach Hermes commands.
+
+        Reads the adapter's ``typed_command_prefix`` capability flag
+        (default "/"). Slack and Matrix return "!" because typed "/"
+        commands are blocked in Slack threads / reserved by Matrix clients;
+        their adapters rewrite "!command" to "/command" on receive.
+        Instruction text built for those platforms must show the prefix
+        that actually works when typed.
+        """
+        source = (
+            source_or_platform
+            if getattr(source_or_platform, "platform", None) is not None
+            else None
+        )
+        platform = source.platform if source is not None else source_or_platform
+        if (
+            source is not None
+            and getattr(source, "delivered_via_upstream_relay", False) is True
+            and platform in {Platform.SLACK, Platform.MATRIX}
+        ):
+            return "!"
+        adapter = (
+            self._adapter_for_source(source)
+            if source is not None
+            else (
+                self.adapters.get(platform)
+                if getattr(self, "adapters", None)
+                else None
+            )
+        )
         return getattr(adapter, "typed_command_prefix", "/") if adapter is not None else "/"
 
     def _terminal_cwd(self) -> str:
@@ -572,46 +589,9 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""
-        from gateway.run import _home_target_env_var, _home_thread_env_var
-        source = event.source
-        platform_name = source.platform.value if source.platform else "unknown"
-        chat_id = source.chat_id
-        chat_name = source.chat_name or chat_id
-        if source.platform is None:
-            return t("gateway.set_home.save_failed", error="Missing logical platform")
-        via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
-        if via_relay:
-            adapter_for_source = getattr(self, "_adapter_for_source", None)
-            relay_adapter = adapter_for_source(source) if callable(adapter_for_source) else None
-            fronts_platform = getattr(relay_adapter, "fronts_platform", None)
-            if (source.platform in {None, Platform.LOCAL, Platform.RELAY}
-                    or not getattr(source, "user_id", None)
-                    or not callable(fronts_platform) or not fronts_platform(source.platform)):
-                return t("gateway.set_home.save_failed",
-                         error="Relay does not authenticate this logical home target")
-        thread_id = _home_thread_from_source(source)
-        home = HomeChannel(
-            platform=source.platform, chat_id=str(chat_id), name=chat_name, thread_id=thread_id,
-            user_id=str(source.user_id) if getattr(source, "user_id", None) else None,
-            scope_id=str(source.scope_id) if getattr(source, "scope_id", None) else None)
-        # config.yaml is canonical because it can persist the authenticated logical-target
-        # provenance required by Relay after a restart.
-        try:
-            persist_home_channel(home, enabled_if_new=not via_relay)
-        except Exception as e:
-            return t("gateway.set_home.save_failed", error=e)
-        # Preserve legacy home env vars for existing cron/setup consumers.
-        try:
-            from hermes_cli.config import save_env_value
-            save_env_value(_home_target_env_var(platform_name), str(chat_id))
-            save_env_value(_home_thread_env_var(platform_name), str(thread_id or ""))
-        except Exception as e:
-            logger.warning("Home config saved but legacy env persistence failed: %s", e)
-        # Keep the running gateway config in sync too. The pre-restart notification path reads
-        # self.config before the process reloads config.
-        platform_config = self.config.platforms.setdefault(source.platform, PlatformConfig(enabled=not via_relay))
-        platform_config.home_channel = home
-        return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
+        from gateway.home_channel_config import set_home
+
+        return await set_home(self, event)
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
         """Handle /voice [on|off|tts|channel|leave|status] command."""

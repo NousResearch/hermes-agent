@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from types import SimpleNamespace
 
 import pytest
@@ -73,12 +74,16 @@ def test_capabilities_are_honest_about_the_driver_boundary(home):
     assert "groups.send" in srv._LONG_HANDLERS
     assert "groups.retry" in result["methods"]
     assert "groups.approve" in result["methods"]
+    assert "groups.desktop.claim" in result["methods"]
+    assert "groups.desktop.presence" in result["methods"]
+    assert "groups.desktop.renew" in result["methods"]
+    assert "groups.desktop.complete" in result["methods"]
     advertised = [
         str(value).lower() for value in (*result["features"], *result["methods"])
     ]
     assert not any(
         token in value
-        for token in ("attachment", "desktop", "messaging")
+        for token in ("attachment", "messaging")
         for value in advertised
     )
     assert result["room_link"]["enabled"] is True
@@ -739,8 +744,8 @@ def test_retry_and_approval_controls_forward_only_exact_local_coordinates(
         turn_id="turn-1",
     )
     service = SimpleNamespace(
-        retry_room_task=lambda room_id, task_id: (
-            calls.append(("retry", room_id, task_id))
+        retry_room_task=lambda room_id, task_id, retry_id=None: (
+            calls.append(("retry", room_id, task_id, retry_id))
             or {
                 "identity": identity,
                 "status": "queued",
@@ -757,9 +762,10 @@ def test_retry_and_approval_controls_forward_only_exact_local_coordinates(
     retried = _result(
         srv._methods["groups.retry"](
             1,
-            {"room_id": "room-1", "task_id": "task-1"},
+            {"room_id": "room-1", "task_id": "task-1", "command_id": "retry-1"},
         )
     )
+    assert calls[0] == ("retry", "room-1", "task-1", "retry-1")
     approved = _result(
         srv._methods["groups.approve"](
             2,
@@ -785,7 +791,7 @@ def test_retry_and_approval_controls_forward_only_exact_local_coordinates(
     }
     assert approved == {"approved": True, "result": {"resolved": 1}}
     assert calls == [
-        ("retry", "room-1", "task-1"),
+        ("retry", "room-1", "task-1", "retry-1"),
         (
             "approve",
             "room-1",
@@ -923,9 +929,17 @@ def test_disband_stops_and_revokes_before_tombstoning(home, monkeypatch):
             calls.append(("revoke", room_id))
 
     monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
+    monkeypatch.setattr(
+        "gateway.hosted_room_controls.revoke_home_control_tokens",
+        lambda _db_path, *, room_id: calls.append(("revoke-controls", room_id)),
+    )
     _result(srv._methods["groups.disband"](9, {"room_id": "room-1"}))
 
-    assert calls == [("stop", "room-1"), ("revoke", "room-1")]
+    assert calls == [
+        ("stop", "room-1"),
+        ("revoke", "room-1"),
+        ("revoke-controls", "room-1"),
+    ]
     assert _result(srv._methods["groups.list"](10, {}))["rooms"] == []
 
 
@@ -1011,3 +1025,198 @@ def test_approve_routes_one_exact_peer_action(home, monkeypatch):
         "request_id": "approval-1",
         "choice": "once",
     }
+
+
+def test_desktop_mailbox_rpc_claim_and_complete(home):
+    from gateway.desktop_room_mailbox import default_db_path, enqueue_command
+
+    enqueue_command(
+        default_db_path(),
+        command_id="messaging:one",
+        room_id="classic-room",
+        authority_hash=hashlib.sha256(b"authority:test").hexdigest(),
+        action="send",
+        payload={"message": "hello"},
+    )
+
+    claimed = _result(
+        srv._methods["groups.desktop.claim"](
+            1,
+            {
+                "consumer_id": "desktop:test",
+                "room_authorities": [
+                    {
+                        "room_id": "classic-room",
+                        "authority_token": "authority:test",
+                    }
+                ],
+            },
+        )
+    )["commands"]
+    assert [item["command_id"] for item in claimed] == ["messaging:one"]
+
+    renewed = _result(
+        srv._methods["groups.desktop.renew"](
+            2,
+            {
+                "consumer_id": "desktop:test",
+                "command_id": claimed[0]["command_id"],
+                "lease_token": claimed[0]["lease_token"],
+            },
+        )
+    )["command"]
+    assert renewed["state"] == "claimed"
+
+    completed = _result(
+        srv._methods["groups.desktop.complete"](
+            3,
+            {
+                "consumer_id": "desktop:test",
+                "command_id": claimed[0]["command_id"],
+                "lease_token": claimed[0]["lease_token"],
+                "success": True,
+                "result": {"thread_id": "thread-1"},
+            },
+        )
+    )["command"]
+    assert completed["state"] == "completed"
+
+
+def test_desktop_presence_rpc_renews_without_claiming_work(home):
+    from gateway.desktop_room_mailbox import (
+        default_db_path,
+        register_projected_authorities,
+        room_available,
+    )
+
+    register_projected_authorities(
+        default_db_path(),
+        [{
+            "room_id": "classic-room",
+            "authority_hash": hashlib.sha256(b"authority:test").hexdigest(),
+        }],
+    )
+
+    result = _result(
+        srv._methods["groups.desktop.presence"](
+            1,
+            {
+                "consumer_id": "desktop:test",
+                "room_authorities": [{
+                    "room_id": "classic-room",
+                    "authority_token": "authority:test",
+                }],
+            },
+        )
+    )
+
+    assert result == {"room_ids": ["classic-room"]}
+    assert room_available(default_db_path(), "classic-room") is True
+
+
+def test_reciprocal_control_network_calls_stay_off_the_rpc_reader_thread():
+    assert {
+        "groups.control.invite",
+        "groups.control.register",
+        "groups.control.revoke",
+    } <= srv._LONG_HANDLERS
+
+
+def test_reciprocal_control_link_is_scoped_to_the_live_peer_reservation(
+    home, monkeypatch
+):
+    from gateway import hosted_room_controls, hosted_rooms
+
+    control_calls = []
+
+    class _ControlClient:
+        def __init__(self, link):
+            self.link = link
+
+        def summary(self):
+            control_calls.append(("summary", self.link.room_id))
+            return {
+                "room": {
+                    "room_id": self.link.room_id,
+                    "authority_gateway_id": self.link.authority_gateway_id,
+                    "authority_epoch": self.link.authority_epoch,
+                }
+            }
+
+        def revoke(self):
+            control_calls.append(("revoke", self.link.room_id))
+            return None
+
+    monkeypatch.setattr(
+        "gateway.hosted_room_control_client.RoomControlHTTPClient",
+        _ControlClient,
+    )
+
+    monkeypatch.setenv("HERMES_ROOM_LINK_URL", "https://home.example.test/hermes")
+    service = srv.get_hosted_room_service()
+    service.create_room(
+        room_id="room-control",
+        name="Control room",
+        members=[
+            {
+                "member_id": "member-peer",
+                "profile": "ops",
+                "handle": "ops",
+                "target": {
+                    "kind": "peer",
+                    "peer_id": "install-peer",
+                    "installation_id": "install-peer",
+                    "profile": "ops",
+                    "capability_digest": "a" * 64,
+                },
+            },
+            {"member_id": "default", "profile": "default", "handle": "hermes"},
+        ],
+    )
+    invitation = _result(
+        srv._methods["groups.control.invite"](
+            1,
+            {
+                "room_id": "room-control",
+                "member_id": "member-peer",
+                "caller_install_id": "install-peer",
+                "request_id": "control-room-member-peer-v1",
+            },
+        )
+    )
+    hosted_rooms.reserve_peer_room(
+        hosted_rooms.default_db_path(),
+        claims={
+            "room_id": "room-control",
+            "member_id": "member-peer",
+            "target_profile": "ops",
+            "authority_gateway_id": invitation["authority_gateway_id"],
+            "authority_epoch": invitation["authority_epoch"],
+        },
+        expires_at=invitation["expires_at"],
+    )
+    registered = _result(
+        srv._methods["groups.control.register"](
+            2,
+            {**invitation, "profile": "ops"},
+        )
+    )
+    assert registered["registered"] is True
+    links = hosted_room_controls.load_peer_control_links(
+        hosted_rooms.default_db_path()
+    ).links
+    assert links[0].room_id == "room-control"
+    assert links[0].home_url == "https://home.example.test/hermes"
+    assert control_calls == [("summary", "room-control")]
+
+    revoked = _result(
+        srv._methods["groups.control.revoke"](
+            3,
+            {"room_id": "room-control", "member_id": "member-peer"},
+        )
+    )
+    assert revoked["revoked"] == 1
+    assert control_calls == [
+        ("summary", "room-control"),
+        ("revoke", "room-control"),
+    ]

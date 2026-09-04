@@ -449,8 +449,13 @@ def verify_room_grant(
     return payload
 
 
-def decode_room_grant(secret: bytes, token: str, *, permission: str, now: float | None = None) -> dict[str, Any]:
+def decode_room_grant(
+    secret: bytes, token: str, *, permission: str, now: float | None = None,
+    allow_expired_for_revocation: bool = False,
+) -> dict[str, Any]:
     """Verify grant signature, lifetime and operation without a dispatch."""
+    if allow_expired_for_revocation and permission != "status":
+        raise HostedRoomGrantError("expired room grants may only be decoded for revocation")
     if not isinstance(token, str) or len(token.encode("utf-8")) > MAX_TOKEN_BYTES:
         raise HostedRoomGrantError("room grant is invalid")
     encoded, supplied_signature = _split_token(token)
@@ -474,7 +479,7 @@ def decode_room_grant(secret: bytes, token: str, *, permission: str, now: float 
     if not (all(map(math.isfinite, lifetimes)) and issued_at < expires_at <= status_expires_at):
         raise HostedRoomGrantError("room grant lifetime is invalid")
     operation_expires_at = status_expires_at if permission in {"approve", "status", "stop"} else expires_at
-    if checked_now < issued_at - 30 or checked_now >= operation_expires_at:
+    if checked_now < issued_at - 30 or (checked_now >= operation_expires_at and not allow_expired_for_revocation):
         raise HostedRoomGrantError("room grant is expired or not active")
     if not isinstance(permissions := payload.get("permissions"), list) or permission not in permissions:
         raise HostedRoomGrantError("room grant does not allow this operation")

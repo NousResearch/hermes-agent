@@ -126,3 +126,77 @@ __all__ = ["SlashAccessPolicy", "policy_from_extra", "policy_for_source"]
 # The whole block is removed by reverting the commit that added it.
 from typing import Tuple  # noqa: F401,E402
 # ---- END PLUGIN-COMPAT ----
+
+
+def _platform_extra(platform_config: Any) -> dict:
+    """Return the ``extra`` dict from a PlatformConfig-like object.
+
+    Defensively handles None and non-PlatformConfig shapes so calling
+    code can stay simple.
+    """
+    if platform_config is None:
+        return {}
+    extra = getattr(platform_config, "extra", None)
+    if isinstance(extra, dict):
+        return extra
+    if isinstance(platform_config, dict):
+        # Some test harnesses pass dicts directly.
+        return platform_config
+    return {}
+
+
+def _scope_for_chat_type(chat_type: Optional[str]) -> str:
+    if chat_type and chat_type.lower() in _DM_CHAT_TYPES:
+        return "dm"
+    return "group"
+
+
+def is_home_control_source(
+    gateway_config: Any, source: Any, *, require_owner_identity: bool = False
+) -> bool:
+    """Return whether *source* is the configured home chat's exact operator.
+
+    The home chat is the operator-selected control surface (``/sethome``).
+    Matching it here avoids making that same operator maintain a second
+    slash-admin allowlist for owner-only controls. A shared home chat is valid
+    only when ``/sethome`` stored the selecting user's identity; other members
+    never inherit that authority.
+
+    ``require_owner_identity`` distinguishes that explicit selection from the
+    legacy DM-home match, which has no recorded selecting user.
+    """
+    if gateway_config is None or source is None:
+        return False
+    scope = _scope_for_chat_type(getattr(source, "chat_type", None))
+    if scope not in {"dm", "group"}:
+        return False
+    if getattr(source, "is_bot", False) is True:
+        return False
+
+    platform = getattr(source, "platform", None)
+    user_id = getattr(source, "user_id", None)
+    chat_id = getattr(source, "chat_id", None)
+    if platform is None or not user_id or not chat_id:
+        return False
+
+    try:
+        home = gateway_config.get_home_channel(platform)
+    except Exception:
+        return False
+    if home is None or home.platform != platform or str(home.chat_id) != str(chat_id):
+        return False
+
+    home_user_id = getattr(home, "user_id", None)
+    if (scope == "group" or require_owner_identity) and not home_user_id:
+        return False
+    if home_user_id and str(home_user_id) != str(user_id):
+        return False
+    from gateway.group_home_identity import home_thread_from_source
+
+    if str(home.thread_id or "") != str(home_thread_from_source(source) or ""):
+        return False
+    home_scope_id = getattr(home, "scope_id", None)
+    source_scope_id = getattr(source, "scope_id", None)
+    if str(home_scope_id or "") != str(source_scope_id or ""):
+        return False
+    return True

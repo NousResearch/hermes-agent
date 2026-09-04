@@ -82,6 +82,18 @@ def _registry_entry(platform):
     return None
 
 
+def _platform_authorization_env_names(platform: Platform) -> tuple[str, str]:
+    """Use the same authorization names for intake and Home owner enrollment."""
+    allowed = _ALLOWED_USERS_ENV.get(platform, "")
+    allow_all = _ALLOW_ALL_ENV.get(platform, "")
+    if platform not in _ALLOWED_USERS_ENV:
+        entry = _registry_entry(platform)
+        with contextlib.suppress(Exception):
+            allowed = getattr(entry, "allowed_users_env", "") or allowed
+            allow_all = getattr(entry, "allow_all_env", "") or allow_all
+    return allowed, allow_all
+
+
 def _coerce_allow_set(raw) -> set[str]:
     """Parse an allowlist (YAML list or comma-separated scalar) into a set of strings."""
     if raw is None:
@@ -490,13 +502,7 @@ class GatewayAuthorizationMixin:
         if not user_id:
             return False
 
-        platform_allow_env = _ALLOWED_USERS_ENV.get(source.platform, "")
-        platform_allow_all_var = _ALLOW_ALL_ENV.get(source.platform, "")
-        if source.platform not in _ALLOWED_USERS_ENV:
-            entry = _registry_entry(source.platform)
-            with contextlib.suppress(Exception):
-                platform_allow_env = getattr(entry, "allowed_users_env", "") or platform_allow_env
-                platform_allow_all_var = getattr(entry, "allow_all_env", "") or platform_allow_all_var
+        platform_allow_env, platform_allow_all_var = _platform_authorization_env_names(source.platform)
         if platform_allow_all_var and _env_truthy(platform_allow_all_var):
             return True
         # Adapter-verified role auth (Discord DISCORD_ALLOWED_ROLES). ``is True``: no MagicMock pass.

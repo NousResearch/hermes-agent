@@ -101,6 +101,20 @@ Groups are standalone rows in the same activity-ordered roster as Bot DMs. A Bot
 - **Not every Bot replies to every message.** Speaking is each member's own choice — a Bot replies only when it has something new to add and passes otherwise, and @-mentioning specific members scopes the round to them. Expect the members you addressed (or whoever has something to say) to speak, and the rest to stay quiet.
 - **Rooms can span machines.** The New Group Chat picker seats Bots from any registered connection; each member's turns run on its own machine, in its own `Group: <name>` session there. Cross-machine members carry a device badge (`dixie · Mac Mini`) in the room and in other members' transcripts, and the disambiguated `@name-device` handle works in room mentions — so same-named agents on two machines never blur together.
 
+### Check in from a messaging app
+
+On gateways that support Group Chat controls, use `/group` in your authorized Hermes chat to choose a group. Telegram and Discord offer buttons; other clients can use the same text commands. For example, if **Product launch** is group **7**:
+
+- `/group 7`: see its status and recent activity.
+- `/group 7 bots`: see the participating Bots.
+- `/group 7 send @writer Hi!`: send a message to one Bot, using its handle from the list.
+- `/group 7 stop`: request a stop.
+- `/group 7 approvals`: check requests for your approval.
+
+Use the group's number from your own list in place of `7`. These examples use `/`; in Slack and Matrix, type `!group`, `!sethome`, and `!whoami` instead, or follow the prefix shown by Hermes. `/group help` (or `!group help`) shows the available commands. Some actions depend on the gateway version and how the group runs. A Desktop-driven group still needs its Desktop connected to receive new work; a queued command is not confirmation that a Bot has started or stopped.
+
+Group Chat controls require an authorized account. If Hermes asks you to choose a Home chat, `/sethome` selects where scheduled updates and cross-chat messages arrive; it does not grant access by itself. A shared Home chat also asks you to confirm that its readers, including people added later, can see Group Chat activity posted there. Approve or deny Bot commands only from the owner's authorized main Hermes chat. Before using `Retry`, check the recent activity: an earlier attempt with an unknown outcome may already have acted, and retrying can repeat those actions.
+
 ## Bot-to-bot messaging
 
 Bots message each other with attribution, and you can hand work off from any chat:

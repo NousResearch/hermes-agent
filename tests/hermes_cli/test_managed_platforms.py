@@ -1,6 +1,9 @@
 """Parsing of the host-declared channel ownership stamps."""
+import logging
+
 import pytest
 
+from hermes_cli import managed_platforms
 from hermes_cli.managed_platforms import (
     DEFAULT_LABEL,
     LABEL_ENV,
@@ -69,6 +72,7 @@ def test_label_fallback_and_cap(raw, expected):
         ("https://portal.example.com/agents", "https://portal.example.com/agents"),
         ("http://localhost:3000", "http://localhost:3000"),
         ("ftp://portal.example.com", None),
+        ("http://[", None),
         ("javascript:alert(1)", None),
         ("portal.example.com", None),
         ("", None),
@@ -86,3 +90,11 @@ def test_label_and_url_do_not_unlock_when_no_platforms_listed():
     assert not managed
     assert managed.label == DEFAULT_LABEL
     assert managed.url is None
+
+
+def test_unknown_kind_is_logged_once_per_stamp_value(caplog):
+    managed_platforms._parse.cache_clear()
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.managed_platforms"):
+        for _ in range(3):
+            load_managed_platforms({PLATFORMS_ENV: "telegram:weird"})
+    assert sum("unknown kind" in r.getMessage() for r in caplog.records) == 1

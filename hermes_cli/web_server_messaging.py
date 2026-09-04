@@ -306,6 +306,89 @@ def _discover_platform_env_vars(platform_id: str) -> tuple[str, ...]:
         and any(name.startswith(prefix) for prefix in prefixes)}))
 
 
+def _managed_platforms():
+    """Host-declared channel ownership (see hermes_cli.managed_platforms)."""
+    from hermes_cli.managed_platforms import load_managed_platforms
+
+    return load_managed_platforms()
+
+
+def _managed_platform_record(platform_id: str) -> Optional[dict]:
+    return _managed_platforms().record_for(platform_id)
+
+
+def _managed_platform_name(platform_id: str) -> str:
+    try:
+        entry = next((e for e in _messaging_platform_catalog() if e["id"] == platform_id), None)
+    except Exception:
+        entry = None
+    return entry["name"] if entry else platform_id.replace("_", " ").title()
+
+
+def _refuse_if_platform_managed(platform_id: str) -> None:
+    """409 when the host owns ``platform_id``: the dashboard must not write it."""
+    record = _managed_platform_record(platform_id)
+    if record is None:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail=f"{_managed_platform_name(platform_id)} is managed by {record['label']}.",
+    )
+
+
+_RELAY_DIRECT_PLATFORMS_ENV = "GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS"
+
+
+def _managed_platform_owning_env_key(key: str, managed) -> Optional[str]:
+    """Managed platform whose env namespace holds ``key``. Matched by the platform prefix, so the
+    knobs the setup card hides (``TELEGRAM_ALLOW_ALL_USERS``, ``TELEGRAM_HOME_CHANNEL``, ...) count
+    too, then by the card's explicit env_vars for plugin platforms with their own names."""
+    for platform_id in managed.platforms:
+        if any(key.startswith(prefix) for prefix in _platform_env_prefixes(platform_id)):
+            return platform_id
+    try:
+        for entry in _messaging_platform_catalog():
+            if entry["id"] in managed.platforms and key in entry.get("env_vars", ()):
+                return entry["id"]
+    except Exception:
+        _log.debug("could not build the messaging catalog for the managed env guard", exc_info=True)
+    return None
+
+
+def _refuse_if_env_key_managed(key: str) -> None:
+    """409 when ``key`` belongs to a host-owned platform. ``GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS``
+    counts as owned whenever a relay platform is managed: it is the one switch that would bring
+    native adapters back beside the host's connector."""
+    managed = _managed_platforms()
+    if not managed:
+        return
+    if key == _RELAY_DIRECT_PLATFORMS_ENV and managed.manages_relay():
+        raise HTTPException(status_code=409, detail=f"{key} is managed by {managed.label}.")
+    owner = _managed_platform_owning_env_key(key, managed)
+    if owner is not None:
+        _refuse_if_platform_managed(owner)
+
+
+def _platform_block_views(doc: Any, platform_id: str) -> tuple:
+    """The three places gateway/config_loader.py reads a platform block from:
+    ``gateway.platforms.<id>``, ``platforms.<id>`` and ``gateway.<id>``."""
+    doc = doc if isinstance(doc, dict) else {}
+    gateway = doc.get("gateway") if isinstance(doc.get("gateway"), dict) else {}
+    nested = gateway.get("platforms") if isinstance(gateway.get("platforms"), dict) else {}
+    top = doc.get("platforms") if isinstance(doc.get("platforms"), dict) else {}
+    return (nested.get(platform_id), top.get(platform_id), gateway.get(platform_id))
+
+
+def _refuse_if_managed_platform_config_changed(before: Any, after: Any) -> None:
+    """409 when a config write alters a host-owned platform block in any of its locations."""
+    managed = _managed_platforms()
+    if not managed:
+        return
+    for platform_id in managed.platforms:
+        if _platform_block_views(before, platform_id) != _platform_block_views(after, platform_id):
+            _refuse_if_platform_managed(platform_id)
+
+
 def _merge_platform_env_vars(platform_id: str, override: dict[str, Any], plugin_entry: Any | None) -> tuple[str, ...]:
     """Canonical env-var list for a platform card. Required credentials always survive: hiding a
     required field would make the platform unconfigurable."""

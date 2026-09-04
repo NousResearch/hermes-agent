@@ -333,6 +333,11 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # these, so production tests must not see them either.
     "HERMES_DASHBOARD_OAUTH_CLIENT_ID",
     "HERMES_DASHBOARD_PORTAL_URL",
+    # Host-declared channel ownership (hermes_cli.managed_platforms). Set only
+    # by hosting layers; a developer box carrying it would lock Channels cards
+    # in every dashboard test.
+    "HERMES_MANAGED_PLATFORMS",
+    "HERMES_MANAGED_PLATFORMS_LABEL",
     "TERMINAL_CWD",
     "TERMINAL_ENV",
     "TERMINAL_VERCEL_RUNTIME",

@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Dict, Mapping, Optional
 from urllib.parse import urlsplit
 
@@ -61,13 +62,17 @@ class ManagedPlatforms:
 
 def load_managed_platforms(environ: Optional[Mapping[str, str]] = None) -> ManagedPlatforms:
     env = os.environ if environ is None else environ
-    platforms = _parse_platforms(env.get(PLATFORMS_ENV, ""))
+    return _parse(env.get(PLATFORMS_ENV, ""), env.get(LABEL_ENV, ""), env.get(URL_ENV, ""))
+
+
+@lru_cache(maxsize=16)
+def _parse(raw_platforms: str, raw_label: str, raw_url: str) -> ManagedPlatforms:
+    """Cached per distinct stamp so a malformed value is logged once, not per request."""
+    platforms = _parse_platforms(raw_platforms)
     if not platforms:
         return ManagedPlatforms()
     return ManagedPlatforms(
-        platforms=platforms,
-        label=_parse_label(env.get(LABEL_ENV, "")),
-        url=_parse_url(env.get(URL_ENV, "")),
+        platforms=platforms, label=_parse_label(raw_label), url=_parse_url(raw_url)
     )
 
 
@@ -103,7 +108,10 @@ def _parse_url(raw: str) -> Optional[str]:
     candidate = raw.strip()
     if not candidate:
         return None
-    parts = urlsplit(candidate)
+    try:
+        parts = urlsplit(candidate)
+    except ValueError:
+        return None
     if parts.scheme not in ("http", "https") or not parts.netloc:
         return None
     return candidate

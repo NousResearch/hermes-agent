@@ -281,20 +281,98 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
       }
     }
 
-    const start = await mcpRpc('mcp.servers.oauth.start', {
+    // Client-side callback listener (electron/mcp-oauth-callback-ipc.ts): the
+    // browser always runs on THIS machine, so hosting the OAuth redirect here
+    // works for local AND remote backends alike. Against a remote backend it
+    // is the only working flow — the gateway's own 127.0.0.1 listener is on
+    // the backend host, unreachable from this machine's browser. Falls back
+    // to the legacy gateway-listener flow when the bridge or the gateway-side
+    // callback RPC is unavailable (older builds).
+    const mcpOauthBridge =
+      typeof window !== 'undefined' && window.hermesDesktop && window.hermesDesktop.mcpOauth
+        ? window.hermesDesktop.mcpOauth
+        : null
+
+    let listener: { id: string; redirectUri: string } | null = null
+
+    if (mcpOauthBridge) {
+      try {
+        listener = await mcpOauthBridge.listen()
+      } catch {
+        listener = null
+      }
+    }
+
+    let start = await mcpRpc('mcp.servers.oauth.start', {
       profile,
-      name: entry.name
+      name: entry.name,
+      ...(listener ? { client_redirect_uri: listener.redirectUri } : {})
     })
+
+    // Older gateway rejecting the loopback URI shape (or a stale build that
+    // validates differently): retry once on the legacy gateway-listener path.
+    if (!start.ok && listener) {
+      try {
+        await mcpOauthBridge!.cancel(listener.id)
+      } catch {
+        /* listener teardown is best-effort */
+      }
+
+      listener = null
+      start = await mcpRpc('mcp.servers.oauth.start', {
+        profile,
+        name: entry.name
+      })
+    }
 
     const payload = start.result && (start.result.result || start.result)
     const authUrl = payload && (payload.auth_url || payload.verification_url)
     const sessionId = payload && payload.session_id
 
     if (!start.ok || !authUrl || !sessionId) {
+      if (listener) {
+        try {
+          await mcpOauthBridge!.cancel(listener.id)
+        } catch {
+          /* listener teardown is best-effort */
+        }
+      }
+
       setPhase('error')
       setMessage(start.error || 'Could not start OAuth')
 
       return
+    }
+
+    // With a client listener bound: await the provider redirect here and relay
+    // code/state to the gateway. Runs concurrently with the status poll below;
+    // errors surface through the poll (the gateway marks the flow failed).
+    if (listener) {
+      const listenerId = listener.id
+
+      void (async () => {
+        const cb = await mcpOauthBridge!.wait(listenerId)
+
+        if (cb.error === 'cancelled') {
+          return
+        }
+
+        const relay = await mcpRpc('mcp.servers.oauth.callback', {
+          profile,
+          name: entry.name,
+          session_id: sessionId,
+          code: cb.code || undefined,
+          state: cb.state || undefined,
+          error: cb.error || undefined
+        })
+
+        const rp = relay.result && (relay.result.result || relay.result)
+
+        if (!relay.ok || (rp && rp.ok === false)) {
+          setPhase('error')
+          setMessage((rp && rp.error_message) || relay.error || 'OAuth callback relay failed')
+        }
+      })()
     }
 
     // Open the auth URL in the native browser, same as provider OAuth.

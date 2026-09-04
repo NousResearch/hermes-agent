@@ -24,7 +24,9 @@ from unittest.mock import patch
 import pytest
 
 import hermes_cli.gateway as gateway
+import hermes_cli.gateway_windows as gateway_windows
 import hermes_cli.main as hm
+import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli.update_cmd import _resume_windows_gateways_after_update
 from hermes_cli.update_inventory import (
     RuntimeRecord,
@@ -43,8 +45,24 @@ def _token(profiles: dict) -> dict:
     }
 
 
+@pytest.fixture(autouse=True)
+def _stub_post_relaunch_liveness(monkeypatch):
+    """The resume path now verifies a stable gateway process actually exists
+    before vouching for the relaunch (#48820 3rd/4th repro — a parent Job
+    Object killing the respawned gateway made '✓ Restarting' a lie). These
+    reconciliation tests exercise the token bookkeeping, not the liveness
+    poll, so stub it as 'gateway came up'."""
+    monkeypatch.setattr(
+        gateway_windows, "_wait_for_gateway_ready", lambda **_kw: [4242]
+    )
+    monkeypatch.setattr(
+        gateway_windows, "_write_start_attestation", lambda *_a, **_kw: None
+    )
+
+
 def test_resume_records_successfully_relaunched_profiles_on_the_token(monkeypatch):
     monkeypatch.setattr(hm, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
     monkeypatch.setattr(hm, "_refresh_windows_gateway_launchers", lambda: None)
     monkeypatch.setattr(
         gateway, "launch_detached_profile_gateway_restart", lambda *_a: True
@@ -65,6 +83,7 @@ def test_resume_omits_profiles_whose_relaunch_failed(monkeypatch):
     'relaunched' — it needs to keep surfacing as unaccounted so the user is
     told to restart it manually (Windows has no watcher to recover it)."""
     monkeypatch.setattr(hm, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
     monkeypatch.setattr(hm, "_refresh_windows_gateway_launchers", lambda: None)
 
     def _relaunch(profile, _old_pid):
@@ -94,6 +113,7 @@ def test_merged_windows_relaunch_resolves_as_restarted_not_unaccounted(monkeypat
     match_runtime_outcomes, must turn a Windows gateway's plan row from
     'unaccounted' (loud warning + exit 1) into 'restarted' (clean)."""
     monkeypatch.setattr(hm, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
     monkeypatch.setattr(hm, "_refresh_windows_gateway_launchers", lambda: None)
     monkeypatch.setattr(
         gateway, "launch_detached_profile_gateway_restart", lambda *_a: True
@@ -149,3 +169,36 @@ def test_resume_with_no_relaunched_profiles_key_does_not_crash_the_merge():
     for profile in token.get("relaunched_profiles") or []:
         relaunched_profiles.append(profile)
     assert relaunched_profiles == []
+
+
+def test_merge_helper_reads_token_keys_into_restart_outcome(monkeypatch):
+    """Drive the real merge helper (not a mirror): the Windows resume token's
+    ``relaunched_profiles`` / ``restarted_services`` / ``service_profiles`` /
+    ``services`` keys must land in the shared restart bookkeeping."""
+    from hermes_cli import update_cmd
+
+    monkeypatch.setattr(hm, "_resume_windows_gateways_after_update", lambda token: None)
+    outcome = update_cmd._GatewayRestartOutcome(
+        incomplete=False,
+        phase_errors=[],
+        pre_restart_gateway_pids=[],
+        restarted_services=["hermes-gateway"],
+        failed_or_stale_units=[],
+        relaunched_profiles=[],
+        externally_supervised_profiles=[],
+        killed_pids=set(),
+    )
+    token = {
+        "resume_needed": False,
+        "relaunched_profiles": ["p1"],
+        "restarted_services": ["svc"],
+        "service_profiles": {"svc": "p2", "pending": "p3"},
+        "services": ["pending"],
+    }
+    with patch("hermes_cli.update_receipt.record_gateway_restart", lambda **kw: None):
+        update_cmd._resume_windows_gateways_and_merge_outcome(outcome, token, False)
+
+    assert outcome.relaunched_profiles == ["p1", "p2"]
+    assert outcome.restarted_services == ["hermes-gateway", "svc"]
+    assert outcome.failed_or_stale_units == ["p3"]
+    assert outcome.incomplete is False

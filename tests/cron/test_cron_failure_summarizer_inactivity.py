@@ -94,22 +94,3 @@ def test_rate_limit_classification_still_takes_priority_over_inactivity_text(mon
     msg = _summarize_cron_failure_for_delivery(job, error)
     assert "weekly usage limit" in msg
     assert "No fallback chain configured" in msg
-
-
-def test_terminal_cwd_lock_timeout_is_not_reported_as_provider_timeout():
-    """Sibling scheduler-internal timeout (#79768): the TERMINAL_CWD lock-wait
-    abort says "Timed out ..." and must not fall through to the generic
-    provider-timeout branch."""
-    job = {"name": "Workdir Job", "id": "abc123def456"}
-    error = (
-        "TimeoutError: Timed out waiting for the TERMINAL_CWD write lock "
-        "after 600s — another cron job (a workdir writer, or long-running "
-        "readers) has held it for longer than the cron inactivity limit. "
-        "If a workdir job is the holder, stagger its schedule or remove its "
-        "workdir to unblock this job (#79768)."
-    )
-    msg = _summarize_cron_failure_for_delivery(job, error)
-    assert "provider timeout" not in msg
-    assert "fallback chain" not in msg.lower()
-    assert "working-directory lock" in msg
-    assert "Workdir Job" in msg

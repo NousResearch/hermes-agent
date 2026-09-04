@@ -6,13 +6,7 @@ that can't encode non-ASCII characters in API request payloads.
 
 import pytest
 
-from run_agent import (
-    _strip_non_ascii,
-    _sanitize_messages_non_ascii,
-    _sanitize_structure_non_ascii,
-    _sanitize_tools_non_ascii,
-    _sanitize_messages_surrogates,
-)
+from agent.message_sanitization import _strip_non_ascii, _sanitize_messages_non_ascii, _sanitize_structure_non_ascii, _sanitize_tools_non_ascii, _sanitize_messages_surrogates
 
 
 class TestStripNonAscii:

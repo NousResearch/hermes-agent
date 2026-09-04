@@ -107,6 +107,23 @@ def test_runtime_mount_overrides_profile_docker_volumes(monkeypatch, tmp_path):
     assert terminal_tool._docker_has_host_access(cfg) is True
 
 
+def test_preterminal_file_tool_relative_path_uses_runtime_workspace(
+    monkeypatch, tmp_path
+):
+    from tools import file_tools
+
+    ws = tmp_path / "project" / "task"
+    ws.mkdir(parents=True)
+    _pin_kanban_worker(monkeypatch, ws, task_id="t_file_path")
+    # This is the host-form value the dispatcher exports. Before the first
+    # terminal call it must not win over the runtime's container cwd.
+    monkeypatch.setenv("TERMINAL_CWD", str(ws.resolve()))
+    monkeypatch.setattr(file_tools, "_terminal_env_type_for_task", lambda _task: "docker")
+
+    resolved = file_tools._resolve_path_for_task("canary.txt", "default")
+    assert str(resolved) == "/workspace/canary.txt"
+
+
 def test_runtime_gets_unique_container_key(monkeypatch, tmp_path):
     from tools import terminal_tool
 

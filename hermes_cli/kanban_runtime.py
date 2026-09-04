@@ -22,7 +22,7 @@ import json
 import os
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
 
@@ -363,6 +363,61 @@ def decode_kanban_terminal_runtime(
         expected_task_id=expected_task_id,
         expected_workspace=expected_workspace,
     )
+
+
+def translate_container_workspace_path(
+    runtime: Mapping[str, Any],
+    container_path: str | os.PathLike[str],
+    *,
+    expected_task_id: str | None = None,
+    expected_workspace: str | os.PathLike[str] | None = None,
+) -> Path:
+    """Translate an authoritative container ``/workspace`` path to the host.
+
+    The versioned dispatcher runtime is the only mapping authority. Traversal,
+    non-workspace paths, and task/workspace mismatches fail closed instead of
+    being reinterpreted in the host namespace.
+    """
+    normalized = validate_kanban_terminal_runtime(
+        runtime,
+        expected_task_id=expected_task_id,
+        expected_workspace=expected_workspace,
+    )
+    raw = str(container_path or "").strip()
+    if not raw:
+        raise KanbanRuntimeError("container workspace path is required")
+
+    posix_path = PurePosixPath(raw)
+    if not posix_path.is_absolute():
+        raise KanbanRuntimeError(
+            f"container workspace path must be absolute: {raw!r}"
+        )
+    if ".." in posix_path.parts:
+        raise KanbanRuntimeError(
+            f"container workspace path traversal is not allowed: {raw!r}"
+        )
+    try:
+        relative = posix_path.relative_to(_WORKSPACE_TARGET)
+    except ValueError as exc:
+        raise KanbanRuntimeError(
+            f"container path is outside {_WORKSPACE_TARGET}: {raw!r}"
+        ) from exc
+
+    workspace = Path(normalized["workspace"])
+    candidate = workspace.joinpath(*relative.parts)
+    try:
+        resolved = candidate.resolve(strict=False)
+    except OSError as exc:
+        raise KanbanRuntimeError(
+            f"unable to resolve translated workspace path {candidate}: {exc}"
+        ) from exc
+    try:
+        resolved.relative_to(workspace)
+    except ValueError as exc:
+        raise KanbanRuntimeError(
+            f"translated workspace path escapes runtime workspace: {raw!r}"
+        ) from exc
+    return resolved
 
 
 def _normalize_path_map_entry(entry: Any) -> tuple[Path, Path]:

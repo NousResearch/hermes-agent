@@ -259,6 +259,51 @@ def _configured_terminal_cwd() -> str | None:
     return _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
 
 
+def _active_kanban_runtime_cwd() -> str | None:
+    """Return the dispatcher-owned in-container cwd for an active Kanban worker.
+
+    Before the first terminal call there is no session cwd record yet.  A
+    Kanban worker still has an authoritative runtime envelope, so file tools
+    must resolve relative paths against its container ``/workspace`` rather
+    than the host-form ``TERMINAL_CWD``.  A present-but-unusable runtime fails
+    closed instead of silently falling back to a host path.
+    """
+    from hermes_cli.kanban_runtime import (
+        KANBAN_TERMINAL_RUNTIME_ENV,
+        KanbanRuntimeError,
+        decode_kanban_terminal_runtime,
+    )
+
+    raw = os.environ.get(KANBAN_TERMINAL_RUNTIME_ENV, "").strip()
+    if not raw:
+        return None
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    workspace = os.environ.get("HERMES_KANBAN_WORKSPACE", "").strip()
+    source = os.environ.get("HERMES_SESSION_SOURCE", "").strip().lower()
+    if source != "kanban" or not task_id or not workspace:
+        raise RuntimeError(
+            "Kanban terminal runtime is present without dispatcher-owned "
+            "task/workspace identity; refusing file-path fallback"
+        )
+
+    from tools.terminal_tool import _kanban_runtime_context_allowed
+
+    if not _kanban_runtime_context_allowed():
+        raise RuntimeError(
+            "Kanban terminal runtime is present without dispatcher authority; "
+            "refusing file-path fallback"
+        )
+    try:
+        runtime = decode_kanban_terminal_runtime(
+            raw,
+            expected_task_id=task_id,
+            expected_workspace=workspace,
+        )
+    except KanbanRuntimeError as exc:
+        raise RuntimeError(f"invalid Kanban file runtime: {exc}") from exc
+    return str(runtime["container_cwd"])
+
+
 def _registered_task_cwd_override(task_id: str = "default") -> str | None:
     """Return a registered cwd override for the raw task id, when available.
 
@@ -306,6 +351,9 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
         recorded = None
     if recorded:
         return recorded
+    runtime_cwd = _active_kanban_runtime_cwd()
+    if runtime_cwd:
+        return runtime_cwd
     registered = _registered_task_cwd_override(task_id)
     if registered:
         return registered

@@ -612,6 +612,139 @@ def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
     ]
 
 
+def test_complete_task_translates_container_workspace_artifact_before_cleanup(
+    kanban_home, monkeypatch
+):
+    """A Docker /workspace artifact is preserved byte-for-byte via the runtime."""
+    from hermes_cli.kanban_runtime import (
+        KANBAN_TERMINAL_RUNTIME_ENV,
+        build_kanban_terminal_runtime,
+        encode_kanban_terminal_runtime,
+    )
+
+    payload = b"\x00kanban-container-artifact\xff\x10"
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="render container artifact")
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+        artifact = ws / "canary.bin"
+        artifact.write_bytes(payload)
+        runtime = build_kanban_terminal_runtime(
+            task_id=t,
+            workspace_kind="scratch",
+            workspace=ws,
+            authorized_roots=[ws.parent],
+        )
+        monkeypatch.setenv(
+            KANBAN_TERMINAL_RUNTIME_ENV,
+            encode_kanban_terminal_runtime(runtime),
+        )
+
+        assert kb.complete_task(
+            conn,
+            t,
+            result="ok",
+            metadata={"artifacts": ["/workspace/canary.bin"]},
+        )
+        completed = [e for e in kb.list_events(conn, t) if e.kind == "completed"][-1]
+        persisted = Path(completed.payload["artifacts"][0])
+        attachments = kb.list_attachments(conn, t)
+
+    assert not ws.exists()
+    assert persisted.read_bytes() == payload
+    assert [(a.filename, a.stored_path) for a in attachments] == [
+        ("canary.bin", str(persisted.resolve()))
+    ]
+
+
+def test_complete_task_container_artifact_traversal_fails_closed(
+    kanban_home, monkeypatch
+):
+    """Traversal cannot escape /workspace and a rejected completion stays running."""
+    from hermes_cli.kanban_runtime import (
+        KANBAN_TERMINAL_RUNTIME_ENV,
+        build_kanban_terminal_runtime,
+        encode_kanban_terminal_runtime,
+    )
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="reject traversal")
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+        (ws / "canary.txt").write_text("keep me", encoding="utf-8")
+        assert kb.claim_task(conn, t, claimer="worker") is not None
+        runtime = build_kanban_terminal_runtime(
+            task_id=t,
+            workspace_kind="scratch",
+            workspace=ws,
+            authorized_roots=[ws.parent],
+        )
+        monkeypatch.setenv(
+            KANBAN_TERMINAL_RUNTIME_ENV,
+            encode_kanban_terminal_runtime(runtime),
+        )
+
+        with pytest.raises(kb.ArtifactPreservationError, match="traversal"):
+            kb.complete_task(
+                conn,
+                t,
+                result="must not commit",
+                metadata={"artifacts": ["/workspace/../escape.txt"]},
+            )
+
+        current = kb.get_task(conn, t)
+        assert current is not None and current.status == "running"
+        assert kb.list_attachments(conn, t) == []
+    assert ws.exists()
+    assert (ws / "canary.txt").read_text(encoding="utf-8") == "keep me"
+
+
+def test_complete_task_mismatched_runtime_workspace_fails_closed(
+    kanban_home, monkeypatch, tmp_path
+):
+    """An envelope for another workspace cannot authorize artifact cleanup."""
+    from hermes_cli.kanban_runtime import (
+        KANBAN_TERMINAL_RUNTIME_ENV,
+        build_kanban_terminal_runtime,
+        encode_kanban_terminal_runtime,
+    )
+
+    other = tmp_path / "other-runtime-workspace"
+    other.mkdir()
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="reject mismatched runtime")
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+        artifact = ws / "canary.txt"
+        artifact.write_text("keep me", encoding="utf-8")
+        assert kb.claim_task(conn, t, claimer="worker") is not None
+        runtime = build_kanban_terminal_runtime(
+            task_id=t,
+            workspace_kind="scratch",
+            workspace=other,
+            authorized_roots=[tmp_path],
+        )
+        monkeypatch.setenv(
+            KANBAN_TERMINAL_RUNTIME_ENV,
+            encode_kanban_terminal_runtime(runtime),
+        )
+
+        with pytest.raises(kb.ArtifactPreservationError, match="workspace mismatch"):
+            kb.complete_task(
+                conn,
+                t,
+                result="must not commit",
+                metadata={"artifacts": ["/workspace/canary.txt"]},
+            )
+
+        current = kb.get_task(conn, t)
+        assert current is not None and current.status == "running"
+        assert kb.list_attachments(conn, t) == []
+    assert ws.exists()
+    assert artifact.read_text(encoding="utf-8") == "keep me"
 
 
 # ---------------------------------------------------------------------------

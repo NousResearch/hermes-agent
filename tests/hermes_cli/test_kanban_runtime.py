@@ -13,6 +13,7 @@ from hermes_cli.kanban_runtime import (
     decode_kanban_terminal_runtime,
     encode_kanban_terminal_runtime,
     is_remote_docker_host,
+    translate_container_workspace_path,
     translate_host_path,
     translate_runtime_mounts,
 )
@@ -70,6 +71,48 @@ def test_encode_decode_checks_task_and_workspace(tmp_path: Path):
 
     with pytest.raises(KanbanRuntimeError, match="task mismatch"):
         decode_kanban_terminal_runtime(raw, expected_task_id="t_other")
+
+
+def test_translate_container_workspace_path_uses_runtime_workspace(tmp_path: Path):
+    ws = tmp_path / "task"
+    ws.mkdir()
+    runtime = build_kanban_terminal_runtime(
+        task_id="t_path", workspace_kind="scratch", workspace=ws
+    )
+
+    translated = translate_container_workspace_path(
+        runtime,
+        "/workspace/out/canary.bin",
+        expected_task_id="t_path",
+        expected_workspace=ws,
+    )
+    assert translated == (ws / "out" / "canary.bin").resolve()
+
+
+@pytest.mark.parametrize(
+    "bad_path",
+    [
+        "/workspace/../escape.txt",
+        "/workspace/sub/../../escape.txt",
+        "/other/canary.txt",
+    ],
+)
+def test_translate_container_workspace_path_rejects_escape(
+    tmp_path: Path, bad_path: str
+):
+    ws = tmp_path / "task"
+    ws.mkdir()
+    runtime = build_kanban_terminal_runtime(
+        task_id="t_path", workspace_kind="scratch", workspace=ws
+    )
+
+    with pytest.raises(KanbanRuntimeError):
+        translate_container_workspace_path(
+            runtime,
+            bad_path,
+            expected_task_id="t_path",
+            expected_workspace=ws,
+        )
 
 
 def test_runtime_rejects_workspace_retarget(tmp_path: Path):

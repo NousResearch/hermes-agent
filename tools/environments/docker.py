@@ -1145,7 +1145,22 @@ class DockerEnvironment(BaseEnvironment):
         self._workspace_dir: Optional[str] = None
         self._home_dir: Optional[str] = None
         writable_args = []
-        if self._persistent:
+        if self._runtime_mounts:
+            # P1-A: the dispatcher runtime is the complete host-bind authority.
+            # Do not add the normal persistent /root bind (or any fallback
+            # /workspace bind) outside that plan.  The task workspace itself is
+            # already host-backed by the strict runtime --mount; keep container
+            # home ephemeral instead of widening host access.
+            if self._persistent:
+                logger.info(
+                    "Task-scoped runtime suppresses persistent /root host bind; "
+                    "using ephemeral container home"
+                )
+            writable_args.extend([
+                "--tmpfs", "/home:rw,exec,size=1g",
+                "--tmpfs", "/root:rw,exec,size=1g",
+            ])
+        elif self._persistent:
             # _sandbox_dir_name(): a raw session-key task_id carries colons,
             # which `-v` reads as extra spec fields (exit 125).
             sandbox = get_sandbox_dir() / "docker" / _sandbox_dir_name(task_id)
@@ -1186,6 +1201,13 @@ class DockerEnvironment(BaseEnvironment):
             )
 
             for mount_entry in get_credential_file_mounts():
+                if self._runtime_mounts:
+                    logger.info(
+                        "Task-scoped runtime suppresses credential host bind %s -> %s",
+                        mount_entry.get("host_path"),
+                        mount_entry.get("container_path"),
+                    )
+                    continue
                 src = Path(mount_entry["host_path"])
                 if src.is_dir():
                     # Docker-in-Docker: Docker auto-created the source path as
@@ -1215,6 +1237,13 @@ class DockerEnvironment(BaseEnvironment):
             # Mount skill directories (local + external) so skill
             # scripts/templates are available inside the container.
             for skills_mount in get_skills_directory_mount():
+                if self._runtime_mounts:
+                    logger.info(
+                        "Task-scoped runtime suppresses skills host bind %s -> %s",
+                        skills_mount.get("host_path"),
+                        skills_mount.get("container_path"),
+                    )
+                    continue
                 src = Path(skills_mount["host_path"])
                 if not src.is_dir():
                     logger.warning(
@@ -1237,6 +1266,13 @@ class DockerEnvironment(BaseEnvironment):
             # cached media from inside the container.  Read-only — the
             # container reads these but the host gateway manages writes.
             for cache_mount in get_cache_directory_mounts():
+                if self._runtime_mounts:
+                    logger.info(
+                        "Task-scoped runtime suppresses cache host bind %s -> %s",
+                        cache_mount.get("host_path"),
+                        cache_mount.get("container_path"),
+                    )
+                    continue
                 src = Path(cache_mount["host_path"])
                 if not src.is_dir():
                     logger.warning(
@@ -1263,10 +1299,24 @@ class DockerEnvironment(BaseEnvironment):
         egress_volume_args, egress_env_overrides, egress_host_args = (
             _egress_proxy_args_for_docker()
         )
+        _enforce_egress = _egress_enforce_on_docker()
+        if self._runtime_mounts and egress_volume_args:
+            if _enforce_egress:
+                raise RuntimeError(
+                    "task-scoped Kanban runtime cannot add the egress CA host bind "
+                    "outside its dispatcher-owned mount plan; refusing Docker start"
+                )
+            logger.warning(
+                "Task-scoped runtime suppresses egress proxy host bind because "
+                "enforce_on_docker=false; egress proxy injection is disabled for "
+                "this container rather than widening host access"
+            )
+            egress_volume_args = []
+            egress_env_overrides = {}
+            egress_host_args = []
         egress_label = _egress_reuse_fingerprint(
             egress_volume_args, egress_env_overrides, egress_host_args,
         )
-        _enforce_egress = _egress_enforce_on_docker()
         _critical_egress_names = _critical_egress_env_names(egress_env_overrides)
         if egress_env_overrides:
             _forward_collisions = sorted(

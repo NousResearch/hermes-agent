@@ -156,7 +156,13 @@ def _sanitize_single_tool(tool: dict) -> dict:
     else:
         if top.get("type") != "object":
             top["type"] = "object"
-        if "properties" not in top or not isinstance(top.get("properties"), dict):
+        # Mirror the recursive rule below: only *bare* top-level objects get
+        # the empty-properties injection (llama.cpp); annotated ones are left
+        # alone because strict validators reject `properties: {}` + annotation.
+        if (
+            not isinstance(top.get("properties"), dict)
+            and not _carries_annotation(top)
+        ):
             top["properties"] = {}
     # Final pass: collapse nullable anyOf/oneOf unions that the recursive
     # sanitizer above leaves intact (it only handles the array-form
@@ -398,6 +404,20 @@ def collapse_const_unions(schema: Any) -> Any:
     return out
 
 
+# Annotation keywords that make an object-typed node "guided" rather than
+# bare. Strict draft-2020-12 validators (Bedrock) reject an empty
+# ``properties: {}`` injected next to these keywords on an object node
+# (``{type: object, description: ..., properties: {}}`` -> TOOL_SCHEMA_INVALID),
+# while llama.cpp's grammar generator still needs the empty ``properties``
+# dict on a completely bare ``{type: object}``.
+_OBJECT_ANNOTATION_KEYWORDS = frozenset({"title", "description"})
+
+
+def _carries_annotation(node: dict) -> bool:
+    """Return True when a schema node already carries annotation keywords."""
+    return bool(set(node) & _OBJECT_ANNOTATION_KEYWORDS)
+
+
 def _sanitize_node(node: Any, path: str) -> Any:
     """Recursively sanitize a JSON-Schema fragment.
 
@@ -521,9 +541,19 @@ def _sanitize_node(node: Any, path: str) -> Any:
         else:
             out[key] = _sanitize_node(value, f"{path}.{key}") if isinstance(value, (dict, list)) else value
 
-    # Object nodes without properties: inject empty properties dict.
-    # llama.cpp's grammar generator can't constrain a free-form object.
-    if out.get("type") == "object" and not isinstance(out.get("properties"), dict):
+    # Object nodes without properties: inject ``properties: {}`` only for
+    # *bare* objects — llama.cpp's grammar generator can't constrain a
+    # completely unguided free-form object. Annotated empty objects
+    # (description/title) are left as-is: strict validators (Bedrock
+    # draft-2020-12) reject ``{type: object, description: ..., properties:
+    # {}}``, so the empty-properties injection would manufacture that
+    # failure on exactly the tools that carry annotated free-form args
+    # (e.g. delegate_task's per-task ``output_schema``).
+    if (
+        out.get("type") == "object"
+        and not isinstance(out.get("properties"), dict)
+        and not _carries_annotation(out)
+    ):
         out["properties"] = {}
 
     # Prune ``required`` entries that don't exist in properties (defense

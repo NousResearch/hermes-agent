@@ -27,19 +27,44 @@ def test_object_without_properties_gets_empty_properties():
 
 
 def test_nested_object_without_properties_gets_empty_properties():
+    # A *bare* nested object (no annotation keywords) still needs the
+    # llama.cpp empty-properties injection.
     tools = [_tool("t", {
         "type": "object",
         "properties": {
             "name": {"type": "string"},
-            "arguments": {"type": "object", "description": "free-form"},
+            "arguments": {"type": "object"},
         },
         "required": ["name"],
     })]
     out = sanitize_tool_schemas(tools)
     args = out[0]["function"]["parameters"]["properties"]["arguments"]
-    assert args["type"] == "object"
-    assert args["properties"] == {}
-    assert args["description"] == "free-form"
+    assert args == {"type": "object", "properties": {}}
+
+
+def test_annotated_object_without_properties_keeps_no_properties():
+    # Regression for #102795: strict draft-2020-12 validators (Bedrock)
+    # reject `{type: object, description: ..., properties: {}}` with
+    # TOOL_SCHEMA_INVALID, so the llama.cpp empty-properties injection must
+    # NOT be applied to objects that already carry annotation keywords.
+    # delegate_task's per-task `output_schema` (annotated free-form object)
+    # is the canonical hit — it blocked subagent dispatches on Bedrock.
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "arguments": {"type": "object", "description": "free-form"},
+            "title_obj": {"type": "object", "title": "free-form title"},
+        },
+        "required": ["name"],
+    })]
+    out = sanitize_tool_schemas(tools)
+    params = out[0]["function"]["parameters"]["properties"]
+    args = params["arguments"]
+    assert args == {"type": "object", "description": "free-form"}
+    assert "properties" not in args
+    assert params["title_obj"] == {"type": "object", "title": "free-form title"}
+    assert "properties" not in params["title_obj"]
 
 
 def test_bare_string_object_value_replaced_with_schema_dict():
@@ -132,6 +157,41 @@ def test_anyof_nested_objects_sanitized():
     variants = out[0]["function"]["parameters"]["properties"]["opt"]["anyOf"]
     assert variants[0] == {"type": "object", "properties": {}}
     assert variants[1] == {"type": "string"}
+
+
+def test_delegate_task_annotated_output_schema_shape_stable():
+    # Mirrors delegate_task's wire shape that Bedrock rejected before the
+    # #102795 fix: tasks[].output_schema is an annotated free-form object
+    # and must leave the sanitizer WITHOUT an injected empty ``properties``.
+    tools = [_tool("delegate_task", {
+        "type": "object",
+        "properties": {
+            "tasks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "goal": {"type": "string"},
+                        "output_schema": {
+                            "type": "object",
+                            "description": "Optional JSON Schema this child's final answer must validate against.",
+                        },
+                    },
+                },
+            },
+        },
+        "required": [],
+    })]
+    out = sanitize_tool_schemas(tools)
+    output_schema = (
+        out[0]["function"]["parameters"]["properties"]["tasks"]
+        ["items"]["properties"]["output_schema"]
+    )
+    assert output_schema == {
+        "type": "object",
+        "description": "Optional JSON Schema this child's final answer must validate against.",
+    }
+    assert "properties" not in output_schema
 
 
 def test_missing_parameters_gets_default_object_schema():

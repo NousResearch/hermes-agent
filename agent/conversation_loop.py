@@ -3846,16 +3846,36 @@ def run_conversation(
                     # Eager fallback: empty/malformed responses are a common
                     # rate-limit symptom.  Switch to fallback immediately
                     # rather than retrying with extended backoff.
+                    # Cloudflare 524 (origin timeout) also triggers eager fallback
+                    # since retries won't fix an infrastructure timeout.
+                    _resp_error_code = None
+                    if response and hasattr(response, 'error') and response.error:
+                        _code_raw = getattr(response.error, 'code', None)
+                        if _code_raw is None and isinstance(response.error, dict):
+                            _code_raw = response.error.get('code')
+                        if _code_raw is not None:
+                            try:
+                                _resp_error_code = int(_code_raw)
+                            except (TypeError, ValueError):
+                                pass
+
+                    is_cloudflare_524 = (_resp_error_code == 524)
+                    is_empty_malformed = not is_cloudflare_524  # original check
+
                     if agent._fallback_index < len(agent._fallback_chain):
-                        agent._buffer_status("⚠️ Empty/malformed response — switching to fallback...")
-                    if agent._try_activate_fallback():
-                        active_system_prompt = _sync_failover_system_message(
-                            agent, api_messages, active_system_prompt)
-                        retry_count = 0
-                        compression_attempts = 0
-                        _retry.primary_recovery_attempted = False
-                        _retry.restart_with_rebuilt_messages = True
-                        break
+                        if is_empty_malformed:
+                            agent._buffer_status("⚠️ Empty/malformed response — switching to fallback...")
+                        elif is_cloudflare_524:
+                            agent._buffer_status("⚠️ Cloudflare 524 (origin timeout) — switching to fallback...")
+                    if is_empty_malformed or is_cloudflare_524:
+                        if agent._try_activate_fallback():
+                            active_system_prompt = _sync_failover_system_message(
+                                agent, api_messages, active_system_prompt)
+                            retry_count = 0
+                            compression_attempts = 0
+                            _retry.primary_recovery_attempted = False
+                            _retry.restart_with_rebuilt_messages = True
+                            break
 
                     # Check for error field in response (some providers include this)
                     error_msg = "Unknown"
@@ -3901,8 +3921,8 @@ def run_conversation(
                         _failure_hint = "rate limited by upstream provider (429)"
                     elif _resp_error_code in {500, 502}:
                         _failure_hint = f"upstream server error ({_resp_error_code}, {api_duration:.0f}s)"
-                    elif _resp_error_code in {503, 529}:
-                        _failure_hint = f"upstream provider overloaded ({_resp_error_code})"
+                    elif _resp_error_code in {503, 524, 529}:
+                        _failure_hint = f"upstream provider overloaded or timed out ({_resp_error_code})"
                     elif _resp_error_code is not None:
                         _failure_hint = f"upstream error (code {_resp_error_code}, {api_duration:.0f}s)"
                     elif api_duration < 10:

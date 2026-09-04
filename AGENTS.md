@@ -1132,6 +1132,13 @@ Two shapes:
 - **Batch (parallel):** pass `tasks: [...]` — each gets its own subagent
   running concurrently. Concurrency is capped by
   `delegation.max_concurrent_children` (default 3).
+- **Batch (dependency-aware):** give every task an `id` and optional
+  `depends_on` ids. Ready nodes run immediately; descendants receive bounded
+  prerequisite summaries after those nodes succeed. Disconnected components
+  deliver independently within one async slot and one public graph handle;
+  otherwise delivery automatically falls back to one consolidated batch while
+  preserving dependency order. IDs alone and empty `depends_on` lists keep the
+  flat behavior; at least one dependency edge is required to activate the DAG.
 
 Roles:
 

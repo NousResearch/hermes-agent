@@ -56,6 +56,7 @@ _KICKOFF_MAX = 500
 # event type arrives (or on completion). Cap the buffer so a huge streamed
 # reply can't hold memory hostage.
 _STREAM_BUFFER_FLUSH_CHARS = 4000
+_MANIFEST_LOCK = threading.Lock()
 
 
 def live_transcript_root() -> Path:
@@ -390,18 +391,27 @@ def update_manifest_statuses(delegation_id: Optional[str],
     if not delegation_id:
         return
     try:
-        mp = _manifest_path(delegation_id)
-        manifest = json.loads(mp.read_text(encoding="utf-8"))
-        by_index = {r.get("task_index"): r for r in results if isinstance(r, dict)}
-        for task in manifest.get("tasks", []):
-            r = by_index.get(task.get("index"))
-            if r is not None:
-                task["status"] = r.get("status", task.get("status"))
-                if r.get("exit_reason"):
-                    task["exit_reason"] = r["exit_reason"]
-        manifest["completed"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        mp.write_text(json.dumps(manifest, indent=2, ensure_ascii=False),
-                      encoding="utf-8")
+        with _MANIFEST_LOCK:
+            mp = _manifest_path(delegation_id)
+            manifest = json.loads(mp.read_text(encoding="utf-8"))
+            by_index = {
+                r.get("task_index"): r for r in results if isinstance(r, dict)
+            }
+            for task in manifest.get("tasks", []):
+                r = by_index.get(task.get("index"))
+                if r is not None:
+                    task["status"] = r.get("status", task.get("status"))
+                    if r.get("exit_reason"):
+                        task["exit_reason"] = r["exit_reason"]
+            if all(
+                task.get("status") != "running"
+                for task in manifest.get("tasks", [])
+            ):
+                manifest["completed"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            mp.write_text(
+                json.dumps(manifest, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
     except Exception as exc:
         logger.debug("Live transcript manifest update failed: %s", exc)
 

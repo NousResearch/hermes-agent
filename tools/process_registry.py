@@ -3179,7 +3179,7 @@ def _format_async_delegation(evt: dict) -> str:
     """
     import time as _time
 
-    deleg_id = evt.get("delegation_id", "unknown")
+    deleg_id = evt.get("graph_id") or evt.get("delegation_id", "unknown")
     goal = evt.get("goal", "") or ""
     context = evt.get("context")
     toolsets = evt.get("toolsets")
@@ -3202,16 +3202,35 @@ def _format_async_delegation(evt: dict) -> str:
     if evt.get("is_batch") or isinstance(batch_results, list):
         results = batch_results or []
         goals = evt.get("goals") or []
+        batch_metadata = evt.get("batch_metadata") or {}
+        adaptive = bool(batch_metadata.get("adaptive_scheduling"))
         n = len(results) if results else len(goals)
         total_dur = evt.get("total_duration_seconds", duration)
-        lines = [
-            f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",
-            f"A background fan-out of {n} subagent(s) you dispatched earlier "
-            "has finished. All ran in parallel and waited on each other; their "
-            "consolidated results are below. You may have moved on since "
-            "dispatching — act on these or re-dispatch if things have changed.",
-            "",
-        ]
+        lines = [f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]"]
+        if adaptive:
+            cluster_index = batch_metadata.get("cluster_index", 1)
+            cluster_count = batch_metadata.get("cluster_count", 1)
+            delivery_note = (
+                "Other independent clusters may still be running. Use this "
+                "result now without waiting for them."
+                if cluster_count > 1
+                else "This is the graph's consolidated result."
+            )
+            lines.append(
+                f"Dependency cluster {cluster_index}/{cluster_count} ({n} "
+                "subagent task(s)) has finished. Ready tasks ran immediately; "
+                "dependent tasks started only after their prerequisites "
+                f"succeeded. {delivery_note}"
+            )
+        else:
+            lines.append(
+                f"A background fan-out of {n} subagent(s) you dispatched "
+                "earlier has finished. All ran in parallel and waited on each "
+                "other; their consolidated results are below. You may have "
+                "moved on since dispatching — act on these or re-dispatch if "
+                "things have changed."
+            )
+        lines.append("")
         if isinstance(dispatched_at, (int, float)):
             ts = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(dispatched_at))
             age = f" ({_format_age(completed_at - dispatched_at)} ago)"
@@ -3232,16 +3251,38 @@ def _format_async_delegation(evt: dict) -> str:
         if _notice:
             lines.append("")
             lines.extend(_notice)
-        for r in sorted(results, key=lambda x: x.get("task_index", 0)):
+        task_indices = batch_metadata.get("task_indices") or []
+        task_ids = batch_metadata.get("task_ids") or []
+        dependencies = batch_metadata.get("dependencies") or {}
+        goal_by_index = (
+            dict(zip(task_indices, goals))
+            if adaptive and len(task_indices) == len(goals)
+            else {}
+        )
+        task_id_by_index = (
+            dict(zip(task_indices, task_ids))
+            if adaptive and len(task_indices) == len(task_ids)
+            else {}
+        )
+        for position, r in enumerate(
+            sorted(results, key=lambda x: x.get("task_index", 0)), start=1
+        ):
             idx = r.get("task_index", 0)
             r_status = r.get("status", "?")
             r_summary = r.get("summary")
             r_error = r.get("error")
-            r_goal = goals[idx] if idx < len(goals) else r.get("goal", "")
+            r_goal = (
+                goal_by_index.get(idx, "")
+                if adaptive
+                else (goals[idx] if idx < len(goals) else r.get("goal", ""))
+            )
+            task_id = r.get("task_id") or task_id_by_index.get(idx)
             r_truncated = r.get("truncated") or r.get("exit_reason") == "max_iterations"
             icon = "⚠" if r_truncated else ("✓" if r_status in ("completed", "success") else "✗")
             lines.append("")
-            header = f"--- {icon} TASK {idx + 1}/{n}"
+            header = f"--- {icon} TASK {position if adaptive else idx + 1}/{n}"
+            if task_id:
+                header += f" [{task_id}]"
             if r_goal:
                 header += f": {r_goal}"
             header += f"  (status={r_status}"
@@ -3253,6 +3294,9 @@ def _format_async_delegation(evt: dict) -> str:
                 header += ", TRUNCATED: hit max_iterations — work may be incomplete"
             header += ") ---"
             lines.append(header)
+            task_dependencies = dependencies.get(task_id, []) if task_id else []
+            if task_dependencies:
+                lines.append("Depends on: " + ", ".join(task_dependencies))
             if r_status in ("completed", "success") and r_summary:
                 if r_truncated:
                     lines.append(

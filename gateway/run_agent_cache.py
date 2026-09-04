@@ -94,7 +94,33 @@ class GatewayAgentCacheMixin:
         provider = cfg_get(cfg, "memory", "provider")
         honcho = isinstance(provider, str) and provider.lower() == "honcho"
         out.update(cls._extract_honcho_cache_busting_config() if honcho else dict.fromkeys(cls._HONCHO_CACHE_BUSTING_KEYS))
+        for key, value in cls._memory_provider_identity_signature(provider).items():
+            out[f"memory.{key}"] = value
         return out
+
+    # Uninitialized provider instances by name, kept for the process lifetime: loading one imports
+    # its plugin module, and identity_signature() runs on every inbound message.
+    _MEMORY_IDENTITY_PROVIDER_MEMO: dict[str, Any] = {}
+
+    @classmethod
+    def _memory_provider_identity_signature(cls, provider_name: Any) -> dict[str, Any]:
+        """The active memory provider's ``identity_signature()``; ``{}`` when there is no provider,
+        it fails to load, or the hook raises."""
+        if not isinstance(provider_name, str) or not provider_name.strip():
+            return {}
+        name = provider_name.strip()
+        try:
+            instance = cls._MEMORY_IDENTITY_PROVIDER_MEMO.get(name)
+            if instance is None:
+                from plugins.memory import load_memory_provider
+                instance = load_memory_provider(name, register_skills=False)
+                if instance is None:
+                    return {}
+                cls._MEMORY_IDENTITY_PROVIDER_MEMO[name] = instance
+            signature = instance.identity_signature()
+            return dict(signature) if isinstance(signature, dict) else {}
+        except Exception:
+            return {}
 
     @staticmethod
     def _agent_config_signature(

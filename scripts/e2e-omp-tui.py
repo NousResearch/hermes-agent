@@ -208,10 +208,11 @@ def assert_live_acceptance(text: str) -> list[str]:
 def _print_launch_hint(captured: bytes, text: str) -> None:
     if len(captured) <= len(MOUSE_CSI) + 20 or captured.startswith(MOUSE_CSI[:20]):
         print(
-            "\nHINT: PTY only saw Hermes mouse-mode CSI — Ink never started.\n"
-            "      hermes --tui blocks on silent npm install/build first.\n"
+            "\nHINT: PTY only saw Hermes mouse-mode CSI — startup still silent or timed out.\n"
+            "      hermes --tui can block 2–3 min on npm install/build before Ink paints.\n"
             "      Run:  python3 scripts/e2e-omp-tui.py bootstrap\n"
             "      Then: hermes --tui   (in kitty/foot, not the IDE panel)\n"
+            "      Live E2E needs --timeout 240 (or wait longer on first cold launch).\n"
             "      Kill stuck npm:  pkill -f 'npm install'",
             file=sys.stderr,
         )
@@ -364,7 +365,7 @@ def main() -> int:
     t = sub.add_parser("test", help="run component + live PTY acceptance")
     t.add_argument("--cols", type=int, default=100)
     t.add_argument("--rows", type=int, default=32)
-    t.add_argument("--timeout", type=float, default=180.0)
+    t.add_argument("--timeout", type=float, default=240.0)
     t.add_argument("--live", action="store_true", help="also spawn hermes --tui in a PTY smoke test")
     t.add_argument("--dev", action="store_true", help="force tsx dev mode for --live (default when dist/ is missing)")
     t.add_argument(

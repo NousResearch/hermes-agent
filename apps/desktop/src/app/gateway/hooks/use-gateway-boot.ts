@@ -981,6 +981,64 @@ export function useGatewayBoot({
 
     async function boot() {
       try {
+        // Version check: clear sidebar LocalStorage on app version change.
+        // After an auto-update, stale LocalStorage (filters, grouping, tiles)
+        // can cause the sidebar to render group headers but zero sessions.
+        // Clearing sidebar-related keys on version mismatch fixes this.
+        try {
+          const desktop = window.hermesDesktop
+          if (desktop?.getVersion) {
+            const versionInfo = await desktop.getVersion()
+            if (versionInfo?.appVersion) {
+              const STORAGE_VERSION_KEY = 'hermes.desktop.appVersion'
+              const storedVersion = localStorage.getItem(STORAGE_VERSION_KEY)
+              if (storedVersion && storedVersion !== versionInfo.appVersion) {
+                // Version changed — clear sidebar-related LocalStorage keys
+                const sidebarKeys = [
+                  'hermes.desktop.sidebarCronOpen',
+                  'hermes.desktop.sidebarMessagingOpen',
+                  'hermes.desktop.sessionOrder',
+                  'hermes.desktop.sessionOrder.manual',
+                  'hermes.desktop.sidebarGrouping',
+                  'hermes.desktop.sidebarGrouping.allProfiles',
+                  'hermes.desktop.sidebarAgentsGrouped.allProfiles',
+                  'hermes.desktop.sidebarSortKey',
+                  'hermes.desktop.sidebarRowMeta',
+                  'hermes.desktop.sidebarCardRows',
+                  'hermes.desktop.sidebarStatusFilter',
+                  'hermes.desktop.sidebarShowArchived',
+                  'hermes.desktop.sidebarProjectFilter',
+                  'hermes.desktop.sidebarProfileFilter',
+                  'hermes.desktop.sidebarPrFilter',
+                  'hermes.desktop.workspaceOrder',
+                  'hermes.desktop.workspaceParentOrder',
+                  'hermes.desktop.projectOrder',
+                  'hermes.desktop.workspaceCollapsed',
+                  'hermes.desktop.workspaceNodeOpen',
+                  'hermes.desktop.dismissedAutoProjects',
+                  'hermes.desktop.dismissedWorktrees',
+                  'hermes.desktop.panesFlipped',
+                  'hermes.desktop.rightRailActiveTab',
+                  'hermes.desktop.sessionTiles.v2',
+                  'hermes.desktop.sessionTiles.v1',
+                  'hermes.desktop.sessionTiles.v2.migrated',
+                  'hermes.desktop.sessionOwnerHints.v1',
+                  'hermes.desktop.sessionSeenCounts',
+                  'hermes.desktop.sessionColors',
+                  'hermes.desktop.pinnedSessions',
+                  'hermes.desktop.agentsGroupedByWorkspace',
+                ]
+                for (const key of sidebarKeys) {
+                  try { localStorage.removeItem(key) } catch {}
+                }
+              }
+              localStorage.setItem(STORAGE_VERSION_KEY, versionInfo.appVersion)
+            }
+          }
+        } catch {
+          // Best-effort: never block boot on version check failures
+        }
+
         // A profile-pinned helper window (the HUD) dials its target profile's
         // backend directly — ensureBackend spawns/reuses it from the pool.
         // Everything else keeps dialing the primary.

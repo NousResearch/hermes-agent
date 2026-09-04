@@ -402,50 +402,13 @@ def _suppress_mouse_residue_early() -> None:
 _suppress_mouse_residue_early()
 
 
-def _is_termux_startup_environment_fast() -> bool:
-    """Tiny Termux check for pre-import startup shortcuts."""
-    return _startup_fast.is_termux_env()
-
-
 def _is_termux_fast_version_argv(argv: list[str]) -> bool:
     return _startup_fast.is_termux_fast_version_argv(argv)
-
-
-def _is_global_fast_version_argv(argv: list[str]) -> bool:
-    return _startup_fast.is_global_fast_version_argv(argv)
-
-
-def _is_container_startup_environment_fast() -> bool:
-    return _startup_fast.is_container_startup_environment()
-
-
-def _active_profile_may_override_home_fast(hermes_root: str) -> bool:
-    return _startup_fast.active_profile_may_override_home(hermes_root)
-
-
-def _container_mode_may_be_active_fast() -> bool:
-    return _startup_fast.container_mode_may_be_active()
-
-
-def _read_openai_version_fast() -> str | None:
-    """Read OpenAI SDK version without importing ``importlib.metadata``."""
-    return _startup_fast.read_openai_version()
-
-
-def _print_fast_version_info() -> None:
-    _startup_fast.print_fast_version_info()
 
 
 def _try_ultrafast_version() -> bool:
     """Handle ``hermes --version`` before config/logging imports."""
     return _startup_fast.try_fast_version()
-
-
-def _try_termux_ultrafast_version() -> bool:
-    """Backward-compatible test hook for the Termux startup fast path."""
-    if not _is_termux_startup_environment_fast():
-        return False
-    return _try_ultrafast_version()
 
 
 _ensure_project_root_on_path_fast()

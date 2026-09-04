@@ -413,35 +413,9 @@ export function ProfileRail() {
           label={p.fleet.allOnGateway}
           onSelect={() => setShowAllProfiles(true)}
         />
-      )}
+      )})
 
-      {/* One button toggles default ↔ all: home face when scoped to a profile,
-          layers face when showing everything. Pinned left like Manage is right.
-          Hidden until a second profile exists. */}
-      {!fleet &&
-        multiProfile &&
-        (defaultProfile ? (
-          // On default → toggle to all. Anywhere else (all view or a named
-          // profile) → return to default. So leaving a profile never lands on all.
-          <ProfilePill
-            active={isAll || onDefault}
-            glyph={isAll ? 'layers' : 'home'}
-            label={onDefault ? p.showAllProfiles : p.switchToProfile(profileLabel(defaultProfile))}
-            onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
-          />
-        ) : (
-          <ProfilePill active={isAll} glyph="layers" label={p.allProfiles} onSelect={() => setShowAllProfiles(true)} />
-        ))}
-
-      {/* Single-profile: the active default's home icon next to the create +. */}
-      {!fleet && !multiProfile && defaultProfile && (
-        <ProfilePill
-          active
-          glyph="home"
-          label={profileLabel(defaultProfile)}
-          onSelect={() => selectProfile(defaultProfile.name)}
-        />
-      )}
+      {/* Aggregate toggle and default home buttons relocated inside flex-1 group below. */}
 
       {condensed ? (
         // Condensed path: one compact dropdown instead of N squares. No drag
@@ -464,6 +438,34 @@ export function ProfileRail() {
           className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           ref={scrollRef}
         >
+          {/* One button toggles default ↔ all: home face when scoped to a profile,
+              layers face when showing everything. First element of the profile group.
+              Hidden until a second profile exists. */}
+          {!fleet &&
+            multiProfile &&
+            (defaultProfile ? (
+              // On default → toggle to all. Anywhere else (all view or a named
+              // profile) → return to default. So leaving a profile never lands on all.
+              <ProfilePill
+                active={isAll || onDefault}
+                glyph={isAll ? 'layers' : 'home'}
+                label={onDefault ? p.showAllProfiles : p.switchToProfile(profileLabel(defaultProfile))}
+                onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
+              />
+            ) : (
+              <ProfilePill active={isAll} glyph="layers" label={p.allProfiles} onSelect={() => setShowAllProfiles(true)} />
+            ))}
+
+          {/* Single-profile: the active default's home icon next to the create +. */}
+          {!fleet && !multiProfile && defaultProfile && (
+            <ProfilePill
+              active
+              glyph="home"
+              label={profileLabel(defaultProfile)}
+              onSelect={() => selectProfile(defaultProfile.name)}
+            />
+          )}
+
           {/* The active gateway's squares. In fleet mode they sit in the
               gateway's registry slot with a home square at their head, so the
               strip keeps one shape whichever gateway is active. */}

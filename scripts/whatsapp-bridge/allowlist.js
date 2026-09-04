@@ -86,3 +86,20 @@ export function matchesAllowedUser(senderId, allowedUsers, sessionDir) {
 
   return false;
 }
+
+
+export function collectWhatsAppMessageIdentifiers(senderId, key = {}) {
+  return Array.from(new Set([
+    senderId,
+    key.participant,
+    key.participantAlt,
+    key.remoteJid,
+    key.remoteJidAlt,
+  ].map((value) => String(value || '').trim()).filter(Boolean)));
+}
+
+export function matchesAllowedMessage(senderId, key, allowedUsers, sessionDir) {
+  return collectWhatsAppMessageIdentifiers(senderId, key).some(
+    (identifier) => matchesAllowedUser(identifier, allowedUsers, sessionDir)
+  );
+}

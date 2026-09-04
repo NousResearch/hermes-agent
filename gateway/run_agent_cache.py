@@ -43,34 +43,6 @@ class GatewayAgentCacheMixin:
     """Agent cache, session model overrides, turn leases, run generations and conversation-scope reset for GatewayRunner."""
 
     @classmethod
-    def _extract_honcho_cache_busting_config(cls) -> dict[str, Any]:
-        """Extract Honcho identity keys, memoized by honcho.json mtime; all-None when unavailable."""
-        try:
-            from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
-            path = resolve_config_path()
-            try:
-                mtime_ns = path.stat().st_mtime_ns
-            except OSError:
-                mtime_ns = None
-            memo_key = (str(path), mtime_ns)
-            cached = cls._HONCHO_CACHE_BUSTING_MEMO.get(memo_key)
-            if cached is not None:
-                return dict(cached)
-            hcfg = HonchoClientConfig.from_global_config(config_path=path)
-            aliases = hcfg.user_peer_aliases or {}
-            values = {
-                "honcho.peer_name": hcfg.peer_name,
-                "honcho.ai_peer": hcfg.ai_peer,
-                "honcho.pin_peer_name": bool(hcfg.pin_peer_name),
-                "honcho.runtime_peer_prefix": hcfg.runtime_peer_prefix or "",
-                "honcho.user_peer_aliases": sorted(aliases.items()) if isinstance(aliases, dict) else [],
-            }
-            cls._HONCHO_CACHE_BUSTING_MEMO = {memo_key: values}
-            return dict(values)
-        except Exception:
-            return dict.fromkeys(cls._HONCHO_CACHE_BUSTING_KEYS)
-
-    @classmethod
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
         """Values that must bust the cached agent, as a flat dict keyed by 'section.key'. Missing keys /
         non-dict sections yield None (still enters the signature). Includes the live tool registry
@@ -89,12 +61,7 @@ class GatewayAgentCacheMixin:
             out["tools.registry_generation"] = getattr(registry, "_generation", None)
         except Exception:
             out["tools.registry_generation"] = None
-        # Honcho identity-mapping keys live in honcho.json, not user_config; only read that file
-        # when Honcho is the active memory provider.
-        provider = cfg_get(cfg, "memory", "provider")
-        honcho = isinstance(provider, str) and provider.lower() == "honcho"
-        out.update(cls._extract_honcho_cache_busting_config() if honcho else dict.fromkeys(cls._HONCHO_CACHE_BUSTING_KEYS))
-        for key, value in cls._memory_provider_identity_signature(provider).items():
+        for key, value in cls._memory_provider_identity_signature(cfg_get(cfg, "memory", "provider")).items():
             out[f"memory.{key}"] = value
         return out
 

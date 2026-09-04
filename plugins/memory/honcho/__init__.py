@@ -17,7 +17,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context
 from agent.memory_provider import MemoryProvider, is_trivial_prompt
-from plugins.memory.honcho.client import spawn_context_thread
+from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path, spawn_context_thread
 from plugins.memory.honcho.dialectic import DialecticMixin
 from plugins.memory.honcho.tool_schemas import ALL_TOOL_SCHEMAS
 from tools.registry import tool_error
@@ -122,6 +122,8 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         self._turn_count = 0
         # Author of the turn in flight, refreshed by on_turn_start.
         self._turn_author: dict[str, Any] = {}
+        # (config path, mtime_ns, size) -> identity_signature() values.
+        self._identity_signature_memo: dict[tuple, dict[str, Any]] = {}
         self._query_rewrite_enabled = False
         self._injection_frequency = "every-turn"  # or "first-turn"
         self._context_cadence = 1   # minimum turns between context API calls
@@ -551,6 +553,35 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
     # Shared with the core prefetch gate so the two classifiers can never drift apart.
     _is_trivial_prompt = staticmethod(is_trivial_prompt)
+
+    def identity_signature(self) -> Dict[str, Any]:
+        """Identity-mapping values from honcho.json that must bust a cached gateway agent when they
+        change. Reads config only, never the network, and memoizes on the file's mtime and size so the
+        per-message call stays a stat. ``{}`` when the config cannot be read."""
+        try:
+            path = resolve_config_path()
+            try:
+                stat = path.stat()
+                memo_key = (str(path), stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                memo_key = (str(path), None, None)
+            cached = self._identity_signature_memo.get(memo_key)
+            if cached is not None:
+                return dict(cached)
+            cfg = HonchoClientConfig.from_global_config(config_path=path)
+            aliases = cfg.user_peer_aliases if isinstance(cfg.user_peer_aliases, dict) else {}
+            values = {
+                "user_identity": cfg.peer_name,
+                "agent_identity": cfg.ai_peer,
+                "pin_user_identity": bool(cfg.pin_peer_name),
+                "runtime_identity_prefix": cfg.runtime_peer_prefix or "",
+                "user_identity_aliases": sorted(aliases.items()),
+                "session_prefixing": [bool(cfg.session_peer_prefix)],
+            }
+            self._identity_signature_memo = {memo_key: values}
+            return dict(values)
+        except Exception:
+            return {}
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Track turn count for cadence, and record who wrote this turn: a shared session carries

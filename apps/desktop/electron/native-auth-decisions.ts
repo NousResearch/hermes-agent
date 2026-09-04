@@ -233,3 +233,50 @@ export function oauthGuardMayHardFail(providers: unknown): boolean {
 
   return !named.every(provider => provider.supportsPassword)
 }
+
+/**
+ * Decide whether a failed oauth ws-ticket mint should surface as "not signed
+ * in" (unsigned) rather than a generic ticket/transport failure.
+ *
+ * Cookie-jar preflight alone is NOT authoritative on Desktop cold start: a
+ * `persist:` partition can still be hydrating when hasLiveOauthSession first
+ * reads, so Settings → Connections → Test (which mints first) succeeds while
+ * roster dial (which used to hard-fail on a false-negative preflight) skipped
+ * the mint entirely (#101339). Only a confirmed auth rejection with no live
+ * session signal (and a guard-eligible provider set) is unsigned.
+ */
+export function shouldTreatOauthMintFailureAsUnsigned(options: {
+  cookieOrNativeSessionLive: boolean
+  isAuthRejection: boolean
+  providers?: unknown
+}): boolean {
+  if (options.cookieOrNativeSessionLive) {
+    return false
+  }
+
+  if (!options.isAuthRejection) {
+    return false
+  }
+
+  return oauthGuardMayHardFail(options.providers)
+}
+
+/** Per-source roster dial budget. OAuth remotes mint a ticket and run
+ *  readiness before /api/profiles; the historical 10s race dropped them on
+ *  cold start even when Test (no deadline) succeeded (#101339). */
+export const DEFAULT_ROSTER_SOURCE_TIMEOUT_MS = 10_000
+export const OAUTH_ROSTER_SOURCE_TIMEOUT_MS = 30_000
+
+export function rosterSourceEnumerationTimeoutMs(connection: {
+  authMode?: string | null
+  kind?: string | null
+}): number {
+  const kind = String(connection.kind || '')
+  const authMode = String(connection.authMode || '')
+
+  if ((kind === 'remote' || kind === 'cloud') && authMode === 'oauth') {
+    return OAUTH_ROSTER_SOURCE_TIMEOUT_MS
+  }
+
+  return DEFAULT_ROSTER_SOURCE_TIMEOUT_MS
+}

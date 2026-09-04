@@ -11,14 +11,18 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  DEFAULT_ROSTER_SOURCE_TIMEOUT_MS,
   normalizeAdvertisedAuthProviders,
+  OAUTH_ROSTER_SOURCE_TIMEOUT_MS,
   oauthGuardMayHardFail,
   oauthSessionIsLive,
   oauthTicketFailureAuthMessage,
   resolveGatedDownloadAuth,
   resolveJsonBody,
   resolveOauthRestAuth,
-  resolveReadinessProbeAuth
+  resolveReadinessProbeAuth,
+  rosterSourceEnumerationTimeoutMs,
+  shouldTreatOauthMintFailureAsUnsigned
 } from './native-auth-decisions'
 
 // --- 1. body encoding (guards the double-JSON.stringify 422) ---
@@ -153,6 +157,54 @@ test('normalizeAdvertisedAuthProviders maps snake_case supports_password', () =>
 test('oauthTicketFailureAuthMessage is expired only with a decryptable native session', () => {
   assert.match(oauthTicketFailureAuthMessage(true), /session has expired/)
   assert.match(oauthTicketFailureAuthMessage(false), /not signed in/)
+})
+
+// --- 5b. mint-first unsigned classification (#101339 cold-start roster) ---
+
+test('shouldTreatOauthMintFailureAsUnsigned only when auth rejected and no live session', () => {
+  assert.equal(
+    shouldTreatOauthMintFailureAsUnsigned({
+      cookieOrNativeSessionLive: false,
+      isAuthRejection: true,
+      providers: [{ name: 'nous', supportsPassword: false }]
+    }),
+    true
+  )
+  // A live session signal means the mint failure is expired/transport, not "never signed in".
+  assert.equal(
+    shouldTreatOauthMintFailureAsUnsigned({
+      cookieOrNativeSessionLive: true,
+      isAuthRejection: true,
+      providers: [{ name: 'nous', supportsPassword: false }]
+    }),
+    false
+  )
+  // Transport blips must not become the Sign-in overlay.
+  assert.equal(
+    shouldTreatOauthMintFailureAsUnsigned({
+      cookieOrNativeSessionLive: false,
+      isAuthRejection: false,
+      providers: [{ name: 'nous', supportsPassword: false }]
+    }),
+    false
+  )
+  // Password-only gateways must not hard-fail as unsigned oauth.
+  assert.equal(
+    shouldTreatOauthMintFailureAsUnsigned({
+      cookieOrNativeSessionLive: false,
+      isAuthRejection: true,
+      providers: [{ name: 'basic', supportsPassword: true }]
+    }),
+    false
+  )
+})
+
+test('rosterSourceEnumerationTimeoutMs gives oauth remotes a longer dial budget', () => {
+  assert.equal(rosterSourceEnumerationTimeoutMs({ kind: 'remote', authMode: 'oauth' }), OAUTH_ROSTER_SOURCE_TIMEOUT_MS)
+  assert.equal(rosterSourceEnumerationTimeoutMs({ kind: 'cloud', authMode: 'oauth' }), OAUTH_ROSTER_SOURCE_TIMEOUT_MS)
+  assert.equal(rosterSourceEnumerationTimeoutMs({ kind: 'remote', authMode: 'token' }), DEFAULT_ROSTER_SOURCE_TIMEOUT_MS)
+  assert.equal(rosterSourceEnumerationTimeoutMs({ kind: 'local' }), DEFAULT_ROSTER_SOURCE_TIMEOUT_MS)
+  assert.equal(rosterSourceEnumerationTimeoutMs({ kind: 'ssh', authMode: 'oauth' }), DEFAULT_ROSTER_SOURCE_TIMEOUT_MS)
 })
 
 // --- 6. gated download auth (guards the Files-panel 401 on cookieless native) ---

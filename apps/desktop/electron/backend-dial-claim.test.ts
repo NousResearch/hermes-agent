@@ -172,11 +172,26 @@ describe('main.ts wiring for #90812', () => {
   it('routes the roster-enumeration probe through the single-owner claim', () => {
     const handlerStart = mainSource.indexOf('async function enumerateRegistryAgentSources')
     expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 3_700)
+    const body = mainSource.slice(handlerStart, handlerStart + 4_200)
 
     expect(body).toContain('backendDialClaims.run(backendScopeKey(connection.id, null)')
     expect(body).toContain('ensureRegistryBackend(connection.id, null)')
     expect(body).toContain("getJsonForBackend(descriptor, '/api/profiles'")
+    // #101339: oauth remotes get a longer per-source deadline than the 10s default.
+    expect(body).toContain('rosterSourceEnumerationTimeoutMs(connection)')
+  })
+
+  it('mints the oauth ws-ticket before classifying an unsigned session (#101339)', () => {
+    const start = mainSource.indexOf('async function buildRemoteConnection(')
+    expect(start).toBeGreaterThan(-1)
+    const body = mainSource.slice(start, start + 2_800)
+
+    expect(body).toContain('ticket = await mintGatewayWsTicket(baseUrl, remoteHeaders)')
+    expect(body).toContain('shouldTreatOauthMintFailureAsUnsigned(')
+    // Preflight-only hard-fail must not return: Test succeeds by minting first.
+    expect(body).not.toMatch(
+      /oauthSessionIsLive\([\s\S]*?\)\s*&&\s*oauthGuardMayHardFail\([\s\S]*?\)\s*\{\s*throw makeUnsignedOauthError/
+    )
   })
 
   it('routes the connections update-all dispatch through the single-owner claim', () => {

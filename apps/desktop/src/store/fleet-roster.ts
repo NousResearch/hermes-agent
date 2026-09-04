@@ -15,6 +15,22 @@ const FLEET_ROSTER_STALE_MS = 60_000
 let fetchedAt = 0
 let inflight: null | Promise<void> = null
 
+/**
+ * True when every registered source answered with profiles (or is deliberately
+ * connect-on-demand). An incomplete snapshot — oauth remotes timing out on
+ * cold start (#101339) — must not sit in the 60s stale window and block focus
+ * retries after Settings → Test warms the session.
+ */
+export function fleetRosterIsComplete(roster: DesktopAgentRoster | null | undefined): boolean {
+  const sources = roster?.sources
+
+  if (!Array.isArray(sources) || sources.length === 0) {
+    return true
+  }
+
+  return sources.every(source => source?.reachable !== false || source?.error === 'connect-on-demand')
+}
+
 export async function refreshFleetRoster(options: { force?: boolean } = {}): Promise<void> {
   const bridge = window.hermesDesktop?.getAgentRoster
 
@@ -22,7 +38,14 @@ export async function refreshFleetRoster(options: { force?: boolean } = {}): Pro
     return
   }
 
-  if (!options.force && $fleetRoster.get() && Date.now() - fetchedAt < FLEET_ROSTER_STALE_MS) {
+  const current = $fleetRoster.get()
+
+  if (
+    !options.force &&
+    current &&
+    Date.now() - fetchedAt < FLEET_ROSTER_STALE_MS &&
+    fleetRosterIsComplete(current)
+  ) {
     return
   }
 

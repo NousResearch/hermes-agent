@@ -35,6 +35,7 @@ import {
 } from '@/lib/icons'
 import { coerceRemoteUrlScheme } from '@/lib/remote-url'
 import { $activeConnectionId, setConnectionsRegistry } from '@/store/connections'
+import { refreshFleetRoster } from '@/store/fleet-roster'
 import { notify, notifyError } from '@/store/notifications'
 
 import { EmptyState, ListRow, Pill, SectionHeading, ToggleRow } from './primitives'
@@ -552,6 +553,10 @@ export function ConnectionsRegistrySection() {
 
         if (reachable) {
           notify({ title: conn.label, message: s.testOk })
+          // Test is the recovery path for cold-start oauth roster misses
+          // (#101339). Force the fleet rail to re-enumerate immediately —
+          // otherwise a stale incomplete snapshot can sit for up to 60s.
+          void refreshFleetRoster({ force: true })
         } else {
           notifyError(new Error(result.error || conn.label), s.testFailed)
         }

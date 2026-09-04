@@ -104,6 +104,7 @@ import {
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
   hostLabelFromBaseUrl,
+  isGatewayAuthRejection,
   localProfileEntry,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
@@ -253,13 +254,14 @@ import {
 import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import {
-  oauthGuardMayHardFail,
   oauthSessionIsLive,
   oauthTicketFailureAuthMessage,
   resolveGatedDownloadAuth,
   resolveJsonBody,
   resolveOauthRestAuth,
-  resolveReadinessProbeAuth
+  resolveReadinessProbeAuth,
+  rosterSourceEnumerationTimeoutMs,
+  shouldTreatOauthMintFailureAsUnsigned
 } from './native-auth-decisions'
 import {
   nativeRefreshUrl,
@@ -9957,28 +9959,12 @@ async function buildRemoteConnection(
   const host = remoteHost || hostLabelFromBaseUrl(baseUrl)
 
   if (authMode === 'oauth') {
-    // OAuth gateway: auth comes from EITHER a native bearer token (cookieless
-    // RFC 8252 flow) OR the session cookies in the OAuth partition. Liveness is
-    // NOT "is the access-token cookie present?" — Portal issues a 24h rotating
-    // refresh token (hermes #37247), and the gateway middleware transparently
-    // rotates a fresh ~15-min access token from it on the next authenticated
-    // request. So a session with an expired AT cookie but a live RT cookie is
-    // still perfectly connectable. We early-out only when NEITHER a native
-    // token NOR any cookie is present, then mint a ws-ticket (which itself
-    // prefers the native bearer) as the authoritative liveness check.
-    //
-    // The native-token check is essential: the native login stores bearer
-    // tokens (no cookie is ever set), so gating solely on hasLiveOauthSession
-    // here would reject a freshly-completed native sign-in and loop the UI back
-    // into "not signed in" even though mintGatewayWsTicket would succeed with
-    // the stored bearer.
-    if (
-      !oauthSessionIsLive(hasNativeSession(baseUrl), await hasLiveOauthSession(baseUrl)) &&
-      oauthGuardMayHardFail(await gatewayAuthProviders(baseUrl, remoteHeaders))
-    ) {
-      throw makeUnsignedOauthError()
-    }
-
+    // Authoritative liveness is the ws-ticket mint — the same path Settings →
+    // Connections → Test uses. Cookie-jar preflight alone false-negatives on
+    // cold start while a `persist:` partition is still hydrating, which used
+    // to skip the mint and drop remote roster rows until the user clicked
+    // Test (#101339). Mint first; only classify as unsigned after a confirmed
+    // auth rejection with no live session signal.
     let ticket
 
     try {
@@ -9995,6 +9981,18 @@ async function buildRemoteConnection(
 
       if (cloudError !== null) {
         throw cloudError
+      }
+
+      const sessionLive = oauthSessionIsLive(hasNativeSession(baseUrl), await hasLiveOauthSession(baseUrl))
+
+      if (
+        shouldTreatOauthMintFailureAsUnsigned({
+          cookieOrNativeSessionLive: sessionLive,
+          isAuthRejection: isGatewayAuthRejection(error),
+          providers: await gatewayAuthProviders(baseUrl, remoteHeaders)
+        })
+      ) {
+        throw makeUnsignedOauthError()
       }
 
       throw gatewayTicketFailure(
@@ -15484,9 +15482,13 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
   // the renderer painted stale rows for the entire outage (and the roster IPC
   // hung >30s in live repro). Bound each source's enumeration; a timeout is
   // reported like any other unreachable source and retried on the next poll.
-  const perSourceTimeoutMs = 10_000
-
-  const withEnumerationDeadline = async <T>(work: Promise<T>): Promise<T> => {
+  // OAuth remotes get a longer budget: mint + readiness + /api/profiles cannot
+  // fit inside 10s on cold start, which dropped remote groups until Test
+  // (no deadline) warmed the session (#101339).
+  const withEnumerationDeadline = async <T>(
+    work: Promise<T>,
+    perSourceTimeoutMs: number
+  ): Promise<T> => {
     let timer: ReturnType<typeof setTimeout> | null = null
 
     try {
@@ -15550,7 +15552,8 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
               backendDialClaims.run(backendScopeKey(connection.id, null), () =>
                 ensureRegistryBackend(connection.id, null)
               )
-            )
+            ),
+            rosterSourceEnumerationTimeoutMs(connection)
           )
 
           const body: any = await getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 })

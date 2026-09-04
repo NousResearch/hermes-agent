@@ -78,5 +78,31 @@ export const sv = defineLocale({
   },
   remoteDisplayBanner: { message: reason => `Programvarurendering är aktiv — fjärrskärm upptäcktes (${reason}). GPU-acceleration är inaktiverad för att förhindra flimmer.` },
   billingBlock: { titleNous: 'Slut på Nous-krediter', titleProvider: provider => `Slut på krediter — ${provider}`, fallbackMessage: 'Ditt konto har slut på krediter. Lägg till krediter för att fortsätta.', openBilling: 'Öppna fakturering', addCredits: 'Lägg till krediter', dismiss: 'Avfärda' },
+  sendDiagnostics: {
+    title: 'Skicka diagnostik till Nous',
+    privacyNotice: 'Detta laddar upp ett felsökningspaket till Nous interna lagring (inte en offentlig inklistring). Det innehåller systeminformation (operativsystem, versioner, leverantör, vilka API-nycklar som är konfigurerade — aldrig själva nycklarna) och fullständiga agent-, gateway- och skrivbordsloggar (upp till 512 kB vardera), som sannolikt innehåller konversationsinnehåll, verktygsutdata och filsökvägar. Hemligheter maskeras före uppladdning. Paketet kan endast ses av Nous personal och tillåtna Discord-moderatorer och raderas automatiskt efter 14 dagar.',
+    upload: 'Ladda upp', uploading: 'Laddar upp…', cancel: 'Avbryt', close: 'Stäng', copyLink: 'Kopiera länk',
+    uploadIdFallback: id => `Ingen visningslänk returnerades — uppge uppladdnings-id ${id} till supporten`,
+    doneTitle: 'Diagnostik skickad', doneDescription: 'Ditt paket laddades upp privat. Dela länken nedan i din supporttråd så att teamet kan se dina loggar.',
+    failedTitle: 'Uppladdningen misslyckades', failedHint: 'Du kan också köra `hermes debug share --nous` i en terminal, eller `hermes debug share --local` för att skriva ut rapporten utan uppladdning.',
+    handoffLead: 'Fortsätt diskussionen i:', links: { github: 'GitHub-ärenden', portal: 'Nous Portal-support', discord: 'Discord' }
+  },
+  titlebar: {
+    hideSidebar: 'Dölj sidofält', showSidebar: 'Visa sidofält', search: 'Sök', searchTitle: 'Sök sessioner, vyer och åtgärder', swapSidebarSides: 'Byt sida för sidofält', hideRightSidebar: 'Dölj högra sidofältet', showRightSidebar: 'Visa högra sidofältet',
+    unreadSessions: count => count === 1 ? '1 oläst session' : `${count} olästa sessioner`, muteHaptics: 'Stäng av haptik', unmuteHaptics: 'Slå på haptik', openSettings: 'Öppna inställningar', openStarmap: 'Öppna minnesgraf', enterHud: 'HUD-läge', exitHud: 'Avsluta HUD-läge', resetHudLayout: 'Återställ HUD-storlek och -position', layoutEditor: 'Layoutredigerare', layoutEditorTitle: mod => `Layoutredigerare — ${mod}-klick återställer layouten`
+  },
+  findInPage: { next: 'Nästa träff', previous: 'Föregående träff' },
+  artifactCard: { kind: { code: 'Kod', html: 'Interaktiv sida', svg: 'Grafik' }, generating: lines => `Skapar… ${lines} rader`, versionBadge: count => `${count} versioner`, open: 'Öppna' },
+  artifactPreview: { versionOf: (current, total) => `v${current} av ${total}`, olderVersion: 'Äldre version', newerVersion: 'Nyare version', latest: 'Senaste', copyContent: 'Kopiera innehåll', download: 'Hämta', openInBrowser: 'Öppna i webbläsaren', openInBrowserFailed: 'Det gick inte att öppna i webbläsaren', missingTitle: 'Artefakten är inte tillgänglig', missingBody: 'Denna artefakt finns inte längre i det lokala registret.' },
+  modelVisibility: { title: 'Modeller', search: 'Sök modeller', noAuthenticatedProviders: 'Inga autentiserade leverantörer.', addProvider: 'Lägg till leverantör…' },
+  contextMenu: {
+    link: { openInApp: 'Öppna i appens webbläsare', openExternal: 'Öppna i extern webbläsare', copyUrl: 'Kopiera URL', copyResolvedUrl: 'Kopiera löst URL' },
+    image: { copyImage: 'Kopiera bild', copyImageAddress: 'Kopiera bildadress', saveImageAs: 'Spara bild som…' },
+    edit: { cut: 'Klipp ut', paste: 'Klistra in', selectAll: 'Markera allt', addToDictionary: 'Lägg till i ordlistan' },
+    page: { copyPageUrl: 'Kopiera sidans URL', inspectElement: 'Inspektera element' }
+  },
+  prompts: { gatewayDisconnected: 'Hermes gateway är inte ansluten', sudoSendFailed: 'Det gick inte att skicka sudo-lösenordet', secretSendFailed: 'Det gick inte att skicka hemligheten', sudoTitle: 'Administratörslösenord', sudoDesc: 'Hermes behöver ditt sudo-lösenord för att köra ett privilegierat kommando. Det skickas bara till din lokala agent.', sudoPlaceholder: 'sudo-lösenord', secretTitle: 'Hemlighet krävs', secretDesc: 'Hermes behöver en inloggningsuppgift för att fortsätta.', secretPlaceholder: 'hemligt värde' },
+  errors: { genericFailure: 'Något gick fel', boundaryTitle: 'Något gick sönder i gränssnittet', boundaryDesc: 'Vyn stötte på ett oväntat fel. Dina chattar och inställningar är säkra.', reloadWindow: 'Läs om fönster', openLogs: 'Öppna loggar' },
+  ui: { search: { clear: 'Rensa sökning' }, pagination: { label: 'sidindelning', previous: 'Föregående', previousAria: 'Gå till föregående sida', next: 'Nästa', nextAria: 'Gå till nästa sida' }, sidebar: { title: 'Sidofält', description: 'Visar sidofältet på mobilen.', toggle: open => `${open ? 'Visa' : 'Dölj'} sidofält` } },
   language: { label: 'Språk', description: 'Välj språk för skrivbordsgränssnittet.', saving: 'Sparar språk…', saveError: 'Det gick inte att uppdatera språk', switchTo: 'Byt språk', searchPlaceholder: 'Sök språk…', noResults: 'Inga språk hittades' }
 })

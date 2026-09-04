@@ -22,6 +22,8 @@ Configuration in config.yaml:
           allow_from: ["user_id_1"]
           group_policy: "pairing"        # open | allowlist | disabled | pairing
           group_allow_from: ["group_id_1"]
+          group_allow_admin_from: ["admin_user_id"]
+          group_registry_path: "/absolute/path/to/wecom-managed-groups.json"
           groups:
             group_id_1:
               allow_from: ["user_id_1"]
@@ -71,7 +73,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes_async,
     cache_image_from_bytes_async,
 )
-from utils import env_float
+from utils import atomic_json_write, env_float
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
@@ -114,6 +116,15 @@ APP_CMD_UPLOAD_MEDIA_FINISH = "aibot_upload_media_finish"
 
 CALLBACK_COMMANDS = {APP_CMD_CALLBACK, APP_CMD_LEGACY_CALLBACK}
 NON_RESPONSE_COMMANDS = CALLBACK_COMMANDS | {APP_CMD_EVENT_CALLBACK}
+
+_GROUP_MANAGEMENT_COMMANDS = {
+    "/group-enable": "enable",
+    "/방등록": "enable",
+    "/group-disable": "disable",
+    "/방해제": "disable",
+    "/group-status": "status",
+    "/방상태": "status",
+}
 
 MAX_MESSAGE_LENGTH = 4000
 CONNECT_TIMEOUT_SECONDS = 20.0
@@ -339,6 +350,23 @@ class WeComAdapter(BasePlatformAdapter):
 
         self._group_policy = str(extra.get("group_policy") or _get_scoped_secret("WECOM_GROUP_POLICY", "pairing")).strip().lower()
         self._group_allow_from = _coerce_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))
+        self._group_allow_admin_from = _coerce_list(
+            extra.get("group_allow_admin_from") or extra.get("groupAllowAdminFrom")
+        )
+        registry_path = str(
+            extra.get("group_registry_path") or extra.get("groupRegistryPath") or ""
+        ).strip()
+        registry_candidate = Path(registry_path).expanduser() if registry_path else None
+        if registry_candidate is not None and not registry_candidate.is_absolute():
+            logger.warning(
+                "[%s] group_registry_path must be absolute; managed groups disabled",
+                self.name,
+            )
+            registry_candidate = None
+        self._group_registry_path = registry_candidate
+        self._managed_group_ids: set[str] = set()
+        self._managed_group_audit: List[Dict[str, str]] = []
+        self._load_managed_groups()
         self._groups = extra.get("groups") if isinstance(extra.get("groups"), dict) else {}
 
         self._session: Optional["aiohttp.ClientSession"] = None
@@ -1311,6 +1339,18 @@ class WeComAdapter(BasePlatformAdapter):
         is_group = str(body.get("chattype") or "").lower() == "group"
         if is_group:
             self._group_chat_ids.add(chat_id)
+            control_text, _control_reply_text = self._extract_text(body)
+            control_action = self._group_management_action(control_text)
+            if control_action:
+                self._remember_chat_req_id(chat_id, self._payload_req_id(payload))
+                self._remember_reply_req_id(msg_id, self._payload_req_id(payload))
+                await self._handle_group_management_command(
+                    action=control_action,
+                    chat_id=chat_id,
+                    sender_id=sender_id,
+                    reply_to=msg_id,
+                )
+                return
             if not self._is_group_allowed(chat_id, sender_id):
                 logger.info(
                     "[%s] Group message DROPPED by policy: chat=%s sender=%s group_policy=%r "
@@ -1749,7 +1789,10 @@ class WeComAdapter(BasePlatformAdapter):
             return False
         if self._group_policy == "pairing":
             return False
-        if self._group_policy == "allowlist" and not _entry_matches(self._group_allow_from, chat_id):
+        if self._group_policy == "allowlist" and not (
+            _entry_matches(self._group_allow_from, chat_id)
+            or self._managed_group_contains(chat_id)
+        ):
             return False
 
         group_cfg = self._resolve_group_cfg(chat_id)
@@ -1757,6 +1800,113 @@ class WeComAdapter(BasePlatformAdapter):
         if sender_allow:
             return _entry_matches(sender_allow, sender_id)
         return True
+
+    @staticmethod
+    def _group_management_action(text: str) -> Optional[str]:
+        normalized = re.sub(r"^@\S+\s*", "", str(text or "")).strip().lower()
+        return _GROUP_MANAGEMENT_COMMANDS.get(normalized)
+
+    def _managed_group_contains(self, chat_id: str) -> bool:
+        candidate = str(chat_id or "").strip().lower()
+        return bool(candidate) and candidate in self._managed_group_ids
+
+    def _load_managed_groups(self) -> None:
+        path = self._group_registry_path
+        if path is None or not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            groups = payload.get("groups", []) if isinstance(payload, dict) else []
+            if not isinstance(groups, list):
+                raise ValueError("managed group registry 'groups' must be a list")
+            self._managed_group_ids = {
+                str(group_id).strip().lower()
+                for group_id in groups
+                if str(group_id).strip()
+            }
+            audit = payload.get("audit", []) if isinstance(payload, dict) else []
+            if isinstance(audit, list):
+                self._managed_group_audit = [
+                    record for record in audit if isinstance(record, dict)
+                ]
+        except Exception as exc:
+            self._managed_group_ids = set()
+            self._managed_group_audit = []
+            logger.warning(
+                "[%s] Managed group registry unreadable; failing closed: %s",
+                self.name,
+                exc,
+            )
+
+    def _persist_managed_groups(self, *, actor: str, action: str, chat_id: str) -> None:
+        path = self._group_registry_path
+        if path is None:
+            raise RuntimeError("group_registry_path is not configured")
+        record = {
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "actor": actor,
+            "action": action,
+            "chat_id": chat_id,
+        }
+        next_audit = [*self._managed_group_audit, record]
+        payload = {
+            "version": 1,
+            "groups": sorted(self._managed_group_ids),
+            "audit": next_audit,
+        }
+        atomic_json_write(path, payload, mode=0o600)
+        self._managed_group_audit = next_audit
+
+    async def _handle_group_management_command(
+        self,
+        *,
+        action: str,
+        chat_id: str,
+        sender_id: str,
+        reply_to: str,
+    ) -> None:
+        if self._group_registry_path is None or not self._group_allow_admin_from:
+            logger.warning(
+                "[%s] Group management command ignored: registry/admin config incomplete",
+                self.name,
+            )
+            return
+
+        if not _entry_matches(self._group_allow_admin_from, sender_id):
+            await self.send(
+                chat_id=chat_id,
+                content="⛔ 이 단톡방의 등록 상태는 지정된 관리자만 변경할 수 있습니다.",
+                reply_to=reply_to,
+            )
+            return
+
+        normalized_chat_id = str(chat_id or "").strip().lower()
+        groups_before = set(self._managed_group_ids)
+        if action == "enable":
+            self._managed_group_ids.add(normalized_chat_id)
+            try:
+                self._persist_managed_groups(
+                    actor=sender_id, action="enable", chat_id=chat_id
+                )
+            except Exception:
+                self._managed_group_ids = groups_before
+                raise
+            message = "✅ 이 단톡방을 상담 허용 목록에 등록했습니다."
+        elif action == "disable":
+            self._managed_group_ids.discard(normalized_chat_id)
+            try:
+                self._persist_managed_groups(
+                    actor=sender_id, action="disable", chat_id=chat_id
+                )
+            except Exception:
+                self._managed_group_ids = groups_before
+                raise
+            message = "✅ 이 단톡방을 상담 허용 목록에서 해제했습니다."
+        else:
+            state = "등록됨" if self._managed_group_contains(chat_id) else "미등록"
+            message = f"ℹ️ 현재 단톡방 상태: {state}"
+
+        await self.send(chat_id=chat_id, content=message, reply_to=reply_to)
 
     def _resolve_group_cfg(self, chat_id: str) -> Dict[str, Any]:
         if not isinstance(self._groups, dict):

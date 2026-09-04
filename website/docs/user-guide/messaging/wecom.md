@@ -117,6 +117,8 @@ Set these in `config.yaml` under `platforms.wecom.extra`:
 | `group_policy` | `open` | Group access: `open`, `allowlist`, `disabled` |
 | `allow_from` | `[]` | User IDs allowed for DMs (when dm_policy=allowlist) |
 | `group_allow_from` | `[]` | Group IDs allowed (when group_policy=allowlist) |
+| `group_allow_admin_from` | `[]` | User IDs allowed to register or remove the current group |
+| `group_registry_path` | — | Absolute path to the runtime-managed group allowlist JSON file |
 | `groups` | `{}` | Per-group configuration (see below) |
 | `stream_keepalive_enabled` | `false` | Send periodic keepalive frames to refresh WeCom's ~6-minute reply-stream window on long turns |
 | `stream_keepalive_interval_seconds` | `120` | Keepalive frame cadence when enabled |
@@ -190,6 +192,37 @@ platforms:
 5. Entries can optionally use the `wecom:user:` or `wecom:group:` prefix format — the prefix is stripped automatically.
 
 If no `allow_from` is configured for a group, all users in that group are allowed (assuming the group itself passes the top-level policy check).
+
+### Runtime-managed group allowlist
+
+For installations where administrators frequently add campaign or support
+rooms, configure an on-disk registry alongside the static group allowlist:
+
+```yaml
+platforms:
+  wecom:
+    enabled: true
+    extra:
+      dm_policy: disabled
+      group_policy: allowlist
+      group_allow_admin_from:
+        - "wecom_admin_user_id"
+      group_registry_path: "/absolute/path/to/wecom-managed-groups.json"
+```
+
+An administrator listed in `group_allow_admin_from` can mention the bot in a
+group and run:
+
+- `/group-enable` or `/방등록` — allow the current group
+- `/group-disable` or `/방해제` — remove the current group
+- `/group-status` or `/방상태` — report the current group's state
+
+Management commands are handled before agent dispatch. Messages from an
+unregistered group are dropped before they reach a model or session. Registry
+writes are atomic, use mode `0600`, and store the corresponding audit record in
+the same registry transaction. A missing or malformed registry fails closed. The
+configured administrator list remains static and requires a gateway restart
+when changed.
 
 ## Media Support
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import json
 import os
 import socket
 from pathlib import Path
@@ -282,6 +283,183 @@ class TestPolicyHelpers:
         )
 
         assert adapter._is_group_allowed("group-1", "user-1") is False
+
+
+class TestManagedGroupAllowlist:
+    @staticmethod
+    def _payload(text, *, chat_id="group-1", sender_id="admin-1", msg_id="msg-1"):
+        return {
+            "headers": {"req_id": f"req-{msg_id}"},
+            "body": {
+                "msgid": msg_id,
+                "chattype": "group",
+                "chatid": chat_id,
+                "from": {"userid": sender_id},
+                "msgtype": "text",
+                "text": {"content": text},
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_admin_can_register_current_group_without_model_dispatch(self, tmp_path):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        registry_path = tmp_path / "managed-groups.json"
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "group_policy": "allowlist",
+                    "group_allow_admin_from": ["admin-1"],
+                    "group_registry_path": str(registry_path),
+                },
+            )
+        )
+        adapter.handle_message = AsyncMock()
+        adapter.send = AsyncMock(return_value=SendResult(success=True))
+
+        await adapter._on_message(self._payload("@Hermes /group-enable"))
+
+        assert adapter._is_group_allowed("group-1", "member-1") is True
+        adapter.handle_message.assert_not_awaited()
+        adapter.send.assert_awaited_once()
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        assert registry["groups"] == ["group-1"]
+        assert registry["audit"][0]["actor"] == "admin-1"
+        assert registry["audit"][0]["action"] == "enable"
+        assert registry["audit"][0]["chat_id"] == "group-1"
+
+    @pytest.mark.asyncio
+    async def test_non_admin_cannot_register_group(self, tmp_path):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "group_policy": "allowlist",
+                    "group_allow_admin_from": ["admin-1"],
+                    "group_registry_path": str(tmp_path / "managed-groups.json"),
+                },
+            )
+        )
+        adapter.handle_message = AsyncMock()
+        adapter.send = AsyncMock(return_value=SendResult(success=True))
+
+        await adapter._on_message(
+            self._payload("/group-enable", sender_id="member-1")
+        )
+
+        assert adapter._is_group_allowed("group-1", "member-1") is False
+        adapter.handle_message.assert_not_awaited()
+        adapter.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_admin_can_disable_persisted_group(self, tmp_path):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        registry_path = tmp_path / "managed-groups.json"
+        config = PlatformConfig(
+            enabled=True,
+            extra={
+                "group_policy": "allowlist",
+                "group_allow_admin_from": ["admin-1"],
+                "group_registry_path": str(registry_path),
+            },
+        )
+        adapter = WeComAdapter(config)
+        adapter.handle_message = AsyncMock()
+        adapter.send = AsyncMock(return_value=SendResult(success=True))
+        await adapter._on_message(self._payload("/group-enable", msg_id="enable"))
+
+        reloaded = WeComAdapter(config)
+        assert reloaded._is_group_allowed("group-1", "member-1") is True
+        reloaded.handle_message = AsyncMock()
+        reloaded.send = AsyncMock(return_value=SendResult(success=True))
+
+        await reloaded._on_message(self._payload("/group-disable", msg_id="disable"))
+
+        assert reloaded._is_group_allowed("group-1", "member-1") is False
+        reloaded.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unregistered_group_message_is_dropped_before_model_dispatch(self, tmp_path):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "group_policy": "allowlist",
+                    "group_allow_admin_from": ["admin-1"],
+                    "group_registry_path": str(tmp_path / "managed-groups.json"),
+                },
+            )
+        )
+        adapter.handle_message = AsyncMock()
+
+        await adapter._on_message(
+            self._payload("private campaign message", sender_id="member-1")
+        )
+
+        adapter.handle_message.assert_not_awaited()
+
+    def test_malformed_registry_shape_fails_closed(self, tmp_path):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        registry_path = tmp_path / "managed-groups.json"
+        registry_path.write_text('{"groups": "group-1"}', encoding="utf-8")
+
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "group_policy": "allowlist",
+                    "group_registry_path": str(registry_path),
+                },
+            )
+        )
+
+        assert adapter._managed_group_ids == set()
+        assert adapter._is_group_allowed("group-1", "member-1") is False
+
+    def test_relative_registry_path_is_rejected(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "group_policy": "allowlist",
+                    "group_registry_path": "relative/groups.json",
+                },
+            )
+        )
+
+        assert adapter._group_registry_path is None
+
+    @pytest.mark.asyncio
+    async def test_failed_registry_write_does_not_enable_group_in_memory(self, tmp_path):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "group_policy": "allowlist",
+                    "group_allow_admin_from": ["admin-1"],
+                    "group_registry_path": str(tmp_path / "managed-groups.json"),
+                },
+            )
+        )
+        adapter._persist_managed_groups = MagicMock(side_effect=OSError("disk full"))
+        adapter.send = AsyncMock(return_value=SendResult(success=True))
+
+        with pytest.raises(OSError, match="disk full"):
+            await adapter._on_message(self._payload("/group-enable"))
+
+        assert adapter._is_group_allowed("group-1", "member-1") is False
+        adapter.send.assert_not_awaited()
 
 
 class TestMediaHelpers:

@@ -40,6 +40,7 @@ from cron.jobs import (
     remove_job,
     resolve_job_ref,
     resume_job,
+    trigger_job,
     update_job)
 from tools.cronjob_prompt_scan import _scan_cron_prompt
 from tools.cronjob_job_args import (
@@ -74,6 +75,37 @@ def _notify_provider_jobs_changed_safe() -> None:
         _notify_provider_jobs_changed()
     except Exception:
         pass
+
+
+def _continuable_run_should_use_gateway_tick(job: Dict[str, Any]) -> bool:
+    """Whether this manual run needs another process's live gateway adapter."""
+    if not job.get("attach_to_session"):
+        return False
+    origin = job.get("origin")
+    if not isinstance(origin, dict):
+        return False
+    origin_platform = str(origin.get("platform") or "").strip().lower()
+    origin_chat = str(origin.get("chat_id") or "").strip()
+    if not origin_platform or not origin_chat:
+        return False
+    deliver = job.get("deliver") or "local"
+    targets = deliver if isinstance(deliver, list) else str(deliver).split(",")
+    normalized = [str(target).strip().lower() for target in targets if str(target).strip()]
+    if not any(
+        target == "origin"
+        or target == origin_platform
+        or target.startswith(f"{origin_platform}:{origin_chat}")
+        for target in normalized
+    ):
+        return False
+    try:
+        import os
+        from gateway.status import get_running_pid
+
+        gateway_pid = get_running_pid(cleanup_stale=False)
+    except Exception:
+        return False
+    return bool(gateway_pid and int(gateway_pid) != os.getpid())
 
 
 # ---------------------------------------------------------------------------
@@ -631,6 +663,26 @@ def _action_run(job: Dict[str, Any], a: Dict[str, Any]) -> str:
         scan_error = _scan_cron_prompt(extra_prompt)
         if scan_error:
             return tool_error(scan_error, success=False)
+    if _continuable_run_should_use_gateway_tick(job):
+        triggered = trigger_job(str(job_id), extra_prompt=extra_prompt)
+        if not triggered:
+            return tool_error(
+                f"Failed to queue continuable job '{job_id}' for the live gateway",
+                success=False,
+            )
+        _notify_provider_jobs_changed_safe()
+        result = _refreshed_job_view(str(job_id))
+        result["executed"] = False
+        result["scheduled_for_gateway"] = True
+        result["execution_mode"] = "gateway_tick"
+        return _dumps({
+            "success": True,
+            "job": result,
+            "note": (
+                "Continuable job queued for the live gateway's next "
+                "scheduler tick so delivery can use its platform adapter."
+            ),
+        })
     # A manual run must actually run even with no ticker active. Preferred: background
     # dispatch (handle now, outcome as a completion event); inline fallback otherwise.
     bg = _try_dispatch_background_run(job, session_id=a["session_id"], extra_prompt=extra_prompt)

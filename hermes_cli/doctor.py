@@ -3263,10 +3263,17 @@ def run_doctor(args):
     from hermes_cli.config import get_env_value
 
     def _gh_authenticated() -> bool:
-        """Check if gh CLI is authenticated via token file or device flow."""
+        """Check if gh CLI is authenticated via token file or device flow.
+
+        Uses ``gh auth status`` without ``--json`` for broad compatibility:
+        gh 2.98+ removed the ``authenticated`` JSON field (only ``hosts``
+        remains), causing ``--json authenticated`` to fail with exit code 1
+        even when logged in. Exit-code semantics are stable across all gh
+        versions (0 = authenticated), and output is captured anyway.
+        """
         try:
             result = subprocess.run(
-                ["gh", "auth", "status", "--json", "authenticated"],
+                ["gh", "auth", "status"],
                 capture_output=True, timeout=10,
             )
             return result.returncode == 0

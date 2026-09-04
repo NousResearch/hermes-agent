@@ -82,6 +82,31 @@ def test_requested_alias_activates_opted_in_profile(tmp_path, monkeypatch):
     _clear_provider_caches()
 
 
+def test_requested_menu_key_activates_opted_in_profile(tmp_path, monkeypatch):
+    """The ``custom:<name>`` form the config and model picker write activates
+    the same profile as the bare entry name."""
+    _hermes_home_with_stub(tmp_path, monkeypatch, install_stub=True)
+    _clear_provider_caches()
+    from providers import resolve_provider_profile
+
+    for requested in ("custom:llamacpp", "custom:llama-swap", "CUSTOM:LlamaCpp"):
+        profile = resolve_provider_profile("custom", requested=requested)
+        assert profile is not None and profile.name == "llamacpp", requested
+    _clear_provider_caches()
+
+
+def test_requested_menu_key_unknown_name_falls_back_to_provider(tmp_path, monkeypatch):
+    """``custom:<other>`` resolves the stock custom profile like the bare name."""
+    _hermes_home_with_stub(tmp_path, monkeypatch, install_stub=True)
+    _clear_provider_caches()
+    from providers import resolve_provider_profile
+
+    for requested in ("custom:rigproxy", "custom:deepseek", "custom:", "custom"):
+        profile = resolve_provider_profile("custom", requested=requested)
+        assert profile is not None and profile.name == "custom", requested
+    _clear_provider_caches()
+
+
 def test_unknown_requested_name_falls_back_to_provider(tmp_path, monkeypatch):
     """A differently-named entry resolves the stock custom profile."""
     _hermes_home_with_stub(tmp_path, monkeypatch, install_stub=True)
@@ -125,7 +150,7 @@ def test_plugin_absent_requested_llamacpp_resolves_custom(tmp_path, monkeypatch)
     _clear_provider_caches()
     from providers import resolve_provider_profile
 
-    for requested in ("llamacpp", "llama-swap", "rigproxy", None):
+    for requested in ("llamacpp", "llama-swap", "custom:llamacpp", "rigproxy", None):
         profile = resolve_provider_profile("custom", requested=requested)
         assert profile is not None and profile.name == "custom", (
             f"requested={requested!r} must resolve custom with no plugin"

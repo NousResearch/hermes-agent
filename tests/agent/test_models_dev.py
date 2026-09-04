@@ -13,6 +13,7 @@ from agent.models_dev import (
     _explicit_model_override,
     _override_context_window,
     _override_for,
+    _provider_override_section,
     _NotModified,
     _validate_registry,
     fetch_models_dev,
@@ -888,6 +889,77 @@ class TestModelOverrides:
             result = _explicit_model_override("copilot", "my-model")
         assert result is not None
         assert result["context_window"] == 222222
+
+    def test_custom_prefix_bare_name_matches(self):
+        """#102425: moved from root repro_102425.py (testpaths=[tests] never collects it)."""
+        overrides = {
+            "jerrita": {
+                "_default": {"supports_reasoning": True},
+                "glm-5.3-flash": {"supports_reasoning": True, "context_window": 123456},
+            },
+        }
+        with self._setup_overrides(overrides):
+            assert _provider_override_section("jerrita") == overrides["jerrita"]
+
+    def test_custom_prefixed_name_matches_bare_section(self):
+        """#102425: moved from root repro_102425.py — strip custom: prefix."""
+        overrides = {
+            "jerrita": {
+                "_default": {"supports_reasoning": True},
+                "glm-5.3-flash": {"supports_reasoning": True, "context_window": 123456},
+            },
+        }
+        with self._setup_overrides(overrides):
+            assert _provider_override_section("custom:jerrita") == overrides["jerrita"]
+
+    def test_explicit_override_custom_prefix(self):
+        """#102425: moved from root repro_102425.py."""
+        overrides = {
+            "jerrita": {
+                "_default": {"supports_reasoning": True},
+                "glm-5.3-flash": {"supports_reasoning": True, "context_window": 123456},
+            },
+        }
+        with self._setup_overrides(overrides):
+            result = _explicit_model_override("custom:jerrita", "glm-5.3-flash")
+        assert result == overrides["jerrita"]["glm-5.3-flash"]
+
+    def test_custom_prefix_strips_then_resolves_alias_models_dev_key(self):
+        """#102425: custom:copilot resolves a github-copilot-keyed section."""
+        overrides = {
+            "github-copilot": {
+                "my-model": {"context_window": 222222},
+            },
+        }
+        with self._setup_overrides(overrides):
+            assert _provider_override_section("custom:copilot") == overrides["github-copilot"]
+            result = _explicit_model_override("custom:copilot", "my-model")
+        assert result is not None
+        assert result["context_window"] == 222222
+
+    def test_custom_prefixed_models_dev_id_resolves_hermes_key(self):
+        """#102425 vice versa: custom:github-copilot resolves a copilot-keyed section."""
+        overrides = {
+            "copilot": {
+                "my-model": {"context_window": 111111},
+            },
+        }
+        with self._setup_overrides(overrides):
+            assert _provider_override_section("custom:github-copilot") == overrides["copilot"]
+            result = _explicit_model_override("custom:github-copilot", "my-model")
+        assert result is not None
+        assert result["context_window"] == 111111
+
+    def test_empty_bare_custom_prefix_returns_none(self):
+        """#102425: _provider_override_section('custom:') returns None without raising."""
+        overrides = {
+            "jerrita": {
+                "glm-5.3-flash": {"context_window": 123456},
+            },
+            "_default": {"context_window": 65536},
+        }
+        with self._setup_overrides(overrides):
+            assert _provider_override_section("custom:") is None
 
     def test_default_fills_gap_for_unknown_model(self):
         """_default applies to models the catalog does not know."""

@@ -908,7 +908,9 @@ def _provider_override_section(provider: str) -> Optional[Dict[str, Any]]:
 
     Accepts either the Hermes provider id or the models.dev provider id as
     the config key, so ``copilot`` and ``github-copilot`` both work
-    regardless of which id space a caller passes in.
+    regardless of which id space a caller passes in. A ``custom:``-prefixed
+    provider id also matches the bare-name section, so ``custom:jerrita``
+    resolves ``jerrita`` overrides.
     """
     overrides = _load_model_overrides()
     if not overrides:
@@ -918,13 +920,19 @@ def _provider_override_section(provider: str) -> Optional[Dict[str, Any]]:
         return None
 
     candidates = [provider_key]
-    mapped = PROVIDER_TO_MODELS_DEV.get(provider_key)
-    if mapped and mapped != provider_key:
-        candidates.append(mapped)
-    # Reverse: caller passed a models.dev id, config keyed by Hermes id.
-    for hermes_id in _models_dev_to_hermes_ids(provider_key):
-        if hermes_id != provider_key:
-            candidates.append(hermes_id)
+    if provider_key.lower().startswith("custom:"):
+        bare = provider_key.split(":", 1)[1].strip()
+        if bare and bare not in candidates:
+            candidates.append(bare)
+
+    for base in list(candidates):
+        mapped = PROVIDER_TO_MODELS_DEV.get(base)
+        if mapped and mapped not in candidates:
+            candidates.append(mapped)
+        # Reverse: caller passed a models.dev id, config keyed by Hermes id.
+        for hermes_id in _models_dev_to_hermes_ids(base):
+            if hermes_id not in candidates:
+                candidates.append(hermes_id)
 
     for key in candidates:
         section = overrides.get(key)

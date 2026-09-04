@@ -21231,6 +21231,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         return source
 
+    def _turn_code_skew_guard(self) -> Optional[str]:
+        """Return a clear "restart required" notice when this process runs stale code.
+
+        Mirrors ``_model_switch_skew_guard`` (slash_commands) and the dashboard's
+        ``_dashboard_code_skew_guard`` for the plain-message turn path. A long-lived
+        gateway/serve process holds ``sys.modules`` from boot; if the checkout was
+        updated underneath it (e.g. ``hermes update`` pulled new code but the unit
+        was not restarted), the first lazy import on a new code path resolves a
+        freshly-pulled consumer module against a stale cached dependency and
+        crashes with a cryptic ``cannot import name ...`` — observed in production
+        as ``fill_empty_non_final_wire_payload`` from ``agent.agent_runtime_helpers``
+        on a serve process kept across an update. Refusing the turn with an
+        actionable notice lets the operator restart and resend, instead of the
+        platform seeing a crash.
+
+        Returns None when no drift is detectable (fresh process, or a non-git
+        install where the boot fingerprint could not be read — never a false
+        positive).
+        """
+        from gateway.code_skew import detect_code_skew
+
+        skew = detect_code_skew()
+        if not skew:
+            return None
+        boot_rev, disk_rev = skew
+        return (
+            f"This backend is running code from {boot_rev} but the checkout on "
+            f"disk is now {disk_rev}. Processing messages would risk a stale-module "
+            f"crash — restart the backend to load the new code, then resend your "
+            f"message."
+        )
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -21243,6 +21275,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _platform_name, source.user_name or source.user_id or "unknown",
             source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
         )
+
+        # Stale-process guard: this gateway/serve may predate a code update.
+        # Refuse with a clear restart notice instead of crashing on the first
+        # lazy import of a freshly-pulled module against a stale cached
+        # dependency (`cannot import name ...`).
+        skew_error = self._turn_code_skew_guard()
+        if skew_error:
+            logger.warning("inbound message refused (stale code): %s", skew_error)
+            await self._deliver_platform_notice(source, skew_error)
+            return
 
         # Get or create session
         # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's

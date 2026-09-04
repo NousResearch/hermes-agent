@@ -51,6 +51,80 @@ class TestShort:
         assert code_skew._short("git:HEAD:abc1234") == "abc1234"
 
 
+class TestTurnCodeSkewGuard:
+    """Turn-path mirror of the model-switch guard.
+
+    Regression: a serve/gateway kept alive across ``hermes update`` crashed
+    with ``cannot import name 'fill_empty_non_final_wire_payload'`` on the
+    first inbound message after the update, because the first lazy import on
+    the new code path resolved against the stale boot-time module graph. The
+    turn handler now refuses with a restart notice instead of crashing.
+    """
+
+    def test_turn_guard_returns_none_without_skew(self, monkeypatch):
+        from gateway import run
+
+        monkeypatch.setattr(code_skew, "detect_code_skew", lambda: None)
+        assert run.GatewayRunner._turn_code_skew_guard(None) is None
+
+    def test_turn_guard_message_names_revs_and_restart(self, monkeypatch):
+        from gateway import run
+
+        monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
+        msg = run.GatewayRunner._turn_code_skew_guard(None)
+        assert msg is not None
+        assert "abc1234567" in msg
+        assert "def4567890" in msg
+        assert "restart the backend" in msg
+        # Deployment-agnostic: never hardcode a Linux-only unit name.
+        assert "systemctl" not in msg
+
+    def test_handler_refuses_and_never_spawns_agent(self, monkeypatch):
+        """A skewed turn delivers the restart notice and never reaches the agent."""
+        import types
+
+        from gateway import run
+
+        monkeypatch.setattr(
+            code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890")
+        )
+
+        notices: list[str] = []
+        spawned: list = []
+
+        async def _fake_deliver(self, source, content: str) -> None:
+            notices.append(content)
+
+        async def _fake_run_agent(self, *a, **k):
+            spawned.append(1)
+            return None
+
+        gateway = object.__new__(run.GatewayRunner)
+        gateway._deliver_platform_notice = types.MethodType(_fake_deliver, gateway)
+        gateway._run_agent = types.MethodType(_fake_run_agent, gateway)
+
+        event = types.SimpleNamespace(
+            text="hello", reply_to_message_id=None, reply_to_text=None,
+            message_id=42, metadata={}, channel_prompt=None, _moa_config=None,
+            message_type=None, timestamp=None,
+        )
+        source = types.SimpleNamespace(
+            platform=None, user_name="u", user_id="1", chat_id="c",
+            thread_id=None, chat_type="private",
+        )
+
+        async def _call():
+            await gateway._handle_message_with_agent(
+                event, source, "quick", 0
+            )
+
+        asyncio.run(_call())
+
+        assert len(notices) == 1
+        assert "restart the backend" in notices[0]
+        assert spawned == []
+
+
 class TestModelSwitchSkewGuard:
     def test_guard_returns_none_without_skew(self, monkeypatch):
         from gateway import slash_commands

@@ -607,9 +607,17 @@ def _reapply_terminal_config_bridge(home_path: Path) -> None:
     ``load_hermes_dotenv(hermes_home=...)`` call would bridge the wrong
     profile's config. Fail-open — a config problem must never break dotenv
     loading (the historical env-driven behavior still applies).
+
+    The guard must compare against the true process launch home
+    (``get_process_hermes_home``), not the context-overridden home
+    (``get_hermes_home``), otherwise a routed profile's cron tick can
+    bridge its own terminal config into the shared process environment
+    and hijack the launch profile's subsequent unscoped turns (#102769).
     """
     try:
-        if Path(home_path).resolve() != _process_hermes_home().resolve():
+        from hermes_constants import get_process_hermes_home
+
+        if Path(home_path).resolve() != get_process_hermes_home().resolve():
             return
         from hermes_cli.config import apply_terminal_config_to_env
 

@@ -4604,6 +4604,55 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
             return messages
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
+# Lean mode: snapshot pristine tool contents BEFORE Phase-1 pruning so
+        # the chunk digests summarize what actually happened, not the pruned
+        # stubs (#compaction-v2). Bounded per entry to keep memory sane.
+        if getattr(self, "tail_mode", "lean") == "lean":
+            self._lean_pristine_tools = {
+                str(m.get("tool_call_id") or ""): (m.get("content") or "")[:80_000]
+                for m in messages
+                if m.get("role") == "tool" and isinstance(m.get("content"), str)
+                and len(m.get("content") or "") > 400
+            }
+        else:
+            self._lean_pristine_tools = {}
+
+        # Size-efficiency guard: skip compression when the LLM summary
+        # would be larger than the content it replaces (runs before Phase-1
+        # pruning to avoid wasting pruning effort on transcripts that would
+        # be returned unchanged).
+        #
+        # The structured template has a _MIN_SUMMARY_TOKENS floor of 2,000
+        # plus ~500 tokens of overhead (headers, instructions, separators).
+        # When the compressible window is small (few messages or short
+        # turns), the summary can be BIGGER than the raw messages it
+        # replaces, causing rapid re-compression (#22037).
+        #
+        # Only apply this guard when the session is genuinely at or above
+        # the compression threshold — unit tests call compress() directly
+        # on tiny transcripts and must still exercise the code path.
+        # Compute approximate boundaries on the original (un-pruned) messages
+        # so the guard can estimate the compressible window size.  Phase 2
+        # recomputes on the pruned messages later with exact boundaries.
+        _guard_compress_start = self._protect_head_size(messages)
+        _guard_compress_start = self._align_boundary_forward(messages, _guard_compress_start)
+        _guard_compress_end = self._find_tail_cut_by_tokens(messages, _guard_compress_start)
+        if _guard_compress_start < _guard_compress_end:
+            _guard_turns = messages[_guard_compress_start:_guard_compress_end]
+            _guard_tokens = estimate_messages_tokens_rough(_guard_turns)
+            _guard_budget = self._compute_summary_budget(_guard_turns)
+            if (
+                display_tokens >= self.threshold_tokens
+                and _guard_tokens <= _guard_budget + 500
+            ):
+                if not self.quiet_mode:
+                    logger.info(
+                        "Compression skipped: compressible window (~%d tokens) not "
+                        "larger than summary budget (%d tokens)",
+                        _guard_tokens,
+                        _guard_budget + 500,
+                    )
+                return messages
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,
@@ -4641,6 +4690,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 f"window {compress_start}-{compress_end} holds only already-summarized handoffs",
             )
             return messages
+
         if not self.quiet_mode:
             self._log_compression_start(
                 display_tokens, compress_start, compress_end, len(turns_to_summarize), n_messages - scan.tail_start,

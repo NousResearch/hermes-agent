@@ -582,14 +582,6 @@ class GroupChatSlashCommandsMixin:
                             f"Run `{rooms_command} {words[0]} bots` again."
                         )
 
-                picker_callback, reusable = _on_room_selected, False
-                try:
-                    from gateway.hosted_room_messaging_files import room_picker_callback
-                    picker_callback, reusable = room_picker_callback(
-                        self, event, service, rooms_command, _on_room_selected
-                    )
-                except ImportError:
-                    pass
                 picker_sent = await self._try_send_group_choice_picker(
                     event,
                     session_key,
@@ -656,6 +648,14 @@ class GroupChatSlashCommandsMixin:
                             f"Run `{rooms_command}` again."
                         )
 
+                picker_callback, reusable = _on_room_selected, False
+                try:
+                    from gateway.hosted_room_messaging_files import room_picker_callback
+                    picker_callback, reusable = room_picker_callback(
+                        self, event, service, rooms_command, _on_room_selected
+                    )
+                except ImportError:
+                    pass
                 picker_sent = await self._try_send_group_choice_picker(
                     event,
                     session_key,

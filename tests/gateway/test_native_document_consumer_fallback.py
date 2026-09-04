@@ -43,7 +43,7 @@ async def test_actual_adapter_fallback_never_says_sent_or_replays(
     assert isinstance(progress, ChoiceProgress)
     result = await progress.complete()
     assert isinstance(result, ChoicePage)
-    assert "could not be confirmed" in result.title
+    assert "Delivery wasn’t confirmed" in result.title
     assert "Sent." not in result.title
     replay = await menu.deliver(item)
     assert isinstance(replay, ChoicePage) and replay.title == result.title
@@ -56,7 +56,7 @@ async def test_actual_adapter_fallback_never_says_sent_or_replays(
         monkeypatch.setattr(Path, "exists", exists)
     _install_success(native)
     retried = await menu.deliver(item, retry=":explicit-again")
-    assert retried == "Sent."
+    assert retried == "File sent."
     assert native.uploaded[0][0] == b"shared bytes"
     assert sorted(receipt(state.db)) == [("delivered", 1), ("unknown", 1)]
     assert not list(state.db.parent.glob("group-file-delivery-tmp/send-*"))

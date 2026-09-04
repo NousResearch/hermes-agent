@@ -48,6 +48,16 @@ class NativeAdapter:
         self.notices.append(kwargs)
         return SendResult(success=True, message_id="notice")
 
+    async def _send_media_fallback_notice(
+        self, _method, _kind, _path, chat_id, caption, reply_to, metadata, **_kwargs
+    ):
+        return await self.send(
+            chat_id=chat_id,
+            content=caption or "File delivery unavailable.",
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
     async def send_document(self, *, chat_id, file_path, file_name=None, **kwargs):
         path = Path(file_path)
         assert path.stat().st_mode & 0o777 == 0o600

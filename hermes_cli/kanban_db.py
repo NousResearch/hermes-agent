@@ -6294,13 +6294,17 @@ def block_task(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
     recurrences = 0
-    with write_txn(conn):
+    caller_owns_txn = bool(getattr(conn, "in_transaction", False))
+    termination: Optional[tuple[Optional[int], Optional[str]]] = None
+    with write_txn(conn, allow_nested=True):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
+            "SELECT status, block_kind, block_recurrences, worker_pid, claim_lock FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if cur_row is None:
             return False
+        if cur_row["status"] == "running":
+            termination = (cur_row["worker_pid"], cur_row["claim_lock"])
         source_status = (
             _retry_status_for_run(conn, task_id)
             if cur_row["status"] == "running"
@@ -6471,6 +6475,8 @@ def block_task(
                 run_id=run_id,
             )
         _blocked_task = get_task(conn, task_id)
+    if termination and not caller_owns_txn:
+        _terminate_reclaimed_worker(termination[0], termination[1])
     _fire_kanban_lifecycle_hook(
         "kanban_task_blocked",
         task_id,
@@ -7936,7 +7942,16 @@ def schedule_task(
     human action, or automation can later call ``unblock_task`` to re-gate them
     to ``ready`` (or ``todo`` if parents are still incomplete).
     """
-    with write_txn(conn):
+    caller_owns_txn = bool(getattr(conn, "in_transaction", False))
+    termination: Optional[tuple[Optional[int], Optional[str]]] = None
+    with write_txn(conn, allow_nested=True):
+        cur_row = conn.execute(
+            "SELECT status, worker_pid, claim_lock FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if cur_row is not None and cur_row["status"] == "running":
+            termination = (cur_row["worker_pid"], cur_row["claim_lock"])
+
         params: list[Any] = [task_id]
         sql = """
             UPDATE tasks
@@ -7965,7 +7980,9 @@ def schedule_task(
                 summary=reason,
             )
         _append_event(conn, task_id, "scheduled", {"reason": reason}, run_id=run_id)
-        return True
+    if termination and not caller_owns_txn:
+        _terminate_reclaimed_worker(termination[0], termination[1])
+    return True
 
 
 # Dispatcher (one-shot pass)

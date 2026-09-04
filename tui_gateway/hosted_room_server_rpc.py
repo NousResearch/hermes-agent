@@ -14,6 +14,7 @@ from types import ModuleType
 from typing import Any, Callable
 
 from gateway import hosted_room_driver as state
+from gateway import hosted_rooms
 
 _LockType = type(threading.Lock())
 
@@ -36,6 +37,7 @@ class HostedRoomServerRPC:
         self._attachment_lock = threading.Lock()
         self._staged_attachments: dict[tuple[str, str, int], dict[str, Any]] = {}
         self._attachment_attempts: dict[tuple[str, int], tuple[str, ...]] = {}
+        self._artifact_scopes: dict[tuple[str, int], dict[str, Any]] = {}
 
     def _call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         envelope = self.server._methods[method](f"hosted-room-{next(self._ids)}", params)
@@ -72,19 +74,49 @@ class HostedRoomServerRPC:
             "profile": profile, "session_id": session_id, "omit_messages": True, "source": source})
 
     def submit(
-        self, *, profile: str, session_id: str, prompt: str, source: str, task: state.TaskIdentity,
-        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
+        self,
+        *,
+        profile: str,
+        session_id: str,
+        prompt: str,
+        source: str,
+        task: state.TaskIdentity,
+        execution_generation: int,
+        on_terminal: Callable[[Mapping[str, Any]], None],
     ) -> Mapping[str, Any]:
+        artifact_scope = self._artifact_scopes.pop(
+            (task.task_id, execution_generation),
+            None,
+        )
+        if artifact_scope is None:
+            exc = HostedRoomSessionError(
+                "prompt.submit", 4120, "hosted room artifact scope is missing"
+            )
+            exc.not_admitted = True
+            raise exc
         try:
-            return self._call("prompt.submit", {
-                "profile": profile, "session_id": session_id, "text": prompt, "source": source,
-                "_hosted_task": {
-                    "room_id": task.room_id, "task_id": task.task_id, "thread_id": task.thread_id,
-                    "turn_id": task.turn_id, "execution_generation": execution_generation},
-                "_hosted_terminal_callback": on_terminal})
+            return self._call(
+                "prompt.submit",
+                {
+                    "profile": profile,
+                    "session_id": session_id,
+                    "text": prompt,
+                    "source": source,
+                    "_hosted_task": {
+                        **artifact_scope,
+                        "thread_id": task.thread_id,
+                        "turn_id": task.turn_id,
+                    },
+                    "_hosted_terminal_callback": _terminal_artifact_callback(
+                        artifact_scope,
+                        on_terminal,
+                    ),
+                },
+            )
         except HostedRoomSessionError as exc:
-            # In-process prompt.submit error envelopes come back before the background turn is
-            # admitted; keep that proof so the driver can defer/requeue without an ambiguity lease.
+            # In-process prompt.submit error envelopes are returned before the
+            # background turn is admitted. Preserve that proof so the driver
+            # can defer or requeue without waiting out an ambiguity lease.
             exc.not_admitted = True
             raise
 
@@ -324,3 +356,70 @@ class HostedRoomServerRPC:
         with self._attachment_lock:
             self._staged_attachments[key] = dict(result)
         return result
+
+
+    def bind_artifact_scope(
+        self,
+        *,
+        task: state.TaskIdentity,
+        execution_generation: int,
+        member_id: str,
+        authority_gateway_id: str,
+        authority_epoch: int,
+        profile: str,
+    ) -> None:
+        """Bind internal publication coordinates before one local submit."""
+
+        installation_id = hosted_rooms.local_authority_gateway_id()
+        self._artifact_scopes[(task.task_id, execution_generation)] = {
+            "room_id": task.room_id,
+            "task_id": task.task_id,
+            "execution_generation": execution_generation,
+            "member_id": member_id,
+            "target_profile": profile,
+            "home_install_id": installation_id,
+            "target_install_id": installation_id,
+            "authority_gateway_id": authority_gateway_id,
+            "authority_epoch": authority_epoch,
+        }
+
+
+def _terminal_artifact_callback(
+    artifact_scope: Mapping[str, Any],
+    on_terminal: Callable[[Mapping[str, Any]], None],
+) -> Callable[[Mapping[str, Any]], None]:
+    """Attach or retire task-scoped files while the profile context is active."""
+
+    def finalize(receipt: Mapping[str, Any]) -> None:
+        result = dict(receipt)
+        try:
+            from gateway.hosted_room_artifacts import (
+                RoomArtifactOutbox,
+                RoomArtifactScope,
+                terminal_artifact_manifest,
+            )
+            from hermes_constants import get_hermes_home
+
+            scope = RoomArtifactScope.from_mapping(artifact_scope)
+            db_path = Path(get_hermes_home()) / "state.db"
+            outbox = RoomArtifactOutbox(db_path)
+            outbox.discard_superseded(scope)
+            if result.get("status") == "settled":
+                artifacts = terminal_artifact_manifest(db_path, scope)
+                if artifacts is not None:
+                    result["artifacts"] = artifacts
+            else:
+                outbox.discard_durably(scope)
+        except Exception:
+            if result.get("status") == "settled":
+                result.update({
+                    "status": "failed",
+                    "error": "A Group Chat file could not be finalized.",
+                })
+            try:
+                outbox.discard_durably(scope)
+            except Exception:
+                pass
+        on_terminal(result)
+
+    return finalize

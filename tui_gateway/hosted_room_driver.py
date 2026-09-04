@@ -781,6 +781,14 @@ class HostedRoomRuntime:
                 # A submit should fail before admission or return after it; an unexpected
                 # exception at that boundary is ambiguous, never a proven failure.
                 submit_attempted = True
+                bind_artifact_scope = getattr(transport, "bind_artifact_scope", None)
+                if callable(bind_artifact_scope):
+                    bind_artifact_scope(
+                        task=attempt.identity, execution_generation=attempt.execution_generation,
+                        member_id=str(task["payload"].get("target_member_id") or profile),
+                        authority_gateway_id=binding.gateway_id, authority_epoch=binding.authority_epoch,
+                        profile=profile,
+                    )
                 deadline_monotonic = time.monotonic() + self.turn_timeout_seconds
                 transport.submit(
                     **_session_kw(profile, session_id), prompt=prompt,
@@ -806,12 +814,27 @@ class HostedRoomRuntime:
             self._drop_lease(binding.room_id)
             self._record_task_error(attempt, f"fenced: {exc}")
         except Exception as exc:
+            # Only start_task's newly allocated, still-fenced generation proves freshness.
+            fresh_preflight_failure = (
+                getattr(exc, "dispatch_not_attempted", False) is True
+                and task.get("status") == "queued"
+                and task.get("execution_generation") == attempt.execution_generation - 1
+            )
+            local_transport_unavailable = (
+                transport is None and isinstance(exc, MemberTransportUnavailable)
+            )
             if transport is not None and attachment_staging_active and attachment_session_id is not None:
                 self._finish_attachment_staging_after_error(
                     transport=transport, profile=profile, session_id=attachment_session_id,
                     execution_generation=attempt.execution_generation, submit_attempted=submit_attempted,
-                    not_admitted=bool(getattr(exc, "not_admitted", False)))
-            if bool(getattr(exc, "not_admitted", False)):
+                    not_admitted=bool(getattr(exc, "not_admitted", False)) or fresh_preflight_failure)
+            if local_transport_unavailable or (
+                submit_attempted
+                and (
+                    bool(getattr(exc, "not_admitted", False))
+                    or fresh_preflight_failure
+                )
+            ):
                 try:
                     if task.get("payload", {}).get("target_member_id"):
                         deferred = state.defer_not_admitted_task(
@@ -1186,6 +1209,8 @@ def _bounded_terminal_result(receipt: Mapping[str, Any]) -> dict[str, Any]:
     error, error_truncated = _truncate_utf8(receipt.get("error", ""), max_bytes=4096)
     return {
         "message_id": receipt.get("message_id"), "text": text,
+        **({"artifacts": receipt.get("artifacts")} if receipt.get("artifacts") else {}),
+        **({"run_id": receipt.get("run_id")} if receipt.get("run_id") else {}),
         **({"error": error} if error else {}),
         **({"truncated": True} if truncated or error_truncated else {})}
 
@@ -1206,7 +1231,8 @@ def _find_terminal_receipt(
         return _TerminalReceipt(
             status=cast(state.TerminalStatus, status), settlement_id=receipt_id,
             result=_bounded_terminal_result(
-                {"message_id": receipt_id, "text": message.get("content", "")}))
+                {"message_id": receipt_id, "text": message.get("content", ""),
+                 "artifacts": message.get("artifacts"), "run_id": message.get("run_id")}))
     return None
 
 

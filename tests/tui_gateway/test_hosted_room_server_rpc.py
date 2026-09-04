@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import base64
 
 import threading
@@ -70,6 +71,14 @@ def test_routes_exact_hidden_session_and_internal_task_proof():
 
     assert rpc.resolve_exact(profile="ops", title="Group: room", source="bot_room")["session_id"] == "tip"
     assert rpc.create(profile="ops", title="Group: room", source="bot_room")["session_id"] == "runtime"
+    rpc.bind_artifact_scope(
+        task=task,
+        execution_generation=2,
+        member_id="member-ops",
+        authority_gateway_id="gateway-a",
+        authority_epoch=1,
+        profile="ops",
+    )
     rpc.submit(
         profile="ops",
         session_id="runtime",
@@ -92,8 +101,18 @@ def test_routes_exact_hidden_session_and_internal_task_proof():
         "thread_id": "thread",
         "turn_id": "turn",
         "execution_generation": 2,
+        "member_id": "member-ops",
+        "target_profile": "ops",
+        "home_install_id": submit["_hosted_task"]["home_install_id"],
+        "target_install_id": submit["_hosted_task"]["target_install_id"],
+        "authority_gateway_id": "gateway-a",
+        "authority_epoch": 1,
     }
-    assert submit["_hosted_terminal_callback"] is callback
+    assert submit["_hosted_task"]["home_install_id"] == submit["_hosted_task"][
+        "target_install_id"
+    ]
+    assert submit["_hosted_terminal_callback"] is not callback
+    assert callable(submit["_hosted_terminal_callback"])
 
     rpc.resume(profile="ops", session_id="stored", source="bot_room")
     resume = next(params for method, params in calls if method == "session.resume")
@@ -176,6 +195,15 @@ def test_prompt_rejection_is_proven_not_admitted():
         "error": {"code": 4121, "message": "session is already busy"},
     }
     rpc = HostedRoomServerRPC(server)
+    task = TaskIdentity("room", "task", "thread", "turn")
+    rpc.bind_artifact_scope(
+        task=task,
+        execution_generation=1,
+        member_id="ops",
+        authority_gateway_id="gateway-a",
+        authority_epoch=1,
+        profile="ops",
+    )
 
     with pytest.raises(HostedRoomSessionError) as exc:
         rpc.submit(
@@ -183,7 +211,7 @@ def test_prompt_rejection_is_proven_not_admitted():
             session_id="runtime",
             prompt="Do the work",
             source="bot_room",
-            task=TaskIdentity("room", "task", "thread", "turn"),
+            task=task,
             execution_generation=1,
             on_terminal=lambda _receipt: None,
         )
@@ -375,3 +403,100 @@ def test_attachment_staging_uses_existing_attach_rpcs_and_deduplicates_attempt(
         assert matching[0]["content_base64"] == base64.b64encode(b"bytes").decode(
             "ascii"
         )
+
+
+def test_terminal_callback_publishes_task_scoped_artifacts(tmp_path: Path, monkeypatch):
+    from gateway.hosted_room_artifacts import RoomArtifactOutbox, RoomArtifactScope
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    server, calls = _server()
+    rpc = HostedRoomServerRPC(server)
+    task = TaskIdentity("room", "task", "thread", "turn")
+    captured = []
+    rpc.bind_artifact_scope(
+        task=task,
+        execution_generation=2,
+        member_id="member-ops",
+        authority_gateway_id="gateway-a",
+        authority_epoch=1,
+        profile="ops",
+    )
+    rpc.submit(
+        profile="ops",
+        session_id="runtime",
+        prompt="Do the work",
+        source="bot_room",
+        task=task,
+        execution_generation=2,
+        on_terminal=captured.append,
+    )
+    submit = next(params for method, params in calls if method == "prompt.submit")
+    scope = RoomArtifactScope.from_mapping({
+        key: submit["_hosted_task"][key]
+        for key in (
+            "room_id",
+            "task_id",
+            "execution_generation",
+            "member_id",
+            "target_profile",
+            "home_install_id",
+            "target_install_id",
+            "authority_gateway_id",
+            "authority_epoch",
+        )
+    })
+    output = tmp_path / "handoff.md"
+    output.write_text("# Handoff\n", encoding="utf-8")
+    RoomArtifactOutbox(home / "state.db").put_path(scope=scope, path=output)
+
+    submit["_hosted_terminal_callback"]({"status": "settled", "text": "Done"})
+
+    assert captured[0]["status"] == "settled"
+    assert captured[0]["artifacts"]["items"][0]["name"] == "handoff.md"
+
+
+def test_terminal_callback_fails_closed_when_manifest_cannot_finalize(
+    tmp_path: Path, monkeypatch
+):
+    from gateway import hosted_room_artifacts
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(
+        hosted_room_artifacts,
+        "terminal_artifact_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("disk fault")),
+    )
+    server, calls = _server()
+    rpc = HostedRoomServerRPC(server)
+    task = TaskIdentity("room", "task", "thread", "turn")
+    captured = []
+    rpc.bind_artifact_scope(
+        task=task,
+        execution_generation=1,
+        member_id="member-ops",
+        authority_gateway_id="gateway-a",
+        authority_epoch=1,
+        profile="ops",
+    )
+    rpc.submit(
+        profile="ops",
+        session_id="runtime",
+        prompt="Do the work",
+        source="bot_room",
+        task=task,
+        execution_generation=1,
+        on_terminal=captured.append,
+    )
+    submit = next(params for method, params in calls if method == "prompt.submit")
+
+    submit["_hosted_terminal_callback"]({"status": "settled", "text": "Done"})
+
+    assert captured == [{
+        "status": "failed",
+        "text": "Done",
+        "error": "A Group Chat file could not be finalized.",
+    }]

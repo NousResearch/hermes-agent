@@ -1107,8 +1107,13 @@ class CredentialPool:
         if entry.source != "device_code":
             return
         try:
-            with _auth_store_lock():
-                auth_store = _load_auth_store()
+            sync_target = (
+                auth_mod._codex_auth_file_path()
+                if self.provider == "openai-codex"
+                else None
+            )
+            with _auth_store_lock(target_path=sync_target):
+                auth_store = _load_auth_store(sync_target)
                 _wt_provider_id = {
                     "nous": "nous",
                     "openai-codex": "openai-codex",
@@ -1154,10 +1159,13 @@ class CredentialPool:
                     return
 
                 global_root = _global_auth_file_path()
-                is_from_root = bool(
-                    source_path is not None
-                    and global_root is not None
-                    and _same_path(source_path, global_root)
+                is_from_root = (
+                    self.provider == "openai-codex"
+                    or (
+                        source_path is not None
+                        and global_root is not None
+                        and _same_path(source_path, global_root)
+                    )
                 )
 
                 if self.provider == "nous":
@@ -1242,8 +1250,14 @@ class CredentialPool:
                 if self.provider == "openai-codex"
                 else self._sync_xai_oauth_entry_from_pool_store
             )
+            lock_target = (
+                auth_mod._codex_auth_file_path()
+                if self.provider == "openai-codex"
+                else None
+            )
             with _auth_store_lock(
-                timeout_seconds=self._single_use_refresh_lock_timeout()
+                timeout_seconds=self._single_use_refresh_lock_timeout(),
+                target_path=lock_target,
             ):
                 synced = sync_entry(entry)
                 if self.provider == "openai-codex":

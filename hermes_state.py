@@ -461,6 +461,31 @@ _read_open_denied_fd_headroom = 0
 _fd_usage_lock = threading.Lock()
 _fd_usage_cache: "tuple[float, Optional[int]]" = (0.0, None)
 
+# Process-global lock registry per database path: serializes self-heal
+# reopens (_reopen_after_close_locked) across all SessionDB instances
+# sharing the same database file. Without this, concurrent self-heal
+# reopens from different SessionDB instances (e.g. cron + gateway) can
+# race and corrupt the database (#102827, #99509).
+_db_reopen_locks: "dict[str, threading.Lock]" = {}
+_db_reopen_locks_lock = threading.Lock()
+
+
+def _get_db_reopen_lock(db_path: Path) -> threading.Lock:
+    """Return the process-global reopen lock for the given database path.
+
+    Creates the lock on first use. The lock ensures that only one
+    SessionDB instance at a time can perform a self-heal reopen for a
+    given database file, preventing concurrent reopens from corrupting
+    the database (torn pages/WAL from concurrent writers).
+    """
+    key = str(db_path.resolve())
+    with _db_reopen_locks_lock:
+        lock = _db_reopen_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _db_reopen_locks[key] = lock
+        return lock
+
 
 def _open_fd_count() -> Optional[int]:
     """Descriptors open in THIS process, or None when it cannot be measured.

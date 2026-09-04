@@ -1355,6 +1355,17 @@ def _run_phase(fn, agent, state: _LoopState, **extra):
     return verdict
 
 
+def _runtime_trace(agent, event_name: str, **fields: Any) -> None:
+    """Best-effort, opt-in trace hook; diagnostics never alter turn semantics."""
+    callback = getattr(agent, "runtime_trace_callback", None)
+    if not callable(callback):
+        return
+    try:
+        callback(event_name, **fields)
+    except Exception:
+        logger.debug("runtime trace callback failed", exc_info=True)
+
+
 def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
     """One API call with its retry/recovery loop (guard → build → call → check, error handlers).
 
@@ -1367,8 +1378,26 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
         if _ng.action == "break":
             return None
         try:
-            _run_phase(build_api_request, agent, s)
-            if _run_phase(perform_api_call, agent, s).action == "break":
+            _runtime_trace(agent, "MODEL_REQUEST_BUILD_ENTER")
+            try:
+                _run_phase(build_api_request, agent, s)
+            except Exception as exc:
+                _runtime_trace(agent, "MODEL_REQUEST_BUILD_EXIT", success=False,
+                               error_class=type(exc).__name__)
+                raise
+            _runtime_trace(agent, "MODEL_REQUEST_BUILD_EXIT", success=True)
+            _runtime_trace(agent, "MODEL_PROVIDER_CALL_ENTER")
+            try:
+                _provider_verdict = _run_phase(perform_api_call, agent, s)
+            except Exception as exc:
+                _runtime_trace(agent, "MODEL_PROVIDER_CALL_EXIT", success=False,
+                               error_class=type(exc).__name__)
+                raise
+            _runtime_trace(agent, "MODEL_PROVIDER_CALL_EXIT", success=True)
+            if not getattr(agent, "_runtime_trace_first_activity_emitted", False):
+                agent._runtime_trace_first_activity_emitted = True
+                _runtime_trace(agent, "MODEL_FIRST_ACTIVITY", success=True)
+            if _provider_verdict.action == "break":
                 return None
             _rc = _run_phase(check_api_response, agent, s)
             if _rc.action == "return":

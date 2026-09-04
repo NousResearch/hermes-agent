@@ -170,6 +170,177 @@ def _compression_failure():
     }
 
 
+def _first_turn_auth_failure():
+    return {
+        "final_response": "provider authentication rejected",
+        "error": "provider authentication rejected",
+        "failed": True,
+        "completed": False,
+        "failure_reason": "auth",
+        "failure_retryable": False,
+    }
+
+
+def test_runtime_trace_is_opt_in_and_content_free(server, monkeypatch):
+    emitted = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload)))
+    private_sid = "session-with-private-value"
+    private_correlation = "trace-with-private-value"
+
+    server._runtime_trace(
+        {"runtime_trace_enabled": True, "runtime_trace_id": private_correlation},
+        private_sid, "MODEL_PROVIDER_CALL_ENTER", operation="provider_request")
+
+    assert len(emitted) == 1
+    event, sid, payload = emitted[0]
+    assert event == "runtime.trace"
+    assert sid == private_sid
+    assert payload["event_name"] == "MODEL_PROVIDER_CALL_ENTER"
+    assert set(payload) == {
+        "event_name", "monotonic_ns", "correlation_id", "process_id", "thread_id", "operation"}
+    assert private_sid not in str(payload)
+    assert private_correlation not in str(payload)
+
+    server._runtime_trace({}, private_sid, "MODEL_PROVIDER_CALL_ENTER")
+    assert len(emitted) == 1
+
+
+def test_first_provider_auth_failure_pauses_unstarted_goal_fail_closed(server, hermes_home, turn_env):
+    from hermes_cli.goals import GoalManager
+
+    session_key = "first-turn-auth-failure"
+    GoalManager(session_key).set("harmless goal", max_turns=1)
+    calls = []
+    agent = types.SimpleNamespace(
+        session_id=session_key, provider="openai-codex", model="gpt-test",
+        clear_interrupt=lambda: None,
+        run_conversation=lambda *args, **kwargs: calls.append((args, kwargs)) or _first_turn_auth_failure(),
+    )
+    turn_session = _turn_session(agent, session_key)
+
+    server._run_prompt_submit("rid", "sid", turn_session, "harmless prompt")
+
+    state = GoalManager(session_key).state
+    assert state is not None
+    assert state.status == "paused"
+    assert state.turns_used == 0
+    assert state.paused_reason == "HERMES_RUNTIME_MODEL_AUTH_FAILED"
+    assert len(calls) == 1
+    updates = [p for event, _sid, p in turn_env if event == "status.update"]
+    assert updates == [{
+        "kind": "runtime", "code": "HERMES_RUNTIME_MODEL_AUTH_FAILED",
+        "retryable": False, "text": "HERMES_RUNTIME_MODEL_AUTH_FAILED",
+    }]
+
+
+def test_runtime_failure_does_not_pause_goal_after_a_native_turn(server, hermes_home):
+    from hermes_cli.goals import GoalManager, save_goal
+
+    session_key = "post-turn-runtime-failure"
+    manager = GoalManager(session_key)
+    state = manager.set("harmless goal", max_turns=2)
+    state.turns_used = 1
+    save_goal(session_key, state)
+
+    paused = server._pause_unstarted_goal_for_runtime_failure(
+        {"session_key": session_key}, "sid",
+        {"layer": "auth", "code": "auth", "retryable": False})
+
+    assert paused is False
+    after = GoalManager(session_key).state
+    assert after is not None
+    assert after.status == "active"
+    assert after.turns_used == 1
+
+
+@pytest.mark.parametrize("canary_id", ("one", "two"))
+def test_source_only_first_turn_canary_completes_once(
+    server, hermes_home, monkeypatch, tmp_path, canary_id
+):
+    """Two independent max-turns=1 canaries exercise the native TUI Goal path.
+
+    The model transport is a deterministic test client, but both canaries pass
+    through the actual request-build and provider-call adapter before native
+    Goal persistence.  No network, credential, tool, or business action is
+    involved.
+    """
+    from hermes_cli.goals import GoalManager
+    from run_agent import AIAgent
+
+    emitted = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload))
+    )
+    monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
+    monkeypatch.setattr(server, "_sync_agent_model_with_config", lambda sid, session: None)
+    monkeypatch.setattr(server, "_session_cwd", lambda session: str(tmp_path))
+    monkeypatch.setattr(server, "_register_session_cwd", lambda session: None)
+    monkeypatch.setattr(server, "_tts_stream_begin", lambda: None)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_get_usage", lambda agent: {})
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(
+        server,
+        "_start_usage_ticker",
+        lambda *args, **kwargs: (threading.Event(), types.SimpleNamespace(join=lambda: None)),
+    )
+    session_key = f"source-only-first-turn-{canary_id}"
+    GoalManager(session_key).set("harmless source canary", max_turns=1)
+    with (
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            session_id=session_key,
+        )
+    agent.client = MagicMock()
+    agent.client.chat.completions.create.return_value = types.SimpleNamespace(
+        choices=[types.SimpleNamespace(
+            message=types.SimpleNamespace(content="harmless source-only completion", tool_calls=None),
+            finish_reason="stop",
+        )],
+        model="test/model",
+        usage=None,
+    )
+    agent._cached_system_prompt = "You are helpful."
+    agent._use_prompt_caching = False
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    agent._persist_session = lambda *args, **kwargs: None
+    agent._save_trajectory = lambda *args, **kwargs: None
+    agent._cleanup_task_resources = lambda *args, **kwargs: None
+    turn_session = _turn_session(agent, session_key)
+    turn_session.update({"runtime_trace_enabled": True, "runtime_trace_id": f"canary-{canary_id}"})
+    agent.runtime_trace_callback = lambda event_name, **fields: server._runtime_trace(
+        turn_session, f"sid-{canary_id}", event_name, **fields
+    )
+
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "complete", False, None, False)):
+        server._run_prompt_submit("rid", f"sid-{canary_id}", turn_session, "harmless source canary")
+        run_thread = turn_session.get("_run_thread")
+        assert run_thread is not None
+        run_thread.join(timeout=20)
+        assert not run_thread.is_alive()
+
+    state = GoalManager(session_key).state
+    assert state is not None
+    assert state.status == "done"
+    assert state.turns_used == 1
+    assert agent.client.chat.completions.create.call_count == 1
+    traces = [payload for event, _sid, payload in emitted if event == "runtime.trace"]
+    names = [trace["event_name"] for trace in traces]
+    assert "MODEL_PROVIDER_CALL_ENTER" in names
+    assert "MODEL_FIRST_ACTIVITY" in names
+    assert "FIRST_NATIVE_TURN_PERSISTED" in names
+
+
 # ── command.dispatch /goal ────────────────────────────────────────────
 
 

@@ -296,6 +296,8 @@ def _create_overrides(params: dict) -> tuple:
 @method("session.create")
 def _(rid, params: dict) -> dict:
     (sid, source), key = _new_runtime_ids(params), _new_session_key()
+    runtime_trace_enabled = is_truthy_value(params.get("runtime_trace", False))
+    runtime_trace_id = str(params.get("runtime_trace_id") or "").strip()
     history = _coerce_seed_history(params.get("messages"))
     # Branch: links back so list_sessions_rich keeps it visible and the sidebar nests it.
     parent_session_id = _str_param(params, "parent_session_id") or None
@@ -325,10 +327,13 @@ def _(rid, params: dict) -> dict:
             "pending_hidden": _flag(params, "hidden"), "room_plumbing": _flag(params, "room_plumbing"),
             "follow_profile_config": _flag(params, "follow_profile_config"),
             "profile_home": str(profile_home) if profile_home is not None else None,
-            "running": False, "session_key": key, "show_reasoning": _load_show_reasoning(), "source": source,
+            "running": False, "runtime_id": sid, "session_key": key,
+            "show_reasoning": _load_show_reasoning(), "source": source,
+            "runtime_trace_enabled": runtime_trace_enabled, "runtime_trace_id": runtime_trace_id,
             "slash_worker": None, "tool_progress_mode": _load_tool_progress_mode(), "tool_started_at": {},
             "transport": current_transport() or _stdio_transport}
         _register_session_cwd(_sessions[sid])
+    _runtime_trace(_sessions[sid], sid, "SESSION_RESOLUTION_EXIT", success=True)
     # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded branch children.
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop launch (and every "New agent" /
     # draft) opens a session here just to paint the composer, so eagerly creating a row left an "Untitled"

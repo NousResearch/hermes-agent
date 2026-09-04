@@ -96,6 +96,13 @@ _ALLOWED: dict[tuple[str, str], str] = {
         "agent-browser runs via `npx`, resolved against the extended browser "
         "PATH that _merge_browser_path() already seeds with the managed dirs."
     ),
+    ("hermes_cli/node_runtime.py", "npm"): (
+        "WSL fallback in _resolve_node_runtime_npm(): after "
+        "find_node_executable('npm') returns a Windows shim on a POSIX host, "
+        "deliberately re-scans PATH (skipping /mnt/* interop entries) for a "
+        "Linux-native npm — same reviewed class as the update_cmd.py npm "
+        "WSL diagnostic."
+    ),
 }
 
 

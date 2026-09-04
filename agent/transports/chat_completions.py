@@ -260,6 +260,46 @@ def _apply_max_tokens(api_kwargs: dict, model: str, reasoning_config: Any, param
         api_kwargs["max_tokens"] = params["anthropic_max_output"]
 
 
+def _tool_effective_name(tool: Any) -> str | None:
+    """Return a tool's effective name for both OpenAI-style and flat tools.
+
+    OpenAI function tools nest the name under ``{"function": {"name": …}}``;
+    some providers/tools carry a flat top-level ``{"name": …}``.
+    """
+    if not isinstance(tool, dict):
+        return None
+    fn = tool.get("function")
+    if isinstance(fn, dict) and isinstance(fn.get("name"), str):
+        return fn["name"]
+    name = tool.get("name")
+    return name if isinstance(name, str) else None
+
+
+def _omit_openrouter_online_web_search(tools: Any, model: str, base_url: Any) -> Any:
+    """Drop the client ``web_search`` tool on OpenRouter xAI ``:online`` requests.
+
+    An OpenRouter ``x-ai/…:online`` request already carries OpenRouter's own
+    server-side online-search tool named ``web_search``. Also forwarding Hermes'
+    client ``web_search`` makes xAI reject the whole request with
+    ``HTTP 400: Duplicate tool names: web_search`` (#76481). Only the client
+    ``web_search`` is removed — ``web_extract``, terminal, and every other tool
+    are preserved. Bare xAI, non-OpenRouter xAI, and non-xAI OpenRouter requests
+    keep the client ``web_search`` unchanged.
+    """
+    if not tools:
+        return tools
+    from utils import base_url_host_matches
+
+    model_lower = (model or "").lower()
+    if not (
+        model_lower.endswith(":online")
+        and "x-ai/" in model_lower
+        and base_url_host_matches(str(base_url or ""), "openrouter.ai")
+    ):
+        return tools
+    return [t for t in tools if _tool_effective_name(t) != "web_search"]
+
+
 def _base_kwargs(model: str, sanitized: list, tools: Any, params: dict, profile: Any = None) -> dict[str, Any]:
     """Shared ``{model, messages[, temperature][, timeout][, tools]}`` scaffold for both build paths.
 
@@ -277,6 +317,8 @@ def _base_kwargs(model: str, sanitized: list, tools: Any, params: dict, profile:
             api_kwargs["temperature"] = params["temperature"]
     if params.get("timeout") is not None:
         api_kwargs["timeout"] = params["timeout"]
+    if tools:
+        tools = _omit_openrouter_online_web_search(tools, model, params.get("base_url"))
     if tools:
         # Moonshot/Kimi uses a stricter JSON Schema flavor; rewriting here also covers aggregator routes.
         api_kwargs["tools"] = sanitize_moonshot_tools(tools) if is_moonshot_model(model) else tools

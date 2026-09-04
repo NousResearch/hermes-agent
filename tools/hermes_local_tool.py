@@ -43,6 +43,10 @@ def _available() -> bool:
 _ENGINE = None
 _ENGINE_ERR: str | None = None
 _LOCK = threading.Lock()
+# os.chdir عالمي على مستوى العملية، وهذا التطبيق متعدد الخيوط: نداءان
+# متوازيان كانا يفسدان مجلد بعضهما وقد يتركان التطبيق كله في مجلد خاطئ.
+# كل تبديل مجلد يمرّ عبر هذا القفل، ولا يُستخدم إلا حيث لا بديل عنه.
+_CWD_LOCK = threading.RLock()
 
 
 def _engine():
@@ -64,13 +68,18 @@ def _engine():
             if str(d) not in sys.path:
                 sys.path.insert(0, str(d))
                 added = True
-            cwd = os.getcwd()
-            os.chdir(d)          # قاعدة الذاكرة ومسارات .env نسبية للمجلد
-            try:
-                from hermes_boot import boot  # type: ignore
-                _ENGINE = boot()
-            finally:
-                os.chdir(cwd)
+            # تثبيت المسارات مطلقة قبل الإقلاع: يزيل اعتماد قاعدة الذاكرة
+            # و.env على مجلد العمل، فلا نحتاج chdir في أي نداء لاحق.
+            os.environ.setdefault("DB_PATH", str(d / "hermes_memory.db"))
+            os.environ.setdefault("HERMES_CODEX_DOCS", str(d / "codex_docs"))
+            with _CWD_LOCK:
+                cwd = os.getcwd()
+                os.chdir(d)      # الإقلاع وحده يحتاجه (تحميل .env النسبي)
+                try:
+                    from hermes_boot import boot  # type: ignore
+                    _ENGINE = boot()
+                finally:
+                    os.chdir(cwd)
         except Exception as exc:
             if added:
                 try:
@@ -83,16 +92,23 @@ def _engine():
 
 
 def _in_dir(fn, *a, **kw):
-    """ينفّذ داخل مجلد هيرمس (قاعدة البيانات والفهارس نسبية له)."""
-    cwd = os.getcwd()
-    try:
-        os.chdir(_local_dir())
-        return fn(*a, **kw)
-    finally:
+    """
+    ينفّذ داخل مجلد هيرمس، محروساً بقفل.
+
+    بعد تثبيت DB_PATH مطلقاً عند الإقلاع لم يعد أغلب الكود يحتاج مجلد العمل،
+    لكن يبقى مسار احتياطي لأي جزء يقرأ مساراً نسبياً. القفل إلزامي: chdir
+    يغيّر حالة العملية كلها، فبدونه ينهار أي نداءين متوازيين معاً.
+    """
+    with _CWD_LOCK:
+        cwd = os.getcwd()
         try:
-            os.chdir(cwd)
-        except Exception:
-            pass
+            os.chdir(_local_dir())
+            return fn(*a, **kw)
+        finally:
+            try:
+                os.chdir(cwd)
+            except Exception:
+                pass
 
 
 def _ok(payload: dict) -> str:

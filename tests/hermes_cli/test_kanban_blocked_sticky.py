@@ -13,10 +13,11 @@ These tests pin down:
 
 * Worker / operator-initiated blocks are sticky and survive
   ``recompute_ready``.
-* Circuit-breaker blocks (``gave_up`` event, status flipped via
-  ``_record_task_failure``) still auto-recover — the original intent
-  of #40c1decb3 is preserved.
-* An explicit ``kanban_unblock`` clears the sticky state.
+* Ordinary circuit-breaker blocks (``gave_up`` without protocol-breaker
+  metadata) still auto-recover — the original intent of #40c1decb3 is
+  preserved.
+* A protocol breaker that exhausts its violation-only budget stays blocked.
+* An explicit ``kanban_unblock`` clears either sticky state.
 * The full block → promote → crash → ``gave_up`` loop is broken after
   this fix: subsequent ticks leave the task blocked.
 
@@ -79,8 +80,125 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
 
 
 # ---------------------------------------------------------------------------
-# Circuit-breaker blocks still auto-recover (preserve #40c1decb3 intent)
+# Protocol-breaker blocks are sticky; ordinary failures keep retry semantics
 # ---------------------------------------------------------------------------
+
+
+def _drive_protocol_violation(
+    conn, task_id: str, pid: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reap one clean worker exit without a terminal kanban call."""
+    import hermes_cli.kanban_db as live_kb
+
+    host = live_kb._claimer_id().split(":", 1)[0]
+    claimed = live_kb.claim_task(conn, task_id, claimer=f"{host}:test")
+    assert claimed is not None
+    live_kb._set_worker_pid(conn, task_id, pid)
+    live_kb._record_worker_exit(pid, 0)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    monkeypatch.setattr(live_kb, "_pid_alive", lambda _pid: False)
+    assert task_id in live_kb.detect_crashed_workers(conn)
+
+
+def test_protocol_breaker_stays_blocked_until_explicit_unblock(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Three clean protocol exits trip a sticky breaker.
+
+    A later dispatcher tick must neither promote nor spawn the task.  An
+    explicit operator unblock is still allowed to start a fresh attempt.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="protocol breaker", assignee="worker")
+
+        for attempt in range(kb._PROTOCOL_VIOLATION_FAILURE_LIMIT):
+            _drive_protocol_violation(conn, tid, 81000 + attempt, monkeypatch)
+            expected = (
+                "blocked"
+                if attempt + 1 == kb._PROTOCOL_VIOLATION_FAILURE_LIMIT
+                else "ready"
+            )
+            assert kb.get_task(conn, tid).status == expected
+
+        gave_up = [e for e in kb.list_events(conn, tid) if e.kind == "gave_up"]
+        assert len(gave_up) == 1
+        assert (gave_up[0].payload or {})["protocol_violations"] == 3
+        assert (gave_up[0].payload or {})["protocol_violation_limit"] == 3
+
+        before_tick = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS id FROM task_events WHERE task_id = ?",
+            (tid,),
+        ).fetchone()["id"]
+        spawn_calls = []
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda *args, **kwargs: spawn_calls.append((args, kwargs)),
+            reconcile_orphans=False,
+        )
+
+        assert result.promoted == 0
+        assert result.spawned == []
+        assert spawn_calls == []
+        tick_kinds = {
+            row["kind"]
+            for row in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ? AND id > ?",
+                (tid, before_tick),
+            )
+        }
+        assert tick_kinds.isdisjoint({"promoted", "claimed", "spawned"})
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        assert kb.unblock_task(conn, tid)
+        assert kb.get_task(conn, tid).status == "ready"
+        assert kb.claim_task(conn, tid, claimer="operator-approved-retry") is not None
+
+
+def test_non_protocol_failures_keep_existing_retry_semantics(
+    kanban_home: Path,
+) -> None:
+    """The protocol guard must not make unrelated transient failures sticky."""
+    with kb.connect() as conn:
+        retryable = kb.create_task(conn, title="transient", assignee="worker")
+        assert kb.claim_task(conn, retryable) is not None
+        assert not kb._record_task_failure(
+            conn,
+            retryable,
+            "temporary worker failure",
+            outcome="spawn_failed",
+            failure_limit=5,
+            release_claim=True,
+            end_run=True,
+        )
+        task = kb.get_task(conn, retryable)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 1
+        assert kb.claim_task(conn, retryable) is not None
+
+
+def test_ordinary_gave_up_recovers_when_failure_limit_increases(
+    kanban_home: Path,
+) -> None:
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ordinary breaker", assignee="worker")
+        assert kb.claim_task(conn, tid) is not None
+        assert kb._record_task_failure(
+            conn,
+            tid,
+            "temporary worker failure",
+            outcome="spawn_failed",
+            failure_limit=1,
+            release_claim=True,
+            end_run=True,
+        )
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        gave_up = next(e for e in kb.list_events(conn, tid) if e.kind == "gave_up")
+        assert {"protocol_violations", "protocol_violation_limit"}.isdisjoint(
+            gave_up.payload or {}
+        )
+        assert kb.recompute_ready(conn, failure_limit=2) == 1
+        assert kb.get_task(conn, tid).status == "ready"
 
 
 

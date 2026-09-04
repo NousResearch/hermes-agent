@@ -4452,8 +4452,7 @@ def _synthesize_ended_run(
 # ---------------------------------------------------------------------------
 
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Return True when ``task_id`` is sticky-blocked by an explicit
-    worker/operator ``kanban_block`` call (#28712).
+    """Return True when ``task_id`` requires an explicit unblock.
 
     A ``blocked`` status can come from two very different sources:
 
@@ -4463,30 +4462,36 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
       should stay blocked until an operator unblocks it.  The block tool
       emits a ``"blocked"`` event row in ``task_events``.
 
-    * **Circuit-breaker** — ``_record_task_failure`` tripped after
-      repeated crashes / spawn failures / timeouts.  This emits
-      ``"gave_up"``, *not* ``"blocked"``, and is meant to recover
-      automatically once the underlying conditions change (e.g. parents
-      finish, transient infra error clears).
+    * **Circuit-breaker** — ``_record_task_failure`` tripped after repeated
+      failures and emitted ``"gave_up"``. Ordinary failures can recover
+      automatically when conditions change, but a protocol-violation breaker
+      has already exhausted its separate retry budget and must stay blocked.
 
-    The cheapest signal that distinguishes the two is the most recent
-    ``"blocked"`` / ``"unblocked"`` event for the task.  If the most
-    recent one is ``"blocked"`` (or there is a ``"blocked"`` event and
-    no ``"unblocked"`` event has fired since), the task is sticky and
-    ``recompute_ready`` must *not* auto-promote it.
-
-    Returns ``False`` when there is no such event at all (e.g. the task
-    was set to ``status='blocked'`` by the circuit breaker or by direct
-    DB manipulation) — preserves the pre-#28712 auto-recover semantics
-    for that path.
+    ``unblocked`` is the durable operator-approval barrier: only explicit
+    blocks or threshold-crossing protocol ``gave_up`` events after the latest
+    unblock are sticky. Other circuit-breaker and legacy blocked rows retain
+    the pre-#28712 auto-recovery behavior.
     """
-    row = conn.execute(
-        "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
-        "ORDER BY id DESC LIMIT 1",
+    rows = conn.execute(
+        "SELECT kind, payload FROM task_events "
+        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked', 'gave_up') "
+        "ORDER BY id DESC",
         (task_id,),
-    ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    )
+    for row in rows:
+        if row["kind"] == "unblocked":
+            return False
+        if row["kind"] == "blocked":
+            return True
+        try:
+            payload = json.loads(row["payload"]) if row["payload"] else {}
+            violations = int(payload["protocol_violations"])
+            limit = int(payload["protocol_violation_limit"])
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if violations >= limit:
+            return True
+    return False
 
 
 def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
@@ -4531,9 +4536,8 @@ def recompute_ready(
     blocked purely by a parent dependency unblocks itself when the
     parent completes), *except* in two cases:
 
-    1. The most recent block event was a worker-initiated
-       ``kanban_block`` — those stay blocked until an explicit
-       ``kanban_unblock`` (#28712).
+    1. A worker-initiated ``kanban_block`` or an exhausted protocol-violation
+       breaker occurred after the latest explicit ``kanban_unblock``.
 
     2. The task's ``consecutive_failures`` has reached the effective
        failure limit.  This prevents infinite retry loops when a task
@@ -4562,10 +4566,9 @@ def recompute_ready(
             task_id = row["id"]
             cur_status = row["status"]
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
-                # Worker / operator asked for explicit human intervention — do not
-                # silently auto-recover.  ``unblock_task`` is the only
-                # legitimate exit (it emits ``"unblocked"`` which flips
-                # this predicate back).
+                # Explicit handoffs and exhausted protocol-only retry budgets
+                # require operator approval. ``unblock_task`` emits the durable
+                # barrier that makes a later retry eligible again.
                 continue
             parents = conn.execute(
                 "SELECT t.status FROM tasks t "

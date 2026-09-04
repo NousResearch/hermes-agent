@@ -13,8 +13,8 @@ def _module(name: str, **attrs):
     return module
 
 
-def test_oneshot_passes_named_provider_request_overrides_to_agent(monkeypatch):
-    """The one-shot constructor must receive the resolver's extra_body."""
+def test_oneshot_passes_named_provider_request_overrides_and_reasoning_to_agent(monkeypatch):
+    """The one-shot constructor must receive provider and CLI request controls."""
     from hermes_cli.oneshot import _run_agent
 
     captured = {}
@@ -93,7 +93,7 @@ def test_oneshot_passes_named_provider_request_overrides_to_agent(monkeypatch):
         ),
     )
 
-    text, result = _run_agent("hello")
+    text, result = _run_agent("hello", reasoning="max")
 
     assert text == "ok"
     assert not result.get("failed")
@@ -104,4 +104,8 @@ def test_oneshot_passes_named_provider_request_overrides_to_agent(monkeypatch):
                 "effort": "medium",
             }
         }
+    }
+    assert captured["reasoning_config"] == {
+        "enabled": True,
+        "effort": "max",
     }

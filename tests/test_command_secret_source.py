@@ -1,7 +1,7 @@
 """E2E tests for the ``command`` secret source.
 
 These exercise the REAL resolution path: real helper shell scripts written
-to a temp dir (chmod +x), real ``/bin/sh -c`` subprocesses, and a real temp
+to a temp dir (chmod +x), real resolved POSIX shell subprocesses, and a real temp
 HERMES_HOME with a config.yaml routing ``secrets.provider: command`` through
 ``hermes_cli.env_loader._apply_external_secret_sources``.
 
@@ -76,6 +76,30 @@ def test_profile_helper_does_not_inherit_process_secret(monkeypatch):
         reset_source_environment(token)
 
     assert output == "unset|profile-value"
+
+
+def test_helper_uses_resolved_sh_from_reduced_path(monkeypatch):
+    import agent.secret_sources.command as command_source
+
+    resolved_sh = "/run/current-system/sw/bin/sh"
+    seen = {}
+
+    class FakeProcess:
+        pid = 1234
+        returncode = 0
+
+        def communicate(self, timeout):
+            return b"CMDTEST_API_KEY=resolved\n", b""
+
+    def fake_popen(argv, **kwargs):
+        seen["argv"] = argv
+        return FakeProcess()
+
+    monkeypatch.setattr(command_source, "resolve_executable", lambda name: resolved_sh)
+    monkeypatch.setattr(command_source.subprocess, "Popen", fake_popen)
+
+    assert get_command_secret(command="printf x", key="CMDTEST_API_KEY") == "resolved"
+    assert seen["argv"] == [resolved_sh, "-c", "printf x"]
 
 
 @pytest.fixture(autouse=True)

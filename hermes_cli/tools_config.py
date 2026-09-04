@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 
+from hermes_cli._subprocess_compat import resolve_executable
 from hermes_cli.config import (
     cfg_get,
     load_config, save_config, get_env_value, save_env_value,
@@ -1626,7 +1627,7 @@ def _run_cua_driver_installer(
     The scripts are idempotent: they always download the latest release, so
     re-running on an already-installed system performs an upgrade.
 
-    * macOS / Linux → ``curl -fsSL …/install.sh | /bin/bash``.
+    * macOS / Linux → ``curl -fsSL …/install.sh | bash``.
     * Windows       → ``powershell -NoProfile -ExecutionPolicy Bypass -Command
       "irm …/install.ps1 | iex"``.
 
@@ -1676,7 +1677,7 @@ def _run_cua_driver_installer(
             "https://raw.githubusercontent.com/trycua/cua/main/"
             "libs/cua-driver/scripts/install.sh"
         )
-        manual_hint = f'/bin/bash -c "$(curl -fsSL {install_url})"'
+        manual_hint = f'bash -c "$(curl -fsSL {install_url})"'
         fd, script_path = _tempfile.mkstemp(prefix="cua-driver-install-", suffix=".sh")
         os.close(fd)
         try:
@@ -1701,7 +1702,18 @@ def _run_cua_driver_installer(
             except OSError:
                 pass
             return False
-        install_cmd = ["/bin/bash", script_path]
+        bash = resolve_executable("bash")
+        if bash is None:
+            _print_warning(
+                "    cua-driver installer requires bash, but no executable bash "
+                "was found on PATH or the known platform paths."
+            )
+            try:
+                os.remove(script_path)
+            except OSError:
+                pass
+            return False
+        install_cmd = [bash, script_path]
     use_shell = False
 
     if show_progress:

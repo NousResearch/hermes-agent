@@ -1406,7 +1406,7 @@ class TestWSL2PowerShellFallback:
             m = MagicMock()
             # Simulate the PowerShell pipeline failing (nonzero rc), and
             # the fallback ffplay succeeding.
-            if cmd[0] in ("/bin/sh", "sh"):
+            if cmd[0].endswith("/sh"):
                 m.returncode = 1
             else:
                 m.returncode = 0
@@ -1415,6 +1415,7 @@ class TestWSL2PowerShellFallback:
 
         with patch("tools.voice_mode._is_wsl2_env", return_value=True), \
              patch("tools.voice_mode._import_audio", side_effect=ImportError), \
+             patch("tools.voice_mode.resolve_executable", return_value="/run/current-system/sw/bin/sh"), \
              patch("tools.voice_mode.shutil.which",
                    side_effect=lambda x: f"/bin/{x}" if x in ("powershell.exe", "ffmpeg", "ffplay", "sh") else (x if x.startswith("/") else None)), \
              patch("tools.voice_mode.subprocess.check_output",
@@ -1431,7 +1432,7 @@ class TestWSL2PowerShellFallback:
             f"Expected sh pipeline to be tried and fail, then ffplay to be "
             f"tried: {captured_cmds}"
         )
-        assert captured_cmds[0][0] in ("/bin/sh", "sh")
+        assert captured_cmds[0][0] == "/run/current-system/sw/bin/sh"
         assert captured_cmds[1][0] == "ffplay"
         # The subshell command must capture and re-exit with $rc, not rely
         # on rm -f's exit status.

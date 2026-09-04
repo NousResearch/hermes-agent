@@ -17,7 +17,7 @@ from pathlib import Path
 
 from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment, _pipe_stdin
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import resolve_executable, windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -982,13 +982,7 @@ def build_subprocess_env(
 def _find_bash() -> str:
     """Find bash for command execution."""
     if not _IS_WINDOWS:
-        return (
-            shutil.which("bash")
-            or ("/usr/bin/bash" if os.path.isfile("/usr/bin/bash") else None)
-            or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
-            or os.environ.get("SHELL")
-            or "/bin/sh"
-        )
+        return resolve_executable("bash") or os.environ.get("SHELL") or "/bin/sh"
 
     candidates: list[str] = []
 

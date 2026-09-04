@@ -48,7 +48,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 # platforms provably never touch systemd code (#70716 cross-platform audit).
 _IS_LINUX = platform.system() == "Linux"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import resolve_executable, windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -189,7 +189,7 @@ def _systemd_run_user_scope_available() -> bool:
     bus that ``systemd-run --user`` needs may be absent even though the
     binary is on PATH, causing every spawn to fail with
     ``Failed to connect to user bus``.  We do a cheap no-op probe
-    (``systemd-run --user --scope --unit=… -- /bin/true``) and remember the
+    (``systemd-run --user --scope --unit=… -- true``) and remember the
     outcome.
     """
     global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
@@ -221,10 +221,9 @@ def _systemd_run_user_scope_available() -> bool:
         available = False
         if _IS_LINUX:
             try:
-                import shutil
-
-                binary = shutil.which("systemd-run")
-                if binary:
+                binary = resolve_executable("systemd-run")
+                probe_true = resolve_executable("true")
+                if binary and probe_true:
                     # Probe: create a transient scope that immediately exits.
                     # A unique unit avoids collisions; timeout bounds D-Bus.
                     probe_unit = f"hermes-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
@@ -237,7 +236,7 @@ def _systemd_run_user_scope_available() -> bool:
                             "--property", f"MemoryMax={_worker_memory_max_bytes()}",
                             "--property", "OOMPolicy=kill",
                             "--",
-                            "/bin/true",
+                            probe_true,
                         ],
                         capture_output=True,
                         timeout=3,
@@ -295,9 +294,7 @@ def _build_systemd_scope_argv(
     the transient scope self-clean after exit; ``--unit`` gives it a
     recognisable name for ``systemctl --user status`` / journalctl.
     """
-    import shutil
-
-    binary = shutil.which("systemd-run")
+    binary = resolve_executable("systemd-run")
     if binary is None:
         # Caller should have checked _systemd_run_user_scope_available();
         # guard anyway so we never pass None into Popen.
@@ -364,9 +361,7 @@ def _stop_systemd_unit(unit_name: str) -> bool:
     Returns True if the unit was successfully stopped (or was already gone),
     False if ``systemctl`` is unavailable or the stop command failed.
     """
-    import shutil
-
-    binary = shutil.which("systemctl")
+    binary = resolve_executable("systemctl")
     if binary is None:
         return False
     try:

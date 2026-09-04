@@ -43,6 +43,61 @@ def _reset_systemd_scope_cache():
     _pr._SYSTEMD_SCOPE_AVAILABLE = original
 
 
+def test_systemd_scope_binary_lookup_uses_shared_nixos_path(monkeypatch, tmp_path):
+    """NixOS systemd binaries must be found from a reduced gateway PATH."""
+    import hermes_cli._subprocess_compat as subprocess_compat
+    import tools.process_registry as process_registry_module
+
+    fake_bin = tmp_path / "nix-bin"
+    fake_bin.mkdir()
+    fake_systemd_run = fake_bin / "systemd-run"
+    fake_systemd_run.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_systemd_run.chmod(0o755)
+    fake_true = fake_bin / "true"
+    fake_true.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_true.chmod(0o755)
+    fake_systemctl = fake_bin / "systemctl"
+    fake_systemctl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_systemctl.chmod(0o755)
+
+    monkeypatch.setattr(
+        subprocess_compat, "_platform_bin_dirs", lambda: (str(fake_bin),)
+    )
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
+    monkeypatch.setattr(process_registry_module, "_SYSTEMD_SCOPE_AVAILABLE", None)
+    monkeypatch.setattr(process_registry_module, "_SYSTEMD_SCOPE_PROBED_AT", 0.0)
+
+    seen = []
+    real_which = shutil.which
+
+    def tracked_which(name, mode=os.F_OK | os.X_OK, path=None):
+        seen.append((name, path))
+        return real_which(name, mode=mode, path=path)
+
+    monkeypatch.setattr(shutil, "which", tracked_which)
+    run_calls = []
+
+    def fake_run(*args, **kwargs):
+        run_calls.append(args[0])
+        return subprocess.CompletedProcess(args[0], 0, b"", b"")
+
+    monkeypatch.setattr(process_registry_module.subprocess, "run", fake_run)
+
+    assert process_registry_module._systemd_run_user_scope_available() is True
+    argv = process_registry_module._build_systemd_scope_argv(
+        ["python", "-m", "cron.scheduler"], unit_suffix="path-test"
+    )
+
+    assert argv[0] == str(fake_systemd_run)
+    assert run_calls and run_calls[0][-1] == str(fake_true)
+    assert process_registry_module._stop_systemd_unit("hermes-worker-path-test.scope") is True
+    assert run_calls[-1][0] == str(fake_systemctl)
+    assert any(
+        name == "systemd-run" and str(fake_bin) in (path or "")
+        for name, path in seen
+    )
+
+
 def _make_session(
     sid="proc_test123",
     command="echo hello",

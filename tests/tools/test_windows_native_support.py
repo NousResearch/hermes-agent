@@ -423,7 +423,37 @@ class TestSubprocessCompatHelpers:
         argv = resolve_node_command("sh", ["-c", "echo hi"])
         assert argv[1:] == ["-c", "echo hi"]
         # First element is either an absolute path (sh found) or the bare
-        # name (fallback) — both are acceptable behaviours.
+        # name (fallback) - both are acceptable behaviours.
+
+    def test_resolve_executable_uses_known_linux_profile_paths(self, tmp_path, monkeypatch):
+        from hermes_cli import _subprocess_compat as sc
+
+        normal_bin = tmp_path / "normal-bin"
+        nix_bin = tmp_path / "nix-bin"
+        normal_bin.mkdir()
+        nix_bin.mkdir()
+        normal = normal_bin / "hermes-path-test"
+        nix = nix_bin / "hermes-path-test"
+        normal.write_text("#!/bin/sh\n", encoding="utf-8")
+        nix.write_text("#!/bin/sh\n", encoding="utf-8")
+        normal.chmod(0o755)
+        nix.chmod(0o755)
+
+        monkeypatch.setenv("PATH", str(normal_bin))
+        monkeypatch.setattr(sc, "_platform_bin_dirs", lambda: (str(nix_bin),))
+        before = os.environ["PATH"]
+        assert sc.resolve_executable("hermes-path-test") == str(normal)
+        assert os.environ["PATH"] == before
+
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        reduced = os.environ["PATH"]
+        assert sc.resolve_executable("hermes-path-test") == str(nix)
+        assert os.environ["PATH"] == reduced
+
+    def test_resolve_executable_does_not_return_missing_fallback(self):
+        from hermes_cli._subprocess_compat import resolve_executable
+
+        assert resolve_executable("hermes-definitely-missing", fallback="/bin/absent") is None
 
 
     @pytest.mark.windows_only
@@ -613,14 +643,13 @@ class TestCronSchedulerBashResolution:
     """cron.scheduler must NOT hardcode /bin/bash — .sh scripts need a
     dynamically-resolved bash so Windows (Git Bash) works."""
 
-    def test_source_uses_shutil_which_for_bash(self):
+    def test_source_uses_shared_executable_resolver_for_bash(self):
         root = Path(__file__).resolve().parents[2]
         source = (root / "cron" / "scheduler.py").read_text(encoding="utf-8")
-        # The old hardcoded path should be gone as the sole bash source.
-        # It may still appear as a POSIX fallback after shutil.which(), so
-        # we check for the shutil.which call near the .sh/.bash branch.
-        assert 'shutil.which("bash")' in source, (
-            "cron.scheduler must resolve bash dynamically via shutil.which"
+        # The old hardcoded path and direct lookup should be gone from the
+        # actual .sh/.bash branch.
+        assert 'resolve_executable("bash")' in source, (
+            "cron.scheduler must resolve bash through the shared executable resolver"
         )
 
     def test_error_message_when_bash_missing(self):

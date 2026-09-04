@@ -239,6 +239,27 @@ class TestSessionTokenInjection:
 # ---------------------------------------------------------------------------
 
 
+def test_run_setup_command_uses_resolved_bash(monkeypatch):
+    import hermes_cli.web_server as web_server
+
+    resolved_bash = "/run/current-system/sw/bin/bash"
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(web_server, "resolve_executable", lambda name: resolved_bash)
+    monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+
+    web_server._run_setup_command(
+        "printf setup", display="printf setup", shell=True, timeout=1
+    )
+
+    assert captured["kwargs"]["executable"] == resolved_bash
+
+
 class TestWebServerEndpoints:
     """Test the FastAPI REST endpoints using Starlette TestClient."""
 

@@ -26,6 +26,8 @@ import time
 import wave
 from typing import Any, Callable, Dict, List, Optional
 
+from hermes_cli._subprocess_compat import resolve_executable
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -1732,7 +1734,7 @@ def _play_audio_file_impl(file_path: str) -> bool:
                         ["wslpath", "-w", _wsl_wav],
                         stderr=subprocess.DEVNULL, timeout=3,
                     ).decode(errors="replace").strip()
-                    if _win_wav:
+                    if _win_wav and (shell_executable := resolve_executable("sh")):
                         _win_wav_safe = _win_wav.replace("'", "''")
                         _ps_script = (
                             f"(New-Object Media.SoundPlayer '{_win_wav_safe}').PlaySync()"
@@ -1751,7 +1753,7 @@ def _play_audio_file_impl(file_path: str) -> bool:
                         # and prevent falling through to the next player).
                         _full_cmd = f"( {_ps_cmd} ); rc=$?; {_cleanup}; exit $rc"
                         # Use full path so the which(cmd[0]) check in the player loop passes.
-                        players.insert(0, ["/bin/sh", "-c", _full_cmd])
+                        players.insert(0, [shell_executable, "-c", _full_cmd])
             except Exception:
                 pass  # WSL path resolution failed; fall through to ffplay/aplay
 

@@ -161,9 +161,8 @@ interface SidebarSessionsSectionProps {
   // Rendered atop the entered-project body (a "back to overview" row).
   projectBackRow?: React.ReactNode
   dndSensors?: ReturnType<typeof useSensors>
-  // Tag every row with its owning profile. Set on the flat cross-profile
-  // lists (Pinned / search results) in the All-profiles view, where no group
-  // header communicates ownership (#66003).
+  // Tag every row with its owning profile. Set on flat cross-profile lists in
+  // the All-profiles view where no profile group header communicates ownership.
   showProfileTags?: boolean
   // Which dividers to fold into the flat list: `date` gives the chronological
   // "Yesterday" / "Last week" separators (flat recents + entered-project lanes),

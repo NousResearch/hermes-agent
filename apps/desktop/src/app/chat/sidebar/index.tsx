@@ -171,6 +171,7 @@ import {
   useRepoWorktreeMap
 } from './projects'
 import { WorktreeDialog } from './projects/worktree-dialog'
+import { showProfileTagsInRecents } from './recents-profile-tags'
 import { SidebarBlankState, SidebarPinnedEmptyState, SidebarSessionSkeletons } from './section-states'
 import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
@@ -1845,6 +1846,7 @@ export function ChatSidebar({
                   !recentsVirtualizes && 'compact:min-h-0 compact:flex-none compact:overflow-visible'
                 )}
                 sessions={displayAgentSessions}
+                showProfileTags={showProfileTagsInRecents(showAllProfiles, profileGrouped)}
                 sortable={!showAllProfiles && agentSessions.length > 1}
               />
             )}

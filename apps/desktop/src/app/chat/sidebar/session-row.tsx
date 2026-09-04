@@ -70,8 +70,8 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
   /** Tag the row with its owning profile (initial chip + tooltip). Used by
-   *  flat cross-profile lists — Pinned and search results in the All-profiles
-   *  view — where no group header communicates ownership (#66003). */
+   *  flat cross-profile lists in the All-profiles view where no profile group
+   *  header communicates ownership. */
   showProfile?: boolean
   /** Inbox-style card: workspace header, title + last-message preview, and a
    *  model · size footer. The flat recents list opts in via the filter menu;

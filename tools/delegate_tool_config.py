@@ -408,6 +408,34 @@ _ROUTING_FILTER_DEFAULTS = (
 
 _NOUS_PROVIDERS = frozenset({"nous", "nous-portal", "nousresearch"})
 
+def _get_delegation_fallback_chain(delegation_cfg: dict | None) -> list | None:
+    """Resolve the delegation-scoped fallback chain with backward compat.
+
+    Merges ``delegation.fallback_providers`` -> ``fallback_chain`` ->
+    ``fallback_model`` (in that priority order) with dedup, reusing the
+    shared entry parser/identity from ``hermes_cli.fallback_config``. Parsed
+    LOCALLY for the delegation block on purpose: the shared top-level
+    ``get_fallback_chain()`` is left untouched so top-level config semantics
+    (which keys activate a fallback) do not change. Empty chain normalizes
+    to None so callers can distinguish "no delegation fallback configured"
+    from "explicit chain".
+    """
+    if not isinstance(delegation_cfg, dict):
+        return None
+    try:
+        from hermes_cli.fallback_config import _entry_identity, _iter_fallback_entries
+    except Exception:
+        return None
+    chain: list = []
+    seen: set = set()
+    for key in ("fallback_providers", "fallback_chain", "fallback_model"):
+        for entry in _iter_fallback_entries(delegation_cfg.get(key)):
+            identity = _entry_identity(entry)
+            if identity not in seen:
+                seen.add(identity)
+                chain.append(entry)
+    return chain or None
+
 def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
@@ -485,9 +513,16 @@ def _resolve_child_runtime(
         "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,
         "reasoning_config": child_reasoning,
-        # Inherit the parent's fallback chain EXCEPT under a pinned provider: a mid-run 429/auth failure must not
-        # silently reroute the quiet child onto the parent's fallbacks. Predictability > liveness for explicit pins.
-        "fallback_model": None if override_provider else (getattr(parent_agent, "_fallback_chain", None) or None),
+        # Delegation fallback takes precedence over parent inheritance: when
+        # delegation.fallback_providers (or the fallback_chain/fallback_model
+        # aliases) is configured it fully replaces the parent chain (mirrors
+        # the auxiliary fallback pattern). Otherwise the legacy rules apply:
+        # a pinned provider disables inheritance (predictability > liveness
+        # for explicit pins, #80450), unpinned inherits the parent chain.
+        "fallback_model": (
+            _get_delegation_fallback_chain(delegation_cfg)
+            or (None if override_provider else (getattr(parent_agent, "_fallback_chain", None) or None))
+        ),
         "openrouter_min_coding_score": getattr(parent_agent, "openrouter_min_coding_score", None),
         # Routing filters reset to their defaults under a pinned provider (see _ROUTING_FILTER_DEFAULTS).
         **{a: d if override_provider else getattr(parent_agent, a, d) for a, d in _ROUTING_FILTER_DEFAULTS},

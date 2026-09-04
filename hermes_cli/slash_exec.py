@@ -73,6 +73,56 @@ def _exec_version(ctx: CommandContext) -> CommandReply:
     return CommandReply(format_banner_version_label())
 
 
+def _exec_whats_new(ctx: CommandContext) -> CommandReply:
+    """Core /whats-new text — show (and optionally acknowledge) a release brief.
+
+    Surface-independent: args are ``[<version>]`` or ``--seen``.
+      * no arg        → current version's brief (if unseen)
+      * version arg   → that version's brief (validated; no traversal)
+      * --seen        → mark current version as acknowledged (no text)
+    """
+    from hermes_cli.whats_new import (
+        get_current_version,
+        get_whats_new,
+        load_seen,
+        mark_seen,
+        validate_version_arg,
+    )
+    from hermes_cli.config import get_project_root
+    from hermes_constants import get_hermes_home
+
+    args = (ctx.args or "").strip()
+    repo_root = get_project_root()
+    home = get_hermes_home()
+    current = get_current_version(repo_root)
+
+    if args == "--seen":
+        if current:
+            mark_seen(home, current)
+            return CommandReply(f"✓ Marked Hermes {current} what's-new as seen.")
+        return CommandReply("✓ Nothing to mark.", format="markdown")
+
+    version = current
+    if args:
+        version = validate_version_arg(args)
+        if version is None:
+            return CommandReply(
+                f"✗ Invalid version `{args}` — expected e.g. `0.20.0`.",
+                format="markdown",
+            )
+
+    brief = get_whats_new(repo_root, version) if version else None
+    if brief is None:
+        if args:
+            return CommandReply(f"ℹ No what's-new brief found for v{args}.", format="markdown")
+        return CommandReply("ℹ No what's-new brief available.", format="markdown")
+
+    # Auto-acknowledge when viewing the current version (user has seen it now).
+    if version == current:
+        mark_seen(home, current)
+    return CommandReply(brief.render(), format="markdown")
+
+
 def _exec_egress(ctx: CommandContext) -> CommandReply:
     """Core /egress text — Docker egress proxy status."""
     from hermes_cli.proxy_cli import format_status_text
@@ -248,6 +298,7 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
 
 EXECUTORS: dict[str, Callable[[CommandContext], CommandReply]] = {
     "version": _exec_version,
+    "whats_new": _exec_whats_new,
     "egress": _exec_egress,
     "profile": _exec_profile,
     "bundles": _exec_bundles,

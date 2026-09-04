@@ -283,6 +283,50 @@ def test_honcho_tools_eager_init_failure_does_not_leave_ready_manager(monkeypatc
     assert provider._manager is None
 
 
+def _init_with_unresolved_peer(monkeypatch, cfg) -> tuple[HonchoMemoryProvider, list[int]]:
+    """Provider whose session init fails because no user peer can be named; returns the attempt log."""
+    from plugins.memory.honcho.session_peers import HonchoPeerUnresolvedError
+
+    provider = HonchoMemoryProvider()
+    monkeypatch.setattr("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", lambda: cfg)
+    attempts: list[int] = []
+
+    def no_peer(self, cfg, session_id, **kwargs):
+        attempts.append(1)
+        raise HonchoPeerUnresolvedError("Honcho has no user peer for session 'x': honcho.json declares no peerName.")
+
+    monkeypatch.setattr(HonchoMemoryProvider, "_do_session_init", no_peer)
+    provider.initialize("session-1", platform="cli")
+    if provider._init_thread:
+        provider._init_thread.join(timeout=5)
+    return provider, attempts
+
+
+def test_honcho_unresolved_peer_notices_once_and_stops_retrying(monkeypatch):
+    """No runtime identity and no peerName: memory stays off for the session, the model hears it
+    once, and later turns do not re-run init for a config gap that cannot heal (#93326)."""
+    provider, attempts = _init_with_unresolved_peer(monkeypatch, _configured_hybrid_config())
+
+    assert provider._manager is None
+    assert provider._can_start_init() is False
+
+    notice = provider.prefetch("what did we decide about the schema?")
+    assert "Honcho memory is off" in notice
+    assert "peerName" in notice
+    assert provider.prefetch("second question") == ""
+    provider.sync_turn("hello", "world")
+    assert attempts == [1]
+
+
+def test_honcho_unresolved_peer_tool_error_names_the_fix(monkeypatch):
+    provider, _ = _init_with_unresolved_peer(monkeypatch, _configured_tools_config(init_on_session_start=True))
+
+    result = json.loads(provider.handle_tool_call("honcho_profile", {"peer": "user"}))
+
+    assert "peerName" in result["error"]
+    assert "could not be initialized" not in result["error"]
+
+
 def test_honcho_tools_lazy_hooks_do_not_prestart_background_init(monkeypatch):
     """tools lazy mode lets the first tool call own session initialization."""
     provider = HonchoMemoryProvider()

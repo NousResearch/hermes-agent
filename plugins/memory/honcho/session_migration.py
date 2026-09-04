@@ -35,13 +35,10 @@ class SessionMigrationMixin:
 
         # Owner-scoped: these files describe the install owner; uploading them under another
         # human's peer would make Honcho attribute the owner's facts to that person. The owner is
-        # the CONFIG peerName — never a re-resolution of the session's own peer (that would compare
-        # the triggering user to themselves). No declared owner: single-operator only when there is
-        # no runtime identity; with one, nobody can be proven to be the owner.
+        # the CONFIG peerName, never a re-resolution of the session's own peer (that would compare
+        # the triggering user to themselves). No declared owner: nobody can be proven to be the owner.
         owner_peer_id = self._declared_owner_peer_id()
-        session_is_owner = (session.user_peer_id == owner_peer_id if owner_peer_id is not None
-                            else not self._runtime_user_ids())
-        if not session_is_owner:
+        if owner_peer_id is None or session.user_peer_id != owner_peer_id:
             logger.info("Skipping memory-file migration: session user peer '%s' is not the declared owner (peerName=%s)",
                         session.user_peer_id, owner_peer_id or "unset")
             return False

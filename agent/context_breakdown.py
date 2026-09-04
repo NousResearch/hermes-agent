@@ -176,6 +176,7 @@ def compute_session_context_breakdown(
         "context_used": context_used,
         "estimated_total": estimated_total,
         "model": getattr(agent, "model", "") or "",
+        "details": compute_context_details(agent),
     }
 
 

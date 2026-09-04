@@ -99,19 +99,28 @@ describe('statusbar item visibility', () => {
     const statusbar = bar([
       item('running-timer', 'Turn timer', { variant: 'text' }),
       item('context-usage', 'Context meter', { variant: 'menu' }),
+      item('session-tokens', 'Session tokens', { variant: 'text' }),
       item('cache-hit-rate', 'Cache hit rate', { variant: 'text' }),
       item('tokens-per-second', 'Tokens per second', { variant: 'text' }),
       item('session-timer', 'Session timer', { variant: 'text' }),
       item('gateway-health', 'Gateway')
     ])
 
-    for (const label of ['Turn timer', 'Context meter', 'Cache hit rate', 'Tokens per second', 'Session timer']) {
+    for (const label of [
+      'Turn timer',
+      'Context meter',
+      'Session tokens',
+      'Cache hit rate',
+      'Tokens per second',
+      'Session timer'
+    ]) {
       expect(screen.queryByText(label)).toBeNull()
     }
 
     openContextMenu(statusbar)
 
     for (const [id, label] of [
+      ['session-tokens', 'Session tokens'],
       ['session-timer', 'Session timer'],
       ['cache-hit-rate', 'Cache hit rate']
     ]) {

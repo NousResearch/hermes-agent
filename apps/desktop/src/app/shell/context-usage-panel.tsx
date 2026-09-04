@@ -3,7 +3,7 @@ import { useMemo } from 'react'
 import { useI18n } from '@/i18n'
 import { compactNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import type { ContextBreakdown, ContextUsageCategory, UsageStats } from '@/types/hermes'
+import type { ContextBreakdown, ContextBreakdownDetails, ContextUsageCategory, UsageStats } from '@/types/hermes'
 
 interface ContextUsagePanelProps {
   breakdown: ContextBreakdown | null
@@ -62,10 +62,57 @@ export function ContextUsagePanel({ breakdown, loading, usage }: ContextUsagePan
         ))}
       </ul>
 
+      {breakdown?.details && <ContextDetails details={breakdown.details} />}
+
       {loading && !categories.length && <p className="text-[0.6875rem] text-muted-foreground">{copy.loading}</p>}
 
       {!loading && !categories.length && <p className="text-[0.6875rem] text-muted-foreground">{copy.empty}</p>}
     </div>
+  )
+}
+
+function ContextDetails({ details }: { details: ContextBreakdownDetails }) {
+  const { t } = useI18n()
+  const copy = t.shell.statusbar.contextUsagePanel
+
+  return (
+    <details className="border-t border-(--ui-stroke-secondary) pt-2" open>
+      <summary className="cursor-pointer text-[0.6875rem] font-medium text-foreground">{copy.details}</summary>
+      <div className="mt-2 flex max-h-56 flex-col gap-2 overflow-y-auto">
+        {details.toolsets.length > 0 && (
+          <section>
+            <p className="mb-1 flex items-center gap-1.5 text-[0.625rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)">
+              <span aria-hidden="true" className="size-1.5 rounded-full bg-(--theme-primary)" />
+              {copy.toolsets}
+            </p>
+            {details.toolsets.map(item => (
+              <div className="flex justify-between gap-2 text-[0.6875rem]" key={item.toolset}>
+                <span className="truncate text-(--ui-text-secondary)">
+                  {item.toolset} <span className="text-(--ui-text-tertiary)">({item.tool_count})</span>
+                </span>
+                <span className="shrink-0 tabular-nums text-(--ui-text-secondary)">{compactNumber(item.schema_tokens)}</span>
+              </div>
+            ))}
+          </section>
+        )}
+        {details.skills.length > 0 && (
+          <section>
+            <p className="mb-1 flex items-center gap-1.5 text-[0.625rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)">
+              <span aria-hidden="true" className="size-1.5 rounded-full bg-(--ui-accent)" />
+              {copy.skills}
+            </p>
+            {details.skills.map(item => (
+              <div className="flex justify-between gap-2 text-[0.6875rem]" key={item.name}>
+                <span className="truncate text-(--ui-text-secondary)">{item.name}</span>
+                <span className="shrink-0 tabular-nums text-(--ui-text-secondary)">
+                  {compactNumber(item.index_tokens + (item.skill_md_tokens ?? 0))}
+                </span>
+              </div>
+            ))}
+          </section>
+        )}
+      </div>
+    </details>
   )
 }
 

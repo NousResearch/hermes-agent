@@ -8,6 +8,7 @@ import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
+import { SessionTokensStatus } from '@/app/shell/session-tokens-status'
 import { useSystemResourcesStatusbarItem } from '@/app/shell/system-resources-statusbar'
 import { $paneVisible, togglePaneVisible } from '@/components/pane-shell/tree/store'
 import { Codicon } from '@/components/ui/codicon'
@@ -28,7 +29,14 @@ import {
   Zap
 } from '@/lib/icons'
 import { runtimeReadinessDisplay, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
+import {
+  cacheHitLabel,
+  contextBarLabel,
+  LiveDuration,
+  sessionTokenLabels,
+  tokensPerSecondLabel,
+  usageContextLabel
+} from '@/lib/statusbar'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
@@ -279,8 +287,10 @@ export function useStatusbarItems({
 
   const contextUsage = useMemo(() => usageContextLabel(gaugeUsage), [gaugeUsage])
   const contextBar = useMemo(() => contextBarLabel(gaugeUsage), [gaugeUsage])
-  // Both ride the same usage payload the context meter does (session.usage
-  // ticks mid-turn, message.complete after) — no extra RPC, no polling.
+  // All three ride the same cumulative usage payload the context meter does
+  // (session.usage ticks mid-turn, message.complete after) — no extra RPC and
+  // no client-side summing that could double-count repeated prompt history.
+  const sessionTokens = useMemo(() => sessionTokenLabels(currentUsage), [currentUsage])
   const cacheHit = cacheHitLabel(currentUsage)
   const tokensPerSecond = tokensPerSecondLabel(currentUsage)
 
@@ -579,6 +589,13 @@ export function useStatusbarItems({
         variant: 'menu'
       },
       {
+        id: 'session-tokens',
+        label: <SessionTokensStatus input={sessionTokens.input} output={sessionTokens.output} />,
+        title: copy.sessionTokensTitle,
+        toggleLabel: copy.toggleSessionTokens,
+        variant: 'text'
+      },
+      {
         icon: <Layers3 className="size-3" />,
         id: 'cache-hit-rate',
         // Same never-self-hide rule as the context meter: opted in means a
@@ -638,6 +655,7 @@ export function useStatusbarItems({
       copy,
       gaugeUsage,
       sessionStartedAt,
+      sessionTokens,
       gatewayState,
       systemResourcesItem,
       terminalShowing,

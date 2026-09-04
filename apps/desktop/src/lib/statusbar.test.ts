@@ -1,10 +1,18 @@
 import { describe, expect, it } from 'vitest'
 
-import { cacheHitLabel, tokensPerSecondLabel } from '@/lib/statusbar'
+import { cacheHitLabel, sessionTokenLabels, tokensPerSecondLabel } from '@/lib/statusbar'
 
 const base = { calls: 0, input: 0, output: 0, total: 0 }
 
 describe('statusbar usage readouts', () => {
+  it('formats cumulative session input and output independently', () => {
+    expect(sessionTokenLabels(base)).toEqual({ input: '0', output: '0' })
+    expect(sessionTokenLabels({ ...base, input: 114_589, output: 12_340 })).toEqual({
+      input: '114.6k',
+      output: '12.3k'
+    })
+  })
+
   it('paints the backend cache-hit and throughput fields, and stays blank when they are absent', () => {
     // The backend omits both fields (rather than sending 0) when it has no data
     // — a provider with no cache reads, or a session before its first call.

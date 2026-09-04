@@ -99,10 +99,16 @@ class TestReapOrphanedBrowserSessions:
         def mock_terminate(pid, expected_start=None):
             terminate_calls.append(pid)
 
-        with patch("gateway.status._pid_exists", return_value=True), \
-             patch("gateway.status.get_process_start_time", return_value=777), \
-             patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=mock_terminate):
+        with patch(
+            "gateway.status._pid_exists", side_effect=[True, False]
+        ), patch(
+            "gateway.status.get_process_start_time", return_value=777
+        ), patch(
+            "tools.browser_tool._verify_reapable_browser_daemon", return_value=True
+        ), patch(
+            "tools.process_registry.ProcessRegistry._terminate_host_pid",
+            side_effect=mock_terminate,
+        ):
             _reap_orphaned_browser_sessions()
 
         assert 12345 in terminate_calls
@@ -149,17 +155,80 @@ class TestReapOrphanedBrowserSessions:
         (d / "bu.pid").write_text("222")
         terminated = []
 
-        with patch("gateway.status._pid_exists", side_effect=[False, True]), \
-             patch("gateway.status.get_process_start_time", return_value=333), \
-             patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=True), \
-             patch(
-                 "tools.process_registry.ProcessRegistry._terminate_host_pid",
-                 side_effect=lambda pid, expected_start=None: terminated.append(pid),
-             ):
+        with patch(
+            "gateway.status._pid_exists",
+            side_effect=[False, True, False],
+        ), patch(
+            "gateway.status.get_process_start_time", return_value=333
+        ), patch(
+            "tools.browser_tool._verify_reapable_browser_daemon", return_value=True
+        ), patch(
+            "tools.process_registry.ProcessRegistry._terminate_host_pid",
+            side_effect=lambda pid, expected_start=None: terminated.append(pid),
+        ):
             _reap_orphaned_browser_sessions()
 
         assert terminated == [222]
         assert not d.exists()
+
+    def test_browser_harness_runtime_dir_survives_failed_termination(
+        self, fake_tmpdir
+    ):
+        """Never delete a live daemon's control files after a failed kill.
+
+        The termination helper is best-effort and can return while the process
+        is still alive (access denial, taskkill failure, or a PID-generation
+        race). Removing ``bu.pid`` / ``bu.sock`` then would hide the survivor
+        from every later sweep. Keep the whole abandoned runtime directory so
+        the periodic reaper can retry safely.
+        """
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        session = "hermes_bh_111_survivor"
+        d = _make_socket_dir(fake_tmpdir, session, owner_pid=111)
+        (d / "bu.pid").write_text("222")
+        (d / "bu.sock").write_text("runtime endpoint")
+
+        with patch(
+            "gateway.status._pid_exists",
+            side_effect=[False, True, True],
+        ), patch(
+            "gateway.status.get_process_start_time", return_value=333
+        ), patch(
+            "tools.browser_tool._verify_reapable_browser_daemon", return_value=True
+        ), patch(
+            "tools.process_registry.ProcessRegistry._terminate_host_pid"
+        ):
+            _reap_orphaned_browser_sessions()
+
+        assert d.exists()
+        assert (d / "bu.pid").read_text() == "222"
+        assert (d / "bu.sock").read_text() == "runtime endpoint"
+
+    def test_browser_harness_runtime_dir_survives_termination_error(
+        self, fake_tmpdir
+    ):
+        """An explicit termination failure retains evidence for a later retry."""
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        session = "hermes_bh_111_denied"
+        d = _make_socket_dir(fake_tmpdir, session, owner_pid=111)
+        (d / "bu.pid").write_text("222")
+
+        with patch(
+            "gateway.status._pid_exists", side_effect=[False, True]
+        ), patch(
+            "gateway.status.get_process_start_time", return_value=333
+        ), patch(
+            "tools.browser_tool._verify_reapable_browser_daemon", return_value=True
+        ), patch(
+            "tools.process_registry.ProcessRegistry._terminate_host_pid",
+            side_effect=PermissionError("denied"),
+        ):
+            _reap_orphaned_browser_sessions()
+
+        assert d.exists()
+        assert (d / "bu.pid").exists()
 
 
 class TestOwnerPidCrossProcess:
@@ -552,11 +621,16 @@ class TestLeakedDaemonWithLiveOwner:
         _age_socket_dir(d, BROWSER_ORPHAN_GRACE_SECONDS + 600)
         kill_calls = []
 
-        with patch("gateway.status._pid_exists", return_value=True), \
-             patch("gateway.status.get_process_start_time", return_value=777), \
-             patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
-                   side_effect=lambda pid, expected_start=None: kill_calls.append(pid)):
+        with patch(
+            "gateway.status._pid_exists", side_effect=[True, True, False]
+        ), patch(
+            "gateway.status.get_process_start_time", return_value=777
+        ), patch(
+            "tools.browser_tool._verify_reapable_browser_daemon", return_value=True
+        ), patch(
+            "tools.process_registry.ProcessRegistry._terminate_host_pid",
+            side_effect=lambda pid, expected_start=None: kill_calls.append(pid),
+        ):
             _reap_orphaned_browser_sessions()
 
         assert 12345 in kill_calls

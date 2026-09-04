@@ -3718,8 +3718,24 @@ _PROVIDER_RETIRED_ALIASES: dict[str, tuple[str, ...]] = {
 
 
 def _provider_catalog_names(provider: str) -> tuple[str, ...]:
-    """Active picker models plus retired aliases recognized for detection."""
+    """Active picker models plus retired aliases recognized for detection.
+
+    Static catalogs remain authoritative for built-in providers.  A provider
+    plugin has no entry there, so use its public profile fallback only when the
+    static catalog is absent.  This lets the current plugin retain a model it
+    explicitly advertises without making plugins candidates for cross-provider
+    guessing.
+    """
     active = tuple(_PROVIDER_MODELS.get(provider, []))
+    if not active:
+        try:
+            from providers import get_provider_profile
+
+            profile = get_provider_profile(provider)
+            if profile is not None:
+                active = tuple(profile.fallback_models or ())
+        except Exception:
+            pass
     retired = _PROVIDER_RETIRED_ALIASES.get(provider, ())
     return active + retired
 

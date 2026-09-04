@@ -43,6 +43,8 @@ def _clean_op_env(monkeypatch):
     monkeypatch.delenv("OP_ACCOUNT", raising=False)
     monkeypatch.delenv("OP_CONNECT_HOST", raising=False)
     monkeypatch.delenv("OP_CONNECT_TOKEN", raising=False)
+    monkeypatch.delenv("OP_LOAD_DESKTOP_APP_SETTINGS", raising=False)
+    monkeypatch.delenv("OP_BIOMETRIC_UNLOCK_ENABLED", raising=False)
     yield
 
 
@@ -297,5 +299,41 @@ def test_apply_never_overrides_token_var(monkeypatch, tmp_path):
     assert calls["n"] == 0
 
 
+# ---------------------------------------------------------------------------
+# Child environment allowlist
+# ---------------------------------------------------------------------------
 
 
+def test_op_child_env_forwards_desktop_integration_switches(monkeypatch):
+    """Both documented ways to bypass op's desktop-app probe must reach the child.
+
+    OP_BIOMETRIC_UNLOCK_ENABLED is the switch 1Password documents; when it is
+    missing from the allowlist it is dropped with no warning, so a user who
+    follows the vendor docs sees no effect at all.
+    """
+    monkeypatch.setenv("OP_LOAD_DESKTOP_APP_SETTINGS", "false")
+    monkeypatch.setenv("OP_BIOMETRIC_UNLOCK_ENABLED", "false")
+
+    env = op._op_child_env("")
+
+    assert env["OP_LOAD_DESKTOP_APP_SETTINGS"] == "false"
+    assert env["OP_BIOMETRIC_UNLOCK_ENABLED"] == "false"
+
+
+def test_op_child_env_still_withholds_unrelated_credentials(monkeypatch):
+    """Guards the reason the allowlist exists, so widening it can't pass unnoticed."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-must-not-reach-op")
+    monkeypatch.setenv("OP_BIOMETRIC_UNLOCK_ENABLED", "false")
+
+    env = op._op_child_env("ops-token")
+
+    assert "OPENAI_API_KEY" not in env
+    assert env["OP_SERVICE_ACCOUNT_TOKEN"] == "ops-token"
+
+
+def test_op_child_env_omits_switches_when_user_did_not_set_them(monkeypatch):
+    """An allowlist entry must forward a value, never invent one."""
+    env = op._op_child_env("")
+
+    assert "OP_BIOMETRIC_UNLOCK_ENABLED" not in env
+    assert "OP_LOAD_DESKTOP_APP_SETTINGS" not in env

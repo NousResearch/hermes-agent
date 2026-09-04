@@ -14,16 +14,20 @@ actually live on native Windows.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import sys
 import threading
 import time
+from unittest.mock import patch
 
 import pytest
 
 # WinPtyBridge can be imported on every platform — ``is_available`` just
 # returns False when pywinpty isn't usable.  Importing the module itself
 # must never raise, otherwise the web_server import branch becomes a trap.
+from hermes_cli import win_pty_bridge
 from hermes_cli.win_pty_bridge import PtyUnavailableError, WinPtyBridge
 
 # ``pytest.mark.windows_only`` rather than a local ``skipif`` alias: the
@@ -117,6 +121,86 @@ class TestWinPtyBridgeUnavailable:
         assert proc.terminated.is_set()
         assert proc.write_finished.is_set()
         assert bridge._closed is True
+
+    @pytest.mark.asyncio
+    async def test_cancelled_write_keeps_healthy_conpty_alive(self):
+        """A socket dropping mid-write is not a wedged child: the PTY outlives
+        its socket by design, so a write that lands within the grace window
+        must not terminate the process."""
+        class _SlowProc:
+            pid = 1
+
+            def __init__(self):
+                self.release_write = threading.Event()
+                self.terminated = threading.Event()
+
+            def write(self, _text):
+                self.release_write.wait(timeout=2.0)
+
+            def terminate(self, force=False):
+                self.terminated.set()
+
+        proc = _SlowProc()
+        bridge = WinPtyBridge(proc)
+        task = asyncio.create_task(bridge.write(b"x"))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        proc.release_write.set()  # the child drains right after the socket left
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not proc.terminated.is_set()
+        assert bridge._closed is False
+
+    @pytest.mark.asyncio
+    async def test_cancelled_write_that_never_lands_terminates_conpty(self):
+        class _WedgedProc:
+            pid = 1
+
+            def __init__(self):
+                self.release_write = threading.Event()
+                self.terminated = threading.Event()
+
+            def write(self, _text):
+                self.release_write.wait(timeout=5.0)
+
+            def terminate(self, force=False):
+                self.terminated.set()
+                self.release_write.set()
+
+        proc = _WedgedProc()
+        bridge = WinPtyBridge(proc)
+        with patch.object(win_pty_bridge, "_WRITE_SHUTDOWN_GRACE", 0.05):
+            task = asyncio.create_task(bridge.write(b"x"))
+            await asyncio.sleep(0.02)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert proc.terminated.is_set()
+        assert bridge._closed is True
+
+    @pytest.mark.asyncio
+    async def test_leaked_write_worker_is_logged(self, caplog):
+        """terminate() that fails to unblock pywinpty leaves a thread parked in
+        the default executor; that must be observable, not swallowed."""
+        class _StuckProc:
+            pid = 1
+
+            def __init__(self):
+                self.release_write = threading.Event()
+
+            def write(self, _text):
+                self.release_write.wait(timeout=5.0)
+
+            def terminate(self, force=False):
+                pass  # does NOT release the write
+
+        proc = _StuckProc()
+        bridge = WinPtyBridge(proc)
+        with patch.object(win_pty_bridge, "_WRITE_SHUTDOWN_GRACE", 0.05), \
+                caplog.at_level(logging.WARNING, logger="hermes_cli.win_pty_bridge"):
+            assert await bridge.write(b"x", timeout=0.01) is False
+        proc.release_write.set()
+        assert any("thread leaked" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.skipif(sys.platform.startswith("win"), reason="non-Windows only")
     def test_spawn_raises_unavailable_off_windows(self):

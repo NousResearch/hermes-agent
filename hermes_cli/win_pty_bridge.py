@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 import time
 from typing import Optional, Sequence
@@ -13,6 +14,8 @@ try:
 except ImportError:  # pragma: no cover - non-Windows or pywinpty missing
     PtyProcess = None  # type: ignore
     _PTY_AVAILABLE = False
+
+_log = logging.getLogger(__name__)
 
 
 __all__ = ["WinPtyBridge", "PtyUnavailableError"]
@@ -111,8 +114,12 @@ class WinPtyBridge:
 
         ``wait_for(to_thread(...))`` alone only cancels the asyncio wrapper;
         the worker remains blocked inside pywinpty. Keep the worker future,
-        force-close the ConPTY on timeout or cancellation, and wait briefly
-        for that close to release the blocked write before returning.
+        force-close the ConPTY on timeout, and wait briefly for that close to
+        release the blocked write before returning.
+
+        Cancellation (the owning socket went away mid-write) is not evidence
+        of a wedged child: the PTY outlives its socket by design, so give the
+        in-flight write the grace window and only terminate if it never lands.
         """
         if self._closed:
             return False
@@ -129,8 +136,19 @@ class WinPtyBridge:
             await self._stop_stalled_write(write_future)
             return False
         except asyncio.CancelledError:
-            await asyncio.shield(self._stop_stalled_write(write_future))
+            await asyncio.shield(self._settle_or_stop_write(write_future))
             raise
+
+    async def _settle_or_stop_write(self, write_future: asyncio.Future) -> None:
+        """Let a cancelled write finish within the grace window; terminate only if it stalls."""
+        try:
+            await asyncio.wait_for(asyncio.shield(write_future), timeout=_WRITE_SHUTDOWN_GRACE)
+            return
+        except asyncio.TimeoutError:
+            pass
+        except Exception:
+            return
+        await self._stop_stalled_write(write_future)
 
     async def _stop_stalled_write(self, write_future: asyncio.Future) -> None:
         """Close ConPTY and reap the worker that was blocked in ``write``."""
@@ -140,8 +158,13 @@ class WinPtyBridge:
                 asyncio.shield(write_future),
                 timeout=_WRITE_SHUTDOWN_GRACE,
             )
-        except asyncio.CancelledError:
-            pass
+        except asyncio.TimeoutError:
+            # The worker is still parked inside pywinpty after terminate(); it
+            # now occupies a default-executor thread until the process exits.
+            _log.warning(
+                "ConPTY write worker did not exit within %.1fs of terminate(); thread leaked",
+                _WRITE_SHUTDOWN_GRACE,
+            )
         except Exception:
             pass
 

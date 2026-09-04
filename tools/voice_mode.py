@@ -1166,7 +1166,7 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
     Returns:
         Dict with ``success``, ``transcript``, and optionally ``error``.
     """
-    from tools.transcription_tools import MAX_FILE_SIZE, transcribe_audio
+    from tools.transcription_common import MAX_FILE_SIZE, transcribe_audio
 
     result = transcribe_audio(wav_path, model=model, source="voice_mode")
 

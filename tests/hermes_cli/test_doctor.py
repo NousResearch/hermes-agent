@@ -348,9 +348,9 @@ class TestDoctorMemoryProviderSection:
         # when gh resolves to a Store/MSIX reparse-point shim. The gh-
         # specific doctor behaviors have their own dedicated tests below,
         # which mock gh explicitly.
-        real_which = doctor_mod.shutil.which
+        real_which = shutil.which
         monkeypatch.setattr(
-            doctor_mod.shutil,
+            shutil,
             "which",
             lambda cmd: None if cmd == "gh" else real_which(cmd),
         )

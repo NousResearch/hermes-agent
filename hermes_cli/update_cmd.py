@@ -4367,7 +4367,7 @@ def _update_node_dependencies() -> list[str]:
     # cache (~0.4s once warm) — print first so that doesn't look like a hang.
     print("→ Warming npx cache for agent-browser...")
     try:
-        from tools.browser_tool import warm_agent_browser_npx_cache
+        from tools.browser_tool_install import warm_agent_browser_npx_cache
         warm_agent_browser_npx_cache()
     except Exception:
         pass

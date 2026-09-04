@@ -1276,7 +1276,7 @@ class TestWebServerEndpoints:
         import hermes_cli.web_server as web_server
 
         monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: False)
-        monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "unknown")
+        monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda _root: "unknown")
 
         check = self.client.get("/api/hermes/update/check")
         assert check.status_code == 200

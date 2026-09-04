@@ -6802,6 +6802,7 @@ class BasePlatformAdapter(ABC):
                 _tts_requested_path = None
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
                         and event.message_type == MessageType.VOICE
+                        and not getattr(event, "_tts_only_voice_delivered", False)
                         and text_content
                         and not media_files
                         and not self._streaming_tts_turn_completed(
@@ -6888,6 +6889,13 @@ class BasePlatformAdapter(ABC):
                             os.remove(_cleanup_path)
                         except OSError:
                             pass
+
+                # ``tts_only`` is an explicit output modality: successful native
+                # voice delivery replaces the text bubble.  The runner sets this
+                # marker only after send_voice succeeds, so text remains the
+                # deterministic fallback when TTS or transport delivery fails.
+                if getattr(event, "_tts_only_voice_delivered", False):
+                    text_content = None
 
                 # Send the text portion. A reconnect may have replaced this
                 # adapter while its in-flight handler was still producing a
@@ -7161,6 +7169,7 @@ class BasePlatformAdapter(ABC):
                 # deliverable, fail loudly rather than dropping it in silence.
                 _anything_delivered = (
                     delivery_attempted or _tts_caption_delivered
+                    or bool(getattr(event, "_tts_only_voice_delivered", False))
                     or images or local_files or media_files
                 )
                 if not _anything_delivered and _response_pre_extract.strip():
@@ -7172,7 +7181,11 @@ class BasePlatformAdapter(ABC):
                     )
 
             # Determine overall success for the processing hook
-            processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            processing_ok = (
+                delivery_succeeded
+                if delivery_attempted
+                else bool(getattr(event, "_tts_only_voice_delivered", False)) or not bool(response)
+            )
             # Clean up the per-turn streaming-TTS flag (#60671).
             self._streaming_tts_completed_turns.discard(
                 self._streaming_tts_turn_key(

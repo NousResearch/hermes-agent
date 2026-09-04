@@ -85,6 +85,11 @@ from hermes_cli.fallback_config import get_fallback_chain
 _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
+# WhatsApp's bridge owns a two-phase readiness probe that can legitimately use
+# ~30s (15s HTTP + 15s saved-session readiness).  The outer gateway timeout
+# must be strictly longer or it cancels connect() at the exact point where the
+# adapter is designed to continue with its self-healing bridge.
+_WHATSAPP_CONNECT_TIMEOUT_SECS_DEFAULT = 45.0
 # Telegram cold polling now proves one real getUpdates round trip before connect
 # returns. Leave enough outer budget for initialize/deleteWebhook/start_polling
 # wall deadlines plus readiness; other platforms retain the 30s isolation bound.
@@ -3647,14 +3652,20 @@ def _event_media_is_audio(event, index: int) -> bool:
 
 
 def _event_media_is_stt_input(event, index: int) -> bool:
-    """True when an audio attachment should enter the automatic STT pipeline."""
+    """True when this attachment should enter the automatic STT pipeline.
+
+    Pending follow-ups can merge several attachments into one event.  In that
+    case the event-level ``VOICE`` type must not make a sibling PDF/video look
+    like voice input.  Trust the per-attachment MIME whenever it is present and
+    use the message type only as a legacy fallback when MIME metadata is absent.
+    """
     message_type = getattr(event, "message_type", None)
     if message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
         return False
-    return (
-        message_type == MessageType.VOICE
-        or _event_media_type_at(event, index).startswith("audio/")
-    )
+    media_type = _event_media_type_at(event, index)
+    if media_type:
+        return media_type.startswith("audio/")
+    return message_type == MessageType.VOICE
 
 
 def _event_media_is_video(event, index: int) -> bool:
@@ -6032,8 +6043,14 @@ class TurnRunner:
             if _plat_streaming is None
             else bool(_plat_streaming)
         )
-        _want_stream_deltas = _streaming_enabled
-        _want_interim_messages = ctx.interim_assistant_messages_enabled
+        # ``tts_only`` is a transport/output contract, not merely a final-send
+        # preference. Do not leak response text through delta/interim streaming
+        # before the final native voice delivery gets a chance to replace it.
+        _tts_only_output = not self._runner._voice_output_allows_text(ctx.source)
+        _want_stream_deltas = _streaming_enabled and not _tts_only_output
+        _want_interim_messages = (
+            ctx.interim_assistant_messages_enabled and not _tts_only_output
+        )
         _want_interim_consumer = _want_interim_messages
         if _want_stream_deltas or _want_interim_consumer:
             try:
@@ -8245,6 +8262,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             profile=self._adapter_profile_for_source(source),
         )
 
+    def _voice_output_allows_text(self, source: SessionSource) -> bool:
+        """Return False only for the explicit audio-only output mode."""
+        return self._voice_mode.get(self._voice_key_for_source(source)) != "tts_only"
+
     def _bind_voice_input_callback(self, adapter) -> None:
         """Route voice transcripts back through the adapter that captured them."""
         if hasattr(adapter, "_voice_input_callback"):
@@ -8261,7 +8282,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not isinstance(data, dict):
             return {}
 
-        valid_modes = {"off", "voice_only", "all"}
+        valid_modes = {"off", "voice_only", "all", "tts_only"}
         result = {}
         for chat_id, mode in data.items():
             if mode not in valid_modes:
@@ -8360,7 +8381,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             enabled_chats.clear()
             enabled_chats.update(
                 key[len(prefix):] for key, mode in self._voice_mode.items()
-                if mode in {"voice_only", "all"} and key.startswith(prefix)
+                if mode in {"voice_only", "all", "tts_only"} and key.startswith(prefix)
             )
 
     async def _await_adapter_cleanup_with_timeout(
@@ -8515,6 +8536,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if initial:
                 return _TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT
             return _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT
+        if platform == Platform.WHATSAPP:
+            return _WHATSAPP_CONNECT_TIMEOUT_SECS_DEFAULT
         return _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT
 
     async def _connect_adapter_with_timeout(
@@ -25048,6 +25071,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if callable(resolver):
             try:
                 resolved = resolver(str(text_ch_id))
+                # Some adapters may expose an async resolver; awaiting here also
+                # keeps test doubles from leaking un-awaited coroutine objects.
+                import inspect
+                if inspect.isawaitable(resolved):
+                    resolved = await resolved
                 channel_prompt = resolved if isinstance(resolved, str) else None
             except Exception:
                 channel_prompt = None
@@ -25096,7 +25124,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 adapter_auto_tts = False
 
         should = (
-            (voice_mode == "all")
+            (voice_mode in {"all", "tts_only"})
             or (voice_mode == "voice_only" and is_voice_input)
             # ``voice.auto_tts`` is synced into the adapter on gateway startup.
             # It is the fallback only when the chat has no explicit mode;
@@ -25132,7 +25160,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # When streaming already delivered the text (already_sent=True),
         # the base adapter will receive None and can't run auto-TTS,
         # so the runner must take over.
-        if is_voice_input and not already_sent:
+        if is_voice_input and not already_sent and voice_mode != "tts_only":
             return False
 
         return True
@@ -25141,16 +25169,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Return whether inbound voice/STT transcripts should be echoed to chat."""
         return bool(getattr(self.config, "stt_echo_transcripts", True))
 
-    async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
-        """Generate TTS audio and send as a voice message before the text reply."""
+    async def _send_voice_reply(self, event: MessageEvent, text: str) -> bool:
+        """Generate TTS audio; return True only when native delivery succeeds."""
         audio_path = None
         actual_paths: List[str] = []
+        delivered = False
         try:
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
             tts_text = _strip_markdown_for_tts(text)
             if not tts_text:
-                return
+                return False
 
             # Platform-aware output path: platforms whose native voice
             # bubbles require Ogg/Opus (OPUS_VOICE_PLATFORMS — Telegram,
@@ -25166,7 +25195,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 result = json.loads(result_json)
             except (json.JSONDecodeError, TypeError):
                 logger.warning("Auto voice reply TTS returned invalid JSON: %s", result_json[:200] if result_json else result_json)
-                return
+                return False
 
             # Final delivery may be one combined file or multiple separately
             # valid files when combination is unavailable or would exceed a
@@ -25180,7 +25209,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ]
             if not result.get("success") or not actual_paths:
                 logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
-                return
+                return False
 
             adapter = self._adapter_for_source(event.source)
 
@@ -25222,9 +25251,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "reply_to": reply_anchor,
                         "metadata": thread_meta,
                     }
-                    await send_voice_call(**send_kwargs)
+                    send_result = await send_voice_call(**send_kwargs)
+                    delivered = bool(getattr(send_result, "success", False)) or delivered
+            if delivered and self._voice_mode.get(self._voice_key_for_source(event.source)) == "tts_only":
+                # The adapter post-handler still owns normal text/media delivery.
+                # Mark only successful native TTS delivery so it can suppress the
+                # duplicate text while preserving text as a fail-open fallback.
+                event._tts_only_voice_delivered = True
+            return delivered
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
+            return False
         finally:
             for p in ({audio_path, *actual_paths} - {None}):
                 try:

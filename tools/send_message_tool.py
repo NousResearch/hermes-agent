@@ -1466,20 +1466,30 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         return last_result
 
     # --- Non-media platforms ---
-    # Buzz is a plugin platform with verified native media delivery through
-    # _send_via_adapter below, including valid media-only sends.
-    if media_files and not message.strip() and platform.value != "buzz":
+    # Plugin platforms with verified native media delivery route through the
+    # generic _send_via_adapter path below. Keep this allowlist explicit so a
+    # plugin cannot accidentally claim attachment support it does not have.
+    _native_media_plugin_values = {"buzz", "photon"}
+    if (
+        media_files
+        and not message.strip()
+        and platform.value not in _native_media_plugin_values
+    ):
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack; "
+                "send_message MEDIA delivery is currently only supported for "
+                "telegram, discord, matrix, weixin, signal, yuanbao, feishu, "
+                "whatsapp, slack, buzz and photon; "
                 f"target {platform.value} had only media attachments"
             )
         }
     warning = None
-    if media_files and platform.value != "buzz":
+    if media_files and platform.value not in _native_media_plugin_values:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"
+            "native send_message media delivery is currently only supported for "
+            "telegram, discord, matrix, weixin, signal, yuanbao, feishu, "
+            "whatsapp, slack, buzz and photon"
         )
 
     last_result = None

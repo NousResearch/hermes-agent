@@ -3,6 +3,7 @@ SQLite-backed fact store with entity resolution and trust scoring.
 Single-user Hermes memory store plugin.
 """
 
+import json
 import os
 import re
 import sqlite3
@@ -74,6 +75,30 @@ CREATE TABLE IF NOT EXISTS memory_banks (
     fact_count INTEGER DEFAULT 0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS edges (
+    edge_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_fact_id  INTEGER NOT NULL REFERENCES facts(fact_id) ON DELETE RESTRICT,
+    target_fact_id  INTEGER NOT NULL REFERENCES facts(fact_id) ON DELETE RESTRICT,
+    relation_type   TEXT NOT NULL,
+    metadata_json   TEXT NOT NULL DEFAULT '{}',
+    status          TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active', 'archived')),
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    archived_at     TIMESTAMP,
+    archive_reason  TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_active_unique
+    ON edges(source_fact_id, target_fact_id, relation_type)
+    WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_edges_outgoing
+    ON edges(source_fact_id, relation_type, status, edge_id);
+CREATE INDEX IF NOT EXISTS idx_edges_incoming
+    ON edges(target_fact_id, relation_type, status, edge_id);
+CREATE INDEX IF NOT EXISTS idx_edges_status
+    ON edges(status, edge_id);
 """
 
 # Trust adjustment constants
@@ -90,6 +115,7 @@ _RE_AKA          = re.compile(
     r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)',
     re.IGNORECASE,
 )
+_RE_RELATION_TYPE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
 def _clamp_trust(value: float) -> float:
@@ -151,7 +177,13 @@ class MemoryStore:
                     isolation_level=None,
                 )
                 conn.row_factory = sqlite3.Row
-                entry = {"conn": conn, "lock": threading.RLock(), "refs": 0, "ready": False}
+                entry = {
+                    "conn": conn,
+                    "lock": threading.RLock(),
+                    "refs": 0,
+                    "ready": False,
+                    "fact_columns": set(),
+                }
                 MemoryStore._shared[self._key] = entry
             entry["refs"] += 1
             self._entry = entry
@@ -163,6 +195,7 @@ class MemoryStore:
             if not self._entry["ready"]:
                 self._init_db()
                 self._entry["ready"] = True
+            self._fact_columns = set(self._entry["fact_columns"])
 
     # ------------------------------------------------------------------
     # Initialisation
@@ -175,11 +208,13 @@ class MemoryStore:
         # state.db / kanban.db — see hermes_state._WAL_INCOMPAT_MARKERS).
         from hermes_state import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="memory_store.db (holographic)")
+        self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA)
         # Migrate: add hrr_vector column if missing (safe for existing databases)
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+        self._entry["fact_columns"] = columns | {"hrr_vector"}
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -303,7 +338,7 @@ class MemoryStore:
         """
         with self._lock:
             row = self._conn.execute(
-                "SELECT fact_id, trust_score FROM facts WHERE fact_id = ?", (fact_id,)
+                "SELECT fact_id, trust_score, category FROM facts WHERE fact_id = ?", (fact_id,)
             ).fetchone()
             if row is None:
                 return False
@@ -346,10 +381,11 @@ class MemoryStore:
             if content is not None:
                 self._compute_hrr_vector(fact_id, content)
             # Rebuild bank for relevant category
-            cat = category or self._conn.execute(
-                "SELECT category FROM facts WHERE fact_id = ?", (fact_id,)
-            ).fetchone()["category"]
+            old_category = row["category"]
+            cat = category or old_category
             self._rebuild_bank(cat)
+            if category is not None and old_category != category:
+                self._rebuild_bank(old_category)
 
             return True
 
@@ -439,6 +475,440 @@ class MemoryStore:
                 "old_trust":    old_trust,
                 "new_trust":    new_trust,
                 "helpful_count": row["helpful_count"] + helpful_increment,
+            }
+
+    # ------------------------------------------------------------------
+    # Native graph API
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_relation_type(relation_type: str) -> str:
+        relation = str(relation_type or "").strip().lower().replace("-", "_")
+        if not _RE_RELATION_TYPE.fullmatch(relation):
+            raise ValueError(
+                "relation_type must be a lower-case slug of 1-64 letters, digits, or underscores"
+            )
+        return relation
+
+    @classmethod
+    def _normalize_relation_types(cls, relation_types) -> list[str]:
+        if relation_types is None:
+            return []
+        values = [relation_types] if isinstance(relation_types, str) else list(relation_types)
+        return list(dict.fromkeys(cls._normalize_relation_type(value) for value in values))
+
+    @staticmethod
+    def _normalize_direction(direction: str) -> str:
+        normalized = str(direction or "out").strip().lower()
+        if normalized not in {"out", "in", "both"}:
+            raise ValueError("direction must be one of: out, in, both")
+        return normalized
+
+    @staticmethod
+    def _bounded_int(value, *, name: str, minimum: int, maximum: int) -> int:
+        if isinstance(value, bool):
+            raise ValueError(f"{name} must be an integer")
+        if isinstance(value, int):
+            result = value
+        elif isinstance(value, str) and value.isascii() and value.isdigit():
+            result = int(value)
+        else:
+            raise ValueError(f"{name} must be an integer")
+        if not minimum <= result <= maximum:
+            raise ValueError(f"{name} must be between {minimum} and {maximum}")
+        return result
+
+    @staticmethod
+    def _json_safe_row(row: sqlite3.Row) -> dict:
+        return {
+            key: value
+            for key, value in dict(row).items()
+            if value is None or isinstance(value, (str, int, float, bool))
+        }
+
+    def _fact_row(self, fact_id: int, *, active_only: bool = True) -> sqlite3.Row | None:
+        active_clause = ""
+        if active_only and "status" in self._fact_columns:
+            active_clause = " AND (status IS NULL OR status = 'active')"
+        return self._conn.execute(
+            f"SELECT * FROM facts WHERE fact_id = ?{active_clause}",
+            (fact_id,),
+        ).fetchone()
+
+    def _edge_to_dict(self, row: sqlite3.Row) -> dict:
+        edge = self._json_safe_row(row)
+        raw_metadata = edge.pop("metadata_json", "{}") or "{}"
+        try:
+            edge["metadata"] = json.loads(raw_metadata)
+        except (TypeError, json.JSONDecodeError):
+            edge["metadata"] = {}
+        return edge
+
+    def add_edge(
+        self,
+        source_fact_id: int,
+        target_fact_id: int,
+        relation_type: str,
+        metadata: dict | None = None,
+    ) -> dict:
+        """Create one directed typed edge without deleting archived history."""
+        with self._lock:
+            source_fact_id = self._bounded_int(
+                source_fact_id, name="source_fact_id", minimum=1, maximum=2**63 - 1
+            )
+            target_fact_id = self._bounded_int(
+                target_fact_id, name="target_fact_id", minimum=1, maximum=2**63 - 1
+            )
+            relation = self._normalize_relation_type(relation_type)
+            if metadata is not None and not isinstance(metadata, dict):
+                raise ValueError("metadata must be an object")
+            metadata_json = json.dumps(
+                metadata or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+
+            for field, fact_id in (
+                ("source_fact_id", source_fact_id),
+                ("target_fact_id", target_fact_id),
+            ):
+                if self._fact_row(fact_id, active_only=True) is None:
+                    raise KeyError(f"{field} {fact_id} not found or not active")
+
+            active = self._conn.execute(
+                """
+                SELECT * FROM edges
+                WHERE source_fact_id = ? AND target_fact_id = ?
+                  AND relation_type = ? AND status = 'active'
+                ORDER BY edge_id LIMIT 1
+                """,
+                (source_fact_id, target_fact_id, relation),
+            ).fetchone()
+            if active is not None:
+                result = self._edge_to_dict(active)
+                result.update({"created": False, "reactivated": False})
+                return result
+
+            archived = self._conn.execute(
+                """
+                SELECT edge_id FROM edges
+                WHERE source_fact_id = ? AND target_fact_id = ?
+                  AND relation_type = ? AND status = 'archived'
+                ORDER BY edge_id DESC LIMIT 1
+                """,
+                (source_fact_id, target_fact_id, relation),
+            ).fetchone()
+            previous_archived_edge_id = (
+                int(archived["edge_id"]) if archived is not None else None
+            )
+            try:
+                cur = self._conn.execute(
+                    """
+                    INSERT INTO edges
+                        (source_fact_id, target_fact_id, relation_type, metadata_json)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (source_fact_id, target_fact_id, relation, metadata_json),
+                )
+                edge_id = int(cur.lastrowid)
+                created = True
+                reactivated = False
+            except sqlite3.IntegrityError:
+                # The RLock is process-local. Another MCP process can win
+                # the same active-edge insert between our SELECT and
+                # INSERT; the partial unique index is the cross-process
+                # arbiter. Return its row so add remains idempotent.
+                winner = self._conn.execute(
+                    """
+                    SELECT * FROM edges
+                    WHERE source_fact_id = ? AND target_fact_id = ?
+                      AND relation_type = ? AND status = 'active'
+                    ORDER BY edge_id LIMIT 1
+                    """,
+                    (source_fact_id, target_fact_id, relation),
+                ).fetchone()
+                if winner is None:
+                    raise
+                result = self._edge_to_dict(winner)
+                result.update({
+                    "created": False,
+                    "reactivated": False,
+                    "previous_archived_edge_id": previous_archived_edge_id,
+                })
+                return result
+
+            row = self._conn.execute(
+                "SELECT * FROM edges WHERE edge_id = ?", (edge_id,)
+            ).fetchone()
+            result = self._edge_to_dict(row)
+            result.update({
+                "created": created,
+                "reactivated": reactivated,
+                "previous_archived_edge_id": previous_archived_edge_id,
+            })
+            return result
+
+    def archive_edge(self, edge_id: int, reason: str | None = None) -> dict:
+        """Archive an edge in place. The row is never deleted."""
+        with self._lock:
+            edge_id = self._bounded_int(
+                edge_id, name="edge_id", minimum=1, maximum=2**63 - 1
+            )
+            row = self._conn.execute(
+                "SELECT * FROM edges WHERE edge_id = ?", (edge_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"edge_id {edge_id} not found")
+            already = row["status"] == "archived"
+            if not already:
+                clean_reason = str(reason).strip()[:200] if reason else None
+                self._conn.execute(
+                    """
+                    UPDATE edges
+                    SET status = 'archived', archived_at = CURRENT_TIMESTAMP,
+                        archive_reason = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE edge_id = ?
+                    """,
+                    (clean_reason, edge_id),
+                )
+                row = self._conn.execute(
+                    "SELECT * FROM edges WHERE edge_id = ?", (edge_id,)
+                ).fetchone()
+            result = self._edge_to_dict(row)
+            result.update({"archived": True, "already": already, "deleted": False})
+            return result
+
+    def _edge_rows_for_nodes(
+        self,
+        fact_ids: list[int],
+        *,
+        relation_types=None,
+        direction: str = "out",
+        active_only: bool = True,
+        limit: int | None = None,
+    ) -> list[sqlite3.Row]:
+        if not fact_ids:
+            return []
+        direction = self._normalize_direction(direction)
+        relations = self._normalize_relation_types(relation_types)
+        placeholders = ",".join("?" for _ in fact_ids)
+        params: list = []
+        if direction == "out":
+            endpoint_clause = f"source_fact_id IN ({placeholders})"
+            params.extend(fact_ids)
+        elif direction == "in":
+            endpoint_clause = f"target_fact_id IN ({placeholders})"
+            params.extend(fact_ids)
+        else:
+            endpoint_clause = (
+                f"(source_fact_id IN ({placeholders}) OR "
+                f"target_fact_id IN ({placeholders}))"
+            )
+            params.extend(fact_ids)
+            params.extend(fact_ids)
+        clauses = [endpoint_clause]
+        if active_only:
+            clauses.append("status = 'active'")
+        if relations:
+            relation_placeholders = ",".join("?" for _ in relations)
+            clauses.append(f"relation_type IN ({relation_placeholders})")
+            params.extend(relations)
+        sql = "SELECT * FROM edges WHERE " + " AND ".join(clauses) + " ORDER BY edge_id"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return self._conn.execute(sql, params).fetchall()
+
+    def neighbors(
+        self,
+        fact_id: int,
+        relation_types=None,
+        direction: str = "out",
+        active_only: bool = True,
+        limit: int = 200,
+    ) -> dict:
+        """Return directed neighboring facts and their stored edges."""
+        with self._lock:
+            fact_id = self._bounded_int(
+                fact_id, name="fact_id", minimum=1, maximum=2**63 - 1
+            )
+            direction = self._normalize_direction(direction)
+            limit = self._bounded_int(limit, name="limit", minimum=1, maximum=1000)
+            if self._fact_row(fact_id, active_only=active_only) is None:
+                raise KeyError(f"fact_id {fact_id} not found or not active")
+            rows = self._edge_rows_for_nodes(
+                [fact_id], relation_types=relation_types, direction=direction,
+                active_only=active_only, limit=limit,
+            )
+            items = []
+            for row in rows:
+                source = int(row["source_fact_id"])
+                target = int(row["target_fact_id"])
+                if direction == "out" or (direction == "both" and source == fact_id):
+                    neighbor_id = target
+                    edge_direction = "out"
+                else:
+                    neighbor_id = source
+                    edge_direction = "in"
+                neighbor = self._fact_row(neighbor_id, active_only=active_only)
+                if neighbor is None:
+                    continue
+                items.append({
+                    "direction": edge_direction,
+                    "edge": self._edge_to_dict(row),
+                    "fact": self._json_safe_row(neighbor),
+                })
+            return {
+                "fact_id": fact_id,
+                "direction": direction,
+                "count": len(items),
+                "neighbors": items,
+            }
+
+    def traverse(
+        self,
+        start_fact_id: int,
+        relation_types=None,
+        direction: str = "out",
+        max_depth: int = 3,
+        max_nodes: int = 200,
+        active_only: bool = True,
+    ) -> dict:
+        """Breadth-first, cycle-safe traversal with hard depth and node bounds."""
+        with self._lock:
+            start_fact_id = self._bounded_int(
+                start_fact_id, name="start_fact_id", minimum=1, maximum=2**63 - 1
+            )
+            direction = self._normalize_direction(direction)
+            max_depth = self._bounded_int(
+                max_depth, name="max_depth", minimum=0, maximum=10
+            )
+            max_nodes = self._bounded_int(
+                max_nodes, name="max_nodes", minimum=1, maximum=1000
+            )
+            start = self._fact_row(start_fact_id, active_only=active_only)
+            if start is None:
+                raise KeyError(f"start_fact_id {start_fact_id} not found or not active")
+
+            visited = {start_fact_id}
+            depth_by_id = {start_fact_id: 0}
+            nodes = [{"depth": 0, "fact": self._json_safe_row(start)}]
+            edge_by_id: dict[int, dict] = {}
+            frontier = [start_fact_id]
+            truncated = False
+
+            for depth in range(max_depth):
+                if not frontier:
+                    break
+                rows = self._edge_rows_for_nodes(
+                    frontier, relation_types=relation_types, direction=direction,
+                    active_only=active_only,
+                )
+                next_frontier: list[int] = []
+                frontier_set = set(frontier)
+                for row in rows:
+                    source = int(row["source_fact_id"])
+                    target = int(row["target_fact_id"])
+                    candidates: list[int] = []
+                    if direction in {"out", "both"} and source in frontier_set:
+                        candidates.append(target)
+                    if direction in {"in", "both"} and target in frontier_set:
+                        candidates.append(source)
+                    accepted_edge = False
+                    for neighbor_id in dict.fromkeys(candidates):
+                        neighbor = self._fact_row(neighbor_id, active_only=active_only)
+                        if neighbor is None:
+                            continue
+                        if neighbor_id not in visited:
+                            if len(visited) >= max_nodes:
+                                truncated = True
+                                continue
+                            visited.add(neighbor_id)
+                            depth_by_id[neighbor_id] = depth + 1
+                            next_frontier.append(neighbor_id)
+                            nodes.append({
+                                "depth": depth + 1,
+                                "fact": self._json_safe_row(neighbor),
+                            })
+                        accepted_edge = True
+                    if accepted_edge:
+                        edge_by_id[int(row["edge_id"])] = self._edge_to_dict(row)
+                frontier = next_frontier
+                if truncated:
+                    break
+
+            return {
+                "start_fact_id": start_fact_id,
+                "direction": direction,
+                "max_depth": max_depth,
+                "max_nodes": max_nodes,
+                "truncated": truncated,
+                "node_count": len(nodes),
+                "edge_count": len(edge_by_id),
+                "nodes": nodes,
+                "edges": [edge_by_id[key] for key in sorted(edge_by_id)],
+                "depth_by_fact_id": depth_by_id,
+            }
+
+    def list_subgraph(
+        self,
+        category: str,
+        relation_types=None,
+        active_only: bool = True,
+        include_isolated: bool = True,
+        limit_nodes: int = 1000,
+    ) -> dict:
+        """Return the category-induced subgraph, including isolated nodes by default."""
+        with self._lock:
+            category = str(category or "").strip()
+            if not category:
+                raise ValueError("category must be non-empty")
+            if len(category) > 80:
+                raise ValueError("category must be at most 80 characters")
+            limit_nodes = self._bounded_int(
+                limit_nodes, name="limit_nodes", minimum=1, maximum=5000
+            )
+            active_clause = ""
+            if active_only and "status" in self._fact_columns:
+                active_clause = " AND (status IS NULL OR status = 'active')"
+            node_rows = self._conn.execute(
+                f"SELECT * FROM facts WHERE category = ?{active_clause} ORDER BY fact_id LIMIT ?",
+                (category, limit_nodes + 1),
+            ).fetchall()
+            truncated = len(node_rows) > limit_nodes
+            node_rows = node_rows[:limit_nodes]
+            fact_ids = [int(row["fact_id"]) for row in node_rows]
+            edge_rows: list[sqlite3.Row] = []
+            if fact_ids:
+                placeholders = ",".join("?" for _ in fact_ids)
+                clauses = [
+                    f"source_fact_id IN ({placeholders})",
+                    f"target_fact_id IN ({placeholders})",
+                ]
+                params: list = fact_ids + fact_ids
+                if active_only:
+                    clauses.append("status = 'active'")
+                relations = self._normalize_relation_types(relation_types)
+                if relations:
+                    relation_placeholders = ",".join("?" for _ in relations)
+                    clauses.append(f"relation_type IN ({relation_placeholders})")
+                    params.extend(relations)
+                edge_rows = self._conn.execute(
+                    "SELECT * FROM edges WHERE " + " AND ".join(clauses) + " ORDER BY edge_id",
+                    params,
+                ).fetchall()
+            if not include_isolated:
+                connected = {
+                    int(value)
+                    for row in edge_rows
+                    for value in (row["source_fact_id"], row["target_fact_id"])
+                }
+                node_rows = [row for row in node_rows if int(row["fact_id"]) in connected]
+            return {
+                "category": category,
+                "node_count": len(node_rows),
+                "edge_count": len(edge_rows),
+                "truncated": truncated,
+                "nodes": [self._json_safe_row(row) for row in node_rows],
+                "edges": [self._edge_to_dict(row) for row in edge_rows],
             }
 
     # ------------------------------------------------------------------

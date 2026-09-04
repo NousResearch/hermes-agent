@@ -687,13 +687,10 @@ def execute_code(
                           "parameter containing Python source. To run shell commands, use terminal(command=...) instead.")
     # Hard-block gateway-lifecycle commands (mirrors the terminal_tool guard — otherwise
     # `os.system("launchctl bootout ...")` here bypasses it and SIGTERMs the gateway mid-task).
-    # Gated on PID-file ownership, not the inherited env marker.
-    # Hard-block gateway-lifecycle commands, mirroring the terminal_tool guard (#68289): without this,
-    # execute_code is a straight bypass — the terminal() path refuses `launchctl bootout ai.hermes.gateway`,
-    # but the identical command inside `os.system(...)` / `subprocess.run([...])` here sailed through and
-    # SIGTERM'd the gateway mid-task.
+    # Gate on origin marker / kanban worker / supervised PID, not the inherited env marker.
+    from gateway.control_plane import should_refuse_inline_gateway_lifecycle
     from tools.process_registry import _is_supervised_gateway_process
-    if _is_supervised_gateway_process():
+    if should_refuse_inline_gateway_lifecycle() or _is_supervised_gateway_process():
         from cron.lifecycle_guard import contains_gateway_lifecycle_command
         if contains_gateway_lifecycle_command(code):
             return tool_error(

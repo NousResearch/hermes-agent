@@ -138,13 +138,30 @@ def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
     return handle, "held"
 
 
+def _stamp_dispatcher_lock_owner(lock_path, *, profile: str, pid: int) -> None:
+    from gateway.control_plane import write_dispatcher_lock_owner
+
+    try:
+        write_dispatcher_lock_owner(lock_path, profile=profile, pid=pid)
+    except Exception:
+        logger.debug("kanban dispatcher: failed to write lock owner diagnostics", exc_info=True)
+
+
 def _release_singleton_lock(handle) -> None:
     """Release a lock acquired via :func:`_acquire_singleton_lock`."""
     if handle is None:
         return
+    lock_path = getattr(handle, "name", None)
     with contextlib.suppress(Exception):
         from gateway.status import _release_file_lock
 
         _release_file_lock(handle)
     with contextlib.suppress(Exception):
         handle.close()
+    if lock_path:
+        try:
+            from gateway.control_plane import clear_dispatcher_lock_owner
+
+            clear_dispatcher_lock_owner(lock_path)
+        except Exception:
+            pass

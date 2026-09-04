@@ -4537,7 +4537,11 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     if dropped_positional_orphans or added_stubs:
         messages = paired
     if dropped_positional_orphans:
-        _ra().logger.debug(
+        # WARNING, not DEBUG: a dropped result is real content the model
+        # asked for being destroyed (replaced by nothing, or the call is
+        # stubbed elsewhere). Without this line in errors.log the loss is
+        # invisible while the model silently answers from incomplete data.
+        _ra().logger.warning(
             "Pre-call sanitizer: removed %d positionally orphaned tool result(s)",
             dropped_positional_orphans,
         )

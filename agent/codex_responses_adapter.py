@@ -18,6 +18,7 @@ import unicodedata
 import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, List, NamedTuple, Optional
+from urllib.parse import urlparse
 
 from agent.message_sanitization import deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
@@ -48,7 +49,10 @@ def _classify_responses_issuer(
     if is_codex_backend:
         return "codex_backend"
     if base_url:
-        return f"other:{base_url}"
+        hostname = (urlparse(base_url).hostname or "").lower()
+        if hostname == "api.deepseek.com":
+            return "deepseek_responses"
+        return f"other:{base_url.rstrip('/')}"
     return "other"
 
 
@@ -591,7 +595,14 @@ def _chat_messages_to_responses_input(
                 has_codex_reasoning = False
                 if isinstance(codex_reasoning, list):
                     for ri in codex_reasoning:
-                        if isinstance(ri, dict) and ri.get("encrypted_content"):
+                        if not isinstance(ri, dict):
+                            continue
+                        encrypted_reasoning = bool(ri.get("encrypted_content"))
+                        plaintext_reasoning = (
+                            ri.get("_issuer_kind") == "deepseek_responses"
+                            and bool(_normalize_plaintext_reasoning_content(ri.get("content")))
+                        )
+                        if encrypted_reasoning or plaintext_reasoning:
                             item_id = ri.get("id")
                             if item_id and item_id in seen_item_ids:
                                 continue
@@ -639,10 +650,24 @@ def _chat_messages_to_responses_input(
                             # Also strip the internal "_issuer_kind" stamp;
                             # it is a Hermes-side metadata key and not part
                             # of the Responses API schema.
-                            replay_item = {
-                                k: v for k, v in ri.items()
-                                if k not in ("id", "_issuer_kind")
-                            }
+                            if plaintext_reasoning and not encrypted_reasoning:
+                                # DeepSeek's stateless Responses surface returns
+                                # plaintext reasoning items (encrypted_content is
+                                # null) and requires their reasoning_text to be
+                                # replayed after every tool call.  The minimal
+                                # provider-verified input shape is type+content;
+                                # ids/status/summary are response-only metadata.
+                                replay_item = {
+                                    "type": "reasoning",
+                                    "content": _normalize_plaintext_reasoning_content(
+                                        ri.get("content")
+                                    ),
+                                }
+                            else:
+                                replay_item = {
+                                    k: v for k, v in ri.items()
+                                    if k not in ("id", "_issuer_kind")
+                                }
                             items.append(replay_item)
                             item_sources.append(msg)
                             if item_id:
@@ -1455,6 +1480,23 @@ def _extract_responses_message_text(item: Any) -> str:
     return "".join(chunks).strip()
 
 
+def _normalize_plaintext_reasoning_content(content: Any) -> List[Dict[str, str]]:
+    """Return provider-safe plaintext ``reasoning_text`` input parts."""
+    if not isinstance(content, list):
+        return []
+    normalized: List[Dict[str, str]] = []
+    for part in content:
+        if isinstance(part, dict):
+            part_type = part.get("type")
+            text = part.get("text")
+        else:
+            part_type = getattr(part, "type", None)
+            text = getattr(part, "text", None)
+        if part_type == "reasoning_text" and isinstance(text, str) and text:
+            normalized.append({"type": "reasoning_text", "text": text})
+    return normalized
+
+
 def _extract_responses_reasoning_text(item: Any) -> str:
     """Extract a compact reasoning text from a Responses reasoning item."""
     summary = getattr(item, "summary", None)
@@ -1469,6 +1511,11 @@ def _extract_responses_reasoning_text(item: Any) -> str:
     text = getattr(item, "text", None)
     if isinstance(text, str) and text:
         return text.strip()
+    plaintext_parts = _normalize_plaintext_reasoning_content(
+        getattr(item, "content", None)
+    )
+    if plaintext_parts:
+        return "\n".join(part["text"] for part in plaintext_parts).strip()
     return ""
 
 
@@ -1671,6 +1718,9 @@ def _normalize_codex_response(
                 message_items_raw.append(raw_message_item)
         elif item_type == "reasoning":
             saw_reasoning_item = True
+            plaintext_content = _normalize_plaintext_reasoning_content(
+                getattr(item, "content", None)
+            )
             reasoning_text = _extract_responses_reasoning_text(item)
             if reasoning_text:
                 reasoning_parts.append(reasoning_text)
@@ -1704,6 +1754,18 @@ def _normalize_codex_response(
                         if isinstance(text, str):
                             raw_summary.append({"type": "summary_text", "text": text})
                     raw_item["summary"] = raw_summary
+                reasoning_items_raw.append(raw_item)
+            elif issuer_kind == "deepseek_responses" and plaintext_content:
+                # Unlike OpenAI/xAI, DeepSeek V4 emits no encrypted reasoning
+                # carrier.  It requires the plaintext reasoning_text item to be
+                # sent back on post-tool turns or returns HTTP 400.  Keep this
+                # scoped to the classified DeepSeek issuer so strict Responses
+                # gateways never receive an unfamiliar plaintext item.
+                raw_item = {
+                    "type": "reasoning",
+                    "content": plaintext_content,
+                    "_issuer_kind": issuer_kind,
+                }
                 reasoning_items_raw.append(raw_item)
         elif item_type == "compaction":
             # Native server-side compaction checkpoint (gpt-5.6 on direct

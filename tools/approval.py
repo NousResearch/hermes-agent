@@ -2097,12 +2097,6 @@ def _read_shell_word(command: str, pos: int) -> tuple[int, int, str]:
     return (start, i, command[start:i])
 
 
-def _strip_optional_shell_quotes(word: str) -> str:
-    if len(word) >= 2 and word[0] == word[-1] and word[0] in ("'", '"'):
-        return word[1:-1]
-    return word
-
-
 def _is_simple_shell_literal(value: str) -> bool:
     return bool(value and _SIMPLE_SHELL_LITERAL_RE.fullmatch(value))
 

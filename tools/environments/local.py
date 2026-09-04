@@ -782,14 +782,6 @@ class LocalEnvironment(BaseEnvironment):
         """
         return args
 
-    def _popen_preexec(self):
-        """Seam for subclasses that need a ``Popen`` ``preexec_fn`` (rlimits).
-
-        ``None`` for the local backend; ``_run_bash`` only sets
-        ``preexec_fn`` when this returns a callable.
-        """
-        return None
-
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         bash = _find_bash()
@@ -802,15 +794,12 @@ class LocalEnvironment(BaseEnvironment):
         # Wrap after cwd recovery so a sandbox prefix that carries the cwd
         # (bwrap --chdir) sees the recovered directory, not the deleted one.
         args = self._wrap_popen_args(args)
-        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
-        preexec_fn = self._popen_preexec()
-        if preexec_fn is not None:
-            _popen_kwargs["preexec_fn"] = preexec_fn
         proc = subprocess.Popen(
             args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            start_new_session=True, cwd=self.cwd, **_popen_kwargs)
+            start_new_session=True, cwd=self.cwd,
+            **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
         if not _IS_WINDOWS:
             with contextlib.suppress(ProcessLookupError):
                 proc._hermes_pgid = os.getpgid(proc.pid)

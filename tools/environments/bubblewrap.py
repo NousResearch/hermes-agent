@@ -56,9 +56,14 @@ above it, lets a command rename the parent, and the next spawn then finds
 nothing to hide at the old path while the secret is readable under the
 new one.
 
-Resource limits are applied through Popen's preexec_fn, as the spec asks.
-CPython documents preexec_fn as unsafe in a threaded process; the callable
-here only calls getrlimit and setrlimit, which take no locks.
+Resource limits are applied by prlimit(1) from util-linux, which the
+environment places in front of the bwrap argv above: prlimit sets
+RLIMIT_AS, RLIMIT_CPU and RLIMIT_NPROC on itself and execs bwrap, so the
+limits are in place before the sandbox starts and no Python code runs in
+the forked child. (Popen's pre-exec callback is documented as unsafe in
+a threaded process, and the gateway is one.) A value above the inherited
+hard limit is clamped to it in the parent, since raising a hard limit
+needs CAP_SYS_RESOURCE.
 """
 
 from __future__ import annotations
@@ -73,7 +78,7 @@ import subprocess
 import time
 import uuid
 from dataclasses import dataclass, replace
-from typing import Callable, Iterable, Mapping, Sequence
+from typing import Iterable, Mapping, Sequence
 
 from hermes_constants import get_hermes_home, get_real_home
 from tools.environments.base import EnvironmentConnectionError, get_sandbox_dir
@@ -595,9 +600,9 @@ def build_bwrap_args(
 PROBE_ARGS: tuple[str, ...] = ("--unshare-user", "--ro-bind", "/", "/", "true")
 PROBE_TIMEOUT_SECONDS = 5
 INSTALL_HINT = (
-    "Install the bubblewrap package (apt, dnf or pacman: bubblewrap) and make "
-    "sure unprivileged user namespaces are allowed on this host, then retry; "
-    "or set terminal.backend to another backend."
+    "Install the bubblewrap package (apt, dnf or pacman: bubblewrap) and "
+    "util-linux (for prlimit), and make sure unprivileged user namespaces are "
+    "allowed on this host, then retry; or set terminal.backend to another backend."
 )
 
 # Path of the bwrap that passed the runtime probe, kept for the life of the
@@ -612,10 +617,13 @@ def run_probe() -> tuple[str | None, str | None]:
     The probe is ``bwrap --unshare-user --ro-bind / / true`` with a
     5 s timeout: it fails where user namespaces are disabled, where bwrap
     is not setuid on a kernel that needs it, or where bwrap is missing.
+    prlimit(1), which applies the resource limits, must be on PATH too.
     """
     path = shutil.which("bwrap")
     if path is None:
         return None, "bubblewrap (bwrap) is not on PATH"
+    if shutil.which("prlimit") is None:
+        return path, "prlimit (util-linux) is not on PATH"
     try:
         result = subprocess.run(
             [path, *PROBE_ARGS],
@@ -702,24 +710,30 @@ def rlimit_values(config: BubblewrapConfig, *, uid_threads: int) -> dict[int, in
     return limits
 
 
-def make_preexec(limits: Mapping[int, int]) -> Callable[[], None] | None:
-    """A Popen preexec_fn applying *limits* as soft and hard, or None when empty.
+PRLIMIT_FLAGS: dict[int, str] = {
+    resource.RLIMIT_AS: "--as", resource.RLIMIT_CPU: "--cpu", resource.RLIMIT_NPROC: "--nproc",
+}
 
-    A value above the inherited hard limit is clamped to it: raising a
-    hard limit needs CAP_SYS_RESOURCE and would fail the spawn.
+
+def prlimit_args(limits: Mapping[int, int], prlimit_path: str) -> list[str]:
+    """The prlimit(1) argv prefix applying *limits* as soft and hard, or [] when empty.
+
+    prlimit sets each limit on itself and execs the command that follows,
+    so the limits are in place before bwrap starts and no Python code runs
+    between fork and exec. It stops parsing at the first non-option
+    argument, so the bwrap argv follows without a separator. A value above
+    the inherited hard limit is clamped to it: raising a hard limit needs
+    CAP_SYS_RESOURCE and would fail the spawn.
     """
     if not limits:
-        return None
-    pairs = tuple(limits.items())
-
-    def _apply_rlimits() -> None:
-        for res, value in pairs:
-            _, hard = resource.getrlimit(res)
-            if hard != resource.RLIM_INFINITY:
-                value = min(value, hard)
-            resource.setrlimit(res, (value, value))
-
-    return _apply_rlimits
+        return []
+    argv = [prlimit_path]
+    for res, value in limits.items():
+        _, hard = resource.getrlimit(res)
+        if hard != resource.RLIM_INFINITY:
+            value = min(value, hard)
+        argv.append(f"{PRLIMIT_FLAGS[res]}={value}")
+    return argv
 
 
 _MOUNT_ARITY: dict[str, int] = {
@@ -784,10 +798,10 @@ class BubblewrapEnvironment(LocalEnvironment):
     """LocalEnvironment whose every spawn runs inside a bwrap sandbox.
 
     Bash resolution, the run env, missing-cwd recovery and process-group
-    kill come from LocalEnvironment. This class adds the argv prefix, the
-    rlimit preexec, a per-instance state dir for the shell snapshot and cwd
-    file, the empty file bound over sensitive files, and their removal on
-    cleanup.
+    kill come from LocalEnvironment. This class adds the argv prefix (the
+    prlimit limits, then bwrap), a per-instance state dir for the shell
+    snapshot and cwd file, the empty file bound over sensitive files, and
+    their removal on cleanup.
     """
 
     def __init__(
@@ -804,6 +818,7 @@ class BubblewrapEnvironment(LocalEnvironment):
         # the terminal tool turns into its degraded or error result.
         resolve_profile(self._config.profile)
         self._bwrap_path = probe_bwrap()
+        self._prlimit_path = shutil.which("prlimit") or "prlimit"
         # The OS user's home anchors the sensitive set even when this process
         # runs with HOME pointed at the profile home. Every mount path is
         # taken through realpath: bwrap resolves a mount destination inside
@@ -1112,7 +1127,7 @@ class BubblewrapEnvironment(LocalEnvironment):
         )
 
     def _wrap_popen_args(self, args: list[str]) -> list[str]:
-        return self._bwrap_prefix(self.cwd) + list(args)
+        return self._prlimit_prefix() + self._bwrap_prefix(self.cwd) + list(args)
 
     def _wrap_command(self, command: str, cwd: str) -> str:
         # --unsetenv strips the socket variables from the environment bwrap
@@ -1123,7 +1138,7 @@ class BubblewrapEnvironment(LocalEnvironment):
         # dump that follows the command then omits them too.
         return super()._wrap_command(f"unset {' '.join(HOST_SOCKET_VARS)}; {command}", cwd)
 
-    def _popen_preexec(self):
+    def _prlimit_prefix(self) -> list[str]:
         # uid_thread_count scans /proc once per spawn, and only when max_procs
         # is non-zero (the one limit that needs it). The count must be fresh:
         # the kernel checks RLIMIT_NPROC against the uid's live thread count
@@ -1131,7 +1146,7 @@ class BubblewrapEnvironment(LocalEnvironment):
         # as the host starts threads, and a limit that falls below the live
         # count stops bwrap from creating its namespace at all.
         uid_threads = uid_thread_count(os.getuid()) if self._config.max_procs else 0
-        return make_preexec(rlimit_values(self._config, uid_threads=uid_threads))
+        return prlimit_args(rlimit_values(self._config, uid_threads=uid_threads), self._prlimit_path)
 
     def _live_sandbox_pids(self) -> list[int]:
         """PIDs of this instance's bwrap wrappers still running.
@@ -1140,9 +1155,10 @@ class BubblewrapEnvironment(LocalEnvironment):
         path with this instance's state dir bound; the state dir is unique
         per instance and fixed at construction, so nothing from inside a
         sandbox can forge it. Zombies are left for the thread that spawned
-        them to reap. A child that is between fork and exec still shows
-        Python's cmdline and is missed; it then fails to bind the removed
-        state dir and exits, exposing nothing.
+        them to reap. A child that has not exec'd bwrap yet (between fork
+        and exec, or still running prlimit) shows another cmdline and is
+        missed; it then fails to bind the removed state dir and exits,
+        exposing nothing.
         """
         me = os.getpid()
         bwrap = self._bwrap_path.encode()

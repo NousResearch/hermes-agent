@@ -2006,6 +2006,8 @@ class LocalEnvironment(BaseEnvironment):
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         cwd = _resolve_local_initial_cwd(cwd)
         super().__init__(cwd=cwd, timeout=timeout, env=env)
+        if _IS_WINDOWS:
+            self._cwd_probe_command = "pwd -W"
         self.init_session()
 
     def get_temp_dir(self) -> str:
@@ -2324,6 +2326,8 @@ class LocalEnvironment(BaseEnvironment):
         super()._extract_cwd_from_output(result)
         if self.cwd != prev_cwd:
             normalized = _msys_to_windows_path(self.cwd) if _IS_WINDOWS else self.cwd
+            if _IS_WINDOWS and re.match(r'^[a-zA-Z]:[\\/]', normalized or ""):
+                normalized = ntpath.normpath(normalized)
             if normalized and os.path.isdir(normalized):
                 self.cwd = normalized
                 result["cwd"] = normalized

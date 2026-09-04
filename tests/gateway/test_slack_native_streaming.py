@@ -76,6 +76,18 @@ class TestSupportsDraftStreaming:
         adapter._native_stream_unsupported = True
         assert adapter.supports_draft_streaming() is False
 
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {"rich_blocks": True},
+            {"rich_blocks": True, "markdown_blocks": True},
+        ],
+    )
+    def test_rich_blocks_disable_native_streaming(self, extra):
+        adapter, _ = _make_adapter(extra)
+
+        assert adapter.supports_draft_streaming(chat_type="dm") is False
+
 
 class TestSendDraft:
     @pytest.mark.asyncio
@@ -208,16 +220,32 @@ class TestSendFinalization:
         client.chat_postMessage.assert_awaited()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("blocks_setting", ["markdown_blocks", "rich_blocks"])
-    async def test_streamed_text_is_not_reapplied_as_blocks_after_seal(
-        self, blocks_setting
-    ):
-        adapter, client = _make_adapter({blocks_setting: True})
+    async def test_streamed_markdown_is_not_reapplied_as_blocks_after_seal(self):
+        adapter, client = _make_adapter({"markdown_blocks": True})
         rich = "# Title\n\nbody text"
         await adapter.send_draft("D1", 7, rich[:5], metadata=META)
         result = await adapter.send("D1", rich, metadata=META)
         assert result.success
         client.chat_stopStream.assert_awaited_once()
+        assert "blocks" not in client.chat_stopStream.await_args.kwargs
+        client.chat_update.assert_not_awaited()
+        client.chat_postMessage.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_native_stream_seals_with_feedback_controls_only(self):
+        adapter, client = _make_adapter(
+            {"markdown_blocks": True, "feedback_buttons": True}
+        )
+        rich = "# Title\n\nbody text"
+        await adapter.send_draft("D1", 7, rich[:5], metadata=META)
+        result = await adapter.send("D1", rich, metadata=META)
+        assert result.success
+        client.chat_stopStream.assert_awaited_once()
+        blocks = client.chat_stopStream.await_args.kwargs["blocks"]
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "context_actions"
+        assert blocks[0]["elements"][0]["type"] == "feedback_buttons"
+        assert not any(block["type"] == "markdown" for block in blocks)
         client.chat_update.assert_not_awaited()
         client.chat_postMessage.assert_not_awaited()
 

@@ -48,10 +48,21 @@ def _room_identity(source: dict[str, Any], *, coerce: bool = False) -> dict[str,
     return {k: int(source[k]) if k == "authority_epoch" else text(source[k]) for k in _ROOM_IDENTITY_FIELDS}
 
 
+def _effective_room_profile(_api_request_profile) -> str:
+    """Resolve the middleware selection or the daemon's active profile scope."""
+    from hermes_cli.profiles import get_active_profile_name, profile_matches_home
+
+    selected = _api_request_profile.get()
+    if selected:
+        return selected
+    active = get_active_profile_name()
+    return "default" if active == "custom" and not profile_matches_home(active) else active
+
+
 def _local_target(claims: dict[str, Any] | None, _api_request_profile) -> tuple[str, str]:
     """Return ``(profile, installation_id)`` for this gateway; *claims* must target it."""
     from gateway import hosted_rooms
-    profile = _api_request_profile.get() or "default"
+    profile = _effective_room_profile(_api_request_profile)
     installation_id = hosted_rooms.local_authority_gateway_id()
     if claims is not None and (claims["target_profile"], claims["target_install_id"]) != (profile, installation_id):
         raise ValueError("room grant target does not match this profile")
@@ -282,7 +293,7 @@ async def _handle_room_member_grant_refresh(
         # dispatch authority. Renewal is possible only while the existing
         # dispatch permission is still live.
         claims = self._room_grant_claims(request, permission="dispatch")
-        profile = _api_request_profile.get() or "default"
+        profile = _effective_room_profile(_api_request_profile)
         installation_id = hosted_rooms.local_authority_gateway_id()
         if (
             claims["target_profile"] != profile
@@ -347,7 +358,7 @@ async def _handle_room_member_grant_revoke(
     _openai_error,
     _api_request_profile,
 ) -> "web.Response":
-    """Revoke exactly the scoped grant authenticating this request."""
+    """Retire the room scope authenticated by this grant."""
     body, error = await self._read_json_body(request)
     if error:
         return error
@@ -368,20 +379,23 @@ async def _handle_room_member_grant_revoke(
             raise ValueError("room grant is missing")
         # Revoke is idempotent: a response-lost retry may authenticate with
         # the grant that was just added to the denylist. Verify signature,
-        # scope, and hard horizon directly, then upsert the same grant id.
+        # scope, and hard horizon directly, then upsert the scope fence.
         claims = decode_room_grant(
             self._room_grant_secret(),
             token,
             permission="status",
             allow_expired_for_revocation=True,
         )
-        profile = _api_request_profile.get() or "default"
+        profile = _effective_room_profile(_api_request_profile)
         installation_id = hosted_rooms.local_authority_gateway_id()
         if (
             claims["target_profile"] != profile
             or claims["target_install_id"] != installation_id
         ):
             raise ValueError("room grant target does not match this profile")
+    except Exception as exc:
+        return _room_grant_error_response(exc, _openai_error=_openai_error)
+    try:
         from gateway.hosted_room_grant_state import (
             grant_state_db_paths,
             revoke_grant_state,
@@ -411,11 +425,10 @@ async def _handle_room_member_grant_revoke(
     except Exception:
         return web.json_response(
             _openai_error(
-                "Room authorization is invalid or expired.",
-                err_type="gateway_auth_error",
-                code="invalid_room_grant",
+                "Room grant revocation could not be persisted; retry required.",
+                code="room_grant_revocation_unavailable",
             ),
-            status=401,
+            status=503,
         )
     return web.json_response(
         {
@@ -461,10 +474,13 @@ async def _handle_room_member_grant_revoke_exact(
             allow_expired_for_revocation=True,
         )
         if (
-            claims["target_profile"] != (_api_request_profile.get() or "default")
+            claims["target_profile"] != _effective_room_profile(_api_request_profile)
             or claims["target_install_id"] != hosted_rooms.local_authority_gateway_id()
         ):
             raise ValueError("room grant target does not match this profile")
+    except Exception as exc:
+        return _room_grant_error_response(exc, _openai_error=_openai_error)
+    try:
         revoke_grant_state(
             grant_state_db_paths(),
             claims=claims,
@@ -474,11 +490,10 @@ async def _handle_room_member_grant_revoke_exact(
     except Exception:
         return web.json_response(
             _openai_error(
-                "Room authorization is invalid or expired.",
-                err_type="gateway_auth_error",
-                code="invalid_room_grant",
+                "Room grant revocation could not be persisted; retry required.",
+                code="room_grant_revocation_unavailable",
             ),
-            status=401,
+            status=503,
         )
     return web.json_response({
         "object": "hermes.room_member.grant.revocation",

@@ -231,10 +231,41 @@ class HostedRoomService(HostedRoomArtifactMixin):
             trace_id=route.trace_id,
         )
         with self._policy_lock:
-            hosted_room_links.save_room_link(
-                self.db_path, stored, expected_grant_sha256=expected_grant_sha256
-            )
             key = (room_id, member_id)
+            if hosted_room_link_records.room_link_retirement_started(self.db_path, room_id=room_id):
+                raise hosted_rooms.HostedRoomError("Group Chat route registration is fenced")
+            previous = hosted_room_links.load_room_link(
+                self.db_path, room_id=room_id, member_id=member_id
+            )
+            previous_hash = hashlib.sha256(previous.grant.encode()).hexdigest() if previous else ""
+            incoming_hash = hashlib.sha256(route.grant.encode()).hexdigest()
+            if expected_grant_sha256 is not None and previous_hash not in {
+                expected_grant_sha256, incoming_hash
+            }:
+                raise hosted_rooms.HostedRoomError("peer route changed during reconnect")
+            if previous is not None and previous.grant != route.grant:
+                # Keep durable cleanup material until the original target acknowledges
+                # exact retirement. A failed save afterward is safe to retry.
+                old_client = self.peer_clients.get(key)
+                old_route = self.peer_routes.get(key)
+                if (
+                    old_client is None or isinstance(old_client, PeerRunsHTTPClient)
+                    or old_route is None or old_route.grant != previous.grant
+                ):
+                    old_client = PeerRunsHTTPClient(
+                        base_url=previous.target_url, api_key="", target_profile=previous.target_profile
+                    )
+                revoke = _hook(old_client, "revoke_grant_exact")
+                if revoke is None:
+                    raise RuntimeError("superseded peer room grant cannot be revoked exactly")
+                try:
+                    revoke(grant=previous.grant)
+                except PeerRunsHTTPError as exc:
+                    if not _grant_revoke_is_terminal(exc):
+                        raise
+            hosted_room_links.save_room_link(
+                self.db_path, stored, expected_grant_sha256=previous_hash
+            )
             if hosted_room_link_records.room_link_retirement_started(self.db_path, room_id=room_id):
                 raise hosted_rooms.HostedRoomError(
                     "Group Chat route registration is fenced"
@@ -342,7 +373,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
                 task_id=identity.task_id,
                 execution_generation=execution_generation,
             )
-        tracked_client = self._tracked_peer_client(binding.room_id, member_id, client)
+        tracked_client = self._tracked_peer_client(binding.room_id, member_id, client, route=route)
         if task.get("payload", {}).get("attachments"):
             route = self._refresh_peer_attachment_catalog(
                 binding.room_id,
@@ -354,6 +385,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
                 raise MemberTransportUnavailable(
                     "The target gateway needs an update before it can receive files in this Group Chat."
                 )
+            tracked_client = self._tracked_peer_client(binding.room_id, member_id, client, route=route)
         self._recover_peer_admission(binding, task, route, tracked_client)
         return PeerHostedRoomTransport(
             binding=binding,
@@ -501,22 +533,15 @@ class HostedRoomService(HostedRoomArtifactMixin):
                     else route.execution_policy_digest
                 ),
             )
-            hosted_room_links.save_room_link(
-                self.db_path,
-                hosted_room_links.make_stored_link(
-                    room_id=room_id,
-                    member_id=member_id,
-                    target_url=stored.target_url,
-                    target_profile=stored.target_profile,
-                    grant=grant,
-                    catalog=effective_catalog,
-                    cancellation_scope_id=stored.cancellation_scope_id,
-                    trace_id=stored.trace_id,
-                ),
+            self.register_peer_route(
+                room_id=room_id,
+                member_id=member_id,
+                route=rotated_route,
+                client=self.peer_clients[key],
+                target_url=stored.target_url,
+                catalog=effective_catalog,
                 expected_grant_sha256=expected_grant_sha256,
             )
-            self.peer_routes[key] = rotated_route
-            self._peer_route_status[key] = "ready"
         self._unblock_artifact_retries(room_id, member_id)
 
     def _route_statuses(self, room_id: str | None = None) -> list[dict[str, str]]:
@@ -858,15 +883,43 @@ class HostedRoomService(HostedRoomArtifactMixin):
         room_id: str,
         member_id: str,
         client: HostedRoomPeerClient,
+        *,
+        route: PeerMemberRoute | None = None,
     ) -> "_RouteStatusPeerClient":
-        route = self.peer_routes.get((room_id, member_id))
+        route = route or self.peer_routes.get((room_id, member_id))
         if route is None:
             raise RuntimeError("peer room route is unavailable")
+        target_url = getattr(client, "base_url", None)
+
+        def require_current(grant):
+            if hosted_room_link_records.room_link_retirement_started(self.db_path, room_id=room_id):
+                raise RuntimeError("peer room route is no longer current")
+            stored = hosted_room_links.load_room_link(self.db_path, room_id=room_id, member_id=member_id)
+            if stored is None:
+                if (
+                    (room_id, member_id) in self._persisted_peer_route_keys
+                    or replace(route, grant=grant) != self.peer_routes.get((room_id, member_id))
+                ):
+                    raise RuntimeError("peer room route changed before admission")
+                return
+            if (
+                stored.grant != grant
+                or (target_url is not None and stored.target_url != target_url)
+                or stored.target_profile != route.target_profile
+                or stored.catalog.installation_id != route.target_install_id
+                or stored.catalog.catalog_digest != route.capability_digest
+                or stored.catalog.execution_policy.policy_digest != route.execution_policy_digest
+                or stored.cancellation_scope_id != route.cancellation_scope_id
+                or stored.trace_id != route.trace_id
+            ):
+                raise RuntimeError("peer room route changed before admission")
+
         return _RouteStatusPeerClient(
             client,
             grant=route.grant,
             capability_digest=route.capability_digest,
             execution_policy_digest=route.execution_policy_digest,
+            before_admission=require_current,
             on_ready=lambda **observation: self._set_route_status(
                 room_id, member_id, "ready", **observation
             ),

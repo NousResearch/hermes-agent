@@ -1033,8 +1033,11 @@ def test_expired_remote_grant_no_longer_blocks_room_cleanup(tmp_path: Path):
 
 
 def test_expired_grant_surfaces_needs_reauthorization_without_secret(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ):
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+
+    monkeypatch.setattr(PeerRunsHTTPClient, "revoke_grant_exact", lambda self, **kwargs: {"revoked": True})
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(installation_id="install-peer", persistent_process=True)
@@ -1324,6 +1327,7 @@ def test_dispatch_refresh_persists_before_remote_admission(tmp_path: Path):
         on_terminal=lambda _receipt: None,
     )
     assert peer.refreshed == [old_grant]
+    assert peer.exact_revoked == [old_grant]
     assert peer.refresh_arguments == [
         {
             "grant": old_grant,

@@ -23,7 +23,8 @@ def _hash(grant):
 
 
 @pytest.fixture
-def peers(tmp_path):
+def peers(tmp_path, monkeypatch):
+    monkeypatch.setattr(PeerRunsHTTPClient, "revoke_grant_exact", lambda self, **kwargs: {"revoked": True})
     server = SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(

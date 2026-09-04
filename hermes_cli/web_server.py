@@ -450,7 +450,7 @@ async def _lifespan(app: "FastAPI"):
 
     record_boot_fingerprint()
 
-    # Hosted Bot rooms belong to the backend process, not to any connected
+# Hosted Bot rooms belong to the backend process, not to any connected
     # Desktop socket. Recovery may need a contended state.db migration, so keep
     # it off the lifespan's pre-yield path: Group Chat startup must degrade on
     # its own instead of preventing every dashboard/Desktop feature from booting.
@@ -474,6 +474,35 @@ async def _lifespan(app: "FastAPI"):
         name="hosted-room-startup",
     )
     hosted_room_start_thread.start()
+
+    # Register declarative shell hooks from cli-config.yaml so Web UI chat
+    # sessions invoke the same configured lifecycle hooks as CLI, TUI and
+    # messaging sessions. The Web server has no TTY, so consent comes from
+    # the same opt-in channels gateway uses (--accept-hooks on launch,
+    # HERMES_ACCEPT_HOOKS env var, or hooks_auto_accept in config.yaml);
+    # pass accept_hooks=False and let register_from_config resolve the
+    # effective value. Failures are logged but must never block startup.
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+
+        _web_hooks_cfg = load_config()
+        register_from_config(_web_hooks_cfg, accept_hooks=False)
+
+        from agent.outbound_webhooks import (
+            register_from_config as register_outbound_webhooks,
+        )
+
+        register_outbound_webhooks(_web_hooks_cfg)
+    except Exception:
+        # A configured hook that silently vanishes is the exact failure this
+        # PR exists to fix (Web UI sessions previously skipped configured
+        # hooks entirely). Log at WARNING so a misconfigured hook is visible
+        # in agent.log, not swallowed at debug; startup still never blocks.
+        _log.warning(
+            "shell-hook registration failed at web startup",
+            exc_info=True,
+        )
 
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
     # since the app has no gateway running the scheduler. Server `hermes

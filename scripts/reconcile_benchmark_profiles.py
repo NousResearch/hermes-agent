@@ -21,7 +21,11 @@ import yaml
 
 
 RUN_ID = "hrl-benchmark-v3-20260831"
-VAULT_NOTE = "/Users/mikedemott/LunaBotVault/Investigations/Hermes provider benchmark and routing tune 2026-08-31.md"
+POLICY_RUNBOOK = "docs/benchmark-profile-routing.md"
+OPERATOR_EVIDENCE = (
+    "LunaBotVault/Investigations/"
+    "Hermes provider benchmark and routing tune 2026-08-31.md"
+)
 ROOT_MANIFEST = "benchmark_profile.json"
 POLICY_FILENAME = "benchmark_policy.json"
 
@@ -239,7 +243,8 @@ def main() -> int:
             "run_id": RUN_ID,
             "classification": "diagnostic-only",
             "authority_ceiling": "no_runtime_or_acceptance_authority",
-            "source_note": VAULT_NOTE,
+            "source_note": POLICY_RUNBOOK,
+            "operator_evidence": OPERATOR_EVIDENCE,
             "root_manifest": str(home / ROOT_MANIFEST),
             "verified_at": "2026-08-31",
             "operator_amendment": "2026-09-02 Terra-medium active routes promoted to Luna-high",

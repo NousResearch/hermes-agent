@@ -744,6 +744,98 @@ def _authorization_code_result(code: str, state: "str | None", iss: "str | None"
     return AuthorizationCodeResult(code=code, state=state, iss=iss)
 
 
+def coerce_oauth_response_iss(
+    emitted: "str | None", advertised: "str | None"
+) -> "str | None":
+    """Return the ``iss`` the MCP SDK should validate against metadata.
+
+    monday.com (and similar hosted MCP servers) advertise
+    ``issuer: https://auth.monday.com/mcp`` but emit
+    ``iss=https://auth.monday.com`` on the authorization redirect. The SDK's
+    RFC 9207 §2.4 check is a strict string compare, so that suffix-only
+    mismatch rejects the callback after the user already granted consent.
+
+    Coerce only when the advertised issuer is the emitted value plus a path
+    suffix (same origin), or the two differ only by a trailing slash.
+    Different hosts, a longer emitted value, or an empty side are left
+    untouched. See #96107.
+    """
+    if not emitted or not advertised:
+        return emitted
+    emitted_s = str(emitted).rstrip("/")
+    advertised_s = str(advertised).rstrip("/")
+    if not emitted_s or not advertised_s:
+        return emitted
+    if emitted_s == advertised_s:
+        return str(advertised)
+    if advertised_s.startswith(emitted_s + "/"):
+        return str(advertised)
+    return emitted
+
+
+def _oauth_result_field(result: Any, name: str, tuple_index: int) -> Any:
+    if result is None:
+        return None
+    if isinstance(result, tuple):
+        if len(result) > tuple_index:
+            return result[tuple_index]
+        return None
+    return getattr(result, name, None)
+
+
+def _advertised_oauth_issuer(provider: Any) -> "str | None":
+    ctx = getattr(provider, "context", None)
+    if ctx is None:
+        return None
+    meta = getattr(ctx, "oauth_metadata", None)
+    issuer = getattr(meta, "issuer", None) if meta is not None else None
+    if issuer:
+        return str(issuer)
+    storage = getattr(ctx, "storage", None)
+    load = getattr(storage, "load_oauth_metadata", None) if storage is not None else None
+    if callable(load):
+        stored = load()
+        issuer = getattr(stored, "issuer", None) if stored is not None else None
+        if issuer:
+            return str(issuer)
+    return None
+
+
+def install_oauth_iss_suffix_coerce(provider: Any) -> None:
+    """Wrap ``context.callback_handler`` so monday-style iss suffixes pass RFC 9207.
+
+    Discovery stores the advertised issuer on ``context.oauth_metadata``
+    before the browser redirect. The callback still carries the shorter
+    emitted ``iss``; rewriting it here (same-origin path suffix only) lets
+    the SDK's strict compare succeed without skipping issuer validation.
+    """
+    ctx = getattr(provider, "context", None)
+    if ctx is None:
+        return
+    inner = getattr(ctx, "callback_handler", None)
+    if inner is None or getattr(inner, "_hermes_iss_suffix_coerced", False):
+        return
+
+    async def _callback():
+        result = await inner()
+        advertised = _advertised_oauth_issuer(provider)
+        emitted = _oauth_result_field(result, "iss", 2)
+        coerced = coerce_oauth_response_iss(
+            str(emitted) if emitted is not None else None,
+            advertised,
+        )
+        if coerced == emitted or coerced is emitted:
+            return result
+        return _authorization_code_result(
+            _oauth_result_field(result, "code", 0),
+            _oauth_result_field(result, "state", 1),
+            coerced,
+        )
+
+    _callback._hermes_iss_suffix_coerced = True  # type: ignore[attr-defined]
+    ctx.callback_handler = _callback
+
+
 def _make_callback_handler() -> tuple[type, dict]:
     """Create a per-flow callback HTTP handler class with its own result dict.
 
@@ -1184,11 +1276,17 @@ def _get_hermes_oauth_provider_class() -> type | None:
         ``token_user_agent`` (from ``oauth.user_agent``) is stamped onto the
         token-endpoint requests the SDK builds — some authorization servers
         and WAFs reject httpx's default User-Agent there (#75576).
+
+        monday.com advertises ``issuer`` with a ``/mcp`` path suffix but
+        emits a suffix-less ``iss`` on the redirect (#96107). The callback
+        is rewritten to the advertised issuer when the mismatch is that
+        path suffix only, so the SDK's RFC 9207 check can complete.
         """
 
         def __init__(self, *args: Any, token_user_agent: "str | None" = None, **kwargs: Any):
             super().__init__(*args, **kwargs)
             self._hermes_token_user_agent = token_user_agent
+            install_oauth_iss_suffix_coerce(self)
 
         def _stamp_token_user_agent(self, request):
             ua = getattr(self, "_hermes_token_user_agent", None)

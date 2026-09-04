@@ -147,6 +147,9 @@ def _make_hermes_provider_class() -> Optional[type]:
             import anyio
 
             self.context.lock = anyio.Semaphore(1, max_value=1)
+            from tools.mcp_oauth import install_oauth_iss_suffix_coerce
+
+            install_oauth_iss_suffix_coerce(self)
             self._hermes_server_name = server_name
             self._hermes_home = ""
             # When the client_id comes from config.yaml (pre-registered), an

@@ -1112,3 +1112,106 @@ def test_humanize_non_registration_403_passthrough():
         )
         is None
     )
+
+
+# ---------------------------------------------------------------------------
+# RFC 9207 iss suffix tolerance (#96107)
+# ---------------------------------------------------------------------------
+
+
+class TestCoerceOAuthResponseIss:
+    def test_monday_path_suffix_uses_advertised_issuer(self):
+        from tools.mcp_oauth import coerce_oauth_response_iss
+
+        assert (
+            coerce_oauth_response_iss(
+                "https://auth.monday.com",
+                "https://auth.monday.com/mcp",
+            )
+            == "https://auth.monday.com/mcp"
+        )
+
+    def test_trailing_slash_only_uses_advertised(self):
+        from tools.mcp_oauth import coerce_oauth_response_iss
+
+        assert (
+            coerce_oauth_response_iss(
+                "https://auth.example.com",
+                "https://auth.example.com/",
+            )
+            == "https://auth.example.com/"
+        )
+
+    def test_exact_match_unchanged(self):
+        from tools.mcp_oauth import coerce_oauth_response_iss
+
+        assert (
+            coerce_oauth_response_iss(
+                "https://auth.example.com/mcp",
+                "https://auth.example.com/mcp",
+            )
+            == "https://auth.example.com/mcp"
+        )
+
+    def test_different_host_is_not_rewritten(self):
+        from tools.mcp_oauth import coerce_oauth_response_iss
+
+        emitted = "https://evil.example"
+        assert (
+            coerce_oauth_response_iss(emitted, "https://auth.monday.com/mcp")
+            == emitted
+        )
+
+    def test_emitted_longer_than_advertised_is_not_rewritten(self):
+        from tools.mcp_oauth import coerce_oauth_response_iss
+
+        emitted = "https://auth.monday.com/mcp/extra"
+        assert (
+            coerce_oauth_response_iss(emitted, "https://auth.monday.com/mcp")
+            == emitted
+        )
+
+    def test_empty_sides_pass_through(self):
+        from tools.mcp_oauth import coerce_oauth_response_iss
+
+        assert coerce_oauth_response_iss(None, "https://auth.monday.com/mcp") is None
+        assert coerce_oauth_response_iss("https://auth.monday.com", None) == (
+            "https://auth.monday.com"
+        )
+
+
+@pytest.mark.asyncio
+async def test_iss_suffix_coerce_rewrites_callback_result():
+    pytest.importorskip("mcp.shared.auth")
+    from tools.mcp_oauth import (
+        coerce_oauth_response_iss,
+        install_oauth_iss_suffix_coerce,
+        _authorization_code_result,
+    )
+
+    class _Meta:
+        issuer = "https://auth.monday.com/mcp"
+
+    class _Ctx:
+        oauth_metadata = _Meta()
+        storage = None
+        callback_handler = None
+
+    class _Provider:
+        context = _Ctx()
+
+    async def _inner():
+        return _authorization_code_result(
+            "auth-code", "state-1", "https://auth.monday.com"
+        )
+
+    provider = _Provider()
+    provider.context.callback_handler = _inner
+    install_oauth_iss_suffix_coerce(provider)
+    result = await provider.context.callback_handler()
+    expected = coerce_oauth_response_iss(
+        "https://auth.monday.com", "https://auth.monday.com/mcp"
+    )
+    assert getattr(result, "iss", None) == expected
+    assert getattr(result, "code", None) == "auth-code"
+    assert getattr(result, "state", None) == "state-1"

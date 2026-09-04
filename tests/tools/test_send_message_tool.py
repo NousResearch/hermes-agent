@@ -697,7 +697,7 @@ class TestMatrixMediaLiveAdapterReuse:
         with patch(
             "gateway.run._gateway_runner_ref", return_value=None
         ), patch.dict(sys.modules, {"plugins.platforms.matrix.adapter": fake_module}), patch(
-            "tools.send_message_tool._gateway_process_running", return_value=False
+            "tools.send_message_senders._gateway_process_running", return_value=False
         ):
             result = asyncio.run(
                 _send_matrix_via_adapter(
@@ -735,7 +735,7 @@ class TestMatrixMediaLiveAdapterReuse:
         with patch(
             "gateway.run._gateway_runner_ref", return_value=None
         ), patch.dict(sys.modules, {"plugins.platforms.matrix.adapter": fake_module}), patch(
-            "tools.send_message_tool._gateway_process_running", return_value=True
+            "tools.send_message_senders._gateway_process_running", return_value=True
         ):
             result = asyncio.run(
                 _send_matrix_via_adapter(

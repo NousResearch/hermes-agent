@@ -1092,7 +1092,7 @@ def _resolve_quick_snapshot_dir(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
 ) -> Optional[Path]:
-    """Return a contained quick-snapshot directory, or None when invalid."""
+    """Return a contained quick-snapshot directory, or None for an invalid ID or missing directory."""
     root = _quick_snapshot_root(hermes_home)
     if (
         not snapshot_id
@@ -1294,7 +1294,7 @@ def restore_quick_snapshot(snapshot_id: str, hermes_home: Optional[Path] = None)
                 # stale pages from a replaced inode (#65942).
                 if not _safe_restore_db(src, dst):
                     # Refused (live holder) or failed: destination untouched — a failure, not a restore.
-                    logger.error("Failed to restore %s: live-safe restore refused", rel)
+                    logger.error("Failed to restore %s: live-safe restore failed or was refused", rel)
                     db_restore_failed = True
                     continue
             else:

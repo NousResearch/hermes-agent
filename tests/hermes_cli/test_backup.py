@@ -1458,8 +1458,8 @@ class TestQuickSnapshot:
             f"(expected 1); the extra row 's2' should have been reverted."
         )
 
-    def test_restore_returns_false_when_safe_restore_refuses(
-        self, hermes_home, monkeypatch
+    def test_restore_returns_false_when_safe_restore_fails(
+        self, hermes_home, monkeypatch, caplog
     ):
         from hermes_cli import backup as backup_mod
 
@@ -1472,6 +1472,7 @@ class TestQuickSnapshot:
             backup_mod.restore_quick_snapshot(snap_id, hermes_home=hermes_home)
             is False
         )
+        assert "live-safe restore failed or was refused" in caplog.text
 
     def test_snapshot_restore_command_reports_failure_not_missing(
         self, hermes_home, monkeypatch, capsys

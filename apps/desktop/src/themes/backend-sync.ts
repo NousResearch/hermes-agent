@@ -7,7 +7,8 @@
  *
  *   1. Registers the converted theme in `$backendThemes` so it appears wherever a
  *      built-in does — Appearance, Cmd-K, `/skin` — with no per-surface wiring
- *      (`listAllThemes` merges this store).
+ *      (`listAllThemes` merges this store). A skin sharing a built-in name keeps
+ *      the hand-tuned built-in palette while contributing wallpaper metadata.
  *   2. When asked to apply (an explicit change), requests the switch via
  *      `$pendingSkinApply`, which the ThemeProvider drains through `setTheme`.
  *
@@ -47,7 +48,8 @@ export function __resetBackendSkinSync(): void {
 /**
  * Fold a resolved skin into the desktop. `apply: false` (connect-time seed) only
  * records the baseline; `apply: true` (runtime change / poll) repaints on a name
- * change. Built-in names keep the desktop's own palette but can still be applied.
+ * change. Built-in names keep the desktop's own palette while still accepting
+ * wallpaper, fit, position, and overlay from the canonical backend skin.
  */
 export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }: { apply: boolean }): void {
   const name = (skin && typeof skin === 'object' ? (skin.name ?? '') : '').trim()
@@ -61,18 +63,35 @@ export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }
   // valid apply TARGET though: a runtime switch back to `default` must repaint the
   // desktop to its own default (setTheme normalizes `default` → nous). So we only
   // skip the registry step here and let it flow through the apply logic below.
-  // Built-in names (mono/slate/…) already have a hand-tuned desktop palette — we
-  // never shadow it, but the name is still a valid apply target.
-  if (name !== 'default' && !BUILTIN_THEMES[name]) {
-    const theme = skinToDesktopTheme(skin as HermesSkin)
+  // Built-in names (mono/slate/…) already have a hand-tuned desktop palette.
+  // Preserve it, but do not discard wallpaper metadata carried by the skin —
+  // Backdrop owns that presentation layer independently from the colour tokens.
+  if (name !== 'default') {
+    const converted = skinToDesktopTheme(skin as HermesSkin)
 
-    if (!theme) {
+    if (!converted) {
       return
     }
 
     const current = $backendThemes.get()
+    const builtin = BUILTIN_THEMES[name]
 
-    if (JSON.stringify(current[name]) !== JSON.stringify(theme)) {
+    const theme = builtin
+      ? converted.backgroundImage
+        ? {
+            ...builtin,
+            backgroundImage: converted.backgroundImage,
+            backgroundImageFit: converted.backgroundImageFit,
+            backgroundImagePosition: converted.backgroundImagePosition,
+            backgroundOverlay: converted.backgroundOverlay
+          }
+        : null
+      : converted
+
+    if (!theme && current[name]) {
+      const { [name]: _removed, ...rest } = current
+      $backendThemes.set(rest)
+    } else if (theme && JSON.stringify(current[name]) !== JSON.stringify(theme)) {
       $backendThemes.set({ ...current, [name]: theme })
     }
   }

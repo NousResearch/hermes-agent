@@ -5114,6 +5114,10 @@ def resolve_skin() -> dict:
             "banner_hero": skin.banner_hero,
             "tool_prefix": skin.tool_prefix,
             "help_header": (skin.branding or {}).get("help_header", ""),
+            "background_image": skin.background_image,
+            "background_image_fit": skin.background_image_fit,
+            "background_image_position": skin.background_image_position,
+            "background_overlay": skin.background_overlay,
         }
     except Exception:
         return {}

@@ -203,7 +203,22 @@ class TestMemoryConsolidationGracefulDegrade:
         assert r["success"] is False
         assert r["done"] is True
         assert "current_entries" not in r
-        assert "continue with your reply" in r["error"]
+        assert "tell the user" in r["error"]
+
+    def test_terminal_message_instructs_surfacing_to_user(self, store):
+        # Regression test: previously the terminal message only told the
+        # model to "continue with your reply," with nothing requiring it
+        # to mention the failure at all -- a dropped fact was silently
+        # indistinguishable from Alfred simply forgetting. Confirmed via
+        # real gateway logs (5 occurrences over 2 weeks on a chronically
+        # full store) that this produced zero user-visible signal.
+        store.add("memory", "fact A")
+        cap = store._MAX_CONSOLIDATION_FAILURES_PER_TURN
+        for _ in range(cap):
+            store.replace("memory", "nonexistent", "new")
+        r = store.replace("memory", "nonexistent", "new")
+        assert "NOT saved" in r["error"]
+        assert "tell the user" in r["error"]
 
 
     def test_apply_batch_failures_count_toward_budget(self, store):
@@ -220,7 +235,7 @@ class TestMemoryConsolidationGracefulDegrade:
         r = store.apply_batch("memory", bad_batch)
         assert r["success"] is False
         assert r["done"] is True
-        assert "continue with your reply" in r["error"]
+        assert "tell the user" in r["error"]
 
     def test_success_and_turn_boundary_reset_failure_budget(self, store):
         store.add("memory", "real entry")
@@ -233,7 +248,7 @@ class TestMemoryConsolidationGracefulDegrade:
         # Now a fresh failure is treated as the first again (still actionable).
         r = store.replace("memory", "nonexistent", "new")
         assert "current_entries" in r
-        assert "continue with your reply" not in r["error"]
+        assert "tell the user" not in r["error"]
 
         # Blow past the cap, then a new turn boundary resets the budget.
         for _ in range(cap + 1):
@@ -241,7 +256,7 @@ class TestMemoryConsolidationGracefulDegrade:
         store.reset_consolidation_failures()
         r = store.replace("memory", "nonexistent", "new")
         assert "current_entries" in r  # actionable again, not degraded
-        assert "continue with your reply" not in r["error"]
+        assert "tell the user" not in r["error"]
 
 
 class TestMemoryStorePersistence:

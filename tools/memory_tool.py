@@ -209,6 +209,14 @@ class MemoryStore:
         exceeded, drop the retry instruction and return a TERMINAL result so the
         model stops looping memory calls and proceeds to answer the user — a
         failed memory side effect must never block the turn's reply (#42405).
+
+        The terminal result explicitly instructs the model to tell the user,
+        not just to move on quietly. Previously it only said "continue with
+        your reply" — visible to the model as a tool result, but nothing
+        required it to actually surface the failure, so a fact could be
+        dropped with zero user-visible signal (confirmed live: this path
+        fired 5 times over 2 weeks on a chronically-full store, one of which
+        silently dropped a repeated user correction).
         """
         self._consolidation_failures += 1
         if self._consolidation_failures <= self._MAX_CONSOLIDATION_FAILURES_PER_TURN:
@@ -218,9 +226,11 @@ class MemoryStore:
             "done": True,
             "error": (
                 f"Memory consolidation failed {self._consolidation_failures} times "
-                "this turn. Stop retrying memory calls — leave memory unchanged for "
-                "now and continue with your reply to the user. The fact can be saved "
-                "in a later turn."
+                "this turn — the store is full and this fact was NOT saved. Stop "
+                "retrying memory calls. You must briefly tell the user this in your "
+                "reply (e.g. \"couldn't save that — memory's full, some old notes "
+                "may need clearing\") so they know it wasn't actually remembered — "
+                "do not continue as if it was saved."
             ),
         }
 

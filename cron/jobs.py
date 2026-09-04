@@ -2229,14 +2229,19 @@ def mark_job_run(
     status: Optional[str] = None,
     *,
     expected_fire_owner: Optional[str] = None,
-) -> bool:
+) -> Optional[bool]:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
 
     ``delivery_error`` is separate from the agent error: agent succeeded but delivery failed records
     ``last_status = "delivery_failed"`` (never "ok") while ``failure_streak`` is left alone. An
-    explicit ``status`` (e.g. "blocked_config") overrides the derived value. False when the fence
-    can't be taken, the job is missing, or ``expected_fire_owner`` no longer holds the fire claim.
+    explicit ``status`` (e.g. "blocked_config") overrides the derived value.
+
+    Tri-state (c-027): ``True`` — recorded (owner CAS matched when supplied); ``False`` —
+    authoritatively rejected (job missing, or ``expected_fire_owner`` no longer holds the fire
+    claim); ``None`` — unconfirmed: the fire fence could not be acquired, so the write (and the
+    CAS) never happened. Callers must not treat ``None`` as ownership loss — the worker's own
+    fenced side effect may be the reason the fence was busy.
     """
     def apply(jobs, _i, job):
         if expected_fire_owner is not None:
@@ -2259,7 +2264,10 @@ def mark_job_run(
             return False
         return found
 
-    return _under_fire_fence(job_id, locked)
+    with _fire_job_lock(job_id) as acquired:
+        if not acquired:
+            return None
+        return locked()
 
 
 def _write_oneshot_diagnostic(job: Dict[str, Any], text: str, what: str) -> bool:
@@ -2511,13 +2519,31 @@ def claim_job_for_fire(
     return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
 
 
-def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
-    """Refresh an active ``fire_claim`` without extending another owner's lease: an execution may
-    outlive the TTL, and the owner check stops a stale runner from refreshing a recovered claim."""
+def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> Optional[bool]:
+    """Tri-state fire-claim heartbeat (c-027).
+
+    Returns:
+        ``True``  — renewed/confirmed: we hold the fire fence and the
+                    persisted claim still names ``expected_owner``.
+        ``False`` — authoritatively inspected: the fence was acquired and
+                    the claim is absent or owned by someone else.
+        ``None``  — unconfirmed: the fire fence could not be acquired (its
+                    process-local RLock is contended, e.g. held across a
+                    slow side-effect delivery) so ownership was never
+                    actually inspected.
+
+    Collapsing ``None`` into ``False`` made a worker's own heartbeat thread
+    report authoritative ownership loss during fenced delivery and cancel a
+    successfully completing run. Callers must treat the three outcomes
+    differently: only an explicit ``False`` is an ownership loss.
+    """
     def apply(jobs, _i, job):
         return _refresh_claim(jobs, job.get("fire_claim"), expected_owner)
 
-    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+    with _fire_job_lock(job_id) as acquired:
+        if not acquired:
+            return None
+        return _with_job(job_id, apply, False)
 
 
 # Completed one-shots are retained in jobs.json (final status stays inspectable) and pruned by

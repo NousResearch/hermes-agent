@@ -2436,41 +2436,80 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
                 exc_info=True)
 
     try:
+        # Tri-state (c-027): True=renewed/owned; False=confirmed loss;
+        # None=unconfirmed (fence contended). Initial validation stays
+        # fail-closed: the run may only start on exactly True.
         owns_fire_claim = heartbeat_fire_claim(job_id, expected_owner=owner)
     except Exception:
-        logger.warning("Job '%s': initial fire_claim validation failed", job_id, exc_info=True)
-        _finish_unstarted("Fire claim ownership could not be validated before execution started.")
+        owns_fire_claim = None
+        logger.warning(
+            "Job '%s': initial fire_claim validation failed",
+            job_id,
+            exc_info=True,
+        )
+        _finish_unstarted(
+            "Fire claim ownership could not be validated before execution started."
+        )
         return True
 
-    if owns_fire_claim is False:
-        logger.warning("Job '%s': fire claim ownership was already lost before execution", job_id)
-        _finish_unstarted("Fire claim ownership lost before execution started.")
+    if owns_fire_claim is not True:
+        # Fail closed (c-027): only an exactly-True renewal lets the run
+        # start. An explicit False is a confirmed loss; None (or an
+        # unexpected value) is unconfirmed ownership — the run must not
+        # begin without a validated claim.
+        if owns_fire_claim is False:
+            logger.warning(
+                "Job '%s': fire claim ownership was already lost before execution",
+                job_id,
+            )
+            _finish_unstarted("Fire claim ownership lost before execution started.")
+        else:
+            logger.warning(
+                "Job '%s': fire claim ownership could not be confirmed before "
+                "execution; refusing to start",
+                job_id,
+            )
+            _finish_unstarted(
+                "Fire claim ownership could not be validated before execution started."
+            )
         return True
 
     def _heartbeat_loop() -> None:
         last_confirmed = time.monotonic()
         while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
             try:
-                if not heartbeat_fire_claim(job_id, expected_owner=owner):
-                    lost_ownership.set()
-                    logger.warning(
-                        "Job '%s': fire claim ownership lost; interrupting stale run",
-                        job_id)
-                    return
-                last_confirmed = time.monotonic()
+                # Tri-state (c-027): only an explicit False is an
+                # authoritative ownership loss. None means the fire fence
+                # was busy (e.g. our own delivery holds it) — ownership was
+                # not inspected, so the renewal is merely unconfirmed and
+                # falls under the grace window like any other exception.
+                renewed = heartbeat_fire_claim(job_id, expected_owner=owner)
             except Exception:
-                logger.debug("Job '%s': fire_claim heartbeat failed", job_id, exc_info=True)
-                if (
-                    time.monotonic() - last_confirmed
-                    >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS
-                ):
-                    lost_ownership.set()
-                    logger.warning(
-                        "Job '%s': fire_claim could not be renewed within %.1fs; "
-                        "interrupting uncertain run",
-                        job_id,
-                        _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS)
-                    return
+                renewed = None
+            if renewed is False:
+                lost_ownership.set()
+                logger.warning(
+                    "Job '%s': fire claim ownership lost; interrupting stale run",
+                    job_id,
+                )
+                return
+            if renewed is True:
+                last_confirmed = time.monotonic()
+                continue
+            logger.debug(
+                "Job '%s': fire_claim heartbeat unconfirmed (fence contended "
+                "or store error)",
+                job_id,
+            )
+            if time.monotonic() - last_confirmed >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS:
+                lost_ownership.set()
+                logger.warning(
+                    "Job '%s': fire_claim could not be renewed within %.1fs; "
+                    "interrupting uncertain run",
+                    job_id,
+                    _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS,
+                )
+                return
 
     heartbeat_thread = _start_heartbeat_thread(
         _heartbeat_loop, "cron-fire-claim-heartbeat",
@@ -2567,10 +2606,23 @@ _OWNERSHIP_LOST_INTERRUPTED = "Interrupted by shutdown before terminal completio
 def _record_fire_ownership_lost(job_id: str, fire_owner: Optional[str], execution_id: str) -> None:
     """Bookkeeping after fire-claim ownership loss. A transport-level cancel (dashboard drain) is
     not a real loss — we still own the claim, so record the interruption via the owner-fenced
-    terminal write instead of leaving fire_claim/last_status stale; otherwise discard."""
-    if fire_owner is not None and heartbeat_fire_claim(job_id, expected_owner=fire_owner):
+    terminal write instead of leaving fire_claim/last_status stale.
+
+    Tri-state (c-027): a None probe is unconfirmed — never adjudicate "ownership lost" on it;
+    the uncertain arm records the distinct uncertain-outcome error instead.
+    """
+    probe = (
+        heartbeat_fire_claim(job_id, expected_owner=fire_owner)
+        if fire_owner is not None
+        else False
+    )
+    if probe is True:
         mark_job_run(job_id, False, _OWNERSHIP_LOST_INTERRUPTED, expected_fire_owner=fire_owner)
         finish_execution(execution_id, success=False, error=_OWNERSHIP_LOST_INTERRUPTED)
+    elif probe is None:
+        finish_execution(
+            execution_id, success=False,
+            error="Fire claim could not be re-validated after interruption; outcome uncertain.")
     else:
         finish_execution(
             execution_id, success=False,
@@ -2664,7 +2716,15 @@ class _FireOwnership:
         if self.owner is None:
             return False
         try:
-            if heartbeat_fire_claim(self.job["id"], expected_owner=self.owner):
+            # Tri-state (c-027): True = still owned; False = authoritative
+            # loss; None = fence contended (likely our own side effect
+            # holds it) — NOT a loss. None keeps the caller in
+            # unknown-but-not-lost territory; the fence acquisition below
+            # re-validates ownership before the terminal write.
+            renewed = heartbeat_fire_claim(self.job["id"], expected_owner=self.owner)
+            if renewed is True:
+                return False
+            if renewed is None:
                 return False
         except Exception:
             logger.debug(
@@ -2790,10 +2850,19 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
     if d.blocked_config:
         mark_kwargs["status"] = "blocked_config"
     marked = mark_job_run(job["id"], d.success, d.error, **mark_kwargs)
-    if fire_owner is not None and not marked:
+    # Tri-state (c-027): only an explicit False is an authoritative owner-CAS
+    # rejection. None means the fire fence was unavailable — the CAS never
+    # ran, so ownership was NOT confirmed lost; record the unconfirmed-terminal
+    # outcome instead of a confirmed loss.
+    if fire_owner is not None and marked is False:
         finish_execution(
             execution_id, success=False,
             error="Fire claim ownership lost before terminal completion.")
+        return True
+    if fire_owner is not None and marked is None:
+        finish_execution(
+            execution_id, success=False,
+            error="Fire claim fence unavailable before terminal completion; outcome uncertain.")
         return True
     delivery_outcome = _classify_delivery_outcome(
         delivery_error=d.delivery_error,
@@ -2949,6 +3018,15 @@ def _run_one_job_body(
 
         if _fire_claim_ownership_lost():
             _teardown_deferred()
+            # Distinguish a real ownership loss (TTL expiry / replacement
+            # claim) from a transport-level cancel (dashboard drain): in the
+            # latter case WE still own the claim, and silently discarding
+            # would leave fire_claim lingering until TTL and last_status
+            # stale. Probe ownership once; if still ours, record the
+            # interruption through the owner-fenced terminal write.
+            # Tri-state (c-027): a None probe is unconfirmed — never
+            # adjudicate "ownership lost" on it; the None arm falls through
+            # to the uncertain-store recording path below.
             _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
             return True
 
@@ -2967,6 +3045,11 @@ def _run_one_job_body(
             _teardown_deferred()
 
         if d.side_effect_ownership_lost or _fire_claim_ownership_lost():
+            # Same transport-cancel distinction as the pre-side-effect path:
+            # if WE still own the claim, record the interruption instead of
+            # discarding silently (lingering claim + stale last_status).
+            # Tri-state (c-027): a None probe is unconfirmed — never
+            # adjudicate "ownership lost" on it.
             _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
             return True
 
@@ -2979,6 +3062,10 @@ def _run_one_job_body(
             _finish_interrupted_run(job, execution_id, delivery_error)
             return True
 
+        # Tri-state (c-027), inside _finish_completed_run: only an explicit False from
+        # mark_job_run is an authoritative owner-CAS rejection. None means the fire
+        # fence was unavailable — the CAS never ran, so ownership was NOT confirmed
+        # lost; the unconfirmed-terminal outcome is recorded instead of a confirmed loss.
         return _finish_completed_run(d, fire_owner, execution_id)
 
     except BaseException as e:  # noqa: BLE001 — deliberate: see below

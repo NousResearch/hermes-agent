@@ -7,6 +7,9 @@ export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, C
   resolveRemote: () => Promise<Remote | null>
   waitForDecision: (backend: Backend) => Promise<FirstRunSetupDecision>
   waitForLocalStart: () => Promise<unknown>
+  /** A remote-only build waits here instead of preparing/probing a local runtime. */
+  waitForRemoteSetup?: () => Promise<unknown>
+  remoteOnly?: boolean
 }
 
 export type PrimaryBackendStartupResult<RuntimeBackend, Connection> =
@@ -70,17 +73,19 @@ export class FirstRunSetupResetError extends Error {
 }
 
 // Owns the production startHermes path up to the local process spawn. Keeping
-// the full ordering here makes the first-run remote boundary executable in a
-// test: an already-saved remote wins immediately; otherwise update exclusion
-// and local backend resolution happen before the setup gate, and a remote Apply
-// re-resolves persisted config without ever entering ensureRuntime/bootstrap.
+// the full ordering here makes both startup boundaries executable in tests: an
+// already-saved remote wins immediately; a remote-only build parks at its
+// setup gate without preparing a local runtime; and the normal build keeps its
+// update exclusion/local resolution before the local setup choice.
 export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, Connection>({
   connectRemote,
   ensureLocalRuntime,
   prepareLocalBackend,
   resolveRemote,
   waitForDecision,
-  waitForLocalStart
+  waitForLocalStart,
+  waitForRemoteSetup,
+  remoteOnly = false
 }: PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection>): Promise<
   PrimaryBackendStartupResult<RuntimeBackend, Connection>
 > {
@@ -88,6 +93,25 @@ export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, 
 
   if (savedRemote) {
     return { kind: 'remote', connection: await connectRemote(savedRemote) }
+  }
+
+  // Standalone client builds have no local runtime to prepare.  Keeping this
+  // branch before waitForLocalStart/prepareLocalBackend is the invariant that
+  // prevents a missing or malformed saved route from silently launching the
+  // installer on the user's machine.
+  if (remoteOnly) {
+    if (!waitForRemoteSetup) {
+      throw new Error('Remote-only Desktop startup requires a remote setup waiter.')
+    }
+
+    await waitForRemoteSetup()
+    const appliedRemote = await resolveRemote()
+
+    if (!appliedRemote) {
+      throw new Error('Remote setup completed without a saved remote backend.')
+    }
+
+    return { kind: 'remote', connection: await connectRemote(appliedRemote) }
   }
 
   await waitForLocalStart()

@@ -41,6 +41,8 @@ import {
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
+  remoteCredentialScope,
+  remoteCredentialScopeMatches,
   remoteRequestMatchesBaseUrl,
   resolveAuthMode,
   resolveProfileApiRequest,
@@ -53,6 +55,48 @@ import {
   translateSelfProfileQuery,
   withTransientRetries
 } from './connection-config'
+
+test('remote credential scope normalizes gateway URL and auth mode', () => {
+  assert.equal(
+    remoteCredentialScope('HTTPS://Gateway.Example.com/hermes///', 'token'),
+    'https://gateway.example.com/hermes\0token'
+  )
+  assert.equal(
+    remoteCredentialScope('https://gateway.example.com/hermes', 'oauth'),
+    'https://gateway.example.com/hermes\0oauth'
+  )
+  assert.equal(remoteCredentialScope('', 'token'), null)
+})
+
+test('saved remote credentials only carry across an unchanged gateway/auth scope', () => {
+  assert.equal(
+    remoteCredentialScopeMatches(
+      'https://Gateway.Example.com/hermes/',
+      'https://gateway.example.com/hermes',
+      'token',
+      'token'
+    ),
+    true
+  )
+  assert.equal(
+    remoteCredentialScopeMatches(
+      'https://gateway.example.com/hermes',
+      'https://other.example.com/hermes',
+      'token',
+      'token'
+    ),
+    false
+  )
+  assert.equal(
+    remoteCredentialScopeMatches(
+      'https://gateway.example.com/hermes',
+      'https://gateway.example.com/hermes',
+      'token',
+      'oauth'
+    ),
+    false
+  )
+})
 
 // --- connectionScopeKey / normAuthMode ---
 

@@ -227,4 +227,18 @@ describe('BootFailureOverlay', () => {
       restore()
     }
   })
+
+  it('does not offer local recovery actions in a remote-only build', async () => {
+    const restore = stubDesktop(remoteToken, { remoteOnlyBuild: true })
+
+    try {
+      render(<BootFailureOverlay />)
+      await waitFor(() => expect(screen.queryByRole('button', { name: /repair/i })).toBeNull())
+      expect(screen.queryByRole('button', { name: /use local gateway/i })).toBeNull()
+      expect(screen.getByRole('button', { name: /gateway settings/i })).toBeTruthy()
+      expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy()
+    } finally {
+      restore()
+    }
+  })
 })

@@ -36,6 +36,28 @@ It builds and launches the GUI against your existing install — same config, ke
 
 Prebuilt installers are built and distributed via [the Hermes Desktop website.](https://hermes-agent.nousresearch.com/).
 
+### Standalone remote client
+
+The repository can also produce a remote-only Desktop bundle for users who
+already run Hermes on a server or use Hermes Cloud. These builds have a
+separate application identity and never probe, install, update, or spawn a
+local Hermes runtime. On first launch they open the remote connection form; a
+broken saved URL or token can be corrected there without installing Hermes on
+the client machine.
+
+From `apps/desktop`, build the renderer and Electron bundle once, then package
+the desired platform:
+
+```bash
+npm run dist:remote:mac       # DMG + zip
+npm run dist:remote:win       # NSIS + MSI
+npm run dist:remote:linux     # AppImage + Flatpak
+```
+
+Remote-client artifacts can be written under `release/remote/`. The ordinary
+`build`, `dist:*`, update, and first-run commands continue to produce and run
+the full Desktop application with local-runtime support.
+
 ---
 
 ## Updating
@@ -80,6 +102,9 @@ npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 npm run dist:mac     # DMG + zip
 npm run dist:win     # NSIS + MSI
 npm run dist:linux   # AppImage + deb + rpm
+npm run dist:remote:mac   # remote-only DMG + zip
+npm run dist:remote:win   # remote-only NSIS + MSI
+npm run dist:remote:linux # remote-only AppImage + Flatpak
 npm run pack         # unpacked app under release/ (no installer)
 ```
 
@@ -120,6 +145,13 @@ The Electron orchestration entry point is `electron/main.ts`; pure resolution,
 probe, hardening, and platform policies live in focused modules beside it. The
 renderer is under `src/`, with shared atoms in `src/store` and transport/native
 adapters in `src/lib`.
+
+The remote-only bundle is selected at build time by the `build:remote` script;
+it is not a runtime preference. Its setup screen reuses the normal remote
+gateway settings form. Local Hermes runtime bootstrap/repair/update/uninstall
+and launching the local Hermes TUI in an external terminal are unavailable in
+that flavor; the ordinary in-app local shell remains available and does not
+install Hermes.
 
 Before changing the app, read:
 

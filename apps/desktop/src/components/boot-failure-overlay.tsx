@@ -52,6 +52,10 @@ export function BootFailureOverlay() {
   const [showLogs, setShowLogs] = useState(false)
   const [remoteReauth, setRemoteReauth] = useState<RemoteReauth | null>(null)
   const [connectionConfig, setConnectionConfig] = useState<DesktopConnectionConfig | null>(null)
+  // This immutable build property is exposed synchronously by preload. The
+  // dynamic capability stream belongs to RemoteGatewaySetupOverlay and must
+  // not create a second, transient recovery state here.
+  const remoteOnly = window.hermesDesktop?.remoteOnlyBuild === true
   // A remote/cloud backend that failed to boot is fixable from gateway settings,
   // so the escape hatch earns emphasis (local failures keep it as a quiet ghost).
   const [remoteFailure, setRemoteFailure] = useState(false)
@@ -157,6 +161,10 @@ export function BootFailureOverlay() {
   }
 
   const switchToLocalGateway = async () => {
+    if (remoteOnly) {
+      return
+    }
+
     setBusy('local')
     // Soft apply: tears down the primary and re-dials in place (shell stays).
     await window.hermesDesktop?.applyConnectionConfig({ mode: 'local' }).catch(() => undefined)
@@ -273,6 +281,9 @@ export function BootFailureOverlay() {
     busy: 'local'
   }
 
+  const localRecoveryAvailable = !remoteOnly
+  const effectiveRemoteFailure = remoteFailure || remoteOnly
+
   let actions: RecoveryAction[]
   let hint: string
   // The electron boot path flags a Nous Cloud backend-down (502/503/504) with
@@ -291,7 +302,7 @@ export function BootFailureOverlay() {
         busy: 'signin'
       },
       { ...settingsAction, variant: 'secondary' },
-      localAction
+      ...(localRecoveryAvailable ? [localAction] : [])
     ]
     hint = copy.remoteSignInHint(label)
   } else if (cloudDown) {
@@ -308,7 +319,7 @@ export function BootFailureOverlay() {
         onClick: () => openExternalLink('https://portal.nousresearch.com'),
         icon: <ExternalLink />
       },
-      localAction,
+      ...(localRecoveryAvailable ? [localAction] : []),
       { ...retryAction, variant: 'secondary' },
       {
         key: 'discord',
@@ -319,8 +330,12 @@ export function BootFailureOverlay() {
       { ...settingsAction, variant: 'ghost' }
     ]
     hint = copy.cloudDownHint
-  } else if (remoteFailure) {
-    actions = [settingsAction, { ...retryAction, variant: 'secondary' }, localAction]
+  } else if (effectiveRemoteFailure) {
+    actions = [
+      settingsAction,
+      { ...retryAction, variant: 'secondary' },
+      ...(localRecoveryAvailable ? [localAction] : [])
+    ]
     hint = copy.remoteFailureHint
   } else {
     // Local failure: Use-local is redundant with Retry (both re-target local), so
@@ -361,7 +376,7 @@ export function BootFailureOverlay() {
           </button>
           <div className="min-h-0 flex-1 pt-4">
             <Suspense fallback={<Loader className="mx-auto my-16 size-6 text-(--ui-text-tertiary)" />}>
-              <GatewaySettings embedded />
+              <GatewaySettings embedded remoteOnly={remoteOnly} />
             </Suspense>
           </div>
         </div>

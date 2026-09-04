@@ -151,14 +151,30 @@ function ModeCard({
 // card: the outer title/intro, the "Save for next restart" action, and the
 // Diagnostics row are redundant there (the card owns its header + a single
 // reconnect action), so only the connection controls render.
-export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {}) {
+export function GatewaySettings({
+  embedded = false,
+  onConnected,
+  remoteOnly = false
+}: {
+  embedded?: boolean
+  onConnected?: () => void
+  remoteOnly?: boolean
+} = {}) {
   const { t } = useI18n()
   const g = t.settings.gateway
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [signingIn, setSigningIn] = useState(false)
-  const [state, setState] = useState<GatewaySettingsState>(EMPTY_STATE)
+  // The preload value is an immutable property of this app bundle. The
+  // dynamic gateway capability handshake describes the connected backend and
+  // must not introduce a transient local-mode state here.
+  const isRemoteOnlyBuild = remoteOnly || window.hermesDesktop?.remoteOnlyBuild === true
+
+  const [state, setState] = useState<GatewaySettingsState>(() =>
+    isRemoteOnlyBuild ? { ...EMPTY_STATE, mode: 'remote' } : EMPTY_STATE
+  )
+
   const [remoteToken, setRemoteToken] = useState('')
   const [lastTest, setLastTest] = useState<null | string>(null)
   const [sshHostSuggestions, setSshHostSuggestions] = useState<string[]>([])
@@ -176,6 +192,8 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   // in the main process and can legitimately prompt for keychain access.
   const [keychainEncryption, setKeychainEncryptionState] = useState(false)
   const [keychainEncryptionBusy, setKeychainEncryptionBusy] = useState(false)
+
+  const localModesHidden = isRemoteOnlyBuild
 
   useEffect(() => {
     let cancelled = false
@@ -213,6 +231,10 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
 
   const acceptSavedConfig = (config: GatewaySettingsState) => {
     const normalized = normalizeGatewaySettingsState(config)
+
+    if (isRemoteOnlyBuild && normalized.mode !== 'cloud') {
+      normalized.mode = 'remote'
+    }
 
     setState(normalized)
     setConnectedCloudUrl(savedCloudConnectionUrl(normalized))
@@ -285,8 +307,8 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
       })
 
     return () => void (cancelled = true)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- load once on mount; copy is stable
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- load once per embedding mode; copy is stable.
+  }, [remoteOnly])
 
   // Debounced probe of the entered remote URL. Only runs in remote mode with a
   // syntactically plausible URL. The probe result drives whether we render the
@@ -373,12 +395,19 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   const hasSavedRemote = state.remoteTokenSet || state.remoteOauthConnected
 
   const authResolved = useMemo(() => {
+    if (isRemoteOnlyBuild) {
+      // A remote can be temporarily offline while it is being configured. Do
+      // not hide the token field after a failed public probe; Apply performs
+      // the authenticated check and gives the user a recoverable error.
+      return probeStatus !== 'probing' && Boolean(trimmedUrl)
+    }
+
     if (probeStatus === 'done') {
       return true
     }
 
     return probeStatus === 'idle' && hasSavedRemote
-  }, [probeStatus, hasSavedRemote])
+  }, [hasSavedRemote, isRemoteOnlyBuild, probeStatus, trimmedUrl])
 
   const providerLabel = useMemo(() => {
     const providers: DesktopAuthProvider[] = probe?.providers ?? []
@@ -513,6 +542,11 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
 
       acceptSavedConfig(next)
       setRemoteToken('')
+
+      if (apply) {
+        onConnected?.()
+      }
+
       notify({
         kind: 'success',
         title: apply ? g.restartingTitle : g.savedTitle,
@@ -919,6 +953,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
       }
 
       acceptSavedConfig(next)
+      onConnected?.()
       notify({ kind: 'success', title: g.cloudConnectedTitle, message: g.cloudConnectedTo(agent.name) })
     } catch (err) {
       if (seq !== contextSeq.current) {
@@ -1104,15 +1139,22 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
           {g.modeTitle}
         </div>
-        <div className="grid auto-rows-fr grid-cols-1 gap-2 sm:grid-cols-2 min-[72rem]:grid-cols-4">
-          <ModeCard
-            active={state.mode === 'local'}
-            description={g.localDesc}
-            disabled={state.envOverride}
-            icon={Monitor}
-            onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
-            title={g.localTitle}
-          />
+        <div
+          className={cn(
+            'grid auto-rows-fr grid-cols-1 gap-2 sm:grid-cols-2',
+            !localModesHidden && 'min-[72rem]:grid-cols-4'
+          )}
+        >
+          {!localModesHidden ? (
+            <ModeCard
+              active={state.mode === 'local'}
+              description={g.localDesc}
+              disabled={state.envOverride}
+              icon={Monitor}
+              onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
+              title={g.localTitle}
+            />
+          ) : null}
           <ModeCard
             active={state.mode === 'cloud'}
             description={g.cloudDesc}
@@ -1130,15 +1172,17 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
             onSelect={() => setState(current => ({ ...current, mode: 'remote' }))}
             title={g.remoteTitle}
           />
-          <ModeCard
-            active={state.mode === 'ssh'}
-            description={g.sshDesc}
-            disabled={state.envOverride}
-            hint={g.sshTrustHint}
-            icon={Terminal}
-            onSelect={() => setState(current => ({ ...current, mode: 'ssh' }))}
-            title={g.sshTitle}
-          />
+          {!localModesHidden ? (
+            <ModeCard
+              active={state.mode === 'ssh'}
+              description={g.sshDesc}
+              disabled={state.envOverride}
+              hint={g.sshTrustHint}
+              icon={Terminal}
+              onSelect={() => setState(current => ({ ...current, mode: 'ssh' }))}
+              title={g.sshTitle}
+            />
+          ) : null}
         </div>
       </div>
 
@@ -1567,11 +1611,11 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
           connection controls. Hidden in the embedded (boot-recovery) form. */}
       {embedded ? null : (
         <>
-          <ConnectionsRegistrySection />
+          <ConnectionsRegistrySection remoteOnly={localModesHidden} />
           {/* Per-connection driver for the transactional managed SSH update
               engine (#95942). Renders only when SSH sources are registered and
               the Electron main exposes connections.updateManaged. */}
-          <ManagedUpdatesSection />
+          {!localModesHidden ? <ManagedUpdatesSection /> : null}
         </>
       )}
 

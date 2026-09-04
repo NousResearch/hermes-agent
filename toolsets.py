@@ -303,7 +303,7 @@ TOOLSETS = {
             "tasks done with structured handoffs, enter first-class review "
             "(request_review — not a block), return review changes, block for human input, "
             "heartbeat during long ops, comment on threads, attach files, and "
-            "(for orchestrators) list, unblock, and fan out tasks."
+            "(for orchestrators) list, unblock, reconcile, and fan out tasks."
         ),
         "tools": [
             "kanban_show", "kanban_list", "kanban_complete", "kanban_block",

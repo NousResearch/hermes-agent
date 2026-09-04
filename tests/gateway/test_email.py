@@ -1124,3 +1124,165 @@ class TestSenderAuthentication(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestThreadContextPersistence(unittest.TestCase):
+    """Thread context must survive gateway restarts (replies keep subject)."""
+
+    def _make_adapter(self, tmp_dir):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "HERMES_HOME": str(tmp_dir),
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def test_save_then_reload_roundtrip(self):
+        """Saved context loads back with subject + message_id intact."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = self._make_adapter(tmp)
+            adapter._thread_context["user@test.com:my-thread"] = {
+                "subject": "Re: My Thread",
+                "message_id": "<m@test.com>",
+                "epoch": 0,
+                "msg_count": 3,
+            }
+            adapter._save_thread_context()
+            self.assertTrue(adapter._thread_context_path.exists())
+
+            # New adapter instance (simulates gateway restart) reloads it
+            adapter2 = self._make_adapter(tmp)
+            self.assertEqual(
+                adapter2._thread_context["user@test.com:my-thread"]["subject"],
+                "Re: My Thread",
+            )
+            self.assertEqual(
+                adapter2._thread_context["user@test.com:my-thread"]["message_id"],
+                "<m@test.com>",
+            )
+
+    def test_corrupt_file_starts_fresh(self):
+        """A corrupt/partial JSON file must not crash adapter construction."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = self._make_adapter(tmp)
+            adapter._thread_context_path.parent.mkdir(parents=True, exist_ok=True)
+            adapter._thread_context_path.write_text("{not json", "utf-8")
+            adapter2 = self._make_adapter(tmp)
+            self.assertEqual(adapter2._thread_context, {})
+
+
+
+class TestExplicitSubjectFreshConversation(unittest.TestCase):
+    """Cron/outbound deliveries carry an explicit subject in metadata: used verbatim (no Re: prefix)
+    with no threading headers, so Gmail shows a new conversation instead of nesting the report in the
+    sender's last inbound thread (the nightly-backup-in-floor-plans-thread bug).
+"""
+
+    def setUp(self):
+        self._prev_allow_all = os.environ.get("EMAIL_ALLOW_ALL_USERS")
+        os.environ["EMAIL_ALLOW_ALL_USERS"] = "true"
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def tearDown(self):
+        if self._prev_allow_all is None:
+            os.environ.pop("EMAIL_ALLOW_ALL_USERS", None)
+        else:
+            os.environ["EMAIL_ALLOW_ALL_USERS"] = self._prev_allow_all
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "HERMES_HOME": self._tmp.name,
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def _dispatch(self, adapter, subject, body, mid):
+        import asyncio
+        captured = []
+
+        async def capture_handle(event):
+            captured.append(event)
+
+        adapter.handle_message = capture_handle
+        msg_data = {
+            "uid": mid.encode(),
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": subject,
+            "message_id": f"<{mid}@test.com>",
+            "in_reply_to": "",
+            "body": body,
+            "attachments": [],
+            "date": "",
+        }
+        asyncio.run(adapter._dispatch_message(msg_data))
+        return captured
+
+    def _sent_subject(self, mock_smtp, call_index=-1):
+        send_call = mock_smtp.return_value.send_message.call_args_list[call_index][0][0]
+        return send_call["Subject"]
+
+    def test_cron_delivery_explicit_subject_is_fresh_conversation(self):
+        """Cron deliveries carry an explicit subject in metadata: used
+        verbatim (no Re: prefix) with no threading headers, so Gmail shows a
+        new conversation instead of nesting the report in the sender's last
+        thread (the nightly-backup-in-floor-plans-thread bug)."""
+        import asyncio
+        adapter = self._make_adapter()
+        self._dispatch(adapter, "test session isolation A", "body A", "m1")
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            result = asyncio.run(adapter.send(
+                chat_id="user@test.com",
+                content="Backup report",
+                metadata={"subject": "Cronjob Response: hermes-nightly-backup"},
+            ))
+        # Regression: send() must report SUCCESS (the pre-fix path raised
+        # UnboundLocalError in the success logger after sending, which made
+        # send() return failure and triggered a duplicate standalone fallback).
+        self.assertTrue(result.success)
+        msg = mock_smtp.return_value.send_message.call_args_list[0][0][0]
+        self.assertEqual(msg["Subject"], "Cronjob Response: hermes-nightly-backup")
+        self.assertNotIn("In-Reply-To", msg)
+        self.assertNotIn("References", msg)
+
+    def test_cron_delivery_explicit_subject_with_attachment_is_fresh(self):
+        """The attachment send path honours the explicit subject the same
+        way (send_document → _send_email_with_attachment)."""
+        import asyncio
+        adapter = self._make_adapter()
+        self._dispatch(adapter, "test session isolation A", "body A", "m1")
+
+        attach_path = os.path.join(self._tmp.name, "report.bin")
+        with open(attach_path, "wb") as f:
+            f.write(b"fake attachment bytes")
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            result = asyncio.run(adapter.send_document(
+                chat_id="user@test.com",
+                file_path=attach_path,
+                caption="Report with file",
+                metadata={"subject": "Cronjob Response: weekly-report"},
+            ))
+        self.assertTrue(result.success)
+        msg = mock_smtp.return_value.send_message.call_args_list[0][0][0]
+        self.assertEqual(msg["Subject"], "Cronjob Response: weekly-report")
+        self.assertNotIn("In-Reply-To", msg)
+        self.assertNotIn("References", msg)

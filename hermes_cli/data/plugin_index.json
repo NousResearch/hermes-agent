@@ -105,17 +105,17 @@
     },
     {
       "name": "excel_line",
-      "description": "Excel-backed long-term memory provider for Hermes. Keeps durable, human-auditable knowledge in Excel workbooks alongside built-in MEMORY.md/USER.md; mirrors the built-in write path, injects indexed memories via prefetch() every session, and exposes search/read tools. Direct-store mode writes straight to the store with no LLM dependency; auto-extract falls back to a raw-text backup so memory is never silently lost.",
+      "description": "Excel-backed long-term memory tree for Hermes Agent (v2 tree architecture, 10-row cap per file, dynamic branching, leaf pointers, keyless model rotation).",
       "author": "kalice-vi",
       "tags": [
         "memory",
         "excel",
-        "knowledge",
         "long-term-memory",
-        "provider"
+        "hierarchical",
+        "tree"
       ],
       "repo": "kalice-vi/hermes-excel-line",
-      "ref": "fa176759adf240a43e39fe87cdbc4ae86023a6b9",
+      "ref": "6a01333ea39e5856fec4e5b3b0355ecd9ed1104f",
       "homepage": "https://github.com/kalice-vi/hermes-excel-line",
       "capabilities": [
         "memory"

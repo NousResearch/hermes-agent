@@ -55,7 +55,10 @@ from hermes_cli.config import (
     save_env_value,
     write_platform_config_field,
 )
-from hermes_cli._subprocess_compat import resolve_executable
+from hermes_cli._subprocess_compat import (
+    platform_executable_dirs,
+    resolve_executable,
+)
 
 # display_hermes_home is imported lazily at call sites to avoid ImportError
 # when hermes_constants is cached from a pre-update version during `hermes update`.
@@ -117,6 +120,17 @@ class WindowsGatewayService:
     gateway_create_time: float = 0.0
 
 
+def _systemctl_executable() -> str | None:
+    """Return a usable systemctl command for the current process environment."""
+    resolved = resolve_executable("systemctl")
+    if not resolved:
+        return None
+    # Keep the long-standing bare command when the invoking PATH can execute
+    # it. When resolution came from a NixOS/profile fallback, retain the
+    # absolute path so reduced-PATH callers do not fail at process launch.
+    return "systemctl" if shutil.which("systemctl") else resolved
+
+
 def _get_service_pids(all_profiles: bool = False) -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
 
@@ -146,7 +160,11 @@ def _get_service_pids(all_profiles: bool = False) -> set:
             pattern = "hermes-gateway*"
         else:
             pattern = get_service_name()
-        for scope_args in [["systemctl", "--user"], ["systemctl"]]:
+        for scope_args in (
+            [[systemctl, "--user"], [systemctl]]
+            if (systemctl := _systemctl_executable())
+            else []
+        ):
             try:
                 result = subprocess.run(
                     scope_args
@@ -2701,7 +2719,7 @@ def _container_systemd_operational() -> bool:
 def supports_systemd_services() -> bool:
     if not is_linux() or is_termux():
         return False
-    if shutil.which("systemctl") is None:
+    if _systemctl_executable() is None:
         return False
     if is_wsl():
         return _wsl_systemd_operational()
@@ -3178,7 +3196,10 @@ def _raise_user_systemd_unavailable(
 def _systemctl_cmd(system: bool = False) -> list[str]:
     if not system:
         _ensure_user_systemd_env()
-    return ["systemctl"] if system else ["systemctl", "--user"]
+    executable = _systemctl_executable()
+    if executable is None:
+        raise RuntimeError("systemctl is not available on this system")
+    return [executable] if system else [executable, "--user"]
 
 
 def _journalctl_cmd(system: bool = False) -> list[str]:
@@ -4106,6 +4127,9 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         # user's Hermes home is known — probing here would stat the calling
         # (sudo → root's) tree and bake the wrong user's Node into the unit.
         _append_node_dir_for_service(path_entries)
+        for directory in platform_executable_dirs():
+            if directory not in path_entries:
+                path_entries.append(directory)
 
     common_bin_paths = [
         "/usr/local/sbin",
@@ -4124,10 +4148,17 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         _get_restart_drain_timeout(),
         _get_cron_drain_timeout(),
     )
-    reload_executable = resolve_executable("kill") or "kill"
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
+        reload_executable = resolve_executable(
+            "kill", path="", home=home_dir, user=username
+        )
+        if reload_executable is None:
+            raise RuntimeError(
+                "systemd gateway requires a kill executable for the target service user"
+            )
+        reload_command = shlex.quote(reload_executable)
         hermes_home = _hermes_home_for_target_user(home_dir)
         systemd_type, systemd_watchdog_directives = _systemd_watchdog_service_fields(
             hermes_home
@@ -4143,6 +4174,12 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         working_dir = str(hermes_home) if hermes_home else _remap_path_for_user(working_dir, home_dir)
         venv_dir = _remap_path_for_user(venv_dir, home_dir)
         path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
+        target_platform_entries = list(
+            platform_executable_dirs(home=home_dir, user=username)
+        )
+        path_entries = [
+            e for e in target_platform_entries if e not in path_entries
+        ] + path_entries
         # Managed Node for the TARGET user's tree (see the skip above): probe
         # the remapped hermes_home, not the calling user's. Prepend — the
         # managed Node must outrank remapped shell-PATH entries, matching the
@@ -4183,7 +4220,7 @@ RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
-ExecReload={reload_executable} -USR1 $MAINPID
+ExecReload={reload_command} -USR1 $MAINPID
 ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
 TimeoutStopSec={restart_timeout}
 StandardOutput=journal
@@ -4193,6 +4230,10 @@ StandardError=journal
 WantedBy=multi-user.target
 """
 
+    reload_executable = resolve_executable("kill")
+    if reload_executable is None:
+        raise RuntimeError("systemd gateway requires a kill executable")
+    reload_command = shlex.quote(reload_executable)
     hermes_home = str(get_hermes_home().resolve())
     systemd_type, systemd_watchdog_directives = _systemd_watchdog_service_fields(
         hermes_home
@@ -4222,7 +4263,7 @@ RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
-ExecReload={reload_executable} -USR1 $MAINPID
+ExecReload={reload_command} -USR1 $MAINPID
 ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
 TimeoutStopSec={restart_timeout}
 StandardOutput=journal

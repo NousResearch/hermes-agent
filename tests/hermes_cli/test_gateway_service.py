@@ -2,6 +2,7 @@
 
 import os
 import plistlib
+import shlex
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -244,15 +245,30 @@ class TestGeneratedSystemdUnits:
 
     def test_generated_systemd_units_resolve_kill_from_nixos_path(self, monkeypatch):
         resolved_kill = "/run/current-system/sw/bin/kill"
-        monkeypatch.setattr(gateway_cli, "resolve_executable", lambda name: resolved_kill)
+        monkeypatch.setattr(gateway_cli, "resolve_executable", lambda name, **kwargs: resolved_kill)
 
         user_unit = gateway_cli.generate_systemd_unit(system=False)
         system_unit = gateway_cli.generate_systemd_unit(
             system=True, run_as_user=pwd.getpwuid(os.getuid()).pw_name
         )
 
-        assert f"ExecReload={resolved_kill} -USR1 $MAINPID" in user_unit
-        assert f"ExecReload={resolved_kill} -USR1 $MAINPID" in system_unit
+        assert f"ExecReload={shlex.quote(resolved_kill)} -USR1 $MAINPID" in user_unit
+        assert f"ExecReload={shlex.quote(resolved_kill)} -USR1 $MAINPID" in system_unit
+
+    def test_generated_systemd_units_quote_spaced_kill_path(self, monkeypatch):
+        resolved_kill = "/home/Alice Smith/.nix-profile/bin/kill"
+        monkeypatch.setattr(gateway_cli, "resolve_executable", lambda name, **kwargs: resolved_kill)
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert f"ExecReload={shlex.quote(resolved_kill)} -USR1 $MAINPID" in unit
+        assert f"ExecReload={resolved_kill} -USR1 $MAINPID" not in unit
+
+    def test_generated_systemd_unit_fails_closed_without_kill(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "resolve_executable", lambda name, **kwargs: None)
+
+        with pytest.raises(RuntimeError, match="kill executable"):
+            gateway_cli.generate_systemd_unit(system=False)
 
     def test_timeout_stop_sec_follows_a_raised_cron_drain_timeout(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 0.0)
@@ -301,7 +317,17 @@ class TestGeneratedSystemdUnits:
         link_node = local_bin / "node"
         link_node.symlink_to(real_node)
 
-        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd, **kwargs: str(link_node) if cmd == "node" else None)
+        monkeypatch.setattr(
+            gateway_cli.shutil,
+            "which",
+            lambda cmd, **kwargs: (
+                str(link_node)
+                if cmd == "node"
+                else "/usr/bin/kill"
+                if cmd == "kill"
+                else None
+            ),
+        )
 
         unit = gateway_cli.generate_systemd_unit(system=False)
 
@@ -1261,10 +1287,30 @@ class TestSystemUnitHermesHome:
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: root_hermes)
         monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", lambda: [])
 
-        monkeypatch.setattr(gateway_cli.shutil, "which", lambda name, **kwargs: "/root/bin/node" if name == "node" else None)
+        monkeypatch.setattr(
+            gateway_cli.shutil,
+            "which",
+            lambda name, **kwargs: (
+                "/root/bin/node"
+                if name == "node"
+                else "/usr/bin/kill"
+                if name == "kill"
+                else None
+            ),
+        )
         root_unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
 
-        monkeypatch.setattr(gateway_cli.shutil, "which", lambda name, **kwargs: "/home/alice/.local/bin/node" if name == "node" else None)
+        monkeypatch.setattr(
+            gateway_cli.shutil,
+            "which",
+            lambda name, **kwargs: (
+                "/home/alice/.local/bin/node"
+                if name == "node"
+                else "/usr/bin/kill"
+                if name == "kill"
+                else None
+            ),
+        )
         user_unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
 
         assert root_unit == user_unit
@@ -1345,7 +1391,11 @@ class TestSystemUnitRefreshSyncsHermesHome:
         monkeypatch.setattr(
             gateway_cli, "_build_user_local_paths", lambda home, existing: []
         )
-        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd, **kwargs: None)
+        monkeypatch.setattr(
+            gateway_cli.shutil,
+            "which",
+            lambda cmd, **kwargs: "/usr/bin/kill" if cmd == "kill" else None,
+        )
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "_run_systemctl", lambda *a, **k: None)
         monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
@@ -2561,7 +2611,11 @@ class TestTimeoutStopSecCoversCronFloor:
         monkeypatch.setenv("HERMES_HOME", str(hermes))
         monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
         monkeypatch.delenv("HERMES_CRON_DRAIN_TIMEOUT", raising=False)
-        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd, **kwargs: None)
+        monkeypatch.setattr(
+            gateway_cli.shutil,
+            "which",
+            lambda cmd, **kwargs: "/usr/bin/kill" if cmd == "kill" else None,
+        )
         monkeypatch.setattr(
             gateway_cli, "_build_user_local_paths", lambda home, existing: []
         )

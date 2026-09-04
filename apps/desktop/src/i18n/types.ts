@@ -489,6 +489,8 @@ export interface Translations {
       toursDesc: string
       composerPopoutTitle: string
       composerPopoutDesc: string
+      composerTodoListTitle: string
+      composerTodoListDesc: string
       vibeHeartsTitle: string
       vibeHeartsDesc: string
       embedsTitle: string

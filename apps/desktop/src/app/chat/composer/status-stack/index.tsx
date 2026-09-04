@@ -24,6 +24,7 @@ import {
   type StatusGroup,
   stopBackgroundProcess
 } from '@/store/composer-status'
+import { $composerTodosVisible } from '@/store/composer-todos-visible'
 import { refreshSessionGoal } from '@/store/goals'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
 import { $threadScrolledUp } from '@/store/thread-scroll'
@@ -96,10 +97,18 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   // items actually changed.
   const items = useSessionSlice($statusItemsBySession, sessionId)
   const previews = useSessionSlice($previewStatusBySession, sessionId)
+  const composerTodosVisible = useStore($composerTodosVisible)
   const scrolledUp = useStore($threadScrolledUp)
   const billing = useStore($billingBlock)
 
-  const groups = useMemo(() => groupStatusItems(items), [items])
+  // Holly-local preference: keep the composer lane free of agent task-list
+  // noise. Background jobs, goals, and subagents still surface here; todo tool
+  // events stay available to other projections/stores but do not render in the
+  // desktop status stack.
+  const groups = useMemo(
+    () => groupStatusItems(items).filter(group => composerTodosVisible || group.type !== 'todo'),
+    [composerTodosVisible, items]
+  )
 
   // Seed from the registry on session open; event-driven refreshes (terminal /
   // process tool completions) live in use-message-stream. This must NOT reset

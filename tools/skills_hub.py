@@ -219,6 +219,8 @@ def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
             safe = _validate_bundle_rel_path(raw)
         except ValueError:
             return None
+        if candidate.endswith("/") or raw.endswith("/"):
+            continue
         if safe.split("/", 1)[0] in _ALLOWED_SUPPORT_DIRS:
             # Prose placeholders — e.g. ``references/type-<name>.md`` (which
             # the link regex truncates at ``<`` to the bare prefix
@@ -800,6 +802,8 @@ class GitHubSource(SkillSource):
                 if not item_path.startswith(prefix):
                     continue
                 rel_path = item_path[len(prefix):]
+                if item.get("type") == "tree":
+                    continue
                 if item.get("type") != "blob" or item.get("mode") == "120000":
                     symlinked.add(rel_path)
                     continue

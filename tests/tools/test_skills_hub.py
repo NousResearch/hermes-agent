@@ -1946,6 +1946,18 @@ class TestReferencedSupportPaths:
             "references/guide.md",
         }
 
+    def test_ignores_directory_references_with_trailing_slash(self):
+        md = (
+            "See `scripts/lib/` and `scripts/lib/vendor/bird-search/`.\n"
+            "Also check references in `references/` or [templates](templates/custom/).\n"
+            "Directory with trailing punctuation: `scripts/lib/.` and `references/sub/,`.\n"
+            "Real support files: `scripts/run.py` and [guide](references/guide.md).\n"
+        )
+        assert _referenced_support_paths(md) == {
+            "scripts/run.py",
+            "references/guide.md",
+        }
+
 
 class TestGitHubSourceFetchMissingReferencedFile:
     def _source(self):
@@ -1972,6 +1984,28 @@ class TestGitHubSourceFetchMissingReferencedFile:
         assert bundle.files["references/guide.md"] == b"# guide"
         # …and the missing one is warned about and skipped, not fatal.
         assert "references/missing.md" not in bundle.files
+
+    def test_fetch_handles_directory_tree_entries_without_marking_symlink(self):
+        md = (
+            "---\nname: demo\ndescription: demo\n---\n\n"
+            "See [guide](references/guide.md) and helper in `scripts/run.py`.\n"
+        )
+        tree_entries = [
+            {"path": "skills/demo/scripts", "type": "tree", "mode": "040000"},
+            {"path": "skills/demo/scripts/run.py", "type": "blob", "mode": "100644"},
+            {"path": "skills/demo/references", "type": "tree", "mode": "040000"},
+            {"path": "skills/demo/references/guide.md", "type": "blob", "mode": "100644"},
+        ]
+        source = self._source()
+        with patch.object(source, "_fetch_file_content", return_value=md), \
+             patch.object(source, "_get_repo_tree", return_value=("main", tree_entries)), \
+             patch.object(source, "_fetch_file_bytes", side_effect=lambda repo, path, ref=None: b"content"):
+            bundle = source.fetch("owner/repo/skills/demo")
+
+        assert bundle is not None
+        assert bundle.name == "demo"
+        assert bundle.files["scripts/run.py"] == b"content"
+        assert bundle.files["references/guide.md"] == b"content"
 
 
 class TestUrlSourceFetchMissingReferencedFile:

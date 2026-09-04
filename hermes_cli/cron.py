@@ -240,6 +240,21 @@ def cron_list(show_all: bool = False):
         print(f"    Schedule:  {schedule}")
         print(f"    Repeat:    {repeat_str}")
         print(f"    Next run:  {next_run}")
+        # Model/provider pin: an unpinned job runs on the profile default and
+        # can drift-skip silently when that default changes. Show the pin so
+        # `cron list` is the first place a user sees it, not a jobs.json read.
+        job_model = job.get("model")
+        job_provider = job.get("provider")
+        if job_model or job_provider:
+            print(
+                f"    Model:     {job_model or '(profile default)'}  "
+                f"Provider: {job_provider or '(profile default)'}"
+            )
+        else:
+            print(
+                f"    Model:     {color('(profile default)', Colors.DIM)}  "
+                f"Provider: {color('(profile default)', Colors.DIM)}"
+            )
         print(f"    Deliver:   {deliver_str}")
         if skills:
             print(f"    Skills:    {', '.join(skills)}")

@@ -14486,6 +14486,22 @@ def main():
         help="Only sessions in one workspace: a git repo root or project dir "
         "(matched by path substring or basename).",
     )
+    sessions_list.add_argument(
+        "--model",
+        metavar="NEEDLE",
+        help="Only match sessions whose EFFECTIVE model contains this substring "
+        "(e.g. 'deepseek', 'v4-flash'). Audits per-chat pins, not just the "
+        "profile default: a chat whose model_config JSON pins a different model "
+        "counts as that pinned value.",
+    )
+    sessions_list.add_argument(
+        "--provider",
+        metavar="NEEDLE",
+        help="Only match sessions whose EFFECTIVE provider contains this "
+        "substring (e.g. 'nous', 'openrouter'). Catches chats whose model "
+        "column looks current but whose model_config still routes to an old "
+        "provider.",
+    )
 
     def _add_session_filter_args(p, default_older_help):
         p.add_argument(
@@ -14790,6 +14806,35 @@ def main():
         "--no-backup",
         action="store_true",
         help="Skip the timestamped backup copy (not recommended)",
+    )
+    sessions_repair.add_argument(
+        "--model",
+        metavar="TARGET",
+        help="Model-pin repair mode (alternative to schema repair): rewrite "
+        "every non-cron session whose effective model deviates from TARGET so "
+        "it runs TARGET on resume. A timestamped state.db backup is made "
+        "first unless --no-backup. Combines with --provider for a full "
+        "provider+endpoint reset.",
+    )
+    sessions_repair.add_argument(
+        "--provider",
+        metavar="TARGET",
+        help="With --model: also reset billing_provider and the model_config "
+        "provider to TARGET, dropping stale endpoint keys (base_url/api_mode) "
+        "for built-in targets. Standalone: reset only the provider routing.",
+    )
+    sessions_repair.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With --model: list the sessions that would be rewritten and the "
+        "rewrite plan without touching the database.",
+    )
+    sessions_repair.add_argument(
+        "--all",
+        action="store_true",
+        help="With --model: include sessions whose model is NULL (inherit the "
+        "profile default) or already match TARGET. Default only rewrites "
+        "sessions that deviate, so already-correct rows are untouched.",
     )
 
     sessions_repair_routing = sessions_subparsers.add_parser(

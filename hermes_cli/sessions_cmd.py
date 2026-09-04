@@ -55,6 +55,51 @@ def _confirm_prompt(prompt: str) -> bool:
         return False
 
 
+#: Operational keys that must survive a model-pin rewrite. Identity keys
+#: (model/provider/base_url/api_mode) are rewritten or dropped; everything
+#: else in a row's model_config JSON is lineage or tuning and is preserved
+#: verbatim (dropping _branched_from/_delegate_from severs branch ancestry).
+_MODEL_CONFIG_PRESERVE_KEYS = frozenset(
+    {
+        "reasoning_config",
+        "service_tier",
+        "max_iterations",
+        "max_tokens",
+        "gateway_runtime",
+        "_delegate_from",
+        "_branched_from",
+    }
+)
+
+
+def _parse_model_config(raw):
+    """Parse a sessions.model_config JSON string; {} on absent/garbage."""
+    import json
+
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _effective_session_identity(s):
+    """(effective_model, effective_provider) of a session row.
+
+    The model column and the model_config JSON can disagree (the desync
+    class: a fresh model column next to a stale JSON provider/endpoint). On
+    resume the JSON wins for provider routing, so audit filters and the
+    repair predicate read the JSON first and fall back to the column /
+    billing route.
+    """
+    mc = _parse_model_config(s.get("model_config"))
+    model = mc.get("model") or s.get("model") or ""
+    provider = mc.get("provider") or s.get("billing_provider") or ""
+    return model, provider
+
+
 #: Default age floor for `hermes sessions prune --never-active`.  Deliberately
 #: generous: the rows are worthless but harmless, and a young never-active row
 #: may simply be a chat that nobody has replied to yet.
@@ -121,6 +166,170 @@ def _prune_never_active_keyed(db, args):
     )
 
 
+def _repair_session_models(args):
+    """`hermes sessions repair --model TARGET [--provider TARGET ...]`.
+
+    Model-pin repair: rewrite every non-cron session whose EFFECTIVE model
+    and/or provider deviates from the given target(s), so a resumed chat can
+    never route to an outdated model/endpoint. This is the session-row half
+    of a model switch — config.yaml governs NEW sessions, these rows govern
+    every EXISTING chat on resume (see _stored_session_runtime_overrides in
+    tui_gateway/server.py).
+
+    Safe by construction:
+    - Backs up state.db first (timestamped sibling copy) unless --no-backup.
+    - Only touches the `sessions` table — never cron run records (id LIKE
+      'cron_%'), which are history, not chats.
+    - Preserves lineage/tuning keys in model_config (_branched_from,
+      _delegate_from, reasoning_config, service_tier, max_iterations,
+      max_tokens, gateway_runtime); rewrites only identity keys and drops
+      stale endpoint keys (base_url/api_mode) for built-in provider targets.
+    - Auxiliary models live in config.yaml, never session rows — untouched.
+    """
+    import json
+    import shutil
+    from datetime import datetime
+
+    from hermes_state import DEFAULT_DB_PATH, SessionDB
+
+    target_model = (args.model or "").strip() or None
+    target_provider = (args.provider or "").strip() or None
+    dry_run = bool(getattr(args, "dry_run", False))
+    include_all = bool(getattr(args, "all", False))
+
+    if not DEFAULT_DB_PATH.exists():
+        print(f"No session database at {DEFAULT_DB_PATH} (nothing to repair).")
+        return 0
+
+    try:
+        db = SessionDB()
+    except Exception as e:
+        print(f"Error: Could not open session database: {e}")
+        return 1
+
+    try:
+        rows = db._conn.execute(
+            "SELECT id, model, billing_provider, billing_base_url, model_config "
+            "FROM sessions WHERE id NOT LIKE 'cron_%'"
+        ).fetchall()
+        rows = [dict(r) for r in rows]
+    finally:
+        db.close()
+
+    plan = []
+    for s in rows:
+        if include_all:
+            plan.append(s)
+            continue
+        mc = _parse_model_config(s.get("model_config"))
+        col_model = s.get("model") or None
+        col_provider = s.get("billing_provider") or None
+        json_model = mc.get("model")
+        json_provider = mc.get("provider")
+        needs = False
+        if target_model:
+            # Stale if either the column or the JSON pins a different model.
+            # A NULL column inherits the profile default — not stale unless
+            # --all explicitly pins it.
+            if col_model is not None and col_model != target_model:
+                needs = True
+            elif json_model is not None and json_model != target_model:
+                needs = True
+        if target_provider:
+            if col_provider not in (None, "", "auto", "custom", target_provider):
+                needs = True
+            elif json_provider is not None and json_provider != target_provider:
+                needs = True
+        if needs:
+            plan.append(s)
+
+    if not plan:
+        print("No sessions deviate from the target — nothing to repair.")
+        if include_all:
+            print("(--all was given; every non-cron session is already on target.)")
+        return 0
+
+    if dry_run:
+        print("Model-pin repair (dry run) — no writes performed:")
+        if target_model:
+            print(f"  target model:    {target_model}")
+        if target_provider:
+            print(f"  target provider: {target_provider}")
+        for s in plan:
+            eff_model, eff_provider = _effective_session_identity(s)
+            print(
+                f"  would rewrite {s['id']:<24} "
+                f"model={eff_model or '(null)'} provider={eff_provider or '(null)'}"
+            )
+        print(
+            f"  {len(plan)} session(s) would be rewritten; "
+            f"{len(rows) - len(plan)} already on target."
+        )
+        return 0
+
+    backup_path = None
+    if not getattr(args, "no_backup", False):
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = DEFAULT_DB_PATH.with_name(
+            f"{DEFAULT_DB_PATH.name}.model-reset-backup-{ts}"
+        )
+        shutil.copy2(DEFAULT_DB_PATH, backup_path)
+
+    db = SessionDB()
+    try:
+        for s in plan:
+            mc = _parse_model_config(s.get("model_config"))
+            preserved = {
+                k: v for k, v in mc.items() if k in _MODEL_CONFIG_PRESERVE_KEYS
+            }
+            if target_model:
+                preserved["model"] = target_model
+            elif mc.get("model"):
+                preserved["model"] = mc["model"]
+            if target_provider:
+                preserved["provider"] = target_provider
+                if not target_provider.startswith("custom"):
+                    preserved.pop("base_url", None)
+                    preserved.pop("api_mode", None)
+            elif mc.get("provider"):
+                preserved["provider"] = mc["provider"]
+            db.update_session_meta(
+                s["id"],
+                json.dumps(preserved, ensure_ascii=False),
+                model=target_model if target_model else None,
+            )
+            if target_provider:
+                base_url = (
+                    s.get("billing_base_url") or ""
+                    if target_provider.startswith("custom")
+                    else ""
+                )
+                db.update_session_billing_route(
+                    s["id"], provider=target_provider, base_url=base_url
+                )
+    finally:
+        db.close()
+
+    print("Model-pin repair complete:")
+    if backup_path:
+        print(f"  backup:      {backup_path}")
+    print(f"  rewritten:   {len(plan)} session(s)")
+    for s in plan:
+        eff_model, eff_provider = _effective_session_identity(s)
+        print(
+            f"    {s['id']:<24} model={eff_model or '(null)'} "
+            f"provider={eff_provider or '(null)'}"
+        )
+    print(
+        f"  untouched:   {len(rows) - len(plan)} session(s) already on target"
+    )
+    print(
+        "  Cron run records (cron_%) and auxiliary models (config.yaml) "
+        "are untouched."
+    )
+    return 0
+
+
 def cmd_sessions(args, sessions_parser=None):
     import json as _json
 
@@ -130,6 +339,11 @@ def cmd_sessions(args, sessions_parser=None):
     # malformed schema is exactly the case where SessionDB() can't open.
     # Recovery additionally promises never to open the supplied source
     # directly, so it operates through its own disposable source copy.
+    if action == "repair" and (
+        getattr(args, "model", None) or getattr(args, "provider", None)
+    ):
+        return _repair_session_models(args)
+
     if action == "repair":
         from hermes_state import (
             DEFAULT_DB_PATH,
@@ -346,6 +560,27 @@ def cmd_sessions(args, sessions_parser=None):
                 )
 
             sessions = [s for s in sessions if _in_workspace(s)]
+
+        # Model/provider audit filters: match the EFFECTIVE identity — the
+        # model_config JSON wins on resume, so filter on it first, then fall
+        # back to the column / billing route. This is what makes
+        # `sessions list --provider nous` surface the desync class (model
+        # column looks current, JSON still routes to an old provider).
+        _model_needle = (getattr(args, "model", None) or "").strip().lower()
+        _provider_needle = (getattr(args, "provider", None) or "").strip().lower()
+        if _model_needle or _provider_needle:
+            sessions = [
+                s
+                for s in sessions
+                if (
+                    not _model_needle
+                    or _model_needle in _effective_session_identity(s)[0].lower()
+                )
+                and (
+                    not _provider_needle
+                    or _provider_needle in _effective_session_identity(s)[1].lower()
+                )
+            ]
 
         if not sessions:
             print("No sessions found.")

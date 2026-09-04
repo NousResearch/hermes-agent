@@ -2391,16 +2391,6 @@ class SlackAdapter(BasePlatformAdapter):
         if not ok:
             # Stop failed — post normally; the dangling stream times out on Slack's side.
             return None
-        # Streams render markdown natively; rich blocks are applied via
-        # chat_update on the sealed message (mirrors edit_message finalize).
-        blocks = self._maybe_blocks(text)
-        if blocks:
-            try:
-                await self._get_client(chat_id).chat_update(
-                    channel=chat_id, ts=ts, text=self.format_message(text), blocks=blocks)
-            except Exception as e:
-                logger.debug(
-                    "[Slack] Post-stream Block Kit update failed (markdown fallback stands): %s", e)
         await self.stop_typing(chat_id)
         return SendResult(success=True, message_id=ts)
 

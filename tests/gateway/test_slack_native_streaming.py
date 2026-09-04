@@ -208,14 +208,18 @@ class TestSendFinalization:
         client.chat_postMessage.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_rich_blocks_applied_after_seal(self):
-        adapter, client = _make_adapter({"rich_blocks": True})
+    @pytest.mark.parametrize("blocks_setting", ["markdown_blocks", "rich_blocks"])
+    async def test_streamed_text_is_not_reapplied_as_blocks_after_seal(
+        self, blocks_setting
+    ):
+        adapter, client = _make_adapter({blocks_setting: True})
         rich = "# Title\n\nbody text"
         await adapter.send_draft("D1", 7, rich[:5], metadata=META)
         result = await adapter.send("D1", rich, metadata=META)
         assert result.success
-        client.chat_update.assert_awaited()
-        assert client.chat_update.await_args.kwargs["blocks"]
+        client.chat_stopStream.assert_awaited_once()
+        client.chat_update.assert_not_awaited()
+        client.chat_postMessage.assert_not_awaited()
 
 
 class TestDisconnectCleanup:

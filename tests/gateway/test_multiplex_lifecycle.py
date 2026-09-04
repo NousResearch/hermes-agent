@@ -122,4 +122,18 @@ class TestNamedProfileMultiplexerGuard:
 
         gw._guard_named_profile_under_multiplexer(force=False)
 
+    def test_named_profile_served_probe_matches_the_start_guard(self, monkeypatch, tmp_path):
+        self._fake_running_default_gateway(monkeypatch, tmp_path)
+        (tmp_path / "config.yaml").write_text(
+            "gateway:\n  multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+
+        from hermes_cli import gateway as gw
+
+        assert gw.named_profile_served_by_running_multiplexer() is True
+
+        monkeypatch.setattr(gw, "_profile_suffix", lambda: "")
+        assert gw.named_profile_served_by_running_multiplexer() is False
+
 

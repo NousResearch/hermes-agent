@@ -30,6 +30,7 @@ import {
   setSessions,
   workspaceCwdForNewSession
 } from '@/store/session'
+import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-removal'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
@@ -64,78 +65,6 @@ function markProjectsRpcFailure(err: unknown): void {
 function projectsStaleBackendError(): Error {
   return new Error(translateNow('sidebar.projects.staleBackend'))
 }
-
-// Client-side cache eviction (Apollo-style optimistic layer): ids the user just
-// deleted/archived. The backend tree is a snapshot that still lists them until
-// its next refresh, so the render-time overlay strips these so the tree matches
-// the live `$sessions` cache exactly — same as the flat Recents list. Pruned on
-// refresh once the server snapshot has caught up.
-export const $removedSessionIds = atom<Set<string>>(new Set())
-
-export function tombstoneSessions(ids: Array<null | string | undefined>): void {
-  const next = new Set($removedSessionIds.get())
-  const before = next.size
-
-  for (const id of ids) {
-    const trimmed = id?.trim()
-
-    if (trimmed) {
-      next.add(trimmed)
-    }
-  }
-
-  if (next.size !== before) {
-    $removedSessionIds.set(next)
-  }
-}
-
-export function untombstoneSessions(ids: Array<null | string | undefined>): void {
-  const current = $removedSessionIds.get()
-
-  if (!current.size) {
-    return
-  }
-
-  const next = new Set(current)
-
-  for (const id of ids) {
-    const trimmed = id?.trim()
-
-    if (trimmed) {
-      next.delete(trimmed)
-    }
-  }
-
-  if (next.size !== current.size) {
-    $removedSessionIds.set(next)
-  }
-}
-
-// Ids whose delete/archive RPC is still in flight. Their tombstones are pinned
-// against the projects.tree prune below: a refresh whose snapshot predates the
-// mutation completing must NOT drop the tombstone, or the row flashes back until
-// the backend catches up. Keyed by id, so concurrent deletes stay independent.
-export const $sessionMutationsInFlight = atom<Set<string>>(new Set())
-
-function mutateInFlight(ids: Array<null | string | undefined>, add: boolean): void {
-  const current = $sessionMutationsInFlight.get()
-  const next = new Set(current)
-
-  for (const id of ids) {
-    const trimmed = id?.trim()
-
-    if (trimmed) {
-      add ? next.add(trimmed) : next.delete(trimmed)
-    }
-  }
-
-  if (next.size !== current.size) {
-    $sessionMutationsInFlight.set(next)
-  }
-}
-
-export const beginSessionMutation = (ids: Array<null | string | undefined>): void => mutateInFlight(ids, true)
-export const endSessionMutation = (ids: Array<null | string | undefined>): void => mutateInFlight(ids, false)
 
 // True while the disk scan is in flight (drives the "finding repos" hint).
 export const $reposScanning = atom(false)
@@ -208,7 +137,9 @@ export function goToProject(id: string, options?: { newSession?: boolean }): voi
 //
 // Priority (first hit wins):
 //   1. Explicit sidebar project scope (drilled into a project / Home bucket)
-//   2. Configured default project dir / remote remembered cwd (detached otherwise)
+//   2. Configured default project dir (detached otherwise — in BOTH local and
+//      remote mode; a bare new chat never inherits the sticky remembered cwd,
+//      #57911 / #84220)
 //
 // The "active project" is just an atom ($projectScope) — so inside a project a
 // new session (cmd-n, the trunk "+") starts at that project's root (its primary
@@ -347,7 +278,7 @@ async function gatewayRequest<T>(method: string, params: Record<string, unknown>
   return gateway.request<T>(method, params)
 }
 
-function projectProfile(): null | string {
+export function projectProfile(): null | string {
   const profile = normalizeProfileKey($activeGatewayProfile.get())
 
   return $profileScope.get() === ALL_PROFILES || profile === ALL_PROFILES ? null : profile

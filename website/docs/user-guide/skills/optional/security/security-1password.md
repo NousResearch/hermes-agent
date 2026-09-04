@@ -15,7 +15,7 @@ Set up op CLI, sign in, and read or inject secrets.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/security/1password` |
-| Path | `optional-skills/security/1password` |
+| Path | `optional-skills/security\1password` |
 | Version | `1.0.0` |
 | Author | arceus77-7, enhanced by Hermes Agent |
 | License | MIT |
@@ -149,7 +149,7 @@ echo "db_password: {{ op://app-prod/db/password }}" | op inject
 ### Run a command with secret env var
 
 ```bash
-export DB_PASSWORD="op://app-prod/db/password"
+export DB_PASSWORD="op://app-prod/db/password"  # example op:// reference, resolved by `op run`
 op run -- sh -c '[ -n "$DB_PASSWORD" ] && echo "DB_PASSWORD is set" || echo "DB_PASSWORD missing"'
 ```
 

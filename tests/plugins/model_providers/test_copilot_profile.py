@@ -160,9 +160,9 @@ class TestCopilotProfileReasoningWireShape:
         supported level, not dropped.
 
         Contract unified with main's clamp behavior (commit cf73b3d41): an
-        unrecognized effort with no xhigh/minimal-specific rule falls back to
-        ``medium`` when the catalog lists it. The catalog here advertises
-        low/medium/high/max, so ``ultra`` -> ``medium``.
+        unrecognized effort clamps to the nearest WEAKER supported level. The
+        catalog here advertises low/medium/high/max, so ``ultra`` (above every
+        listed level) clamps down to ``max``.
         """
         with patch(
             "hermes_cli.models.fetch_github_model_catalog",
@@ -175,7 +175,7 @@ class TestCopilotProfileReasoningWireShape:
                 api_key="dummy-copilot-token",
             )
 
-        assert extra_body == {"reasoning": {"effort": "medium"}}
+        assert extra_body == {"reasoning": {"effort": "max"}}
 
     def test_non_reasoning_model_emits_nothing(self, copilot_profile):
         """A chat model without ``reasoning_effort`` support emits no reasoning key."""

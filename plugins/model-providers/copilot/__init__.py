@@ -1,13 +1,8 @@
 """Copilot / GitHub Models provider profile.
 
-Copilot uses per-model api_mode routing:
-  - GPT-5+ / Codex models → codex_responses
-  - Claude models → anthropic_messages
-  - Everything else → chat_completions (this profile covers that subset)
-
-Key quirks for the chat_completions subset:
-  - Editor attribution headers (via copilot_default_headers())
-  - GitHub Models reasoning extra_body (model-catalog gated)
+Core routes GPT-5+/Codex -> codex_responses and Claude -> anthropic_messages;
+this profile covers the chat_completions remainder: editor attribution headers
+(copilot_default_headers()) and catalog-gated GitHub Models reasoning.
 """
 
 from typing import Any
@@ -80,10 +75,8 @@ class CopilotProfile(ProviderProfile):
 
 
 copilot = CopilotProfile(
-    name="copilot",
-    aliases=("github-copilot", "github-models", "github-model", "github"),
-    env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"),
-    base_url="https://api.githubcopilot.com",
+    name="copilot", aliases=("github-copilot", "github-models", "github-model", "github"),
+    env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"), base_url="https://api.githubcopilot.com",
     auth_type="copilot",
 )
 

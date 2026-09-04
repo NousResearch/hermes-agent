@@ -641,6 +641,27 @@ def _get_bot_chat_delivery_timeout() -> int:
         return 600
 
 
+def _bot_chat_delivery_cwd() -> str:
+    """Stable existing directory for the bot-chat delivery subprocess.
+
+    Must not inherit the caller's cwd: kanban/cron workers often sit in a scratch
+    workspace that completion cleanup has already removed. Spawning into a
+    deleted cwd crashes CLI startup in ``ensure_project_root_on_path`` (#102941).
+    Prefer the active profile home; fall back to the system temp dir.
+    """
+    import tempfile
+
+    try:
+        from hermes_constants import get_hermes_home
+
+        home = str(get_hermes_home())
+        if home and os.path.isdir(home):
+            return home
+    except Exception:
+        pass
+    return tempfile.gettempdir()
+
+
 def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]:
     """Deliver job output into a profile's canonical Bot Chat as a real inbound user turn, via
     ``hermes [-p <profile>] chat --in ~ -c "Bot Chat" --create-if-missing -Q --query-file`` — the
@@ -693,6 +714,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
         ]
         result = subprocess.run(
             argv, capture_output=True, text=True, timeout=_get_bot_chat_delivery_timeout(), env=env,
+            cwd=_bot_chat_delivery_cwd(),
             creationflags=windows_hide_flags())
         if result.returncode != 0:
             tail = (result.stderr or result.stdout or "").strip()[-500:]

@@ -74,6 +74,9 @@ ERR_UNTRUSTED_PEER = -32052
 _DEFAULT_MAX_PINGPONG = 5
 _HARD_MAX_PINGPONG = 20
 
+_DEFAULT_HISTORY_LIMIT = 20
+_HARD_HISTORY_LIMIT = 200
+
 
 def max_pingpong_turns() -> int:
     try:
@@ -81,6 +84,20 @@ def max_pingpong_turns() -> int:
         return max(1, min(v, _HARD_MAX_PINGPONG))
     except (ValueError, TypeError):
         return _DEFAULT_MAX_PINGPONG
+
+
+def history_injection_limit() -> int:
+    """Max prior messages prepended when a caller resumes a context_id.
+
+    The agent sees the full thread on multi-turn continuations instead of
+    only the latest message. 0 disables injection. Bounded so a long-lived
+    context cannot balloon a single prompt.
+    """
+    try:
+        v = int(os.getenv("A2A_HISTORY_INJECTION_LIMIT", str(_DEFAULT_HISTORY_LIMIT)))
+        return max(0, min(v, _HARD_HISTORY_LIMIT))
+    except (ValueError, TypeError):
+        return _DEFAULT_HISTORY_LIMIT
 
 
 def now_iso() -> str:
@@ -832,6 +849,30 @@ def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
     except Exception:
         return []
     return out[-limit:]
+
+
+def format_history(context_id: str, limit: Optional[int] = None) -> str:
+    """Render prior messages of a resumed context as a plain-text prefix.
+
+    Returns "" when the context has no history yet (or when injection is
+    disabled via ``limit <= 0``). The adapter prepends this to an inbound
+    message when a caller reuses a ``contextId``, so the agent sees the
+    full thread (multi-turn) instead of only the latest message. Lines are
+    ``role: text`` with the A2A roles ``user`` / ``assistant``; non-user
+    roles are treated as assistant output.
+    """
+    limit = limit if limit is not None else history_injection_limit()
+    if limit <= 0:
+        return ""
+    recs = load_conversation(context_id, limit=limit)
+    if not recs:
+        return ""
+    lines = []
+    for rec in recs:
+        role = rec.get("role")
+        label = "user" if role == "user" else "assistant"
+        lines.append(f"{label}: {rec.get('text', '')}")
+    return "\n".join(lines) + "\n\n"
 
 
 def list_conversations() -> list[str]:

@@ -11494,6 +11494,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         changed.
         """
         def _do(conn):
+            # DIAGNOSTIC (#hidden-flip, 2026-09-05): log every hidden-flag
+            # write with the caller stack so we can identify what re-hides
+            # live sessions, regardless of entry point.
+            try:
+                import traceback as _tb
+                logger.warning(
+                    "DIAG set_session_hidden(%s, hidden=%s)\n%s",
+                    session_id, hidden,
+                    "".join(_tb.format_stack()[-7:]),
+                )
+            except Exception:
+                pass
             cursor = conn.execute(
                 """
                 WITH RECURSIVE

@@ -90,9 +90,11 @@ def _web_dist_dir(web_dir: Path) -> Path:
     return _web_project_root(web_dir) / "hermes_cli" / "web_dist"
 
 
-def _hash_source_tree(project_root: Path, tree_dir: Path) -> str:
-    """SHA-256 over *tree_dir* plus the root ``package.json`` / ``package-lock.json``.
+def _hash_source_tree(project_root: Path, tree_dir: Path, *additional_tree_dirs: Path) -> str:
+    """SHA-256 over source trees plus the root ``package.json`` / ``package-lock.json``.
 
+    ``additional_tree_dirs`` lets a build hash workspace sources outside its own
+    directory (for example Desktop's direct dependency on ``apps/shared``).
     Ignored paths (``node_modules/``, ``dist/``, ``*.pyc``, ...) are skipped via
     the repo-root ``.gitignore`` (pathspec) so build output never feeds back into
     its own staleness check. Filenames are sorted for a deterministic digest.
@@ -122,12 +124,13 @@ def _hash_source_tree(project_root: Path, tree_dir: Path) -> str:
             _hash_file(p)
 
     # Prune ignored directories in place so we never descend into them.
-    for dirpath, dirnames, filenames in os.walk(tree_dir, topdown=True):
-        dirnames[:] = [d for d in dirnames if not _ignored(Path(dirpath) / d)]
-        for fn in sorted(filenames):
-            fp = Path(dirpath) / fn
-            if not _ignored(fp):
-                _hash_file(fp)
+    for source_tree in (tree_dir, *additional_tree_dirs):
+        for dirpath, dirnames, filenames in os.walk(source_tree, topdown=True):
+            dirnames[:] = [d for d in dirnames if not _ignored(Path(dirpath) / d)]
+            for fn in sorted(filenames):
+                fp = Path(dirpath) / fn
+                if not _ignored(fp):
+                    _hash_file(fp)
 
     return h.hexdigest()
 

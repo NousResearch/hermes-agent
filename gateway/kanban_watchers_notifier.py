@@ -465,27 +465,92 @@ class _KanbanNotification:
             _delivery_meta = sub.get("delivery_metadata")
             if isinstance(_delivery_meta, dict):
                 _chat_type = str(_delivery_meta.get("chat_type") or "").strip()
+        # Propagate the subscription's telegram_reply_to_message_id into the
+        # wake SessionSource so the wake response anchors to the visible DM
+        # topic lane in Telegram Web instead of falling back to
+        # direct_messages_topic_id.
+        _wake_meta = sub.get("delivery_metadata")
+        _wake_reply_to = None
+        if isinstance(_wake_meta, dict):
+            _wake_reply_to = _wake_meta.get("telegram_reply_to_message_id")
         _source = SessionSource(
             platform=self.plat, chat_id=sub["chat_id"], chat_type=_chat_type or "group",
             thread_id=sub.get("thread_id") or None, user_id=sub.get("user_id"), user_id_alt=sub.get("user_id_alt"),
             profile=self.sub_profile or None, scope_id=_wake_scope_id(self.adapter, sub),
+            # Propagate the subscription's telegram_reply_to_message_id into the
+            # wake SessionSource so the wake response anchors to the visible DM
+            # topic lane in Telegram Web instead of falling back to
+            # direct_messages_topic_id.
+            message_id=str(_wake_reply_to) if _wake_reply_to else None,
         )
         await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key, source=_source)
         self._log_woke()
 
     async def _send_event(self, ev: Any, msg: str) -> None:
-        """Send one text ping; raises on adapter exception or SendResult(success=False)."""
+        """Send one text ping; raises on adapter exception or SendResult(success=False).
+
+        Delivery is write-ahead through the delivery ledger (when enabled): the
+        obligation is recorded BEFORE sending so a gateway crash between send
+        success and cursor advance can redeliver on next boot, and the send
+        itself goes through ``_send_with_retry`` (FloodWait honor, plain-text
+        fallback) instead of a single bare ``send``."""
         sub, adapter = self.sub, self.adapter
         delivery_metadata = sub.get("delivery_metadata")
         metadata: dict[str, Any] = dict(delivery_metadata) if isinstance(delivery_metadata, dict) else {}
         if sub.get("thread_id") and not metadata.get("thread_id"):
             metadata["thread_id"] = sub["thread_id"]
-        _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
-        # SendResult(success=False) without an exception is a FAILED delivery
-        # (else the event is lost); None / non-SendResult keeps the
+        _ping_obligation_id: Optional[str] = None
+        try:
+            from gateway.delivery_ledger import (
+                compute_obligation_id, ledger_enabled, mark_attempting, record_obligation,
+            )
+            if ledger_enabled():
+                _ping_session_key = (
+                    f"agent:kanban:notifier:{self.platform_str}:{sub['chat_id']}:"
+                    f"{sub.get('thread_id') or ''}"
+                )
+                _ping_obligation_id = compute_obligation_id(
+                    _ping_session_key, sub["task_id"] + ev.kind, msg,
+                )
+                record_obligation(
+                    obligation_id=_ping_obligation_id, session_key=_ping_session_key,
+                    platform=self.platform_str, chat_id=sub["chat_id"],
+                    thread_id=sub.get("thread_id") or None, content=msg,
+                )
+                mark_attempting(_ping_obligation_id)
+        except Exception:
+            logger.debug(
+                "kanban notifier: delivery ledger record failed for text ping %s",
+                self.task_id, exc_info=True,
+            )
+            _ping_obligation_id = None
+        _send_res = await adapter._send_with_retry(
+            chat_id=sub["chat_id"], content=msg, metadata=metadata,
+        )
+        # _send_with_retry returns SendResult; a failed result must count as a
+        # FAILED delivery — otherwise the cursor advances and the event is
+        # permanently lost. Non-SendResult shapes keep the legacy
         # "no exception == delivered" contract.
         if getattr(_send_res, "success", True) is False:
-            raise RuntimeError(f"adapter send() reported failure: {getattr(_send_res, 'error', None) or 'unknown error'}")
+            if _ping_obligation_id is not None:
+                try:
+                    from gateway.delivery_ledger import mark_failed
+                    mark_failed(_ping_obligation_id, str(_send_res)[:500])
+                except Exception:
+                    pass
+            raise RuntimeError(
+                f"adapter _send_with_retry() reported failure: "
+                f"{getattr(_send_res, 'error', None) or 'unknown error'}"
+            )
+        if _ping_obligation_id is not None:
+            try:
+                from gateway.delivery_ledger import mark_delivered
+                mark_delivered(_ping_obligation_id)
+            except Exception:
+                logger.debug(
+                    "kanban notifier: delivery ledger mark_delivered failed for %s",
+                    self.task_id, exc_info=True,
+                )
         logger.debug("kanban notifier: delivered %s event for %s to %s/%s on board %s",
                      ev.kind, self.task_id, self.platform_str, sub["chat_id"], self.board_slug)
         # Upload artifact paths from the completion payload / legacy result as

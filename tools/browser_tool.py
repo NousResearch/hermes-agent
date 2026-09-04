@@ -1530,6 +1530,38 @@ def _use_real_profile() -> bool:
     return False
 
 
+def _real_profile_browser() -> Optional[str]:
+    """Return the configured RPF source browser, or detect the OS default.
+
+    ``browser.real_profile_browser`` is an explicit escape hatch for hosts
+    where the OS browser-association API reports stale state. It is limited to
+    the stable Chromium families RPF already supports and fails closed for an
+    invalid value rather than silently driving a different profile.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {})
+        if isinstance(browser_cfg, dict):
+            configured = str(browser_cfg.get("real_profile_browser", "") or "").strip().lower()
+            if configured:
+                if configured in {"chrome", "edge", "brave", "chromium"}:
+                    return configured
+                logger.warning(
+                    "Ignoring invalid browser.real_profile_browser value %r; "
+                    "expected chrome, edge, brave, or chromium",
+                    configured,
+                )
+                return None
+    except Exception as e:
+        logger.debug("Could not read real_profile_browser from config: %s", e)
+
+    from hermes_cli.browser_connect import detect_default_chromium
+
+    return detect_default_chromium()
+
+
 # Session name for the single shared real-profile copy-browser. All consented
 # local browsing attaches to this one agent-browser session so concurrent
 # tasks reuse the same copy-browser instead of each launching a rival Chromium
@@ -1685,7 +1717,6 @@ def _real_profile_cdp() -> tuple:
 
     from hermes_cli.browser_connect import (
         UNSUPPORTED_CHANNEL,
-        detect_default_chromium,
         real_profile_copy_dir,
         snapshot_real_profile,
     )
@@ -1697,7 +1728,7 @@ def _real_profile_cdp() -> tuple:
             return cached, None
         _real_profile_cdp_cache.pop("cdp", None)
 
-        browser = detect_default_chromium()
+        browser = _real_profile_browser()
         if browser is None:
             return None, (
                 "browser.use_real_profile is on, but your default browser is not a "

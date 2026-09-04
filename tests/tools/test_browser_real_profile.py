@@ -369,6 +369,42 @@ class TestConsentConfigRead:
                    return_value={"browser": {"use_real_profile": False}}):
             assert bt._use_real_profile() is False
 
+    def test_explicit_real_profile_browser_overrides_os_detection(self):
+        """A configured stable browser wins when OS detection is stale."""
+        import tools.browser_tool as bt
+        with patch(
+            "hermes_cli.config.read_raw_config",
+            return_value={"browser": {"real_profile_browser": "chrome"}},
+        ), patch(
+            "hermes_cli.browser_connect.detect_default_chromium",
+            return_value="edge",
+        ) as detect:
+            assert bt._real_profile_browser() == "chrome"
+        detect.assert_not_called()
+
+    def test_blank_real_profile_browser_uses_os_detection(self):
+        import tools.browser_tool as bt
+        with patch(
+            "hermes_cli.config.read_raw_config",
+            return_value={"browser": {"real_profile_browser": ""}},
+        ), patch(
+            "hermes_cli.browser_connect.detect_default_chromium",
+            return_value="edge",
+        ):
+            assert bt._real_profile_browser() == "edge"
+
+    def test_invalid_real_profile_browser_fails_closed(self):
+        import tools.browser_tool as bt
+        with patch(
+            "hermes_cli.config.read_raw_config",
+            return_value={"browser": {"real_profile_browser": "firefox"}},
+        ), patch(
+            "hermes_cli.browser_connect.detect_default_chromium",
+            return_value="edge",
+        ) as detect:
+            assert bt._real_profile_browser() is None
+        detect.assert_not_called()
+
 
 class TestLocalSessionRealProfile:
     def test_local_session_attaches_to_real_profile_cdp(self):

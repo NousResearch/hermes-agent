@@ -2250,6 +2250,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             if skip_tool_execution_middleware:
                 dispatch_kwargs["skip_tool_execution_middleware"] = True
             import model_tools
+            if function_name in {"request_user_input", "check_user_input"}:
+                dispatch_kwargs["session_db"] = getattr(agent, "_session_db", None)
             return model_tools.handle_function_call(function_name, next_args, effective_task_id, **dispatch_kwargs)
     if skip_tool_execution_middleware:
         return _execute(function_args)

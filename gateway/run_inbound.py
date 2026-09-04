@@ -305,6 +305,68 @@ class GatewayInboundMixin:
             _up_state.persistent.update_prompt_pending = False
         return None
 
+    async def _hm_user_input_reply(
+        self, event: "MessageEvent", source: SessionSource, _quick_key: str
+    ) -> Optional[str]:
+        """Resolve an explicit ``/answer <request_id> <json-object>`` envelope.
+
+        Ordinary text is never treated as an answer. The request is settled in
+        state.db before the active agent is steered, so a retry cannot deliver the
+        same response twice.
+        """
+        raw = (event.text or "").strip()
+        parts = raw.split(maxsplit=2)
+        if not parts or parts[0].lower() not in {"/answer", "!answer"}:
+            return None
+        if len(parts) < 3:
+            return "Usage: /answer <request_id> <json-object>"
+        request_id = parts[1].strip()
+        try:
+            answers = json.loads(parts[2])
+        except (TypeError, ValueError):
+            return "The answer must be a JSON object, for example: /answer <request_id> {\"choice\": \"value\"}"
+        if not isinstance(answers, dict):
+            return "The answer must be a JSON object keyed by question id."
+
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        state = self._peek_session_state(_quick_key)
+        running_agent = state.turn.agent if state else None
+        if running_agent is None or running_agent is _AGENT_PENDING_SENTINEL:
+            # No active turn can safely consume this request. Do not create a new
+            # turn from the envelope; the durable row remains available to status/
+            # reconnect tooling.
+            return "No active Hermes turn is available for that request."
+        session_id = str(getattr(running_agent, "session_id", "") or "")
+        if not session_id:
+            return "The active Hermes turn has no durable session id."
+        db_handle = getattr(self, "_session_db", None)
+        db = getattr(db_handle, "_db", db_handle)
+        if db is None:
+            return "Hermes session state is temporarily unavailable; please retry the answer."
+        try:
+            from tools.user_input_tool import answer_user_input
+            result = await asyncio.to_thread(
+                answer_user_input,
+                request_id,
+                answers,
+                session_id=session_id,
+                session_db=db,
+                agent=running_agent,
+            )
+        except Exception:
+            logger.debug("user-input gateway answer failed", exc_info=True)
+            return "Hermes could not record that answer; please retry it."
+        if result.get("status") == "not_found":
+            return "That Hermes user-input request is not pending for this session."
+        if result.get("status") == "invalid":
+            return str(result.get("error") or "That answer is invalid.")
+        if result.get("accepted"):
+            delivery = result.get("delivery")
+            if delivery in {"steered", "redirected", "queued"}:
+                return ""
+            return "✓ Answer recorded. Hermes will use it when the active turn reaches its next boundary."
+        return ""
+
     async def _hm_clarify_reply(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str
     ) -> Optional[str]:
@@ -1120,6 +1182,8 @@ class GatewayInboundMixin:
         if not event.allow_gateway_control:
             return None
         _reply = self._hm_update_prompt_reply(event, _quick_key)
+        if _reply is None:
+            _reply = await self._hm_user_input_reply(event, source, _quick_key)
         if _reply is None:
             _reply = await self._hm_clarify_reply(event, source, _quick_key)
         if _reply is None:

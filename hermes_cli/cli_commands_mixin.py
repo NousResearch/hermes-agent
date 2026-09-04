@@ -2647,6 +2647,37 @@ class CLICommandsMixin:
             CLI_CONFIG["agent"]["reasoning_effort"] = arg
         _cp(_accent_line(f"✓ Reasoning effort set to '{arg}' {_scope_outcome(explicit_global, saved)}"))
 
+    def _handle_answer_command(self, cmd: str):
+        """Resolve a pending Hermes structured user-input request in this CLI session."""
+        import json
+        from cli import _cprint
+        parts = (cmd or "").strip().split(maxsplit=2)
+        if len(parts) < 3:
+            return _cp("Usage: /answer <request_id> <json-object>")
+        try:
+            answers = json.loads(parts[2])
+        except (TypeError, ValueError):
+            return _cp("The answer must be a JSON object keyed by question id.")
+        if not isinstance(answers, dict):
+            return _cp("The answer must be a JSON object keyed by question id.")
+        agent = getattr(self, "agent", None)
+        db = getattr(self, "_session_db", None)
+        if agent is None or db is None:
+            return _cp("No active Hermes session is available for that request.")
+        from tools.user_input_tool import answer_user_input
+        result = answer_user_input(
+            parts[1], answers, session_id=str(getattr(agent, "session_id", "") or self.session_id),
+            session_db=db, agent=agent,
+        )
+        if result.get("status") == "not_found":
+            return _cp("That Hermes user-input request is not pending for this session.")
+        if result.get("status") == "invalid":
+            return _cp(str(result.get("error") or "That answer is invalid."))
+        if result.get("accepted"):
+            _cprint("✓ Answer recorded for Hermes.")
+        else:
+            _cprint("That Hermes user-input request was already settled.")
+
     def _handle_busy_command(self, cmd: str):
         """Handle /busy [status|queue|steer|interrupt] — what Enter does while Hermes is working."""
         arg = _command_arg(cmd, lower=True)

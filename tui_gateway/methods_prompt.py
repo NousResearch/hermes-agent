@@ -1081,6 +1081,68 @@ def _(rid, params: dict) -> dict:
     return _respond(rid, params, "answer", allow_expired=True)
 
 
+@method("user_input.pending")
+def _(rid, params: dict) -> dict:
+    """Replay durable non-blocking requests for exactly the attached session."""
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    agent = session.get("agent")
+    session_id = str(getattr(agent, "session_id", "") or "")
+    if not session_id:
+        return _err(rid, 4001, "session has no durable id")
+    try:
+        from tools.user_input_tool import list_pending_user_inputs
+        with _session_db(session) as db:
+            requests = list_pending_user_inputs(session_id, session_db=db)
+    except Exception as exc:
+        logger.debug("user_input.pending failed", exc_info=True)
+        return _err(rid, 5004, str(exc))
+    return _ok(rid, {"requests": requests})
+
+
+@method("user_input.respond")
+def _(rid, params: dict) -> dict:
+    """Resolve a durable request and hand the answer to its live Hermes turn."""
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    request_id = str(params.get("request_id") or "").strip()
+    answers = params.get("answers")
+    if not request_id:
+        return _err(rid, 4006, "request_id required")
+    if not isinstance(answers, dict):
+        return _err(rid, 4004, "answers must be an object")
+    agent = session.get("agent")
+    session_id = str(getattr(agent, "session_id", "") or "")
+    if not session_id:
+        return _err(rid, 4001, "session has no durable id")
+    try:
+        from tools.user_input_tool import answer_user_input
+        with _session_db(session) as db:
+            result = answer_user_input(
+                request_id,
+                answers,
+                session_id=session_id,
+                session_db=db,
+                agent=agent,
+            )
+    except Exception as exc:
+        logger.debug("user_input.respond failed", exc_info=True)
+        return _err(rid, 5004, str(exc))
+    if result.get("status") == "not_found":
+        return _err(rid, 4001, "user-input request not found for this session")
+    if result.get("status") == "invalid":
+        return _err(rid, 4004, result.get("error", "invalid answer"))
+    event_payload = {
+        key: result[key]
+        for key in ("request_id", "status", "answer", "accepted", "delivery")
+        if key in result
+    }
+    _emit("user_input.answer", params.get("session_id", ""), event_payload)
+    return _ok(rid, result)
+
+
 _LATE_RESPOND_KEYS = {
     "terminal.read.respond": "text", "preview.read.respond": "text", "preview.act.respond": "text",
     "window.read.respond": "text", "tour.respond": "text", "mcp.setup.respond": "result",

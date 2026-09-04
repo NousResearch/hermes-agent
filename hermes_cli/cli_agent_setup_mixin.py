@@ -471,6 +471,32 @@ class CLIAgentSetupMixin:
         self._reopen_session()
         return True
 
+    def _user_input_callback(self, request: dict) -> None:
+        """Render a non-blocking structured request without taking over the CLI input loop."""
+        import json
+        from cli import _cprint
+        if not isinstance(request, dict):
+            return
+        lines = ["", "📝 Hermes needs your input"]
+        if context := str(request.get("context") or "").strip():
+            lines.append(context)
+        for question in request.get("questions") or []:
+            if not isinstance(question, dict):
+                continue
+            question_id = str(question.get("id") or "")
+            text = str(question.get("text") or "")
+            if not question_id or not text:
+                continue
+            lines.append(f"{question_id}: {text}")
+            for index, option in enumerate(question.get("options") or [], 1):
+                lines.append(f"  {index}. {option}")
+        lines.append(
+            f"Reply with: /answer {request.get('request_id', '')} "
+            + json.dumps({str(q.get("id")): "your answer" for q in request.get("questions") or []
+                          if isinstance(q, dict) and q.get("id")}, ensure_ascii=False)
+        )
+        _cprint("\n".join(lines))
+
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
         """Build the agent on first use; when resuming, restore history from SQLite.
         Returns True on success."""
@@ -531,7 +557,7 @@ class CLIAgentSetupMixin:
                 provider_data_collection=self._provider_data_collection,
                 openrouter_min_coding_score=self._openrouter_min_coding_score,
                 session_id=self.session_id, platform="cli", session_db=self._session_db,
-                clarify_callback=clarify_callback,
+                clarify_callback=clarify_callback, user_input_callback=self._user_input_callback,
                 reasoning_callback=self._current_reasoning_callback(),
                 fallback_model=self._fallback_model, thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,

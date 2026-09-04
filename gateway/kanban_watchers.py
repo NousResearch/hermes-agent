@@ -630,6 +630,7 @@ class GatewayKanbanWatchersMixin:
                             )
                         elif kind == "timed_out":
                             limit = None
+                            budget_rendered = False
                             if ev.payload:
                                 # Iteration-budget exhaustion carries the
                                 # budget (budget_used/budget_max), not a
@@ -643,24 +644,28 @@ class GatewayKanbanWatchersMixin:
                                         f"iteration budget exhausted "
                                         f"({budget_used}/{budget_max}); will retry"
                                     )
-                                else:
-                                    if ev.payload.get("limit_seconds"):
+                                    budget_rendered = True
+                                elif ev.payload.get("limit_seconds"):
+                                    try:
                                         limit = int(ev.payload["limit_seconds"])
-                            if limit is None and "iteration budget" not in msg:
+                                    except (TypeError, ValueError):
+                                        limit = None
+                            if limit is None and not budget_rendered:
                                 # Legacy events / metadata-less payloads:
                                 # fall back to the task's configured runtime,
                                 # never an invented zero.
                                 limit = sub.get("max_runtime_seconds")
-                            if limit is not None:
-                                msg = (
-                                    f"⏱ {board_tag}{tag}Kanban {sub['task_id']} timed out "
-                                    f"(max_runtime={limit}s); will retry"
-                                )
-                            elif "iteration budget" not in msg:
-                                msg = (
-                                    f"⏱ {board_tag}{tag}Kanban {sub['task_id']} timed out "
-                                    f"(max_runtime=?s); will retry"
-                                )
+                            if not budget_rendered:
+                                if limit is not None:
+                                    msg = (
+                                        f"⏱ {board_tag}{tag}Kanban {sub['task_id']} timed out "
+                                        f"(max_runtime={limit}s); will retry"
+                                    )
+                                else:
+                                    msg = (
+                                        f"⏱ {board_tag}{tag}Kanban {sub['task_id']} timed out "
+                                        f"(max_runtime=?s); will retry"
+                                    )
                         elif kind == "status":
                             new_status = ""
                             if ev.payload and ev.payload.get("status"):

@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import type { ComponentProps } from 'react'
+import { type ComponentProps, useCallback, useEffect } from 'react'
 
 import { TreeSkeleton } from '@/components/chat/skeletons'
 import { ErrorBoundary } from '@/components/error-boundary'
@@ -10,6 +10,7 @@ import { useDelayedTrue } from '@/hooks/use-delayed-true'
 import { useI18n } from '@/i18n'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
+import { refreshRepoStatus, registerRepoStatusCwd } from '@/store/coding-status'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
@@ -44,6 +45,25 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
     rootLoading,
     setNodeOpen
   } = useProjectTree(hasWorkspace ? targetCwd : '')
+
+  useEffect(() => {
+    const activeCwd = effectiveCwd || (hasWorkspace ? targetCwd : '')
+
+    if (!activeCwd) {
+      return
+    }
+
+    return registerRepoStatusCwd(activeCwd)
+  }, [effectiveCwd, hasWorkspace, targetCwd])
+
+  const handleRefresh = useCallback(() => {
+    void refreshRoot()
+    const activeCwd = effectiveCwd || (hasWorkspace ? targetCwd : '')
+
+    if (activeCwd) {
+      void refreshRepoStatus(activeCwd)
+    }
+  }, [effectiveCwd, hasWorkspace, refreshRoot, targetCwd])
 
   const cwdName =
     effectiveCwd
@@ -92,7 +112,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
         onLoadChildren={loadChildren}
         onNodeOpenChange={setNodeOpen}
         onPreviewFile={previewFile}
-        onRefresh={() => void refreshRoot()}
+        onRefresh={handleRefresh}
         openState={openState}
       />
     </aside>

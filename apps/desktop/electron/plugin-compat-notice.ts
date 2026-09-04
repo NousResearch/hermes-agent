@@ -87,6 +87,7 @@ export function recordDismissed(userData: string, key: string): void {
   if (!keys.includes(key)) {
     keys.push(key)
   }
+
   fs.mkdirSync(userData, { recursive: true })
   fs.writeFileSync(file, JSON.stringify({ keys: keys.slice(-20) }, null, 2))
 }
@@ -105,11 +106,13 @@ export function pendingNotice(hermesHome: string, userData: string): PendingNoti
   if (!report) {
     return null
   }
+
   const key = reportKey(report)
 
   if (wasDismissed(userData, key)) {
     return null
   }
+
   const names = Object.keys(report.plugins).sort()
 
   const list = names

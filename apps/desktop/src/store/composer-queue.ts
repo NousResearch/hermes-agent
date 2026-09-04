@@ -15,13 +15,24 @@ export interface QueuedPromptEntry {
   queuedAt: number
 }
 
-/** Whether a queued entry can ride a mid-turn redirect: text-only, non-empty,
- *  not a slash command — the same gate `steerDraft` applies to the live draft
- *  (attachments can't ride a redirect; slash commands execute, not steer). */
+export const isImageOnlyAttachmentSet = (
+  attachments: readonly Pick<ComposerAttachment, 'kind'>[]
+): boolean => attachments.every(attachment => attachment.kind === 'image')
+
+/** Whether a queued entry can ride a mid-turn redirect: non-slash text and/or
+ *  images. Non-image attachments still queue — they cannot ride redirect. */
 export const isSteerableEntry = (entry: Pick<QueuedPromptEntry, 'attachments' | 'text'>): boolean => {
   const text = entry.text.trim()
 
-  return Boolean(text) && entry.attachments.length === 0 && !SLASH_COMMAND_RE.test(text)
+  if (SLASH_COMMAND_RE.test(text)) {
+    return false
+  }
+
+  if (!isImageOnlyAttachmentSet(entry.attachments)) {
+    return false
+  }
+
+  return Boolean(text) || entry.attachments.length > 0
 }
 
 type QueueState = Record<string, QueuedPromptEntry[]>

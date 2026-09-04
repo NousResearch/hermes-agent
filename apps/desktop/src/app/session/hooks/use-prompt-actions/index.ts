@@ -734,14 +734,15 @@ export function usePromptActions({
   // completed work intact. During a tool it waits for the safe result boundary.
   // Returns false when the turn raced to completion so the composer can queue.
   const redirectPrompt = useCallback(
-    async (rawText: string): Promise<boolean> => {
+    async (rawText: string, attachments?: ComposerAttachment[]): Promise<boolean> => {
       const text = sanitizeComposerInput(rawText).trim()
+      const imageAttachments = (attachments ?? []).filter(attachment => attachment.kind === 'image')
       // Ref, not the closure-captured prop — see cancelRun above. A redirect
       // reaches the live model mid-turn, so a stale target delivers the user's
       // correction into a conversation they are no longer looking at.
       const sessionId = activeSessionIdRef.current
 
-      if (!text || !sessionId) {
+      if ((!text && imageAttachments.length === 0) || !sessionId) {
         return false
       }
 
@@ -751,12 +752,30 @@ export function usePromptActions({
       // message after the interrupted checkpoint, matching the durable core
       // transcript rather than a system note that changes role after reload.
       const send = async (id: string): Promise<boolean> => {
+        let imagePaths: string[] = []
+        let bubbleText = text
+        if (imageAttachments.length > 0) {
+          const synced = await syncAttachmentsForSubmit(id, imageAttachments, {
+            updateComposerAttachments: false
+          })
+          imagePaths = synced.attachments
+            .map(attachment => attachment.path)
+            .filter((path): path is string => Boolean(path))
+          if (imagePaths.length === 0) {
+            return false
+          }
+          const refs = synced.attachments
+            .map(attachment => attachment.refText)
+            .filter((ref): ref is string => Boolean(ref))
+          bubbleText = [text, ...refs].filter(Boolean).join('\n')
+        }
+
         // Redirect aborts the model request, so the completion event can race
         // its RPC response. Record the correction *before* awaiting the
         // gateway, in arrival order: sealed already-streamed output above,
         // correction bubble below it, post-redirect deltas below that
         // (#73793, #83151).
-        const messageId = appendSessionTextMessage(id, 'user', text, undefined, { appendAfterActiveReply: true })
+        const messageId = appendSessionTextMessage(id, 'user', bubbleText, undefined, { appendAfterActiveReply: true })
 
         const discardOptimisticMessage = () =>
           updateSessionState(id, state => ({
@@ -774,7 +793,19 @@ export function usePromptActions({
           })
 
         try {
-          const result = await requestGateway<SessionRedirectResponse>('session.redirect', { session_id: id, text })
+          const result = await requestGateway<SessionRedirectResponse>('session.redirect', {
+            session_id: id,
+            text,
+            ...(imagePaths.length > 0 ? { image_paths: imagePaths } : {})
+          })
+
+          if (result?.reason === 'images_unsupported') {
+            notify({
+              kind: 'warning',
+              title: t.composer.steerImagesUnsupportedTitle,
+              message: t.composer.steerImagesUnsupported
+            })
+          }
 
           if (result?.status === 'redirected') {
             triggerHaptic('submit')
@@ -819,7 +850,7 @@ export function usePromptActions({
 
       return false
     },
-    [activeSessionIdRef, appendSessionTextMessage, requestGateway, selectedStoredSessionIdRef, updateSessionState]
+    [activeSessionIdRef, appendSessionTextMessage, requestGateway, selectedStoredSessionIdRef, syncAttachmentsForSubmit, t, updateSessionState]
   )
 
   // After a durable rewind the surviving bubbles' cached rowIds are stale (the

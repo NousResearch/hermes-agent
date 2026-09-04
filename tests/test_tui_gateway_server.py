@@ -11936,6 +11936,74 @@ def test_session_redirect_calls_capable_core_agent(monkeypatch):
     assert before is None or session["last_active"] >= before
 
 
+def test_session_redirect_accepts_image_paths_and_records_refs(tmp_path):
+    shot = tmp_path / "ui.png"
+    shot.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+    calls = []
+
+    def _redirect(text, image_paths=None):
+        calls.append((text, list(image_paths or [])))
+        return True
+
+    agent = types.SimpleNamespace(
+        _supports_active_turn_redirect=True,
+        api_mode="chat_completions",
+        redirect=_redirect,
+    )
+    session = _session(agent=agent)
+    session["inflight_turn"] = {"user": "original request", "assistant": ""}
+    server._sessions["sid"] = session
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.redirect",
+                "params": {
+                    "session_id": "sid",
+                    "text": "look here",
+                    "image_paths": [str(shot)],
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["status"] == "redirected"
+    assert "@image:" in resp["result"]["text"]
+    assert calls == [("look here", [str(shot)])]
+    assert any("@image:" in item for item in session["inflight_turn"]["corrections"])
+
+
+def test_session_redirect_queues_images_on_codex():
+    agent = types.SimpleNamespace(
+        _supports_active_turn_redirect=True,
+        api_mode="codex_app_server",
+        redirect=lambda text, image_paths=None: True,
+    )
+    session = _session(agent=agent, running=True)
+    session["inflight_turn"] = {"user": "original request", "assistant": ""}
+    server._sessions["sid"] = session
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.redirect",
+                "params": {
+                    "session_id": "sid",
+                    "text": "look here",
+                    "image_paths": ["/tmp/does-not-need-to-exist.png"],
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["status"] == "queued"
+    assert resp["result"]["reason"] == "images_unsupported"
+    queued = session.get("queued_prompt") or {}
+    assert queued.get("image_paths") == ["/tmp/does-not-need-to-exist.png"]
+
+
 def test_session_redirect_rpc_drops_queued_duplicate_of_inflight_user():
     """#84417: Desktop ``session.redirect`` must purge stale self-duplicates.
 

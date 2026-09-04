@@ -345,11 +345,15 @@ export function ChatBar({
   const hasComposerPayload = hasText || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
 
-  // Steer only makes sense mid-turn, text-only (the gateway can't carry images
-  // into a tool result) and never for a slash command (those execute inline).
-  // A blocking prompt (approval/sudo/secret) also rules it out: the tool batch
-  // is parked on the user, so a steer can't reach the model — text queues.
-  const canSteer = busy && !compacting && !blockingPrompt && !!onSteer && attachments.length === 0 && isSteerableText
+  const imageAttachments = attachments.filter(attachment => attachment.kind === 'image')
+  const hasNonImageAttachments = attachments.some(attachment => attachment.kind !== 'image')
+  const canSteer =
+    busy &&
+    !compacting &&
+    !blockingPrompt &&
+    !!onSteer &&
+    !hasNonImageAttachments &&
+    (isSteerableText || imageAttachments.length > 0)
 
   // While busy: text redirects the live turn (Cursor-style stop-and-correct),
   // attachments queue for the next turn, an empty composer stops.

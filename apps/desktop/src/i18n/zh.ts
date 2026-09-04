@@ -2737,6 +2737,8 @@ export const zh: Translations = {
     queueEdit: '编辑',
     queueSendNext: '下一个',
     queueSteer: '引导 — 立即修正当前回合',
+    steerImagesUnsupportedTitle: '当前运行时无法用图片引导',
+    steerImagesUnsupported: '图片无法引导此运行时；已排队到下一回合',
     queueSend: '发送',
     queueDelete: '删除',
     queueResume: '继续',

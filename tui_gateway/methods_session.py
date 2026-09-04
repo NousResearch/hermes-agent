@@ -3754,75 +3754,102 @@ def _(rid, params: dict) -> dict:
     Mirrors AIAgent.steer(). Safe to call while a turn is running — the text
     lands on the last tool result of the next tool batch and the model sees
     it on its next iteration. No interrupt, no new user turn, no role
-    alternation violation.
+    alternation violation. Image paths ride the same payload as redirect
+    and land as a multimodal user correction at the next loop boundary.
     """
+    from agent.steer_media import (
+        call_redirect_like,
+        parse_redirect_image_paths,
+        persist_image_correction_text,
+        supports_image_redirect,
+    )
+
     text = (params.get("text") or "").strip()
-    if not text:
-        return _err(rid, 4002, "text is required")
+    image_paths = parse_redirect_image_paths(params)
+    if not text and not image_paths:
+        return _err(rid, 4002, "text or image_paths is required")
     session, err = _sess_nowait(params, rid)
     if err:
         return err
     agent = session.get("agent")
     if agent is None or not hasattr(agent, "steer"):
         return _err(rid, 4010, "agent does not support steer")
+    display = persist_image_correction_text(text, image_paths) if image_paths else text
+    if image_paths:
+        if not supports_image_redirect(agent):
+            _enqueue_prompt(
+                session, text, current_transport() or _stdio_transport, image_paths=image_paths
+            )
+            session["last_active"] = time.time()
+            return _ok(
+                rid,
+                {"status": "queued", "text": display, "reason": "images_unsupported"},
+            )
     try:
-        accepted = agent.steer(text)
+        accepted = call_redirect_like(agent.steer, text, image_paths)
     except Exception as exc:
         return _err(rid, 5000, f"steer failed: {exc}")
     if accepted:
-        # Record the correction on the live turn exactly like session.redirect
-        # does. Without this, a resume/reconnect while the turn is running
-        # rebuilds the transcript from the inflight snapshot and the steered
-        # text has no user bubble — the "my message vanished on reload" loss.
         with session["history_lock"]:
-            _record_inflight_correction(session, text)
-            # #84417: steer does not cancel the live original, but a server
-            # queue self-copy of that original must still not re-fire after
-            # settle (same class as redirect).
+            _record_inflight_correction(session, display)
             _drop_queued_duplicates_of_inflight_user(session)
             session["last_active"] = time.time()
-    return _ok(rid, {"status": "queued" if accepted else "rejected", "text": text})
+    return _ok(rid, {"status": "queued" if accepted else "rejected", "text": display})
 
 
 @method("session.redirect")
 def _(rid, params: dict) -> dict:
     """Redirect the active model turn while preserving valid work/context."""
+    from agent.steer_media import (
+        call_redirect_like,
+        parse_redirect_image_paths,
+        persist_image_correction_text,
+        supports_image_redirect,
+    )
+
     text = (params.get("text") or "").strip()
-    if not text:
-        return _err(rid, 4002, "text is required")
+    image_paths = parse_redirect_image_paths(params)
+    if not text and not image_paths:
+        return _err(rid, 4002, "text or image_paths is required")
     session, err = _sess_nowait(params, rid)
     if err:
         return err
     agent = session.get("agent")
-    # Turn-build window: a fresh turn flips running=True and kicks off an async
-    # agent build, so session["agent"] is briefly None. That is not an
-    # unsupported runtime — queue the correction server-side so it reaches the
-    # model as the next turn, instead of a misleading 4010 the client silently
-    # swallows into a lost follow-up.
+    display = persist_image_correction_text(text, image_paths) if image_paths else text
     if agent is None and session.get("running"):
-        _enqueue_prompt(session, text, current_transport() or _stdio_transport)
+        _enqueue_prompt(
+            session, text, current_transport() or _stdio_transport, image_paths=image_paths
+        )
         session["last_active"] = time.time()
-        return _ok(rid, {"status": "queued", "text": text})
+        return _ok(rid, {"status": "queued", "text": display})
     if (
         agent is None
         or getattr(agent, "_supports_active_turn_redirect", False) is not True
         or not hasattr(agent, "redirect")
     ):
         return _err(rid, 4010, "agent does not support active-turn redirect")
+    if image_paths:
+        if not supports_image_redirect(agent):
+            _enqueue_prompt(
+                session, text, current_transport() or _stdio_transport, image_paths=image_paths
+            )
+            session["last_active"] = time.time()
+            return _ok(
+                rid,
+                {"status": "queued", "text": display, "reason": "images_unsupported"},
+            )
     try:
-        accepted = agent.redirect(text)
+        accepted = call_redirect_like(agent.redirect, text, image_paths)
     except Exception as exc:
         return _err(rid, 5000, f"redirect failed: {exc}")
     if accepted:
         with session["history_lock"]:
-            _record_inflight_correction(session, text)
-            # #84417: purge server-queue self-duplicates of the live original
-            # so post-turn drain cannot restart the pre-correction prompt.
+            _record_inflight_correction(session, display)
             _drop_queued_duplicates_of_inflight_user(session)
             session["last_active"] = time.time()
     return _ok(
         rid,
-        {"status": "redirected" if accepted else "rejected", "text": text},
+        {"status": "redirected" if accepted else "rejected", "text": display},
     )
 
 

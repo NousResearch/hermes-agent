@@ -24,6 +24,7 @@ def _bare_agent() -> AIAgent:
     agent._pending_steer = None
     agent._pending_steer_lock = threading.Lock()
     agent._pending_redirect = None
+    agent._pending_redirect_images = []
     agent._pending_redirect_lock = threading.Lock()
     agent._model_request_active = threading.Event()
     agent._executing_tools = False
@@ -849,3 +850,56 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
         wire = agent.client.chat.completions.create.call_args.kwargs["messages"]
         wire_assistants = [m for m in wire if m.get("role") == "assistant"]
         assert wire_assistants[0]["content"] == "visible text"
+
+
+class TestMultimodalRedirect:
+    def test_text_only_steer_unchanged(self):
+        agent = _bare_agent()
+        assert agent.steer("keep going") is True
+        assert agent._pending_steer == "keep going"
+        assert agent._pending_redirect is None
+
+    def test_image_steer_during_tools_does_not_interrupt(self, tmp_path):
+        shot = tmp_path / "ui.png"
+        shot.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        agent = _bare_agent()
+        agent._executing_tools = True
+
+        assert agent.redirect("look at this", image_paths=[str(shot)]) is True
+        assert agent._interrupt_requested is False
+        assert agent._pending_steer is None
+        assert agent._pending_redirect == "look at this"
+        assert agent._pending_redirect_images == [str(shot)]
+
+    def test_codex_rejects_image_redirect(self, tmp_path):
+        shot = tmp_path / "ui.png"
+        shot.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        agent = _bare_agent()
+        agent.api_mode = "codex_app_server"
+        agent._model_request_active.set()
+
+        assert agent.redirect("look at this", image_paths=[str(shot)]) is False
+        assert agent._pending_redirect is None
+
+    def test_apply_redirect_persists_image_ref(self, tmp_path):
+        from agent.conversation_loop import _apply_active_turn_redirect
+
+        shot = tmp_path / "diagram.png"
+        shot.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        agent = _bare_agent()
+        agent._current_streamed_assistant_text = ""
+        messages = [
+            {"role": "user", "content": "start"},
+            {"role": "tool", "content": "done", "tool_call_id": "1"},
+        ]
+
+        _apply_active_turn_redirect(
+            agent, messages, "fix this", image_paths=[str(shot)]
+        )
+
+        assert messages[-1]["role"] == "user"
+        assert "@image:" in messages[-1]["content"]
+        assert "fix this" in messages[-1]["content"]
+        replayed = messages[-1]["api_content"]
+        replay_text = replayed if isinstance(replayed, str) else str(replayed)
+        assert "vision_analyze" in replay_text or "image_url" in replay_text

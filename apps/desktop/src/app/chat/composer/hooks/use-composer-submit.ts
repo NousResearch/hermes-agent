@@ -202,16 +202,14 @@ export function useComposerSubmit({
         triggerHaptic('submit')
         clearDraft()
         dispatchSubmit(text)
-      } else if (!compacting && !blockingPrompt && !attachments.length && text.trim()) {
-        // Cursor-style stop-and-correct: interrupt the live turn and redirect
-        // it with this text. redirect() preserves the shown reasoning/work; if
-        // the turn already ended, steerDraft re-queues so nothing is lost.
+      } else if (
+        !compacting &&
+        !blockingPrompt &&
+        attachments.every(attachment => attachment.kind === 'image') &&
+        (text.trim() || attachments.length > 0)
+      ) {
         steerDraft()
       } else if (payloadPresent) {
-        // Attachments can't ride a redirect (no tool-result image carriage) —
-        // queue the whole payload for the next turn. Same for a turn parked on
-        // an approval/sudo/secret prompt: a steer can't reach the model while
-        // the tool batch is blocked, so the message runs as the next turn.
         queueCurrentDraft()
       } else {
         // Stop button (the only way to reach here while busy with an empty
@@ -238,19 +236,26 @@ export function useComposerSubmit({
   // tool boundary. If the turn already ended, queue the words instead.
   const steerDraft = () => {
     const text = draftRef.current.trim()
+    const steeredAttachments = cloneAttachments(attachments)
+    const hasImages = steeredAttachments.some(attachment => attachment.kind === 'image')
+    const hasNonImages = steeredAttachments.some(attachment => attachment.kind !== 'image')
 
-    // Guard on live editor state, not the render-lagged `canSteer`: a redirect
-    // fired on a fast Enter must not be dropped because state hasn't synced.
-    if (!onSteer || !text || attachments.length > 0 || SLASH_COMMAND_RE.test(text)) {
+    if (
+      !onSteer ||
+      hasNonImages ||
+      SLASH_COMMAND_RE.test(text) ||
+      (!text && !hasImages)
+    ) {
       return
     }
 
     triggerHaptic('submit')
     clearDraft()
+    scope.attachments.clear()
 
-    void Promise.resolve(onSteer(text)).then(accepted => {
+    void Promise.resolve(onSteer(text, steeredAttachments)).then(accepted => {
       if (!accepted && activeQueueSessionKey) {
-        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
+        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: steeredAttachments })
       }
     })
   }

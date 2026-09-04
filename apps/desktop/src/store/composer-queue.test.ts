@@ -9,6 +9,7 @@ import {
   enqueueQueuedPrompt,
   getQueuedPrompts,
   isQueueParked,
+  isSteerableEntry,
   migrateQueuedPrompts,
   parkQueuedPrompts,
   promoteQueuedPrompt,
@@ -258,5 +259,28 @@ describe('parked queue sessions', () => {
     migrateQueuedPrompts('rt-old', 'rt-new')
 
     expect(isQueueParked('rt-new')).toBe(false)
+  })
+
+  it('treats text and image attachments as steerable, files as not', () => {
+    expect(isSteerableEntry({ text: 'nudge', attachments: [] })).toBe(true)
+    expect(
+      isSteerableEntry({
+        text: 'look',
+        attachments: [attachment('shot', 'image')]
+      })
+    ).toBe(true)
+    expect(
+      isSteerableEntry({
+        text: '',
+        attachments: [attachment('shot', 'image')]
+      })
+    ).toBe(true)
+    expect(
+      isSteerableEntry({
+        text: 'open this',
+        attachments: [attachment('doc', 'file')]
+      })
+    ).toBe(false)
+    expect(isSteerableEntry({ text: '/status', attachments: [] })).toBe(false)
   })
 })

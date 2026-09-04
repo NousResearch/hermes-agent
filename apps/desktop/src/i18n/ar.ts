@@ -1899,6 +1899,8 @@ export const ar = defineLocale({
     queueEdit: 'تحرير الرسالة المجدولة',
     queueSendNext: 'إرسالها تاليا',
     queueSteer: 'توجيه — تصحيح الدور الجاري فورا',
+    steerImagesUnsupportedTitle: 'لا يمكن توجيه هذا التشغيل بالصور',
+    steerImagesUnsupported: 'لا يمكن توجيه هذا التشغيل بالصور؛ تم وضعها في طابور الدور التالي',
     queueSend: 'إرسالها الآن',
     queueDelete: 'حذف من الطابور',
     queueStuckTitle: 'لم تُرسل الرسالة في قائمة الانتظار',

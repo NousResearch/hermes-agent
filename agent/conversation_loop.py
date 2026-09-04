@@ -434,7 +434,12 @@ def _moa_reference_metrics_for_hook(agent: Any) -> Any:
         return None
 
 
-def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text: str) -> None:
+def _apply_active_turn_redirect(
+    agent: Any,
+    messages: List[Dict[str, Any]],
+    text: str,
+    image_paths: Optional[List[str]] = None,
+) -> None:
     """Append a provider-safe checkpoint and correction to the live turn.
 
     Incomplete provider reasoning blocks are not valid replay items (Anthropic
@@ -481,11 +486,35 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
             ["Visible response before the interruption:", visible]
         )
     checkpoint = "\n\n".join(checkpoint_parts)
-    correction = (
-        "[Context from the interrupted assistant response]\n"
-        f"{checkpoint}\n\n"
-        f"{text}"
-    )
+    paths = list(image_paths or [])
+    user_visible = text
+    if paths:
+        from agent.steer_media import build_redirect_user_payload
+
+        user_visible, api_suffix = build_redirect_user_payload(agent, text, paths)
+        if isinstance(api_suffix, list):
+            correction: Any = [
+                {
+                    "type": "text",
+                    "text": (
+                        "[Context from the interrupted assistant response]\n"
+                        f"{checkpoint}\n\n"
+                    ),
+                },
+                *api_suffix,
+            ]
+        else:
+            correction = (
+                "[Context from the interrupted assistant response]\n"
+                f"{checkpoint}\n\n"
+                f"{api_suffix}"
+            )
+    else:
+        correction = (
+            "[Context from the interrupted assistant response]\n"
+            f"{checkpoint}\n\n"
+            f"{text}"
+        )
 
     # The normal live tail is user or tool, so an assistant placeholder
     # followed by the correction preserves strict alternation. If a transport
@@ -496,7 +525,7 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
         # scaffolded form so it still sees the interrupted context.
         append_message(
             messages,
-            {"role": "user", "content": text, "api_content": correction},
+            {"role": "user", "content": user_visible, "api_content": correction},
         )
     else:
         # Placeholder preserves role alternation only. Scaffold bytes must
@@ -525,7 +554,7 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
         append_message(messages, placeholder)
         append_message(
             messages,
-            {"role": "user", "content": text, "api_content": correction},
+            {"role": "user", "content": user_visible, "api_content": correction},
         )
 
     agent._current_streamed_assistant_text = ""
@@ -2287,13 +2316,24 @@ def run_conversation(
         )
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
-        _redirect_text = agent._drain_pending_redirect()
-        if _redirect_text:
-            _apply_active_turn_redirect(agent, messages, _redirect_text)
+        _drain_payload = getattr(agent, "_drain_pending_redirect_payload", None)
+        if callable(_drain_payload):
+            _redirect_text, _redirect_images = _drain_payload()
+        else:
+            _redirect_text = agent._drain_pending_redirect()
+            _redirect_images = []
+        if _redirect_text or _redirect_images:
+            _apply_active_turn_redirect(
+                agent,
+                messages,
+                _redirect_text or "",
+                image_paths=_redirect_images,
+            )
             if isinstance(original_user_message, str):
+                _note = _redirect_text or "image correction"
                 original_user_message = (
                     f"{original_user_message}\n\n"
-                    f"User correction during the turn: {_redirect_text}"
+                    f"User correction during the turn: {_note}"
                 )
             agent._persist_session(messages, conversation_history)
 

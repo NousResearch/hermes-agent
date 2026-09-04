@@ -2234,6 +2234,8 @@ export const ja = defineLocale({
     queueEdit: '編集',
     queueSendNext: '次に送信',
     queueSteer: 'ステア — 現在のターンを今すぐ修正',
+    steerImagesUnsupportedTitle: 'このランタイムでは画像ステアできません',
+    steerImagesUnsupported: '画像はこのランタイムをステアできません。次のターンにキューしました',
     queueSend: '送信',
     queueDelete: '削除',
     queueResume: '再開',

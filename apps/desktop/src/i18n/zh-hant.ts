@@ -2155,6 +2155,8 @@ export const zhHant = defineLocale({
     queueEdit: '編輯',
     queueSendNext: '下一個',
     queueSteer: '引導 — 立即修正目前回合',
+    steerImagesUnsupportedTitle: '目前執行階段無法用圖片引導',
+    steerImagesUnsupported: '圖片無法引導此執行階段；已排隊到下一回合',
     queueSend: '傳送',
     queueDelete: '刪除',
     queueResume: '繼續',

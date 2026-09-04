@@ -92,6 +92,7 @@ export interface SessionSteerResponse {
 export interface SessionRedirectResponse {
   status?: 'redirected' | 'queued' | 'rejected'
   text?: string
+  reason?: 'images_unsupported'
 }
 
 export interface SessionTitleResponse {

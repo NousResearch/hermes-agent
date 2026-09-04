@@ -3740,6 +3740,7 @@ class AIAgent:
                 if hard_cancel:
                     _cancel_pending_compression_commit()
                 self._pending_redirect = None
+                self._pending_redirect_images = []
         else:
             if hard_cancel:
                 _wait_for_compression_commit()
@@ -3748,6 +3749,7 @@ class AIAgent:
             if hard_cancel:
                 _cancel_pending_compression_commit()
             self._pending_redirect = None
+            self._pending_redirect_images = []
 
         # Codex app-server owns its model/tool loop and watches a private
         # interrupt event rather than Hermes' per-thread flag.
@@ -3858,7 +3860,7 @@ class AIAgent:
         _redirect_lock = getattr(self, "_pending_redirect_lock", None)
         if _redirect_lock is not None:
             with _redirect_lock:
-                if preserve_redirect and not self._pending_redirect:
+                if preserve_redirect and not self._has_pending_redirect_unlocked():
                     return False
                 self._interrupt_requested = False
                 self._interrupt_message = None
@@ -3866,8 +3868,9 @@ class AIAgent:
                 getattr(self, "_hard_interrupt_requested", threading.Event()).clear()
                 if not preserve_redirect:
                     self._pending_redirect = None
+                    self._pending_redirect_images = []
         else:
-            if preserve_redirect and not getattr(self, "_pending_redirect", None):
+            if preserve_redirect and not self._has_pending_redirect_unlocked():
                 return False
             self._interrupt_requested = False
             self._interrupt_message = None
@@ -3875,6 +3878,7 @@ class AIAgent:
             getattr(self, "_hard_interrupt_requested", threading.Event()).clear()
             if not preserve_redirect:
                 self._pending_redirect = None
+                self._pending_redirect_images = []
         self._interrupt_thread_signal_pending = False
         if self._execution_thread_id is not None:
             _set_interrupt(False, self._execution_thread_id)
@@ -3905,7 +3909,7 @@ class AIAgent:
                 self._pending_steer = None
         return True
 
-    def steer(self, text: str) -> bool:
+    def steer(self, text: str, image_paths: Optional[List[str]] = None) -> bool:
         """
         Inject a user message into the next tool result without interrupting.
 
@@ -3914,18 +3918,31 @@ class AIAgent:
         result's content once the current tool batch finishes. The model
         sees the steer as part of the tool output on its next iteration.
 
+        Images cannot ride a tool-result string. They are stashed as a
+        pending redirect (no interrupt) and applied as a multimodal user
+        correction at the next role-safe loop boundary.
+
         Thread-safe: callable from gateway/CLI/TUI threads. Multiple calls
         before the drain point concatenate with newlines.
 
         Args:
-            text: The user text to inject. Empty strings are ignored.
+            text: The user text to inject. Empty strings are ignored unless
+                ``image_paths`` are present.
+            image_paths: Optional local image paths to deliver with the steer.
 
         Returns:
-            True if the steer was accepted, False if the text was empty.
+            True if the steer was accepted, False if the payload was empty.
         """
-        if not text or not text.strip():
+        from agent.steer_media import normalize_image_paths, supports_image_redirect
+
+        paths = normalize_image_paths(image_paths)
+        cleaned = (text or "").strip()
+        if not cleaned and not paths:
             return False
-        cleaned = text.strip()
+        if paths:
+            if not supports_image_redirect(self):
+                return False
+            return self._stash_pending_redirect(cleaned, paths, interrupt=False)
         _lock = getattr(self, "_pending_steer_lock", None)
         if _lock is None:
             # Test stubs that built AIAgent via object.__new__ skip __init__.
@@ -3941,7 +3958,7 @@ class AIAgent:
                 self._pending_steer = cleaned
         return True
 
-    def redirect(self, text: str) -> bool:
+    def redirect(self, text: str, image_paths: Optional[List[str]] = None) -> bool:
         """Redirect the active turn without converting it into a new task.
 
         During a normal Hermes model request this cancels only that request;
@@ -3950,18 +3967,22 @@ class AIAgent:
         correction as a real user message, and retries. During tool execution
         it degrades to ``steer()`` so the tool can finish at a safe boundary.
         Codex app-server has a native ``turn/steer`` operation and uses it
-        directly instead of cancelling.
+        directly instead of cancelling. Images are rejected on Codex so the
+        gateway can queue a lossless next-turn fallback.
 
-        Returns ``False`` when there is no live turn or the text is empty, so
+        Returns ``False`` when there is no live turn or the payload is empty, so
         surfaces can fall back to their existing next-turn queue.
         """
-        if not text or not text.strip():
-            return False
-        cleaned = text.strip()
+        from agent.steer_media import normalize_image_paths, supports_image_redirect
 
-        # Codex owns its internal reasoning/tool loop, so use its first-class
-        # active-turn steering protocol rather than interrupting the subprocess.
+        paths = normalize_image_paths(image_paths)
+        cleaned = (text or "").strip()
+        if not cleaned and not paths:
+            return False
+
         if getattr(self, "api_mode", None) == "codex_app_server":
+            if paths or not supports_image_redirect(self):
+                return False
             _codex_session = getattr(self, "_codex_session", None)
             _native_steer = getattr(_codex_session, "request_steer", None)
             if callable(_native_steer):
@@ -3978,44 +3999,17 @@ class AIAgent:
                     logger.debug("Codex app-server turn/steer failed", exc_info=True)
                     return False
 
-        # Never kill a tool merely to deliver conversational guidance. The
-        # existing steer drain puts it on the final tool result before the next
-        # model decision, including delegate_task children.
+        # Never kill a tool merely to deliver conversational guidance.
         if getattr(self, "_executing_tools", False):
+            if paths:
+                return self._stash_pending_redirect(cleaned, paths, interrupt=False)
             return self.steer(cleaned)
 
         _model_active = getattr(self, "_model_request_active", None)
-        _redirect_lock = getattr(self, "_pending_redirect_lock", None)
-        if _redirect_lock is None:
-            if _model_active is None or not _model_active.is_set():
-                return False
-            existing = getattr(self, "_pending_redirect", None)
-            if self._interrupt_requested and not existing:
-                return False
-            self._pending_redirect = (
-                f"{existing}\n\n[Additional user correction]\n{cleaned}"
-                if existing
-                else cleaned
-            )
-            self._interrupt_requested = True
-            self._interrupt_message = None
-        else:
-            with _redirect_lock:
-                if _model_active is None or not _model_active.is_set():
-                    # The response completed before we acquired the state lock.
-                    # Reject so the surface queues a new turn.
-                    return False
-                if self._interrupt_requested and not self._pending_redirect:
-                    return False
-                if self._pending_redirect:
-                    self._pending_redirect = (
-                        f"{self._pending_redirect}\n\n"
-                        f"[Additional user correction]\n{cleaned}"
-                    )
-                else:
-                    self._pending_redirect = cleaned
-                self._interrupt_requested = True
-                self._interrupt_message = None
+        if _model_active is None or not _model_active.is_set():
+            return False
+        if not self._stash_pending_redirect(cleaned, paths, interrupt=True):
+            return False
 
         # Interrupt only the model request. Do not fan out to tool workers or
         # child agents as interrupt() does.
@@ -4033,24 +4027,79 @@ class AIAgent:
                 logger.debug("Failed to abort request for redirect", exc_info=True)
         return True
 
+    def _stash_pending_redirect(
+        self,
+        text: str,
+        image_paths: Optional[List[str]] = None,
+        *,
+        interrupt: bool = True,
+    ) -> bool:
+        """Store a pending redirect/steer payload. Optionally request interrupt."""
+        from agent.steer_media import merge_redirect_text, normalize_image_paths
+
+        cleaned = (text or "").strip()
+        paths = normalize_image_paths(image_paths)
+        if not cleaned and not paths:
+            return False
+
+        def _apply() -> bool:
+            if interrupt:
+                _model_active = getattr(self, "_model_request_active", None)
+                if _model_active is None or not _model_active.is_set():
+                    return False
+                if self._interrupt_requested and not self._has_pending_redirect_unlocked():
+                    return False
+            existing = getattr(self, "_pending_redirect", None)
+            if cleaned:
+                self._pending_redirect = merge_redirect_text(existing, cleaned)
+            existing_imgs = list(getattr(self, "_pending_redirect_images", None) or [])
+            for path in paths:
+                if path not in existing_imgs:
+                    existing_imgs.append(path)
+            self._pending_redirect_images = existing_imgs
+            if interrupt:
+                self._interrupt_requested = True
+                self._interrupt_message = None
+            return True
+
+        _redirect_lock = getattr(self, "_pending_redirect_lock", None)
+        if _redirect_lock is None:
+            return _apply()
+        with _redirect_lock:
+            return _apply()
+
+    def _has_pending_redirect_unlocked(self) -> bool:
+        return bool(getattr(self, "_pending_redirect", None)) or bool(
+            getattr(self, "_pending_redirect_images", None)
+        )
+
     def _has_pending_redirect(self) -> bool:
         """Return whether an active-turn redirect is waiting to be applied."""
         _redirect_lock = getattr(self, "_pending_redirect_lock", None)
         if _redirect_lock is None:
-            return bool(getattr(self, "_pending_redirect", None))
+            return self._has_pending_redirect_unlocked()
         with _redirect_lock:
-            return bool(self._pending_redirect)
+            return self._has_pending_redirect_unlocked()
 
-    def _drain_pending_redirect(self) -> Optional[str]:
-        """Return and clear pending active-turn correction text."""
+    def _drain_pending_redirect_payload(self) -> tuple:
+        """Return and clear pending redirect text plus image paths."""
         _redirect_lock = getattr(self, "_pending_redirect_lock", None)
         if _redirect_lock is None:
             text = getattr(self, "_pending_redirect", None)
+            images = list(getattr(self, "_pending_redirect_images", None) or [])
             self._pending_redirect = None
-            return text
+            self._pending_redirect_images = []
+            return text, images
         with _redirect_lock:
             text = self._pending_redirect
+            images = list(getattr(self, "_pending_redirect_images", None) or [])
             self._pending_redirect = None
+            self._pending_redirect_images = []
+        return text, images
+
+    def _drain_pending_redirect(self) -> Optional[str]:
+        """Return and clear pending active-turn correction text."""
+        text, _images = self._drain_pending_redirect_payload()
         return text
 
     def _drain_pending_steer(self) -> Optional[str]:

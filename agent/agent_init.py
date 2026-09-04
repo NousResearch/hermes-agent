@@ -922,6 +922,7 @@ def init_agent(
     # prefix, cancel only the in-flight model request, and rebuild its tail with
     # the correction. The loop drains this slot at a role-safe boundary.
     agent._pending_redirect: Optional[str] = None
+    agent._pending_redirect_images: List[str] = []
     agent._pending_redirect_lock = threading.Lock()
 
     # Concurrent-tool worker thread tracking.  `_execute_tool_calls_concurrent`

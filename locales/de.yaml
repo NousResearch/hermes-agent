@@ -130,9 +130,9 @@ gateway:
     unknown_arg:           "⚠️ Unbekanntes Argument: `{arg}`\n\n**Gültige Optionen:** normal, fast, status"
     saved:                 "⚡ ✓ Priority Processing: **{label}** (in Konfiguration gespeichert)\n_(wird ab nächster Nachricht wirksam)_"
     session_only:          "⚡ ✓ Priority Processing: **{label}** (nur diese Sitzung)"
-    label_fast:            "FAST"
+    label_fast:            "SCHNELL"
     label_normal:          "NORMAL"
-    status_fast:           "fast"
+    status_fast:           "schnell"
     status_normal:         "normal"
     picker_title:          "⚡ **Priority Processing**\\n\\nAktueller Modus: `{mode}`\\n\\nOption wählen:"
     choice_fast:           "fast — Priority Processing an"
@@ -172,6 +172,11 @@ gateway:
     truncated_suffix:      "… (gekürzt; verwenden Sie `hermes kanban …` im Terminal für die vollständige Ausgabe)"
     no_output:             "(keine Ausgabe)"
     wake:
+      # Model-facing, not UI: gateway/kanban_watchers.py builds `message` from
+      # these status words and delivers the result as a synthetic agent turn
+      # via deliver_wake(). Translating them would produce a half-German
+      # prompt, so this block stays English like `message`/`handoff`/
+      # `review_detail`/`guidance` below.
       completed:           "completed"
       gave_up:             "gave up (retries exhausted)"
       crashed:             "crashed (worker exited); dispatcher will retry"
@@ -329,8 +334,8 @@ Future messages in this room will use that transcript until `/reset` or another 
 
   status:
     header:                "📊 **Hermes-Gateway-Status**"
-    matrix_scope_header:   "**Matrix scope:**"
-    matrix_scope_room:     "  room: {room}"
+    matrix_scope_header:   "**Matrix-Scope:**"
+    matrix_scope_room:     "  Raum: {room}"
     matrix_scope_room_id:  "  room_id: {room_id}"
     matrix_scope_thread:   "  thread_id: {thread_id}"
     matrix_scope_mode:     "  session_scope: {scope}"

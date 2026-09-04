@@ -4128,8 +4128,11 @@ class GatewayRunner(
                 raise RuntimeError("Gateway is shutting down; executor unavailable")
             executor = getattr(self, "_executor", None)
             if executor is None or getattr(executor, "_shutdown", False):
+                # gateway.agent_executor_workers; bare runners (tests) without a config keep the default.
+                max_workers = getattr(getattr(self, "config", None), "agent_executor_workers", None) or 10
+                logger.info("Gateway agent executor: max_workers=%d", max_workers)
                 executor = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=10, thread_name_prefix="hermes-gateway")
+                    max_workers=max_workers, thread_name_prefix="hermes-gateway")
                 self._executor = executor
             return executor
 

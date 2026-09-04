@@ -1105,3 +1105,18 @@ def latest_command_states(
             ).fetchall()
             states.update({str(row["room_id"]): _command(row) for row in rows})
     return states
+
+
+def command_state(
+    db_path: Path | str,
+    command_id: str,
+) -> dict[str, Any] | None:
+    """Return one command by its transport-stable id."""
+
+    command_id = _identifier(command_id, label="command_id")
+    with _transaction(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM desktop_room_commands WHERE command_id = ?",
+            (command_id,),
+        ).fetchone()
+    return _command(row) if row is not None else None

@@ -168,6 +168,7 @@ function RepoFlatSection({
           onNewSession={group.isKanban ? undefined : onNewSession}
           onRemove={group.isMain || group.isKanban ? undefined : () => setRemoveTarget(group)}
           renderRows={renderRows}
+          repoPath={repo.path}
         />
       ))}
     </>

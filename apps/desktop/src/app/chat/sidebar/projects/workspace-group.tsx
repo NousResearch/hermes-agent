@@ -1,17 +1,19 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
+import { PrTag } from '@/app/chat/pr-tag'
 import { Codicon } from '@/components/ui/codicon'
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
 import { useStoreSelector } from '@/lib/use-session-slice'
-import { setWorkspaceNodeOpen } from '@/store/layout'
+import { $sidebarRowMeta, setWorkspaceNodeOpen } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { newSessionInProfile, selectProfile } from '@/store/profile'
 import { switchBranchInRepo } from '@/store/projects'
+import { $pullRequestsByBranch, branchLanePrKey, refreshPullRequests } from '@/store/pull-requests'
 import { $sessionProfilesUsage } from '@/store/session'
 import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
 
@@ -35,9 +37,19 @@ interface SidebarWorkspaceGroupProps {
   // When set (linked worktree rows), shows a remove affordance that runs a real
   // `git worktree remove`.
   onRemove?: () => void
+  // The repo root the lane belongs to — the join key for the lane's PR badge
+  // (with the lane label as the branch). Absent for profile/source groups,
+  // which have no single repo and take no badge.
+  repoPath?: null | string
 }
 
-export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemove }: SidebarWorkspaceGroupProps) {
+export function SidebarWorkspaceGroup({
+  group,
+  renderRows,
+  onNewSession,
+  onRemove,
+  repoPath
+}: SidebarWorkspaceGroupProps) {
   const { t } = useI18n()
   const s = t.sidebar
   const isProfileGroup = group.mode === 'profile'
@@ -70,6 +82,23 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
       size="0.75rem"
     />
   )
+
+  // The lane's PR, behind the same Show-menu toggle as the session rows'
+  // badges. A lane's label IS its branch (linked worktrees are relabeled to
+  // the live checked-out branch by the visual enhancer; main lanes carry the
+  // branch name outright) — except the kanban aggregate, which is many
+  // branches in one lane and takes no badge. The trunk guard lives in the key.
+  const rowMeta = useStore($sidebarRowMeta)
+  const lanePrKey = !group.isKanban && rowMeta.includes('pr') ? branchLanePrKey(repoPath, group.label) : null
+  const lanePr = useStoreSelector($pullRequestsByBranch, prs => (lanePrKey ? prs[lanePrKey] : undefined))
+
+  useEffect(() => {
+    if (lanePrKey) {
+      const [root, branch] = lanePrKey.split('\n')
+
+      void refreshPullRequests({ [root]: [branch] })
+    }
+  }, [lanePrKey])
 
   const handleNewSession = async () => {
     // Reveal the lane the new session targets — an empty worktree/branch lane
@@ -158,6 +187,7 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
             }
             icon={leadingIcon}
             label={group.label}
+            meta={lanePr && <PrTag pr={lanePr} />}
             onToggle={toggleOpen}
             open={open}
             title={group.path ? displayPath(group.path) : undefined}

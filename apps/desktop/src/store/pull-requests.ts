@@ -35,6 +35,10 @@ export const $prBranchBySession = persistentAtom<Record<string, string>>(
 const $prScannedSessions = persistentAtom<string[]>('hermes.desktop.prScannedSessions', [], Codecs.stringArray)
 
 const fetchedAt = new Map<string, number>()
+// The lookups the last fetch for a repo actually asked about. A repo is fresh
+// only for THOSE: a new asker (a lane appearing, a project entered) with a
+// branch outside this set must not be starved by the TTL.
+const fetchedLookups = new Map<string, Set<string>>()
 const inFlight = new Set<string>()
 let scanUnavailable = false
 let scanInFlight = false
@@ -49,6 +53,16 @@ export const branchPrKey = (repoRoot: string, branch: string): string => `${repo
  *  share the one map. GitHub answers by number just as happily as by branch. */
 export const numberPrKey = (repoRoot: string, number: number): string => `${repoRoot}\n#${number}`
 
+/** The trunk-guarded lookup key for a branch lane (or any repo+branch pair the
+ *  UI wants to badge). Null when there is nothing safe to ask about — no repo,
+ *  no branch, or a trunk branch (see TRUNK_BRANCHES above). */
+export function branchLanePrKey(repoRoot: null | string | undefined, branch: null | string | undefined): null | string {
+  const root = repoRoot?.trim()
+  const name = branch?.trim()
+
+  return root && name && !TRUNK_BRANCHES.has(name.toLowerCase()) ? branchPrKey(root, name) : null
+}
+
 export function sessionPrKey(session: SessionInfo): null | string {
   const stamped = $prBranchBySession.get()[session.id]
 
@@ -56,10 +70,7 @@ export function sessionPrKey(session: SessionInfo): null | string {
     return stamped
   }
 
-  const root = session.git_repo_root
-  const branch = session.git_branch
-
-  return root && branch && !TRUNK_BRANCHES.has(branch.toLowerCase()) ? branchPrKey(root, branch) : null
+  return branchLanePrKey(session.git_repo_root, session.git_branch)
 }
 
 /** Bind a session to the branch it just opened a PR from. */
@@ -145,15 +156,30 @@ export async function refreshPullRequests(lookupsByRepo: Record<string, string[]
 
   const now = Date.now()
 
-  const stale = Object.keys(lookupsByRepo).filter(
-    root => !inFlight.has(root) && (force || now - (fetchedAt.get(root) ?? 0) > PR_STALE_MS)
-  )
+  const stale = Object.keys(lookupsByRepo).filter(root => {
+    if (inFlight.has(root)) {
+      return false
+    }
+
+    if (force || now - (fetchedAt.get(root) ?? 0) > PR_STALE_MS) {
+      return true
+    }
+
+    // Fresh for the lookups it asked about — but a caller asking about a
+    // branch the last fetch did not cover still needs an answer now.
+    const covered = fetchedLookups.get(root)
+
+    return !covered || lookupsByRepo[root].some(lookup => !covered.has(lookup))
+  })
 
   await Promise.all(
     stale.map(async root => {
       inFlight.add(root)
 
-      const lookups = lookupsByRepo[root]
+      // Merge what the last fetch covered into this ask, so a narrow caller
+      // (one lane's branch) doesn't shrink the repo's slice and drop PRs the
+      // session rows are rendering — the replace below is wholesale.
+      const lookups = [...new Set([...lookupsByRepo[root], ...(fetchedLookups.get(root) ?? [])])]
       const numbers = lookups.filter(l => l.startsWith('#')).map(l => Number(l.slice(1)))
 
       try {
@@ -164,6 +190,7 @@ export async function refreshPullRequests(lookupsByRepo: Record<string, string[]
         )
 
         fetchedAt.set(root, Date.now())
+        fetchedLookups.set(root, new Set(lookups))
 
         // Replace this repo's slice wholesale: a PR that closed since the last
         // pull has to disappear, not linger as a stale merge of old and new.

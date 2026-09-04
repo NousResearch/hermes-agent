@@ -95,13 +95,22 @@ def test_partial_config_import_cannot_invert_config_and_module_locks(tmp_path):
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
-@pytest.mark.parametrize("mode,require_wal", [("delete", False), ("wal", False), ("wal", True)])
+@pytest.mark.parametrize(
+    "mode,require_wal,vulnerable",
+    [
+        ("delete", False, True),
+        ("delete", False, False),
+        ("wal", False, False),
+        ("wal", True, False),
+    ],
+)
 def test_existing_database_does_not_wait_for_config_writer(
-    tmp_path, monkeypatch, caplog, mode, require_wal
+    tmp_path, monkeypatch, caplog, mode, require_wal, vulnerable
 ):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(wal, "is_sqlite_wal_reset_vulnerable", lambda: vulnerable)
     config.save_config({"database": {"journal_mode": mode}, "marker": "before"})
     config.load_config_readonly()
     path = tmp_path / "existing.db"
@@ -125,7 +134,7 @@ def test_existing_database_does_not_wait_for_config_writer(
         try:
             selected = apply_wal_with_fallback(
                 conn,
-                db_label=f"contention-{mode}-{require_wal}",
+                db_label=f"contention-{mode}-{require_wal}-{vulnerable}",
                 require_wal=require_wal,
             )
             retained = conn.execute("SELECT value FROM retained").fetchone()[0]
@@ -146,12 +155,16 @@ def test_existing_database_does_not_wait_for_config_writer(
             release.set()
             worker.join(5)
     assert not worker.is_alive()
-    if mode == "delete":
-        assert any(
-            "WAL-reset corruption bug" in record.message
-            and "using journal_mode=DELETE" in record.message
-            for record in caplog.records
-        )
+    warnings = [
+        record
+        for record in caplog.records
+        if "WAL-reset corruption bug" in record.message
+        and "using journal_mode=DELETE" in record.message
+    ]
+    if vulnerable:
+        assert len(warnings) == 1
+    else:
+        assert not warnings
     assert config.load_config_readonly()["marker"] == "after replacement"
     with closing(sqlite3.connect(path)) as conn:
         assert conn.execute("SELECT COUNT(*) FROM retained").fetchone()[0] == 2

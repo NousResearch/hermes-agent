@@ -4,7 +4,8 @@ The probe is ``bwrap --unshare-user --ro-bind / / true`` with a 5 s
 timeout, run once per process on the first construction; a passing
 result is cached, a failing one raises EnvironmentConnectionError and is
 retried on the next construction. Commands are never run unsandboxed: a
-recorded Popen shows every spawn starting with the bwrap path.
+recorded Popen shows every spawn starting with the prlimit prefix and then
+the bwrap path.
 
 Unit tests never spawn bwrap. Integration tests are skipped as a module
 when bwrap is missing or its runtime probe fails, so CI without bwrap
@@ -49,6 +50,7 @@ BWRAP_USABLE = _bwrap_usable()
 needs_bwrap = pytest.mark.skipif(not BWRAP_USABLE, reason="bwrap missing or its namespace probe failed")
 
 BWRAP = "/usr/bin/bwrap"
+PRLIMIT = "/usr/bin/prlimit"
 
 
 @pytest.fixture(autouse=True)
@@ -100,7 +102,7 @@ class TestRunProbe:
             return outcome
 
         fake_run.outcome = _completed(0)
-        monkeypatch.setattr(bubblewrap.shutil, "which", lambda name: BWRAP if name == "bwrap" else None)
+        monkeypatch.setattr(bubblewrap.shutil, "which", lambda name: {"bwrap": BWRAP, "prlimit": PRLIMIT}.get(name))
         monkeypatch.setattr(bubblewrap.subprocess, "run", fake_run)
         return calls, fake_run
 
@@ -110,6 +112,14 @@ class TestRunProbe:
         path, failure = run_probe()
         assert path is None
         assert "bwrap" in failure and "PATH" in failure
+        assert calls == []
+
+    def test_missing_prlimit_fails_without_spawning(self, runs, monkeypatch):
+        calls, _ = runs
+        monkeypatch.setattr(bubblewrap.shutil, "which", lambda name: BWRAP if name == "bwrap" else None)
+        path, failure = run_probe()
+        assert path == BWRAP
+        assert "prlimit" in failure and "PATH" in failure
         assert calls == []
 
     def test_passing_probe_runs_the_documented_argv_with_a_5s_timeout(self, runs):
@@ -259,7 +269,7 @@ class TestEverySpawnIsWrapped:
         assert "subprocess.run(" in inspect.getsource(run_probe)
 
     @needs_bwrap
-    def test_every_popen_argv_starts_with_the_bwrap_path(self, sandbox_root, work_dir, monkeypatch):
+    def test_every_popen_argv_is_the_probe_or_prlimit_then_bwrap(self, sandbox_root, work_dir, monkeypatch):
         recorded = []
         real_popen = subprocess.Popen
 
@@ -275,13 +285,16 @@ class TestEverySpawnIsWrapped:
             assert env.execute("pwd")["output"].strip() == "/usr/share"
         finally:
             env.cleanup()
-        # The probe, the login bootstrap and the three commands: every one
-        # is bwrap, either the probe argv or the sandbox prefix.
+        # The probe, the login bootstrap and the three commands: the probe
+        # is bwrap alone, every other spawn is the prlimit limits and then
+        # the sandbox prefix.
         assert len(recorded) >= 5
         assert env._bwrap_path == shutil.which("bwrap")
-        assert recorded[0][1:] == list(PROBE_ARGS)
-        for argv in recorded:
-            assert argv[0] == env._bwrap_path, argv
-            if argv[1:] != list(PROBE_ARGS):
-                assert argv[1] == "--unshare-all", argv
-                assert "--" in argv
+        assert env._prlimit_path == shutil.which("prlimit")
+        assert recorded[0] == [env._bwrap_path, *PROBE_ARGS]
+        for argv in recorded[1:]:
+            assert argv[0] == env._prlimit_path, argv
+            i = argv.index(env._bwrap_path)
+            assert argv[1:i] and all(a.startswith("--") for a in argv[1:i]), argv
+            assert argv[i + 1] == "--unshare-all", argv
+            assert "--" in argv

@@ -461,6 +461,11 @@ export async function extractBridgeEvent({
     body = `[${mediaType} received]`;
   }
 
+  const rawTimestamp = Number(msg.messageTimestamp);
+  const timestamp = Number.isSafeInteger(rawTimestamp) && rawTimestamp > 0
+    ? rawTimestamp
+    : 0;
+
   return {
     messageId: msg.key.id,
     chatId,
@@ -468,6 +473,8 @@ export async function extractBridgeEvent({
     senderName: msg.pushName || senderNumber,
     chatName: isGroup ? (chatId.split('@')[0]) : (msg.pushName || senderNumber),
     isGroup,
+    fromMe: Boolean(msg.key.fromMe),
+    isForwarded: Boolean(contextInfo?.isForwarded || Number(contextInfo?.forwardingScore || 0) > 0),
     body,
     hasMedia,
     mediaType,
@@ -489,7 +496,7 @@ export async function extractBridgeEvent({
       participant: msg.key.participant || senderId,
       fromMe: Boolean(msg.key.fromMe),
     },
-    timestamp: msg.messageTimestamp,
+    timestamp,
   };
 }
 

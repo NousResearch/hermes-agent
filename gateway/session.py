@@ -4321,12 +4321,18 @@ class SessionStore:
     def has_platform_message_id(
         self, session_id: str, platform_message_id: str
     ) -> bool:
-        """Check if a message with the given platform_message_id is persisted.
+        """Check persisted and pending messages for a platform message ID.
 
-        Thin wrapper over SessionDB.has_platform_message_id(). Returns False
-        when no DB is available (in-memory sessions). Used by the gateway's
-        transient-failure dedupe guard (#47237).
+        The pending queue is authoritative during transient DB failures; checking
+        it first prevents a redelivered transport event from being queued twice.
         """
+        with self._transcript_retry_lock:
+            for message in self._dirty_transcripts.get(session_id, ()):
+                pending_id = message.get("platform_message_id") or message.get(
+                    "message_id"
+                )
+                if pending_id == platform_message_id:
+                    return True
         if not self._db_for_session_id(session_id):
             return False
         try:

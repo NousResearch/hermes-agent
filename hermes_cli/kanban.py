@@ -662,9 +662,6 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 
     p_block = sub.add_parser("block", help="Mark one or more tasks blocked")
     p_block.add_argument("task_id")
-    p_block.add_argument("reason", nargs="*", help="Reason (also appended as a comment)")
-    p_block.add_argument("--ids", nargs="+", default=None,
-                         help="Additional task ids to block with the same reason (bulk mode)")
     p_block.add_argument(
         "--kind", default=None, choices=sorted(kb.VALID_BLOCK_KINDS),
         help=(
@@ -675,6 +672,9 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
             "triage to break unblock loops. Omit for a generic block."
         ),
     )
+    p_block.add_argument("--ids", nargs="+", default=None,
+                         help="Additional task ids to block with the same reason (bulk mode)")
+    p_block.add_argument("reason", nargs="*", help="Reason (also appended as a comment)")
 
     p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
     p_schedule.add_argument("task_id")

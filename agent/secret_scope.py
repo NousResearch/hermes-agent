@@ -114,6 +114,23 @@ _GLOBAL_ENV_EXACT = frozenset({
     # profile-scoped.
     "API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_PORT",
     "API_SERVER_CORS_ORIGINS",
+    # Relay-connector ROUTING stamps — deployment config injected into the
+    # container/process env by managed deploys (the same shape as the
+    # API_SERVER listener settings above). The scoped runner reload and the
+    # relay-exclusive sweep in gateway/config.py must keep seeing them, and
+    # every reader (gateway.config, gateway.relay.relay_url()/registration/
+    # self-provision) must resolve the SAME value — a scope-dependent split
+    # leaves the adapter registered but the platform absent from config (or
+    # vice versa). Mirrors the non-secret/secret line drawn by the terminal
+    # env blocklist (tools/environments/local.py): routing hints are global;
+    # GATEWAY_RELAY_SECRET / GATEWAY_RELAY_ID / GATEWAY_RELAY_DELIVERY_KEY
+    # and the IDP_* credentials are auth material and deliberately NOT here —
+    # they stay profile-scoped with the fail-closed multiplex guard.
+    "GATEWAY_RELAY_URL", "GATEWAY_RELAY_ENDPOINT",
+    "GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS",
+    "GATEWAY_RELAY_PLATFORMS", "GATEWAY_RELAY_BOT_IDS",
+    "GATEWAY_RELAY_ROUTE_KEYS", "GATEWAY_RELAY_INSTANCE_ID",
+    "GATEWAY_RELAY_WAKE_URL", "GATEWAY_RELAY_DISPLAY_NAME",
 })
 _GLOBAL_ENV_PREFIXES = (
     "HERMES_KANBAN_",

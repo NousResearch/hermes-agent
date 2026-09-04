@@ -7,6 +7,7 @@ import {
   FEATURED_ID,
   FeaturedProviderRow,
   FireworksProviderRow,
+  LocalModelsProviderRow,
   OpenRouterProviderRow,
   ProviderRow,
   providerTitle,
@@ -20,6 +21,8 @@ import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
+import { confirm } from '@/store/confirm'
+import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
@@ -28,6 +31,7 @@ import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
 import { CustomEndpointsSettings } from './custom-endpoints-settings'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
 import { providerGroup, providerMeta, providerPriority } from './helpers'
+import { LocalModelsSettings } from './local-models-settings'
 import { SettingsContent, SettingsSkeleton } from './primitives'
 
 // The embedded terminal (and thus the "run disconnect command" path) only
@@ -45,7 +49,7 @@ function GroupLabel({ children }: { children: ReactNode }) {
 }
 
 // Sub-views surfaced as a sidebar subnav: account sign-in vs raw API keys.
-export const PROVIDER_VIEWS = ['accounts', 'keys', 'custom-endpoints'] as const
+export const PROVIDER_VIEWS = ['accounts', 'keys', 'custom-endpoints', 'local'] as const
 
 export type ProviderView = (typeof PROVIDER_VIEWS)[number]
 
@@ -116,24 +120,26 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
 
 // Deliberately a near-1:1 replica of the first-run onboarding picker
 // (`Picker` in desktop-onboarding-overlay): same recommended card, same
-// Fireworks #2 quick-key row, same provider rows, same "Other providers"
-// disclosure, same OpenRouter quick-key row, and the same bottom-right
-// "I have an API key" affordance. The leaf cards are the exact shared
-// components, so the two surfaces stay visually identical. Selecting a
-// provider hands off to the shared onboarding overlay, which runs that
-// provider's real sign-in flow; the key affordances open the API-key
-// catalog below.
+// always-visible Local models row, same provider rows, same "Other
+// providers" disclosure (Fireworks and OpenRouter quick-key rows live
+// inside it on both surfaces), and the same bottom-right "I have an API
+// key" affordance. The leaf cards are the exact shared components, so
+// the two surfaces stay visually identical. Selecting a provider hands
+// off to the shared onboarding overlay, which runs that provider's real
+// sign-in flow; the key affordances open the API-key catalog below.
 function OAuthPicker({
   disconnecting,
   onDisconnect,
   onTerminalDisconnect,
   onWantApiKey,
+  onWantLocalModels,
   providers
 }: {
   disconnecting: null | string
   onDisconnect: (provider: OAuthProvider) => void
   onTerminalDisconnect: (provider: OAuthProvider) => void
   onWantApiKey: () => void
+  onWantLocalModels: () => void
   providers: OAuthProvider[]
 }) {
   const { t } = useI18n()
@@ -175,8 +181,9 @@ function OAuthPicker({
         {p.intro}
       </p>
       {featured && <FeaturedProviderRow onSelect={select} provider={featured} />}
-      {/* Slot #2 — always visible, matching onboarding / CANONICAL_PROVIDERS. */}
-      <FireworksProviderRow onClick={onWantApiKey} />
+      {/* Slot #2 — the no-account path, matching onboarding. Behind the
+          --local launch flag like every local-models surface. */}
+      {$localModelsEnabled.get() && <LocalModelsProviderRow onClick={onWantLocalModels} />}
       {connected.length > 0 && (
         <>
           <GroupLabel>{p.connected}</GroupLabel>
@@ -198,6 +205,7 @@ function OAuthPicker({
           {others.map(p => (
             <ProviderRow key={p.id} onSelect={select} provider={p} />
           ))}
+          <FireworksProviderRow onClick={onWantApiKey} />
           <OpenRouterProviderRow onClick={onWantApiKey} />
         </>
       )}
@@ -382,7 +390,7 @@ export function ProvidersSettings({
   // Hermes never deletes creds another tool owns behind a silent API call.
   // Instead we run the documented removal command in the embedded terminal so
   // the user sees exactly what executes, then return them to chat to watch it.
-  function handleTerminalDisconnect(provider: OAuthProvider) {
+  async function handleTerminalDisconnect(provider: OAuthProvider) {
     const command = provider.disconnect_command
 
     if (!command) {
@@ -391,7 +399,13 @@ export function ProvidersSettings({
 
     const name = providerTitle(provider)
 
-    if (!window.confirm(t.settings.providers.removeTerminalConfirm(name, command))) {
+    const ok = await confirm({
+      confirmLabel: t.settings.providers.disconnect,
+      destructive: true,
+      title: t.settings.providers.removeTerminalConfirm(name, command)
+    })
+
+    if (!ok) {
       return
     }
 
@@ -408,7 +422,13 @@ export function ProvidersSettings({
   async function handleDisconnect(provider: OAuthProvider) {
     const name = providerTitle(provider)
 
-    if (!window.confirm(t.settings.providers.removeConfirm(name))) {
+    const ok = await confirm({
+      confirmLabel: t.settings.providers.disconnect,
+      destructive: true,
+      title: t.settings.providers.removeConfirm(name)
+    })
+
+    if (!ok) {
       return
     }
 
@@ -494,13 +514,21 @@ export function ProvidersSettings({
     return <CustomEndpointsSettings onConfigSaved={onConfigSaved} onMainModelChanged={onMainModelChanged} />
   }
 
+  if (view === 'local') {
+    // Strict --local gate: without the launch flag the pane doesn't render
+    // even when local models are configured — a stale ?pview=local deep link
+    // (or an old shortcut) lands on the accounts view instead.
+    return $localModelsEnabled.get() ? <LocalModelsSettings /> : null
+  }
+
   return (
     <SettingsContent>
       <OAuthPicker
         disconnecting={disconnecting}
         onDisconnect={provider => void handleDisconnect(provider)}
-        onTerminalDisconnect={handleTerminalDisconnect}
+        onTerminalDisconnect={provider => void handleTerminalDisconnect(provider)}
         onWantApiKey={() => onViewChange('keys')}
+        onWantLocalModels={() => onViewChange('local')}
         providers={oauthProviders}
       />
     </SettingsContent>

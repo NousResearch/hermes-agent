@@ -79,6 +79,10 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/messaging/platforms",
   "/api/messaging/telegram/onboarding",
   "/api/messaging/whatsapp/onboarding",
+  // OAuth/account state is profile-owned too: status, login sessions, polling,
+  // cancellation, and disconnect must all follow the selected management
+  // profile rather than silently targeting the dashboard process's profile.
+  "/api/providers/oauth",
   "/api/model/info",
   "/api/model/set",
   "/api/model/auxiliary",
@@ -452,11 +456,18 @@ export const api = {
     source?: string,
     profile = getManagementProfile(),
   ) =>
-    fetchJSON<{ ok: boolean; removed: number }>("/api/sessions/prune", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ older_than_days, source, profile: profile || undefined }),
-    }),
+    fetchJSON<{ ok: boolean; removed: number; skipped_open: number }>(
+      "/api/sessions/prune",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          older_than_days,
+          source,
+          profile: profile || undefined,
+        }),
+      },
+    ),
   listFiles: (path?: string) => {
     const query = path ? `?path=${encodeURIComponent(path)}` : "";
     return fetchJSON<ManagedFilesResponse>(`/api/files${query}`);
@@ -1861,11 +1872,13 @@ export interface StatusResponse {
    * fail-closed state (the dashboard will refuse to bind). */
   auth_providers?: string[];
   /** Supported dashboard auth flows for the client to choose from. In gated
-   * mode always includes ``"cookie"``; includes ``"native_pkce"`` when a
-   * brokerable OAuth provider is registered, signalling that the desktop can
-   * use the RFC 8252 system-browser + loopback + PKCE flow (no embedded
-   * webview, no session cookies). Absent / missing ``"native_pkce"`` ⇒ an
-   * older gateway ⇒ the desktop falls back to the embedded-webview flow. */
+   * mode always includes ``"cookie"``; includes ``"native_pkce"`` when any
+   * interactive session provider is registered (OAuth providers broker the
+   * IDP redirect; password providers complete at /login in the system
+   * browser), signalling that the desktop can use the RFC 8252
+   * system-browser + loopback + PKCE flow (no embedded webview, no session
+   * cookies). Absent / missing ``"native_pkce"`` ⇒ an older gateway ⇒ the
+   * desktop falls back to the embedded-webview flow. */
   auth_flows?: string[];
   /** False when the dashboard is running in a hosted/managed layout where
    * updates are handled by the outer launcher instead of ``hermes update``. */
@@ -1935,6 +1948,9 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
+  /** Owning profile stamped by the list/detail endpoints (the store the row
+   * was read from). Absent on search-endpoint rows, which carry no stamp. */
+  profile?: string;
 }
 
 export interface SessionLatestDescendantResponse {
@@ -2171,6 +2187,7 @@ export interface ProfileInfo {
   gateway_running: boolean;
   description: string;
   description_auto: boolean;
+  display_name?: string;
   distribution_name: string | null;
   distribution_version: string | null;
   distribution_source: string | null;
@@ -2266,6 +2283,7 @@ export interface CronJob {
   last_status?: string | null;
   last_error?: string | null;
   last_delivery_error?: string | null;
+  last_fire_error?: { at?: string | null; detail?: string | null } | null;
 }
 
 export interface CronDeliveryTarget {

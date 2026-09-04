@@ -4,10 +4,11 @@ Platform Adapter Registry
 Allows platform adapters (built-in and plugin) to self-register so the gateway
 can discover and instantiate them without hardcoded if/elif chains.
 
-Built-in adapters continue to use the existing if/elif in _create_adapter()
+Built-in adapters continue to use the existing if/elif in _instantiate_adapter()
 for now.  Plugin adapters register here via PluginContext.register_platform()
 and are looked up first -- if nothing is found the gateway falls through to
-the legacy code path.
+the legacy code path.  GatewayRunner._create_adapter() wraps both paths and
+binds every successful adapter to its runner.
 
 Usage (plugin side):
 
@@ -579,6 +580,24 @@ class PlatformRegistry:
         """Return only plugin-registered platform entries."""
         self._resolve_all()
         return [e for e in self.all_entries() if e.source == "plugin"]
+
+    def registered_names(self) -> set[str]:
+        """Return concrete and deferred platform names without loading adapters.
+
+        Mirrors ``is_registered()``'s scope semantics: names registered under
+        the current profile scope AND process-global names both count. Plugin
+        platforms register deferred loaders under a profile scope, so reading
+        only the global maps would miss every plugin platform.
+        """
+        with self._lock:
+            scope = self.current_scope_key()
+            entries, deferred = self._scope_maps(scope)
+            return (
+                entries.keys()
+                | deferred.keys()
+                | self._entries.keys()
+                | self._deferred.keys()
+            )
 
     def is_registered(self, name: str) -> bool:
         # A deferred (not-yet-imported) platform still counts as registered --

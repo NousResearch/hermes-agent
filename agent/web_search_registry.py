@@ -166,6 +166,43 @@ _LEGACY_PREFERENCE = (
     "ddgs",
 )
 
+# Keyless free-tier walk — strictly LAST-resort, tried only after the
+# availability-filtered legacy walk finds nothing (i.e. the user has zero
+# web credentials and no importable ddgs). Ring vendors expose public
+# anonymous free tiers (see plugins/web/keyless_mcp.py). Unpinned keyless
+# traffic round-robins across the ring per request (the ring cursor lives
+# in keyless_mcp; an explicit `hermes tools` pick bypasses this walk
+# entirely, and rate-limited requests fail over to the next ring vendor).
+# Disable the tier with ``web.keyless_fallback: false``.
+_KEYLESS_PREFERENCE = (
+    "exa",
+    "parallel",
+    "firecrawl",
+    "keenable",
+)
+
+
+def _keyless_preference() -> tuple:
+    """Return the keyless walk order for resolution.
+
+    Delegates the entry-vendor choice to the ring cursor in
+    :mod:`plugins.web.keyless_mcp` (round-robin per request, seeded by the
+    per-process random session id) so resolution and dispatch agree on
+    which vendor a fresh install starts at. The remaining vendors follow
+    in ring order as fallbacks for registration gaps.
+    """
+    try:
+        from plugins.web.keyless_mcp import _KEYLESS_RING, _ring_cursor
+
+        start = _ring_cursor % len(_KEYLESS_RING)
+        return tuple(
+            _KEYLESS_RING[(start + i) % len(_KEYLESS_RING)]
+            for i in range(len(_KEYLESS_RING))
+        )
+    except Exception as exc:  # noqa: BLE001 — ring optional in stripped envs
+        logger.debug("keyless ring order unavailable: %s", exc)
+    return _KEYLESS_PREFERENCE
+
 
 def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearchProvider]:
     """Resolve the active provider for a capability ("search" | "extract").
@@ -254,7 +291,37 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
         ):
             return provider
 
+    # 4. Keyless free-tier walk — the user has NO credentialed/importable
+    #    backend at all. Fall back to providers that can serve anonymously
+    #    (public MCP free tiers), unless disabled via
+    #    ``web.keyless_fallback: false``. This tier never pre-empts a keyed
+    #    setup: it is only reachable when the legacy walk found nothing.
+    if _keyless_tier_enabled():
+        for name in _keyless_preference():
+            provider = snapshot.get(name)
+            if provider is None or not _capable(provider):
+                continue
+            try:
+                if provider.is_keyless_available():
+                    return provider
+            except Exception as exc:  # noqa: BLE001 — buggy provider skipped
+                logger.debug(
+                    "provider %s.is_keyless_available() raised %s", name, exc
+                )
+
     return None
+
+
+def _keyless_tier_enabled() -> bool:
+    """Read ``web.keyless_fallback`` from config.yaml (default: enabled)."""
+    try:
+        from hermes_cli.config import load_config
+
+        web_cfg = load_config().get("web") or {}
+        return bool(web_cfg.get("keyless_fallback", True))
+    except Exception as exc:  # noqa: BLE001 — config layer optional
+        logger.debug("keyless_fallback config read failed: %s", exc)
+        return True
 
 
 def _disabled_web_plugin_for(configured: Optional[str] = None, *, capability: Optional[str] = None) -> Optional[str]:

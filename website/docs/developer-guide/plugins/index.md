@@ -659,6 +659,31 @@ with open(_DATA_FILE) as f:
     _DATA = yaml.safe_load(f)
 ```
 
+That's for files you *ship*. State you *write* is different — see the next
+section.
+
+### Store durable state
+
+Never write runtime state into your plugin directory: that's the install
+tree, and `hermes plugins update` / `remove` git-pull or delete it — your
+users' data dies with it. The sanctioned home is the per-plugin data root,
+which survives both and follows the active profile:
+
+```python
+from plugins.plugin_storage import plugin_data_dir, plugin_db
+
+# <hermes home>/plugin-data/<name>/ — created on first use
+state_file = plugin_data_dir("my-plugin") / "state.json"
+
+# Or a SQLite database at <data dir>/data.db (WAL mode, thread-friendly)
+conn = plugin_db("my-plugin")
+conn.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY)")
+```
+
+One directory per plugin means every plugin's data is inspectable in one
+predictable place. Secrets don't belong here — credential reads go through
+the standard `.env` / secret-scope path like everywhere else.
+
 ### Bundle skills
 
 Plugins can ship skill files that the agent loads via `skill_view("plugin:skill")`. Register them in your `__init__.py`:
@@ -1254,7 +1279,85 @@ def register(ctx):
 - Standard slack_bolt rules apply — `await ack()` within 3 seconds, then do longer work.
 - For multi-workspace deployments the handler fires for clicks from any connected workspace; use `body["team"]["id"]` if you need to scope behaviour.
 
-This is the public way for plugins to participate in Slack interactivity. Older plugins may patch `SlackAdapter.connect`; prefer this API instead.
+This is the public way for plugins to participate in Slack interactivity. Older plugins may patch `SlackAdapter.connect`; prefer this API instead. For the full slack_bolt surface (events, shortcuts, commands — not just Block Kit actions), use the generic `register_platform_handler("slack", ...)` below.
+
+### Register native platform handlers (any platform)
+
+Plugins that need to receive platform events the core adapter doesn't route — extra update types, native button callbacks, reaction/member events, webhook routes — can register a handler factory that the platform's adapter invokes at connect time. This works on **every** gateway platform.
+
+```python
+def register(ctx):
+    def _wire(native, adapter):
+        # native: the platform's client/app object (see table below)
+        # adapter: the platform adapter instance (treat as read-only)
+        # Import platform SDKs HERE so register() works without them.
+        ...
+
+    ctx.register_platform_handler("discord", _wire)
+```
+
+**Signature:** `ctx.register_platform_handler(platform, factory) -> None`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `platform` | `str` | Gateway platform name, lowercase (`"telegram"`, `"discord"`, `"slack"`, `"matrix"`, ...) |
+| `factory` | callable | Receives `(native, adapter)` at connect time |
+
+**What `native` is, per platform:**
+
+| Platform | `native` object | Typical hooks |
+|----------|-----------------|---------------|
+| `telegram` | PTB `Application` | `add_handler` — any update type, pattern-scoped callbacks |
+| `discord` | `discord.ext.commands.Bot` | `add_listener` — reactions, member events, threads, voice |
+| `slack` | `slack_bolt.AsyncApp` | `app.event()` / `app.action()` / `app.command()` |
+| `matrix` | Matrix client | event callbacks |
+| `teams` | Teams `App` | `on_message` / `on_card_action` decorators |
+| `dingtalk` | `DingTalkStreamClient` | `register_callback_handler` for other stream topics |
+| `feishu` | lark_oapi client | API calls; event routing |
+| `line`, `api_server`, `msgraph_webhook` | aiohttp `web.Application` | `router.add_get/post` — custom routes (wired before the router freezes) |
+| everything else (whatsapp, signal, irc, email, sms, ntfy, wecom, weixin, bluebubbles, yuanbao, ...) | `None` | connect-time hook; work through the `adapter` handle |
+
+**Runtime behavior:**
+
+- Factories are queued at plugin-load time and invoked when the platform connects — for platforms where dispatch order matters (Telegram, Slack, Teams, aiohttp routers) they run **before** the core handlers register, so scoped plugin handlers take precedence and everything else falls through.
+- **Always scope handlers you add to first-match dispatch tables.** On Telegram, use `CallbackQueryHandler(..., pattern=r"^myplugin:")` — an unscoped handler would swallow the core button flows (exec approvals, model picker, clarify prompts).
+- Each factory is isolated: if it raises, the error is logged and the platform still connects.
+- Import platform SDKs inside the factory body, not at module level — `register()` must work when the SDK isn't installed.
+- One plugin can register factories for several platforms; each fires only when its platform connects.
+
+**Telegram alias:** `ctx.register_telegram_handler(factory)` is a back-compat alias for `ctx.register_platform_handler("telegram", factory)`.
+
+Example — Telegram, pattern-scoped inline buttons:
+
+```python
+def register(ctx):
+    def _wire(application, adapter):
+        from telegram.ext import CallbackQueryHandler
+
+        async def _on_button(update, context):
+            query = update.callback_query
+            await query.answer()
+            # ...handle "myplugin:*" callbacks
+
+        application.add_handler(
+            CallbackQueryHandler(_on_button, pattern=r"^myplugin:")
+        )
+
+    ctx.register_platform_handler("telegram", _wire)
+```
+
+Example — Discord, reaction events:
+
+```python
+def register(ctx):
+    def _wire(bot, adapter):
+        async def on_raw_reaction_add(payload):
+            ...  # e.g. reaction-based voting / moderation
+
+        bot.add_listener(on_raw_reaction_add, "on_raw_reaction_add")
+
+    ctx.register_platform_handler("discord", _wire)
+```
 
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.

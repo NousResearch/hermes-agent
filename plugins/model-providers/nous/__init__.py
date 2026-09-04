@@ -2,7 +2,11 @@
 
 from typing import Any
 
-from agent.portal_tags import get_conversation_context, nous_portal_tags
+from agent.portal_tags import (
+    get_affinity_scope,
+    get_conversation_context,
+    nous_portal_tags,
+)
 from agent.transports.codex import _cache_scope_from_session_id
 from providers import register_provider
 from providers.base import ProviderProfile
@@ -50,14 +54,17 @@ class NousProfile(ProviderProfile):
         # ``conversation=`` tag but NO sticky key at all, and each one routed
         # independently of the conversation it belongs to. Reading the same
         # ambient contextvar the tag already uses fixes that with zero
-        # per-call-site plumbing.
+        # per-call-site plumbing; a host-declared routing scope (#96811) wins
+        # over it when one was published for this turn.
         #
         # For the main loop the two agree anyway under the default
         # ``compression.in_place: true`` (#38763), where compaction keeps the
         # session id; the ambient root additionally keeps the key stable for
         # installs that opt back into rotating compaction, and across
         # delegate-subagent trees.
-        sticky_key = _cache_scope_from_session_id(get_conversation_context() or session_id)
+        sticky_key = _cache_scope_from_session_id(
+            get_affinity_scope() or get_conversation_context() or session_id
+        )
         if sticky_key:
             body["session_id"] = sticky_key
         provider_preferences = context.get("provider_preferences")
@@ -65,20 +72,58 @@ class NousProfile(ProviderProfile):
             body["provider"] = provider_preferences
         return body
 
+    @staticmethod
+    def _cannot_disable_reasoning(model: str | None) -> bool:
+        """True when a disable can't safely be sent for *model*.
+
+        Reasoning-mandatory routes answer ``reasoning: {enabled: false}``
+        with HTTP 400 ("Reasoning is mandatory for this model"), so the
+        catalog decides. Cache-only, and an unknown model (catalog cold,
+        unlisted, or unreachable) also answers True: a cold first turn errs
+        toward the old omit-everything behavior rather than risking a 400.
+
+        A route the catalog says takes no reasoning parameter at all is
+        treated the same way — sending it a disable is sending a parameter
+        the Portal has told us it doesn't accept.
+        """
+        try:
+            from hermes_cli.models import (
+                nous_model_reasoning_capabilities,
+                warm_nous_reasoning_caps_async,
+            )
+
+            caps = nous_model_reasoning_capabilities(model)
+            if caps is None:
+                warm_nous_reasoning_caps_async()
+                return True
+        except Exception:
+            return True
+        if not caps.get("supports_reasoning"):
+            return True
+        return bool(caps.get("mandatory"))
+
     def build_api_kwargs_extras(
         self,
         *,
         reasoning_config: dict | None = None,
         supports_reasoning: bool = False,
+        model: str | None = None,
         **context,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Nous: passes full reasoning_config, but OMITS when disabled."""
+        """Nous: passes the full reasoning_config, disable included.
+
+        The Portal honors ``reasoning: {enabled: false}`` — it is the only
+        wire shape that does. Sending nothing means the *upstream* default,
+        which for a thinking-first model like ``deepseek/deepseek-v4-pro``
+        (catalog: ``default_effort: high``) is thinking ON, so omitting a
+        disable silently ignored the user's "thinking off".
+        """
         extra_body = {}
         if supports_reasoning:
             if reasoning_config is not None:
                 rc = dict(reasoning_config)
-                if rc.get("enabled") is False:
-                    pass  # Nous omits reasoning when disabled
+                if rc.get("enabled") is False and self._cannot_disable_reasoning(model):
+                    pass  # route rejects a disable — let the model think
                 else:
                     extra_body["reasoning"] = rc
             else:

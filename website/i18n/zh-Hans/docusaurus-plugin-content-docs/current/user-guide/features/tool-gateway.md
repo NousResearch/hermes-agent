@@ -70,32 +70,32 @@ Your Nous subscription includes the Tool Gateway.
 hermes tools
 ```
 
-选择工具类别（Web、Browser、Image Generation、TTS），再将提供商选为 **Nous Subscription**。这会在配置里把对应工具的 `use_gateway` 设为 `true`。
+选择工具类别（Web、Browser、Image Generation、TTS），再将提供商选为 **Nous Subscription**。这会把该类别的选择键写为 `nous`（例如 `image_gen.provider: nous`）。
 
 ### 手动编辑配置
 
-在 `~/.hermes/config.yaml` 中直接设置 `use_gateway`：
+每个工具类别只有一个选择键，选 **Nous Subscription** 即写入 `nous`：
 
 ```yaml
 web:
-  backend: firecrawl
-  use_gateway: true
+  backend: nous          # 网页搜索/抓取走 Tool Gateway
 
 image_gen:
-  use_gateway: true
+  provider: nous
 
 tts:
-  provider: openai
-  use_gateway: true
+  provider: nous
+
+stt:
+  provider: nous
 
 browser:
-  cloud_provider: browser-use
-  use_gateway: true
+  cloud_provider: nous
 ```
 
 ## 工作原理
 
-当某工具的 `use_gateway: true` 时，运行时会把 API 调用路由到 Nous Tool Gateway，而不是使用直连 Key：
+当某工具类别的选择键为 `nous` 时，运行时会把 API 调用路由到 Nous Tool Gateway，而不是使用直连 Key：
 
 1. **网页工具** — `web_search` / `web_extract` 走网关的 Firecrawl 端点  
 2. **文生图** — `image_generate` 走网关的 FAL 端点  
@@ -106,12 +106,13 @@ browser:
 
 ### 优先级
 
-每个工具都会先看 `use_gateway`：
+运行时**始终使用已保存的选择**，凭据是否存在不会影响路由：
 
-- **`use_gateway: true`** → 强制走网关，即使 `.env` 里仍有直连 Key  
-- **`use_gateway: false`**（或未设置）→ 若有直连 Key 则优先直连；仅在没有直连凭据时才回退到网关  
+- **选择为 `nous`** → 走网关，即使 `.env` 里仍有直连 Key（例如 `FAL_KEY` 会被忽略）
+- **选择为具体厂商**（如 `fal`、`firecrawl`）→ 直连；若对应 Key 缺失则报错并提示运行 `hermes tools`，**不会**静默回退到网关
+- **从未配置过的类别** → 按可用凭据自动检测（行为不变）；但一旦存在选择，仅往 `.env` 加 Key 不会改变路由
 
-因此你可以在网关与直连之间切换，而无需删除 `.env` 中的旧 Key。
+（旧版的 `use_gateway` 布尔键已废弃：不再写入，读取时 `use_gateway: true` 等同于 `nous`。请改用 `hermes tools` 选择提供商。）
 
 ## 切回直连 Key
 
@@ -121,15 +122,14 @@ browser:
 hermes tools    # 选择该工具 → 选直连提供商
 ```
 
-或在配置中设 `use_gateway: false`：
+或在配置中把选择键改回具体厂商：
 
 ```yaml
 web:
-  backend: firecrawl
-  use_gateway: false  # 此时使用 .env 中的 FIRECRAWL_API_KEY
+  backend: firecrawl  # 此时使用 .env 中的 FIRECRAWL_API_KEY
 ```
 
-在 `hermes tools` 中选择非网关提供商时，`use_gateway` 会自动设为 `false`，避免配置自相矛盾。
+在 `hermes tools` 中选择非网关提供商时，选择键会被改写为该厂商名（旧的 `use_gateway` 键若存在会被一并移除），避免配置自相矛盾。
 
 ## 查看状态
 
@@ -168,11 +168,11 @@ FIRECRAWL_GATEWAY_URL=https://...         # 单独覆盖 Firecrawl 端点
 
 ### 需要删掉已有的 API Key 吗？
 
-不需要。`use_gateway: true` 时运行时会跳过直连 Key 并走网关；Key 仍保留在 `.env`。之后若关闭网关，会自动恢复使用直连 Key。
+不需要。类别选择为 **Nous Subscription**（`nous`）时，运行时会忽略该类别的直连 Key；Key 仍保留在 `.env`。之后在 `hermes tools` 里改回直连提供商，Key 即恢复生效。
 
 ### 能否部分工具走网关、部分走直连？
 
-可以。`use_gateway` 按工具独立配置。例如：网页与文生图走网关，TTS 用 ElevenLabs，浏览器用 Browserbase。
+可以。选择按工具类别独立配置。例如：网页与文生图选 Nous Subscription，TTS 用 ElevenLabs，浏览器用 Browserbase。
 
 ### 订阅到期会怎样？
 

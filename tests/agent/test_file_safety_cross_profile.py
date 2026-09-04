@@ -151,34 +151,18 @@ class TestClassifyCrossProfileTarget:
 
 
 class TestGetCrossProfileWarning:
+    """The guard is RETIRED (maintainer decision): profiles are not
+    isolated, so the warning helper is a permanent None stub — kept only
+    so external callers fail soft. The classifier itself survives for
+    the system-prompt hint and diagnostics."""
+
     def test_in_profile_returns_none(self, fake_hermes, monkeypatch):
-        _set_active_home(monkeypatch, fake_hermes["security_home"])
         from agent.file_safety import get_cross_profile_warning
         assert get_cross_profile_warning(
-            str(fake_hermes["security_home"] / "skills" / "foo" / "SKILL.md")
-        ) is None
+            str(fake_hermes["root"] / "skills" / "a" / "SKILL.md")) is None
 
-    def test_cross_profile_warning_names_both_profiles(self, fake_hermes, monkeypatch):
-        _set_active_home(monkeypatch, fake_hermes["security_home"])
+    def test_cross_profile_returns_none_guard_retired(self, fake_hermes, monkeypatch):
         from agent.file_safety import get_cross_profile_warning
-        warn = get_cross_profile_warning(
-            str(fake_hermes["default_home"] / "skills" / "foo" / "SKILL.md")
-        )
-        assert warn is not None
-        # Must name BOTH profiles so the model knows which is which.
-        assert "default" in warn
-        assert "hermes-security" in warn
-        # Must name the bypass kwarg.
-        assert "cross_profile=True" in warn
-        # Must reference the area.
-        assert "skills" in warn
+        target = fake_hermes["root"] / "profiles" / "security" / "skills" / "x" / "SKILL.md"
+        assert get_cross_profile_warning(str(target)) is None
 
-    def test_warning_is_defense_in_depth_not_boundary(self, fake_hermes, monkeypatch):
-        _set_active_home(monkeypatch, fake_hermes["security_home"])
-        from agent.file_safety import get_cross_profile_warning
-        warn = get_cross_profile_warning(
-            str(fake_hermes["default_home"] / "skills" / "foo" / "SKILL.md")
-        )
-        # Must self-document as defense-in-depth so future reviewers
-        # don't promote it to a hard block.
-        assert "not a security boundary" in warn.lower()

@@ -467,6 +467,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("model.options")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     try:
         from hermes_cli.inventory import build_model_options_payload

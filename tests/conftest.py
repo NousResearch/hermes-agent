@@ -21,6 +21,7 @@ test runner at ``scripts/run_tests.sh``.
 
 import asyncio
 import atexit
+import importlib
 import os
 import shutil
 import sqlite3
@@ -90,6 +91,20 @@ if _hermes_home_points_at_production(os.environ.get("HERMES_HOME", "")):
     _SESSION_HERMES_HOME = tempfile.mkdtemp(prefix="hermes-test-home-")
     os.environ["HERMES_HOME"] = _SESSION_HERMES_HOME
     atexit.register(shutil.rmtree, _SESSION_HERMES_HOME, True)
+
+# Subprocess-surviving isolation marker (#82770). PYTEST_CURRENT_TEST /
+# PYTEST_VERSION are pytest's own vars, and tests that spawn children
+# routinely rebuild the child env and strip them ("the subprocess must look
+# like a real CLI") — which used to disarm hermes_state's live-DB guard in
+# the child at the same moment the child lost the HERMES_HOME redirect.
+# HERMES_TEST_ISOLATION is OUR marker: exported here (before any test module
+# imports), inherited by every child by default, and honored by
+# hermes_state._running_under_pytest() as a test-context signal. A child
+# that carries it and still resolves the production state.db fails hard.
+# Tests that legitimately need a child to look like a non-test process AND
+# open a real DB must export HERMES_STATE_DB_GUARD_BYPASS=1 in that child's
+# env instead of stripping markers.
+os.environ["HERMES_TEST_ISOLATION"] = os.environ.get("HERMES_HOME", "") or "1"
 
 #: HERMES_HOME as it stood when conftest was imported - i.e. before any test
 #: module could import code that configures logging. Recorded so the guard in
@@ -250,6 +265,12 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_VOICE",
     "HERMES_VOICE_TTS",
     "HERMES_YOLO_MODE",
+    # Injected into subprocess envs by the terminal tool (_make_run_env), so
+    # any test run launched FROM a Hermes agent session inherits them and
+    # hermes_constants home-resolution helpers prefer them over monkeypatched
+    # HOME (test_subprocess_home_isolation red locally, green on CI).
+    "HERMES_REAL_HOME",
+    "TERMINAL_HOME_MODE",
     "HERMES_INTERACTIVE",
     "HERMES_QUIET",
     "HERMES_TOOL_PROGRESS",
@@ -327,6 +348,10 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # (user shell, earlier leaky test, CI env), they change gateway auth
     # behavior and flake button-authorization tests.
     "TELEGRAM_ALLOWED_USERS",
+    "TELEGRAM_GROUP_ALLOWED_USERS",
+    "TELEGRAM_GROUP_ALLOWED_CHATS",
+    "QQ_ALLOWED_USERS",
+    "QQ_GROUP_ALLOWED_USERS",
     "DISCORD_ALLOWED_USERS",
     "WHATSAPP_ALLOWED_USERS",
     "SLACK_ALLOWED_USERS",
@@ -467,6 +492,14 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "memories").mkdir()
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
+    # Keep the subprocess-surviving isolation marker pointed at THIS test's
+    # home (#82770): children spawned by the test inherit it by default, so
+    # hermes_state's live-DB guard stays armed in them even when the test
+    # strips pytest's own PYTEST_* vars from the child env.
+    monkeypatch.setenv("HERMES_TEST_ISOLATION", str(fake_hermes_home))
+    # And never let a developer-shell (or leaked child) bypass disarm the
+    # guard for in-process code under test.
+    monkeypatch.delenv("HERMES_STATE_DB_GUARD_BYPASS", raising=False)
 
     # 3b. hermes_state computes ``DEFAULT_DB_PATH = get_hermes_home() / "state.db"``
     #     at import time. When the module is first imported at collection (any
@@ -541,6 +574,28 @@ def _isolate_hermes_home(_hermetic_environment):
 
 
 @pytest.fixture(autouse=True)
+def _neutralize_kanban_memory_guard(request, monkeypatch):
+    """Pin the kanban dispatcher's memory guard to "no data" for every test.
+
+    The dispatcher consults live system memory before spawning (OOF-30/
+    OOF-77: memory-derived default cap + pressure-based spawn restriction).
+    Left un-patched, dispatch tests would pass or fail based on how loaded
+    the CI runner happens to be. Defaulting the sample to ``{}`` makes the
+    derived cap ``None`` and the pressure level ``"unknown"`` — i.e. the
+    pre-guard behaviour every existing test was written against. Tests that
+    exercise the guard itself opt out with
+    ``@pytest.mark.real_memory_guard`` or patch the seam directly.
+    """
+    if request.node.get_closest_marker("real_memory_guard"):
+        return
+    try:
+        from hermes_cli import kanban_db as _kb_mod
+    except Exception:
+        return
+    monkeypatch.setattr(_kb_mod, "_system_memory_sample", lambda: {}, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_webbrowser(monkeypatch):
     """Record browser-open attempts instead of opening real browser windows."""
     import webbrowser as _webbrowser
@@ -576,17 +631,21 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
     if request.node.get_closest_marker(_ALLOW_MACOS_KEYCHAIN_MARK):
         return None
 
-    try:
-        import agent.anthropic_adapter as _anthropic_adapter
-    except Exception:
-        return None
-
-    monkeypatch.setattr(
-        _anthropic_adapter,
-        "_read_claude_code_credentials_from_keychain",
-        lambda *_args, **_kwargs: None,
-        raising=False,
-    )
+    # Patch the implementation owner (agent.anthropic_credentials) AND the
+    # adapter re-export: after the adapter godfile split, the real call
+    # executes inside agent.anthropic_credentials, so patching only the
+    # adapter alias silently stopped intercepting Keychain reads.
+    for _module_name in ("agent.anthropic_credentials", "agent.anthropic_adapter"):
+        try:
+            _mod = importlib.import_module(_module_name)
+        except Exception:
+            continue
+        monkeypatch.setattr(
+            _mod,
+            "_read_claude_code_credentials_from_keychain",
+            lambda *_args, **_kwargs: None,
+            raising=False,
+        )
     return None
 
 
@@ -1119,6 +1178,12 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         "require_symlinks: skip the test if symbolic links cannot be "
         "created in the current environment (needs admin/developer mode "
         "on Windows).",
+    )
+    config.addinivalue_line(
+        "markers",
+        "real_memory_guard: bypass the autouse fixture that pins the kanban "
+        "dispatcher's memory guard to 'no data' — only for tests that "
+        "exercise the guard itself with their own patched samples.",
     )
     # NOTE: linux_only / macos_only / windows_only are declared in
     # pyproject.toml's ``markers`` list, not here — they are part of the

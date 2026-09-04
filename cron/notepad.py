@@ -26,21 +26,34 @@ from __future__ import annotations
 import sqlite3
 import threading
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 
-NOTEPAD_FILE = get_hermes_home().resolve() / "cron" / "notepad.db"
+# Optional test override. Production resolves the path at transaction time so
+# multiplexed profile ticks (set_hermes_home_override) cannot leak one
+# profile's notepad rows into the import-time home — and remove_job's
+# clear_notepad cannot wipe the wrong profile's DB (#86519). Same pattern as
+# cron/executions.py.
+NOTEPAD_FILE: Optional[Path] = None
 MAX_VALUE_BYTES = 16 * 1024
 MAX_KEY_CHARS = 128
 MAX_JOB_TOTAL_BYTES = 64 * 1024
 _lock = threading.RLock()
 
 
+def _current_notepad_file() -> Path:
+    return NOTEPAD_FILE or (get_hermes_home().resolve() / "cron" / "notepad.db")
+
+
 def _connect() -> sqlite3.Connection:
-    NOTEPAD_FILE.parent.mkdir(parents=True, exist_ok=True)
-    return sqlite3.connect(NOTEPAD_FILE, timeout=5)
+    from cron.jobs import _ensure_cron_dir
+
+    path = _current_notepad_file()
+    _ensure_cron_dir(path.parent)
+    return sqlite3.connect(path, timeout=5)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
@@ -155,7 +168,7 @@ def clear_notepad(job_id: str) -> int:
     Called from ``cron.jobs.remove_job`` so deleted jobs don't orphan their
     rows. No-ops without creating the DB when no notepad file exists yet.
     """
-    if not NOTEPAD_FILE.exists():
+    if not _current_notepad_file().exists():
         return 0
     with _transaction() as conn:
         cur = conn.execute(

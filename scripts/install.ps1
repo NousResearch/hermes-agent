@@ -248,7 +248,10 @@ function ConvertTo-LongPath {
     if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
     # Only 8.3 short names carry a tilde+digit ("~1"); skip every resolver for
     # ordinary long paths, which is the overwhelmingly common case.
-    if ($Path -notmatch '~\d') { return $Path }
+    if ($Path -notmatch '~\d') {
+        $script:LastResolver = 'skipped-long-path'
+        return $Path
+    }
 
     # 1. kernel32. Compiled on first use only, so a normal profile never pays
     #    the Add-Type cost (this file is re-entered once per install stage).
@@ -326,6 +329,12 @@ function Set-LongProfileEnvVars {
     return $rewrote
 }
 
+# ConvertTo-LongPath only assigns $script:LastResolver when a ~\d short path
+# actually needs expansion, so an ordinary long profile leaves it unset -- and
+# the ResolvedPathReport below reads it unconditionally, which is fatal under
+# Set-StrictMode before any stage starts. 'none' is the resolver's own value
+# for "nothing ran".
+$script:LastResolver = 'none'
 $script:NormalizedProfilePaths = Set-LongProfileEnvVars
 
 # Re-derive the install paths now that the env vars behind their defaults are
@@ -378,18 +387,18 @@ $RepoUrlSsh = "git@github.com:NousResearch/hermes-agent.git"
 $RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
 $PythonVersion = "3.11"
 # Minor versions the installer accepts when the requested $PythonVersion isn't
-# available, in preference order.  uv discovers both uv-managed and system
-# interpreters, so this list also matches a pre-existing system Python.  Single
-# source of truth shared by Test-Python's fallback and Resolve-AvailablePythonVersion.
+# available, in preference order. Only checkout-private uv-managed interpreters
+# are eligible. Single source of truth shared by Test-Python's fallback and
+# Resolve-AvailablePythonVersion.
 $PythonFallbackVersions = @("3.12", "3.13", "3.10")
+$PythonFindTimeoutMs = 30000
 $NodeVersion = "22"
 # The npm range the root package.json pins in `engines.npm`.  A constant rather
 # than a manifest read like the POSIX side does: Test-Node runs BEFORE the repo
 # is cloned, so there is usually no package.json on disk yet (and none at all
-# when install.ps1 is piped straight from the web).  Get-NpmRange prefers the
-# manifest whenever it does exist, so a drifted constant self-corrects on any
-# run against an existing checkout.
-$NpmRange = ">=12.0.0"
+# when install.ps1 is piped straight from the web). Keep this fallback in sync
+# with package.json; Get-NpmRange prefers the manifest once a checkout exists.
+$NpmRange = "<11.10.0 || >=11.17.0"
 
 # Stage-protocol version.  Bumped only for genuinely breaking changes to the
 # manifest schema, stage-name set semantics, or stdout JSON shape.  Adding a
@@ -760,7 +769,65 @@ function Install-Uv {
         # than a bare `powershell`, which isn't guaranteed to be on PATH under
         # PowerShell 7 / pwsh-only setups.
         $psHostExe = Get-PowerShellHostExe
-        & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
+
+        # Rungs 1 + 2: run the uv installer -- astral.sh first, then the
+        # byte-identical copy published on GitHub releases.  Corporate
+        # proxies and AV products frequently block astral.sh while
+        # github.com is reachable (issue #69216), so a second source turns
+        # a hard failure into a working install.  Capture the installer
+        # output (Tee-Object) instead of discarding it: when every source
+        # fails, the real error (download blocked, AV quarantine,
+        # permissions) must reach the user instead of only the generic
+        # "installed but not found" message.
+        $installerOutput = @()
+        $astralOut = @()
+        & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Tee-Object -Variable astralOut | Out-Null
+        $installerOutput += "--- uv installer source: astral.sh ---"
+        $installerOutput += @($astralOut | ForEach-Object { "$_" })
+        if (Test-Path $managedUv) {
+            Write-Info "uv installer succeeded via astral.sh"
+        } else {
+            Write-Info "astral.sh uv installer did not produce $managedUv; trying GitHub releases mirror ..."
+            $ghOut = @()
+            & $psHostExe -ExecutionPolicy ByPass -c "irm https://github.com/astral-sh/uv/releases/latest/download/uv-installer.ps1 | iex" 2>&1 | Tee-Object -Variable ghOut | Out-Null
+            $installerOutput += "--- uv installer source: GitHub releases ---"
+            $installerOutput += @($ghOut | ForEach-Object { "$_" })
+            if (Test-Path $managedUv) {
+                Write-Info "uv installer succeeded via GitHub releases"
+            }
+        }
+
+        # Rung 3: salvage an existing uv.exe.  When the installer cannot run
+        # at all (network fully blocked) but a working uv already exists --
+        # on PATH, or at ~/.local/bin (the astral default location when
+        # UV_INSTALL_DIR was ignored by an older installer) -- copy it into
+        # the managed location so the managed-first invariant holds
+        # (hermes_cli/managed_uv.py looks only at $HermesHome\bin\uv.exe).
+        if (-not (Test-Path $managedUv)) {
+            $existingUv = $null
+            $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+            if ($uvOnPath -and $uvOnPath.Source -and (Test-Path $uvOnPath.Source)) {
+                $existingUv = $uvOnPath.Source
+            }
+            if (-not $existingUv) {
+                $defaultUv = Join-Path $env:USERPROFILE ".local\bin\uv.exe"
+                if (Test-Path $defaultUv) { $existingUv = $defaultUv }
+            }
+            if ($existingUv) {
+                Write-Info "Salvaging existing uv from $existingUv"
+                try {
+                    Copy-Item $existingUv $managedUv -Force
+                    # Verify the salvaged binary actually runs before
+                    # trusting it as the managed uv.
+                    $null = & $managedUv --version
+                } catch {
+                    Write-Info "Existing uv at $existingUv could not be salvaged: $_"
+                    Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
         $ErrorActionPreference = $prevEAP
 
         if (Test-Path $managedUv) {
@@ -771,6 +838,10 @@ function Install-Uv {
         }
 
         Write-Err "uv installed but not found at $managedUv"
+        if ($installerOutput.Count -gt 0) {
+            Write-Info "uv installer output (last 15 lines):"
+            $installerOutput | Select-Object -Last 15 | ForEach-Object { Write-Info "  $_" }
+        }
         Write-Info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
         return $false
     } catch {
@@ -863,14 +934,93 @@ function Get-NpmRange {
     return $NpmRange
 }
 
-# Upgrade the Hermes-managed Node tree's bundled npm into $NpmRange.
-#
-# The nodejs.org zip ships whatever npm that Node major bundles -- Node 26.5.1
-# bundles npm 11.17.0, one minor below the root package.json's own
-# `engines.npm` floor of >=12.  The repo .npmrc sets `engine-strict=true`, so
-# that is fatal rather than a warning and a brand-new install dies at the first
-# `npm ci` with EBADENGINE.  Provision the right npm here instead of reacting
-# to the failure later.
+# Convert the numeric core of an npm version or range operand into a stable
+# three-component System.Version. npm reports semantic versions, but the
+# installer only needs the numeric core for the comparator ranges authored in
+# package.json (for example, <11.10.0 || >=11.17.0).
+function ConvertTo-NpmVersion {
+    param([string]$Version)
+
+    if (-not $Version) { return $null }
+
+    $core = ($Version.Trim() -replace '^v', '' -replace '-.*$', '')
+    $parts = @($core -split '\.')
+    if ($parts.Count -lt 1 -or $parts.Count -gt 3) { return $null }
+    foreach ($part in $parts) {
+        if ($part -notmatch '^\d+$') { return $null }
+    }
+    while ($parts.Count -lt 3) { $parts += '0' }
+
+    try {
+        return [version]($parts -join '.')
+    } catch {
+        return $null
+    }
+}
+
+# Evaluate the comparator-only npm ranges used by the root manifest and the
+# pre-clone fallback. Alternatives are separated with || and each alternative
+# may contain one or more whitespace-separated <, <=, >, or >= comparators.
+# Unknown range syntax fails closed so an incompatible system npm cannot reach
+# npm ci and fail later with EBADENGINE.
+function Test-NpmVersionOk {
+    param(
+        [string]$Version,
+        [string]$Range = (Get-NpmRange)
+    )
+
+    $actual = ConvertTo-NpmVersion $Version
+    if (-not $actual -or -not $Range) { return $false }
+
+    foreach ($alternative in @($Range -split '\s*\|\|\s*')) {
+        $clause = $alternative.Trim()
+        if (-not $clause) { continue }
+
+        $comparators = [regex]::Matches(
+            $clause,
+            '(?:^|\s)(<=|>=|<|>)\s*(\d+(?:\.\d+){0,2})(?=\s|$)'
+        )
+        if ($comparators.Count -eq 0) { continue }
+
+        $remainder = [regex]::Replace(
+            $clause,
+            '(?:^|\s)(?:<=|>=|<|>)\s*\d+(?:\.\d+){0,2}(?=\s|$)',
+            ''
+        ).Trim()
+        if ($remainder) { continue }
+
+        $matchesClause = $true
+        foreach ($comparator in $comparators) {
+            $target = ConvertTo-NpmVersion $comparator.Groups[2].Value
+            if (-not $target) {
+                $matchesClause = $false
+                break
+            }
+
+            $matchesComparator = switch ($comparator.Groups[1].Value) {
+                '<'  { $actual -lt $target }
+                '<=' { $actual -le $target }
+                '>'  { $actual -gt $target }
+                '>=' { $actual -ge $target }
+                default { $false }
+            }
+            if (-not $matchesComparator) {
+                $matchesClause = $false
+                break
+            }
+        }
+
+        if ($matchesClause) { return $true }
+    }
+
+    return $false
+}
+
+# Upgrade the Hermes-managed Node tree's bundled npm into $NpmRange when
+# needed. Managed Node trees survive updates, so their bundled npm can drift
+# outside a newer root package.json engine range. The repo .npmrc sets
+# `engine-strict=true`, making that mismatch fatal at the first `npm ci`.
+# Provision the right npm here instead of reacting to EBADENGINE later.
 #
 # Three details are load-bearing, mirroring _nb_ensure_bundled_npm_range in
 # scripts/lib/node-bootstrap.sh and upgrade_managed_npm in
@@ -892,16 +1042,19 @@ function Update-ManagedNpm {
     $range = Get-NpmRange
 
     # Skip the network round-trip when the bundled npm already satisfies the
-    # range.  Only the ">=N" shape we actually author is parsed; anything more
-    # exotic falls through to letting npm itself decide.
-    if ($range -match '^>=(\d+)') {
-        $want = [int]$Matches[1]
-        try {
-            $have = (& $npmCmd --version 2>$null)
-            if ($have -match '^(\d+)') {
-                if ([int]$Matches[1] -ge $want) { return $true }
-            }
-        } catch { }
+    # same range used by the system-Node acceptance gate.
+    try {
+        $have = (& $npmCmd --version 2>$null | Select-Object -First 1)
+        if ($have -and (Test-NpmVersionOk $have $range)) { return $true }
+    } catch { }
+
+    # In-app updates run while the desktop app's Node processes are alive.
+    # The managed npm lives inside the very tree they execute from, so an
+    # in-place upgrade would hit WinError 5 (Access denied) on npm.cmd
+    # (#80926).  Defer; the next update with the app closed retries.
+    if (Test-ManagedNodeInUse $NodeDir) {
+        Write-Warn "Hermes-managed Node.js is in use by a running app; skipping the bundled npm upgrade (applies on a later update with the app closed)."
+        return $false
     }
 
     Write-Info "Upgrading bundled npm to satisfy $range ..."
@@ -940,6 +1093,29 @@ function Update-ManagedNpm {
 
     Write-Success "npm $(& $npmCmd --version 2>$null) installed"
     return $true
+}
+
+function Test-ManagedNodeInUse {
+    param([string]$NodeDir)
+    # Windows locks files that running processes execute from.  During an
+    # in-app update the desktop app's Node processes may hold the managed
+    # tree open, and rewriting it then fails with WinError 5 (Access denied)
+    # on npm.cmd (#80926).  Cheap pre-check used to skip destructive steps;
+    # the rename/move itself remains the authoritative guard.
+    #
+    # Check the executable path AND the command line: a cmd.exe wrapper
+    # running npm.cmd from the tree reports its own exe (cmd.exe lives in
+    # System32) while the tree path appears only in the command line.
+    # Win32_Process.CommandLine is available on Windows PowerShell 5.1 and
+    # 7+ (the Get-Process .CommandLine ETS property is 7.4+ only), and a
+    # single CIM query beats a per-process property access loop.
+    return @(
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+                ($_.ExecutablePath -like "$NodeDir\*") -or
+                ($_.CommandLine -like "*$NodeDir*")
+            }
+    ).Count -gt 0
 }
 
 # Re-discover uv without re-installing it.  Cross-process stage drivers
@@ -989,39 +1165,97 @@ function Resolve-UvCmd {
     throw "uv is not installed. Run install.ps1 -Stage uv first."
 }
 
+function Initialize-ManagedPythonEnvironment {
+    # Python used by Hermes belongs to the checkout, never to another
+    # application or a user-level uv configuration. Keep this aligned with
+    # hermes_cli.managed_uv.managed_python_env(), which owns the update path.
+    foreach ($name in @(
+        "CONDA_DEFAULT_ENV", "CONDA_PREFIX", "UV_PROJECT_ENVIRONMENT",
+        "UV_NO_MANAGED_PYTHON", "UV_PYTHON", "UV_PYTHON_DOWNLOADS",
+        "UV_SYSTEM_PYTHON", "VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH"
+    )) {
+        Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue
+    }
+
+    $managedRoot = Join-Path $InstallDir ".hermes-runtime\python"
+    New-Item -ItemType Directory -Force -Path $managedRoot | Out-Null
+    $env:UV_MANAGED_PYTHON = "1"
+    $env:UV_NO_CONFIG = "1"
+    $env:UV_PYTHON_INSTALL_BIN = "0"
+    $env:UV_PYTHON_INSTALL_DIR = $managedRoot
+    $env:UV_PYTHON_INSTALL_REGISTRY = "0"
+    return [System.IO.Path]::GetFullPath($managedRoot)
+}
+
 function Resolve-AvailablePythonVersion {
-    # Return the first Python minor version uv can actually find, preferring the
-    # requested $PythonVersion and then $PythonFallbackVersions.  Returns $null
-    # when none are available.
+    # Return the path and minor version of the first Hermes-managed interpreter
+    # uv can find, preferring the requested version and then fallback minors.
+    # System and application-owned interpreters are deliberately ineligible.
     #
-    # This is the cross-process-safe counterpart to Test-Python's in-memory
-    # ``$script:PythonVersion = $fallbackVer`` mutation.  Under Hermes-Setup.exe
-    # each ``-Stage NAME`` runs in a *fresh* powershell.exe, so the fallback the
-    # ``python`` stage settled on (e.g. 3.12 when 3.11 is absent) does NOT
-    # survive into the ``venv`` stage's process -- there $PythonVersion is back
-    # at its "3.11" default.  Consumers re-resolve here instead of trusting that
-    # default, which is exactly the propagation gap behind issue #50769.
+    # Under Hermes-Setup.exe each stage runs in a fresh powershell.exe. The
+    # venv stage therefore re-resolves both version and provenance rather than
+    # relying on state selected by the earlier Python stage (#50769).
+    [string]$managedRoot = Initialize-ManagedPythonEnvironment
+    $managedPrefix = $managedRoot.TrimEnd('\') + '\'
     $candidates = @($PythonVersion) + $PythonFallbackVersions
     $seen = @{}
     foreach ($ver in $candidates) {
         if (-not $ver -or $seen.ContainsKey($ver)) { continue }
         $seen[$ver] = $true
+        $process = $null
         try {
-            $found = & $UvCmd python find $ver 2>$null
-            if ($found) { return $ver }
-        } catch { }
+            # PowerShell 5.1 can lose a nested native command's stdout when
+            # this installer itself is redirected by the desktop bootstrapper.
+            # Capture uv directly through ProcessStartInfo instead of relying
+            # on the native-command pipeline for the interpreter path.
+            $process = New-Object System.Diagnostics.Process
+            $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+            $startInfo.FileName = $UvCmd
+            $startInfo.Arguments = "python find $ver --managed-python --no-config"
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            $process.StartInfo = $startInfo
+            if (-not $process.Start()) { continue }
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit($PythonFindTimeoutMs)) {
+                try { $process.Kill() } catch { }
+                $process.WaitForExit()
+                throw "uv python find $ver timed out after $PythonFindTimeoutMs ms"
+            }
+            $stdout = $stdoutTask.Result
+            $stderrTask.Result | Out-Null
+            if ($process.ExitCode -ne 0) { continue }
+            [string]$foundPath = ($stdout.Trim() -split "`r?`n") | Select-Object -Last 1
+            if ($foundPath) {
+                $absolute = [System.IO.Path]::GetFullPath($foundPath)
+                if ($absolute.StartsWith($managedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    return [PSCustomObject]@{
+                        Path = $absolute
+                        Version = $ver
+                    }
+                }
+            }
+        } catch {
+            throw "Failed to resolve Hermes-managed Python $ver`: $_"
+        } finally {
+            if ($process) { $process.Dispose() }
+        }
     }
     return $null
 }
 
 function Test-Python {
+    Initialize-ManagedPythonEnvironment | Out-Null
     Write-Info "Checking Python $PythonVersion..."
-    
-    # Let uv find or install Python
+
+    # Only a checkout-private uv-managed interpreter satisfies this stage.
     try {
-        $pythonPath = & $UvCmd python find $PythonVersion 2>$null
-        if ($pythonPath) {
-            $ver = & $pythonPath --version 2>$null
+        $resolvedPython = Resolve-AvailablePythonVersion
+        if ($resolvedPython) {
+            $ver = & $resolvedPython.Path --version 2>$null
             Write-Success "Python found: $ver"
             return $true
         }
@@ -1044,15 +1278,15 @@ function Test-Python {
         # semantics or stderr noise.  This fix was previously landed as
         # commit ec1714e71 and then lost in a release squash; reapplied here.
         $ErrorActionPreference = "Continue"
-        $uvOutput = & $UvCmd python install $PythonVersion 2>&1
+        $uvOutput = & $UvCmd python install $PythonVersion --no-bin --no-registry --no-config 2>&1
         $uvExitCode = $LASTEXITCODE
         $ErrorActionPreference = $prevEAP
 
         # Check if Python is now available (more reliable than exit code
         # since uv may return non-zero due to "already installed" etc.)
-        $pythonPath = & $UvCmd python find $PythonVersion 2>$null
-        if ($pythonPath) {
-            $ver = & $pythonPath --version 2>$null
+        $resolvedPython = Resolve-AvailablePythonVersion
+        if ($resolvedPython) {
+            $ver = & $resolvedPython.Path --version 2>$null
             Write-Success "Python installed: $ver"
             return $true
         }
@@ -1068,60 +1302,29 @@ function Test-Python {
         Write-Warn "uv python install error: $_"
     }
 
-    # Fallback: check if ANY Python 3.10+ is already available on the system
-    Write-Info "Trying to find any existing Python 3.10+..."
+    # Preserve the established minor-version fallback contract, but provision
+    # every fallback into the same private store instead of borrowing a system
+    # interpreter. This path is reached only when the preferred install failed.
     foreach ($fallbackVer in $PythonFallbackVersions) {
         try {
-            $pythonPath = & $UvCmd python find $fallbackVer 2>$null
-            if ($pythonPath) {
-                $ver = & $pythonPath --version 2>$null
-                Write-Success "Found fallback: $ver"
-                $script:PythonVersion = $fallbackVer
+            Write-Info "Trying managed Python fallback $fallbackVer..."
+            $previousFallbackEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            & $UvCmd python install $fallbackVer --no-bin --no-registry --no-config 2>&1 | Out-Null
+            $ErrorActionPreference = $previousFallbackEAP
+            $resolvedPython = Resolve-AvailablePythonVersion
+            if ($resolvedPython) {
+                $ver = & $resolvedPython.Path --version 2>$null
+                Write-Success "Python fallback installed: $ver"
                 return $true
             }
-        } catch { }
-    }
-
-    # Fallback: try system python -- but skip the Microsoft Store stub.
-    # On Windows, %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe is a 0-byte
-    # reparse-point stub that prints "Python was not found; run without
-    # arguments to install from the Microsoft Store..." to stdout and exits
-    # non-zero.  Get-Command finds it; invoking it produces a confusing error
-    # that the user sees as our installer crashing.
-    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($pythonCmd) {
-        $isStoreStub = $false
-        try {
-            $pythonSource = $pythonCmd.Source
-            if ($pythonSource -and $pythonSource -like "*\WindowsApps\*") {
-                $isStoreStub = $true
-            } else {
-                # Even outside WindowsApps, a 0-byte file is the stub
-                $item = Get-Item $pythonSource -ErrorAction SilentlyContinue
-                if ($item -and $item.Length -eq 0) { $isStoreStub = $true }
-            }
-        } catch { }
-
-        if (-not $isStoreStub) {
-            try {
-                $prevEAP2 = $ErrorActionPreference
-                $ErrorActionPreference = "Continue"
-                $sysVer = & python --version 2>&1
-                $ErrorActionPreference = $prevEAP2
-                if ($sysVer -match "Python 3\.(1[0-9]|[1-9][0-9])") {
-                    Write-Success "Using system Python: $sysVer"
-                    return $true
-                }
-            } catch {
-                if ($prevEAP2) { $ErrorActionPreference = $prevEAP2 }
-            }
+        } catch {
+            if ($previousFallbackEAP) { $ErrorActionPreference = $previousFallbackEAP }
         }
     }
 
     Write-Err "Failed to install Python $PythonVersion"
-    Write-Info "Install Python 3.11 manually, then re-run this script:"
-    Write-Info "  https://www.python.org/downloads/"
-    Write-Info "  Or: winget install Python.Python.3.11"
+    Write-Info "Check network access to uv's managed Python downloads, then retry."
     return $false
 }
 
@@ -1468,35 +1671,73 @@ function Set-GitBashEnvVar {
     Write-Info "If needed, set HERMES_GIT_BASH_PATH manually to your bash.exe path."
 }
 
-# The dependency tree's real Node floor is >=22.22.0, set by react-router 8.3.0
-# (`engines.node`). Keep this in sync with the root package.json: looser lets an
-# install reach a `npm ci` that dies with EBADENGINE, stricter replaces a working
-# user toolchain for nothing. Returns $true when a `node --version` string
-# clears that floor.
+# The dependency tree supports Node 22.22+, 24.11+, and 26+. nanoid 6 excludes
+# Node 23 and 25 while its >=26 arm accepts later releases, and @babel/* 8.x
+# requires ^22.18.0 || >=24.11.0 -- so accepting 23/25 or an early Node 24
+# only defers the failure to `npm ci` under engine-strict. Keep this in sync
+# with the root package.json.
 function Test-NodeVersionOk {
     param([string]$Version)
+    if ($Version -match '-') { return $false }
     try {
-        $v = [version]($Version -replace '^v', '' -replace '-.*$', '')
+        $v = [version]($Version -replace '^v', '')
     } catch {
         return $false
     }
     if ($v.Major -eq 22) { return ($v.Minor -ge 22) }
-    return ($v.Major -gt 22)
+    if ($v.Major -eq 24) { return ($v.Minor -ge 11) }
+    return ($v.Major -ge 26)
+}
+
+# Accept a system Node only when its companion npm also satisfies the same
+# range used to provision the Hermes-managed tree. Keeping this probe separate
+# lets the initial PATH check and the post-winget check share one authority.
+function Test-SystemNodeReady {
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) { return $false }
+
+    $version = node --version
+    if (Test-NodeVersionOk $version) {
+        Ensure-NodeExeOnPath | Out-Null
+    } else {
+        Write-Warn "Node.js $version is unsupported (Hermes requires Node 22.22+, 24.11+, or 26+)"
+        return $false
+    }
+
+    $npmRange = Get-NpmRange
+    $npmCmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if (-not $npmCmd) {
+        $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+    }
+
+    $npmVersion = $null
+    if ($npmCmd) {
+        try {
+            $npmVersion = (& $npmCmd --version 2>$null | Select-Object -First 1)
+        } catch { }
+    }
+
+    if ($npmVersion -and (Test-NpmVersionOk $npmVersion $npmRange)) {
+        Write-Success "Node.js $version with npm $npmVersion found"
+        return $true
+    }
+
+    if ($npmVersion) {
+        Write-Warn "Node.js $version uses npm $npmVersion, which does not satisfy Hermes requirement $npmRange"
+    } else {
+        Write-Warn "Node.js $version was found, but npm is missing or could not report its version"
+    }
+    return $false
 }
 
 function Test-Node {
     Write-Info "Checking Node.js (for browser tools)..."
 
-    if (Get-Command node -ErrorAction SilentlyContinue) {
-        $version = node --version
-        if (Test-NodeVersionOk $version) {
-            Ensure-NodeExeOnPath | Out-Null
-            Write-Success "Node.js $version found"
-            $script:HasNode = $true
-            return $true
-        }
-        Write-Warn "Node.js $version is too old (Hermes requires Node >=26)"
+    if (Test-SystemNodeReady) {
+        $script:HasNode = $true
+        return $true
     }
+
+    Write-Info "Using a Hermes-managed Node.js installation instead..."
 
     # Prefer a Hermes-managed Node from a previous run over a too-old system one.
     $managedNode = "$HermesHome\node\node.exe"
@@ -1542,8 +1783,77 @@ function Test-Node {
 
             $extractedDir = Get-ChildItem $tmpDir -Directory | Select-Object -First 1
             if ($extractedDir) {
-                if (Test-Path "$HermesHome\node") { Remove-Item -Recurse -Force "$HermesHome\node" }
-                Move-Item $extractedDir.FullName "$HermesHome\node"
+                # Rename-swap instead of delete-then-move: the live tree is
+                # never removed before its replacement is fully extracted.
+                # Windows permits renaming a tree with running executables,
+                # but if a process holds it without FILE_SHARE_DELETE the
+                # rename fails with WinError 5 -- that refusal means the tree
+                # is in use, so defer instead of forcing the write (#80926).
+                # Best-effort sweep of staging/backup litter from interrupted
+                # runs; locked files simply stay for the next attempt.  Only
+                # dirs older than 10 minutes are removed so a concurrent
+                # heal's in-flight swap is never disturbed.
+                Get-ChildItem "$HermesHome" -Directory -Filter "node.old-*" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-10) } |
+                    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+                Get-ChildItem "$HermesHome" -Directory -Filter "node.new-*" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-10) } |
+                    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+                $stamp = [Guid]::NewGuid().ToString("N")
+                $staged = "$HermesHome\node.new-$stamp"
+                $backup = "$HermesHome\node.old-$stamp"
+                # Stage to a sibling directory so the final swap is a
+                # same-volume rename (atomic), not a cross-volume Move-Item
+                # (copy+delete, non-atomic -- a partial copy would leave a
+                # broken tree).  Move from $env:TEMP here, rename below.
+                try {
+                    Move-Item $extractedDir.FullName $staged -ErrorAction Stop
+                } catch {
+                    Write-Warn "Failed to stage the new Node.js tree; aborting the Node upgrade."
+                    Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+                    Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+                    return $false
+                }
+                if (Test-Path "$HermesHome\node") {
+                    try {
+                        Rename-Item "$HermesHome\node" $backup -ErrorAction Stop
+                    } catch {
+                        Write-Warn "Hermes-managed Node.js is in use by a running app; deferring its upgrade. Close the app and re-run the update."
+                        Remove-Item -Recurse -Force $staged -ErrorAction SilentlyContinue
+                        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+                        Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+                        return $false
+                    }
+                    # A rename preserves LastWriteTime, so a backup renamed
+                    # from a long-lived tree would instantly look older than
+                    # the litter-sweep cutoff to a concurrent heal.  Touch it
+                    # (best-effort) so the in-flight backup is never swept.
+                    try {
+                        (Get-Item $backup).LastWriteTime = Get-Date
+                    } catch { }
+                    try {
+                        Rename-Item $staged "$HermesHome\node" -ErrorAction Stop
+                    } catch {
+                        # Restore the live tree before bailing.  The swap is a
+                        # same-volume rename, so a failure leaves no partial
+                        # target to clear.
+                        Rename-Item $backup "$HermesHome\node" -ErrorAction SilentlyContinue
+                        Remove-Item -Recurse -Force $staged -ErrorAction SilentlyContinue
+                        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+                        Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+                        return $false
+                    }
+                    Remove-Item -Recurse -Force $backup -ErrorAction SilentlyContinue
+                } else {
+                    try {
+                        Rename-Item $staged "$HermesHome\node" -ErrorAction Stop
+                    } catch {
+                        Remove-Item -Recurse -Force $staged -ErrorAction SilentlyContinue
+                        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+                        Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+                        return $false
+                    }
+                }
 
                 # Session PATH so the rest of this run sees node/npm.
                 $env:Path = "$HermesHome\node;$env:Path"
@@ -1602,9 +1912,7 @@ function Test-Node {
             $ErrorActionPreference = $prevEAP
             # Refresh PATH
             $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
-            if (Get-Command node -ErrorAction SilentlyContinue) {
-                $version = node --version
-                Write-Success "Node.js $version installed via winget"
+            if (Test-SystemNodeReady) {
                 $script:HasNode = $true
                 return $true
             }
@@ -2254,13 +2562,12 @@ function Install-Venv {
     # fresh process -- $PythonVersion is back at its "3.11" default.  Trusting it
     # here made `uv venv venv --python 3.11` fail with exit 2 on machines without
     # 3.11 even though the `python` stage reported success (issue #50769).
-    $resolved = Resolve-AvailablePythonVersion
-    if ($resolved -and $resolved -ne $PythonVersion) {
-        Write-Info "Python $PythonVersion not available; using detected Python $resolved"
-        $script:PythonVersion = $resolved
+    $resolvedPython = Resolve-AvailablePythonVersion
+    if (-not $resolvedPython) {
+        throw "Hermes-managed Python is unavailable. Run install.ps1 -Stage python first."
     }
 
-    Write-Info "Creating virtual environment with Python $PythonVersion..."
+    Write-Info "Creating virtual environment with Python $($resolvedPython.Version)..."
     
     Push-Location $InstallDir
 
@@ -2268,22 +2575,26 @@ function Install-Venv {
     # exits. Populated only with tasks that were ENABLED before we touched
     # them, so a task the user deliberately disabled is never re-armed.
     $gatewayTasksDisabled = @()
+    $venvHadExistingVenv = $false
+    $venvBackupName = $null
+    $venvParked = $false
     try {
-    if (Test-Path "venv") {
+    if (Test-Path -LiteralPath "venv") {
+        $venvHadExistingVenv = $true
         Write-Info "Virtual environment already exists, recreating..."
         # On Windows, native Python extensions (e.g. _bcrypt.pyd, tornado's
         # speedups.pyd) are loaded as DLLs by any running hermes process.
         # Windows denies deletion of loaded DLLs, so every process running out
-        # of this venv must be stopped before removing it -- otherwise
-        # Remove-Item fails with "Access to the path '...' is denied" and the
-        # whole install/update aborts at this stage.
+        # of this venv must be stopped before retiring it. This keeps cleanup
+        # from accumulating locked stale trees and avoids carrying a live
+        # gateway into the replacement venv.
         if ($env:OS -eq "Windows_NT") {
             $myPid = $PID
             Write-Info "Stopping any running hermes processes before recreating venv..."
             # Disarm the respawner FIRST: the gateway autostart Scheduled Task
             # relaunches a killed gateway within seconds, and losing that race
             # re-locks the venv's .pyd files between our kill sweep and
-            # Remove-Item (the July 2026 _brotlicffi.pyd incident). schtasks
+            # venv parking/cleanup (the July 2026 _brotlicffi.pyd incident). schtasks
             # /End stops a running task instance; /Change /DISABLE stops it
             # from re-firing mid-install. (The Startup-folder .vbs fallback is
             # NOT touched: it only fires at logon, so it cannot respawn a
@@ -2329,7 +2640,7 @@ function Install-Venv {
             #
             # The sweep is a bounded LOOP, not single-shot: supervised processes
             # (the Desktop app's backend, a watchdog-managed gateway) respawn in
-            # the window between one kill pass and the delete. Each pass re-
+            # the window between one kill pass and venv parking. Each pass re-
             # enumerates; three consecutive clean passes (or the attempt cap)
             # ends the loop.
             $venvPrefix = [System.IO.Path]::GetFullPath((Join-Path $InstallDir "venv")).TrimEnd('\') + '\'
@@ -2353,57 +2664,89 @@ function Install-Venv {
                 Start-Sleep -Milliseconds 400
             }
         }
-        # Rename-then-delete: on Windows a directory RENAME succeeds even while
-        # files inside it are mapped as DLLs (only in-place delete/replace of
-        # the mapped file is denied, and only same-volume renames are atomic
-        # moves). Moving the old venv aside means `uv venv` can create a fresh
-        # one immediately even if some straggler still holds a .pyd from the
-        # old tree; the renamed dir is deleted best-effort (now, and by the
-        # cleanup pass below on the NEXT install if a handle outlives this one).
-        $staleName = "venv.stale.{0}" -f (Get-Date -Format "yyyyMMddHHmmss")
-        $renamed = $false
+        # Move the old venv aside before creating its replacement. A directory
+        # rename is atomic on the same volume and does not require deleting
+        # files mapped as DLLs. NEVER fall back to deleting the live venv
+        # (#83149): Remove-Item -Recurse can delete most of site-packages and
+        # then fail on one locked .pyd, leaving a gutted venv with no usable
+        # interpreter and no rollback source. Abort with the previous install
+        # intact so the user can close holders and retry.
+        $venvBackupName = "venv.stale.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
         try {
-            Rename-Item -Path "venv" -NewName $staleName -ErrorAction Stop
-            $renamed = $true
+            Rename-Item -LiteralPath "venv" -NewName $venvBackupName -ErrorAction Stop
+            $venvParked = $true
         } catch {
-            Write-Warn "Could not rename venv aside ($($_.Exception.Message)); falling back to in-place delete"
+            $renameErr = $_.Exception.Message
+            throw (
+                "Could not move the existing venv aside ($renameErr). " +
+                "A process still has the install directory open (often a non-Hermes " +
+                "python.exe that resolved into this venv via PATH). Close those " +
+                "processes and retry - the previous install was left intact."
+            )
         }
-        if ($renamed) {
-            Remove-Item -Recurse -Force $staleName -ErrorAction SilentlyContinue
-            if (Test-Path $staleName) {
-                Write-Warn "Old venv parked at $staleName (a process still holds files in it); it will be cleaned up on the next install"
-            }
-        } else {
-            Remove-Item -Recurse -Force "venv" -ErrorAction SilentlyContinue
-            # A killed process can take a moment to release its file handles, so a
-            # first Remove-Item may still hit a locked .pyd. Retry once after a short
-            # pause before giving up and letting the stage fail loudly.
-            if (Test-Path "venv") {
-                Start-Sleep -Seconds 2
-                Remove-Item -Recurse -Force "venv"
-            }
+    }
+    
+    # Pass the already-validated private interpreter path and prohibit uv from
+    # resolving or downloading a different Python during venv creation. Use
+    # ProcessStartInfo because the desktop bootstrapper redirects this script;
+    # Windows PowerShell 5.1 can otherwise lose nested native output/exit state.
+    $venvProcess = New-Object System.Diagnostics.Process
+    try {
+        $venvStartInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $venvStartInfo.FileName = $UvCmd
+        $venvStartInfo.Arguments = "venv venv --python `"$($resolvedPython.Path)`" --managed-python --no-python-downloads --no-config"
+        $venvStartInfo.WorkingDirectory = $InstallDir
+        $venvStartInfo.UseShellExecute = $false
+        $venvStartInfo.CreateNoWindow = $true
+        $venvStartInfo.RedirectStandardOutput = $true
+        $venvStartInfo.RedirectStandardError = $true
+        $venvProcess.StartInfo = $venvStartInfo
+        if (-not $venvProcess.Start()) {
+            throw "Failed to start uv while creating the virtual environment"
         }
+        $venvStdoutTask = $venvProcess.StandardOutput.ReadToEndAsync()
+        $venvStderrTask = $venvProcess.StandardError.ReadToEndAsync()
+        $venvProcess.WaitForExit()
+        $venvStdout = $venvStdoutTask.Result
+        $venvStderr = $venvStderrTask.Result
+        $venvExitCode = $venvProcess.ExitCode
+        if ($venvStdout) { Write-Host $venvStdout.TrimEnd() }
+        if ($venvStderr) { Write-Host $venvStderr.TrimEnd() }
+    } finally {
+        $venvProcess.Dispose()
+    }
+    # Fail fast so the stage cannot report ok=true when uv failed.
+    if ($venvExitCode -ne 0) {
+        throw "Failed to create virtual environment (uv venv exited with $venvExitCode)"
+    }
+
+    # uv can return success without leaving the interpreter expected by the
+    # installer (for example after an interrupted filesystem operation). Treat
+    # that as a failed transaction so the previous venv can be restored.
+    $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $venvPythonExe -PathType Leaf)) {
+        throw "uv reported success but venv interpreter is missing at $venvPythonExe"
+    }
+
+    # The replacement has a working interpreter, but the transaction is only
+    # committed after Install-Dependencies' baseline-import gate passes -- the
+    # bootstrap runs the stages as separate processes, and every dependency
+    # tier (or the import validation) can still fail after this stage
+    # succeeds. Record the parked backup so the dependency stage can restore
+    # it on failure and commit its cleanup only after validation (#83149).
+    if ($venvParked) {
+        Set-Content -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Value $venvBackupName -Encoding ascii
+        Write-Info "Previous venv parked at $venvBackupName until the dependency install is verified"
     }
 
     # Clean up parked venvs from previous installs whose handles have since
     # been released. Best-effort -- a still-held tree just stays for next time.
-    Get-ChildItem -Directory -Filter "venv.stale.*" -ErrorAction SilentlyContinue | ForEach-Object {
-        Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue
-    }
-    
-    # uv creates the venv and pins the Python version in one step.  uv emits
-    # normal progress such as "Using CPython ..." on stderr; under Windows
-    # PowerShell 5.1 with EAP=Stop that stderr is a NativeCommandError unless
-    # we temporarily relax EAP and trust $LASTEXITCODE for real failures.
-    Invoke-NativeWithRelaxedErrorAction { & $UvCmd venv venv --python $PythonVersion }
-    # Relaxing EAP above means a *genuine* uv-venv failure (exit != 0) no longer
-    # aborts on its own. Capture $LASTEXITCODE immediately and fail fast, so the
-    # `venv` stage can't falsely report success (and Invoke-Stage can't emit
-    # ok=true) when the venv was never created.
-    $venvExitCode = $LASTEXITCODE
-    if ($venvExitCode -ne 0) {
-        throw "Failed to create virtual environment (uv venv exited with $venvExitCode)"
-    }
+    # The backup parked THIS run is excluded: it is the rollback source until
+    # Install-Dependencies commits the transaction.
+    Get-ChildItem -Directory -Filter "venv.stale.*" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne $venvBackupName } | ForEach-Object {
+            Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue
+        }
 
     # Neutralize any inherited UV_PYTHON (e.g. $env:UV_PYTHON = "3.14" left in
     # the user's shell). uv honours UV_PYTHON over an existing venv for the
@@ -2412,10 +2755,43 @@ function Install-Venv {
     # -- building Rust transitives that have no wheel for that version from
     # source via maturin, which fails. Pinning UV_PYTHON to the interpreter we
     # just created forces every subsequent uv command onto it.
-    $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
-    if (Test-Path $venvPythonExe) {
-        $env:UV_PYTHON = $venvPythonExe
-    }
+    $env:UV_PYTHON = $venvPythonExe
+    } catch {
+        $originalError = $_
+        $rollbackError = $null
+
+        if ($venvParked -and $venvBackupName -and (Test-Path -LiteralPath $venvBackupName)) {
+            try {
+                if (Test-Path -LiteralPath "venv") {
+                    $failedVenvName = "venv.failed.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
+                    Rename-Item -LiteralPath "venv" -NewName $failedVenvName -ErrorAction Stop
+                    Write-Warn "Failed replacement parked at $failedVenvName"
+                }
+                Rename-Item -LiteralPath $venvBackupName -NewName "venv" -ErrorAction Stop
+                Write-Warn "Restored previous virtual environment after failed recreate"
+            } catch {
+                $rollbackError = $_.Exception.Message
+            }
+
+            if ($rollbackError) {
+                throw "Virtual environment recreate failed: $($originalError.Exception.Message). Rollback failed: $rollbackError. Previous venv remains at $venvBackupName."
+            }
+        } elseif (-not $venvHadExistingVenv -and (Test-Path -LiteralPath "venv")) {
+            # Preserve a partial first install too. This branch must not touch a
+            # pre-existing venv whose move-aside failed above.
+            try {
+                $failedVenvName = "venv.failed.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
+                Rename-Item -LiteralPath "venv" -NewName $failedVenvName -ErrorAction Stop
+                Write-Warn "Partial virtual environment parked at $failedVenvName"
+            } catch {
+                $rollbackError = $_.Exception.Message
+            }
+            if ($rollbackError) {
+                throw "Virtual environment creation failed: $($originalError.Exception.Message). Could not park partial venv: $rollbackError"
+            }
+        }
+
+        throw $originalError
     } finally {
         Pop-Location
         # Re-arm the gateway autostart tasks disabled during the venv teardown
@@ -2433,7 +2809,56 @@ function Install-Venv {
         }
     }
 
-    Write-Success "Virtual environment ready (Python $PythonVersion)"
+    Write-Success "Virtual environment ready (Python $($resolvedPython.Version))"
+}
+
+function Get-PendingVenvBackup {
+    # Rollback source recorded by Install-Venv (#83149). Returns the parked
+    # directory name, or $null when there is nothing to roll back to. A marker
+    # pointing at a directory that no longer exists is stale -- drop it.
+    $markerPath = Join-Path $InstallDir "venv.pending-backup"
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { return $null }
+    $name = (Get-Content -LiteralPath $markerPath -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if ($name) { $name = $name.Trim() }
+    if (-not $name -or -not (Test-Path -LiteralPath (Join-Path $InstallDir $name))) {
+        Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
+        return $null
+    }
+    return $name
+}
+
+function Complete-VenvTransaction {
+    # Commit: dependency install + baseline imports passed, so the previous
+    # venv is no longer needed as a rollback source. Best-effort delete; a
+    # tree still held open just stays parked for the next install's sweep.
+    $backupName = Get-PendingVenvBackup
+    if (-not $backupName) { return }
+    $backupPath = Join-Path $InstallDir $backupName
+    Remove-Item -LiteralPath $backupPath -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $backupPath) {
+        Write-Warn "Old venv parked at $backupName (a process still holds files in it); it will be cleaned up on the next install"
+    }
+    Remove-Item -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Force -ErrorAction SilentlyContinue
+}
+
+function Restore-VenvBackup {
+    # Rollback: the dependency stage failed after Install-Venv replaced the
+    # venv. Park the unusable replacement and restore the previous working
+    # venv so Hermes (and the venv-blocker probe) stay usable (#83149).
+    $backupName = Get-PendingVenvBackup
+    if (-not $backupName) { return }
+    try {
+        if (Test-Path -LiteralPath (Join-Path $InstallDir "venv")) {
+            $failedVenvName = "venv.failed.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
+            Rename-Item -LiteralPath (Join-Path $InstallDir "venv") -NewName $failedVenvName -ErrorAction Stop
+            Write-Warn "Failed replacement parked at $failedVenvName"
+        }
+        Rename-Item -LiteralPath (Join-Path $InstallDir $backupName) -NewName "venv" -ErrorAction Stop
+        Remove-Item -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Force -ErrorAction SilentlyContinue
+        Write-Warn "Restored previous virtual environment after failed dependency install"
+    } catch {
+        Write-Warn "Could not restore previous venv (still parked at $backupName): $($_.Exception.Message)"
+    }
 }
 
 function Install-Dependencies {
@@ -2470,6 +2895,12 @@ function Install-Dependencies {
     # without any hash verification -- they exist to keep installs working
     # when the lockfile is stale, missing, or out-of-sync with the
     # current extras spec, NOT because they're equivalent in posture.
+    #
+    # Everything through the baseline-import gate runs inside the venv
+    # transaction opened by Install-Venv (#83149): on any failure the parked
+    # previous venv is restored before the error propagates, and the parked
+    # tree is deleted only after the imports prove the replacement usable.
+    try {
     if (Test-Path "uv.lock") {
         Write-Info "Trying tier: hash-verified (uv.lock) ..."
         # Critical flag choice: `--extra all`, NOT `--all-extras`.
@@ -2586,7 +3017,7 @@ except Exception:
     if (-not $NoVenv) {
         $venvPython = "$InstallDir\venv\Scripts\python.exe"
         if (-not (Test-Path $venvPython)) {
-            throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, manually: cd '$InstallDir'; Remove-Item -Recurse -Force venv,.venv; uv venv venv --python $PythonVersion; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
+            throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, close Hermes processes and preserve existing venv directories before retrying. Do not delete venv in place."
         }
         # Relax EAP=Stop while running the import probe.  Python writes
         # deprecation warnings and import-system info to stderr; under
@@ -2602,13 +3033,26 @@ except Exception:
         if ($importExitCode -ne 0) {
             $sibling = "$InstallDir\.venv"
             $hint = if (Test-Path $sibling) {
-                "Detected sibling .venv\ at $sibling -- uv synced there instead of venv\. Recover with: cd '$InstallDir'; Remove-Item -Recurse -Force venv; Move-Item .venv venv"
+                "Detected sibling .venv\ at $sibling -- uv synced there instead of venv\. Close Hermes processes, preserve the existing venv, and rerun the installer so the transactional recovery path can move directories safely."
             } else {
                 "Recover with: cd '$InstallDir'; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
             }
             throw "Baseline imports failed in $InstallDir\venv (dotenv/openai/rich/prompt_toolkit). The install completed but dependencies are not in the venv. $hint"
         }
         Write-Success "Baseline imports verified in venv"
+    }
+
+    # Commit the venv transaction: the dependency install completed and the
+    # baseline imports passed, so the previous venv is no longer needed as a
+    # rollback source (#83149).
+    Complete-VenvTransaction
+    } catch {
+        # Dependency install or import validation failed: restore the previous
+        # working venv (parked by Install-Venv) before surfacing the error, so
+        # a failed update leaves Hermes and its blocker probe usable.
+        Restore-VenvBackup
+        Pop-Location
+        throw
     }
 
     if (-not $NoVenv) {
@@ -2697,41 +3141,95 @@ print(','.join(scripts))
     Write-Success "All dependencies installed"
 }
 
+function Install-HermesCommandLaunchers {
+    param(
+        [Parameter(Mandatory=$true)] [string]$Root,
+        [Parameter(Mandatory=$true)] [string]$Destination
+    )
+
+    # Expose ONLY the hermes launchers on PATH -- never the whole
+    # venv\Scripts directory, which contains python.exe / pip.exe and
+    # silently hijacks the `python` command in every terminal (#83797).
+    # Requiring hermes.exe before creating the destination keeps the PATH
+    # stage from reporting success with an unusable command (PR #92092).
+    $scriptsDir = Join-Path $Root "venv\Scripts"
+    $requiredSource = Join-Path $scriptsDir "hermes.exe"
+    if (-not (Test-Path -LiteralPath $requiredSource -PathType Leaf)) {
+        throw "Cannot set up the hermes command: required launcher not found: $requiredSource"
+    }
+
+    New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+
+    # Launcher form depends on the venv (keep in lockstep with
+    # hermes_cli/_install_repair.py): a normal venv's exe trampoline
+    # embeds an absolute interpreter path and survives copying; a
+    # relocatable venv's trampoline (managed_uv rebuilds use
+    # --relocatable) resolves relative to its own location, and a copy
+    # dies with 'uv trampoline failed to canonicalize script path' --
+    # those get a .cmd delegator invoking the in-venv exe instead.
+    $pyvenvCfg = Join-Path $Root "venv\pyvenv.cfg"
+    $venvRelocatable = $false
+    if (Test-Path -LiteralPath $pyvenvCfg) {
+        $venvRelocatable = [bool](Select-String -Path $pyvenvCfg -Pattern '^\s*relocatable\s*=\s*true\s*$' -Quiet)
+    }
+    foreach ($launcher in @("hermes", "hermes-acp")) {
+        $src = Join-Path $scriptsDir "$launcher.exe"
+        if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { continue }
+        if ($venvRelocatable) {
+            Remove-Item (Join-Path $Destination "$launcher.exe") -Force -ErrorAction SilentlyContinue
+            Set-Content -Path (Join-Path $Destination "$launcher.cmd") -Value "@echo off`r`n`"$src`" %*" -Encoding Ascii
+        } else {
+            Remove-Item (Join-Path $Destination "$launcher.cmd") -Force -ErrorAction SilentlyContinue
+            Copy-Item -Force -LiteralPath $src -Destination (Join-Path $Destination "$launcher.exe")
+        }
+    }
+
+    # Verify either staged form before the caller mutates PATH.
+    $requiredExe = Join-Path $Destination "hermes.exe"
+    $requiredCmd = Join-Path $Destination "hermes.cmd"
+    if (-not ((Test-Path -LiteralPath $requiredExe -PathType Leaf) -or
+              (Test-Path -LiteralPath $requiredCmd -PathType Leaf))) {
+        throw "Cannot set up the hermes command: launcher was not installed: $requiredExe"
+    }
+    return $Destination
+}
+
 function Set-PathVariable {
     Write-Info "Setting up hermes command..."
     
     if ($NoVenv) {
         $hermesBin = "$InstallDir"
     } else {
-        # Expose ONLY the hermes launchers on PATH -- never the whole
-        # venv\Scripts directory. venv\Scripts contains python.exe /
-        # pythonw.exe / pip.exe, and putting it on the user PATH silently
-        # hijacks the `python` command in every terminal on the machine
-        # (#83797): unrelated projects start resolving python to Hermes'
-        # runtime interpreter. A dedicated bin dir with copies of the
-        # launcher exes keeps `hermes` globally available without
-        # shadowing anything. (Launcher exes embed the venv interpreter
-        # path, so they work from any location and survive updates.)
-        $hermesBin = "$InstallDir\bin"
-        New-Item -ItemType Directory -Force -Path $hermesBin | Out-Null
-        foreach ($launcher in @("hermes.exe", "hermes-acp.exe")) {
-            $src = "$InstallDir\venv\Scripts\$launcher"
-            if (Test-Path $src) {
-                Copy-Item -Force $src "$hermesBin\$launcher"
-            }
-        }
+        # $HermesHome\bin is the managed binary dir (shared with the managed
+        # uv), OUTSIDE the git checkout: `hermes update`'s autostash
+        # (git stash push --include-untracked) deletes untracked files from
+        # the working tree, which silently removed the launchers an earlier
+        # installer staged under hermes-agent\bin. No git operation can ever
+        # touch this dir. Staging and verification live in
+        # Install-HermesCommandLaunchers, which throws BEFORE any PATH
+        # mutation when the launchers cannot be staged.
+        $hermesBin = "$HermesHome\bin"
+        Install-HermesCommandLaunchers -Root $InstallDir -Destination $hermesBin | Out-Null
     }
     
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
 
-    # Migrate installs that got venv\Scripts onto PATH from earlier
-    # installer versions -- remove it so the python shadowing stops.
-    $legacyBin = "$InstallDir\venv\Scripts"
-    if ((-not $NoVenv) -and $currentPath -like "*$legacyBin*") {
-        $cleaned = ($currentPath -split ';' | Where-Object { $_ -and $_ -ne $legacyBin }) -join ';'
-        [Environment]::SetEnvironmentVariable("Path", $cleaned, "User")
-        $currentPath = $cleaned
-        Write-Info "Removed legacy venv\Scripts from user PATH (kept hermes via $hermesBin)"
+    # Migrate older layouts off the user PATH:
+    #   venv\Scripts     -- shadowed the user's python (#83797)
+    #   hermes-agent\bin -- lived inside the git checkout, where the update
+    #                       autostash could sweep the launchers off disk
+    # The hermes-agent\bin FILES are left in place on purpose: editor/ACP
+    # configs that captured absolute launcher paths keep working, and the
+    # dir is git-ignored so it cannot dirty the checkout.
+    if (-not $NoVenv) {
+        $legacyEntries = @("$InstallDir\venv\Scripts", "$InstallDir\bin")
+        $items = @(($currentPath -split ';') | Where-Object { $_ })
+        $cleaned = @($items | Where-Object { $legacyEntries -notcontains $_ })
+        if ($cleaned.Count -ne $items.Count) {
+            $currentPath = $cleaned -join ";"
+            [Environment]::SetEnvironmentVariable("Path", $currentPath, "User")
+            Write-Info "Removed legacy launcher entries from user PATH (kept hermes via $hermesBin)"
+        }
     }
     
     if ($currentPath -notlike "*$hermesBin*") {
@@ -2895,7 +3393,7 @@ function Copy-ConfigTemplates {
         # upgrades the old comment-only scaffold to this text on next run, so
         # drift is self-healing, but keep them in sync to avoid first-run churn.
         $soulContent = @"
-You are Hermes Agent, an intelligent AI assistant created by Nous Research. You are helpful, knowledgeable, and direct. You assist users with a wide range of tasks including answering questions, writing and editing code, analyzing information, creative work, and executing actions via your tools. You communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose unless otherwise directed below. Be targeted and efficient in your exploration and investigations.
+You are Hermes Agent, built by Nous Research. Be direct: match the length of your reply to the weight of the ask -- a one-line question gets a one-line answer, and finished work gets a short report of what changed, what's verified, and what's left, never a replay of the process. No filler ("Great question," "I'd be happy to"), no restating the request back, no re-summarizing what you already said, no narrating tool calls the user can see. Plain claims over adjectives; when unsure, say so plainly. Agree because it's right, not because the user said it. Depth is earned -- give it when the user asks for detail, teaches, or the stakes demand it, not by default.
 "@
         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
         [System.IO.File]::WriteAllText($soulPath, $soulContent, $utf8NoBom)
@@ -3240,7 +3738,10 @@ function Install-BrowserUseCli {
     }
     $managedBin = Join-Path $HermesHome "bin"
     $managedBu = Join-Path $managedBin "browser-use.exe"
-    if ((Get-Command browser-use -ErrorAction SilentlyContinue) -or (Test-Path $managedBu)) {
+    # MANAGED-FIRST: only Hermes' managed copy short-circuits. A browser-use
+    # on the user's PATH is a side install -- resolution prefers the managed
+    # copy, so it must be provisioned regardless.
+    if (Test-Path $managedBu) {
         Write-Success "Browser Use CLI already installed"
         return
     }
@@ -3269,6 +3770,57 @@ function Install-BrowserUseCli {
     }
 }
 
+function Test-CuaDriverRuntimeContract {
+    param([Parameter(Mandatory = $true)][string]$DriverPath)
+
+    try {
+        $versionOutput = (& $DriverPath --version 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) {
+            return $false
+        }
+        $versionMatch = [regex]::Match($versionOutput, '(\d+\.\d+\.\d+)')
+        if (-not $versionMatch.Success) {
+            return $false
+        }
+        if ([version]($versionMatch.Groups[1].Value) -lt [version]'0.20.0') {
+            return $false
+        }
+
+        $manifestOutput = (& $DriverPath manifest 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $manifestOutput) {
+            return $false
+        }
+        $manifest = $manifestOutput | ConvertFrom-Json
+        if (-not $manifest.mcp_invocation.args) {
+            return $false
+        }
+
+        $required = @{
+            mcp = @('--socket', '--grant')
+            serve = @(
+                '--socket', '--permission-mode', '--capability-manifest',
+                '--approve-capability-manifest', '--embedded'
+            )
+            stop = @('--socket')
+        }
+        foreach ($commandName in $required.Keys) {
+            $command = $manifest.subcommands | Where-Object { $_.name -eq $commandName }
+            if (-not $command) {
+                return $false
+            }
+            $argNames = @($command.args | ForEach-Object { $_.name })
+            foreach ($requiredArg in $required[$commandName]) {
+                if ($requiredArg -notin $argNames) {
+                    return $false
+                }
+            }
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 # cua-driver powers the computer_use toolset (background desktop control).
 # Provision it at install time so enabling the tool later -- via `hermes
 # tools`, the dashboard, or the desktop app -- is a config flip, not a
@@ -3280,9 +3832,13 @@ function Install-CuaDriver {
         Write-Info "Skipping Computer Use (cua-driver) install (-SkipComputerUse)"
         return
     }
-    if (Get-Command cua-driver -ErrorAction SilentlyContinue) {
-        Write-Success "Computer Use driver (cua-driver) already installed"
-        return
+    $existingCuaDriver = Get-Command cua-driver -ErrorAction SilentlyContinue
+    if ($existingCuaDriver) {
+        if (Test-CuaDriverRuntimeContract -DriverPath $existingCuaDriver.Source) {
+            Write-Success "Computer Use driver (cua-driver) already installed and compatible"
+            return
+        }
+        Write-Warn "Existing cua-driver is old or incomplete; repairing it"
     }
 
     Write-Info "Installing Computer Use driver (cua-driver)..."
@@ -3299,10 +3855,11 @@ function Install-CuaDriver {
         if (Wait-Job $job -Timeout 660) {
             Receive-Job $job -ErrorAction SilentlyContinue | Out-Null
             Remove-Job $job -Force -ErrorAction SilentlyContinue
-            if (Get-Command cua-driver -ErrorAction SilentlyContinue) {
+            $installedCuaDriver = Get-Command cua-driver -ErrorAction SilentlyContinue
+            if ($installedCuaDriver -and (Test-CuaDriverRuntimeContract -DriverPath $installedCuaDriver.Source)) {
                 Write-Success "Computer Use driver installed (enable via 'hermes tools' -> Computer Use)"
             } else {
-                Write-Warn "Computer Use driver install did not complete -- it will install on demand when you enable the tool."
+                Write-Warn "Computer Use driver install did not produce a compatible runtime -- repair it before enabling the tool."
                 Write-Info "Install later with: hermes computer-use install"
             }
         } else {
@@ -3485,8 +4042,8 @@ function Install-Desktop {
 
     # Always re-resolve Node here. Stages run in separate PowerShell processes,
     # so $script:HasNode from Stage-Node isn't visible; more importantly Test-Node
-    # enforces the build floor (Node >=26) and prepends the Hermes-managed
-    # Node to PATH, so the build never runs on a too-old system Node -- the cause
+    # enforces the supported Node lines and prepends the Hermes-managed Node to
+    # PATH, so the build never runs on an unsupported system Node -- the cause
     # of the opaque "Build desktop app ... exit code 1" failure (Vite crashes on
     # old Node).
     Test-Node | Out-Null
@@ -4176,11 +4733,15 @@ function Write-Completion {
 # or arrange to provide answers another way."
 $InstallStages = @(
     @{ Name = "uv";               Title = "Installing uv package manager";        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Uv" }
-    @{ Name = "python";           Title = "Verifying Python $PythonVersion";      Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Python" }
     @{ Name = "git";              Title = "Installing Git";                       Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Git" }
     @{ Name = "node";             Title = "Detecting Node.js";                    Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Node" }
     @{ Name = "system-packages";  Title = "Installing ripgrep and ffmpeg";        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-SystemPackages" }
     @{ Name = "repository";       Title = "Cloning Hermes repository";            Category = "install";      NeedsUserInput = $false; Worker = "Stage-Repository" }
+    # Managed Python lives under $InstallDir\.hermes-runtime, so the checkout
+    # must exist before this stage creates that directory. Otherwise the later
+    # repository stage treats the runtime-only directory as a broken checkout,
+    # parks it, and leaves Stage-Venv with no managed interpreter.
+    @{ Name = "python";           Title = "Verifying Python $PythonVersion";      Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Python" }
     @{ Name = "venv";             Title = "Creating Python virtual environment";  Category = "install";      NeedsUserInput = $false; Worker = "Stage-Venv" }
     @{ Name = "dependencies";     Title = "Installing Python dependencies";       Category = "install";      NeedsUserInput = $false; Worker = "Stage-Dependencies" }
     @{ Name = "node-deps";        Title = "Installing Node.js dependencies";      Category = "install";      NeedsUserInput = $false; Worker = "Stage-NodeDeps" }
@@ -4399,6 +4960,13 @@ function Main {
 # All branches funnel through one try/catch so errors don't kill an `irm |
 # iex` PowerShell session, and so failures in stage-driver mode produce a
 # structured JSON error frame instead of a bare exception.
+
+# Dot-sourcing loads the installer's real functions for isolated behavioral
+# tests without running an install. Normal script and `irm | iex` entry points
+# are unchanged.
+if ($MyInvocation.InvocationName -eq ".") {
+    return
+}
 
 try {
     if ($Ensure -ne "") {

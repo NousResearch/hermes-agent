@@ -172,7 +172,7 @@ function FloatingPane({ pane }: { pane: Contribution }) {
           onClick={toggleCollapsed}
           type="button"
         >
-          <Codicon name={collapsed ? 'chevron-down' : 'chevron-up'} size="0.75rem" />
+          <Codicon name={collapsed ? 'chevron-up' : 'chevron-down'} size="0.75rem" />
         </button>
       </header>
 

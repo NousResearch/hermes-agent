@@ -21,6 +21,7 @@ def execute(
     callback: Callable[[dict[str, Any]], Any],
     *,
     session_id: str,
+    tool_call_id: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     """Run one tool call through Relay and return its final arguments."""
@@ -52,7 +53,7 @@ def execute(
             raise
         raw_result["value"] = result
         raw_result["json"] = _jsonable(result)
-        return raw_result["json"]
+        return runtime.relay.ToolExecutionResult(raw_result["json"])
 
     try:
         managed = _run_awaitable(
@@ -64,6 +65,7 @@ def execute(
                 invoke,
                 handle=parent,
                 metadata=_jsonable(metadata or {}),
+                tool_call_id=tool_call_id or None,
             )
         )
     except BaseException as exc:
@@ -85,11 +87,12 @@ def execute(
             return raw_result["value"], observed_args
         raise
 
-    if "value" in raw_result and _json_equal(managed, raw_result["json"]):
+    managed_result = managed.result
+    if "value" in raw_result and _json_equal(managed_result, raw_result["json"]):
         return raw_result["value"], observed_args
-    if isinstance(managed, str):
-        return managed, observed_args
-    return json.dumps(_jsonable(managed), ensure_ascii=False), observed_args
+    if isinstance(managed_result, str):
+        return managed_result, observed_args
+    return json.dumps(_jsonable(managed_result), ensure_ascii=False), observed_args
 
 
 def _jsonable(value: Any) -> Any:

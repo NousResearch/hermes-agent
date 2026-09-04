@@ -48,7 +48,7 @@ def _tick(job, tmp_path, current_provider, deliveries):
     """Run one run_one_job tick with the provider resolution pinned."""
     fake_db = MagicMock()
 
-    def fake_deliver(job, content, adapters=None, loop=None):
+    def fake_deliver(job, content, adapters=None, loop=None, **kwargs):
         deliveries.append(content)
         return None
 
@@ -56,7 +56,7 @@ def _tick(job, tmp_path, current_provider, deliveries):
          patch("cron.scheduler._resolve_origin", return_value=None), \
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-         patch("hermes_state.SessionDB", return_value=fake_db), \
+         patch("hermes_state.get_shared_session_db", return_value=fake_db), \
          patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                return_value={
@@ -92,9 +92,11 @@ class TestDriftAlertOnce:
         blob = deliveries[0].lower()
         assert "drift" in blob
         assert "pin" in blob
-        # The single alert must carry the complete remediation command —
-        # the generic summarizer's 180-char truncation must not eat it.
-        assert "cronjob action=update" in deliveries[0]
+        assert "host running hermes" in blob
+        # The single alert must carry the complete supported remediation
+        # command — the generic summarizer's 180-char truncation must not eat it.
+        assert "hermes cron edit drift-once-test" in deliveries[0]
+        assert "cronjob action=update" not in deliveries[0]
         assert "[drift_skip" not in deliveries[0]
 
     def test_healed_drift_clears_bit_and_redrift_realerts(self, tmp_path):
@@ -127,7 +129,7 @@ class TestDriftAlertOnce:
         job = _job(provider_snapshot=None, drift_alerted=True)
         deliveries = []
 
-        def fake_deliver(jb, content, adapters=None, loop=None):
+        def fake_deliver(jb, content, adapters=None, loop=None, **kwargs):
             deliveries.append(content)
             return None
 
@@ -139,7 +141,7 @@ class TestDriftAlertOnce:
                  patch("cron.scheduler._resolve_origin", return_value=None), \
                  patch("hermes_cli.env_loader.load_hermes_dotenv"), \
                  patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-                 patch("hermes_state.SessionDB", return_value=fake_db), \
+                 patch("hermes_state.get_shared_session_db", return_value=fake_db), \
                  patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
                  patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                        return_value={

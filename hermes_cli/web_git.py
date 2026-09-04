@@ -19,7 +19,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
 
 _GIT_TIMEOUT = 30
 _GH_TIMEOUT = 30
@@ -42,7 +42,7 @@ def _git(cwd: str, args: list[str], *, timeout: int = _GIT_TIMEOUT) -> tuple[int
     the real auth error in the toast instead."""
     try:
         proc = subprocess.run(
-            ["git", *args],
+            ["git", *harden_git_argv(args)],
             cwd=cwd,
             capture_output=True,
             text=True, encoding='utf-8', errors='replace',
@@ -682,19 +682,46 @@ def _unique_dir(base: str) -> str:
     return candidate
 
 
+def _remote_of_ref(cwd: str, name: str) -> str:
+    """The remote a ref belongs to ("origin" for "origin/main"), or "" when the
+    name is not a remote-tracking ref in this repo. Asks git rather than
+    assuming the remote is called "origin" (mirrors the Electron op)."""
+    if "/" not in name:
+        return ""
+    code, _, _ = _git(cwd, ["show-ref", "--verify", "--quiet", f"refs/remotes/{name}"])
+    if code != 0:
+        return ""
+    return name.split("/", 1)[0]
+
+
 def worktree_add(cwd: str, options: dict) -> dict:
     _ensure_repo(cwd)
     root = _main_root(cwd)
     options = options or {}
 
-    existing = _sanitize_branch(options.get("existingBranch") or "")
+    requested = _sanitize_branch(options.get("existingBranch") or "")
     if options.get("existingBranch"):
-        if not existing:
+        if not requested:
             raise RuntimeError("Branch name is required.")
-        if existing == _default_branch(root):
+        # "origin/feature" is a remote-tracking ref, not a branch git can check
+        # out — `git worktree add <dir> origin/feature` detaches HEAD. Create a
+        # local branch with the same short name that tracks the remote ref,
+        # like `git switch feature` does for a branch on exactly one remote.
+        # (Parity with the Electron op; a remote gateway serves this mirror, so
+        # the desktop's convert-a-branch flow must behave identically. #81724)
+        remote = _remote_of_ref(root, requested)
+        existing = requested.split("/", 1)[1] if remote else requested
+        if not remote and existing == _default_branch(root):
             _git_ok(root, ["switch", existing])
             return {"path": root, "branch": existing, "repoRoot": root}
         target = _unique_dir(os.path.join(root, ".worktrees", _slugify(existing)))
+        if remote:
+            # Best-effort freshness: the remote-tracking ref is stale if the
+            # user did not fetch recently. On failure (offline, branch gone)
+            # the last known ref is still there to branch from.
+            _git(root, ["fetch", remote, existing])
+            _git_ok(root, ["worktree", "add", "--track", "-b", existing, target, requested])
+            return {"path": target, "branch": existing, "repoRoot": root}
         _git_ok(root, ["worktree", "add", target, existing])
         return {"path": target, "branch": existing, "repoRoot": root}
 
@@ -711,6 +738,11 @@ def worktree_add(cwd: str, options: dict) -> dict:
         if base.startswith("origin/"):
             remote_branch = base[len("origin/"):]
             _git(root, ["fetch", "origin", remote_branch])
+            # Branching off a remote-tracking ref auto-sets up tracking (the
+            # new branch silently wired to origin's upstream). The user wants a
+            # standalone local branch — like `git checkout origin/main && git
+            # checkout -b new` — so suppress it (parity with the Electron op).
+            args.append("--no-track")
         args.append(base)
     code, _, err = _git(root, args)
     if code != 0:
@@ -732,6 +764,10 @@ def worktree_remove(cwd: str, worktree_path: str, force: bool) -> dict:
 
 
 def branch_list(cwd: str) -> list[dict]:
+    """Branches for the convert-a-branch picker: local heads first, then the
+    remote-tracking refs that have no local head yet (a teammate's branch is
+    reachable without a manual checkout). Parity with the Electron op — a
+    remote gateway serves this mirror for the same desktop UI (#81724)."""
     out = _git_out(
         cwd, ["for-each-ref", "--format=%(refname:short)", "--sort=-committerdate", "refs/heads"]
     )
@@ -740,15 +776,44 @@ def branch_list(cwd: str) -> list[dict]:
     trees = worktree_list(cwd)
     path_by_branch = {t["branch"]: t["path"] for t in trees if t["branch"]}
     trunk = _default_branch(cwd)
-    return [
-        {
-            "name": name,
-            "checkedOut": name in path_by_branch,
-            "isDefault": bool(trunk and name == trunk),
-            "worktreePath": path_by_branch.get(name),
-        }
-        for name in (line.strip() for line in out.split("\n"))
+    locals_ = [name for name in (line.strip() for line in out.split("\n")) if name]
+    local_set = set(locals_)
+    remote_out = _git_out(
+        cwd, ["for-each-ref", "--format=%(refname:short)", "--sort=-committerdate", "refs/remotes"]
+    )
+    remotes = [
+        name
+        for name in (line.strip() for line in remote_out.split("\n"))
         if name
+        # "origin/HEAD" is a symbolic alias for the remote's default branch —
+        # not a branch, and a duplicate row in the list.
+        and not name.endswith("/HEAD")
+        # A remote branch tracked locally is reachable via its local head; a
+        # second row is noise, and checking out the remote ref detaches HEAD.
+        and name.split("/", 1)[-1] not in local_set
+    ]
+    return [
+        *(
+            {
+                "name": name,
+                "checkedOut": name in path_by_branch,
+                "isDefault": bool(trunk and name == trunk),
+                "isRemote": False,
+                "worktreePath": path_by_branch.get(name),
+            }
+            for name in locals_
+        ),
+        *(
+            {
+                # No local checkout, and never the local trunk.
+                "name": name,
+                "checkedOut": False,
+                "isDefault": False,
+                "isRemote": True,
+                "worktreePath": None,
+            }
+            for name in remotes
+        ),
     ]
 
 

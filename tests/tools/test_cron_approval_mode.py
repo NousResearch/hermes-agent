@@ -98,7 +98,11 @@ class TestCronContextVarDetection:
     def test_explicit_blank_masks_leaked_cron_env_for_gateway_classification(self, monkeypatch):
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
-        tokens = set_session_vars(platform="api_server", cron_session="")
+        # A chat platform: unattended programmatic platforms (webhook,
+        # msgraph_webhook, api_server) are intentionally NOT gateway
+        # approval contexts anymore (#37284/#87509) — this test's subject
+        # is the blank-cron-ContextVar masking, not platform policy.
+        tokens = set_session_vars(platform="telegram", cron_session="")
         try:
             assert approval_module._is_cron_approval_context() is False
             assert approval_module._is_gateway_approval_context() is True

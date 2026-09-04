@@ -25,8 +25,9 @@ def _agent(
     base_url="https://api.openai.com/v1",
     enabled=True,
     compression_enabled=True,
-    threshold=DEFAULT_COMPACT_THRESHOLD,
+    threshold: object = DEFAULT_COMPACT_THRESHOLD,
     compressor=None,
+    capabilities=None,
 ):
     return SimpleNamespace(
         model=model,
@@ -35,6 +36,7 @@ def _agent(
         compression_enabled=compression_enabled,
         codex_responses_compact_threshold=threshold,
         context_compressor=compressor,
+        capabilities=capabilities or {},
     )
 
 
@@ -87,6 +89,16 @@ class TestRequestGate:
         payload = native_compaction_context_management(
             _agent(base_url="https://chatgpt.com/backend-api/codex"),
             is_codex_backend=True,
+        )
+        assert payload is not None
+
+    def test_trusted_proxy_capability_gets_payload(self):
+        payload = native_compaction_context_management(
+            _agent(
+                base_url="https://trusted-proxy.example/v1",
+                capabilities={"openai_native_compaction": True},
+            ),
+            is_codex_backend=False,
         )
         assert payload is not None
 
@@ -145,20 +157,51 @@ class TestRequestGate:
         )
         assert payload[0]["compact_threshold"] < 100_000
 
+    def test_omitted_threshold_tracks_resolved_local_trigger(self):
+        compressor = SimpleNamespace(threshold_tokens=765_000)
+        payload = native_compaction_context_management(
+            _agent(threshold=None, compressor=compressor), is_codex_backend=False
+        )
+        assert payload == [{"type": "compaction", "compact_threshold": 756_808}]
+
 
 class TestThresholdClamp:
+    def test_omitted_threshold_derives_from_local_trigger(self):
+        assert resolve_compact_threshold(None, 765_000) == 756_808
+
     def test_clamps_below_local_trigger(self):
         assert resolve_compact_threshold(200_000, 100_000) == 100_000 - 8_192
+
+    def test_explicit_threshold_remains_absolute_for_larger_window(self):
+        assert resolve_compact_threshold(200_000, 765_000) == 200_000
 
     def test_no_local_trigger_uses_configured(self):
         assert resolve_compact_threshold(200_000, None) == 200_000
 
-    def test_garbage_configured_falls_back_to_default(self):
-        assert resolve_compact_threshold("garbage", None) == DEFAULT_COMPACT_THRESHOLD
-        assert resolve_compact_threshold(True, None) == DEFAULT_COMPACT_THRESHOLD
-        assert resolve_compact_threshold(-5, None) == DEFAULT_COMPACT_THRESHOLD
+    @pytest.mark.parametrize("configured", ["garbage", True, -5, 1.5])
+    def test_invalid_configured_uses_automatic_local_threshold(self, configured):
+        assert resolve_compact_threshold(configured, 765_000) == 756_808
 
-    def test_tiny_local_trigger_stays_positive(self):
+    def test_automatic_without_local_trigger_uses_documented_fallback(self):
+        assert resolve_compact_threshold(None, None) == DEFAULT_COMPACT_THRESHOLD
+
+    @pytest.mark.parametrize(
+        ("local_trigger", "expected"),
+        [
+            (8_193, 1_024),
+            (8_192, 6_553),
+            (4_000, 3_200),
+            (1_024, 1_024),
+            (1_000, 1_024),
+            (1, 1_024),
+        ],
+    )
+    def test_automatic_tiny_local_trigger_respects_provider_floor(
+        self, local_trigger, expected
+    ):
+        assert resolve_compact_threshold(None, local_trigger) == expected
+
+    def test_explicit_tiny_local_trigger_stays_positive(self):
         assert resolve_compact_threshold(200_000, 4_000) >= 1_024
 
 
@@ -349,6 +392,7 @@ class TestResponseCapture:
                 {"role": "user", "content": "next"},
             ],
             current_issuer_kind="codex_backend",
+            native_compaction_eligible=True,
         )
         replayed = [item for item in items if item.get("type") == "compaction"]
         assert len(replayed) == 1
@@ -375,12 +419,13 @@ class TestResponseCapture:
                 {"role": "user", "content": "next"},
             ],
             current_issuer_kind="xai_responses",
+            native_compaction_eligible=True,
         )
         assert all(item.get("type") != "compaction" for item in items)
 
 
 class TestAgentInitConfig:
-    def test_defaults_off_and_threshold(self, monkeypatch):
+    def test_defaults_off_and_automatic_threshold(self, monkeypatch):
         from run_agent import AIAgent
 
         agent = AIAgent(
@@ -395,7 +440,59 @@ class TestAgentInitConfig:
             enabled_toolsets=[],
         )
         assert agent.codex_responses_native_compaction is False
-        assert agent.codex_responses_compact_threshold == 200_000
+        assert agent.codex_responses_compact_threshold is None
+
+    def test_public_config_default_selects_automatic_threshold(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert (
+            DEFAULT_CONFIG["compression"]["codex_responses_compact_threshold"] is None
+        )
+
+    @pytest.mark.parametrize(
+        ("threshold_yaml", "configured", "resolved"),
+        [
+            (None, None, 756_808),
+            ("null", None, 756_808),
+            ("200000", 200_000, 200_000),
+            ("true", None, 756_808),
+            ("-5", None, 756_808),
+            ("1.5", None, 756_808),
+            ('"bad"', None, 756_808),
+        ],
+    )
+    def test_loaded_config_reaches_request_threshold(
+        self, tmp_path, monkeypatch, threshold_yaml, configured, resolved
+    ):
+        from run_agent import AIAgent
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        lines = ["compression:", "  codex_responses_native: true"]
+        if threshold_yaml is not None:
+            lines.append(f"  codex_responses_compact_threshold: {threshold_yaml}")
+        (home / "config.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.openai.com/v1",
+            api_mode="codex_responses",
+            model="gpt-5.6",
+            provider="openai-api",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            enabled_toolsets=[],
+        )
+        compressor = getattr(agent, "context_compressor")
+        compressor.threshold_tokens = 765_000
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+        assert getattr(agent, "codex_responses_compact_threshold") == configured
+        assert kwargs["context_management"] == [
+            {"type": "compaction", "compact_threshold": resolved}
+        ]
 
     def test_kwargs_have_no_context_management_by_default(self):
         from run_agent import AIAgent
@@ -549,7 +646,7 @@ class TestPrunePreCheckpointItems:
             },
             {"role": "user", "content": "follow-up"},
         ]
-        items = _chat_messages_to_responses_input(msgs)
+        items = _chat_messages_to_responses_input(msgs, native_compaction_eligible=True)
         assert items[0] == {"type": "compaction", "encrypted_content": "blob"}
         users = [i["content"] for i in items if i.get("role") == "user"]
         assert users == ["the goal", "follow-up"]
@@ -569,3 +666,145 @@ class TestPrunePreCheckpointItems:
         ]
         items = _chat_messages_to_responses_input(msgs)
         assert [i.get("role") for i in items] == ["user", "assistant", "user"]
+
+
+class TestCheckpointGatedOnCurrentEligibility:
+    """A captured checkpoint must not outlive the native gate.
+
+    The checkpoint is persisted in the ``codex_reasoning_items`` sidecar, so
+    it survives a mid-session model swap, ``compression.enabled: false``, the
+    rejection kill switch and a resumed session. Every one of those closes the
+    gate; if the wire kept being restructured around the stale checkpoint,
+    pre-checkpoint history would be deleted from requests that were never
+    natively compacted — on a model that cannot even decrypt the blob.
+    """
+
+    def _history(self):
+        return [
+            {"role": "user", "content": "goal: ship the migration"},
+            {"role": "assistant", "content": "on it"},
+            {"role": "user", "content": "detail A"},
+            {
+                "role": "assistant",
+                "content": "checkpointed turn",
+                "codex_reasoning_items": [
+                    {
+                        "type": "compaction",
+                        "encrypted_content": "blob",
+                        "_issuer_kind": "codex_backend",
+                    }
+                ],
+            },
+            {"role": "user", "content": "next ask"},
+        ]
+
+    def test_ineligible_request_keeps_pre_feature_wire(self):
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+        history = self._history()
+        items = _chat_messages_to_responses_input(
+            history,
+            current_issuer_kind="codex_backend",
+            native_compaction_eligible=False,
+        )
+        pre_feature = _chat_messages_to_responses_input(
+            [
+                {k: v for k, v in msg.items() if k != "codex_reasoning_items"}
+                for msg in history
+            ],
+        )
+        assert items == pre_feature
+        # Specifically: no checkpoint on the wire, no deleted history.
+        assert all(i.get("type") != "compaction" for i in items)
+        assert {"role": "assistant", "content": "on it"} in items
+
+    def test_eligible_request_still_restructures(self):
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+        items = _chat_messages_to_responses_input(
+            self._history(),
+            current_issuer_kind="codex_backend",
+            native_compaction_eligible=True,
+        )
+        assert items[0]["type"] == "compaction"
+        assert {"role": "assistant", "content": "on it"} not in items
+
+    def test_converter_defaults_to_ineligible(self):
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+        items = _chat_messages_to_responses_input(self._history())
+        assert all(i.get("type") != "compaction" for i in items)
+        assert {"role": "assistant", "content": "on it"} in items
+
+    def test_build_kwargs_without_field_does_not_prune(self):
+        """Model swapped out of the gpt-5.6 family / kill switch fired:
+        the gate returns None, so the wire must be the pre-feature one."""
+        from agent.transports.codex import ResponsesApiTransport
+
+        kwargs = ResponsesApiTransport().build_kwargs(
+            model="gpt-5.2",
+            messages=self._history(),
+            context_management=None,
+        )
+        assert "context_management" not in kwargs
+        assert all(i.get("type") != "compaction" for i in kwargs["input"])
+        assert {"role": "assistant", "content": "on it"} in kwargs["input"]
+
+    def test_build_kwargs_with_field_prunes(self):
+        from agent.transports.codex import ResponsesApiTransport
+
+        kwargs = ResponsesApiTransport().build_kwargs(
+            model="gpt-5.6",
+            messages=self._history(),
+            is_codex_backend=True,
+            context_management=[{"type": "compaction", "compact_threshold": 4000}],
+        )
+        assert kwargs["input"][0]["type"] == "compaction"
+        assert {"role": "assistant", "content": "on it"} not in kwargs["input"]
+
+    def test_convert_messages_defaults_to_ineligible(self):
+        from agent.transports.codex import ResponsesApiTransport
+
+        items = ResponsesApiTransport().convert_messages(
+            self._history(), is_codex_backend=True
+        )
+        assert all(i.get("type") != "compaction" for i in items)
+        assert {"role": "assistant", "content": "on it"} in items
+
+    def test_auxiliary_responses_adapter_never_prunes(self, monkeypatch):
+        """Auxiliary calls (compression, flush_memories, MoA) replay real
+        session history but never send ``context_management`` — so a
+        checkpoint in that history must not restructure their request."""
+        import agent.codex_responses_adapter as adapter
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        seen = {}
+        real = adapter._chat_messages_to_responses_input
+
+        def _spy(messages, **kw):
+            seen.update(kw)
+            return real(messages, **kw)
+
+        monkeypatch.setattr(adapter, "_chat_messages_to_responses_input", _spy)
+
+        class _Responses:
+            def create(self, **kwargs):
+                # #93650 routes the bulk input around the SDK transform via
+                # extra_body; accept the payload in either wire shape.
+                seen["input"] = kwargs.get("input") or (
+                    kwargs.get("extra_body") or {}
+                ).get("input")
+                raise RuntimeError("stop before network")
+
+        class _Client:
+            base_url = "https://chatgpt.com/backend-api/codex"
+            responses = _Responses()
+
+        with pytest.raises(RuntimeError, match="stop before network"):
+            _CodexCompletionsAdapter(_Client(), "gpt-5.2").create(
+                messages=self._history()
+            )
+
+        assert seen.get("native_compaction_eligible") is False
+        assert all(i.get("type") != "compaction" for i in seen["input"])
+        assert {"role": "assistant", "content": "on it"} in seen["input"]

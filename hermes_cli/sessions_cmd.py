@@ -39,8 +39,8 @@ def _relative_time(ts):
     return _m()._relative_time(ts)
 
 
-def _session_browse_picker(sessions):
-    return _m()._session_browse_picker(sessions)
+def _session_browse_picker(sessions, session_db=None):
+    return _m()._session_browse_picker(sessions, session_db=session_db)
 
 
 def _size_delta_label(saved_mb):
@@ -53,6 +53,72 @@ def _confirm_prompt(prompt: str) -> bool:
         return input(prompt).strip().lower() in {"y", "yes"}
     except (EOFError, KeyboardInterrupt):
         return False
+
+
+#: Default age floor for `hermes sessions prune --never-active`.  Deliberately
+#: generous: the rows are worthless but harmless, and a young never-active row
+#: may simply be a chat that nobody has replied to yet.
+_NEVER_ACTIVE_DEFAULT_DAYS = 30.0
+
+
+def _prune_never_active_keyed(db, args):
+    """`hermes sessions prune --never-active` — drop leaked/dead keyed rows.
+
+    Targets keyed gateway rows that were opened and never used at all.  The
+    population is dominated by escaped test fixtures (#82770), which the
+    hermetic-isolation guard can only stop from being *created* — rows already
+    written to a developer's state.db need a sweep to leave.
+    """
+    from hermes_cli.session_filters import format_epoch, parse_duration_seconds
+
+    older_than = getattr(args, "older_than", None)
+    if older_than is None:
+        days = _NEVER_ACTIVE_DEFAULT_DAYS
+    else:
+        seconds = parse_duration_seconds(str(older_than))
+        if seconds is None:
+            print(
+                f"Error: --older-than '{older_than}' is not a duration. "
+                "Use a bare number of days or a form like '2d' / '1w'."
+            )
+            return
+        days = seconds / 86400.0
+
+    candidates = db.list_never_active_keyed_sessions(older_than_days=days)
+    if not candidates:
+        print(f"No never-active keyed sessions older than {days:g} day(s).")
+        return
+
+    shown = candidates if args.dry_run else candidates[:15]
+    print(
+        f"{len(candidates)} never-active keyed session(s) older than "
+        f"{days:g} day(s) — no messages, tokens, tool calls or title:"
+    )
+    for s in shown:
+        print(
+            f"  {s['id']}  {format_epoch(s.get('started_at')):<17} "
+            f"{(s.get('source') or '-'):<10} {s.get('session_key') or '-'}"
+        )
+    if len(candidates) > len(shown):
+        print(f"  … {len(candidates) - len(shown)} more")
+
+    if args.dry_run:
+        print("Dry run — nothing deleted.")
+        return
+    if not args.yes and not _confirm_prompt(
+        f"Delete {len(candidates)} session(s)? [y/N] "
+    ):
+        print("Aborted.")
+        return
+
+    sessions_dir = get_hermes_home() / "sessions"
+    deleted, routing_deleted = db.prune_never_active_keyed_sessions(
+        older_than_days=days, sessions_dir=sessions_dir
+    )
+    print(
+        f"Deleted {deleted} never-active session(s) and {routing_deleted} "
+        "stale routing entr(ies)."
+    )
 
 
 def cmd_sessions(args, sessions_parser=None):
@@ -93,10 +159,14 @@ def cmd_sessions(args, sessions_parser=None):
             try:
                 from hermes_state import SessionDB
 
-                n = SessionDB()._conn.execute(
-                    "SELECT COUNT(*) FROM sessions"
-                ).fetchone()[0]
-                print(f"✓ Repaired — {n} sessions recovered.")
+                _repair_db = SessionDB()
+                try:
+                    n = _repair_db._conn.execute(
+                        "SELECT COUNT(*) FROM sessions"
+                    ).fetchone()[0]
+                    print(f"✓ Repaired — {n} sessions recovered.")
+                finally:
+                    _repair_db.close()
             except Exception:
                 print("✓ Repaired.")
         else:
@@ -232,13 +302,25 @@ def cmd_sessions(args, sessions_parser=None):
         print("  Do not install it. Review the JSON report for partial data or errors.")
         return 1
 
+    if action == "import":
+        from hermes_cli.foreign_sessions import run_sessions_import
+
+        result = run_sessions_import(args)
+        # A path was explicitly given but nothing imported → real error (bad
+        # path, unknown source, no turns). Propagate a non-zero exit so
+        # scripts can detect the failure (SES-04/SES-10). An interactive
+        # picker cancel (no path) returning None is a normal no-op → exit 0.
+        if result is None and getattr(args, "path", None):
+            return 1
+        return
+
     try:
         from hermes_state import SessionDB
 
         db = SessionDB()
     except Exception as e:
         print(f"Error: Could not open session database: {e}")
-        return
+        return 1
 
     # Hide third-party tool sessions by default, but honour explicit --source
     _source = getattr(args, "source", None)
@@ -789,18 +871,34 @@ def cmd_sessions(args, sessions_parser=None):
         resolved_session_id = db.resolve_session_id(args.session_id)
         if not resolved_session_id:
             print(f"Session '{args.session_id}' not found.")
-            return
+            return 1
+        # Note when the explicit target is pinned — the user named this id
+        # directly so we honor the delete, but a pin is a "keep" flag and
+        # silently destroying it (round-3 QA SES-01) is surprising.
+        _get_session = getattr(db, "get_session", None)
+        _meta = (_get_session(resolved_session_id) or {}) if callable(_get_session) else {}
+        _pinned_note = " (this session is PINNED)" if _meta.get("pinned") else ""
         if not args.yes:
             if not _confirm_prompt(
-                f"Delete session '{resolved_session_id}' and all its messages? [y/N] "
+                f"Delete session '{resolved_session_id}'{_pinned_note} "
+                "and all its messages? [y/N] "
             ):
                 print("Cancelled.")
                 return
+        elif _pinned_note:
+            print(f"Warning: deleting a pinned session '{resolved_session_id}'.")
         sessions_dir = get_hermes_home() / "sessions"
         if db.delete_session(resolved_session_id, sessions_dir=sessions_dir):
             print(f"Deleted session '{resolved_session_id}'.")
         else:
             print(f"Session '{args.session_id}' not found.")
+            return 1
+
+    elif action == "prune" and getattr(args, "never_active", False):
+        # Separate branch on purpose: the shared prune/archive selector is
+        # pinned to `ended_at IS NOT NULL`, so never-closed rows sit outside
+        # it by construction and cannot be expressed as one more filter.
+        _prune_never_active_keyed(db, args)
 
     elif action in ("prune", "archive"):
         from hermes_cli.session_filters import (
@@ -839,7 +937,7 @@ def cmd_sessions(args, sessions_parser=None):
             filters = build_prune_filters(args)
         except ValueError as e:
             print(f"Error: {e}")
-            return
+            return 1
 
         if action == "archive" and not any(
             v for k, v in filters.items() if k != "older_than_days"
@@ -859,7 +957,52 @@ def cmd_sessions(args, sessions_parser=None):
         else:
             filters["archived"] = False
 
+        # Pinned sessions are excluded by default from bulk prune/archive
+        # (pin = durable keep). `prune --include-pinned` opts in; archive has
+        # no such flag, so archive always spares pinned rows. Surface a count
+        # of pinned matches being skipped so the user knows they were spared.
+        _include_pinned = getattr(args, "include_pinned", False)
+        filters["include_pinned"] = _include_pinned
+        _count_matches = getattr(db, "count_prune_matches", None)
+        if not _include_pinned and callable(_count_matches):
+            _base = {k: v for k, v in filters.items() if k != "include_pinned"}
+            try:
+                _with_pinned = int(_count_matches(**_base, include_pinned=True))
+                _without_pinned = int(_count_matches(**_base, include_pinned=False))
+                _pinned_skipped = max(_with_pinned - _without_pinned, 0)
+            except TypeError:
+                # A db double without include_pinned support — skip the note.
+                _pinned_skipped = 0
+            if _pinned_skipped:
+                _suffix = "" if _pinned_skipped == 1 else "s"
+                _verb_word = "deleted" if action == "prune" else "archived"
+                _optin = (
+                    "Pass --include-pinned to delete them anyway, or unpin "
+                    "first with `hermes sessions unpin <id>`."
+                    if action == "prune"
+                    else "Unpin first with `hermes sessions unpin <id>` to include them."
+                )
+                print(
+                    f"Note: {_pinned_skipped} pinned session{_suffix} also match "
+                    f"these filters but will NOT be {_verb_word} (pin is a keep "
+                    f"flag). {_optin}"
+                )
+
         candidates = db.list_prune_candidates(**filters)
+        # Archive expands each selected row to its compression lineage, which
+        # can include open continuations; a direct-open count would therefore
+        # describe the eventual archive effect inaccurately.
+        skipped_open = (
+            db.count_open_prune_matches(**filters) if action == "prune" else 0
+        )
+        if skipped_open:
+            suffix = "" if skipped_open == 1 else "s"
+            print(
+                f"Note: {skipped_open} open session{suffix} also match these "
+                "filters but will be skipped because prune only deletes ended "
+                "sessions. Use `hermes sessions delete <id>` "
+                "to remove one explicitly."
+            )
         verb = "Delete" if action == "prune" else "Archive"
         if not candidates:
             print(f"No sessions match ({describe_filters(filters)}).")
@@ -917,15 +1060,90 @@ def cmd_sessions(args, sessions_parser=None):
         resolved_session_id = db.resolve_session_id(args.session_id)
         if not resolved_session_id:
             print(f"Session '{args.session_id}' not found.")
-            return
+            return 1
         title = " ".join(args.title)
+        # Reject blank / whitespace-only / newline-bearing titles (SES-05):
+        # an empty title renders as "—" and embedded newlines corrupt the
+        # `list` table. length is validated in set_session_title; guard
+        # emptiness + control chars here.
+        if not title.strip():
+            print("Error: title cannot be empty or whitespace-only.")
+            return 1
+        if "\n" in title or "\r" in title:
+            print("Error: title cannot contain newlines.")
+            return 1
         try:
             if db.set_session_title(resolved_session_id, title):
                 print(f"Session '{resolved_session_id}' renamed to: {title}")
             else:
                 print(f"Session '{args.session_id}' not found.")
+                return 1
         except ValueError as e:
             print(f"Error: {e}")
+            return 1
+
+    elif action in ("pin", "unpin"):
+        # CLI surface for the durable "keep" flag (issue #52955). Pinned
+        # sessions are exempt from the sessions.auto_archive stale sweep and
+        # always surface in listings; until now only the Desktop sidebar
+        # could write the flag. Inspired by Perplexity Computer's
+        # conversational session management (pin/archive from any surface):
+        # pin state is operational infrastructure, so every surface — GUI,
+        # TUI, CLI, scripts — needs read/write access to the same store.
+        pinning = action == "pin"
+        failures = 0
+        for raw_id in args.session_ids:
+            resolved = db.resolve_session_id(raw_id)
+            if not resolved:
+                print(f"Session '{raw_id}' not found.")
+                failures += 1
+                continue
+            if db.set_session_pinned(resolved, pinning):
+                verb = "Pinned" if pinning else "Unpinned"
+                title = db.get_session_title(resolved)
+                suffix = f"  ({title})" if title else ""
+                print(f"{verb} session '{resolved}'.{suffix}")
+            else:
+                print(f"Session '{raw_id}' not found.")
+                failures += 1
+        if failures:
+            return 1
+
+    elif action == "pinned":
+        # List every pinned conversation regardless of age. limit=1 keeps the
+        # recency page minimal; include_pinned back-fills ALL pinned rows the
+        # page missed (bounded by pin count, see list_sessions_rich), so old
+        # pins can't fall off a paging window.
+        rows = db.list_sessions_rich(
+            limit=1, include_pinned=True, exclude_sources=_exclude
+        )
+        pinned_rows = [s for s in rows if s.get("pinned")]
+        if getattr(args, "json", False):
+            payload = [
+                {
+                    "id": s["id"],
+                    "title": s.get("title"),
+                    "source": s.get("source"),
+                    "last_active": s.get("last_active"),
+                    "message_count": s.get("message_count"),
+                }
+                for s in pinned_rows
+            ]
+            print(_json.dumps(payload, indent=2))
+            return
+        if not pinned_rows:
+            print(
+                "No pinned sessions. Pin one with: hermes sessions pin <session_id>"
+            )
+            return
+        print(f"{'Title':<32} {'Last Active':<13} {'Src':<9} {'ID'}")
+        print("─" * 100)
+        for s in pinned_rows:
+            title = (s.get("title") or s.get("preview", "") or "—")[:30]
+            last_active = _relative_time(s.get("last_active"))
+            print(
+                f"{title:<32} {last_active:<13} {(s.get('source') or '-'):<9} {s['id']}"
+            )
 
     elif action == "retitle-skills":
         from agent.skill_commands import describe_skill_invocation
@@ -994,12 +1212,17 @@ def cmd_sessions(args, sessions_parser=None):
         sessions = db.list_sessions_rich(
             source=source, exclude_sources=_browse_exclude, limit=limit
         )
-        db.close()
         if not sessions:
+            db.close()
             print("No sessions found.")
             return
 
-        selected_id = _session_browse_picker(sessions)
+        # Keep the DB open: the picker uses it for lifecycle status tags and
+        # the 'd' delete-with-confirmation action.
+        try:
+            selected_id = _session_browse_picker(sessions, session_db=db)
+        finally:
+            db.close()
         if not selected_id:
             print("Cancelled.")
             return

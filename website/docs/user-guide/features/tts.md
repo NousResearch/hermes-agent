@@ -45,7 +45,7 @@ Convert text to speech with twelve providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "deepinfra" | "neutts" | "kittentts" | "piper" | "kokoro"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "deepinfra" | "neutts" | "kittentts" | "piper" | "kokoro" — or "nous" for the managed Tool Gateway (written when you pick Nous Subscription in `hermes tools`)
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -270,7 +270,7 @@ tts:
 
 Kokoro is a high-quality local neural TTS engine (82M parameters, Apache-licensed) that runs via ONNX Runtime. It needs no API key and bundles espeak-ng through the `espeakng-loader` dependency (prebuilt DLLs for Linux, macOS, and Windows — no system espeak-ng install required).
 
-**Install via `hermes tools`** → Voice & TTS → Kokoro — Hermes runs `pip install kokoro-onnx soundfile` for you. Or install manually: `pip install kokoro-onnx soundfile`.
+**Install via `hermes tools** -> Voice & TTS -> Kokoro -- Hermes runs `pip install kokoro-onnx soundfile` for you. Or install manually: `pip install kokoro-onnx soundfile`.
 
 **Switch to Kokoro:**
 
@@ -284,7 +284,7 @@ tts:
 
 On the first TTS call, Hermes downloads the model files (`kokoro-v1.0.int8.onnx` ~114MB + `voices-v1.0.bin`) into `~/.hermes/cache/kokoro-models/`. Subsequent calls reuse the cached model.
 
-**Choosing a model variant.** The default `int8` model (114MB) is optimized for CPU inference — fastest on CPU and the lightest footprint. Users with a dedicated GPU can switch to `fp32` (325MB, fastest on GPU) or `fp16` (163MB):
+**Choosing a model variant.** The default `int8` model (114MB) is optimized for CPU inference -- fastest on CPU and the lightest footprint. Users with a dedicated GPU can switch to `fp32` (325MB, fastest on GPU) or `fp16` (163MB):
 
 ```yaml
 tts:
@@ -314,6 +314,19 @@ tts:
 ```
 
 **Speed control** (`tts.kokoro.speed`, default `1.0`) adjusts the speech rate. The model can also pass a per-call `speed` parameter through the `text_to_speech` tool.
+
+### Warm-up and unload via speech toggles (local engines)
+
+Local engines (Piper, KittenTTS) load their model lazily, so without help the *first* spoken reply after you turn speech on pays the whole model load -- and on a fresh install the voice download -- as silence before the first word. Hermes treats the speech-output toggles as the signal that TTS is about to be needed:
+
+- **Desktop** -- turning on **Read replies aloud**, or starting a **voice conversation**, pre-loads the configured engine in the background right away. Turning both off again unloads the resident model (a Piper voice is tens of MB; KittenTTS up to ~80MB) so it isn't parked in RAM for nothing.
+- **CLI / TUI** -- `/voice tts` (and `/voice on` when `voice.auto_tts` is set) do the same; `/voice off` releases.
+
+Each toggle holds a *lease* on the engine; the model is only unloaded when the last lease across surfaces is released, so switching off read-aloud in one Desktop window never pulls the voice out from under a conversation running in another. For cloud providers there is no model to hold -- the toggle only makes sure a lazily-installed SDK (edge-tts, ElevenLabs, Mistral) is present. Warm-up is best-effort: if the engine can't load, the toggle still succeeds and the first reply falls back to loading on demand as before.
+
+The Desktop calls `POST /api/audio/tts-lease` with `{"lease": "<name>", "active": true|false}`; other frontends can use the same endpoint.
+
+The same lease also reaches user-declared providers, so a self-hosted TTS server can preload and unload its model on the toggles: a [command provider](#custom-command-providers) runs its optional `warm_command` / `release_command`, and a [Python plugin provider](#python-plugin-providers) gets `warm()` / `release()`.
 
 ### Custom command providers
 
@@ -407,6 +420,7 @@ Use `{{` and `}}` for literal braces.
 | `voice_compatible` | `false` | When `true`, Hermes converts MP3/WAV output to Opus/OGG via ffmpeg so Telegram renders a voice bubble.      |
 | `max_text_length`  | `5000`  | Maximum input characters per command invocation; longer text is split into ordered chunks.                  |
 | `voice` / `model`  | empty   | Passed to the command as placeholder values only.                                                           |
+| `warm_command` / `release_command` | unset | Shell commands run when a surface toggles speech output on / when the last lease across surfaces is released — e.g. `curl -s localhost:5002/load?model={model}` to preload a local TTS server, and its `unload` counterpart. Best-effort and non-blocking: run in the background with the same `timeout`, `env_passthrough` and `{voice}` / `{model}` / `{speed}` placeholders as `command`; output is discarded and failures are only logged at debug. |
 
 #### Behavior notes
 
@@ -496,6 +510,7 @@ Override these on your provider class for richer integration:
 - `get_setup_schema()` → return `{name, badge, tag, env_vars: [{key, prompt, url}]}` to power the picker row in `hermes tools` / `hermes setup`. Without this, the plugin still works but its row in the picker is minimal.
 - `stream(text, *, voice, model, format, **extra)` → iterator yielding audio bytes for streaming delivery (default raises `NotImplementedError`).
 - `voice_compatible` property → set `True` if your output is Opus-compatible and the gateway should deliver it as a voice bubble (default `False` = regular audio attachment).
+- `warm()` / `release()` → called when a surface toggles speech output on / when the last lease across surfaces is released, while your provider is the configured `tts.provider` — preload or unload a local model server here. Both default to no-ops; exceptions are logged at debug and never fail the toggle.
 
 See `agent/tts_provider.py` for the full ABC including docstrings.
 
@@ -584,10 +599,12 @@ Hermes writes the incoming voice message to `{input_path}`, runs the command, an
 
 ### Fallback Behavior
 
-If your configured provider isn't available, Hermes automatically falls back:
+An **explicit** `stt.provider` selection (written in `config.yaml`, e.g. via `hermes tools`) is honored strictly — if that provider can't run, transcription fails with a clear error (`stt is configured to use <provider> (set via hermes tools), but <failure>. Run 'hermes tools' to change it.`) instead of silently switching engines. Note that `stt.provider: local` written in your config counts as an explicit selection.
+
+When **no provider has ever been selected**, Hermes auto-detects from what's available:
 - **Local faster-whisper unavailable** → Tries a local `whisper` CLI or `HERMES_LOCAL_STT_COMMAND` before cloud providers
-- **Groq key not set** → Falls back to local transcription, then OpenAI
-- **OpenAI key not set** → Falls back to local transcription, then Groq
+- **Groq key not set** → Skipped; next available provider
+- **OpenAI key not set** → Skipped; next available provider
 - **Mistral key/SDK not set** → Skipped in auto-detect; falls through to next available provider
 - **Nothing available** → Voice messages pass through with an accurate note to the user
 

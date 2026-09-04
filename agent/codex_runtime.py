@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
@@ -305,6 +306,11 @@ def _record_codex_app_server_compaction(
             compressor.last_prompt_tokens = -1
             compressor.last_completion_tokens = 0
             compressor.awaiting_real_usage_after_compression = True
+
+    # Native compaction rewrote the provider-side context; the usage anchor's
+    # transcript snapshot no longer matches what will be sent. Invalidate it.
+    agent._usage_anchor = None
+    agent._turn_base_usage_anchor = None
 
     agent._last_compaction_in_place = False
     try:
@@ -690,6 +696,20 @@ def run_codex_app_server_turn(
     Called from run_conversation() when agent.api_mode == "codex_app_server".
     Returns the same dict shape as the chat_completions path.
     """
+    # Defense in depth for compression.checkpoint_required: agent init
+    # already refuses this combination, but api_mode is a plain attribute a
+    # future code path could mutate on a live agent. Fail closed before the
+    # codex agent can compact its thread — once run_turn() executes, a
+    # codex-owned compaction may already have happened with no pre-compress
+    # checkpoint. Explicit-True check matches the compress_context() gate.
+    if getattr(agent, "compression_checkpoint_required", False) is True:
+        from agent.conversation_compression import _checkpoint_blocked
+
+        raise _checkpoint_blocked(
+            "codex_app_server owns the authoritative thread and compacts it "
+            "without a truthful pre-compaction transcript boundary"
+        )
+
     from agent.transports.codex_app_server_session import (
         CodexAppServerSession,
         _ServerRequestRouting,
@@ -824,7 +844,10 @@ def run_codex_app_server_turn(
     # standard {role, content, tool_calls, tool_call_id} entries, which
     # is exactly what curator.py / sessions DB expect.
     if turn.projected_messages:
-        messages.extend(turn.projected_messages)
+        from agent.message_metadata import append_message
+
+        for projected_message in turn.projected_messages:
+            append_message(messages, projected_message)
 
         # Persist the newly-projected assistant/tool messages ourselves.
         # This path is an early return that bypasses conversation_loop, whose
@@ -1078,11 +1101,28 @@ def _consume_codex_event_stream(
     * ``on_first_delta()`` — one-shot, fires on the first text delta only.
     * ``on_event(event)`` — fires for every event before any other processing.
       Used for watchdog activity, debug logging, anything wire-shape-agnostic.
-    * ``interrupt_check()`` — returns True to break the loop early.
+    * ``interrupt_check()`` — returns True to break the loop early, or raises
+      ``TimeoutError`` / ``InterruptedError`` for request-retirement control
+      flow that must not be converted into a partial final response.
     """
     collected_output_items: List[Any] = []
+    # output_index of each collected_output_items entry, appended in lockstep
+    # so settled pending calls can be merged back in stream order.
+    collected_output_indexes: List[Any] = []
+    collected_output_sequences: List[int] = []
     collected_text_deltas: List[str] = []
     has_tool_calls = False
+    # Function calls announced via output_item.added but not yet confirmed by
+    # output_item.done, keyed by item id.  Some OpenAI-compatible backends omit
+    # per-item done events on a successful completion (upstream evidence:
+    # anomalyco/opencode#37159); these are settled from accumulated stream
+    # state at the terminal event so the tool call executes instead of being
+    # silently dropped.
+    pending_function_calls: Dict[str, Dict[str, Any]] = {}
+    # First-observed (sequence, output_index) per announced item id, so items
+    # confirmed later via output_item.done keep their announced stream
+    # position when merged with settled pending calls.
+    announced_output_order: Dict[str, tuple] = {}
     first_delta_fired = False
     active_message_phase: str | None = None
     commentary_text_deltas: List[str] = []
@@ -1096,6 +1136,11 @@ def _consume_codex_event_stream(
     terminal_incomplete_details: Any = None
     terminal_error: Any = None
     saw_terminal = False
+    # Settlement of pending calls requires an actually observed successful
+    # terminal frame.  ``terminal_status`` defaults to "completed", so it
+    # cannot distinguish a real response.completed from EOF/interruption.
+    saw_response_completed = False
+    next_output_sequence = 0
 
     for event in event_iter:
         if on_event is not None:
@@ -1138,8 +1183,32 @@ def _consume_codex_event_stream(
                     commentary_text_deltas = []
             else:
                 active_message_phase = None
+            # First-observed ordering metadata for EVERY announced item (not
+            # just function calls): when this item later lands via
+            # output_item.done, the done path must reuse the announced
+            # sequence/index instead of allocating a fresh tail position, or
+            # a mixed announced/pending stream without output_index values
+            # reorders the calls (review P1 on PR #92767).
+            item_id = str(_item_field(item, "id", ""))
+            if item_id and item_id not in announced_output_order:
+                announced_output_order[item_id] = (
+                    next_output_sequence,
+                    _event_field(event, "output_index", None),
+                )
+                next_output_sequence += 1
             if "function_call" in str(item_type):
                 has_tool_calls = True
+                if item_id:
+                    announced_sequence, announced_index = announced_output_order[item_id]
+                    # Seed from the announced item's own arguments when the
+                    # backend attaches them up front, and remember the stream
+                    # position so a settled call keeps its place in the output.
+                    pending_function_calls[item_id] = {
+                        "item": item,
+                        "arguments": str(_item_field(item, "arguments", "") or ""),
+                        "output_index": announced_index,
+                        "sequence": announced_sequence,
+                    }
             continue
 
         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
@@ -1178,7 +1247,27 @@ def _consume_codex_event_stream(
 
         if "function_call" in event_type:
             has_tool_calls = True
-            # fall through — function_call items still get added on output_item.done
+            # Accumulate streamed argument deltas for calls announced via
+            # output_item.added, so a stream that completes without per-item
+            # done events can still be settled from accumulated state.
+            if "delta" in event_type:
+                delta_args = _event_field(event, "delta", "")
+                pending = pending_function_calls.get(str(_event_field(event, "item_id", "")))
+                if pending is not None and delta_args:
+                    pending["arguments"] += delta_args
+                continue
+            if event_type.endswith("function_call_arguments.done"):
+                done_args = _event_field(event, "arguments", None)
+                pending = pending_function_calls.get(str(_event_field(event, "item_id", "")))
+                if pending is not None and done_args is not None:
+                    # Per-item arguments.done is authoritative for the
+                    # accumulated string when the item itself never lands.
+                    # An explicit empty string (zero-argument call) counts as
+                    # authoritative; only a missing field leaves the streamed
+                    # deltas in place.
+                    pending["arguments"] = str(done_args)
+                continue
+            # other function_call frames fall through — function_call items still get added on output_item.done
 
         if "reasoning" in event_type and "delta" in event_type:
             reasoning_text = _event_field(event, "delta", "")
@@ -1204,6 +1293,26 @@ def _consume_codex_event_stream(
             done_item = _event_field(event, "item")
             if done_item is not None:
                 collected_output_items.append(done_item)
+                # Reuse the first-observed position when this item was
+                # announced earlier via output_item.added; a fresh tail
+                # sequence is allocated only for genuinely unannounced items.
+                # The .done event's own output_index wins when present, with
+                # the announced index as its fallback.
+                done_id = str(_item_field(done_item, "id", ""))
+                announced_sequence, announced_index = announced_output_order.get(
+                    done_id, (None, None)
+                )
+                done_index = _event_field(event, "output_index", None)
+                if done_index is None:
+                    done_index = announced_index
+                if announced_sequence is None:
+                    announced_sequence = next_output_sequence
+                    next_output_sequence += 1
+                collected_output_indexes.append(done_index)
+                collected_output_sequences.append(announced_sequence)
+                # Confirmed by the authoritative per-item done event; remove
+                # from pending so it is not settled twice.
+                pending_function_calls.pop(done_id, None)
                 done_phase = _item_field(done_item, "phase", None)
                 done_phase = done_phase.strip().lower() if isinstance(done_phase, str) else None
                 if done_phase == "commentary" and on_commentary_message is not None:
@@ -1252,6 +1361,7 @@ def _consume_codex_event_stream(
                     if terminal_error is None and isinstance(resp_obj, dict):
                         terminal_error = resp_obj.get("error")
             if event_type == "response.completed":
+                saw_response_completed = True
                 terminal_status = terminal_status or "completed"
             elif event_type == "response.incomplete":
                 terminal_status = terminal_status or "incomplete"
@@ -1275,6 +1385,56 @@ def _consume_codex_event_stream(
         )]
     else:
         output = []
+
+    # Settle function calls that were announced via output_item.added and
+    # streamed argument deltas but never confirmed by output_item.done: some
+    # OpenAI-compatible backends omit per-item done events on a successful
+    # completion (anomalyco/opencode#37159).  Done items stay authoritative;
+    # this only fills the gap so the call executes instead of vanishing.
+    if pending_function_calls and saw_response_completed:
+        # Assemble settled calls and .done items in output_index order instead
+        # of appending at the tail: a pending call that streamed before a later
+        # .done item must keep its position, or dependent side effects invert.
+        indexed = [
+            (index, sequence, position, item)
+            for position, (index, sequence, item) in enumerate(
+                zip(
+                    collected_output_indexes,
+                    collected_output_sequences,
+                    collected_output_items,
+                )
+            )
+        ]
+        for position, pending in enumerate(pending_function_calls.values(), start=len(indexed)):
+            item = pending["item"]
+            # Canonicalize empty/whitespace arguments so zero-delta calls stay
+            # executable; malformed non-empty JSON passes through untouched and
+            # stays rejected by downstream argument parsing.
+            arguments = (pending["arguments"] or "").strip() or "{}"
+            indexed.append((pending.get("output_index"), pending["sequence"], position, SimpleNamespace(
+                type="function_call",
+                id=_item_field(item, "id", None),
+                call_id=_item_field(item, "call_id", None),
+                name=_item_field(item, "name", None),
+                arguments=arguments,
+                status="completed",
+            )))
+
+        # output_index is optional in compatible Responses streams.  A partial
+        # ordering (sorting indexed entries while interleaving unindexed ones)
+        # is not well-defined and can produce contradictory comparisons.  Keep
+        # the observed wire order whenever any index is missing; use the
+        # protocol ordering only when every entry provides an index.
+        if all(entry[0] is not None for entry in indexed):
+            try:
+                indexed.sort(key=lambda entry: entry[0])
+            except TypeError:
+                # Preserve wire order if a backend sends non-comparable index
+                # values instead of integers.
+                pass
+        else:
+            indexed.sort(key=lambda entry: entry[1])
+        output = [entry[3] for entry in indexed]
 
     # If the stream ended without any terminal event AND produced no usable
     # content (no items, no text deltas), surface that as a RuntimeError so
@@ -1302,6 +1462,134 @@ def _consume_codex_event_stream(
     return final
 
 
+def _sanitize_consumer_codex_request(
+    agent: Any,
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    """Drop fields the ChatGPT OAuth Codex endpoint does not accept.
+
+    This guard intentionally lives at the final wire boundary, after Relay or
+    other request middleware has had a chance to transform the request. The
+    normal transport builder already omits ``prompt_cache_retention`` for this
+    endpoint, but a late mutation must not be allowed to turn a valid tool
+    follow-up into a non-retryable HTTP 400.
+
+    Explicit ``request_overrides`` are subject to the same endpoint contract:
+    unsupported retention is dropped with a warning instead of being sent and
+    rejected by the provider. The check covers both the top-level kwarg and a
+    nested ``extra_body`` entry — the OpenAI SDK merges ``extra_body`` into
+    the outgoing JSON body, so either shape reaches the endpoint.
+    """
+    sanitized = dict(request)
+    # Resolved defensively on purpose: run_codex_stream is also driven with
+    # lightweight stand-in agents that carry only the attributes a given path
+    # needs (see tests/agent/test_codex_request_transport_diagnostics.py), so a
+    # bare agent._is_codex_backend() here would raise AttributeError on them.
+    backend_predicate = getattr(agent, "_is_codex_backend", None)
+    is_consumer_codex = (
+        bool(backend_predicate()) if callable(backend_predicate) else False
+    )
+    if not is_consumer_codex:
+        return sanitized
+    dropped_from: list[str] = []
+    if "prompt_cache_retention" in sanitized:
+        sanitized.pop("prompt_cache_retention")
+        dropped_from.append("top-level")
+    # The OpenAI SDK merges ``extra_body`` into the outgoing JSON body, so a
+    # nested ``extra_body.prompt_cache_retention`` reaches the endpoint just
+    # like the top-level field would. Copy before editing — the caller's
+    # mapping must not be mutated — and drop the mapping when it empties.
+    extra_body = sanitized.get("extra_body")
+    if isinstance(extra_body, dict) and "prompt_cache_retention" in extra_body:
+        extra_body = dict(extra_body)
+        extra_body.pop("prompt_cache_retention")
+        if extra_body:
+            sanitized["extra_body"] = extra_body
+        else:
+            sanitized.pop("extra_body")
+        dropped_from.append("extra_body")
+    if dropped_from:
+        logger.warning(
+            "Dropped unsupported prompt_cache_retention at consumer Codex "
+            "wire boundary (model=%s, via %s).",
+            sanitized.get("model", getattr(agent, "model", "unknown")),
+            ", ".join(dropped_from),
+        )
+    return sanitized
+
+
+# Bulk request fields that carry the conversation payload. Everything else in
+# the request is scalar configuration the SDK transform handles in microseconds.
+_SDK_TRANSFORM_BYPASS_FIELDS = ("input", "tools")
+
+
+def _is_plain_json_data(value: Any) -> bool:
+    """True when ``value`` is composed purely of JSON wire types.
+
+    The SDK's request transform exists to convert typed params (TypedDict
+    key aliases, pydantic models, ``PropertyInfo`` formats) into wire
+    format.  Hermes assembles Codex payloads from JSON round-trips, so they
+    are already wire format — but that is only provable when every node is
+    a plain JSON type.  Anything else must keep the typed SDK path.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return True
+    if isinstance(value, dict):
+        return all(
+            isinstance(key, str) and _is_plain_json_data(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return all(_is_plain_json_data(item) for item in value)
+    return False
+
+
+def _bypass_sdk_request_transform(stream_kwargs: dict) -> dict:
+    """Route bulk payload fields around the SDK's ``maybe_transform`` (#93650).
+
+    ``responses.create`` re-walks the entire request body against the
+    ``ResponseCreateParams`` union graph before any byte leaves the process.
+    That walk runs with the GIL held, and #93650 documents it wedging for
+    12+ hours on a ~1.4 MB conversation — starving every other thread,
+    including the TTFB/stale watchdogs whose job is to rescue this exact
+    call.  Because the hang is client-side and pre-network, no socket kill
+    can unblock it.
+
+    The SDK merges ``extra_body`` into the JSON body *after* the transform
+    (``_base_client._build_request``), so moving the already-wire-format
+    bulk fields there skips the walk entirely and produces a byte-identical
+    request.  Fields containing anything that is not plain JSON data (e.g.
+    pydantic models, generators) stay on the typed path, which still needs
+    the transform.  Set HERMES_CODEX_SDK_TRANSFORM=1 to restore the pre-fix
+    behavior.
+    """
+    if os.environ.get("HERMES_CODEX_SDK_TRANSFORM", "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }:
+        return stream_kwargs
+
+    moved = {
+        field: stream_kwargs[field]
+        for field in _SDK_TRANSFORM_BYPASS_FIELDS
+        if isinstance(stream_kwargs.get(field), (dict, list))
+        and _is_plain_json_data(stream_kwargs[field])
+    }
+    if not moved:
+        return stream_kwargs
+
+    bypassed = {
+        key: value for key, value in stream_kwargs.items() if key not in moved
+    }
+    extra_body = bypassed.get("extra_body")
+    merged = dict(extra_body) if isinstance(extra_body, dict) else {}
+    for field, value in moved.items():
+        # An explicit caller-provided extra_body entry keeps precedence,
+        # matching what the SDK's post-transform merge would have done.
+        merged.setdefault(field, value)
+    bypassed["extra_body"] = merged
+    return bypassed
+
+
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """Execute one streaming Responses API request and return the final response.
 
@@ -1320,18 +1608,39 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     max_stream_retries = 1
     # Accumulate streamed text so callers / compat shims can read it.
     agent._codex_streamed_text_parts: list = []
+    # Retirement token for THIS request, installed by
+    # ``interruptible_api_call`` before it hands off to the worker thread. When
+    # a watchdog (TTFB / stream-idle / stale-call) kills the connection it
+    # clears the agent-level token, so a worker that is still draining frames
+    # can tell it has been retired. ``None`` means no watchdog owns this call
+    # (auxiliary callers drive this function directly) — then every check
+    # passes and behavior is unchanged.
+    request_token = getattr(agent, "_active_codex_stream_request_token", None)
+
+    def _request_is_current() -> bool:
+        if request_token is None:
+            return True
+        return getattr(agent, "_active_codex_stream_request_token", None) is request_token
 
     def _on_text_delta(text: str) -> None:
+        if not _request_is_current():
+            return
         agent._codex_streamed_text_parts.append(text)
         agent._fire_stream_delta(text)
 
     def _on_reasoning_delta(text: str) -> None:
+        if not _request_is_current():
+            return
         agent._fire_reasoning_delta(text)
 
     def _on_commentary_message(text: str) -> None:
+        if not _request_is_current():
+            return
         agent._fire_streamed_codex_commentary(text)
 
     def _on_event(event: Any) -> None:
+        if not _request_is_current():
+            return
         # TTFB watchdog and activity touch — runs once per SSE event.
         agent._codex_stream_last_event_ts = time.time()
         agent._touch_activity("receiving stream response")
@@ -1344,8 +1653,12 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         writer_token = {"value": None}
 
         def _open_codex_stream(next_api_kwargs: dict[str, Any]):
-            stream_kwargs = dict(next_api_kwargs)
+            stream_kwargs = _sanitize_consumer_codex_request(
+                agent,
+                next_api_kwargs,
+            )
             stream_kwargs["stream"] = True
+            stream_kwargs = _bypass_sdk_request_transform(stream_kwargs)
             return active_client.responses.create(**stream_kwargs)
 
         def _codex_stream_created(_raw_stream: Any) -> None:
@@ -1431,6 +1744,14 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             raise
 
         def _interrupt_or_superseded() -> bool:
+            # A retired request must NOT break out of the consume loop: breaking
+            # returns the partial `final` (status defaults to "completed"), which
+            # the caller persists as a finished assistant turn. Raise so the
+            # watchdog's own TimeoutError is what the retry path sees.
+            if not _request_is_current():
+                raise TimeoutError(
+                    "Codex Responses stream request retired before terminal response"
+                )
             return bool(agent._interrupt_requested)
 
         try:

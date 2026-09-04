@@ -393,7 +393,10 @@ def relay_relevance_policy(platform: Optional[str] = None) -> Optional[dict]:
         cfg = _load_gateway_config() or {}
         plat_cfg = cfg.get(platform)
         if not isinstance(plat_cfg, dict):
-            plat_cfg = ((cfg.get("gateway") or {}).get("platforms") or {}).get(platform)
+            _gw_platforms = (cfg.get("gateway") or {}).get("platforms") or {}
+            if not isinstance(_gw_platforms, dict):
+                _gw_platforms = {}
+            plat_cfg = _gw_platforms.get(platform)
         if not isinstance(plat_cfg, dict):
             plat_cfg = (cfg.get("platforms") or {}).get(platform)
         plat_cfg = plat_cfg if isinstance(plat_cfg, dict) else {}

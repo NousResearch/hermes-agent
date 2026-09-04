@@ -101,9 +101,17 @@ def project_create(name: str, path: Optional[str] = None, task_id: Optional[str]
 
     try:
         with pdb.connect_closing() as conn:
-            pid = pdb.create_project(conn, name=name, folders=[folder] if folder else [], primary_path=folder or None)
-            pdb.set_active(conn, pid)
-            proj = pdb.get_project(conn, pid)
+            existing = pdb.find_by_primary_path(conn, folder) if folder else None
+            if existing is not None:
+                # Idempotent create: the folder already belongs to a project.
+                # Re-activating it beats minting a duplicate — duplicated
+                # projects render N identical sidebar subtrees (#75820).
+                pdb.set_active(conn, existing.id)
+                proj = existing
+            else:
+                pid = pdb.create_project(conn, name=name, folders=[folder] if folder else [], primary_path=folder or None)
+                pdb.set_active(conn, pid)
+                proj = pdb.get_project(conn, pid)
     except ValueError as exc:
         return json.dumps({"success": False, "error": str(exc)})
 
@@ -131,59 +139,43 @@ def project_switch(project: str, task_id: Optional[str] = None) -> str:
     return json.dumps({"success": True, "id": proj.id, "slug": proj.slug, "name": proj.name, "primary_path": primary})
 
 
-registry.register(
-    name="project_list",
-    toolset="project",
-    schema={
-        "name": "project_list",
-        "description": "List the desktop Projects (named workspaces) and which one is active.",
-        "parameters": {"type": "object", "properties": {}},
-    },
-    handler=lambda args, **kw: project_list(task_id=kw.get("task_id")),
-)
+def _handle_project(args, **kw):
+    action = (args.get("action") or "").strip()
+    tid = kw.get("task_id")
+    if action == "list":
+        return project_list(task_id=tid)
+    if action == "create":
+        return project_create(name=args.get("name", ""), path=args.get("path"), task_id=tid)
+    if action == "switch":
+        return project_switch(project=args.get("name", ""), task_id=tid)
+    return json.dumps({"success": False, "error": "action must be one of: create, switch, list."})
 
+
+# Consolidated (#95681, maintainer-directed): project_list/create/switch each
+# re-taught "desktop Projects (named workspaces)"; one action enum says it
+# once (244 -> ~145 tok).
 registry.register(
-    name="project_create",
+    name="desktop_project",
     toolset="project",
     schema={
-        "name": "project_create",
+        "name": "desktop_project",
         "description": (
-            "Create a desktop Project (a named workspace) and switch this chat into it. "
-            "Pass `path` to anchor it to a repo/folder — this chat's workspace moves there "
-            "and the sidebar follows. Use when starting work in a new repo/folder; this is "
-            "the intentional way to move the session, not `cd`."
+            "Create or switch desktop Projects (named workspaces). create: one and switch "
+            "this chat into it — pass path to anchor it to a repo/folder (the "
+            "chat's workspace moves there, the sidebar follows). switch: move "
+            "this chat into an existing project by name/slug/id — the "
+            "intentional way to move the session, not `cd`. list: all "
+            "projects + which is active."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Human name, e.g. 'Aurora Demo'"},
-                "path": {"type": "string", "description": "Primary repo/folder to anchor the project to"},
+                "action": {"type": "string", "enum": ["create", "switch", "list"]},
+                "name": {"type": "string", "description": "create: human name. switch: name, slug, or id."},
+                "path": {"type": "string", "description": "create: repo/folder to anchor to."},
             },
-            "required": ["name"],
+            "required": ["action"],
         },
     },
-    handler=lambda args, **kw: project_create(
-        name=args.get("name", ""), path=args.get("path"), task_id=kw.get("task_id")
-    ),
-)
-
-registry.register(
-    name="project_switch",
-    toolset="project",
-    schema={
-        "name": "project_switch",
-        "description": (
-            "Switch this chat into an existing desktop Project (by name, slug, or id). "
-            "Moves the session's workspace to the project's primary folder and the sidebar "
-            "follows. The intentional way to move between projects, not `cd`."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "project": {"type": "string", "description": "Project name, slug, or id"},
-            },
-            "required": ["project"],
-        },
-    },
-    handler=lambda args, **kw: project_switch(project=args.get("project", ""), task_id=kw.get("task_id")),
+    handler=_handle_project,
 )

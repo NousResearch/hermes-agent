@@ -9,6 +9,7 @@ back into the minimal shape Hermes expects from an OpenAI client.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import re
@@ -21,20 +22,18 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from openai.types.chat.chat_completion_message_tool_call import (
-    ChatCompletionMessageToolCall,
-    Function,
+from agent.acp_openai_bridge import (
+    completion_to_stream_chunks as _completion_to_stream_chunks,
+    extract_tool_calls_from_text as _extract_tool_calls_from_text,
+    render_tool_bridge_sections as _render_tool_bridge_sections,
 )
-
 from agent.file_safety import get_read_block_error, get_write_denied_error, is_write_approval_required
 from agent.redact import redact_sensitive_text
 from tools.environments.local import hermes_subprocess_env
 
 ACP_MARKER_BASE_URL = "acp://copilot"
+logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_SECONDS = 900.0
-
-_TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
-_TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
 
 # Stderr fingerprint of the deprecated `gh copilot` CLI extension
 # (https://github.blog/changelog/2025-09-25-upcoming-deprecation-of-gh-copilot-cli-extension).
@@ -72,6 +71,60 @@ def _resolve_args() -> list[str]:
     if not raw:
         return ["--acp", "--stdio"]
     return shlex.split(raw)
+
+
+# Probe verdicts cached per binary path so repeated prompts against a
+# CLI that supports --acp pay the ~50ms --help cost exactly once per
+# process. Only definitive verdicts (True/False) are cached; an
+# inconclusive probe (binary missing, --help crashed or timed out) is
+# not cached so a CLI installed mid-session is picked up.
+_ACP_PROBE_CACHE: dict[str, bool] = {}
+
+
+def _acp_supported(command: str, args: list[str]) -> bool | None:
+    """Tri-state probe: does ``command`` accept the ACP args we'd pass?
+
+    Different CLI versions support different transports. The GitHub
+    Copilot CLI (`@github/copilot`, late 2025+) ships with ``--acp``;
+    older releases (and Claude Code v2.x as of Aug 2026) do not.
+    Spawning a CLI that doesn't recognize the flag silently exits
+    with code 1 and ``error: unknown option '--acp'`` on stderr,
+    after which every delegate_task call hangs the parent for
+    ``child_timeout_seconds`` (default 600s) waiting for stdout
+    that never arrives.
+
+    Returns:
+      - ``True``  — help text advertises ``--acp``; safe to spawn.
+      - ``False`` — help ran cleanly but ``--acp`` is absent; spawning
+        would hang, so the caller should fast-fail with a clear error.
+      - ``None``  — inconclusive (binary missing, --help failed or
+        timed out). The caller must fall through to the normal spawn
+        path, which surfaces the existing "Could not start Copilot ACP
+        command" error with full context.
+
+    Only probes when ``--acp`` is actually among ``args``: a custom
+    HERMES_COPILOT_ACP_ARGS transport is the operator's business.
+    """
+    if "--acp" not in args:
+        return True
+    cached = _ACP_PROBE_CACHE.get(command)
+    if cached is not None:
+        return cached
+    try:
+        probe = subprocess.run(
+            [command, "--help"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if probe.returncode != 0:
+        # --help itself failed; can't tell anything about --acp.
+        return None
+    # Match ``--acp`` as a flag in the help text; tolerate spacing and
+    # variants like ``[--acp]``.
+    verdict = bool(re.search(r"(?:^|[\s\[])--acp(?:[\s=\],]|$)", probe.stdout, re.MULTILINE))
+    _ACP_PROBE_CACHE[command] = verdict
+    return verdict
 
 
 def _resolve_home_dir() -> str:
@@ -134,6 +187,71 @@ def _permission_denied(message_id: Any) -> dict[str, Any]:
     }
 
 
+def _model_selection_request(
+    session: dict[str, Any], requested_model: str
+) -> tuple[str, dict[str, str]] | None:
+    """Return the ACP request that selects ``requested_model`` for ``session``.
+
+    Prefer stable v1 ``session/set_config_option``. Fall back to Copilot's
+    pre-stabilization ``session/set_model`` extension only when no model
+    config option is advertised. A reported model list is authoritative:
+    unknown and policy-disabled ids return None instead of being sent.
+    """
+    session_id = str(session.get("sessionId") or "").strip()
+    requested_model = str(requested_model or "").strip()
+    if not session_id or not requested_model or requested_model == "copilot-acp":
+        return None
+
+    config_options = [
+        o for o in (session.get("configOptions") or []) if isinstance(o, dict)
+    ]
+    model_option = next(
+        (
+            o for o in config_options
+            if o.get("category") == "model" or o.get("id") == "model"
+        ),
+        None,
+    )
+    if model_option is not None:
+        enabled_values = {
+            str(o.get("value") or "").strip()
+            for o in (model_option.get("options") or [])
+            if isinstance(o, dict)
+            and str(
+                ((o.get("_meta") or {}).get("copilotEnablement")) or ""
+            ).strip().lower() != "disabled"
+        }
+        if requested_model not in enabled_values:
+            return None
+        return (
+            "session/set_config_option",
+            {
+                "sessionId": session_id,
+                "configId": str(model_option.get("id") or "model"),
+                "value": requested_model,
+            },
+        )
+
+    advertised = [
+        m
+        for m in ((session.get("models") or {}).get("availableModels") or [])
+        if isinstance(m, dict)
+    ]
+    available = {
+        str(m.get("modelId") or "").strip()
+        for m in advertised
+        if str(
+            ((m.get("_meta") or {}).get("copilotEnablement")) or ""
+        ).strip().lower() != "disabled"
+    }
+    if available and requested_model not in available:
+        return None
+    return (
+        "session/set_model",
+        {"sessionId": session_id, "modelId": requested_model},
+    )
+
+
 def _format_messages_as_prompt(
     messages: list[dict[str, Any]],
     model: str | None = None,
@@ -146,37 +264,15 @@ def _format_messages_as_prompt(
         "IMPORTANT: If you take an action with a tool, you MUST output tool calls using <tool_call>{...}</tool_call> blocks with JSON exactly in OpenAI function-call shape.",
         "If no tool is needed, answer normally.",
     ]
-    if model:
-        sections.append(f"Hermes requested model hint: {model}")
+    # Deliberately no "requested model" line in the prompt: the model is
+    # applied for real via ACP session/set_model, and when the backend can't
+    # honor it (org-policy-disabled id) a prompt-text mention makes the
+    # serving model FALSELY self-identify as the requested one. Identity
+    # must come from the backend, not from prompt suggestion.
 
-    if isinstance(tools, list) and tools:
-        tool_specs: list[dict[str, Any]] = []
-        for t in tools:
-            if not isinstance(t, dict):
-                continue
-            fn = t.get("function") or {}
-            if not isinstance(fn, dict):
-                continue
-            name = fn.get("name")
-            if not isinstance(name, str) or not name.strip():
-                continue
-            tool_specs.append(
-                {
-                    "name": name.strip(),
-                    "description": fn.get("description", ""),
-                    "parameters": fn.get("parameters", {}),
-                }
-            )
-        if tool_specs:
-            sections.append(
-                "Available tools (OpenAI function schema). "
-                "When using a tool, emit ONLY <tool_call>{...}</tool_call> with one JSON object "
-                "containing id/type/function{name,arguments}. arguments must be a JSON string.\n"
-                + json.dumps(tool_specs, ensure_ascii=False)
-            )
-
-    if tool_choice is not None:
-        sections.append(f"Tool choice hint: {json.dumps(tool_choice, ensure_ascii=False)}")
+    # Copilot has no tools of its own that would collide with Hermes', so it
+    # forwards the whole toolset (no allowlist).
+    sections.extend(_render_tool_bridge_sections(tools, tool_choice))
 
     transcript: list[str] = []
     for message in messages:
@@ -233,140 +329,6 @@ def _render_message_content(content: Any) -> str:
     return str(content).strip()
 
 
-def _build_openai_tool_call(
-    *,
-    call_id: str,
-    name: str,
-    arguments: str,
-) -> ChatCompletionMessageToolCall:
-    """Build an OpenAI-compatible tool-call object for downstream handling."""
-    return ChatCompletionMessageToolCall(
-        id=call_id,
-        call_id=call_id,
-        response_item_id=None,
-        type="function",
-        function=Function(name=name, arguments=arguments),
-    )
-
-
-def _completion_to_stream_chunks(completion: SimpleNamespace) -> list[SimpleNamespace]:
-    """Convert a one-shot ACP response into OpenAI-style stream chunks."""
-    choice = completion.choices[0]
-    message = choice.message
-    tool_call_deltas = None
-    if message.tool_calls:
-        tool_call_deltas = []
-        for index, tool_call in enumerate(message.tool_calls):
-            tool_call_deltas.append(
-                SimpleNamespace(
-                    index=index,
-                    id=getattr(tool_call, "id", None),
-                    type=getattr(tool_call, "type", "function"),
-                    function=SimpleNamespace(
-                        name=getattr(tool_call.function, "name", None),
-                        arguments=getattr(tool_call.function, "arguments", None),
-                    ),
-                )
-            )
-
-    delta = SimpleNamespace(
-        role="assistant",
-        content=message.content or None,
-        tool_calls=tool_call_deltas,
-        reasoning_content=message.reasoning_content,
-        reasoning=message.reasoning,
-    )
-    data_chunk = SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                index=0,
-                delta=delta,
-                finish_reason=choice.finish_reason,
-            )
-        ],
-        model=completion.model,
-        usage=None,
-    )
-    usage_chunk = SimpleNamespace(
-        choices=[],
-        model=completion.model,
-        usage=completion.usage,
-    )
-    return [data_chunk, usage_chunk]
-
-
-def _extract_tool_calls_from_text(text: str) -> tuple[list[ChatCompletionMessageToolCall], str]:
-    if not isinstance(text, str) or not text.strip():
-        return [], ""
-
-    extracted: list[ChatCompletionMessageToolCall] = []
-    consumed_spans: list[tuple[int, int]] = []
-
-    def _try_add_tool_call(raw_json: str) -> None:
-        try:
-            obj = json.loads(raw_json)
-        except Exception:
-            return
-        if not isinstance(obj, dict):
-            return
-        fn = obj.get("function")
-        if not isinstance(fn, dict):
-            return
-        fn_name = fn.get("name")
-        if not isinstance(fn_name, str) or not fn_name.strip():
-            return
-        fn_args = fn.get("arguments", "{}")
-        if not isinstance(fn_args, str):
-            fn_args = json.dumps(fn_args, ensure_ascii=False)
-        call_id = obj.get("id")
-        if not isinstance(call_id, str) or not call_id.strip():
-            call_id = f"acp_call_{len(extracted)+1}"
-
-        extracted.append(
-            _build_openai_tool_call(
-                call_id=call_id,
-                name=fn_name.strip(),
-                arguments=fn_args,
-            )
-        )
-
-    for m in _TOOL_CALL_BLOCK_RE.finditer(text):
-        raw = m.group(1)
-        _try_add_tool_call(raw)
-        consumed_spans.append((m.start(), m.end()))
-
-    # Only try bare-JSON fallback when no XML blocks were found.
-    if not extracted:
-        for m in _TOOL_CALL_JSON_RE.finditer(text):
-            raw = m.group(0)
-            _try_add_tool_call(raw)
-            consumed_spans.append((m.start(), m.end()))
-
-    if not consumed_spans:
-        return extracted, text.strip()
-
-    consumed_spans.sort()
-    merged: list[tuple[int, int]] = []
-    for start, end in consumed_spans:
-        if not merged or start > merged[-1][1]:
-            merged.append((start, end))
-        else:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-
-    parts: list[str] = []
-    cursor = 0
-    for start, end in merged:
-        if cursor < start:
-            parts.append(text[cursor:start])
-        cursor = max(cursor, end)
-    if cursor < len(text):
-        parts.append(text[cursor:])
-
-    cleaned = "\n".join(p.strip() for p in parts if p and p.strip()).strip()
-    return extracted, cleaned
-
-
-
 def _ensure_path_within_cwd(path_text: str, cwd: str) -> Path:
     candidate = Path(path_text)
     if not candidate.is_absolute():
@@ -395,6 +357,12 @@ class _ACPChatNamespace:
 
 class CopilotACPClient:
     """Minimal OpenAI-client-compatible facade for Copilot ACP."""
+
+    # Declared for agent/auxiliary_client.py: this shim drives an ACP subprocess
+    # over stdio, so it is already a complete client (never re-dispatch it
+    # through a wire adapter) and is safe to use from async code as-is.
+    HERMES_SKIP_TRANSPORT_WRAP = True
+    HERMES_SKIP_ASYNC_WRAP = True
 
     def __init__(
         self,
@@ -473,6 +441,7 @@ class CopilotACPClient:
         response_text, reasoning_text = self._run_prompt(
             prompt_text,
             timeout_seconds=_effective_timeout,
+            model=model,
         )
 
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
@@ -501,7 +470,42 @@ class CopilotACPClient:
             return _completion_to_stream_chunks(completion)
         return completion
 
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+    def _run_prompt(
+        self,
+        prompt_text: str,
+        *,
+        timeout_seconds: float,
+        model: str | None = None,
+    ) -> tuple[str, str]:
+        # Fast-fail when the CLI doesn't support the ACP args we'd pass.
+        # Without this guard, a CLI like Claude Code v2.x exits with
+        # ``error: unknown option '--acp'`` immediately, then the parent
+        # ACP loop waits the full ``child_timeout_seconds`` (default 600s)
+        # for stdout that never arrives. The probe costs ~50ms and turns
+        # a 600s silent hang into a 280ms clear error.
+        # ``None`` (inconclusive probe — e.g. binary missing) falls
+        # through to the spawn below, which raises the established
+        # "Could not start Copilot ACP command" error.
+        if _acp_supported(self._acp_command, self._acp_args) is False:
+            preview = " ".join(self._acp_args[:3]) if self._acp_args else "(none)"
+            raise RuntimeError(
+                f"ACP transport not supported by '{self._acp_command}': "
+                f"`{preview}` is rejected as an unknown option. "
+                f"This usually means the CLI is an older release (e.g. "
+                f"Claude Code v2.x) or a different tool than expected. "
+                f"Either install a CLI that ships with --acp support "
+                f"(e.g. `@github/copilot` late 2025+), or set "
+                f"HERMES_COPILOT_ACP_COMMAND / HERMES_COPILOT_ACP_ARGS "
+                f"to a working pair."
+            )
+
+        # Note the model Hermes selected; it is applied after session/new via
+        # the ACP-native `session/set_model` call. The CLI's `--model` spawn
+        # flag is deliberately NOT used here: `copilot --acp` validates it
+        # (an unknown id aborts the spawn) but then ignores it for the actual
+        # session, so it adds a failure mode without selecting anything.
+        requested_model = str(model or "").strip()
+
         try:
             # Hide the console the CLI child would otherwise flash on Windows
             # (#56747). Hide-only — stdio pipes stay intact for the ACP wire.
@@ -645,6 +649,31 @@ class CopilotACPClient:
             session_id = str(session.get("sessionId") or "").strip()
             if not session_id:
                 raise RuntimeError("Copilot ACP did not return a sessionId.")
+
+            # Select the model Hermes asked for. Prefer the stable ACP v1
+            # session-config API: session/new advertises a category="model"
+            # select option and session/set_config_option updates it. Copilot
+            # still exposes the older models/session/set_model extension too,
+            # so retain that only as compatibility fallback for older agents.
+            if requested_model and requested_model != "copilot-acp":
+                try:
+                    selection = _model_selection_request(session, requested_model)
+                    if selection is not None:
+                        method, params = selection
+                        _request(method, params)
+                    else:
+                        logger.warning(
+                            "Copilot ACP does not offer model %r; using the "
+                            "session default.",
+                            requested_model,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Copilot ACP model selection for %r failed; continuing "
+                        "with the session default: %s",
+                        requested_model,
+                        exc,
+                    )
 
             text_parts: list[str] = []
             reasoning_parts: list[str] = []

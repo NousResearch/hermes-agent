@@ -74,6 +74,30 @@ def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
     assert not any("#38798" in r.getMessage() for r in caplog.records)
 
 
+def test_null_platform_toolsets_fall_back_to_platform_default():
+    """A YAML ``platform:`` value is absent, not an explicit empty list."""
+    config = {"platform_toolsets": {"cli": None}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    default_enabled = _get_platform_tools(
+        {}, "cli", include_default_mcp_servers=False
+    )
+
+    assert enabled == default_enabled
+
+
+def test_scalar_platform_toolsets_fall_back_to_platform_default():
+    """A non-list platform value is ignored by the resolver."""
+    config = {"platform_toolsets": {"cli": "bogus"}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    default_enabled = _get_platform_tools(
+        {}, "cli", include_default_mcp_servers=False
+    )
+
+    assert enabled == default_enabled
+
+
 
 
 
@@ -220,6 +244,7 @@ def test_first_install_nous_auto_configures_video_gen(monkeypatch):
         "ELEVENLABS_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
+        "KEENABLE_API_KEY",
         "TAVILY_API_KEY",
         "PARALLEL_API_KEY",
         "BROWSERBASE_API_KEY",
@@ -256,8 +281,8 @@ def test_first_install_nous_auto_configures_video_gen(monkeypatch):
 
     tools_command(first_install=True, config=config)
 
-    assert config["video_gen"]["provider"] == "fal"
-    assert config["video_gen"]["use_gateway"] is True
+    assert config["video_gen"]["provider"] == "nous"
+    assert "use_gateway" not in config["video_gen"]
     # video_gen should NOT appear in the manual configure list — it's auto-configured
     assert "video_gen" not in configured
 
@@ -358,6 +383,16 @@ class TestAgentBrowserPostSetup:
     cascade instead of hand-rolling its own node_modules/.bin/agent-browser
     (and Windows .cmd-shim) lookup.
     """
+
+    @pytest.fixture(autouse=True)
+    def _stub_browser_use_install(self):
+        """Both browser branches now attempt a Browser Use CLI install first
+        (the CLI drives every non-Camofox backend). Stub it so these
+        Chromium-branch tests never bootstrap uv / hit the network, and so
+        their print/subprocess assertions stay scoped to the agent-browser
+        logic under test."""
+        with patch("hermes_cli.tools_config._ensure_browser_use_cli") as stub:
+            yield stub
 
     def test_warns_when_neither_npx_nor_agent_browser_on_path(self):
         with patch("shutil.which", return_value=None), patch(
@@ -616,6 +651,61 @@ class TestAgentBrowserPostSetup:
         assert any("timed out" in c.args[0] for c in warn.call_args_list)
 
 
+class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
+    """The Browser Use CLI is the primary driver engine for every browser
+    backend except Camofox — so EVERY browser picker selection except
+    Camofox must attempt the CLI install, not just the explicit
+    "Browser Use" row."""
+
+    @pytest.mark.parametrize("key", ["agent_browser", "browserbase", "browser_use_cli"])
+    def test_browser_post_setup_attempts_cli_install(self, key):
+        with patch("hermes_cli.tools_config._ensure_browser_use_cli") as ensure, patch(
+            "shutil.which", return_value=None
+        ), patch("subprocess.run"):
+            _run_post_setup(key)
+        ensure.assert_called_once()
+
+    def test_camofox_post_setup_never_touches_browser_use(self):
+        """Camofox is Firefox-based with no CDP surface; the CDP-only
+        browser-use harness cannot drive it, so its setup must not pull
+        the CLI in."""
+        with patch("hermes_cli.tools_config._ensure_browser_use_cli") as ensure, patch(
+            "hermes_constants.find_node_executable", return_value=None
+        ), patch("subprocess.run"):
+            _run_post_setup("camofox")
+        ensure.assert_not_called()
+
+    def test_ensure_helper_always_delegates_to_install_cli(self):
+        """MANAGED-FIRST: a browser-use on PATH must not short-circuit the
+        helper — install_cli() owns the managed-copy check and provisions
+        $HERMES_HOME/bin when only side installs exist."""
+        with patch(
+            "hermes_cli.tools_config.shutil.which", return_value="/usr/bin/browser-use"
+        ), patch(
+            "tools.browser_use_cli.install_cli",
+            return_value=(True, "browser-use CLI already installed (/managed/bin/browser-use)"),
+        ) as install:
+            from hermes_cli.tools_config import _ensure_browser_use_cli
+
+            _ensure_browser_use_cli()
+        install.assert_called_once()
+
+    def test_ensure_helper_install_failure_is_non_fatal(self):
+        """A failed install must warn and fall back, never raise — the
+        uvx zero-install path and the built-in tools remain available."""
+        from hermes_cli.tools_config import _ensure_browser_use_cli
+
+        with patch(
+            "hermes_cli.tools_config.shutil.which", return_value=None
+        ), patch(
+            "tools.browser_use_cli.install_cli",
+            return_value=(False, "`uv tool install browser-use` failed:\nboom"),
+        ), patch("hermes_cli.tools_config._print_warning") as warn:
+            _ensure_browser_use_cli()  # must not raise
+
+        assert any("failed" in c.args[0] for c in warn.call_args_list)
+
+
 class TestImagegenBackendRegistry:
     """IMAGEGEN_BACKENDS tags drive the model picker flow in tools_config."""
 
@@ -694,6 +784,26 @@ class TestImagegenModelPicker:
             _configure_imagegen_model("fal", config)
         assert isinstance(config["image_gen"], dict)
         assert config["image_gen"]["model"] == "fal-ai/flux-2/klein/9b"
+
+    def test_plugin_picker_falls_back_when_default_is_missing_from_catalog(self):
+        """A stale cross-provider model must not become an unindexable row."""
+        from hermes_cli.tools_config import _configure_imagegen_model_for_plugin
+
+        catalog = {
+            "openai/gpt-5.4-image-2": {"strengths": "quality"},
+            "google/gemini-3-pro-image": {"strengths": "fallback"},
+        }
+        config = {"image_gen": {"model": "gpt-image-2-medium"}}
+        with (
+            patch(
+                "hermes_cli.tools_config._plugin_image_gen_catalog",
+                return_value=(catalog, "also-missing"),
+            ),
+            patch("hermes_cli.tools_config._prompt_choice", return_value=0),
+        ):
+            _configure_imagegen_model_for_plugin("openrouter", config)
+
+        assert config["image_gen"]["model"] == "openai/gpt-5.4-image-2"
 
 
 
@@ -949,8 +1059,8 @@ def _saved_list_from_before(platform="cli"):
 
 @_requires_recently_shipped
 def test_saved_list_gains_toolsets_that_shipped_after_it_was_written():
-    """The bug: a frozen list never gained bfl, so composite users got Nous
-    Portal video generation on upgrade and picker users silently did not."""
+    """The bug: a frozen list never gained a newly shipped toolset, so
+    composite users got it on upgrade and picker users silently did not."""
     on_composite = _get_platform_tools(
         {"platform_toolsets": {"cli": ["hermes-cli"]}},
         "cli",
@@ -989,6 +1099,36 @@ def test_agent_disabled_toolsets_still_wins():
 
 
 @_requires_recently_shipped
+def test_agent_disabled_toolsets_json_array_string_form_still_wins():
+    """#86661: the suppression list may arrive as a JSON-array string (e.g.
+    `hermes config set agent.disabled_toolsets '["memory"]'`). It must be
+    parsed, not treated as one dead toolset name that filters nothing."""
+    config = _saved_list_from_before()
+    import json as _json
+
+    config["agent"] = {
+        "disabled_toolsets": _json.dumps(sorted(_RECENTLY_SHIPPED_TOOLSETS))
+    }
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled)
+
+
+@_requires_recently_shipped
+def test_agent_disabled_toolsets_python_literal_string_form_still_wins():
+    """Single-quoted Python-literal form (as written by some config editors)
+    must resolve the same way as the JSON form."""
+    config = _saved_list_from_before()
+    quoted = ", ".join(repr(ts) for ts in sorted(_RECENTLY_SHIPPED_TOOLSETS))
+    config["agent"] = {"disabled_toolsets": f"[{quoted}]"}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled)
+
+
+@_requires_recently_shipped
 def test_platforms_whose_composite_excludes_it_are_left_narrow():
     """Parity is the justification, so don't widen a deliberately small
     composite (hermes-acp, hermes-webhook) that never carried the toolset."""
@@ -1013,3 +1153,141 @@ def test_platforms_whose_composite_excludes_it_are_left_narrow():
             include_default_mcp_servers=False,
         )
         assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled), platform
+
+
+# Regression for issue #81163 (Layer 2): an explicitly-listed plugin toolset
+# in ``platform_toolsets.<platform>`` must survive the filter, not be dropped
+# because it isn't a built-in CONFIGURABLE_TOOLSETS entry.
+
+
+def test_explicit_plugin_toolset_admitted_in_platform_toolsets(monkeypatch):
+    """When a plugin toolset key is explicitly listed under
+    ``platform_toolsets.<platform>`` (alongside a composite like
+    ``hermes-cli``), it MUST be admitted as a configurable key instead of
+    being silently dropped by the has_explicit_config filter.
+
+    Reproduces the second half of #81163: even after the eager register_tools
+    fix lands, ``_get_platform_tools`` was filtering against
+    ``CONFIGURABLE_TOOLSETS`` only, so plugin keys in the explicit list were
+    excluded from ``enabled_toolsets``.
+    """
+    # Force a plugin toolset key to be present without depending on the a2a
+    # plugin being installed on disk. _get_plugin_toolset_keys() calls
+    # discover_plugins(); we patch its source so the test is hermetic.
+    import hermes_cli.plugins as _plugins_mod
+    import hermes_cli.tools_config as _tc_mod
+
+    class _StubMgr:
+        _plugin_tool_names = {"dplat_call"}
+
+        def __getattr__(self, _name):
+            return lambda *_a, **_kw: None
+
+    monkeypatch.setattr(
+        _plugins_mod, "get_plugin_toolsets",
+        lambda: [("dplat_client", "Test", "test toolset")],
+    )
+    monkeypatch.setattr(
+        _tc_mod, "_get_plugin_toolset_keys", lambda: {"dplat_client"},
+    )
+    # Discover_plugins must succeed silently under the stub.
+    monkeypatch.setattr(_plugins_mod, "discover_plugins", lambda: None)
+    # Resolve dplat_call inside the dplat_client toolset — _get_platform_tools
+    # ends up calling resolve_toolset() which can fall back to the registry
+    # for plugin-provided names. Patch resolve_toolset for "dplat_client".
+    from toolsets import TOOLSETS as _BASE_TOOLSETS
+    import toolsets as _toolsets_mod
+
+    original_resolve = _toolsets_mod.resolve_toolset
+
+    def _resolve_with_plugin(ts_key, include_registry=True):
+        if ts_key == "dplat_client":
+            return ["dplat_call"]
+        return original_resolve(ts_key, include_registry=include_registry)
+
+    monkeypatch.setattr(_toolsets_mod, "resolve_toolset", _resolve_with_plugin)
+    monkeypatch.setattr(
+        _tc_mod, "resolve_toolset", _resolve_with_plugin,
+        raising=False,
+    )
+
+    # An explicit platform_toolsets list with a plugin key alongside the
+    # standard composite — exactly the "I want hermes-cli AND a2a in my CLI
+    # session" config the issue's user was trying to write.
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "dplat_client"]}}
+
+    enabled = _get_platform_tools(config, "cli")
+
+    assert "dplat_client" in enabled, (
+        "plugin toolset 'dplat_client' listed in platform_toolsets.cli was "
+        "dropped by _get_platform_tools — Layer 2 of #81163 not fixed"
+    )
+
+
+def test_explicit_plugin_toolset_admitted_against_real_a2a_plugin(monkeypatch):
+    """End-to-end Layer 2 regression: with the bundled a2a plugin enabled and
+    a real config like ``platform_toolsets.cli: [hermes-cli, a2a]``, ``a2a``
+    must appear in the resolved enabled toolset set. Before the fix, the
+    filter dropped all non-CONFIGURABLE keys (a2a included)."""
+    # Discover real plugins so _get_plugin_toolset_keys() sees the a2a key.
+    # If the worktree lacks bundled plugin manifests, skip — this test
+    # exercises real bundled state and is meaningless without it.
+    from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
+    discover_plugins()
+    plugin_ts_keys = {k for k, _, _ in get_plugin_toolsets()}
+    if "a2a" not in plugin_ts_keys:
+        pytest.skip("bundled a2a plugin not discoverable in this worktree")
+
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "a2a"]}}
+    enabled = _get_platform_tools(config, "cli")
+    assert "a2a" in enabled, (
+        f"plugin-provided 'a2a' toolset dropped by _get_platform_tools "
+        f"(Layer 2 of #81163); enabled={sorted(enabled)}"
+    )
+
+
+class TestLightpandaPostSetup:
+    """The Lightpanda picker row: no Chromium, just the binary check."""
+
+    @pytest.fixture(autouse=True)
+    def _stub_browser_use_install(self):
+        with patch("hermes_cli.tools_config._ensure_browser_use_cli") as stub:
+            yield stub
+
+    def test_reports_binary_when_found(self, _stub_browser_use_install):
+        from hermes_cli.tools_config import _run_post_setup
+
+        with patch("tools.browser_lightpanda.find_lightpanda_binary", return_value="/opt/lightpanda"), \
+             patch("hermes_cli.tools_config._print_success") as ok, \
+             patch("hermes_cli.tools_config._print_warning") as warn:
+            _run_post_setup("lightpanda")
+        _stub_browser_use_install.assert_called_once()
+        assert "/opt/lightpanda" in ok.call_args.args[0]
+        warn.assert_not_called()
+
+    def test_prints_install_hint_when_missing(self):
+        from hermes_cli.tools_config import _run_post_setup
+        from tools.browser_lightpanda import LIGHTPANDA_INSTALL_URL
+
+        with patch("tools.browser_lightpanda.find_lightpanda_binary", return_value=None), \
+             patch("hermes_cli.tools_config._print_warning") as warn, \
+             patch("hermes_cli.tools_config._print_info") as info:
+            _run_post_setup("lightpanda")
+        assert "not found" in warn.call_args.args[0]
+        assert any(LIGHTPANDA_INSTALL_URL in c.args[0] for c in info.call_args_list)
+
+    def test_post_setup_key_is_valid_and_readiness_gated(self):
+        from hermes_cli.tools_config import (
+            _POST_SETUP_INSTALLED,
+            _POST_SETUP_READY,
+            valid_post_setup_keys,
+        )
+
+        assert "lightpanda" in valid_post_setup_keys()
+        with patch("tools.browser_lightpanda.find_lightpanda_binary", return_value="/opt/lightpanda"):
+            assert _POST_SETUP_READY["lightpanda"]() is True
+        with patch("tools.browser_lightpanda.find_lightpanda_binary", return_value=None):
+            assert _POST_SETUP_READY["lightpanda"]() is False
+        # Not in the forced-setup gate: a missing binary must not nag every
+        # user who toggles the browser toolset.
+        assert "lightpanda" not in _POST_SETUP_INSTALLED

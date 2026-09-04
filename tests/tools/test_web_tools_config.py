@@ -115,6 +115,82 @@ class TestFirecrawlClientConfig:
                     with pytest.raises(ValueError):
                         _get_firecrawl_client()
 
+    def test_explicit_firecrawl_config_without_creds_uses_keyless_client(self):
+        """Explicit Firecrawl config should build the keyless cloud client."""
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}):
+            with patch("tools.web_tools._read_nous_access_token", return_value=None):
+                with patch("tools.web_tools.Firecrawl", side_effect=AssertionError("SDK path should not run")):
+                    from tools.web_tools import _get_firecrawl_client
+
+                    result = _get_firecrawl_client()
+
+        assert isinstance(result, firecrawl_provider._KeylessFirecrawlClient)
+        assert result.api_url == "https://api.firecrawl.dev"
+
+    def test_keyless_firecrawl_search_omits_authorization_header(self, monkeypatch):
+        """Keyless Firecrawl search must not send a bearer header."""
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        captured = {}
+
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"success": True, "data": {"web": []}}
+
+        def _fake_post(url, *, json, headers, timeout):
+            captured["url"] = url
+            captured["json"] = json
+            captured["headers"] = headers
+            captured["timeout"] = timeout
+            return _Response()
+
+        monkeypatch.setattr(firecrawl_provider.httpx, "post", _fake_post)
+
+        client = firecrawl_provider._KeylessFirecrawlClient()
+        result = client.search(query="firecrawl", limit=1)
+
+        assert result["success"] is True
+        assert captured["url"] == "https://api.firecrawl.dev/v2/search"
+        assert captured["json"] == {"query": "firecrawl", "limit": 1}
+        assert captured["headers"] == {"Content-Type": "application/json"}
+        assert "Authorization" not in captured["headers"]
+
+    def test_keyless_firecrawl_scrape_omits_authorization_header(self, monkeypatch):
+        """Keyless Firecrawl scrape must not send a bearer header."""
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        captured = {}
+
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"success": True, "data": {"markdown": "# ok"}}
+
+        def _fake_post(url, *, json, headers, timeout):
+            captured["url"] = url
+            captured["json"] = json
+            captured["headers"] = headers
+            captured["timeout"] = timeout
+            return _Response()
+
+        monkeypatch.setattr(firecrawl_provider.httpx, "post", _fake_post)
+
+        client = firecrawl_provider._KeylessFirecrawlClient()
+        result = client.scrape(url="https://example.com", formats=["markdown"])
+
+        assert result["success"] is True
+        assert captured["url"] == "https://api.firecrawl.dev/v2/scrape"
+        assert captured["json"] == {"url": "https://example.com", "formats": ["markdown"]}
+        assert captured["headers"] == {"Content-Type": "application/json"}
+        assert "Authorization" not in captured["headers"]
+
 
 class TestBackendSelection:
     """Test suite for _get_backend() backend selection logic.
@@ -133,6 +209,7 @@ class TestBackendSelection:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
+        "KEENABLE_API_KEY",
         "TAVILY_API_KEY",
     )
 
@@ -178,11 +255,25 @@ class TestBackendSelection:
             assert _get_backend() == "exa"
 
     def test_fallback_exa_takes_priority_over_parallel(self):
-        """Direct-credential backends are tried in the order tavily > exa > parallel
+        """Direct-credential backends are tried in the order tavily > exa > parallel > keenable
         so an explicit Exa key wins when both Exa and Parallel are configured."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"EXA_API_KEY": "exa-test", "PARALLEL_API_KEY": "par-test"}):
+            assert _get_backend() == "exa"
+
+    def test_fallback_keenable_only_key(self):
+        """Only KEENABLE_API_KEY set → 'keenable'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"KEENABLE_API_KEY": "kn-test"}):
+            assert _get_backend() == "keenable"
+
+    def test_fallback_exa_beats_firecrawl_direct(self):
+        """Exa ranks above firecrawl in the explicit-credential block."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"EXA_API_KEY": "exa-test", "FIRECRAWL_API_KEY": "fc-test"}):
             assert _get_backend() == "exa"
 
     def test_fallback_tavily_only_key(self):
@@ -197,6 +288,13 @@ class TestBackendSelection:
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "FIRECRAWL_API_KEY": "fc-test"}):
+            assert _get_backend() == "tavily"
+
+    def test_fallback_tavily_beats_exa(self):
+        """Tavily ranks above Exa in the explicit-credential block."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "EXA_API_KEY": "exa-test"}):
             assert _get_backend() == "tavily"
 
 
@@ -216,25 +314,58 @@ class TestBackendSelection:
             assert _get_backend() == "firecrawl"
 
     def test_fallback_no_keys_defaults_to_firecrawl(self):
-        """No keys, no config → 'firecrawl' (will fail at client init)."""
+        """No keys, no config, keyless tier off → 'firecrawl' sentinel.
+
+        With the keyless tier on (default), zero credentials resolves to
+        the Parallel/Exa free tier instead — covered in
+        test_web_keyless_fallback.py.
+        """
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._ddgs_package_importable", return_value=False):
+             patch("tools.web_tools._is_tool_gateway_ready", return_value=False), \
+             patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("tools.web_tools._list_registered_web_providers", return_value=[]), \
+             patch("agent.web_search_registry._keyless_tier_enabled", return_value=False):
             assert _get_backend() == "firecrawl"
 
-    def test_invalid_config_falls_through_to_fallback(self):
-        """web.backend=invalid → ignored, uses key-based fallback."""
+    def test_invalid_config_is_returned_verbatim(self):
+        """Strict selection: web.backend=nonexistent is returned as-is so the
+        dispatch path raises the honest selection-naming error — never
+        silently rerouted through the credential ladder."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={"backend": "nonexistent"}), \
              patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
-            assert _get_backend() == "parallel"
+            assert _get_backend() == "nonexistent"
+
+    def test_stored_backend_wins_over_other_credentials(self):
+        """Strict selection: a stored web.backend beats env keys for other
+        vendors — no availability probe, no credential override."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}), \
+             patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
+            assert _get_backend() == "firecrawl"
+
+    def test_nous_backend_maps_to_firecrawl(self):
+        """The managed 'nous' selection is serviced by the firecrawl
+        provider (whose client resolver routes managed)."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "nous"}):
+            assert _get_backend() == "firecrawl"
+
+    def test_managed_gateway_does_not_preempt_explicit_exa(self):
+        """Regression: a Nous OAuth token (managed gateway "ready") must NOT
+        beat an explicitly configured EXA_API_KEY in the fallback path.
+        Free Nous tiers don't include web search, so the user's deliberate
+        Exa setup would fail at runtime with "no subscription" if the
+        gateway pre-empted it."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._is_tool_gateway_ready", return_value=True), \
+             patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
+            assert _get_backend() == "exa"
 
     def test_managed_gateway_does_not_preempt_explicit_tavily(self):
-        """Regression: a Nous OAuth token (managed gateway "ready") must NOT
-        beat an explicitly configured TAVILY_API_KEY in the fallback path.
-        Free Nous tiers don't include web search, so the user's deliberate
-        Tavily setup would fail at runtime with "no subscription" if the
-        gateway pre-empted it."""
+        """A Nous OAuth token must not beat an explicit TAVILY_API_KEY."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch("tools.web_tools._is_tool_gateway_ready", return_value=True), \
@@ -392,6 +523,7 @@ class TestCheckWebApiKey:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
+        "KEENABLE_API_KEY",
         "TAVILY_API_KEY",
     )
 
@@ -444,11 +576,61 @@ class TestCheckWebApiKey:
                     from tools.web_tools import check_web_api_key
                     assert check_web_api_key() is True
 
+    def test_explicit_unavailable_active_provider_is_not_ready(self):
+        """#78412: get_active_* may return a configured backend whose
+        is_available() is False. check_web_api_key must still report False so
+        doctor does not paint a green check for a backend that cannot run.
+        """
+        class _UnavailableProvider:
+            name = "firecrawl"
+
+            def is_available(self):
+                return False
+
+        unavailable = _UnavailableProvider()
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}), \
+             patch("tools.web_tools._is_backend_available", return_value=False), \
+             patch(
+                 "agent.web_search_registry.get_active_search_provider",
+                 return_value=unavailable,
+             ), \
+             patch(
+                 "agent.web_search_registry.get_active_extract_provider",
+                 return_value=unavailable,
+             ):
+            from tools.web_tools import check_web_api_key, _provider_is_ready
+            assert _provider_is_ready(unavailable) is False
+            assert check_web_api_key() is False
+
+    def test_explicit_available_active_provider_is_ready(self):
+        """Registry-selected available provider still lights the gate."""
+        class _AvailableProvider:
+            name = "custom-ok"
+
+            def is_available(self):
+                return True
+
+        available = _AvailableProvider()
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "custom-ok"}), \
+             patch("tools.web_tools._is_backend_available", return_value=False), \
+             patch(
+                 "agent.web_search_registry.get_active_search_provider",
+                 return_value=available,
+             ), \
+             patch(
+                 "agent.web_search_registry.get_active_extract_provider",
+                 return_value=None,
+             ):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
 
 def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
-    assert "EXA_API_KEY" in _web_requires_env()
+    env = _web_requires_env()
+    assert "EXA_API_KEY" in env
+    assert "TAVILY_API_KEY" in env
 
 
 class TestNonBuiltinProviderAvailability:
@@ -475,6 +657,7 @@ class TestNonBuiltinProviderAvailability:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
+        "KEENABLE_API_KEY",
         "TAVILY_API_KEY",
         "SEARXNG_URL",
         "BRAVE_SEARCH_API_KEY",
@@ -583,7 +766,8 @@ class TestFirecrawlEnvResolution:
 
             result = _get_direct_firecrawl_config()
             assert result is not None, "get_env_value fallback should find the key"
-            kwargs, _cache_key = result
+            mode, kwargs, _cache_key = result
+            assert mode == "sdk"
             assert kwargs["api_key"] == fake_key
 
     def test_direct_config_reads_url_via_get_env_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -600,7 +784,8 @@ class TestFirecrawlEnvResolution:
 
             result = _get_direct_firecrawl_config()
             assert result is not None
-            kwargs, _cache_key = result
+            mode, kwargs, _cache_key = result
+            assert mode == "sdk"
             assert kwargs["api_url"] == fake_url.rstrip("/")
 
 
@@ -613,6 +798,7 @@ class TestSiblingProvidersEnvResolution:
     _CASES = [
         ("plugins.web.exa.provider", "ExaWebSearchProvider", "EXA_API_KEY"),
         ("plugins.web.parallel.provider", "ParallelWebSearchProvider", "PARALLEL_API_KEY"),
+        ("plugins.web.keenable.provider", "KeenableWebSearchProvider", "KEENABLE_API_KEY"),
         ("plugins.web.tavily.provider", "TavilyWebSearchProvider", "TAVILY_API_KEY"),
         ("plugins.web.brave_free.provider", "BraveFreeWebSearchProvider", "BRAVE_SEARCH_API_KEY"),
     ]
@@ -638,6 +824,49 @@ class TestSiblingProvidersEnvResolution:
                 f"{cls_name}.is_available() ignored {env_key} from the "
                 "config-aware env layer (get_env_value)"
             )
+
+    def test_keenable_search_reads_key_via_get_env_value(self, monkeypatch):
+        """Keyed Keenable must Bearer-auth with a key that lives only in .env."""
+        monkeypatch.delenv("KEENABLE_API_KEY", raising=False)
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"results": []}
+        mock_response.text = "{}"
+
+        with patch(
+            "hermes_cli.config.get_env_value",
+            side_effect=lambda k: "kn-from-dotenv" if k == "KEENABLE_API_KEY" else None,
+        ), patch(
+            "requests.post", return_value=mock_response
+        ) as mock_post:
+            from plugins.web.keenable.provider import KeenableWebSearchProvider
+
+            KeenableWebSearchProvider().search("q", limit=2)
+            headers = mock_post.call_args.kwargs["headers"]
+            assert headers["Authorization"] == "Bearer kn-from-dotenv"
+            assert headers["X-Keenable-Title"] == "hermes-agent"
+
+    def test_tavily_request_reads_key_via_get_env_value(self, monkeypatch):
+        """Keyed Tavily must Bearer-auth with a key that lives only in .env."""
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"results": []}
+        mock_response.text = "{}"
+
+        with patch(
+            "hermes_cli.config.get_env_value",
+            side_effect=lambda k: "tvly-from-dotenv" if k == "TAVILY_API_KEY" else None,
+        ), patch(
+            "plugins.web.tavily.provider.httpx.post", return_value=mock_response
+        ) as mock_post:
+            from plugins.web.tavily.provider import _tavily_request
+
+            _tavily_request("search", {"query": "q"})
+            headers = mock_post.call_args.kwargs["headers"]
+            assert headers["Authorization"] == "Bearer tvly-from-dotenv"
+            assert headers["X-Client-Name"] == "hermes-agent"
+            assert "X-Tavily-Access-Mode" not in headers
 
 
     def test_get_provider_env_unset_returns_empty(self, monkeypatch):

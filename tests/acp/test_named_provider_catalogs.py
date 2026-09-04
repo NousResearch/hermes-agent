@@ -44,7 +44,7 @@ class TestNamedCustomProviderCatalogs:
             }
         )
         with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.models.fetch_api_models",
+            "hermes_cli.model_switch._fetch_picker_live_models",
             return_value=["model-a", "model-b"],
         ):
             catalogs = _named_custom_provider_catalogs()
@@ -69,7 +69,7 @@ class TestNamedCustomProviderCatalogs:
             }
         )
         with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.models.fetch_api_models", return_value=None
+            "hermes_cli.model_switch._fetch_picker_live_models", return_value=None
         ):
             assert _named_custom_provider_catalogs() == []
 
@@ -85,7 +85,7 @@ class TestNamedCustomProviderCatalogs:
             }
         )
         with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.models.fetch_api_models", return_value=None
+            "hermes_cli.model_switch._fetch_picker_live_models", return_value=None
         ):
             assert _named_custom_provider_catalogs() == []
 
@@ -102,16 +102,109 @@ class TestNamedCustomProviderCatalogs:
             ]
         )
         with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.models.fetch_api_models", return_value=None
+            "hermes_cli.model_switch._fetch_picker_live_models", return_value=None
         ):
             catalogs = _named_custom_provider_catalogs()
 
         assert catalogs == [
             ("custom:legacy-endpoint", "Legacy Endpoint", [("legacy-model", "")])
         ]
+    def test_no_key_ollama_provider_discovers_native_catalog(self):
+        cfg = _cfg(
+            providers={
+                "custom:ollama": {
+                    "name": "Ollama",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                }
+            }
+        )
+        with patch("hermes_cli.config.load_config", return_value=cfg), patch(
+            "hermes_cli.models.should_use_ollama_native_catalog",
+            return_value=True,
+        ), patch(
+            "hermes_cli.model_switch._fetch_picker_live_models",
+            return_value=["qwen3:1.7b"],
+        ) as fetch:
+            catalogs = _named_custom_provider_catalogs()
+
+        assert [m for m, _ in catalogs[0][2]] == ["qwen3:1.7b"]
+        fetch.assert_called_once_with(
+            "",
+            "http://127.0.0.1:11434/v1",
+            "custom:ollama",
+            False,
+            headers=None,
+            timeout=1.5,
+            api_mode=None,
+        )
+    def test_legacy_credentialless_ollama_discovers_native_catalog(self):
+        cfg = _cfg(
+            custom_providers=[
+                {
+                    "name": "Local Ollama",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                }
+            ]
+        )
+        with patch("hermes_cli.config.load_config", return_value=cfg), patch(
+            "hermes_cli.models.should_use_ollama_native_catalog",
+            return_value=True,
+        ), patch(
+            "hermes_cli.model_switch._fetch_picker_live_models",
+            return_value=["qwen3:1.7b"],
+        ) as fetch:
+            catalogs = _named_custom_provider_catalogs()
+
+        assert [m for m, _ in catalogs[0][2]] == ["qwen3:1.7b"]
+        fetch.assert_called_once()
+
+    def test_native_empty_catalog_is_authoritative_over_default_model(self):
+        cfg = _cfg(
+            providers={
+                "custom:ollama": {
+                    "name": "Ollama",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                    "default_model": "saved:model",
+                }
+            }
+        )
+        from hermes_cli.model_switch import _NativePickerModelList
+
+        with patch("hermes_cli.config.load_config", return_value=cfg), patch(
+            "hermes_cli.models.should_use_ollama_native_catalog",
+            return_value=True,
+        ), patch(
+            "hermes_cli.model_switch._fetch_picker_live_models",
+            return_value=_NativePickerModelList(),
+        ):
+            assert _named_custom_provider_catalogs() == [
+                ("custom:ollama", "Ollama", [])
+            ]
 
 
 class TestModelStateIncludesNamedProviders:
+    @pytest.mark.asyncio
+    async def test_authoritative_empty_named_catalog_does_not_resurrect_current_model(self):
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(
+                model="saved:model", provider="ollama"
+            )
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+
+        with patch("hermes_cli.models.curated_models_for_provider", return_value=[]), patch(
+            "acp_adapter.server._named_custom_provider_catalogs",
+            return_value=[("custom:ollama", "Ollama", [])],
+        ):
+            resp = await acp_agent.new_session(cwd="/tmp")
+
+        assert isinstance(resp.models, SessionModelState)
+        assert resp.models.current_model_id == ""
+        assert all(
+            not item.model_id.startswith(("ollama:", "custom:ollama:"))
+            for item in resp.models.available_models
+        )
+
     @pytest.mark.asyncio
     async def test_named_provider_models_appear_in_model_state(self):
         manager = SessionManager(
@@ -153,6 +246,34 @@ class TestModelStateIncludesNamedProviders:
         from hermes_cli.models import parse_model_input
 
         choice_id = "custom:bedrock-mantle:openai.gpt-5.5"
-        provider, model = parse_model_input(choice_id, "bedrock")
+        cfg = {
+            "providers": {
+                "bedrock-mantle": {
+                    "name": "AWS Bedrock Mantle",
+                    "base_url": "https://bedrock.example/v1",
+                }
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            provider, model = parse_model_input(choice_id, "bedrock")
         assert provider == "custom:bedrock-mantle"
         assert model == "openai.gpt-5.5"
+
+    def test_selector_choice_id_round_trips_colon_bearing_custom_identity(self):
+        """Configured provider and model IDs may both contain colons."""
+        from hermes_cli.models import parse_model_input
+
+        cfg = {
+            "providers": {
+                "local-127.0.0.1:11434": {
+                    "name": "Local Ollama",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                }
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            provider, model = parse_model_input(
+                "custom:local-127.0.0.1:11434:qwen3:1.7b", "custom"
+            )
+        assert provider == "custom:local-127.0.0.1:11434"
+        assert model == "qwen3:1.7b"

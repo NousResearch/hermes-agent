@@ -61,6 +61,34 @@ optional_env:
     password: false
 ```
 
+#### Outbound client tools: `provides_tools`
+
+`kind: platform` plugins are **deferred**: the adapter module (and its SDK
+imports) only load when a gateway, cron, or `send_message` path first asks the
+platform registry for the platform. If your plugin also ships outbound *client
+tools* the agent should be able to call from any session (the bundled `a2a`
+plugin's `a2a_call` / `a2a_discover` etc.), put them in a dedicated `tools.py`
+with a `register_tools(ctx)` function and declare them in the manifest:
+
+```yaml
+provides_tools:
+  - my_platform_call
+  - my_platform_list
+```
+
+With `provides_tools` declared, Hermes imports only `tools.py` during plugin
+discovery and registers the client tools in every process — CLI and TUI
+included — while the adapter stays deferred. Keep the package `__init__.py`
+import-light and pull the adapter in from inside `register()` so the eager
+import stays cheap. Without the field, nothing changes: the whole plugin stays
+deferred.
+
+Users enable the toolset per platform like any other, e.g.
+`hermes tools enable my_platform --platform cli`, or by listing the toolset
+key under `platform_toolsets` in `config.yaml`. Plugin platform names are
+also valid `--platform` targets, so an inbound session on your platform can
+be granted its own outbound tools.
+
 ### adapter.py
 
 ```python
@@ -609,7 +637,7 @@ Three touchpoints:
 
 Six touchpoints:
 
-1. **`_create_adapter()`** — Add an `elif platform == Platform.NEWPLAT:` branch
+1. **`_instantiate_adapter()`** — Add an `elif platform == Platform.NEWPLAT:` branch. The `_create_adapter()` wrapper binds every successful adapter to its gateway runner.
 2. **`_is_user_authorized()` allowed_users map** — `Platform.NEWPLAT: "NEWPLAT_ALLOWED_USERS"`
 3. **`_is_user_authorized()` allow_all map** — `Platform.NEWPLAT: "NEWPLAT_ALLOW_ALL_USERS"`
 4. **Early env check `_any_allowlist` tuple** — Add `"NEWPLAT_ALLOWED_USERS"`

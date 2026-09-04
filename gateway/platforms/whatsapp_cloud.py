@@ -492,6 +492,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "incoming webhook POSTs will be refused with 503. Set "
                 "the app secret to enable inbound message delivery."
             )
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:
@@ -552,7 +554,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 resp = await self._http_client.post(url, headers=headers, json=payload)
             except Exception as exc:
                 logger.exception("[whatsapp_cloud] send failed")
-                return SendResult(success=False, error=str(exc))
+                return SendResult(success=False, error=str(exc) or type(exc).__name__)
 
             if resp.status_code != 200:
                 # Meta returns structured errors in the body — surface them
@@ -710,7 +712,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             resp = await self._http_client.post(url, headers=headers, json=payload)
         except Exception as exc:
             logger.exception("[whatsapp_cloud] interactive send failed")
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error=str(exc) or type(exc).__name__)
 
         if resp.status_code != 200:
             try:
@@ -1086,7 +1088,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             resp = await self._http_client.post(url, headers=headers, json=payload)
         except Exception as exc:
             logger.exception("[whatsapp_cloud] media send failed")
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error=str(exc) or type(exc).__name__)
 
         if resp.status_code != 200:
             try:

@@ -13,7 +13,7 @@ import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
-import { $currentCwd } from '@/store/session'
+import { $currentCwd, $selectedStoredSessionId, $workspaceCwdOwner } from '@/store/session'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
@@ -30,12 +30,13 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
   const r = t.rightSidebar
   const panesFlipped = useStore($panesFlipped)
   const currentCwd = useStore($currentCwd).trim()
+  const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const workspaceCwdOwner = useStore($workspaceCwdOwner)
 
-  // The file tree is simply "browse the session's working directory". If the
-  // session has a cwd — a repo, a sibling worktree, or any folder — show it. A
-  // bare/detached chat (resolveNewSessionCwd → '') has none, so it shows the
-  // empty hint instead of whatever dir Hermes happens to run from.
-  const hasWorkspace = Boolean(currentCwd)
+  // A transition intentionally retains the old CWD until the new session
+  // confirms its workspace. Do not issue a filesystem read against that path:
+  // under a gateway switch it may belong to a different remote machine.
+  const hasWorkspace = Boolean(currentCwd) && (workspaceCwdOwner ?? null) === (selectedStoredSessionId ?? null)
 
   const {
     collapseAll,
@@ -115,7 +116,7 @@ interface FilesystemTabProps extends FileTreeBodyProps {
 // Sidebar palette + hover-reveal: header actions stay reachable while moving
 // from the project label to the action buttons.
 const HEADER_ACTION_CLASS =
-  'text-sidebar-foreground/70 hover:bg-sidebar-accent! hover:text-sidebar-accent-foreground! focus-visible:ring-sidebar-ring'
+  'text-sidebar-foreground/70 hover:bg-sidebar-accent! hover:text-sidebar-accent-foreground! focus-visible:bg-sidebar-accent! focus-visible:text-sidebar-accent-foreground! focus-visible:ring-sidebar-ring'
 
 const HEADER_ACTION_LABEL_REVEAL = `${HEADER_ACTION_CLASS} pointer-events-none opacity-0 transition-opacity focus-visible:pointer-events-auto focus-visible:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100`
 

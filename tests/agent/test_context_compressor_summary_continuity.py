@@ -21,6 +21,11 @@ def _compressor(protect_first_n: int = 1) -> ContextCompressor:
             protect_first_n=protect_first_n,
             protect_last_n=1,
             quiet_mode=True,
+            # Pinned: these tests assert the stored summary ENDS with the raw
+            # LLM text. Lean mode (the default since the tail-default flip)
+            # appends the verbatim-user-quote appendix after it by design;
+            # the continuity contract under test is mode-independent.
+            tail_mode="legacy",
         )
 
 
@@ -323,6 +328,70 @@ def test_restart_fossil_survives_summary_abort_then_retry():
     ) == 1
 
 
+def test_degenerate_compress_end_keeps_same_session_previous_summary():
+    """Handoff beyond a degenerate compress_end must not clear same-session state.
+
+    Regression for #83248: with compression_count >= 1 and a truthy
+    ``_previous_summary`` from this session's prior compaction, a scan bounded
+    at ``compress_end`` can miss an in-window handoff sitting past the cut.
+    The #57835 cross-session guard then discarded the valid summary and the
+    from-scratch path replaced a rich handoff with a one-turn summary.
+    """
+    compressor = _compressor(protect_first_n=0)
+    rich_summary = (
+        "RICH-SAME-SESSION-HANDOFF\n"
+        "1. completed action alpha\n"
+        "2. completed action beta\n"
+        "3. completed action gamma"
+    )
+    compressor.compression_count = 1
+    compressor._previous_summary = rich_summary
+
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "early turn before cut"},
+        {"role": "assistant", "content": "early answer"},
+        {"role": "user", "content": "mid turn before handoff"},
+        {"role": "assistant", "content": f"{SUMMARY_PREFIX}\n{rich_summary}"},
+        {"role": "user", "content": "post handoff turn"},
+        {"role": "assistant", "content": "post handoff answer"},
+        {"role": "user", "content": "tail request"},
+    ]
+    # Handoff is at index 4; force compress_end=2 so a compress_end-bounded
+    # scan would miss it while still leaving a non-empty middle window.
+    assert ContextCompressor._is_context_summary_message(messages[4])
+
+    previous_at_generate = []
+
+    def _capture(turns, **kwargs):
+        previous_at_generate.append(compressor._previous_summary)
+        return ContextCompressor._with_summary_prefix("updated iterative summary")
+
+    with (
+        patch.object(compressor, "_find_tail_cut_by_tokens", return_value=2),
+        patch.object(compressor, "_generate_summary", side_effect=_capture),
+    ):
+        result = compressor.compress(messages, current_tokens=90_000)
+
+    assert previous_at_generate, "_generate_summary should have run"
+    assert previous_at_generate[0] is not None, (
+        "same-session _previous_summary must not be discarded when a handoff "
+        "exists beyond a degenerate compress_end"
+    )
+    assert "RICH-SAME-SESSION-HANDOFF" in previous_at_generate[0]
+    # Iterative state must remain available after the attempt (either the
+    # prior rich handoff, or the updated summary if the compaction committed).
+    assert compressor._previous_summary is not None
+    stored = compressor._previous_summary or ""
+    assert (
+        "RICH-SAME-SESSION-HANDOFF" in stored
+        or "updated iterative summary" in stored
+    )
+    assert sum(
+        1 for msg in result if ContextCompressor._is_context_summary_message(msg)
+    ) >= 1
+
+
 
 
 def test_forced_leading_merged_summary_strips_live_tail_from_summary_body():
@@ -378,10 +447,12 @@ def test_empty_post_handoff_window_noops_without_summary_call():
     # genuinely present in the returned (unchanged) transcript.
     assert compressor._previous_summary == old_summary
     assert compressor.compression_count == 0
-    # Mirrors the sibling no-compressible-window guard (#40803): the shape
-    # cannot shrink, so it counts as an ineffective strike (routed through
-    # the durable write-through helper) to arm the anti-thrash breaker.
-    assert compressor._ineffective_compression_count == 1
+    # Mirrors the sibling no-compressible-window guard, but as a structural
+    # no-op (#93022): the window holds nothing eligible to compress, so the
+    # compressor defers retries transiently instead of arming the permanent
+    # anti-thrash breaker.
+    assert compressor._ineffective_compression_count == 0
+    assert compressor._structural_no_op_backoff_until > 0.0
     assert compressor._last_compression_savings_pct == 0.0
     assert compressor._last_summary_dropped_count == 0
     assert compressor._last_summary_fallback_used is False

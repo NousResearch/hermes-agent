@@ -63,6 +63,7 @@ class FileStateRegistry:
         self._reads: Dict[str, Dict[str, ReadStamp]] = defaultdict(dict)
         self._last_writer: Dict[str, Tuple[str, float]] = {}
         self._path_locks: Dict[str, threading.Lock] = {}
+        self._path_lock_users: Dict[str, int] = {}
         self._meta_lock = threading.Lock()  # guards _path_locks
         self._state_lock = threading.Lock()  # guards _reads + _last_writer
 
@@ -73,6 +74,7 @@ class FileStateRegistry:
             if lock is None:
                 lock = threading.Lock()
                 self._path_locks[resolved] = lock
+            self._path_lock_users[resolved] = self._path_lock_users.get(resolved, 0) + 1
             return lock
 
     @contextmanager
@@ -88,6 +90,13 @@ class FileStateRegistry:
             yield
         finally:
             lock.release()
+            with self._meta_lock:
+                users = self._path_lock_users[resolved] - 1
+                if users:
+                    self._path_lock_users[resolved] = users
+                else:
+                    self._path_lock_users.pop(resolved, None)
+                    self._path_locks.pop(resolved, None)
 
     # ── Read/write accounting ───────────────────────────────────────
     def record_read(
@@ -248,6 +257,11 @@ class FileStateRegistry:
         with self._state_lock:
             return list(self._reads.get(task_id, {}).keys())
 
+    def forget_task(self, task_id: str) -> None:
+        """Release read stamps owned by a task after its lifecycle ends."""
+        with self._state_lock:
+            self._reads.pop(task_id, None)
+
     # ── Testing hooks ───────────────────────────────────────────────
     def clear(self) -> None:
         """Reset all state.  Intended for tests only."""
@@ -256,6 +270,7 @@ class FileStateRegistry:
             self._last_writer.clear()
         with self._meta_lock:
             self._path_locks.clear()
+            self._path_lock_users.clear()
 
 
 # ── Module-level singleton + helpers ─────────────────────────────────

@@ -30,6 +30,8 @@ Two subtleties this pins:
   and disables compaction on a healthy session.
   ``test_no_false_positive_under_tokenizer_skew``.
 """
+import time
+
 import pytest
 
 from agent.context_compressor import ContextCompressor
@@ -188,11 +190,13 @@ class TestFutilityGuard:
 
 
 class TestMinimumMessagesBranch:
-    def test_too_few_messages_records_an_ineffective_pass(self):
-        """Returning the transcript unchanged must move the anti-thrash state.
+    def test_too_few_messages_defers_via_structural_backoff(self):
+        """A structurally impossible compaction must not strike the breaker.
 
-        Otherwise should_compress() keeps saying True about a transcript that can
-        never shrink, and every turn re-enters a no-op compaction.
+        #93022 — too-few-messages is a transcript-shape fact, not evidence
+        of an incompressible floor: striking it punished unrelated later
+        failures. Instead the branch arms the structural no-op backoff so
+        retries are deferred without burning anti-thrash strikes.
         """
         cc = _compressor(threshold_tokens=1)
         msgs = _messages(3, size=10)
@@ -202,4 +206,54 @@ class TestMinimumMessagesBranch:
 
         assert len(out) == len(msgs), "nothing should have been compressed"
         assert cc._last_compression_made_progress is False
-        assert cc._ineffective_compression_count == before + 1
+        assert cc._ineffective_compression_count == before, (
+            "structural no-op must leave the strike counter untouched"
+        )
+        assert cc._structural_no_op_backoff_until > time.monotonic(), (
+            "structural no-op must arm the retry backoff"
+        )
+        assert cc._compression_block_reason().startswith("structural_backoff")
+
+
+class TestRejectedCompactionStrike:
+    """#88568 — a would-grow refusal must count as an ineffective strike.
+
+    The anti-growth guard correctly keeps the original transcript, but the
+    rejection used to leave ``_ineffective_compression_count`` untouched, so
+    the breaker never latched and automatic compression retried the SAME
+    unchanged transcript on every turn.
+    """
+
+    def test_rejected_compaction_increments_strike(self):
+        cc = _compressor(threshold_tokens=1)
+        assert cc._ineffective_compression_count == 0
+
+        cc.record_rejected_compaction()
+
+        assert cc._ineffective_compression_count == 1
+
+    def test_two_rejections_stop_further_automatic_compression(self):
+        cc = _compressor(threshold_tokens=1)
+        cc.record_rejected_compaction()
+        cc.record_rejected_compaction()
+
+        # The latch consumers key on the counter itself (>= 2 blocks);
+        # pin the counter and the recovery-clock arming side effect.
+        assert cc._ineffective_compression_count >= 2
+
+    def test_rejection_does_not_arm_real_usage_verification(self):
+        """Nothing was committed, so the next response must not be scored
+        against the pre-rejection transcript (that verdict belongs to
+        committed compactions only)."""
+        cc = _compressor(threshold_tokens=1)
+        cc.record_rejected_compaction()
+
+        assert cc._verify_compaction_cleared_threshold is False
+
+    def test_rejection_leaves_fallback_streak_untouched(self):
+        cc = _compressor(threshold_tokens=1)
+        cc._fallback_compression_streak = 1
+
+        cc.record_rejected_compaction()
+
+        assert cc._fallback_compression_streak == 1

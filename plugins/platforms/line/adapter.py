@@ -113,14 +113,15 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 from gateway.platforms.base import (
+    gateway_trust_env,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
     SendResult,
-    cache_audio_from_bytes,
-    cache_document_from_bytes,
-    cache_image_from_bytes,
-    cache_video_from_bytes,
+    cache_audio_from_bytes_async,
+    cache_document_from_bytes_async,
+    cache_image_from_bytes_async,
+    cache_video_from_bytes_async,
 )
 from gateway.config import Platform
 
@@ -514,7 +515,7 @@ class _LineClient:
     async def reply(self, reply_token: str, messages: List[Dict[str, Any]]) -> None:
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=self._timeout)
-        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=gateway_trust_env()) as session:
             async with session.post(
                 LINE_REPLY_URL,
                 headers=self._headers,
@@ -527,7 +528,7 @@ class _LineClient:
     async def push(self, chat_id: str, messages: List[Dict[str, Any]]) -> None:
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=self._timeout)
-        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=gateway_trust_env()) as session:
             async with session.post(
                 LINE_PUSH_URL,
                 headers=self._headers,
@@ -546,7 +547,7 @@ class _LineClient:
         clamped = max(5, min(60, (seconds // 5) * 5 or 5))
         try:
             timeout = aiohttp.ClientTimeout(total=5.0)
-            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=gateway_trust_env()) as session:
                 await session.post(
                     LINE_LOADING_URL,
                     headers=self._headers,
@@ -560,7 +561,7 @@ class _LineClient:
         import aiohttp
         url = LINE_CONTENT_URL_FMT.format(message_id=message_id)
         timeout = aiohttp.ClientTimeout(total=30.0)
-        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=gateway_trust_env()) as session:
             async with session.get(url, headers={"Authorization": f"Bearer {self._token}"}) as resp:
                 if resp.status >= 400:
                     raise RuntimeError(f"LINE content {resp.status}")
@@ -571,7 +572,7 @@ class _LineClient:
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=10.0)
         try:
-            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=gateway_trust_env()) as session:
                 async with session.get(LINE_BOT_INFO_URL, headers=self._headers) as resp:
                     if resp.status >= 400:
                         return None
@@ -854,6 +855,10 @@ class LineAdapter(BasePlatformAdapter):
             f"{DEFAULT_MEDIA_PATH_PREFIX}/{{token}}/{{filename}}",
             self._handle_media,
         )
+
+        # Plugin-registered native handlers (aiohttp web.Application —
+        # router routes). Wired before AppRunner.setup() freezes the router.
+        self._wire_plugin_handlers(self._app)
 
         self._runner = web.AppRunner(self._app)
         try:
@@ -1149,16 +1154,16 @@ class LineAdapter(BasePlatformAdapter):
         }.get(msg_type, ".bin")
         try:
             if msg_type == "image":
-                return cache_image_from_bytes(data, ext=ext), "image/jpeg"
+                return await cache_image_from_bytes_async(data, ext=ext), "image/jpeg"
             if msg_type == "audio":
                 media_type = mimetypes.guess_type(f"audio{ext}")[0] or "audio/mp4"
-                return cache_audio_from_bytes(data, ext=ext), media_type
+                return await cache_audio_from_bytes_async(data, ext=ext), media_type
             if msg_type == "video":
                 media_type = mimetypes.guess_type(f"video{ext}")[0] or "video/mp4"
-                return cache_video_from_bytes(data, ext=ext), media_type
+                return await cache_video_from_bytes_async(data, ext=ext), media_type
             document_name = filename or f"line_file{ext}"
             return (
-                cache_document_from_bytes(data, document_name),
+                await cache_document_from_bytes_async(data, document_name),
                 mimetypes.guess_type(document_name)[0] or "application/octet-stream",
             )
         except Exception as exc:

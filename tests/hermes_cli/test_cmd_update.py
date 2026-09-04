@@ -3,7 +3,7 @@
 import hashlib
 import subprocess
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 
@@ -67,7 +67,29 @@ def _patch_managed_uv(request):
 
     with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
          patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
-         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv):
+         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv), \
+         patch(
+             "hermes_cli.update_cmd._post_update_sqlite_runtime_status",
+             return_value=(True, None),
+         ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _patch_gateway_discovery():
+    """Keep cmd_update's gateway auto-restart phase off this machine's gateways.
+
+    The restart phase used to swallow every exception at debug level, so these
+    end-to-end tests never noticed it touching real gateway discovery. Since
+    the phase is surfaced (#78574: an aborted restart now fails the update),
+    an unmocked ``find_gateway_pids`` on a box with a live gateway reaches the
+    conftest live-system guard and turns into a spurious ``sys.exit(1)``.
+    Discovery returning nothing makes the phase a clean no-op for every test
+    in this module (none of them assert on gateway restarts).
+    """
+    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
+         patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
+         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]):
         yield
 
 
@@ -198,6 +220,59 @@ class TestCmdUpdateTermuxUvBootstrap:
         mock_run.assert_not_called()
 
 
+class TestUpdateManagedPythonEnvIsolation:
+    """Regression for the uv-env isolation fix (third-party UV_PYTHON_INSTALL_DIR
+    must not hijack the update's pip install).
+
+    The update path builds uv_env via managed_python_env() (drops
+    VIRTUAL_ENV/PYTHONPATH/UV_PYTHON, pins UV_MANAGED_PYTHON=1 + UV_NO_CONFIG=1,
+    forces UV_PYTHON_INSTALL_DIR to .hermes-runtime/python), then re-points
+    VIRTUAL_ENV at this install's venv. These tests lock that contract in.
+    """
+
+    def test_managed_env_drops_third_party_uv_install_dir(self):
+        from hermes_cli.managed_uv import managed_python_env
+
+        poisoned = {
+            "UV_PYTHON_INSTALL_DIR": r"C:\WorkBuddy\python",
+            "UV_PYTHON": r"C:\WorkBuddy\python\python.exe",
+            "UV_SYSTEM_PYTHON": "1",
+            "UV_NO_MANAGED_PYTHON": "1",
+            "VIRTUAL_ENV": r"C:\Some\Other\venv",
+            "PYTHONPATH": r"C:\Some\site-packages",
+        }
+        env = managed_python_env()
+
+        # Third-party UV_PYTHON_INSTALL_DIR must not survive into the env.
+        assert env.get("UV_PYTHON_INSTALL_DIR", "") != r"C:\WorkBuddy\python"
+        assert "WorkBuddy" not in env.get("UV_PYTHON_INSTALL_DIR", "")
+        # Managed pins are set; the hijack guards are explicitly cleared.
+        assert env.get("UV_MANAGED_PYTHON") == "1"
+        assert env.get("UV_NO_CONFIG") == "1"
+        assert env.get("UV_PYTHON") is None
+        assert env.get("UV_SYSTEM_PYTHON") is None
+        assert env.get("UV_NO_MANAGED_PYTHON") is None
+        assert env.get("VIRTUAL_ENV") is None
+        assert env.get("PYTHONPATH") is None
+        # Sanity: the poisoned values did exist on input (guards the test itself).
+        assert poisoned["UV_PYTHON_INSTALL_DIR"].startswith("C:\\WorkBuddy")
+
+    def test_update_uv_env_points_venv_and_runtime_store(self):
+        """The update's final uv_env must carry VIRTUAL_ENV=this venv while the
+        managed store path is still the UV_PYTHON_INSTALL_DIR."""
+        from hermes_cli import main as hm
+        from hermes_cli.managed_uv import managed_python_env
+
+        uv_env = managed_python_env()
+        uv_env["VIRTUAL_ENV"] = str(PROJECT_ROOT / "venv")
+
+        assert uv_env["VIRTUAL_ENV"] == str(PROJECT_ROOT / "venv")
+        # Managed store stays the install-scoped runtime dir, not a third-party one.
+        assert ".hermes-runtime" in uv_env.get("UV_PYTHON_INSTALL_DIR", "")
+        assert uv_env.get("UV_MANAGED_PYTHON") == "1"
+        assert uv_env.get("UV_NO_CONFIG") == "1"
+
+
 class TestCmdUpdateBranchFallback:
     """cmd_update falls back to main when current branch has no remote counterpart."""
 
@@ -230,9 +305,225 @@ class TestCmdUpdateBranchFallback:
         expected_git_cmd = (
             ["git", "-c", "windows.appendAtomically=false"] if hm._is_windows() else ["git"]
         )
-        sync_mock.assert_called_once_with(expected_git_cmd, PROJECT_ROOT)
+        sync_mock.assert_called_once_with(
+            expected_git_cmd,
+            PROJECT_ROOT,
+            assume_yes=False,
+            input_fn=None,
+        )
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_yes_on_fork_without_upstream_does_not_claim_up_to_date(
+        self, mock_run, _mock_which, capsys
+    ):
+        """#97052 review: genuine fork, no upstream remote, HEAD == origin/main,
+        --yes. The prompt is skipped without mutating remotes, and because the
+        official repo was never consulted the completion line must not claim
+        plain "Already up to date!"."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(
+            update_cmd, "_has_upstream_remote", return_value=False
+        ), patch.object(
+            update_cmd, "_should_skip_upstream_prompt", return_value=False
+        ), patch.object(
+            update_cmd, "_add_upstream_remote"
+        ) as add_remote, patch.object(
+            update_cmd, "_mark_skip_upstream_prompt"
+        ) as mark_skip, patch("builtins.input") as stdin_input:
+            cmd_update(SimpleNamespace(yes=True))
+
+        stdin_input.assert_not_called()
+        add_remote.assert_not_called()
+        mark_skip.assert_not_called()
+        captured = capsys.readouterr()
+        assert "Skipping upstream setup (non-interactive run)." in captured.out
+        assert "official repo not checked" in captured.out
+        assert "Already up to date!" not in captured.out
+
+    @pytest.mark.parametrize(
+        ("health_after_repair", "runtime_status", "expected_runtime_checks"),
+        [
+            (True, (False, SimpleNamespace(sqlite_version_string="3.46.1")), 1),
+            (False, (True, None), 0),
+        ],
+    )
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_current_checkout_python_repair_failure_is_durable(
+        self,
+        mock_run,
+        _mock_which,
+        mock_args,
+        health_after_repair,
+        runtime_status,
+        expected_runtime_checks,
+    ):
+        """Python repair must not bypass runtime and durable outcome checks."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        mock_args.gateway = True
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(hm, "_sync_with_upstream_if_needed"), patch.object(
+            update_cmd,
+            "_venv_core_imports_healthy",
+            side_effect=[
+                (False, "broken before repair"),
+                (health_after_repair, "broken after repair"),
+            ],
+        ), patch.object(
+            hm, "_install_python_dependencies_with_optional_fallback"
+        ), patch.object(
+            hm, "_refresh_active_lazy_features"
+        ), patch.object(
+            hm, "_restore_active_tool_dependencies"
+        ), patch.object(
+            update_cmd, "_write_update_incomplete_marker"
+        ), patch.object(
+            hm, "_clear_update_incomplete_marker"
+        ), patch.object(
+            update_cmd,
+            "_post_update_sqlite_runtime_status",
+            return_value=runtime_status,
+        ) as runtime_check, patch.object(
+            update_cmd, "_write_gateway_update_exit_code"
+        ) as write_gateway_exit, patch(
+            "hermes_cli.update_receipt.finalize_update_receipt"
+        ) as finalize_receipt, patch(
+            "hermes_cli.update_receipt.finalize_pending_update_receipt"
+        ):
+            with pytest.raises(SystemExit) as exit_info:
+                cmd_update(mock_args)
+
+        assert exit_info.value.code == 1
+        assert runtime_check.call_count == expected_runtime_checks
+        write_gateway_exit.assert_called_once_with(False)
+        finalize_receipt.assert_called_once_with("partial")
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_current_checkout_node_repair_verification_failure_is_durable(
+        self, mock_run, _mock_which, mock_args
+    ):
+        """A failed Node-path runtime check must fail durable outcomes."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        mock_args.gateway = True
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(hm, "_sync_with_upstream_if_needed"), patch.object(
+            update_cmd,
+            "_repair_node_deps_on_current_checkout",
+            return_value=False,
+        ), patch.object(
+            update_cmd, "_write_gateway_update_exit_code"
+        ) as write_gateway_exit, patch(
+            "hermes_cli.update_receipt.finalize_update_receipt"
+        ) as finalize_receipt, patch(
+            "hermes_cli.update_receipt.finalize_pending_update_receipt"
+        ):
+            with pytest.raises(SystemExit) as exit_info:
+                cmd_update(mock_args)
+
+        assert exit_info.value.code == 1
+        write_gateway_exit.assert_called_once_with(False)
+        finalize_receipt.assert_called_once_with("partial")
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_fork_upstream_sync_that_moves_head_runs_post_update_steps(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        """A fork sync that pulls code must continue through post-update work."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        # The first two reads bracket the upstream sync (aaaaaaa -> bbbbbbb:
+        # the sync moved HEAD). The NEXT two bracket the pull inside the
+        # normal update path (bbbbbbb -> ccccccc) — the head-moved no-op
+        # guard added after this PR exits 1 when that pair is equal, so the
+        # mock must show the pull advancing HEAD too.
+        shas = iter(["aaaaaaa", "bbbbbbb", "bbbbbbb", "ccccccc"])
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(
+            update_cmd,
+            "_capture_head_sha",
+            side_effect=lambda *_args, **_kwargs: next(shas, "ccccccc"),
+        ), patch(
+            # The full post-update path runs the fleet version check, which
+            # reads the REAL machine's profile gateway_state.json files —
+            # live gateways on a dev box read as STALE vs this checkout and
+            # exit 1. Pin an empty fleet: this test asserts the post-update
+            # path RUNS, not the fleet's health.
+            "hermes_cli.update_receipt.collect_fleet_versions",
+            return_value=[],
+        ), patch(
+            # Same isolation for the restart phase: without these, the real
+            # machine's live gateways enter the restart discovery, the
+            # mocked-subprocess restart phase can't verify replacements, and
+            # the fail-closed contract (#78574) exits 1 (locally the
+            # live-system guard blocks the os.kill outright).
+            "hermes_cli.gateway.find_gateway_pids",
+            return_value=[],
+        ), patch(
+            "hermes_cli.gateway.find_profile_gateway_processes",
+            return_value=[],
+        ), patch(
+            "hermes_cli.gateway._get_service_pids",
+            return_value=set(),
+        ), patch.object(
+            hm, "_sync_with_upstream_if_needed"
+        ), patch.object(
+            hm,
+            "_reload_updated_runtime_modules",
+            # Reaching the reload step IS the proof the post-update path ran
+            # (the bug returned from "Already up to date!" before it). Abort
+            # the pipeline right here: everything past this point (skills
+            # sync, desktop rebuild, gateway restart, fleet check) would run
+            # for real against the host machine.
+            side_effect=SystemExit(0),
+        ) as post_update_step:
+            with pytest.raises(SystemExit) as exit_info:
+                cmd_update(mock_args)
+
+        assert exit_info.value.code == 0
+        post_update_step.assert_called_once_with()
+        captured = capsys.readouterr()
+        assert "Already up to date!" not in captured.out
 
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""
@@ -307,6 +598,49 @@ class TestCmdUpdateMigrationPrompt:
             assert "no new settings to configure" in out
             # The misleading question must NOT appear for a pure version bump.
             assert "configure them now" not in out.lower()
+
+    def test_version_bump_only_surfaces_migration_resets(
+        self, mock_args, capsys
+    ):
+        """A quiet version-bump migration that RESETS a user setting must say so.
+
+        Regression for #86656: the v33→v34 personality reset ran with
+        quiet=True and its results dict was discarded, so the update printed
+        "no new settings to configure" while silently wiping
+        display.personality. Migration-step mutations (config_added) and
+        warnings must be re-surfaced even in the silent branch.
+        """
+        with patch("shutil.which", return_value=None), patch(
+            "subprocess.run"
+        ) as mock_run, patch("builtins.input") as mock_input, patch(
+            "hermes_cli.config.get_missing_env_vars", return_value=[]
+        ), patch(
+            "hermes_cli.config.get_missing_config_fields", return_value=[]
+        ), patch(
+            "hermes_cli.update_cmd._reload_config_modules"
+        ), patch(
+            "hermes_cli.update_cmd._run_config_check_fresh", return_value=(33, 34)
+        ), patch(
+            "hermes_cli.update_cmd._run_migrate_config_fresh",
+            return_value={
+                "env_added": [],
+                "config_added": ["display.personality=none (one-time reset)"],
+                "warnings": ["Disabled suspicious MCP server 'evil'"],
+            },
+        ):
+            mock_run.side_effect = _make_run_side_effect(
+                branch="main", verify_ok=True, commit_count="1"
+            )
+
+            cmd_update(mock_args)
+
+            mock_input.assert_not_called()
+            out = capsys.readouterr().out
+            assert "Updating config format (v33 → v34)" in out
+            assert "no new settings to configure" in out
+            # The migration's mutation note and warning must NOT be swallowed.
+            assert "display.personality=none (one-time reset)" in out
+            assert "Disabled suspicious MCP server 'evil'" in out
 
     def test_new_options_are_listed_by_name_before_prompt(
         self, mock_args, capsys
@@ -791,6 +1125,140 @@ class TestNodeRuntimeNpmResolution:
             for call in mock_run.call_args_list
         )
 
+    def test_update_rebuilds_desktop_that_disappears_mid_update(self):
+        """A previously packaged Desktop must be rebuilt when its release tree vanishes."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+        packaged_exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
+        build_ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        with (
+            patch.object(
+                hm, "_desktop_packaged_executable", side_effect=[packaged_exe, None]
+            ) as packaged,
+            patch.object(hm, "_desktop_dist_exists", return_value=False),
+            patch.object(hm, "_resolve_node_runtime_npm", return_value="npm.cmd"),
+            patch.object(hm, "_desktop_build_needed", return_value=True),
+            patch.object(hm, "_run_logged_subprocess", return_value=build_ok) as desktop_build,
+        ):
+            had_desktop_app_before_update = update_cmd._desktop_app_present(desktop_dir)
+            assert not update_cmd._desktop_app_present(desktop_dir)
+            update_cmd._rebuild_desktop_after_update(
+                desktop_dir,
+                had_desktop_app_before_update=had_desktop_app_before_update,
+            )
+
+        assert packaged.call_count == 2
+        desktop_build.assert_called_once_with(
+            [hm.sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"],
+            cwd=PROJECT_ROOT,
+            env=ANY,
+        )
+
+    def test_git_failure_zip_fallback_rebuilds_missing_desktop(self, tmp_path, monkeypatch):
+        """The Windows ZIP fallback keeps Desktop intact when replacing ``apps/``.
+
+        Contract updated for the #70337/#87331 release-dir graft: the built
+        desktop app (release/win-unpacked/Hermes.exe) is preserved THROUGH
+        the swap — previously this test pinned the old repair shape (exe
+        deleted by the swap, then rebuilt from scratch). The rebuild hook
+        still runs (mocked _desktop_build_needed=True), but it now finds
+        the packaged exe alive rather than missing.
+        """
+        import zipfile
+
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        project_root = tmp_path / "hermes-agent"
+        (project_root / ".git").mkdir(parents=True)
+        desktop_dir = project_root / "apps" / "desktop"
+        packaged_exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
+        packaged_exe.parent.mkdir(parents=True)
+        packaged_exe.write_bytes(b"desktop")
+
+        def write_source_zip(_url, destination):
+            with zipfile.ZipFile(destination, "w") as archive:
+                archive.writestr("hermes-agent-main/apps/desktop/package.json", "{}")
+
+        def fail_git_fetch(command, **_kwargs):
+            if "fetch" in command:
+                raise subprocess.CalledProcessError(1, command)
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        desktop_builds = []
+
+        def rebuild_desktop(*_args, **_kwargs):
+            desktop_builds.append(not packaged_exe.exists())
+            return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", project_root)
+        monkeypatch.setattr(hm, "_is_windows", lambda: True)
+        monkeypatch.setattr(hm, "_run_pre_update_backup", lambda _args: None)
+        monkeypatch.setattr(hm, "_pause_windows_gateways_for_update", lambda: None)
+        monkeypatch.setattr(hm, "_get_origin_url", lambda *_args: "")
+        monkeypatch.setattr(
+            hm,
+            "_desktop_packaged_executable",
+            lambda _desktop_dir: packaged_exe if packaged_exe.exists() else None,
+        )
+        monkeypatch.setattr(hm, "_desktop_dist_exists", lambda _desktop_dir: False)
+        monkeypatch.setattr(hm, "_resolve_node_runtime_npm", lambda: "npm.cmd")
+        monkeypatch.setattr(hm, "_desktop_build_needed", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(hm, "_run_logged_subprocess", rebuild_desktop)
+        monkeypatch.setattr(hm, "_clear_bytecode_cache", lambda *_args: 0)
+        monkeypatch.setattr(hm, "_record_bytecode_fingerprint", lambda: None)
+        monkeypatch.setattr(hm, "_refresh_bootstrap_cache_scripts", lambda _branch: None)
+        monkeypatch.setattr(
+            hm, "_install_python_dependencies_with_optional_fallback", lambda *_args, **_kwargs: None
+        )
+        monkeypatch.setattr(hm, "_refresh_active_memory_provider_dependencies", lambda: None)
+        monkeypatch.setattr(hm, "_build_web_ui", lambda *_args: None)
+        monkeypatch.setattr(update_cmd, "_discard_lockfile_churn", lambda *_args: None)
+        monkeypatch.setattr(update_cmd, "_normalize_managed_eol", lambda *_args: None)
+        monkeypatch.setattr(
+            update_cmd,
+            "_validate_critical_modules_import",
+            lambda *_args: (True, None, None),
+        )
+        monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: [])
+        monkeypatch.setattr(update_cmd, "_print_curator_first_run_notice", lambda: None)
+        monkeypatch.setattr(update_cmd, "_print_curator_recent_run_notice", lambda: None)
+        monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda _failures: None)
+        monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: tmp_path / "hermes-home")
+
+        with (
+            patch("hermes_cli.config.load_config", return_value={}),
+            patch("subprocess.run", side_effect=fail_git_fetch),
+            patch("urllib.request.urlretrieve", side_effect=write_source_zip),
+            patch("hermes_cli.managed_uv.ensure_uv", return_value="uv"),
+            patch("hermes_cli.managed_uv.update_managed_uv"),
+            patch(
+                "tools.skills_sync.sync_skills",
+                return_value={
+                    "copied": [],
+                    "updated": [],
+                    "user_modified": [],
+                    "cleaned": [],
+                    "relocated": [],
+                },
+            ),
+            patch("hermes_cli.model_catalog.seed_cache_from_checkout", return_value=False),
+        ):
+            update_cmd._cmd_update_impl(
+                SimpleNamespace(yes=True, force=True, force_venv=True, branch=None),
+                gateway_mode=False,
+            )
+
+        # Release-dir graft (#70337): the packaged exe SURVIVES the swap, so
+        # the rebuild hook observed it present (False), and the bytes are the
+        # original build — never deleted, never rebuilt from nothing.
+        assert desktop_builds == [False]
+        assert packaged_exe.exists()
+        assert packaged_exe.read_bytes() == b"desktop"
+
 
 class TestUpdateNodeDependencies:
     """Unit tests for _update_node_dependencies — issue #43564.
@@ -1054,3 +1522,117 @@ class TestUpdateNodeDependencies:
         assert cwd_calls, "expected at least one npm call"
         for cwd in cwd_calls:
             assert cwd == tmp_path, f"npm must run from PROJECT_ROOT; got cwd={cwd}"
+
+
+class TestGitTrampolineSelfHeal:
+    """Proactive Git-for-Windows trampoline self-heal (#87876).
+
+    A broken bin\\git.exe / cmd\\git.exe shim (~46KB) refuses every git call
+    with a "BUG (fork bomb)" guard instead of re-execing the real git-core
+    binary. _ensure_non_trampoline_git detects this up front and swaps in a
+    real git binary when one can be located, so the normal git update path
+    survives instead of degrading to the ZIP fallback.
+    """
+
+    @staticmethod
+    def _fake_run_healthy(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command, 0, stdout="git version 2.50.0.windows.1\n", stderr=""
+        )
+
+    @staticmethod
+    def _fake_run_trampoline(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="",
+            stderr="BUG (fork bomb): tried to spawn itself, check your PATH\n",
+        )
+
+    def test_healthy_git_command_unchanged(self):
+        from hermes_cli import update_cmd
+
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+        with (
+            patch("sys.platform", "win32"),
+            patch(
+                "hermes_cli.update_cmd.subprocess.run",
+                side_effect=self._fake_run_healthy,
+            ),
+            patch("hermes_cli.update_cmd._locate_real_git") as locate,
+        ):
+            result = update_cmd._ensure_non_trampoline_git(git_cmd)
+        assert result == git_cmd
+        locate.assert_not_called()
+
+    def test_trampoline_swaps_to_real_git(self, capsys):
+        from pathlib import Path
+
+        from hermes_cli import update_cmd
+
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+        real = Path(r"C:\Program Files\Git\mingw64\libexec\git-core\git.exe")
+        with (
+            patch("sys.platform", "win32"),
+            patch(
+                "hermes_cli.update_cmd.subprocess.run",
+                side_effect=self._fake_run_trampoline,
+            ),
+            patch(
+                "hermes_cli.update_cmd._locate_real_git", return_value=real
+            ),
+        ):
+            result = update_cmd._ensure_non_trampoline_git(git_cmd)
+        assert result == [str(real), "-c", "windows.appendAtomically=false"]
+        out = capsys.readouterr().out
+        assert "switching to real git" in out
+
+    def test_trampoline_no_real_git_keeps_command(self, capsys):
+        from hermes_cli import update_cmd
+
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+        with (
+            patch("sys.platform", "win32"),
+            patch(
+                "hermes_cli.update_cmd.subprocess.run",
+                side_effect=self._fake_run_trampoline,
+            ),
+            patch("hermes_cli.update_cmd._locate_real_git", return_value=None),
+        ):
+            result = update_cmd._ensure_non_trampoline_git(git_cmd)
+        assert result == git_cmd
+        out = capsys.readouterr().out
+        assert "ZIP path" in out
+
+    def test_off_windows_noop(self):
+        from hermes_cli import update_cmd
+
+        git_cmd = ["git"]
+        with (
+            patch("sys.platform", "linux"),
+            patch("hermes_cli.update_cmd.subprocess.run") as run,
+        ):
+            result = update_cmd._ensure_non_trampoline_git(git_cmd)
+        assert result == git_cmd
+        run.assert_not_called()
+
+    def test_portable_git_candidates_check_shared_root_first(self, tmp_path, monkeypatch):
+        # Profile-scoped layout: HERMES_HOME = <root>/profiles/foo, but the
+        # PortableGit tree lives under the SHARED root (monerostar review on
+        # #88136). The candidate list must check get_default_hermes_root()
+        # before the profile home.
+        from hermes_cli import update_cmd
+
+        root = tmp_path / "root"
+        profile_home = root / "profiles" / "foo"
+
+        monkeypatch.setattr(update_cmd, "get_default_hermes_root", lambda: root)
+        monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: profile_home)
+
+        candidates = update_cmd._portable_git_candidates()
+        assert candidates[0] == (
+            root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
+        )
+        assert candidates[1] == (
+            profile_home / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
+        )

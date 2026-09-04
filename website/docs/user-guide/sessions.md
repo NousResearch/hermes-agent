@@ -115,6 +115,10 @@ hermes chat -c
 
 This looks up the most recent `cli` session from the SQLite database and loads its full conversation history.
 
+#### Per-Terminal Continue
+
+A bare `-c` is terminal-aware: each CLI session drops a small breadcrumb file under `~/.hermes/terminal-sessions/` keyed by the terminal it runs in (tty device, tmux pane, kitty window, wezterm pane, Zellij pane, Windows Terminal session, ...). When you run `hermes -c` again in the *same* terminal, Hermes resumes that terminal's own session — so two panes side by side each continue their own conversation instead of both grabbing the globally most-recent one. If there's no breadcrumb for the terminal (first use, deleted session, or a stale breadcrumb older than 30 days), `-c` falls back to the most-recent-session behavior. `-c "name"` and `--resume` are unaffected. Disable with `session.terminal_continue: false` in `config.yaml`.
+
 ### Resume by Name
 
 If you've given a session a title (see [Session Naming](#session-naming) below), you can resume it by name:
@@ -242,7 +246,8 @@ What happens:
 
 **Failure modes:**
 - No home channel configured → CLI refuses with a `/sethome` hint.
-- Platform not enabled / gateway not running → CLI times out at 60s with a clear message and your CLI session stays intact.
+- Gateway not running (nothing ever claims the request) → CLI times out at 60s with a clear message and your CLI session stays intact.
+- Slow transfer: once the gateway claims the handoff it replays your full session through a real agent turn, which can take a few minutes on long sessions. The CLI shows "Still transferring..." heartbeats and waits up to 15 minutes — it never misreports a slow transfer as "gateway not running".
 - Thread creation fails (permissions, topics-mode off) → falls back to the home channel directly and still completes; no thread isolation but the handoff itself works.
 - `adapter.send` fails (rate limit, transient API error) → handoff marked failed with the reason; the row clears so you can retry.
 
@@ -458,6 +463,28 @@ hermes sessions rename 20250305_091523_a1b2c3d4 debugging auth flow
 
 If the title is already in use by another session, an error is shown.
 
+### Pin a Session
+
+Pinning sets a durable "keep" flag: pinned sessions are exempt from the
+`sessions.auto_archive` stale sweep and always appear in listings. It is the
+same flag the Desktop sidebar's Pinned section uses — pin from either surface
+and both see it.
+
+```bash
+# Pin one or more sessions (unique ID prefixes work)
+hermes sessions pin 20250305_091523_a1b2c3d4
+hermes sessions pin 20250305 20250306
+
+# Remove the pin
+hermes sessions unpin 20250305_091523_a1b2c3d4
+
+# List pinned sessions
+hermes sessions pinned
+
+# Machine-readable output, e.g. for a nightly backup of your pin set
+hermes sessions pinned --json > pinned-sessions.json
+```
+
 ### Prune Old Sessions
 
 ```bash
@@ -610,11 +637,43 @@ routing is the only thing the repair changes. Back up first
 (`cp ~/.hermes/state.db ~/.hermes/state.db.bak`).
 
 
+## Importing Sessions from Claude Code and Codex CLI
+
+Started a conversation in another agent CLI? You can pull it into Hermes and
+continue it here. Hermes reads Claude Code's session logs
+(`~/.claude/projects/`) and Codex CLI's rollouts (`~/.codex/sessions/`) —
+the foreign files are only read, never modified.
+
+```bash
+# Interactive picker across both tools, newest first
+hermes sessions import
+
+# Limit to one tool, or point at a specific file
+hermes sessions import --from claude
+hermes sessions import --from codex ~/.codex/sessions/2026/08/15/rollout-....jsonl
+
+# Import-and-resume in one step
+hermes --resume @claude
+hermes --resume @codex
+```
+
+`hermes sessions import` creates a new Hermes session titled
+`Imported from Claude Code: <first user message>` (or Codex CLI) and prints
+the id plus a ready-to-paste `hermes --resume <id>` command.
+`--resume @claude` / `--resume @codex` show the same picker and drop you
+straight into the imported conversation.
+
+What carries over: the ordered user/assistant conversation, with tool
+activity condensed to short `[ran tool: …]` notes inside assistant turns.
+System prompts, injected context, reasoning traces, and raw tool output are
+left behind — the import is a clean transcript, not a byte-for-byte replay.
+
+
 ## Session Search Tool
 
-The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine — and lets the agent scroll through any session it finds. No LLM calls, no summarization, no truncation. Every shape returns actual messages from the DB.
+The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine — and lets the agent scroll through any session it finds. It makes no LLM calls and returns views of actual messages from the DB rather than generating summaries.
 
-### Three calling shapes
+### Four calling shapes
 
 The tool infers what you want from which arguments you set. There's no `mode` parameter.
 
@@ -624,16 +683,18 @@ The tool infers what you want from which arguments you set. There's no `mode` pa
 session_search(query="auth refactor", limit=3)
 ```
 
-Runs FTS5, dedupes hits by session lineage, returns the top N sessions. Each result carries:
+Runs FTS5, dedupes hits by session lineage, and returns the top N sessions. Discovery uses adaptive detail by default: the highest-ranked result includes its full context window and bookends, while lower-ranked results stay compact. Pass `detail="full"` to fully hydrate every result.
+
+Each result carries:
 
 - `session_id`, `title`, `when`, `source`
 - `snippet` — FTS5-highlighted match excerpt
-- `bookend_start` — first 3 user+assistant messages of the session (the goal/kickoff)
-- `messages` — ±5 messages around the FTS5 match, with the anchor message flagged (the hit in context)
-- `bookend_end` — last 3 user+assistant messages of the session (the resolution/decisions)
+- `detail` — `full` or `compact`
+- `bookend_start` / `bookend_end` — first/last 3 user+assistant messages for full results; empty lists for compact results
+- `messages` — ±5 messages around the FTS5 match for full results; only the flagged anchor message for compact results
 - `match_message_id`, `messages_before`, `messages_after`
 
-Bookends + window together reconstruct goal → match → resolution without paying for the whole transcript. Typical wall time: 15–50ms on a real session DB.
+The top result reconstructs goal → match → resolution immediately. If another compact result looks more promising, use its session and message IDs with the scroll shape. Typical wall time is tens of milliseconds on a real session DB.
 
 **2. Scroll — pass `session_id` + `around_message_id`:**
 
@@ -650,7 +711,15 @@ Returns a window of ±`window` messages centered on the anchor. No FTS5, no book
 
 Typical wall time: 1–2ms per scroll call.
 
-**3. Browse — no args:**
+**3. Read — pass `session_id` without an anchor:**
+
+```python
+session_search(session_id="20260510_174648_805cc2")
+```
+
+Returns the whole session, or a bounded head/tail view for large sessions. This shape is also used to resolve an `@session:<profile>/<id>` link.
+
+**4. Browse — no args:**
 
 ```python
 session_search()
@@ -670,6 +739,7 @@ The keyword mode supports standard FTS5 query syntax:
 ### Optional parameters
 
 - `sort` — `newest` or `oldest`, on top of FTS5 ranking. Omit for relevance-only ordering (the default; suitable for exploratory recall). Use `newest` for "where did we leave X" questions, `oldest` for "how did X start" questions.
+- `detail` — `adaptive` (default) fully hydrates only the top discovery result; `full` hydrates every discovery result.
 - `role_filter` — comma-separated roles to include. Discovery defaults to `user,assistant` (tool output is usually noise). Pass `user,assistant,tool` to include tool output (debugging tool behaviour) or `tool` to search tool output only.
 
 ### When It's Used
@@ -799,24 +869,69 @@ Key tables in `state.db`:
 
 - Gateway sessions auto-reset based on the configured reset policy
 - Before reset, the agent saves memories and skills from the expiring session
-- Opt-in auto-pruning: when `sessions.auto_prune` is `true`, ended sessions inactive for `sessions.retention_days` (default 90) are pruned at CLI/gateway startup
-- After a prune that actually removed rows, `state.db` is `VACUUM`ed to reclaim disk space when at least `sessions.min_vacuum_interval_days` (default 30) have elapsed since the last successful `VACUUM` (SQLite does not shrink the file on plain DELETE)
+- Auto-pruning (**on by default** since #54189): when `sessions.auto_prune` is `true`, ended sessions inactive for `sessions.retention_days` (default 90) are pruned at CLI/gateway/cron startup
+- After a prune that actually removed rows, `state.db` is `VACUUM`ed to reclaim disk space only when **both** gates pass: at least `sessions.min_vacuum_interval_days` (default 30) have elapsed since the last successful `VACUUM`, **and** more than 25% of the file's pages are reclaimable (`PRAGMA freelist_count / page_count`). A dense database never pays for a full rewrite to reclaim a few MB (SQLite does not shrink the file on plain DELETE)
 - Pruning runs at most once per `sessions.min_interval_hours` (default 24); the last-run timestamp is tracked inside `state.db` itself so it's shared across every Hermes process in the same `HERMES_HOME`
 
-Default is **off** — session history is valuable for `session_search` recall, and silently deleting it could surprise users. Enable in `~/.hermes/config.yaml`:
+Without pruning, `state.db` grows without bound — multi-GB files within weeks were reported on gateway + cron installs. If you would rather keep every ended session forever (the pre-#54189 behavior), turn it off in `~/.hermes/config.yaml`:
 
 ```yaml
 sessions:
-  auto_prune: true          # opt in — default is false
+  auto_prune: false         # default is true — set false to keep all history
   retention_days: 90        # keep ended sessions active within this window
   vacuum_after_prune: true  # reclaim disk space after a pruning sweep
   min_vacuum_interval_days: 30 # don't rewrite the DB more often than this
   min_interval_hours: 24    # don't re-run the sweep more often than this
 ```
 
-Active sessions are never auto-pruned, regardless of age. Ended sessions are
-aged from their latest message, so a long-lived conversation used recently is
-not deleted merely because it began before the retention window.
+Existing installs that already set any of these keys explicitly keep their
+values; only unset keys pick up the new defaults.
+
+Only **ended** sessions are ever deleted. Active sessions are never auto-pruned,
+regardless of age. Ended sessions are aged from their latest message, so a
+long-lived conversation used recently is not deleted merely because it began
+before the retention window.
+
+**Stale open sessions from automation.** Some producers — cron jobs, kanban
+workers, subagents, one-shot CLI runs — can die without ever marking their
+session ended, and pruning only deletes *ended* rows. To keep those from
+accumulating forever, each auto-prune pass also *closes* open sessions from
+those state-owned sources (`cli`, `cron`, `kanban`, `acp`, `api_server`,
+`subagent`, `tool`) whose last activity is older than `retention_days`
+(`end_reason: startup_orphan_reap`). Closing is non-destructive — the
+session stays resumable — and the row is aged from its close, so it is only
+deleted by a *later* pass after a further full retention window. Messaging
+platform sessions (Telegram, Discord, …), TUI/desktop sessions, pinned
+sessions, and sessions with a live turn or compression in progress are
+never closed by this sweep.
+
+### Oversized-Transcript Guards
+
+Two limits stop a runaway transcript from being loaded into memory all at once
+(both default to `20000` active messages; `0` disables the guard):
+
+```yaml
+sessions:
+  max_resume_messages: 20000   # interactive resume (CLI / TUI / Desktop)
+  max_export_messages: 20000   # one-shot in-memory export of a single session
+```
+
+`max_resume_messages` bounds **what the resume actually loads**, not the whole
+history of the conversation:
+
+- A plain interactive resume (CLI `--resume`, the TUI) materializes the full
+  compression lineage — every compacted segment plus the live tip — so it is
+  bounded across the lineage.
+- Desktop's cold resume pages the transcript over REST and only holds the live
+  tip segment in memory, so it is bounded by the tip alone. A long-lived chat
+  that has been compacted many times (dozens of segments, tens of thousands of
+  archived rows behind a small tip) is exactly what compression is meant to
+  produce and opens normally; its footer message count reflects the stored
+  lineage, not the live prompt.
+
+When a resume is refused the client receives error code `4130` with the count
+and the scope it was measured against (`across its lineage` or
+`in its tip segment`). `hermes sessions export` still works for such sessions.
 
 ### Manual Cleanup
 

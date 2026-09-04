@@ -41,6 +41,7 @@ from hermes_cli.dashboard_auth.cookies import (
     clear_session_cookies,
     clear_sso_attempt_cookie,
     detect_https,
+    parse_pkce_payload,
     read_pkce_cookie,
     read_session_cookies,
     set_pkce_cookie,
@@ -110,6 +111,23 @@ def _client_ip(request: Request) -> str:
     if fwd:
         return fwd.split(",")[0].strip()
     return request.client.host if request.client else ""
+
+
+def _provider_pkce_segments(cookie_payload: dict[str, str]) -> dict[str, str]:
+    """Segment dict from a provider's ``LoginStart.cookie_payload``.
+
+    Providers serialise their PKCE material as the flat
+    ``state=…;verifier=…`` string documented on
+    :class:`~hermes_cli.dashboard_auth.base.LoginStart` (values are
+    ``token_urlsafe`` — never containing ``;`` or ``=``). This is the ONE
+    place that flat provider string is parsed; from here on the payload
+    is a dict all the way to :func:`set_pkce_cookie`'s base64url(JSON)
+    wire encoding.
+    """
+    flat = cookie_payload.get("hermes_session_pkce", "")
+    return dict(
+        seg.split("=", 1) for seg in flat.split(";") if "=" in seg
+    )
 
 
 def _prefix(request: Request) -> str:
@@ -224,20 +242,21 @@ async def auth_login(request: Request, provider: str, next: str = ""):
     resp = RedirectResponse(url=ls.redirect_url, status_code=302)
     # Pack the provider name into the PKCE cookie so the callback can
     # find it without a separate cookie. Provider may or may not have
-    # already included a ``provider=`` segment.
-    pkce = ls.cookie_payload.get("hermes_session_pkce", "")
-    if "provider=" not in pkce:
-        pkce = f"provider={provider};{pkce}" if pkce else f"provider={provider}"
+    # already included a ``provider`` segment.
+    pkce = _provider_pkce_segments(ls.cookie_payload)
+    pkce.setdefault("provider", provider)
     # Carry ``next=`` through the round trip in the PKCE cookie. Real
     # IDPs only echo back ``code`` + ``state`` on the callback URL, so
     # query-string transport would lose the value — the cookie is the
     # only server-controlled channel that survives. Validate before we
     # store it so an attacker who reaches /auth/login directly with
-    # ``next=//evil.example`` can't poison the cookie.
+    # ``next=//evil.example`` can't poison the cookie. Stored as the
+    # validator's decoded path VERBATIM — JSON has no delimiter to
+    # collide with, so no extra encoding layer (the callback validator's
+    # single unquote stays symmetric with the query-string decode).
     safe_next = _validate_post_login_target(next)
     if safe_next:
-        from urllib.parse import quote
-        pkce = f"{pkce};next={quote(safe_next, safe='')}"
+        pkce["next"] = safe_next
     set_pkce_cookie(
         resp, payload=pkce, use_https=detect_https(request),
         prefix=_prefix(request),
@@ -304,6 +323,15 @@ async def auth_native_authorize(
     ``/auth/callback``), carrying the broker_state in the same PKCE cookie the
     cookie flow uses. On the callback we mint a loopback code (see
     ``auth_callback``); no browser session cookie is ever set for the desktop.
+
+    Password providers have no upstream IDP round trip to broker, but the
+    native flow is still exactly what they want: it moves sign-in out of the
+    desktop's embedded webview (where OS password managers cannot autofill)
+    into the SYSTEM browser (where they can). For a ``supports_password``
+    provider we redirect to the interactive ``/login`` form instead of an
+    IDP, carrying the broker_state in the PKCE cookie; a successful
+    ``/auth/password-login`` then completes the pending authorization and
+    bounces the browser to the loopback redirect (see that route).
     """
     # PKCE method must be S256 (RFC 7636 — plain is disallowed for native apps).
     if code_challenge_method.upper() != "S256":
@@ -344,14 +372,11 @@ async def auth_native_authorize(
         raise HTTPException(
             status_code=404, detail=f"Unknown provider: {provider!r}"
         )
-    if not getattr(p, "supports_session", True) or getattr(
-        p, "supports_password", False
-    ):
-        # Native PKCE brokering is only meaningful for redirect/OAuth
-        # providers; a password provider has no IDP round trip to broker.
+    if not getattr(p, "supports_session", True):
+        # Token-only credentials (e.g. drain) are not interactive sign-ins.
         raise HTTPException(
             status_code=400,
-            detail=f"Provider does not support native OAuth login: {p.name!r}",
+            detail=f"Provider does not support native login: {p.name!r}",
         )
 
     from hermes_cli.dashboard_auth import native_flow
@@ -365,6 +390,30 @@ async def auth_native_authorize(
         )
     except native_flow.NativeFlowError as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+    if getattr(p, "supports_password", False):
+        # Password provider: no IDP to redirect through. Land the system
+        # browser on the interactive /login form with the broker_state in
+        # the PKCE cookie (the same server-controlled channel the OAuth
+        # branch uses); /auth/password-login picks it up on success and
+        # 302s the browser to the desktop's loopback redirect_uri. The
+        # desktop's challenge/state never touch the cookie — only our
+        # opaque broker_state does.
+        audit_log(
+            AuditEvent.NATIVE_AUTHORIZE_START,
+            provider=p.name,
+            ip=_client_ip(request),
+        )
+        resp = RedirectResponse(
+            url=f"{_prefix(request)}/login", status_code=302
+        )
+        set_pkce_cookie(
+            resp,
+            payload={"provider": p.name, "broker": broker_state},
+            use_https=detect_https(request),
+            prefix=_prefix(request),
+        )
+        return resp
 
     try:
         ls = p.start_login(redirect_uri=_redirect_uri(request))
@@ -382,10 +431,9 @@ async def auth_native_authorize(
     # cookie so the callback can (a) dispatch to the right provider and (b)
     # find the pending native authorization. The desktop's challenge/state
     # never touch this cookie — only our opaque broker_state does.
-    pkce = ls.cookie_payload.get("hermes_session_pkce", "")
-    if "provider=" not in pkce:
-        pkce = f"provider={p.name};{pkce}" if pkce else f"provider={p.name}"
-    pkce = f"{pkce};broker={broker_state}"
+    pkce = _provider_pkce_segments(ls.cookie_payload)
+    pkce.setdefault("provider", p.name)
+    pkce["broker"] = broker_state
     set_pkce_cookie(
         resp, payload=pkce, use_https=detect_https(request),
         prefix=_prefix(request),
@@ -413,13 +461,12 @@ async def auth_callback(
             detail="Missing PKCE state cookie",
         )
 
-    # Parse ``provider=...;state=...;verifier=...;next=...`` — the
-    # ``next`` segment is optional (only present when /auth/login was
-    # given a next= query). All keys live in the same flat namespace;
-    # ``next`` carries a URL-encoded path so it never contains ``;``.
-    parts = dict(
-        seg.split("=", 1) for seg in pkce_raw.split(";") if "=" in seg
-    )
+    # Parse the segment dict (``provider`` / ``state`` / ``verifier`` /
+    # ``next`` — ``next`` only present when /auth/login was given a
+    # next= query). parse_pkce_payload decodes the base64url(JSON) wire
+    # value, with a compatibility ladder for the two legacy flat formats
+    # (see its docstring).
+    parts = parse_pkce_payload(pkce_raw)
     provider_name = parts.get("provider", "")
     expected_state = parts.get("state", "")
     verifier = parts.get("verifier", "")
@@ -547,7 +594,7 @@ async def auth_callback(
         # Clear the PKCE cookie (its job is done) but set NO session cookies:
         # the desktop is not a browser session, it redeems the code for a
         # bearer token it stores itself.
-        clear_pkce_cookie(resp, prefix=_prefix(request))
+        clear_pkce_cookie(resp, use_https=detect_https(request), prefix=_prefix(request))
         clear_sso_attempt_cookie(resp, prefix=_prefix(request))
         return resp
 
@@ -568,7 +615,7 @@ async def auth_callback(
         prefix=_prefix(request),
         provider=session.provider,
     )
-    clear_pkce_cookie(resp, prefix=_prefix(request))
+    clear_pkce_cookie(resp, use_https=detect_https(request), prefix=_prefix(request))
     # Clear the one-shot auto-SSO loop-guard marker now that login succeeded,
     # so it never lingers to suppress a future silent attempt after logout.
     clear_sso_attempt_cookie(resp, prefix=_prefix(request))
@@ -674,6 +721,15 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
     the credential form POSTs via fetch and navigates client-side, so a
     302 (which fetch follows opaquely) is the wrong shape here.
 
+    RFC 8252 native-app branch: when ``/auth/native/authorize`` sent this
+    browser to ``/login`` (password provider), the PKCE cookie carries the
+    opaque ``broker=`` handle. Mirroring the ``/auth/callback`` native
+    branch, success then mints a one-time loopback code instead of a
+    browser session: ``next`` is the desktop's loopback redirect_uri
+    (validated at authorize time) carrying ``code`` + ``state``, and NO
+    session cookies are set — the desktop redeems the code at
+    ``/auth/native/token`` for bearer tokens it stores itself.
+
     Failure modes, all deliberately generic so the endpoint can't be used
     as a username oracle or a provider-enumeration oracle:
       * unknown provider / provider lacks password support → 404
@@ -705,6 +761,39 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
             ip=ip,
         )
         raise HTTPException(status_code=404, detail="Unknown provider")
+
+    # Native-app branch discriminator (see docstring): a broker handle in
+    # the PKCE cookie means this sign-in was initiated by
+    # /auth/native/authorize for a desktop app, not a browser session. The
+    # cookie is server-set (never client-supplied), so it is trustworthy —
+    # and it also records WHICH provider the native flow was initiated for.
+    # /login renders a form for every session provider, so without this
+    # check a flow started for provider A could be completed with provider
+    # B's credentials, binding B's session into A's pending authorization.
+    # Enforce equality BEFORE verifying credentials: nothing is minted, the
+    # pending authorization is preserved, and the user can submit the form
+    # the flow was actually started for.
+    broker_state = ""
+    cookie_provider = ""
+    pkce_raw = read_pkce_cookie(request)
+    if pkce_raw:
+        pkce_parts = parse_pkce_payload(pkce_raw)
+        broker_state = pkce_parts.get("broker", "")
+        cookie_provider = pkce_parts.get("provider", "")
+    if broker_state and cookie_provider != body.provider:
+        audit_log(
+            AuditEvent.NATIVE_TOKEN_FAILURE,
+            provider=body.provider,
+            reason="provider_mismatch",
+            ip=ip,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This native sign-in was started for a different provider; "
+                "use that provider's form or restart sign-in."
+            ),
+        )
 
     try:
         session = p.complete_password_login(
@@ -740,6 +829,48 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
         org_id=session.org_id,
         ip=ip,
     )
+
+    # Native-app branch: the broker handle was parsed (and its provider
+    # binding enforced) above, before credential verification.
+    if broker_state:
+        from hermes_cli.dashboard_auth import native_flow
+
+        try:
+            pending = native_flow.get_pending(broker_state)
+            gw_code = native_flow.complete_pending(
+                broker_state, session=session
+            )
+        except native_flow.NativeFlowError:
+            audit_log(
+                AuditEvent.NATIVE_TOKEN_FAILURE,
+                provider=body.provider,
+                reason="pending_not_found",
+                ip=ip,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail="Native login expired or unknown; restart sign-in.",
+            )
+        from urllib.parse import urlencode
+
+        sep = "&" if "?" in pending.redirect_uri else "?"
+        loopback = (
+            f"{pending.redirect_uri}{sep}"
+            f"{urlencode({'code': gw_code, 'state': pending.client_state})}"
+        )
+        audit_log(
+            AuditEvent.NATIVE_CODE_ISSUED,
+            provider=body.provider,
+            user_id=session.user_id,
+            ip=ip,
+        )
+        # The login page's form script navigates to ``next`` — here the
+        # loopback listener, which answers with its own "you can close
+        # this window" page. No session cookies: the desktop is not a
+        # browser session (mirrors the /auth/callback native branch).
+        resp = JSONResponse({"ok": True, "next": loopback})
+        clear_pkce_cookie(resp, use_https=detect_https(request), prefix=_prefix(request))
+        return resp
 
     expires_in = max(60, session.expires_at - int(time.time()))
     landing = _validate_post_login_target(body.next) or "/"
@@ -783,7 +914,7 @@ async def auth_logout(request: Request):
     prefix = _prefix(request)
     resp = RedirectResponse(url=f"{prefix}/login", status_code=302)
     clear_session_cookies(resp, prefix=prefix)
-    clear_pkce_cookie(resp, prefix=prefix)
+    clear_pkce_cookie(resp, use_https=detect_https(request), prefix=prefix)
     return resp
 
 

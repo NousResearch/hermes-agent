@@ -51,6 +51,10 @@ _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
 _APPLIED_HOMES: set[str] = set()
 _SECRET_SOURCE_CACHE_LOCK = threading.RLock()
 
+# Routed profile homes whose dotenv load was skipped under multiplex, so the
+# skip is logged once per home rather than on every lazy import mid-turn.
+_SCOPED_SKIP_LOGGED: set[str] = set()
+
 
 def _known_hermes_env_keys() -> set[str]:
     """Return the combined set of known Hermes env-var keys.
@@ -471,6 +475,7 @@ def load_hermes_dotenv(
     *,
     hermes_home: str | os.PathLike | None = None,
     project_env: str | os.PathLike | None = None,
+    load_external_secrets: bool = True,
 ) -> list[Path]:
     """Load Hermes environment files with user config taking precedence.
 
@@ -479,10 +484,45 @@ def load_hermes_dotenv(
     - project `.env` acts as a dev fallback and only fills missing values when
       the user env exists.
     - if no user env exists, the project `.env` also overrides stale shell vars.
+    - callers that only maintain the installation can set
+      ``load_external_secrets=False`` to avoid loading optional secret-manager
+      dependencies into the process that replaces that same environment.
+    - routed multiplex profile loads hydrate external sources into the
+      profile's private secret snapshot without mutating the shared process
+      environment; unscoped startup loads retain the normal behavior above.
     """
-    loaded: list[Path] = []
-
     home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+
+    # A multiplex gateway hosts every profile in one process.  While a routed
+    # profile-home override is active, copying that profile's .env into
+    # os.environ would expose its credentials to sibling turns and every
+    # subsequently spawned child.  An unscoped startup load remains process
+    # configuration and must retain the normal loading path.
+    # External secret sources still need their normal refresh path, so resolve
+    # them against the existing profile-local mapping instead of simply
+    # returning before all hydration work.
+    from agent.secret_scope import is_multiplex_active
+    from hermes_constants import get_hermes_home_override
+
+    if is_multiplex_active() and get_hermes_home_override() is not None:
+        home_key = str(home_path.resolve())
+        if home_key not in _SCOPED_SKIP_LOGGED:
+            _SCOPED_SKIP_LOGGED.add(home_key)
+            import logging
+
+            logging.getLogger(__name__).debug(
+                "multiplex: skipping process-global dotenv load for routed "
+                "profile home %s (credentials resolve via the profile scope)",
+                home_path,
+            )
+        if load_external_secrets:
+            from hermes_cli import _early_recovery
+
+            if not _early_recovery._should_skip_external_secret_sources():
+                hydrate_profile_secret_sources(home_path)
+        return []
+
+    loaded: list[Path] = []
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 
@@ -517,7 +557,21 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
 
-    _apply_external_secret_sources(home_path)
+    # External secret sources are skipped in two updater situations:
+    # 1. ``load_external_secrets=False`` — the caller is an ``update``
+    #    invocation that must not import optional secret-manager libraries
+    #    (Bitwarden → cryptography → ``_rust.pyd``) into the process that
+    #    replaces that same environment on Windows (#73381, #86735).
+    # 2. A fresh ``hermes update`` retry just completed a deferred dependency
+    #    install before importing this module.  Do not remap native
+    #    secret-source dependencies in that same updater process or the
+    #    self-lock preflight will recreate the marker and exit 2 again.
+    # Dotenv and managed env still load in both cases; only external source
+    # resolution is unnecessary for the updater.
+    from hermes_cli import _early_recovery
+
+    if load_external_secrets and not _early_recovery._should_skip_external_secret_sources():
+        _apply_external_secret_sources(home_path)
     _apply_managed_env()
 
     # config.yaml is the documented source of truth for terminal.* settings,
@@ -635,6 +689,23 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         # marked applied either — the re-parse is a cheap fast_safe_load and
         # leaving the home unmarked lets a process pick up a config change
         # on its next load_hermes_dotenv() call instead of never.
+        return
+
+    # Defer the registry import until we know a secrets source is enabled —
+    # agent.secret_sources.bitwarden eagerly loads cryptography._rust.pyd,
+    # which causes the Windows updater to self-lock before its preflight
+    # (the updater itself maps the .pyd before the dependency sync runs).
+    # A config with no enabled sources costs one dict scan; a config with
+    # enabled sources pays the crypto load exactly once, on demand.
+    # NOTE: only keys that smell like a real secret source trigger the import —
+    # a generic dict entry must not force crypto load on every hermes launch.
+    # We whitelist by *shape* (source dict with enabled flag) rather than
+    # hardcoding names, so plugin/test sources pass through unknown keys.
+    any_enabled = any(
+        isinstance(v, dict) and v.get("enabled") is True
+        for v in cfg.values()
+    )
+    if not any_enabled:
         return
 
     try:

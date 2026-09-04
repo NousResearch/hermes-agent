@@ -530,7 +530,18 @@ class DeliveryRouter:
         # platform adapter regardless of which persona's prompt failed.
         # Local/file delivery (_deliver_local) is a separate path and is never
         # filtered — saved silence has no loop risk.
-        if self._filter_silence_narration_enabled() and _is_silence_narration(content):
+        # Cron output is an ARTIFACT, not model chatter: a job whose brief is
+        # legitimately terse ("...", a single 🔇 from a script) has no bot-to-bot
+        # mirror loop to guard against, and dropping it here while returning
+        # {"success": True} is exactly how a cron was logged as delivered with
+        # nothing on the wire (#77763).  Cron sends carry job_id in metadata;
+        # every other caller keeps the filter unchanged.
+        is_cron_artifact = "job_id" in (metadata or {})
+        if (
+            self._filter_silence_narration_enabled()
+            and not is_cron_artifact
+            and _is_silence_narration(content)
+        ):
             logger.warning(
                 "Dropped silence-narration outbound to %s (chat=%s): %r",
                 target.platform.value,

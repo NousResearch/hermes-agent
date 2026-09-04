@@ -30,6 +30,7 @@ import { resolveProfileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
+import { $activeConnectionId } from '@/store/connections'
 import { $cronJobs } from '@/store/cron'
 import { $bindings } from '@/store/keybinds'
 import {
@@ -71,13 +72,16 @@ import {
   toggleSidebarMessagingOpen,
   unpinSession
 } from '@/store/layout'
+import { notifyError } from '@/store/notifications'
 import {
   $newChatProfile,
   $profileColors,
   $profiles,
   $profileScope,
   ALL_PROFILES,
-  normalizeProfileKey
+  messagingTotalsKey,
+  normalizeProfileKey,
+  sidebarProfileForScope
 } from '@/store/profile'
 import {
   $activeProjectId,
@@ -85,7 +89,6 @@ import {
   $projectScope,
   $projectTree,
   $projectTreeLoading,
-  $removedSessionIds,
   $reposScanning,
   ALL_PROJECTS,
   enterProject,
@@ -116,11 +119,17 @@ import {
   $sessionProfilesTruncated,
   $sessions,
   $sessionsLoading,
+  $unreadFinishedSessionIds,
+  markAllSessionsRead,
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
 import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
+import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
+import { $removedSessionIds } from '@/store/session-removal'
 import { $focusedStoredSessionId, $workingSessionIds, type SplitDir } from '@/store/session-states'
+import { ackAllSessionsRead } from '@/store/session-unread'
+import { markSessionUnread } from '@/store/session-unread-remote'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
 import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
 
@@ -139,6 +148,7 @@ import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarFilterMenu } from './filter-menu'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
+import { filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
 import {
@@ -151,6 +161,7 @@ import {
   ProjectBackRow,
   ProjectMenu,
   projectTreeCwd,
+  reconcileEnteredProjectSessions,
   sessionRecency as sessionTime,
   type SidebarProjectTree,
   type SidebarSessionGroup,
@@ -161,7 +172,7 @@ import {
 } from './projects'
 import { WorktreeDialog } from './projects/worktree-dialog'
 import { SidebarBlankState, SidebarPinnedEmptyState, SidebarSessionSkeletons } from './section-states'
-import { buildSessionByAnyId } from './session-index'
+import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 
@@ -248,6 +259,16 @@ const HEADER_NAV_BTN =
 // FTS results cover sessions that aren't in the loaded page; synthesize a
 // minimal SessionInfo so they render in the same row component (resume works
 // by id; the snippet stands in for the preview).
+
+// The backend's FTS layer wraps matched terms in literal '>>>' / '<<<'
+// highlight markers (sqlite snippet() delimiters — see hermes_state_search.py).
+// The sidebar renders the snippet as plain text, so the markers must be
+// stripped or a search for "foo" paints rows titled ">>>foo<<<".
+// Exported for tests.
+export function stripFtsMarkers(snippet: string): string {
+  return snippet.replaceAll('>>>', '').replaceAll('<<<', '')
+}
+
 function searchResultToSession(result: SessionSearchResult): SessionInfo {
   const ts = result.session_started ?? Date.now() / 1000
 
@@ -263,7 +284,7 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
     message_count: 0,
     model: result.model ?? null,
     output_tokens: 0,
-    preview: result.snippet?.trim() || null,
+    preview: stripFtsMarkers(result.snippet ?? '').trim() || null,
     source: result.source ?? null,
     started_at: ts,
     title: null,
@@ -276,7 +297,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onNavigate: (item: SidebarNavItem) => void
   onLoadMoreSessions: () => Promise<void> | void
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
-  onResumeSession: (sessionId: string) => void
+  onResumeSession: (sessionId: string, session?: SessionInfo) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
   onBranchSession: (sessionId: string) => void
@@ -284,7 +305,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   /** Create a brand-new session and open it as a tile on `dir`. */
   onNewSessionSplit: (dir: SplitDir) => void
   onManageCronJob: (jobId: string) => void
-  onTriggerCronJob: (jobId: string) => void
+  onTriggerCronJob: (jobId: string) => Promise<void>
 }
 
 export function ChatSidebar({
@@ -351,6 +372,7 @@ export function ChatSidebar({
   const sortOrderIds = useStore($sidebarSessionRankIds)
   const agentsGrouped = grouping === 'project'
   const pinnedSessionIds = useStore($pinnedSessionIds)
+  const unconfirmedPinWrites = useStore($unconfirmedPinWrites)
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
   const cronOpen = useStore($sidebarCronOpen)
@@ -365,9 +387,25 @@ export function ChatSidebar({
   const messagingTruncated = useStore($messagingTruncated)
   const sessionsLoading = useStore($sessionsLoading)
   const sessionProfilesTruncated = useStore($sessionProfilesTruncated)
+  const unreadCount = useStore($unreadFinishedSessionIds).length
   const profiles = useStore($profiles)
   const profileColors = useStore($profileColors)
   const profileScope = useStore($profileScope)
+  const activeConnectionId = useStore($activeConnectionId)
+
+  // Toggle the persisted read-state watermark from a row menu. The row's own
+  // `unread` prop mirrors what the dot paints; flip it and let the backend
+  // become the truth (optimistic update + rollback in markSessionUnread).
+  const toggleUnread = (storedId: string) => {
+    const row = $sessions.get().find(r => r.id === storedId)
+
+    if (!row) {
+      return
+    }
+
+    markSessionUnread(storedId, row.unread !== true).catch(err => notifyError(err, s.row.unreadFailed))
+  }
+
   // Only surface the profile switcher when more than one profile exists, so
   // single-profile users see the unchanged sidebar.
   const multiProfile = profiles.length > 1
@@ -375,6 +413,7 @@ export function ChatSidebar({
   // profile while scope is still ALL (persisted), the rail is hidden and they'd
   // otherwise be stuck in the grouped view with no way out.
   const showAllProfiles = multiProfile && profileScope === ALL_PROFILES
+  const messagingProfile = sidebarProfileForScope(profileScope)
   const agentOrderIds = useStore($sidebarSessionOrderIds)
   const agentOrderManual = useStore($sidebarSessionOrderManual)
   const workspaceOrderIds = useStore($sidebarWorkspaceOrderIds)
@@ -441,16 +480,19 @@ export function ChatSidebar({
 
   // Profile scope = the "workspace switcher" context. Concrete scope shows only
   // that profile's sessions (clean rows, no per-row tags); ALL fans every
-  // profile in, grouped by profile below. Single-profile users land here with
-  // scope === their only profile, so nothing is filtered out.
+  // profile in. Grouped rendering stays gated on `showAllProfiles` (multi-profile
+  // + ALL) so a single-profile user is never stranded in a grouped view with no
+  // rail — but the *data* still has to fan in when the persisted scope is ALL
+  // (Grouping → Profile). Filtering that pool against the `__all__` sentinel
+  // matches nothing and empties recents + pins.
   // Archived rows are excluded from the sessions query, so Archived is a view of
   // its own set rather than a filter over this one — a flat list of archived
   // rows, no project tree, no date or status dividers.
   const scopedSessions = useMemo(() => {
     const pool = showArchived ? archivedSessions : sessions
 
-    return showAllProfiles ? pool : pool.filter(s => normalizeProfileKey(s.profile) === profileScope)
-  }, [sessions, archivedSessions, showArchived, showAllProfiles, profileScope])
+    return filterSessionsByProfileScope(pool, profileScope)
+  }, [sessions, archivedSessions, showArchived, profileScope])
 
   // One predicate for the status/project filters, so the flat list and the
   // project lanes narrow by the same rule. A project lane holds rows the loaded
@@ -503,28 +545,37 @@ export function ChatSidebar({
     [visibleSessions]
   )
 
+  const visibleCronSessions = useMemo(
+    () => filterSessionsByProfileScope(cronSessions, profileScope),
+    [cronSessions, profileScope]
+  )
+
+  const visibleMessagingSessions = useMemo(
+    () => filterSessionsByProfileScope(messagingSessions, profileScope),
+    [messagingSessions, profileScope]
+  )
+
   // Index sessions by every id a pin might be stored under — recents, cron,
   // AND messaging, since all three can be pinned (see session-index.ts).
   const sessionByAnyId = useMemo(
-    () => buildSessionByAnyId(visibleSessions, cronSessions, messagingSessions),
-    [visibleSessions, cronSessions, messagingSessions]
+    () => buildSessionByAnyId(visibleSessions, visibleCronSessions, visibleMessagingSessions),
+    [visibleSessions, visibleCronSessions, visibleMessagingSessions]
   )
 
-  const pinnedSessions = useMemo(() => {
-    const seen = new Set<string>()
-    const out: SessionInfo[] = []
-
-    for (const pinId of pinnedSessionIds) {
-      const session = sessionByAnyId.get(pinId)
-
-      if (session && !seen.has(session.id)) {
-        seen.add(session.id)
-        out.push(session)
-      }
-    }
-
-    return out
-  }, [pinnedSessionIds, sessionByAnyId])
+  // Local pin ids first (hand-picked order), then server-flagged pins the
+  // local set doesn't know about — a backend `pinned=1` row must never be
+  // invisible just because localStorage is cold or was clobbered (#85969) —
+  // minus the rows whose flag our own in-flight pin write already contradicts.
+  const pinnedSessions = useMemo(
+    () =>
+      resolvePinnedSessions(
+        pinnedSessionIds,
+        sessionByAnyId,
+        [...visibleSessions, ...cronSessions, ...messagingSessions],
+        unconfirmedPinWrites
+      ),
+    [pinnedSessionIds, sessionByAnyId, visibleSessions, cronSessions, messagingSessions, unconfirmedPinWrites]
+  )
 
   // Every id a pin is reachable under: the raw stored ids, plus BOTH identities
   // of each session we resolved one to. A pin is stored on the durable lineage
@@ -711,7 +762,7 @@ export function ChatSidebar({
     const warm = window.setTimeout(() => void refreshProjectTree(), PROJECT_TREE_WARM_MS)
 
     return () => window.clearTimeout(warm)
-  }, [worktreeGroupingActive, showAllProfiles, profileScope, gatewayReady])
+  }, [activeConnectionId, worktreeGroupingActive, showAllProfiles, profileScope, gatewayReady])
 
   // Sessions the branch join can't answer for get one look at their own
   // transcript — a `gh pr create` in there names the PR outright. Backfills
@@ -956,14 +1007,22 @@ export function ChatSidebar({
     )
   }, [overviewEnteredProject, enteredProjectTree, orderRepos, isHiddenFromProjects])
 
+  const enteredProjectOverlaySessions = useMemo(
+    () => reconcileEnteredProjectSessions(agentSessions, overviewEnteredProject?.previewSessions),
+    [agentSessions, overviewEnteredProject?.previewSessions]
+  )
+
   // Overlay live `$sessions` onto the entered project so a just-created session
   // (which the backend snapshot hasn't folded in yet) counts as content and
-  // renders immediately — same optimistic layer as the overview previews. The
-  // backend now seeds each project folder as an (empty) repo, so the overlay
-  // always has a lane to place a new in-project session into.
+  // renders immediately. Also carry over the overview's current preview rows:
+  // its project tree and the separately hydrated drill-in can resolve at
+  // different times, but a row visible in the overview must not disappear on
+  // entry. The backend seeds each project folder as an (empty) repo, so the
+  // overlay always has a lane to place a missing in-project session into.
   const enteredProjectContent = useMemo(
-    () => (enteredProject ? overlayLiveLanes(enteredProject, agentSessions, removedSessionIds) : undefined),
-    [enteredProject, agentSessions, removedSessionIds]
+    () =>
+      enteredProject ? overlayLiveLanes(enteredProject, enteredProjectOverlaySessions, removedSessionIds) : undefined,
+    [enteredProject, enteredProjectOverlaySessions, removedSessionIds]
   )
 
   const scopedRepoPaths = useMemo(
@@ -1143,7 +1202,7 @@ export function ChatSidebar({
   // within a platform by recency. Per-platform totals (when a "load more" has
   // resolved them) drive the count + whether more remain on disk.
   const messagingGroups = useMemo<MessagingSection[]>(() => {
-    if (!messagingSessions.length) {
+    if (!visibleMessagingSessions.length) {
       return []
     }
 
@@ -1153,7 +1212,7 @@ export function ChatSidebar({
     // promises rows that will never appear.
     const pinnedBySource = new Map<string, number>()
 
-    for (const session of messagingSessions) {
+    for (const session of visibleMessagingSessions) {
       const sourceId = normalizeSessionSource(session.source)
 
       if (!sourceId) {
@@ -1174,7 +1233,7 @@ export function ChatSidebar({
     return [...bySource.entries()]
       .map(([sourceId, list]) => {
         const ordered = [...list].sort((a, b) => sessionTime(b) - sessionTime(a))
-        const known = messagingPlatformTotals[sourceId]
+        const known = messagingPlatformTotals[messagingTotalsKey(messagingProfile, sourceId)]
         const unpinnedKnown = known == null ? null : Math.max(0, known - (pinnedBySource.get(sourceId) ?? 0))
         const total = Math.max(ordered.length, unpinnedKnown ?? 0)
 
@@ -1190,7 +1249,7 @@ export function ChatSidebar({
         }
       })
       .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
-  }, [messagingSessions, messagingPlatformTotals, messagingTruncated, isPinnedSession])
+  }, [visibleMessagingSessions, messagingPlatformTotals, messagingTruncated, isPinnedSession, messagingProfile])
 
   // Grouping by profile: one collapsible group per profile, color on the header
   // (not on every row). Default profile floats to the top, the rest alpha.
@@ -1415,6 +1474,8 @@ export function ChatSidebar({
         'border-(--sidebar-edge-border) bg-(--ui-sidebar-surface-background) opacity-100'
       )}
       collapsible="none"
+      data-tip-region=""
+      data-tour="sessions-sidebar"
     >
       <SidebarContent className="gap-0 overflow-hidden bg-transparent px-2.5">
         <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
@@ -1450,6 +1511,9 @@ export function ChatSidebar({
                       !isInteractive &&
                         'cursor-default hover:border-transparent hover:bg-transparent hover:text-inherit'
                     )}
+                    // A tip anchored to the label points at the end of the
+                    // word; the row is what it's actually about.
+                    data-tip-region=""
                     onClick={() => {
                       // A plain new session lands in whatever profile the live
                       // gateway is on (= the active switcher context). null →
@@ -1473,7 +1537,18 @@ export function ChatSidebar({
                     type="button"
                   >
                     <item.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
-                    <span className="min-w-0 flex-1 truncate">{s.nav[item.id] ?? item.label}</span>
+                    {/* Shrink-to-fit, not flex-1: the label carries the row's
+                        `data-tour` handle, and anything anchored to it should
+                        land at the end of the WORD, not out at the sidebar's
+                        edge. Still truncates — `min-w-0` lets it shrink past
+                        its content when the rail is narrow — and the trailing
+                        chip's `ml-auto` was already doing the pushing that
+                        `flex-1` looked like it was for.
+                        Its own `sidebar-nav-` namespace: the overlay nav owns
+                        `nav-<id>`, and both are on screen with Settings open. */}
+                    <span className="min-w-0 truncate" data-tip-arrow-only="" data-tour={`sidebar-nav-${item.id}`}>
+                      {s.nav[item.id] ?? item.label}
+                    </span>
                     {isNewSession && (
                       <KbdGroup
                         className={cn('ml-auto opacity-55', newSessionKbdFlash && 'opacity-100!')}
@@ -1553,6 +1628,7 @@ export function ChatSidebar({
                 onResumeSession={onResumeSession}
                 onToggle={() => undefined}
                 onTogglePin={pinSession}
+                onToggleUnread={toggleUnread}
                 open
                 pinned={false}
                 rootClassName="min-h-32 flex-1 overflow-hidden p-0"
@@ -1575,6 +1651,7 @@ export function ChatSidebar({
                 onResumeSession={onResumeSession}
                 onToggle={() => setSidebarPinsOpen(!pinsOpen)}
                 onTogglePin={unpinSession}
+                onToggleUnread={toggleUnread}
                 open={pinsOpen}
                 pinned
                 rootClassName="shrink-0 p-0 pb-1"
@@ -1646,63 +1723,87 @@ export function ChatSidebar({
                 grouping={showArchived || rankedGlobally ? 'none' : grouping === 'status' ? 'status' : 'date'}
                 groups={displayAgentGroups}
                 headerAction={
-                  inProject && enteredProject ? (
-                    <div className="group/workspace flex shrink-0 items-center gap-0.5">
-                      {enteredProject.path && <StartWorkButton repoPath={enteredProject.path} />}
-                      {/* Home has no folder and no record to rename, theme, or delete. */}
-                      {!enteredProject.isNoProject && (
-                        <ProjectMenu
-                          isActive={enteredProject.id === activeProjectId}
-                          onExitScope={exitProjectScope}
-                          project={enteredProject}
-                          scoped
-                        />
-                      )}
-                      <div className="grid size-6 place-items-center">
-                        <Tip label={s.showProjects}>
-                          <Button
-                            aria-label={s.showProjects}
-                            className={HEADER_NAV_BTN}
-                            onClick={event => {
-                              event.stopPropagation()
-                              exitProjectScope()
-                            }}
-                            size="icon-xs"
-                            variant="ghost"
-                          >
-                            <Codicon name="list-unordered" size="0.75rem" />
-                          </Button>
-                        </Tip>
+                  // One cluster, not a fragment: the header is justify-between,
+                  // so two children (mark-all + the rest) park the check-all in
+                  // the middle as a blank 24px hole until hover.
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    {unreadCount > 0 && (
+                      <Tip label={s.markAllRead}>
+                        <Button
+                          aria-label={s.markAllRead}
+                          className={HEADER_ACTION_BTN}
+                          onClick={event => {
+                            event.stopPropagation()
+                            markAllSessionsRead()
+                            // Ack the persisted layer too, or the next list
+                            // refresh repaints every dot just dismissed.
+                            ackAllSessionsRead()
+                          }}
+                          size="icon-xs"
+                          variant="ghost"
+                        >
+                          <Codicon name="check-all" size="0.75rem" />
+                        </Button>
+                      </Tip>
+                    )}
+                    {inProject && enteredProject ? (
+                      <div className="group/workspace flex shrink-0 items-center gap-0.5">
+                        {enteredProject.path && <StartWorkButton repoPath={enteredProject.path} />}
+                        {/* Home has no folder and no record to rename, theme, or delete. */}
+                        {!enteredProject.isNoProject && (
+                          <ProjectMenu
+                            isActive={enteredProject.id === activeProjectId}
+                            onExitScope={exitProjectScope}
+                            project={enteredProject}
+                            scoped
+                          />
+                        )}
+                        <div className="grid size-6 place-items-center">
+                          <Tip label={s.showProjects}>
+                            <Button
+                              aria-label={s.showProjects}
+                              className={HEADER_NAV_BTN}
+                              onClick={event => {
+                                event.stopPropagation()
+                                exitProjectScope()
+                              }}
+                              size="icon-xs"
+                              variant="ghost"
+                            >
+                              <Codicon name="list-unordered" size="0.75rem" />
+                            </Button>
+                          </Tip>
+                        </div>
                       </div>
-                    </div>
-                  ) : (
-                    <div className="flex shrink-0 items-center gap-0.5">
-                      {!showAllProfiles ? (
-                        <Tip label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}>
-                          <Button
-                            aria-label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
-                            className={HEADER_ACTION_BTN}
-                            onClick={event => {
-                              event.stopPropagation()
+                    ) : (
+                      <>
+                        {!showAllProfiles ? (
+                          <Tip label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}>
+                            <Button
+                              aria-label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
+                              className={HEADER_ACTION_BTN}
+                              onClick={event => {
+                                event.stopPropagation()
 
-                              if (agentsGrouped) {
-                                openProjectCreate()
-                              } else {
-                                onNewSessionInWorkspace(null)
-                              }
-                            }}
-                            size="icon-xs"
-                            variant="ghost"
-                          >
-                            <Codicon name="add" size="0.75rem" />
-                          </Button>
-                        </Tip>
-                      ) : null}
-                      <div className="grid size-6 place-items-center">
-                        <SidebarFilterMenu className={HEADER_NAV_BTN} />
-                      </div>
-                    </div>
-                  )
+                                if (agentsGrouped) {
+                                  openProjectCreate()
+                                } else {
+                                  onNewSessionInWorkspace(null)
+                                }
+                              }}
+                              size="icon-xs"
+                              variant="ghost"
+                            >
+                              <Codicon name="add" size="0.75rem" />
+                            </Button>
+                          </Tip>
+                        ) : null}
+                        <div className="grid size-6 place-items-center">
+                          <SidebarFilterMenu className={HEADER_NAV_BTN} />
+                        </div>
+                      </>
+                    )}
+                  </div>
                 }
                 label={sessionsLabel}
                 labelMeta={
@@ -1712,7 +1813,7 @@ export function ChatSidebar({
                     ) : undefined
                   ) : undefined
                 }
-                liveSessions={inProject ? agentSessions : undefined}
+                liveSessions={inProject ? enteredProjectOverlaySessions : undefined}
                 manualOrderIds={agentOrderManual ? agentOrderIds : sortOrderIds}
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}
@@ -1727,6 +1828,7 @@ export function ChatSidebar({
                 onResumeSession={onResumeSession}
                 onToggle={() => setSidebarRecentsOpen(!agentsOpen)}
                 onTogglePin={pinSession}
+                onToggleUnread={toggleUnread}
                 open={agentsOpen}
                 pinned={false}
                 projectBackRow={
@@ -1784,6 +1886,7 @@ export function ChatSidebar({
                     onResumeSession={onResumeSession}
                     onToggle={() => toggleSidebarMessagingOpen(group.sourceId)}
                     onTogglePin={pinSession}
+                    onToggleUnread={toggleUnread}
                     open={messagingOpenIds.includes(group.sourceId)}
                     pinned={false}
                     rootClassName="shrink-0 p-0"

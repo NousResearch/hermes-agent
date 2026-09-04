@@ -266,3 +266,29 @@ class TestOpenRouterProfileClamp:
         )
         # Unknown capability → passthrough unchanged (no silent downgrade).
         assert extra_body["reasoning"]["effort"] == "ultra"
+
+    def test_disable_omitted_for_mandatory_route_kept_otherwise(self, monkeypatch):
+        """A reasoning-mandatory route 400s on ``{enabled: false}`` — omit it;
+        a route that can disable still gets the user's disable verbatim."""
+        import hermes_cli.models as models_mod
+        from providers import get_provider_profile
+
+        monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_failed_at", None)
+        monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_cache", {
+            "z-ai/glm-5.3-flash": {
+                "supports_reasoning": True,
+                "supported_efforts": ["max", "high", "low"],
+                "mandatory": True,
+            },
+            "z-ai/glm-5.1": {"supports_reasoning": True, "supported_efforts": None, "mandatory": False},
+        })
+        profile = get_provider_profile("openrouter")
+        for disable in ({"enabled": False}, {"enabled": True, "effort": "none"}):
+            extra_body, _top = profile.build_api_kwargs_extras(
+                reasoning_config=disable, supports_reasoning=True, model="z-ai/glm-5.3-flash",
+            )
+            assert "reasoning" not in extra_body, disable
+        extra_body, _top = profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False}, supports_reasoning=True, model="z-ai/glm-5.1",
+        )
+        assert extra_body["reasoning"] == {"enabled": False}

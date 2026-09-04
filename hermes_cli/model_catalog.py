@@ -74,7 +74,10 @@ DEFAULT_CATALOG_URL = (
 DEFAULT_CATALOG_FALLBACK_URLS: tuple[str, ...] = (
     "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/website/static/api/model-catalog.json",
 )
-DEFAULT_TTL_HOURS = 1
+DEFAULT_TTL_MINUTES = 20
+# Legacy key. ``ttl_hours`` is honoured only when the user set it explicitly;
+# the shipped default is ``ttl_minutes`` above.
+DEFAULT_TTL_HOURS = DEFAULT_TTL_MINUTES / 60.0
 DEFAULT_FETCH_TIMEOUT = 8.0
 SUPPORTED_SCHEMA_VERSION = 1
 
@@ -104,10 +107,28 @@ def _load_catalog_config() -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
 
+    # ``ttl_minutes`` is the shipped default (20). ``ttl_hours`` is the legacy
+    # key: honoured when a user set it explicitly and ``ttl_minutes`` is still
+    # at its default (load_config() deep-merges the default in, so "present"
+    # alone doesn't mean "user-set"), so old customized configs keep their
+    # chosen window.
+    ttl_minutes = raw.get("ttl_minutes")
+    try:
+        ttl_minutes = float(ttl_minutes) if ttl_minutes not in (None, "") else DEFAULT_TTL_MINUTES
+    except (TypeError, ValueError):
+        ttl_minutes = DEFAULT_TTL_MINUTES
+    if ttl_minutes == DEFAULT_TTL_MINUTES and raw.get("ttl_hours"):
+        try:
+            ttl_minutes = float(raw["ttl_hours"]) * 60.0
+        except (TypeError, ValueError):
+            pass
+    if ttl_minutes <= 0:
+        ttl_minutes = DEFAULT_TTL_MINUTES
+
     return {
         "enabled": bool(raw.get("enabled", True)),
         "url": str(raw.get("url") or DEFAULT_CATALOG_URL),
-        "ttl_hours": float(raw.get("ttl_hours") or DEFAULT_TTL_HOURS),
+        "ttl_hours": ttl_minutes / 60.0,
         "providers": raw.get("providers") if isinstance(raw.get("providers"), dict) else {},
     }
 
@@ -328,6 +349,33 @@ def get_catalog(*, force_refresh: bool = False) -> dict[str, Any]:
         return disk_data
 
     return {}
+
+
+def refresh_interval_seconds() -> float:
+    """Return the configured catalog TTL in seconds (the gateway poll cadence)."""
+    return max(60.0, _load_catalog_config()["ttl_hours"] * 3600.0)
+
+
+def refresh_catalogs() -> bool:
+    """Force-refresh every remote model catalog the picker reads from.
+
+    Fetches the curated manifest, the OpenRouter live list (tool-support /
+    free-pricing filter) and the Nous Portal recommendations, writing each
+    to its disk cache so the next ``/model`` open in ANY process on this
+    machine sees the new lists. Blocking; run it off the event loop.
+    Returns True when the manifest refresh succeeded.
+    """
+    if not _load_catalog_config()["enabled"]:
+        return False
+    catalog = get_catalog(force_refresh=True)
+    try:
+        from hermes_cli.models import fetch_nous_recommended_models, fetch_openrouter_models
+
+        fetch_openrouter_models(force_refresh=True)
+        fetch_nous_recommended_models(force_refresh=True)
+    except Exception:
+        logger.debug("provider catalog refresh failed", exc_info=True)
+    return bool(catalog)
 
 
 def _fetch_provider_override(provider: str) -> dict[str, Any] | None:

@@ -457,6 +457,21 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
                 print(f"   🚫 Prompt {prompt_index} discarded (no reasoning in any turn)")
                 discarded_no_reasoning += 1
                 completed_in_batch.append(prompt_index)
+                # Tombstone row (#93527): resume filters exclusively by
+                # scanning batch_*.jsonl rows for prompt content, so a
+                # discarded sample without a row is invisible to --resume
+                # and gets re-run at full cost on every restart. The
+                # tombstone carries just enough for the scan; the merge
+                # step excludes it from trajectories.jsonl.
+                tombstone = {
+                    "prompt_index": prompt_index,
+                    "discarded": "no_reasoning",
+                    "prompt": _entry_prompt_text(prompt_data),
+                }
+                with open(batch_output_file, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps(tombstone, ensure_ascii=False) + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())
                 continue
             
             # Get and normalize tool stats for consistent schema across all entries
@@ -524,6 +539,31 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
         "discarded_no_reasoning": discarded_no_reasoning,
         "completed_prompts": completed_in_batch
     }
+
+
+def _entry_prompt_text(entry: Dict) -> str:
+    """Extract the human prompt text from a dataset or trajectory entry.
+
+    Handles the shapes that appear across batch_runner: a flat
+    ``entry["prompt"]``, ShareGPT-style ``conversations`` (``from``/``value``),
+    chat-style ``conversations``/``messages`` (``role``/``content``), and the
+    discard tombstones written by the no-reasoning discard path.
+    """
+    if not isinstance(entry, dict):
+        return ""
+    text = str(entry.get("prompt") or "").strip()
+    if text:
+        return text
+    for key in ("conversations", "messages"):
+        for msg in entry.get(key, []) or []:
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role") or msg.get("from")
+            if role in {"user", "human"}:
+                text = str(msg.get("content") or msg.get("value") or "").strip()
+                if text:
+                    return text
+    return ""
 
 
 class BatchRunner:
@@ -755,19 +795,17 @@ class BatchRunner:
                     for line in f:
                         try:
                             entry = json.loads(line.strip())
-                            
+
                             # Skip failed entries - we want to retry these
                             if entry.get("failed", False):
                                 continue
-                            
-                            # Extract the human/user prompt from conversations
-                            conversations = entry.get("conversations", [])
-                            for msg in conversations:
-                                if msg.get("from") == "human":
-                                    prompt_text = msg.get("value", "").strip()
-                                    if prompt_text:
-                                        completed_prompts.add(prompt_text)
-                                    break  # Only need the first human message
+
+                            # Discard tombstones count as completed — the
+                            # prompt was processed and deliberately dropped
+                            # (#93527); re-running it would just re-discard.
+                            prompt_text = _entry_prompt_text(entry)
+                            if prompt_text:
+                                completed_prompts.add(prompt_text)
                         except json.JSONDecodeError:
                             continue
             except Exception as e:
@@ -1043,6 +1081,7 @@ class BatchRunner:
         
         total_entries = 0
         filtered_entries = 0
+        tombstone_entries = 0
         batch_files_found = 0
         
         # Find ALL batch files in the output directory (handles resume merging old + new)
@@ -1058,6 +1097,14 @@ class BatchRunner:
                         total_entries += 1
                         try:
                             data = json.loads(line)
+
+                            # Discard tombstones are resume bookkeeping, not
+                            # training data (#93527) — never enter the merged
+                            # trajectories file.
+                            if data.get("discarded"):
+                                tombstone_entries += 1
+                                continue
+
                             tool_stats = data.get('tool_stats', {})
                             
                             # Check for invalid tool names (model hallucinations)
@@ -1076,7 +1123,7 @@ class BatchRunner:
         
         if filtered_entries > 0:
             print(f"⚠️  Filtered {filtered_entries} corrupted entries out of {total_entries} total")
-        print(f"✅ Combined {batch_files_found} batch files into trajectories.jsonl ({total_entries - filtered_entries} entries)")
+        print(f"✅ Combined {batch_files_found} batch files into trajectories.jsonl ({total_entries - filtered_entries - tombstone_entries} entries)")
         
         # Save final statistics
         final_stats = {
@@ -1090,6 +1137,9 @@ class BatchRunner:
             "duration_seconds": round(time.time() - start_time, 2),
             "tool_statistics": total_tool_stats,
             "reasoning_statistics": total_reasoning_stats,
+            "discarded_no_reasoning": sum(
+                r.get("discarded_no_reasoning", 0) for r in results
+            ),
         }
         
         with open(self.stats_file, 'w', encoding='utf-8') as f:
@@ -1100,7 +1150,7 @@ class BatchRunner:
         print("📊 BATCH PROCESSING COMPLETE")
         print("=" * 70)
         print(f"✅ Prompts processed this run: {sum(r.get('processed', 0) for r in results)}")
-        print(f"✅ Total trajectories in merged file: {total_entries - filtered_entries}")
+        print(f"✅ Total trajectories in merged file: {total_entries - filtered_entries - tombstone_entries}")
         print(f"✅ Total batch files merged: {batch_files_found}")
         print(f"⏱️  Total duration: {round(time.time() - start_time, 2)}s")
         print("\n📈 Tool Usage Statistics:")
@@ -1246,21 +1296,21 @@ def main(
     # Validate required arguments
     if not dataset_file:
         print("❌ Error: --dataset_file is required")
-        return
-    
+        raise SystemExit(1)
+
     if not batch_size or batch_size < 1:
         print("❌ Error: --batch_size must be a positive integer")
-        return
-    
+        raise SystemExit(1)
+
     if not run_name:
         print("❌ Error: --run_name is required")
-        return
-    
+        raise SystemExit(1)
+
     # Parse provider preferences (comma-separated strings to lists)
     providers_allowed_list = [p.strip() for p in providers_allowed.split(",")] if providers_allowed else None
     providers_ignored_list = [p.strip() for p in providers_ignored.split(",")] if providers_ignored else None
     providers_order_list = [p.strip() for p in providers_order.split(",")] if providers_order else None
-    
+
     # Build reasoning_config from CLI flags
     # --reasoning_disabled takes priority, then --reasoning_effort, then default (medium)
     reasoning_config = None
@@ -1273,10 +1323,10 @@ def main(
         valid_efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
         if reasoning_effort not in valid_efforts:
             print(f"❌ Error: --reasoning_effort must be one of: {', '.join(valid_efforts)}")
-            return
+            raise SystemExit(1)
         reasoning_config = {"enabled": True, "effort": reasoning_effort}
         print(f"🧠 Reasoning effort: {reasoning_effort}")
-    
+
     # Load prefill messages from JSON file if provided
     prefill_messages = None
     if prefill_messages_file:
@@ -1285,12 +1335,12 @@ def main(
                 prefill_messages = json.load(f)
             if not isinstance(prefill_messages, list):
                 print("❌ Error: prefill_messages_file must contain a JSON array of messages")
-                return
+                raise SystemExit(1)
             print(f"💬 Loaded {len(prefill_messages)} prefill messages from {prefill_messages_file}")
         except Exception as e:
             print(f"❌ Error loading prefill messages: {e}")
-            return
-    
+            raise SystemExit(1)
+
     # Initialize and run batch runner
     try:
         runner = BatchRunner(
@@ -1317,12 +1367,12 @@ def main(
         )
 
         runner.run(resume=resume)
-    
+
     except Exception as e:
         print(f"\n❌ Fatal error: {e}")
         if verbose:
             traceback.print_exc()
-        return 1
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

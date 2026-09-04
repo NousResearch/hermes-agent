@@ -216,13 +216,14 @@ let
   # root, preserving the workspace layout that buildNpmPackage and
   # npmConfigHook expect.  Callers pass the dirs they need (relative to
   # the repo root), so each package owns its own source scope.
+  testFileFilter = lib.fileset.fileFilter (file: lib.hasInfix ".test." file.name) repoRoot;
   mkNpmSrc =
     dirs:
     lib.fileset.toSource {
       root = repoRoot;
-      fileset = lib.fileset.union npmWorkspaceFiles (
+      fileset = lib.fileset.difference (lib.fileset.union npmWorkspaceFiles (
         lib.fileset.unions (map (d: repoRoot + "/${d}") dirs)
-      );
+      )) testFileFilter;
     };
 
   # Returns a buildNpmPackage-compatible function.

@@ -5,38 +5,8 @@
 // the completion cue settles (done). Reuses the same lightweight WebAudio
 // synthesis approach — no asset file to ship.
 
+import { getAudioContext } from '@/lib/audio-context'
 import { $hapticsMuted } from '@/store/haptics'
-
-let ctx: AudioContext | null = null
-
-function getCtx(): AudioContext | null {
-  if (typeof window === 'undefined') {
-    return null
-  }
-
-  try {
-    if (!ctx) {
-      const Ctor =
-        window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
-
-      if (!Ctor) {
-        return null
-      }
-
-      ctx = new Ctor()
-    }
-
-    // Autoplay policies can leave the context suspended until a gesture; a
-    // resume() here recovers it once the user has interacted with the window.
-    if (ctx.state === 'suspended') {
-      void ctx.resume().catch(() => undefined)
-    }
-
-    return ctx
-  } catch {
-    return null
-  }
-}
 
 // One enveloped sine voice → master. Linear-ish attack into an exponential
 // decay keeps the tail smooth and avoids the click you get ramping to zero.
@@ -66,7 +36,7 @@ export function playWakeSound(): void {
     return
   }
 
-  const ac = getCtx()
+  const ac = getAudioContext()
 
   if (!ac) {
     return

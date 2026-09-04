@@ -37,6 +37,8 @@ delegate_task(tasks=[
 Subagents start with a **completely fresh conversation**. They have zero knowledge of the parent's conversation history, prior tool calls, or anything discussed before delegation. The subagent's only context comes from the `goal` and `context` fields the parent agent populates when it calls `delegate_task`.
 :::
 
+One exception: when the parent has a resolved workspace directory, every subagent's system prompt embeds that workspace's **project context files** (`.hermes.md` > AGENTS.md chain > CLAUDE.md > `.cursorrules` — the same discovery, priority, and size caps as the main agent's system prompt; SOUL.md is excluded). Subagents working in a repo operate under the repo's own conventions without having to rediscover them.
+
 This means the parent agent must pass **everything** the subagent needs in the call:
 
 ```python
@@ -140,6 +142,26 @@ process disappears while it is still running is recorded as `unknown`, because
 Hermes cannot prove whether its external side effects happened. Pending and
 delivered records are bounded and profile-local.
 
+### Child background-process notifications
+
+Background processes a subagent starts (e.g. `npm ci` with
+`notify_on_complete`) technically route their completion and watch-pattern
+notifications to the **parent** conversation, because anything that outlives
+the child needs a durable consumer. By default those notifications are
+**suppressed** in the parent chat — the child's consolidated delegation result
+is the deliverable, and mid-conversation "process finished" walls from a
+child's internal builds are noise. Suppressed events are logged at debug level
+with the process session ID and subagent task ID, so they remain diagnosable.
+
+The delegation result itself is never suppressed. To restore delivery of the
+child process notifications (each carries a "Started by subagent …"
+attribution line):
+
+```yaml
+delegation:
+  surface_child_process_notifications: true   # default: false
+```
+
 ## Model Override
 
 You can configure a different model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:
@@ -166,9 +188,42 @@ delegation:
   provider: "openrouter"             # optional: route children to a different provider
 ```
 
-Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then `delegation.provider` (full credential bundle resolved via the runtime provider system), and when neither is set children inherit the parent's provider and credentials; `delegation.model` applies in all cases, and when it is empty children inherit the parent's model.
+Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then `delegation.provider` (full credential bundle resolved via the runtime provider system), and when neither is set children inherit the parent's provider and credentials; `delegation.model` applies in all cases, and when it is empty children inherit the parent's model. Setting `delegation.provider` alongside `delegation.base_url` keeps the explicit endpoint but carries that provider's request overrides and max output tokens into the child. An explicit `delegation.request_overrides` dict is honored on every branch and merges over those runtime-derived values (see [Configuration](#configuration) below).
 
 Note that the pin is global: `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
+
+## The `/review` Command
+
+`/review` spawns an independent, full-privilege background subagent whose only job is to review the work your conversation just produced — a PR, a diff, code, documentation, a design. It works on every surface: CLI, TUI, the Desktop app, and every gateway messaging platform.
+
+```
+/review                       # review whatever the last 10 messages presented
+/review focus on security     # add extra instructions for the reviewer
+```
+
+What happens:
+
+1. The last 10 user/assistant messages are snapshotted as the reviewer's starting evidence (tool output and system messages are excluded).
+2. A reviewer subagent is dispatched on the same background delegation rail as `delegate_task` — it gets the full normal subagent toolset (terminal, web, files, browser...), so it actually opens the PR, reads the diff, and runs code rather than judging from the excerpt.
+3. The reviewer inherits the primary agent's working context: any skills the primary agent had loaded (launch-preloaded or via `skill_view` during the session) are named in its briefing with an instruction to load them and judge the work against their conventions. Like every subagent, its system prompt also embeds the workspace's project context files (AGENTS.md / CLAUDE.md / .cursorrules) as binding conventions.
+4. When it finishes, its full review re-enters the same session as a normal background-subagent completion — your primary agent sees it and can act on it (fix the findings, push follow-ups, reply to you).
+
+The canonical flow: your main agent opens a PR, you type `/review`, and a second pair of eyes investigates it while you keep working; the review lands back in the chat addressed to the agent that created the PR.
+
+### Review model
+
+By default the reviewer runs on your main model. To pin a dedicated review model, set `auxiliary.review` in `config.yaml`:
+
+```yaml
+auxiliary:
+  review:
+    provider: openrouter               # or nous, anthropic, a direct base_url, ...
+    model: anthropic/claude-opus-4.6   # a strong reviewer model
+```
+
+Credentials resolve exactly like a `delegation.provider` pin (full runtime-provider bundle: base_url, api key, api_mode). `provider: auto` with an empty `model` means "inherit the main agent's model" — the default.
+
+`/review` is deliberately separate from `/refine`: `/refine` reviews the conversation to update memory and skills, `/review` reviews the *work product* the conversation created.
 
 ## Inherited Tool Access
 
@@ -218,6 +273,16 @@ stopwatch kill from other failures without parsing text: `timeout_seconds`
 `timeout_phase` (`before_first_llm_call` when the child never reached its
 first request, `after_llm_calls` otherwise). All three are `null` on
 non-timeout errors.
+
+## Failure Visibility
+
+A subagent that fails — non-retryable provider error (404/400), timeout, crash, or no usable output — is never silent:
+
+- **CLI**: the delegation tree prints a one-line reason: `⚠️ Subagent failed — "your goal": HTTP 404: model not found (after 12s)`. Batch runs append the reason to the per-task `✗` completion line.
+- **Gateway platforms** (Telegram, Discord, Slack, ...): the same clean line is delivered as a standalone chat notice, **even when `tool_progress` is off** for that platform.
+- **Parent agent**: the tool result entry carries `status: "failed"` plus the full `error` text, so the model can react (retry, re-route, report).
+
+Error text is reduced to the single most informative line (the exception message, not a traceback wall) and capped in length.
 
 :::tip Diagnostic dump on zero-call timeout
 With a hard cap configured, if a subagent times out having made **zero** API calls (usually: provider unreachable, auth failure, or tool-schema rejection), `delegate_task` writes a structured diagnostic to `~/.hermes/logs/subagent-timeout-<session>-<timestamp>.log` containing the subagent's config snapshot, credential-resolution trace, any early error messages, and stack traces for **all** live threads (not just the child's own) — a child parked waiting on a nested helper thread is indistinguishable from a slow provider without the full picture.
@@ -412,6 +477,11 @@ With isolation on:
   reviews or merges each branch (`git log <branch>`, `git merge <branch>`).
 - A worktree left with **no commits and a clean tree is pruned automatically**
   (`pruned: true`); anything holding work is kept.
+- Pruning requires proof. If a git inspection probe fails — or finalization
+  itself errors — the worktree and branch are kept and the entry carries
+  `inspection_failed: true` plus a `note` — `commits`/`dirty` are then
+  defaults, not measurements, so inspect the worktree rather than assuming
+  the child produced nothing.
 
 Scope: opt-in, git-only, and local-terminal-backend-only. In a non-git
 directory, on docker/ssh/modal backends, or if worktree creation fails, the
@@ -452,9 +522,22 @@ delegation:
   base_url: "http://localhost:1234/v1"
   api_key: "local-key"
   # api_mode: "anthropic_messages"  # Optional. Wire protocol override for base_url ("chat_completions", "codex_responses", or "anthropic_messages"). Empty = auto-detect from URL (e.g. /anthropic suffix). Set explicitly for endpoints the heuristic can't classify (Azure AI Foundry, MiniMax, Zhipu GLM, LiteLLM proxies, …).
+
+# Send per-child request settings on every subagent API call — e.g. OpenRouter
+# routing hints when delegating straight to openrouter.ai via base_url:
+delegation:
+  model: "deepseek/deepseek-v4-flash-0731"
+  base_url: "https://openrouter.ai/api/v1"
+  api_key: "sk-or-..."
+  request_overrides:
+    extra_body:
+      provider:
+        sort: throughput   # children route to the fastest OpenRouter provider
 ```
 
 When `base_url` points at an Anthropic-compatible endpoint — for example a path ending in `/anthropic`, an Azure Foundry Claude route, or a MiniMax `/anthropic` proxy — `api_mode` is auto-detected as `anthropic_messages` so the subagent uses the right wire format without you setting anything. Set `api_mode` explicitly when the auto-detection guess is wrong (rare).
+
+`delegation.request_overrides` works on **all three** resolution branches — direct `base_url`, named `provider`, and pure inherit — so it always takes effect. Top-level keys are API kwargs (e.g. `service_tier`); an `extra_body` sub-dict is merged into the request's `extra_body`. Explicit values merge **over** runtime- or parent-derived overrides: explicit top-level keys win, and `extra_body` is deep-merged one level, so a provider's own request personality (e.g. `thinking: {type: disabled}`) survives unless your key redefines it. See [Configuration → Delegation](../configuration.md#delegation) for details.
 
 :::tip
 The agent handles delegation automatically based on the task complexity. You don't need to explicitly ask it to delegate — it will do so when it makes sense.

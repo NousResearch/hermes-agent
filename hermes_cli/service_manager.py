@@ -684,6 +684,10 @@ class S6ServiceManager:
         # start`, etc. See `_gateway_command_inner` for the matching
         # guard.
         lines.append("export HERMES_S6_SUPERVISED_CHILD=1")
+        # Generalized supervisor marker (#74872) — same meaning for the
+        # profile-redirect guard in hermes_cli.main._apply_profile_override,
+        # kept alongside the s6-specific sentinel for back-compat.
+        lines.append("export HERMES_SUPERVISED_CHILD=1")
         # ``--replace`` makes the supervised gateway authoritative for its
         # profile's HERMES_HOME. Without it, a gateway started OUTSIDE s6
         # (a stray ``hermes gateway run`` from a shell, an agent action, or
@@ -716,8 +720,12 @@ class S6ServiceManager:
         When the gateway exits with EX_CONFIG (78) — a fatal
         configuration error such as a token collision or no messaging
         platforms — we tell s6-supervise to stop restarting by exiting
-        125 (permanent failure).  Any other exit code lets s6 restart
-        normally.  See #51228.
+        125 (permanent failure).  A clean exit 0 is an intentional stop,
+        not a crash: restarting after it turns any normal gateway exit
+        into a reconnect loop (the ashriel-discord storm in #76435 —
+        1,000+ connections and a provider token reset).  Only non-zero,
+        non-78 exits (genuine crashes) let s6 restart normally.
+        See #51228, #76435.
         """
         from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
 
@@ -727,7 +735,11 @@ class S6ServiceManager:
             "# shellcheck shell=sh\n"
             "# $1 = exit code from the run script.\n"
             f"# Exit {code} (EX_CONFIG) = fatal config error — don't restart.\n"
+            "# Exit 0 (clean stop) = intentional stop — don't restart.\n"
             f'if [ "$1" = "{code}" ]; then\n'
+            "  exit 125\n"
+            "fi\n"
+            'if [ "$1" = "0" ]; then\n'
             "  exit 125\n"
             "fi\n"
             "exit 0\n"

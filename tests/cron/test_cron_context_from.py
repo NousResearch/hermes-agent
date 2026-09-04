@@ -217,3 +217,226 @@ class TestUpdateContextFrom:
         assert reloaded["context_from"] == [job_a["id"]]
 
 
+class TestSelfContext:
+    """The special 'self' value injects the job's OWN previous output.
+
+    Inspired by Amp's "Right on Schedule" (agents wake up with their saved
+    context and continue where they left off): recurring jobs get run-to-run
+    continuity without touching session history.
+    """
+
+    def test_self_injects_own_previous_output(self, cron_env):
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job = create_job(
+            prompt="Scan for news", schedule="every 1h", context_from="self"
+        )
+        out_dir = OUTPUT_DIR / job["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "2026-08-01_10-00-00.md").write_text(
+            "Reported: story A, story B", encoding="utf-8"
+        )
+
+        prompt = _build_job_prompt(job)
+        assert "Reported: story A, story B" in prompt
+        assert "previous run" in prompt.lower()
+        # Self-context uses continuity framing, not the upstream-job framing.
+        assert f"Output from job '{job['id']}'" not in prompt
+
+    def test_self_case_insensitive(self, cron_env):
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job = create_job(
+            prompt="Scan", schedule="every 1h", context_from="SELF"
+        )
+        out_dir = OUTPUT_DIR / job["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "2026-08-01_10-00-00.md").write_text("prev", encoding="utf-8")
+        prompt = _build_job_prompt(job)
+        assert "prev" in prompt
+
+    def test_self_silent_skip_on_first_run(self, cron_env):
+        from cron.jobs import create_job
+        from cron.scheduler import _build_job_prompt
+
+        job = create_job(
+            prompt="Scan for news", schedule="every 1h", context_from="self"
+        )
+        # No output yet (first run) — base prompt intact, no placeholder.
+        prompt = _build_job_prompt(job)
+        assert "Scan for news" in prompt
+        assert "previous run" not in prompt.lower()
+
+    def test_own_id_treated_as_self(self, cron_env):
+        """Passing the job's literal id gets the continuity framing too."""
+        from cron.jobs import create_job, update_job, get_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job = create_job(prompt="Scan", schedule="every 1h")
+        update_job(job["id"], {"context_from": [job["id"]]})
+        job = get_job(job["id"])
+        assert job is not None
+
+        out_dir = OUTPUT_DIR / job["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "2026-08-01_10-00-00.md").write_text("prev output", encoding="utf-8")
+
+        prompt = _build_job_prompt(job)
+        assert "prev output" in prompt
+        assert "previous run" in prompt.lower()
+
+    def test_tool_create_accepts_self(self, cron_env):
+        from tools.cronjob_tools import cronjob
+        from cron.jobs import get_job
+        import json
+
+        result = json.loads(cronjob(
+            action="create",
+            prompt="Scan for news",
+            schedule="every 1h",
+            context_from="self",
+        ))
+        assert result["success"] is True
+        job_id = result["job_id"]
+        assert get_job(job_id)["context_from"] == ["self"]
+
+    def test_tool_update_accepts_self(self, cron_env):
+        from cron.jobs import create_job, get_job
+        from tools.cronjob_tools import cronjob
+        import json
+
+        job = create_job(prompt="Scan", schedule="every 1h")
+        result = json.loads(cronjob(
+            action="update",
+            job_id=job["id"],
+            context_from="self",
+        ))
+        assert result["success"] is True
+        assert get_job(job["id"])["context_from"] == ["self"]
+
+
+class TestContinuityFlag:
+    """continuity=true/false is the user-facing surface for self-context.
+
+    It translates to the reserved 'self' entry in context_from internally.
+    """
+
+    def test_create_with_continuity_true(self, cron_env):
+        from tools.cronjob_tools import cronjob
+        from cron.jobs import get_job
+        import json
+
+        result = json.loads(cronjob(
+            action="create",
+            prompt="Scan for news",
+            schedule="every 1h",
+            continuity=True,
+        ))
+        assert result["success"] is True
+        assert get_job(result["job_id"])["context_from"] == ["self"]
+
+    def test_create_continuity_false_is_noop(self, cron_env):
+        from tools.cronjob_tools import cronjob
+        from cron.jobs import get_job
+        import json
+
+        result = json.loads(cronjob(
+            action="create",
+            prompt="Scan",
+            schedule="every 1h",
+            continuity=False,
+        ))
+        assert result["success"] is True
+        assert get_job(result["job_id"]).get("context_from") is None
+
+    def test_create_continuity_combines_with_context_from(self, cron_env):
+        from cron.jobs import create_job, get_job
+        from tools.cronjob_tools import cronjob
+        import json
+
+        upstream = create_job(prompt="Collect", schedule="every 1h")
+        result = json.loads(cronjob(
+            action="create",
+            prompt="Digest",
+            schedule="every 2h",
+            context_from=upstream["id"],
+            continuity=True,
+        ))
+        assert result["success"] is True
+        stored = get_job(result["job_id"])["context_from"]
+        assert upstream["id"] in stored
+        assert "self" in stored
+
+    def test_update_continuity_true_adds_self(self, cron_env):
+        from cron.jobs import create_job, get_job
+        from tools.cronjob_tools import cronjob
+        import json
+
+        job = create_job(prompt="Scan", schedule="every 1h")
+        result = json.loads(cronjob(
+            action="update",
+            job_id=job["id"],
+            continuity=True,
+        ))
+        assert result["success"] is True
+        assert get_job(job["id"])["context_from"] == ["self"]
+
+    def test_update_continuity_false_removes_self_preserves_others(self, cron_env):
+        from cron.jobs import create_job, get_job
+        from tools.cronjob_tools import cronjob
+        import json
+
+        upstream = create_job(prompt="Collect", schedule="every 1h")
+        job = create_job(
+            prompt="Digest",
+            schedule="every 2h",
+            context_from=["self", upstream["id"]],
+        )
+        result = json.loads(cronjob(
+            action="update",
+            job_id=job["id"],
+            continuity=False,
+        ))
+        assert result["success"] is True
+        assert get_job(job["id"])["context_from"] == [upstream["id"]]
+
+    def test_update_continuity_true_idempotent(self, cron_env):
+        from cron.jobs import create_job, get_job
+        from tools.cronjob_tools import cronjob
+        import json
+
+        job = create_job(prompt="Scan", schedule="every 1h", context_from="self")
+        result = json.loads(cronjob(
+            action="update",
+            job_id=job["id"],
+            continuity=True,
+        ))
+        assert result["success"] is True
+        assert get_job(job["id"])["context_from"] == ["self"]
+
+    def test_continuity_job_gets_previous_output(self, cron_env):
+        """End-to-end: a continuity-created job injects its own prior output."""
+        from tools.cronjob_tools import cronjob
+        from cron.jobs import get_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+        import json
+
+        result = json.loads(cronjob(
+            action="create",
+            prompt="Scan for news",
+            schedule="every 1h",
+            continuity=True,
+        ))
+        job = get_job(result["job_id"])
+        out_dir = OUTPUT_DIR / job["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "2026-08-01_10-00-00.md").write_text(
+            "Reported: story A", encoding="utf-8"
+        )
+        prompt = _build_job_prompt(job)
+        assert "Reported: story A" in prompt
+        assert "previous run" in prompt.lower()
+
+

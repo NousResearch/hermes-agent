@@ -46,7 +46,7 @@ class TestOriginThreadStaleGuard:
                           "thread_id": SYNTH}}
         target = _resolve_single_delivery_target(job, "origin")
         assert target == {"platform": "slack", "chat_id": "D0BJTDCSR7C",
-                          "thread_id": None}
+                          "thread_id": None, "_resolved_from": "origin"}
 
     def test_origin_thread_kept_when_chat_not_home(self, monkeypatch):
         """A non-home Slack origin thread may be a genuine working thread: keep it."""
@@ -79,7 +79,7 @@ class TestOriginThreadStaleGuard:
             "tools.send_message_tool.prepare_send_message_platforms", lambda: None)
         monkeypatch.setattr(
             "tools.send_message_tool.resolve_send_target",
-            lambda platform, rest: (rest, None, None))
+            lambda platform, rest, **kw: (rest, None, None))
         job = {"origin": {"platform": "slack", "chat_id": "D0BJTDCSR7C",
                           "thread_id": SYNTH}}
         target = _resolve_single_delivery_target(job, "slack:D0BJTDCSR7C")
@@ -92,7 +92,7 @@ class TestOriginThreadStaleGuard:
             "tools.send_message_tool.prepare_send_message_platforms", lambda: None)
         monkeypatch.setattr(
             "tools.send_message_tool.resolve_send_target",
-            lambda platform, rest: (rest, None, None))
+            lambda platform, rest, **kw: (rest, None, None))
         job = {"origin": {"platform": "slack", "chat_id": "C0AGENERAL",
                           "thread_id": "1755040000.000100"}}
         target = _resolve_single_delivery_target(job, "slack:C0AGENERAL")

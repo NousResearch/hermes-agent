@@ -1,9 +1,9 @@
 """OpenCode provider profiles (Zen + Go).
 
 Both use per-model api_mode routing:
-  - OpenCode Zen: Claude → anthropic_messages, GPT-5/Codex → codex_responses,
-    everything else → chat_completions (this profile)
-  - OpenCode Go: GPT → codex_responses, MiniMax/Qwen → anthropic_messages,
+  - OpenCode Zen: Claude → anthropic_messages, GPT-5/Codex/Grok → codex_responses,
+    Muse Spark → codex_responses, everything else → chat_completions (this profile)
+  - OpenCode Go: GPT / Grok / Muse Spark → codex_responses, MiniMax/Qwen → anthropic_messages,
     GLM/Kimi/DeepSeek/MiMo → chat_completions (this profile)
 """
 
@@ -75,8 +75,8 @@ class OpenCodeGoProfile(ProviderProfile):
 
         if _is_glm_5_2_model(model):
             # GLM-5.2 on OpenCode Go uses its native OpenAI-compatible
-            # reasoning_effort knob, which has exactly two enabled levels:
-            # high and max. Map Hermes' richer scale onto those; leave the
+            # reasoning_effort knob (high/max — declared in
+            # agent.reasoning_effort, shared with the zai profile); leave the
             # server default alone when reasoning is disabled or unset.
             if not isinstance(reasoning_config, dict):
                 return extra_body, top_level
@@ -85,7 +85,16 @@ class OpenCodeGoProfile(ProviderProfile):
             effort = (reasoning_config.get("effort") or "").strip().lower()
             if not effort or effort == "none":
                 return extra_body, top_level
-            top_level["reasoning_effort"] = "max" if effort in {"xhigh", "max", "ultra"} else "high"
+            from agent.reasoning_effort import (
+                GLM52_EFFORTS,
+                GLM52_OVERRIDES,
+                clamp_effort,
+            )
+
+            clamped = clamp_effort(effort, GLM52_EFFORTS, GLM52_OVERRIDES)
+            top_level["reasoning_effort"] = (
+                clamped if clamped in GLM52_EFFORTS else "high"
+            )
             return extra_body, top_level
 
         if _is_kimi_k2_model(model):
@@ -102,10 +111,12 @@ class OpenCodeGoProfile(ProviderProfile):
                 return extra_body, top_level
 
             effort = (reasoning_config.get("effort") or "").strip().lower()
-            if effort in {"xhigh", "max", "ultra"}:
-                top_level["reasoning_effort"] = "high"
-            elif effort in {"low", "medium", "high"}:
-                top_level["reasoning_effort"] = effort
+            if effort and effort != "none":
+                from agent.reasoning_effort import KIMI_K2_EFFORTS, clamp_effort
+
+                clamped = clamp_effort(effort, KIMI_K2_EFFORTS)
+                if clamped in KIMI_K2_EFFORTS:
+                    top_level["reasoning_effort"] = clamped
 
             # Avoid "cannot specify both 'thinking' and 'reasoning_effort'" HTTP 400:
             # only send extra_body["thinking"] when no reasoning_effort is set.
@@ -126,10 +137,18 @@ class OpenCodeGoProfile(ProviderProfile):
 
         if isinstance(reasoning_config, dict):
             effort = (reasoning_config.get("effort") or "").strip().lower()
-            if effort in {"xhigh", "max", "ultra"}:
-                top_level["reasoning_effort"] = "max"
-            elif effort in {"low", "medium", "high"}:
-                top_level["reasoning_effort"] = effort
+            if effort and effort != "none":
+                from agent.reasoning_effort import (
+                    DEEPSEEK_V4_EFFORTS,
+                    DEEPSEEK_V4_OVERRIDES,
+                    clamp_effort,
+                )
+
+                clamped = clamp_effort(
+                    effort, DEEPSEEK_V4_EFFORTS, DEEPSEEK_V4_OVERRIDES
+                )
+                if clamped in DEEPSEEK_V4_EFFORTS:
+                    top_level["reasoning_effort"] = clamped
 
         # Avoid "cannot specify both 'thinking' and 'reasoning_effort'" HTTP 400:
         # only send extra_body["thinking"] when no reasoning_effort is set.
@@ -139,7 +158,48 @@ class OpenCodeGoProfile(ProviderProfile):
         return extra_body, top_level
 
 
-opencode_zen = ProviderProfile(
+def _build_ox_alpha_reasoning_extras(
+    reasoning_config: dict | None, model: str | None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Shared Ox Alpha (x-preview-f-free) reasoning_effort translation.
+
+    Used by both the opencode-zen profile and the opencode-free keyless
+    profile — the model is reachable through either provider and the wire
+    contract is identical (low/high/max only; anything else 400s).
+    """
+    if _flat_model_name(model) != "x-preview-f-free":
+        return {}, {}
+    if not isinstance(reasoning_config, dict):
+        return {}, {}
+    if reasoning_config.get("enabled") is False:
+        return {}, {}
+
+    effort = (reasoning_config.get("effort") or "").strip().lower()
+    if not effort or effort == "none":
+        return {}, {}
+
+    from agent.reasoning_effort import (
+        OX_ALPHA_EFFORTS,
+        OX_ALPHA_OVERRIDES,
+        clamp_effort,
+    )
+
+    clamped = clamp_effort(effort, OX_ALPHA_EFFORTS, OX_ALPHA_OVERRIDES)
+    if clamped not in OX_ALPHA_EFFORTS:
+        return {}, {}
+    return {}, {"reasoning_effort": clamped}
+
+
+class OpenCodeZenProfile(ProviderProfile):
+    """OpenCode Zen - model-specific reasoning controls."""
+
+    def build_api_kwargs_extras(
+        self, *, reasoning_config: dict | None = None, model: str | None = None, **context
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        return _build_ox_alpha_reasoning_extras(reasoning_config, model)
+
+
+opencode_zen = OpenCodeZenProfile(
     name="opencode-zen",
     aliases=("opencode", "opencode_zen", "zen"),
     env_vars=("OPENCODE_ZEN_API_KEY",),

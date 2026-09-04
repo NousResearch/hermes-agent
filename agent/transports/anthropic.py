@@ -84,7 +84,11 @@ class AnthropicTransport(ProviderTransport):
         to OpenAI finish_reason, and collects reasoning_details in provider_data.
         """
         import json
-        from agent.anthropic_adapter import _to_plain_data, _sanitize_replay_block
+        from agent.anthropic_adapter import (
+            _OAUTH_TOOL_NAME_REVERSE_ALIASES,
+            _sanitize_replay_block,
+            _to_plain_data,
+        )
         from agent.transports.types import ToolCall
 
         strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
@@ -151,6 +155,12 @@ class AnthropicTransport(ProviderTransport):
                             name = single
                         elif _tool_registry.get_entry(bare):
                             name = bare
+                        elif bare in _OAUTH_TOOL_NAME_REVERSE_ALIASES:
+                            # OAuth wire alias (e.g. chat_history_lookup ->
+                            # session_search, #65365). Checked LAST so a real
+                            # tool actually registered under the wire name
+                            # still wins — same GH-25255 precedence.
+                            name = _OAUTH_TOOL_NAME_REVERSE_ALIASES[bare]
                 tool_calls.append(
                     ToolCall(
                         id=block.id,

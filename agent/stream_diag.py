@@ -52,6 +52,13 @@ def stream_diag_init() -> Dict[str, Any]:
         "bytes": 0,
         "headers": {},
         "http_status": None,
+        # Set True the moment a terminal chunk (finish_reason or an
+        # equivalent lastOne/close sentinel) is observed on this attempt.
+        # Read by log_stream_retry so a retry/exhaustion WARNING can tell
+        # "the connection died before the server ever finished" (type-1,
+        # this stays False) from "the server finished but something after
+        # that point still raised" (type-2, this is True) — see #102766.
+        "finish_reason_seen": False,
     }
 
 
@@ -137,9 +144,13 @@ def log_stream_retry(
     When *diag* is provided (the per-attempt stream-diagnostic dict from
     :func:`stream_diag_init`), the WARNING also captures upstream headers
     (cf-ray, x-openrouter-provider, x-openrouter-id), HTTP status, bytes
-    streamed before the drop, and elapsed time on the dying attempt.
-    These are the breadcrumbs needed to answer "is one CF edge / one
-    downstream provider responsible, or is it random across runs?"
+    streamed before the drop, elapsed time on the dying attempt, and
+    whether a terminal ``finish_reason`` was ever observed on this attempt
+    before *error* was raised. These are the breadcrumbs needed to answer
+    "is one CF edge / one downstream provider responsible, or is it random
+    across runs?" and, per #102766, to tell a mid-flight transport failure
+    (``finish_reason_seen=False``) from an exception raised after the
+    server had already reported completion.
     """
     try:
         try:
@@ -163,6 +174,7 @@ def log_stream_retry(
         _ttfb = None
         _headers_repr = "-"
         _http_status = "-"
+        _finish_reason_seen = False
         if isinstance(diag, dict):
             try:
                 _bytes = int(diag.get("bytes") or 0)
@@ -179,6 +191,7 @@ def log_stream_retry(
                     )
                 if diag.get("http_status") is not None:
                     _http_status = str(diag.get("http_status"))
+                _finish_reason_seen = bool(diag.get("finish_reason_seen"))
             except Exception:
                 pass
 
@@ -188,6 +201,7 @@ def log_stream_retry(
             "error_type=%s error=%s "
             "chain=%s "
             "http_status=%s bytes=%d chunks=%d elapsed=%.2fs ttfb=%s "
+            "finish_reason_seen=%s "
             "upstream=[%s]",
             kind,
             attempt,
@@ -204,6 +218,7 @@ def log_stream_retry(
             _chunks,
             _elapsed,
             f"{_ttfb:.2f}s" if _ttfb is not None else "-",
+            _finish_reason_seen,
             _headers_repr,
             extra={"mid_tool_call": mid_tool_call},
         )

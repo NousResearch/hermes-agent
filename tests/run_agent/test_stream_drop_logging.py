@@ -43,6 +43,7 @@ def test_stream_diag_init_returns_well_formed_dict():
     assert diag["first_chunk_at"] is None
     assert diag["http_status"] is None
     assert diag["headers"] == {}
+    assert diag["finish_reason_seen"] is False
 
 
 class _FakeHeaders:
@@ -210,6 +211,37 @@ def test_emit_stream_drop_ui_includes_elapsed_when_available():
     assert "after" in msg and "s" in msg
 
 
+
+
+def test_log_stream_retry_reports_finish_reason_seen(caplog):
+    """#102766: the retry/exhaustion WARNING must say whether a terminal
+    finish_reason was ever observed on the dying attempt, so a post-hoc
+    grep can tell "the connection died before the server finished"
+    (finish_reason_seen=False, a genuine transport drop) from "something
+    raised after the server had already reported completion"
+    (finish_reason_seen=True) instead of treating every exception on a
+    streaming attempt as the same undifferentiated drop.
+    """
+    agent = _make_agent()
+    agent.provider = "openrouter"
+
+    diag_before_finish = AIAgent._stream_diag_init()
+    diag_after_finish = AIAgent._stream_diag_init()
+    diag_after_finish["finish_reason_seen"] = True
+
+    with caplog.at_level(logging.WARNING, logger="run_agent"):
+        agent._log_stream_retry(
+            kind="drop", error=ConnectionError("x"), attempt=1, max_attempts=3,
+            mid_tool_call=False, diag=diag_before_finish,
+        )
+        agent._log_stream_retry(
+            kind="drop", error=ConnectionError("y"), attempt=2, max_attempts=3,
+            mid_tool_call=False, diag=diag_after_finish,
+        )
+
+    msgs = [r.getMessage() for r in caplog.records if "Stream drop" in r.getMessage()]
+    assert "finish_reason_seen=False" in msgs[0]
+    assert "finish_reason_seen=True" in msgs[1]
 
 
 def test_quiet_mode_does_not_clobber_runagent_logger_level():

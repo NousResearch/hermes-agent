@@ -3609,13 +3609,22 @@ def _build_partial_stream_stub(
     role, full_content, full_reasoning, model_name, usage_obj, *,
     dropped_tool_names=None,
 ):
-    """Build a partial-stream-stub response for mid-stream drop scenarios.
+    """Build a partial-stream-stub response for a clean-EOF drop.
 
     Used when the SSE stream ends without a ``finish_reason`` after
-    delivering content (text-only drops, tool-call-arg drops).  The stub
-    is tagged ``PARTIAL_STREAM_STUB_ID`` with ``FINISH_REASON_LENGTH`` so
-    the conversation loop enters its continuation/retry path instead of
-    silently accepting truncated output as a complete turn (#32086).
+    delivering content (text-only drops, tool-call-arg drops) — the
+    provider closed the connection with no exception, not a transport
+    failure.  The stub is tagged ``PARTIAL_STREAM_STUB_ID`` with
+    ``FINISH_REASON_LENGTH`` so the conversation loop enters its
+    continuation/retry path instead of silently accepting truncated
+    output as a complete turn (#32086).
+
+    ``_clean_eof`` distinguishes this case from the transport-exception
+    stub built after retries are exhausted (same id/finish_reason, but a
+    real ``httpx``/SDK error was caught) so the conversation loop and log
+    lines can stop conflating "the network dropped the connection" with
+    "the server ended the stream without ever sending finish_reason"
+    (#102766) — the two require opposite remediation.
     """
     mock_message = SimpleNamespace(
         role=role,
@@ -3634,6 +3643,7 @@ def _build_partial_stream_stub(
         choices=[mock_choice],
         usage=usage_obj,
         _dropped_tool_names=dropped_tool_names or None,
+        _clean_eof=True,
     )
 
 
@@ -4537,6 +4547,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # upstreams have been seen sending 1 / "true".
                 if last_one in (True, 1, "true") and finish_reason is None:
                     finish_reason = "stop"
+                    _diag["finish_reason_seen"] = True
                 continue
 
             delta = chunk.choices[0].delta
@@ -4552,6 +4563,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             chunk_finish_reason = getattr(chunk.choices[0], "finish_reason", None)
             if chunk_finish_reason:
                 finish_reason = chunk_finish_reason
+                _diag["finish_reason_seen"] = True
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
 
@@ -4829,9 +4841,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 for idx in sorted(tool_calls_acc)
             ]
             logger.warning(
-                "Stream ended with no finish_reason while a tool call's "
-                "arguments were still incomplete (tools=%s); treating as a "
-                "mid-tool-call stream drop, not an output-length truncation.",
+                "Clean EOF, no finish_reason: server ended the stream (no "
+                "transport exception) while a tool call's arguments were "
+                "still incomplete (tools=%s). Not a network drop and not "
+                "an output-length truncation — the server or an "
+                "intermediary closed the connection without ever sending "
+                "a terminal chunk.",
                 _dropped_names,
             )
             return _build_partial_stream_stub(
@@ -4859,8 +4874,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         )
         if _text_only_dropped_no_finish:
             logger.warning(
-                "Stream ended with no finish_reason after delivering text "
-                "with no tool calls; treating as a mid-stream drop."
+                "Clean EOF, no finish_reason: server ended the stream (no "
+                "transport exception) after delivering text with no tool "
+                "calls. Not a network drop — the server or an "
+                "intermediary closed the connection without ever sending "
+                "a terminal chunk."
             )
             return _build_partial_stream_stub(
                 role, full_content,

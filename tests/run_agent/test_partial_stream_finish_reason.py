@@ -89,6 +89,12 @@ class TestPartialStreamStubFinishReason:
         )
         assert response.choices[0].message.content == "Here's my answer so far"
         assert response.choices[0].message.tool_calls is None
+        assert getattr(response, "_clean_eof", False) is False, (
+            "A stub built after a real transport exception (RuntimeError "
+            "here) must NOT be tagged _clean_eof — that tag is reserved "
+            "for a stream that ended with no exception and no "
+            "finish_reason, a distinct failure class (#102766)."
+        )
 
 
 class TestTerminalChunkFenceException:
@@ -179,6 +185,11 @@ class TestTerminalChunkFenceException:
 
         assert response.id == PARTIAL_STREAM_STUB_ID
         assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+        assert response._clean_eof is True, (
+            "The stream ended with no exception and no finish_reason — "
+            "that is the clean-EOF class the fix for #102766 must tag "
+            "distinctly from a genuine transport drop."
+        )
 
 
 # ── Clean stream-end mid-tool-call (no exception, no finish_reason) ─────────
@@ -236,6 +247,11 @@ class TestCleanStreamEndMidToolCall:
             "Incomplete tool args must never auto-execute."
         )
         assert getattr(response, "_dropped_tool_names", None) == ["execute_code"]
+        assert response._clean_eof is True, (
+            "No exception was raised and no finish_reason ever arrived — "
+            "this is the clean-EOF class the fix for #102766 must tag "
+            "distinctly from a genuine transport drop."
+        )
 
 
 

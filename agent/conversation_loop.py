@@ -4148,11 +4148,28 @@ def run_conversation(
 
                 if finish_reason == "length":
                     if getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID:
-                        agent._vprint(
-                            f"{agent.log_prefix}⚠️  Response truncated — stream "
-                            f"ended before completion",
-                            force=True,
-                        )
+                        # Same stub id/finish_reason covers two distinct
+                        # failure modes (#102766): a genuine transport
+                        # exception (network dropped mid-stream — retry is
+                        # correct) versus a clean EOF where the server (or
+                        # an intermediary) closed the connection with no
+                        # exception and no finish_reason ever seen. Report
+                        # them differently so the user isn't sent chasing
+                        # a network problem that a stream_diag log with
+                        # finish_reason_seen=False would have ruled out.
+                        if getattr(response, "_clean_eof", False):
+                            agent._vprint(
+                                f"{agent.log_prefix}⚠️  Response truncated — "
+                                f"server ended the stream without ever "
+                                f"sending finish_reason (not a network drop)",
+                                force=True,
+                            )
+                        else:
+                            agent._vprint(
+                                f"{agent.log_prefix}⚠️  Response truncated — stream "
+                                f"ended before completion",
+                                force=True,
+                            )
                     else:
                         agent._vprint(
                             f"{agent.log_prefix}⚠️  Response truncated "

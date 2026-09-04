@@ -882,7 +882,15 @@ function MessagingField({
           {field.url && (
             <Tip label={m.openDocs}>
               <Button asChild className="size-8 shrink-0" variant="ghost">
-                <a href={field.url} rel="noreferrer" target="_blank">
+                <a
+                  href={field.url}
+                  onClick={event => {
+                    event.preventDefault()
+                    openExternalLink(field.url!)
+                  }}
+                  rel="noreferrer"
+                  target="_blank"
+                >
                   <ExternalLink className="size-3.5" />
                 </a>
               </Button>

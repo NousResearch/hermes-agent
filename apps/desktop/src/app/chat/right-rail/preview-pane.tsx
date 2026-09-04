@@ -12,6 +12,7 @@ import { PanelEmpty } from '@/app/overlays/panel'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
+import { openExternalLink } from '@/lib/external-link'
 import { guardGuestPointers } from '@/lib/guest-pointer-guard'
 import { openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
 import { isRemoteGateway } from '@/lib/media'
@@ -1271,7 +1272,12 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
                     if (isRemoteHtmlTarget) {
                       event.preventDefault()
                       void openPreviewTargetInBrowser(target).catch(error => notifyError(error, t.preview.unavailable))
+
+                      return
                     }
+
+                    event.preventDefault()
+                    openExternalLink(currentUrl)
                   }}
                   rel="noreferrer"
                   target={isRemoteHtmlTarget ? undefined : '_blank'}

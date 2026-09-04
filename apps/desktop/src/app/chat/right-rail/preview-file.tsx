@@ -29,6 +29,7 @@ import {
   readDesktopFileText,
   writeDesktopFileText
 } from '@/lib/desktop-fs'
+import { openExternalLink } from '@/lib/external-link'
 import { Check, Pencil, X } from '@/lib/icons'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { isComposerChord } from '@/lib/keybinds/chords'
@@ -379,13 +380,23 @@ function MarkdownImage({ alt, src, ...rest }: ComponentProps<'img'>) {
   )
 }
 
-function MarkdownLink({ children, className, href, ...rest }: ComponentProps<'a'>) {
+function MarkdownLink({ children, className, href, onClick, ...rest }: ComponentProps<'a'>) {
   const isExternal = /^https?:\/\//i.test(href || '')
 
   return (
     <a
       className={cn('text-foreground underline underline-offset-2 hover:text-primary', className)}
       href={href}
+      onClick={event => {
+        onClick?.(event)
+
+        if (!isExternal || event.defaultPrevented) {
+          return
+        }
+
+        event.preventDefault()
+        openExternalLink(href || '')
+      }}
       rel={isExternal ? 'noopener noreferrer' : undefined}
       target={isExternal ? '_blank' : undefined}
       {...rest}

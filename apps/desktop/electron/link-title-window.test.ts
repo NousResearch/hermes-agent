@@ -10,11 +10,14 @@ import {
 } from './link-title-window'
 
 function makeFakeBrowserWindow() {
-  const calls = { audioMuted: [] }
+  const calls = { audioMuted: [], windowOpenHandlers: [] }
 
   const FakeBrowserWindow = function (options) {
     this.options = options
     this.webContents = {
+      setWindowOpenHandler(handler) {
+        calls.windowOpenHandlers.push(handler)
+      },
       setAudioMuted(value) {
         calls.audioMuted.push(value)
       }
@@ -47,10 +50,20 @@ test('createLinkTitleWindow mutes audio so historical links never autoplay sound
   assert.deepEqual(calls.audioMuted, [true])
 })
 
+test('createLinkTitleWindow denies every popup before arbitrary linked content loads', () => {
+  const { FakeBrowserWindow, calls } = makeFakeBrowserWindow()
+
+  createLinkTitleWindow(FakeBrowserWindow, { id: 'link-titles' })
+
+  assert.equal(calls.windowOpenHandlers.length, 1)
+  assert.deepEqual(calls.windowOpenHandlers[0]({ url: 'https://attacker.test/popup' }), { action: 'deny' })
+})
+
 test('createLinkTitleWindow still returns the window if muting throws', () => {
   const ThrowingBrowserWindow = function (options) {
     this.options = options
     this.webContents = {
+      setWindowOpenHandler() {},
       setAudioMuted() {
         throw new Error('webContents unavailable')
       }
@@ -60,6 +73,27 @@ test('createLinkTitleWindow still returns the window if muting throws', () => {
   const window = createLinkTitleWindow(ThrowingBrowserWindow, { id: 'link-titles' })
 
   assert.ok(window instanceof ThrowingBrowserWindow)
+})
+
+test('createLinkTitleWindow destroys the hidden window if popup denial cannot be installed', () => {
+  let destroyed = false
+
+  const ThrowingBrowserWindow = function (options) {
+    this.options = options
+
+    this.destroy = () => {
+      destroyed = true
+    }
+
+    this.webContents = {
+      setWindowOpenHandler() {
+        throw new Error('policy unavailable')
+      }
+    }
+  }
+
+  assert.throws(() => createLinkTitleWindow(ThrowingBrowserWindow, { id: 'link-titles' }), /policy unavailable/)
+  assert.equal(destroyed, true)
 })
 
 test('guardLinkTitleSession cancels downloads triggered by the title-fetch window', () => {

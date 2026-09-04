@@ -3,6 +3,8 @@
 // in an offscreen window and read its title. That window loads arbitrary
 // user-linked pages, so it must never emit sound or trigger real downloads.
 
+import { createWindowOpenHandler } from './window-open-policy'
+
 export function linkTitleWindowOptions(partitionSession) {
   return {
     show: false,
@@ -31,6 +33,24 @@ export function linkTitleWindowOptions(partitionSession) {
 // audio every time a session containing such links is re-rendered. See #49505.
 export function createLinkTitleWindow(BrowserWindow, partitionSession) {
   const window = new BrowserWindow(linkTitleWindowOptions(partitionSession))
+
+  try {
+    // This window loads arbitrary pages with JavaScript enabled. Install the
+    // same unconditional deny policy as every visible app window before any
+    // page is loaded so a sandboxed iframe cannot reach Electron's OpenURL
+    // popup path (GHSA-9f4c-93c8-jc8g).
+    window.webContents.setWindowOpenHandler(createWindowOpenHandler())
+  } catch (error) {
+    // Failure to install the boundary must fail closed. The caller treats a
+    // creation error as an unavailable title and falls back without this tier.
+    try {
+      window.destroy()
+    } catch {
+      // Best effort: construction may have yielded an already-dead window.
+    }
+
+    throw error
+  }
 
   try {
     window.webContents.setAudioMuted(true)

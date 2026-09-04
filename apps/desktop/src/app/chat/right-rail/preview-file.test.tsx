@@ -1,7 +1,10 @@
-import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { MarkdownPreview } from './preview-file'
+
+const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+const initialHermesDesktop = desktopWindow.hermesDesktop
 
 // Behavior tests for the .md file preview renderer: input markdown goes
 // through normalizeFilePreviewMath -> Streamdown (+ KaTeX math plugin) and must
@@ -11,6 +14,12 @@ import { MarkdownPreview } from './preview-file'
 describe('MarkdownPreview', () => {
   afterEach(() => {
     cleanup()
+
+    if (initialHermesDesktop) {
+      desktopWindow.hermesDesktop = initialHermesDesktop
+    } else {
+      delete desktopWindow.hermesDesktop
+    }
   })
 
   it('renders block and inline math through KaTeX', () => {
@@ -43,11 +52,16 @@ describe('MarkdownPreview', () => {
   })
 
   it('renders external links to open in a new tab safely', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    desktopWindow.hermesDesktop = { openExternal } as unknown as Window['hermesDesktop']
     const { container } = render(<MarkdownPreview text={'[docs](https://example.com/docs)'} />)
 
     const anchor = container.querySelector('a')
     expect(anchor?.getAttribute('href')).toBe('https://example.com/docs')
     expect(anchor?.getAttribute('target')).toBe('_blank')
     expect(anchor?.getAttribute('rel')).toBe('noopener noreferrer')
+
+    fireEvent.click(anchor!)
+    expect(openExternal).toHaveBeenCalledWith('https://example.com/docs')
   })
 })

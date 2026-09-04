@@ -3,6 +3,7 @@ import { type ChangeEvent, type KeyboardEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { translateNow, useI18n } from '@/i18n'
+import { openExternalLink } from '@/lib/external-link'
 import { ChevronDown, ExternalLink, Loader2, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import type { EnvVarInfo } from '@/types/hermes'
@@ -147,7 +148,11 @@ function CredentialDocsLink({ href }: { href: string }) {
     <a
       className="inline-flex w-fit items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary) underline-offset-4 transition-colors hover:text-foreground hover:underline"
       href={href}
-      onClick={e => e.stopPropagation()}
+      onClick={event => {
+        event.preventDefault()
+        event.stopPropagation()
+        openExternalLink(href)
+      }}
       rel="noreferrer"
       target="_blank"
     >

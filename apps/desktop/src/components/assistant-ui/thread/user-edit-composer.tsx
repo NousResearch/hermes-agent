@@ -44,7 +44,14 @@ import {
   replaceBeforeCaret,
   RICH_INPUT_SLOT
 } from '@/app/chat/composer/rich-editor'
-import { detectTrigger, openDirectiveScope, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
+import {
+  detectTrigger,
+  localPathFromFileUrl,
+  openDirectiveScope,
+  pastedFileClipboardPaths,
+  textBeforeCaret,
+  type TriggerState
+} from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import { isRedoShortcut, isUndoShortcut } from '@/app/chat/composer/undo-history'
 import { chipTypedUrlOnSpace, linkifyUrls } from '@/app/chat/composer/url-refs'
@@ -594,7 +601,51 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
-    const pastedText = sanitizeComposerInput(event.clipboardData.getData('text'))
+    // A file copied from the OS file manager (Finder/Explorer/Nautilus "Copy")
+    // surfaces only as file:// URL text — stage it through the same upload
+    // pipeline the drop path uses and insert the gateway-side ref, never the
+    // raw local path (see uploadOsDropRefs).
+    const pastedFilePaths = pastedFileClipboardPaths(event.clipboardData)
+
+    // Plain text minus any pasted file:// lines — a pure file copy leaves
+    // nothing text-shaped to insert.
+    const pastedText = sanitizeComposerInput(
+      event.clipboardData
+        .getData('text')
+        .split(/\r?\n/)
+        .filter(line => pastedFilePaths.length === 0 || localPathFromFileUrl(line) === null)
+        .join('\n')
+        .trim()
+    )
+
+    if (pastedFilePaths.length > 0 && gateway && sessionId) {
+      event.preventDefault()
+      rememberInitialDraft()
+
+      // Prose pasted alongside the file lands first, at the caret — the async
+      // chip insert then appends after it (same ordering as typing prose and
+      // dropping a file). Focus first: the caret-based insert (and the draft
+      // effect's repaint guard) both need this editor to be the active one —
+      // the chip insert gets that for free from insertInlineRefsIntoEditor.
+      if (pastedText) {
+        event.currentTarget.focus({ preventScroll: true })
+        recordUndoPoint()
+        insertComposerContentsAtCaret(event.currentTarget, pathifyRefs(linkifyUrls(pastedText)), openDirectiveScope(event.currentTarget))
+        syncDraftFromEditor(event.currentTarget)
+      }
+
+      setStaging(true)
+
+      void uploadOsDropRefs(pastedFilePaths.map(path => ({ path })))
+        .then(refs => {
+          if (insertRefStrings(refs)) {
+            triggerHaptic('selection')
+          }
+        })
+        .finally(() => setStaging(false))
+
+      return
+    }
 
     if (!pastedText || DATA_IMAGE_URL_RE.test(pastedText.trim())) {
       event.preventDefault()

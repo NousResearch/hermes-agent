@@ -43,7 +43,7 @@ import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
-import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
+import { markActiveComposer, onComposerAttachImagesRequest, onComposerAttachPathsRequest } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
 import { useComposerBranch } from './hooks/use-composer-branch'
@@ -79,7 +79,12 @@ import { useComposerScope } from './scope'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { SuggestionPills } from './suggestion-pills'
-import { extractClipboardImageBlobs, openDirectiveScope } from './text-utils'
+import {
+  extractClipboardImageBlobs,
+  localPathFromFileUrl,
+  openDirectiveScope,
+  pastedFileClipboardPaths
+} from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { isRedoShortcut, isUndoShortcut } from './undo-history'
@@ -274,6 +279,27 @@ export function ChatBar({
       }
     })
   }, [onAttachImageBlob, scope.target])
+
+  // Paste-to-focus: a file copied from the OS file manager (Finder/Explorer/
+  // Nautilus "Copy") pastes as a file:// URL, not a File handle. The window
+  // dispatcher decodes the URL and hands us the absolute path here; routing it
+  // through onAttachDroppedItems gives the drop pipeline's exact semantics —
+  // image paths upload for vision, everything else chips an @file: ref that
+  // submit syncs through file.attach/image.attach (remote gateways included).
+  useEffect(() => {
+    if (!onAttachDroppedItems) {
+      return undefined
+    }
+
+    return onComposerAttachPathsRequest(({ paths, target }) => {
+      if (target !== scope.target) {
+        return
+      }
+
+      triggerHaptic('selection')
+      void onAttachDroppedItems(paths.map(path => ({ path })))
+    })
+  }, [onAttachDroppedItems, scope.target])
 
   // Prior history belongs to the draft that just left — undoing into another
   // conversation's text is worse than having none.
@@ -505,16 +531,38 @@ export function ChatBar({
       }
     }
 
-    // Trim surrounding whitespace so a copy that dragged along leading/trailing
-    // blank lines (common when selecting from terminals, code blocks, web pages)
-    // doesn't dump multiline padding into the composer. Internal newlines are
-    // preserved — only the edges are cleaned up.
-    const pastedText = sanitizeComposerInput(event.clipboardData.getData('text').trim())
+    // A file copied from the OS file manager (Finder/Explorer/Nautilus "Copy")
+    // carries no image blob — it surfaces only as file:// URL text. Attach it
+    // through the drop pipeline instead of dropping URL text the gateway can't
+    // resolve. A pure file copy is consumed by the attach; prose pasted
+    // alongside a file URL keeps its text below.
+    const pastedFilePaths = pastedFileClipboardPaths(event.clipboardData)
+
+    if (pastedFilePaths.length > 0 && onAttachDroppedItems) {
+      triggerHaptic('selection')
+      void onAttachDroppedItems(pastedFilePaths.map(path => ({ path })))
+    }
+
+    // Plain text minus any pasted file:// lines — a pure file copy leaves
+    // nothing here, so the empty-text branch consumes the paste instead of
+    // treating it as an image-less WSL clipboard probe.
+    const pastedText = sanitizeComposerInput(
+      event.clipboardData
+        .getData('text')
+        .split(/\r?\n/)
+        .filter(line => pastedFilePaths.length === 0 || localPathFromFileUrl(line) === null)
+        .join('\n')
+        .trim()
+    )
 
     if (!pastedText) {
       event.preventDefault()
 
       if (imageBlobs.length > 0) {
+        return
+      }
+
+      if (pastedFilePaths.length > 0 && onAttachDroppedItems) {
         return
       }
 

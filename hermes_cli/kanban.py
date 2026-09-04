@@ -2216,7 +2216,19 @@ def _cmd_comment(args: argparse.Namespace) -> int:
             body = body[: max(0, args.max_len - len(suffix))].rstrip() + suffix
     author = args.author or _profile_author()
     with kb.connect_closing() as conn:
-        kb.add_comment(conn, args.task_id, author, body)
+        try:
+            kb.add_comment(conn, args.task_id, author, body, caller_context="cli")
+        except ValueError as e:
+            if "human-vocabulary" in str(e) or "rejected" in str(e).lower():
+                print(
+                    "kanban: --author rejected: human-looking names (user, admin, reviewer, etc.) "
+                    "are reserved for the dashboard. Use a machine label (bot, automation, cli, worker) "
+                    "or omit --author to use the profile name.",
+                    file=sys.stderr,
+                )
+            else:
+                print(f"kanban: {e}", file=sys.stderr)
+            return 2
     print(f"Comment added to {args.task_id}")
     return 0
 

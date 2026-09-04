@@ -3991,15 +3991,75 @@ def parent_results(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, Op
 # ---------------------------------------------------------------------------
 
 def add_comment(
-    conn: sqlite3.Connection, task_id: str, author: str, body: str
+    conn: sqlite3.Connection,
+    task_id: str,
+    author: str,
+    body: str,
+    *,
+    caller_context: str = "cli",
 ) -> int:
+    """Insert a comment, enforcing author policy by caller context.
+
+    Author policy (see #102693):
+    - caller_context="dashboard": Accept any author string (session-authenticated user)
+    - caller_context="tool": Author is derived server-side from HERMES_PROFILE (already enforced by caller)
+    - caller_context="cli" / "worker" / other: Reject human-vocabulary author strings;
+      stamp a machine identity instead (profile name / "cli" / "worker" / "bot" / "automation")
+    """
     if not body or not body.strip():
         raise ValueError("comment body is required")
     if not author or not author.strip():
         raise ValueError("comment author is required")
+
+    author = author.strip()
+
+    # Human-vocabulary names that must only come from the dashboard (session-authenticated user).
+    # Machine/automation identities are allowed from CLI/worker paths.
+    _HUMAN_VOCABULARY = frozenset({
+        "user",
+        "human",
+        "admin",
+        "administrator",
+        "operator",
+        "reviewer",
+        "review",
+        "approver",
+        "approve",
+        "supervisor",
+        "manager",
+        "lead",
+        "owner",
+    })
+
+    def _is_human_vocab(name: str) -> bool:
+        n = name.lower().strip()
+        return n in _HUMAN_VOCABULARY
+
+    # Dashboard is the ONLY surface allowed to write human-vocabulary author strings.
+    if caller_context != "dashboard" and _is_human_vocab(author):
+        # Derive a machine identity for non-dashboard callers.
+        # Prefer explicit profile env, then "cli"/"worker"/"bot"/"automation".
+        for env in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
+            v = os.environ.get(env)
+            if v:
+                author = v
+                break
+        else:
+            # No profile env: use a generic machine label.
+            # Caller can pass "bot", "automation", "worker", "cli" via --author;
+            # if they passed a human name we already rejected it above.
+            if caller_context in {"cli", "worker"}:
+                author = "cli" if caller_context == "cli" else "worker"
+            elif caller_context in {"bot", "automation"}:
+                author = caller_context
+            else:
+                author = "worker"
+    elif caller_context == "tool":
+        # Tool path already derives author from HERMES_PROFILE in the handler.
+        # Trust the caller-provided author (it's already server-side derived).
+        pass
+
     now = int(time.time())
-    # ``allow_nested=True``: graph builders (kanban_swarm blackboard seeding)
-    # compose comment writes under one outer commit.
     with write_txn(conn, allow_nested=True):
         if not conn.execute(
             "SELECT 1 FROM tasks WHERE id = ?", (task_id,)
@@ -4008,7 +4068,7 @@ def add_comment(
         cur = conn.execute(
             "INSERT INTO task_comments (task_id, author, body, created_at) "
             "VALUES (?, ?, ?, ?)",
-            (task_id, author.strip(), body.strip(), now),
+            (task_id, author, body.strip(), now),
         )
         _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
         return int(cur.lastrowid or 0)

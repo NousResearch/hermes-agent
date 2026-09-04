@@ -1248,6 +1248,7 @@ def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
         kanban_db.add_comment(
             conn, task_id, author=payload.author or "dashboard", body=payload.body,
+            caller_context="dashboard",
         )
         return {"ok": True}
     finally:

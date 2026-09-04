@@ -180,3 +180,40 @@ def test_no_event_key_means_fresh_envelope_each_time(root):
     kw = dict(room_id="r", room_name="n", text="x", from_profile="p", label="l")
     a, b = gr.enqueue(root, **kw), gr.enqueue(root, **kw)
     assert a["id"] != b["id"] and "event_key" not in a and gr.pending_count(root) == 2
+
+
+def test_keyed_enqueue_recovers_from_crash_between_receipt_and_outbox(root, monkeypatch):
+    """Receipt written, outbox write never happened (crash): a retry must re-queue, same id."""
+    kw = dict(room_id="r", room_name="n", text="once", from_profile="p", label="l", event_key="k1")
+    real = gr._atomic_write_json
+
+    def crash(*args, **kwargs):
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(gr, "_atomic_write_json", crash)
+    with pytest.raises(OSError):
+        gr.enqueue(root, **kw)
+    expected = gr.envelope_id_for_key("k1")
+    assert gr._receipt_from_replies(gr.relay_root(root), expected) is not None
+    assert gr.pending_count(root) == 0
+    monkeypatch.setattr(gr, "_atomic_write_json", real)
+    recovered = gr.enqueue(root, **kw)
+    assert recovered["id"] == expected and gr.pending_count(root) == 1
+    # Only one receipt line was written; the retry did not duplicate it.
+    lines, _ = gr.read_reply_lines(root, expected)
+    assert [l["kind"] for l in lines] == ["receipt"]
+    # And a conflicting retry in that same crashed state still fails closed.
+    (gr.relay_root(root) / gr.OUTBOX_DIR / f"{expected}.json").unlink()
+    with pytest.raises(gr.GroupRelayConflictError):
+        gr.enqueue(root, **{**kw, "text": "twice"})
+    assert gr.pending_count(root) == 0
+
+
+def test_keyed_enqueue_does_not_requeue_once_desktop_accepted(root):
+    kw = dict(room_id="r", room_name="n", text="once", from_profile="p", label="l", event_key="k2")
+    first = gr.enqueue(root, **kw)
+    gr.claim_pending(root)
+    (gr.relay_root(root) / gr.CLAIMED_DIR / f"{first['id']}.json").unlink()
+    gr.append_reply_line(root, first["id"], {"kind": "accepted", "thread": "t", "group": "n"})
+    assert gr.enqueue(root, **kw)["id"] == first["id"]
+    assert gr.pending_count(root) == 0

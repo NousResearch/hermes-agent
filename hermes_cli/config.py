@@ -32,7 +32,7 @@ import time
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple, Set
+from typing import Dict, Any, Optional, List, Tuple, Set, cast
 
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.secret_prompt import masked_secret_prompt
@@ -2528,6 +2528,40 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             "    base_url: https://...",
         ))
 
+    # Closed-catalog providers can reject impossible model IDs without a
+    # network call. Open/dynamic/custom providers are intentionally skipped:
+    # an ID absent from Hermes' snapshot may still be a valid deployment.
+    provider_id = ""
+    model_id = ""
+    if isinstance(model_cfg, dict):
+        provider_id = str(model_cfg.get("provider") or "").strip().lower()
+        model_id = str(
+            model_cfg.get("default") or model_cfg.get("model") or ""
+        ).strip()
+    elif isinstance(model_cfg, str):
+        model_id = model_cfg.strip()
+    if model_id:
+        try:
+            from hermes_cli.models import validate_strict_provider_model
+
+            verdict, fallback = validate_strict_provider_model(
+                provider_id, model_id
+            )
+        except Exception:
+            verdict, fallback = None, model_id
+        if verdict is False:
+            provider_note = f" for provider '{provider_id}'" if provider_id else ""
+            hint = (
+                f"Use a supported model such as '{fallback}', or run 'hermes model' to choose one"
+                if fallback
+                else "Configure model.provider and choose a supported model with 'hermes model'"
+            )
+            issues.append(ConfigIssue(
+                "error",
+                f"model '{model_id}' is not supported{provider_note}",
+                hint,
+            ))
+
     # ── Root-level keys that look misplaced ──────────────────────────────
     # Only provider-like fields (base_url, api_key, …) are flagged. Arbitrary
     # unknown top-level keys are deliberately NOT warned about: top-level
@@ -4200,7 +4234,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                     return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
 
         normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
-        expanded = _expand_env_vars(normalized)
+        expanded = cast(Dict[str, Any], _expand_env_vars(normalized))
         # Managed scope wins at the leaf. Applied AFTER user expansion so a user
         # ${VAR} cannot shadow a managed literal: managed values are expanded only
         # against the process environment, never against user-config-defined refs.
@@ -4221,6 +4255,69 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                 managed_normalized["model"] = {"default": managed_normalized["model"]}
             managed_expanded = _expand_env_vars(managed_normalized)
             expanded = _deep_merge(expanded, managed_expanded)
+
+        # Reject impossible IDs for closed-catalog providers at the canonical
+        # load boundary. Keep config.yaml byte-for-byte intact so the operator
+        # can inspect/repair the bad value; only the effective in-memory config
+        # falls back. This prevents unattended reads from sending a known-bad
+        # slug while avoiding false rejection for custom/dynamic catalogs.
+        _effective_model_cfg = expanded.get("model")
+        _effective_provider = ""
+        _effective_model = ""
+        _legacy_scalar = isinstance(_effective_model_cfg, str)
+        if isinstance(_effective_model_cfg, dict):
+            _effective_provider = str(
+                _effective_model_cfg.get("provider") or ""
+            ).strip().lower()
+            _effective_model = str(
+                _effective_model_cfg.get("default") or ""
+            ).strip()
+        elif _legacy_scalar:
+            _effective_model = str(_effective_model_cfg).strip()
+
+        if _effective_model:
+            from hermes_cli.models import validate_strict_provider_model
+
+            _model_verdict, _validated_model = validate_strict_provider_model(
+                _effective_provider, _effective_model
+            )
+            # Legacy scalar configs do not name a provider. Only universally
+            # invalid sentinel values return False without one; resolve those
+            # against Hermes' default provider so unattended jobs can recover.
+            if _legacy_scalar and _model_verdict is False:
+                _default_model_cfg = DEFAULT_CONFIG.get("model", {})
+                if isinstance(_default_model_cfg, dict):
+                    _effective_provider = str(
+                        _default_model_cfg.get("provider") or ""
+                    ).strip().lower()
+                _model_verdict, _validated_model = validate_strict_provider_model(
+                    _effective_provider, _effective_model
+                )
+            if _model_verdict is False and not _validated_model:
+                raise InvalidUserConfigError(
+                    f"Unsupported model.default {_effective_model!r} for "
+                    f"provider {_effective_provider!r}; no safe provider "
+                    "default is available"
+                )
+            if _model_verdict is not None and _validated_model != _effective_model:
+                expanded = copy.deepcopy(expanded)
+                expanded["model"] = dict(_effective_model_cfg) if isinstance(
+                    _effective_model_cfg, dict
+                ) else {}
+                expanded["model"]["default"] = _validated_model
+                if _effective_provider:
+                    expanded["model"]["provider"] = _effective_provider
+                action = (
+                    "normalized" if _model_verdict is True else "rejected unsupported"
+                )
+                logger.warning(
+                    "%s model.default %r for provider %r; using %r for "
+                    "this process (config.yaml was not modified)",
+                    action.capitalize(),
+                    _effective_model,
+                    _effective_provider,
+                    _validated_model,
+                )
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_sig is not None:
             # Cache stores a separate deepcopy so subsequent ``load_config()``

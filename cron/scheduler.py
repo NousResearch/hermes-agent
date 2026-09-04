@@ -6475,6 +6475,23 @@ def run_job(
             or configured_provider_for_drift
             or None
         )
+
+        # Validate before provider resolution whenever config identifies a
+        # closed-catalog provider. That keeps target_model/api_mode atomic: the
+        # runtime resolver never derives transport settings from a stale slug.
+        from hermes_cli.models import validate_strict_provider_model
+
+        _pre_model_verdict, _pre_validated_model = validate_strict_provider_model(
+            str(primary_provider_for_drift or ""), str(model)
+        )
+        if _pre_model_verdict is False and not _pre_validated_model:
+            raise RuntimeError(
+                f"Unsupported model {model!r} for provider "
+                f"{primary_provider_for_drift!r}; no safe default is available"
+            )
+        if _pre_model_verdict is not None:
+            model = _pre_validated_model
+
         try:
             # Do not inject HERMES_INFERENCE_PROVIDER here. resolve_runtime_provider()
             # already prefers persisted config over stale shell/env overrides when
@@ -6560,6 +6577,44 @@ def run_job(
                     logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
             if runtime is None:
                 raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
+
+        # A persisted model can outlive a closed provider catalog. Reject the
+        # stale ID before AIAgent is constructed and fall back within the SAME
+        # provider; never turn a bad slug into cross-provider routing or a 400.
+        # Open/dynamic/custom catalogs return ``None`` and remain untouched.
+        from hermes_cli.models import validate_strict_provider_model
+
+        _runtime_provider_for_model = str(
+            runtime.get("provider") or primary_provider_for_drift or ""
+        ).strip().lower()
+        _model_verdict, _validated_model = validate_strict_provider_model(
+            _runtime_provider_for_model, str(model)
+        )
+        if _model_verdict is False and not _validated_model:
+            raise RuntimeError(
+                f"Unsupported model {model!r} for provider "
+                f"{_runtime_provider_for_model!r}; no safe default is available"
+            )
+        if _model_verdict is not None and _validated_model != str(model):
+            # Provider may only become known after credential resolution. When
+            # that reveals a stale or noncanonical slug, re-resolve atomically
+            # so provider-specific api_mode/base_url match the corrected model.
+            _corrected_kwargs = {
+                "requested": _runtime_provider_for_model,
+                "target_model": _validated_model,
+            }
+            if job.get("base_url"):
+                _corrected_kwargs["explicit_base_url"] = job.get("base_url")
+            runtime = resolve_runtime_provider(**_corrected_kwargs)
+            logger.warning(
+                "Job '%s': %s model %r for provider %r; using %r",
+                job_id,
+                "normalized" if _model_verdict is True else "rejected unsupported",
+                model,
+                _runtime_provider_for_model,
+                _validated_model,
+            )
+            model = _validated_model
 
         reasoning_config = _resolve_job_reasoning_config(
             job, _cfg if isinstance(_cfg, dict) else {}, str(model)

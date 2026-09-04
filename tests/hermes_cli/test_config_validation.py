@@ -111,6 +111,54 @@ class TestVoiceSubmitModeValidation:
         )
 
 
+class TestStrictProviderModelValidation:
+    """Closed-catalog providers reject impossible persisted model ids early."""
+
+    def test_invalid_codex_model_is_an_error_with_fallback_hint(self):
+        issues = validate_config_structure({
+            "model": {"provider": "openai-codex", "default": "test"},
+        })
+
+        assert any(
+            issue.severity == "error"
+            and "model 'test'" in issue.message
+            and "openai-codex" in issue.message
+            and "gpt-" in issue.hint
+            for issue in issues
+        )
+
+    def test_legacy_scalar_placeholder_model_is_rejected(self):
+        issues = validate_config_structure({"model": "test"})
+
+        assert any(
+            issue.severity == "error"
+            and "model 'test'" in issue.message
+            and "model.provider" in issue.hint
+            for issue in issues
+        )
+
+    def test_valid_codex_model_is_accepted(self):
+        issues = validate_config_structure({
+            "model": {"provider": "openai-codex", "default": "gpt-5.4"},
+        })
+        assert not any("not supported" in issue.message for issue in issues)
+
+    def test_provider_qualified_codex_model_is_normalized_and_accepted(self):
+        issues = validate_config_structure({
+            "model": {
+                "provider": "openai-codex",
+                "default": "openai-codex/gpt-5.4",
+            },
+        })
+        assert not any("not supported" in issue.message for issue in issues)
+
+    def test_open_catalog_provider_is_not_rejected_locally(self):
+        issues = validate_config_structure({
+            "model": {"provider": "custom:private", "default": "test"},
+        })
+        assert not any("not supported" in issue.message for issue in issues)
+
+
 class TestUnknownTopLevelKeys:
     """Arbitrary top-level keys must NOT warn — they are bridged to os.environ.
 

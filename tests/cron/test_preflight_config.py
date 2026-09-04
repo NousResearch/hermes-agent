@@ -191,6 +191,51 @@ class TestMissingProviderKeyBlocks:
         assert error is None
 
 
+class TestInvalidClosedCatalogModelFallback:
+    def test_unpinned_job_never_constructs_agent_with_invalid_codex_model(self, tmp_path):
+        """Regression: weekly-review inherited ``test`` and sent it to Codex."""
+        (tmp_path / "config.yaml").write_text(
+            "model:\n  provider: openai-codex\n  default: test\n",
+            encoding="utf-8",
+        )
+        job = _job()
+        fake_db = MagicMock()
+        runtime = dict(_RUNTIME, provider="openai-codex", api_mode="codex_responses")
+        resolve_mock = MagicMock(return_value=runtime)
+
+        patches = [
+            patch("cron.scheduler._hermes_home", tmp_path),
+            patch("cron.scheduler._resolve_origin", return_value=None),
+            patch("hermes_cli.env_loader.load_hermes_dotenv"),
+            patch("hermes_cli.env_loader.reset_secret_source_cache"),
+            patch("hermes_state.get_shared_session_db", return_value=fake_db),
+            patch("tools.mcp_tool.discover_mcp_tools", return_value=[]),
+            patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                new=resolve_mock,
+            ),
+        ]
+
+        from contextlib import ExitStack
+
+        with cron_jobs.use_cron_store(tmp_path), patch("run_agent.AIAgent") as agent_cls:
+            agent_cls.return_value.run_conversation.return_value = {
+                "final_response": "ok"
+            }
+            with ExitStack() as stack:
+                for p in patches:
+                    stack.enter_context(p)
+                success, _output, _final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        resolved_model = resolve_mock.call_args.kwargs["target_model"]
+        assert resolved_model.startswith("gpt-")
+        assert resolved_model != "test"
+        selected_model = agent_cls.call_args.kwargs["model"]
+        assert selected_model == resolved_model
+
+
 class TestHealthyJobUnaffected:
     def test_healthy_job_runs_normally(self, tmp_path):
         job = _job()

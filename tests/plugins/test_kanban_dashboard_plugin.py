@@ -220,6 +220,69 @@ def test_task_detail_includes_links_and_events(client):
     assert len(data["events"]) >= 1
 
 
+def test_dashboard_round_trips_outcome_condition_and_blocks_reject(client):
+    sha = "a" * 40
+    parent = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "review"},
+    ).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "release"},
+    ).json()["task"]
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}",
+        json={
+            "status": "done",
+            "summary": "rejected exact candidate",
+            "outcome_code": "REJECT",
+            "subject_sha": sha,
+        },
+    )
+    assert response.status_code == 200, response.text
+    response = client.post(
+        "/api/plugins/kanban/links",
+        json={
+            "parent_id": parent["id"],
+            "child_id": child["id"],
+            "accepted_outcome_codes": ["APPROVED"],
+            "subject_sha": sha,
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    detail = client.get(
+        f"/api/plugins/kanban/tasks/{parent['id']}"
+    ).json()
+    assert detail["runs"][-1]["outcome_code"] == "REJECT"
+    assert detail["runs"][-1]["subject_sha"] == sha
+    child_detail = client.get(
+        f"/api/plugins/kanban/tasks/{child['id']}"
+    ).json()
+    assert child_detail["task"]["status"] == "todo"
+
+
+def test_dashboard_rejects_partial_or_unknown_completion_evidence(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "review"},
+    ).json()["task"]
+
+    partial = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": "done", "outcome_code": "APPROVED"},
+    )
+    unknown = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={
+            "status": "done",
+            "outcome_code": "MAYBE",
+            "subject_sha": "a" * 40,
+        },
+    )
+
+    assert partial.status_code == 400
+    assert unknown.status_code == 422
+
+
 # ---------------------------------------------------------------------------
 # PATCH /tasks/:id — status transitions
 # ---------------------------------------------------------------------------

@@ -1028,6 +1028,9 @@ export const ja = defineLocale({
         mcp: { label: 'MCP', hint: 'MCP ツールルーティング' },
         title_generation: { label: 'タイトル生成', hint: 'セッションタイトル' },
         review: { label: 'レビュー', hint: '/review レビューサブエージェント' },
+        triage_specifier: { label: 'トリアージ仕様化', hint: 'カンバントリアージの仕様への展開' },
+        kanban_decomposer: { label: 'カンバン分解', hint: 'カンバンのタスクグラフ分解' },
+        profile_describer: { label: 'プロファイル記述', hint: 'プロファイル概要の生成' },
         curator: { label: 'キュレーター', hint: 'スキル使用レビュー' }
       }
     },

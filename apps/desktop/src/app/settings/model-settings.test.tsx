@@ -1,7 +1,30 @@
+import { promises as fs } from 'node:fs'
+import path from 'node:path'
+
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { ar } from '@/i18n/ar'
+import { en } from '@/i18n/en'
+import { ja } from '@/i18n/ja'
+import type { Translations } from '@/i18n/types'
+import { zh } from '@/i18n/zh'
+import { zhHant } from '@/i18n/zh-hant'
+
+const SHIPPED_LOCALES: readonly [string, Translations][] = [
+  ['en', en],
+  ['ja', ja],
+  ['zh', zh],
+  ['zh-hant', zhHant],
+  ['ar', ar]
+]
+
+// Locale tag for assertion messages — clearer failures than "[Object object]".
+function localeName(locale: Translations): string {
+  return SHIPPED_LOCALES.find(([, bundle]) => bundle === locale)?.[0] ?? 'unknown'
+}
 
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
 // doesn't implement it (nor hasPointerCapture / releasePointerCapture), so stub
@@ -324,6 +347,47 @@ describe('ModelSettings', () => {
 
     expect(await screen.findByText('Vision')).toBeTruthy()
     expect(screen.getAllByText('auto · use main model').length).toBeGreaterThan(0)
+  })
+
+  it('renders every backend auxiliary slot, including the three that were UI-invisible', async () => {
+    await renderModelSettings()
+
+    // 8 slots rendered before #98978; the pinned inventory is 11.
+    expect(await screen.findAllByRole('button', { name: 'Set to main' })).toHaveLength(11)
+    expect(await screen.findByText('Triage specifier')).toBeTruthy()
+    expect(await screen.findByText('Kanban decomposer')).toBeTruthy()
+    expect(await screen.findByText('Profile describer')).toBeTruthy()
+  })
+
+  it('keeps AUX_TASKS in lockstep with the backend slot list', async () => {
+    // The backend tuple is the source of truth (served by GET /api/model/auxiliary);
+    // a hardcoded frontend list that misses a slot makes that slot editable only
+    // via raw config.yaml (#98978). Parse web_server.py instead of importing it —
+    // the desktop test runner has no Python interpreter contract.
+    const webServer = await fs.readFile(
+      path.join(__dirname, '..', '..', '..', '..', '..', 'hermes_cli', 'web_server.py'),
+      'utf8'
+    )
+
+    const match = webServer.match(/_AUX_TASK_SLOTS[^=]*=\s*\(([^)]*)\)/)
+    expect(match).toBeTruthy()
+    const backendSlots = [...match![1].matchAll(/"([a-z_]+)"/g)].map(m => m[1])
+
+    const { AUX_TASKS } = await import('./model-settings')
+    expect(AUX_TASKS.map(meta => meta.key)).toEqual(backendSlots)
+  })
+
+  it('labels every auxiliary slot in all shipped locales', async () => {
+    const { AUX_TASKS } = await import('./model-settings')
+
+    for (const locale of [en, ja, zh, zhHant, ar]) {
+      const tasks = locale.settings.model.tasks
+
+      for (const meta of AUX_TASKS) {
+        expect(tasks[meta.key]?.label, `${localeName(locale)}: ${meta.key}`).toBeTruthy()
+        expect(tasks[meta.key]?.hint, `${localeName(locale)}: ${meta.key}`).toBeTruthy()
+      }
+    }
   })
 
   it('assigns an auxiliary task to the main model via setModelAssignment', async () => {

@@ -1314,6 +1314,9 @@ export const zh: Translations = {
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '标题生成', hint: '会话标题' },
         review: { label: '评审', hint: '/review 评审子智能体' },
+        triage_specifier: { label: '分诊细化', hint: '细化看板分诊想法为规格' },
+        kanban_decomposer: { label: '看板分解器', hint: '分解看板任务图' },
+        profile_describer: { label: '配置档描述器', hint: '生成配置档描述' },
         curator: { label: '维护器', hint: '技能使用审查' }
       }
     },

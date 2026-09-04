@@ -990,6 +990,9 @@ export const zhHant = defineLocale({
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '標題生成', hint: '工作階段標題' },
         review: { label: '評審', hint: '/review 評審子代理' },
+        triage_specifier: { label: '分類細化', hint: '將看板分類想法整理為規格' },
+        kanban_decomposer: { label: '看板分解器', hint: '分解看板任務圖' },
+        profile_describer: { label: '設定檔描述器', hint: '產生設定檔描述' },
         curator: { label: '策展器', hint: '技能使用審查' }
       }
     },

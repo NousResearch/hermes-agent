@@ -912,6 +912,18 @@ export const ar = defineLocale({
           label: 'المراجعة',
           hint: 'وكيل المراجعة الفرعي /review'
         },
+        triage_specifier: {
+          label: 'مُحدِّد الفرز',
+          hint: 'تحويل أفكار فرز كانبان إلى مواصفات'
+        },
+        kanban_decomposer: {
+          label: 'مُفكِّك كانبان',
+          hint: 'تفكيك مهام كانبان إلى مخطط'
+        },
+        profile_describer: {
+          label: 'واصف الملفات الشخصية',
+          hint: 'توليد أوصاف الملفات الشخصية'
+        },
         curator: {
           label: 'المنسّق',
           hint: 'مراجعة استخدام المهارات'

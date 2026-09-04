@@ -103,12 +103,13 @@ function isProviderReady(p?: ModelOptionProvider): boolean {
 
 // Mirrors `_AUX_TASK_SLOTS` in hermes_cli/web_server.py. Friendly labels and
 // hints make the assignments readable; raw task keys (vision, mcp, …) are
-// opaque to most users.
+// opaque to most users. The drift test parses the backend tuple and pins this
+// list to it, so a slot added server-side can't stay unreachable here again.
 interface AuxTaskMeta {
   key: string
 }
 
-const AUX_TASKS: readonly AuxTaskMeta[] = [
+export const AUX_TASKS: readonly AuxTaskMeta[] = [
   { key: 'vision' },
   { key: 'compression' },
   { key: 'skills_hub' },
@@ -116,6 +117,9 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
   { key: 'mcp' },
   { key: 'title_generation' },
   { key: 'review' },
+  { key: 'triage_specifier' },
+  { key: 'kanban_decomposer' },
+  { key: 'profile_describer' },
   { key: 'curator' }
 ]
 

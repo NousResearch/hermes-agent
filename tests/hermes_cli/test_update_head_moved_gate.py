@@ -100,6 +100,9 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
     )
+    # Preserve this test's mocked module graph across the simulated checkout
+    # change; production purge behavior is covered by its dedicated tests.
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
     # Short-circuit the long tail: dependency install + desktop build.
     monkeypatch.setattr(hermes_main, "_write_update_incomplete_marker", lambda: None)
     monkeypatch.setattr(hermes_main, "_clear_update_incomplete_marker", lambda: None)
@@ -118,6 +121,16 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     )
     monkeypatch.setattr(
         hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
+    )
+    # Keep the updater's fail-closed fleet verification inside this unit
+    # test's mocked world rather than discovering the live VPS runtimes.
+    monkeypatch.setattr(
+        "hermes_cli.update_inventory.collect_runtime_inventory",
+        lambda: SimpleNamespace(runtimes=[], to_dict=lambda: {}),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **_kwargs: [],
     )
 
 

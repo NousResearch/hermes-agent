@@ -1,5 +1,6 @@
 """Tests for hermes_constants module."""
 
+import io
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -359,6 +360,49 @@ class TestIsContainer:
         self._reset_cache(monkeypatch)
         monkeypatch.setattr(os.path, "exists", lambda p: False)
         monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.43.0.1")
+        assert is_container() is True
+
+    def test_host_container_storage_mounts_do_not_imply_container(self, monkeypatch):
+        """Host-mounted containerd storage below /var/lib must not match root."""
+        self._reset_cache(monkeypatch)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+
+        real_open = open
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/proc/1/cgroup":
+                return io.StringIO("0::/\n")
+            if path == "/proc/self/mountinfo":
+                return io.StringIO(
+                    "36 25 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n"
+                    "149 36 0:59 / /var/lib/docker/rootfs/overlayfs/abc rw - "
+                    "overlay overlay rw,lowerdir=/var/lib/containerd/snapshots/1/fs\n"
+                )
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", fake_open)
+        assert is_container() is False
+
+    def test_detects_containerd_root_mount_on_cgroup_v2(self, monkeypatch):
+        """A containerd-backed root mount remains a positive fallback signal."""
+        self._reset_cache(monkeypatch)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+
+        real_open = open
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/proc/1/cgroup":
+                return io.StringIO("0::/\n")
+            if path == "/proc/self/mountinfo":
+                return io.StringIO(
+                    "36 25 0:59 / / rw - overlay overlay rw,"
+                    "lowerdir=/var/lib/containerd/snapshots/1/fs\n"
+                )
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", fake_open)
         assert is_container() is True
 
 

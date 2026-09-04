@@ -2462,6 +2462,23 @@ class TestLazyContextResolution:
             result = c.context_length
             assert result == 200_000
 
+    def test_uses_custom_provider_context_length(self):
+        """A custom endpoint's per-model window must reach the compressor."""
+        custom_providers = [{
+            "name": "ninfer",
+            "base_url": "http://127.0.0.1:8081/v1",
+            "models": {"qwen3.8-27b": {"context_length": 262_144}},
+        }]
+        compressor = ContextCompressor(
+            model="qwen3.8-27b",
+            provider="custom:ninfer",
+            base_url="http://127.0.0.1:8081/v1",
+            custom_providers=custom_providers,
+            quiet_mode=True,
+        )
+
+        assert compressor.context_length == 262_144
+
 
 class TestPreflightSentinelGuard:
     """Regression guards for the preflight token-display seed

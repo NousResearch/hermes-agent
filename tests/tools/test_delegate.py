@@ -2233,5 +2233,86 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIn("missing-acp-binary", str(ctx.exception))
 
 
+class TestGuardrailHaltClassification(unittest.TestCase):
+    """#102694: a child stopped by a hard tool guardrail must NOT surface as
+    status="completed" — the child's controlled closing message is a stop, not
+    a successful finish. Previously the summary-presence heuristic labeled any
+    non-empty final_response as completed, so coordinators that consume the
+    structured status accepted guardrail-aborted delegations as success."""
+
+    def test_guardrail_halt_reported_as_failed_with_metadata(self):
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            # The child still produced a controlled final message — this is
+            # exactly the shape that used to be mislabeled "completed".
+            mock_child.run_conversation.return_value = {
+                "final_response": (
+                    "Stopping: web_search was invoked 12 times in a loop; "
+                    "halting to avoid runaway costs."
+                ),
+                "completed": False,
+                "interrupted": False,
+                "api_calls": 4,
+                "messages": [],
+                "guardrail": {
+                    "action": "halt",
+                    "code": "loop_web_search_cap",
+                    "message": "web_search invoked 12 times in a loop; halting",
+                    "tool_name": "web_search",
+                    "count": 12,
+                    "signature": {"tool_name": "web_search", "args_hash": "a1b2c3"},
+                },
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="guardrail halt", parent_agent=parent))
+            entry = result["results"][0]
+
+            self.assertEqual(entry["status"], "failed")
+            self.assertEqual(entry["exit_reason"], "guardrail_halt")
+            self.assertFalse(entry.get("truncated"))
+            # The public guardrail code is preserved (hashes only — no raw
+            # tool argument values leak through).
+            guardrail = entry.get("guardrail")
+            self.assertIsNotNone(guardrail)
+            self.assertEqual(guardrail.get("action"), "halt")
+            self.assertEqual(guardrail.get("code"), "loop_web_search_cap")
+            self.assertEqual(guardrail.get("signature", {}).get("args_hash"), "a1b2c3")
+            self.assertNotIn("arguments", json.dumps(guardrail))
+            # The error names the public guardrail code.
+            self.assertIn("loop_web_search_cap", entry.get("error", ""))
+            self.assertIn("guardrail", entry.get("error", "").lower())
+
+    def test_normal_completion_still_completed(self):
+        """Guardrail detection must not change classifications for clean runs."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 2,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="clean run", parent_agent=parent))
+            entry = result["results"][0]
+            self.assertEqual(entry["status"], "completed")
+            self.assertEqual(entry["exit_reason"], "completed")
+            self.assertNotIn("guardrail", entry)
+
+
 if __name__ == "__main__":
     unittest.main()
+

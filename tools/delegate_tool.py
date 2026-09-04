@@ -2634,16 +2634,20 @@ def _run_single_child(
           hit its iteration budget; see ``exit_reason``).
         * ``"interrupted"`` — the child was interrupted (``interrupted=True``).
         * ``"failed"``    — a structured failure (``failed=True`` or a non-empty
-          ``error``) or a summary-less/invalid terminal state.
+          ``error``) or a summary-less/invalid terminal state. A hard tool
+          guardrail halt is also classified here: the task was stopped, not
+          completed (#102694).
 
     ``exit_reason`` ∈ {``"completed"``, ``"max_iterations"``, ``"interrupted"``,
-    ``"error"``}:
+    ``"error"``, ``"guardrail_halt"``}:
         * ``"completed"``       — normal finish.
         * ``"max_iterations"``  — genuine per-child iteration-budget exhaustion
           (``completed=False`` with no failure fields).
         * ``"interrupted"``     — interrupted by the parent.
         * ``"error"``           — provider rejection / terminal failure; NOT
           budget exhaustion (this is the case #97655 fixed).
+        * ``"guardrail_halt"``  — a hard tool guardrail (e.g.
+          ``loop_web_search_cap``) stopped the child mid-task (#102694).
 
     ``truncated`` is derived as ``exit_reason == "max_iterations"`` only, so the
     parent-visible truncation flag stays truthful for all of the above.
@@ -3293,8 +3297,26 @@ def _run_single_child(
         # it instead of silently accepting zero-content "success".
         _empty_sentinel = summary.strip() == "(empty)"
 
+        # A hard tool guardrail halt (e.g. loop_web_search_cap cutting a runaway
+        # loop) is NOT completion: the child stopped because a guardrail decided
+        # the task must not continue. Detect it BEFORE the summary-presence
+        # heuristic, which would otherwise label the child's controlled closing
+        # message (its ``final_response``) as status="completed" (#102694). Only
+        # real halts reach here — warn/allow decisions never set the child's
+        # halt decision, so result["guardrail"] is absent for them.
+        _guardrail = result.get("guardrail")
+        _guardrail_halt = (
+            isinstance(_guardrail, dict)
+            and _guardrail.get("action") == "halt"
+        )
+
         if interrupted:
             status = "interrupted"
+        elif _guardrail_halt:
+            # Hard guardrail stop must never surface as successful completion
+            # to coordinators that consume the structured status. The child
+            # produced a controlled message, but the task was aborted.
+            status = "failed"
         elif result.get("failed") or result.get("error"):
             # A structured failure (provider rejection / terminal exception)
             # must WIN over the summary-presence heuristic below. The child's
@@ -3364,6 +3386,8 @@ def _run_single_child(
         # Determine exit reason
         if interrupted:
             exit_reason = "interrupted"
+        elif _guardrail_halt:
+            exit_reason = "guardrail_halt"
         elif result.get("failed") or result.get("error"):
             # Provider rejection / terminal failure. Do NOT report this as
             # iteration-budget exhaustion — "max_iterations" is only truthful
@@ -3382,7 +3406,8 @@ def _run_single_child(
 
         # --- result entry contract (see _run_single_child docstring) ---
         # status ∈ {completed, interrupted, failed}
-        # exit_reason ∈ {completed, max_iterations, interrupted, error}
+        # exit_reason ∈ {completed, max_iterations, interrupted, error,
+        #                 guardrail_halt}
         # truncated is exactly (exit_reason == "max_iterations").
         entry: Dict[str, Any] = {
             "task_index": task_index,
@@ -3438,7 +3463,17 @@ def _run_single_child(
             else "unknown"
         )
         if status == "failed":
-            if _schema_valid is False and summary and not _empty_sentinel:
+            if _guardrail_halt:
+                # A hard guardrail stop is a controlled abort, not a provider
+                # or transport failure — name the public guardrail code/message
+                # so coordinators can tell "stopped by policy" from "broke".
+                _gr_code = _guardrail.get("code") or "halt"
+                _gr_message = _guardrail.get("message") or ""
+                entry["error"] = (
+                    f"Subagent halted by tool guardrail ({_gr_code})"
+                    + (f": {_gr_message}" if _gr_message else "")
+                )
+            elif _schema_valid is False and summary and not _empty_sentinel:
                 # The child DID respond — the response just violates the
                 # declared contract. Name that instead of the generic
                 # "no response" error; schema_errors (below) hold the
@@ -3460,6 +3495,13 @@ def _run_single_child(
             _failure_reason = result.get("failure_reason")
             if isinstance(_failure_reason, str) and _failure_reason:
                 entry["failure_reason"] = _failure_reason
+
+        # Preserve the public guardrail metadata (action/code/message/
+        # tool_name/count, plus signature hashes only — never raw argument
+        # values) so orchestrators can inspect why a delegation was halted
+        # without parsing prose (#102694).
+        if isinstance(_guardrail, dict):
+            entry["guardrail"] = _guardrail
 
         # T1-24: schema-validation outcome — emitted ONLY when a schema was
         # requested, so legacy (schema-less) payloads keep their exact shape.

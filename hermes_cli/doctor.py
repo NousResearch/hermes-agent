@@ -6,6 +6,7 @@ Check bodies live in the ``doctor_*`` siblings.
 
 import os
 import sys
+from pathlib import Path
 
 from hermes_cli.config import get_env_path, get_hermes_home, get_project_root
 from hermes_cli.env_loader import load_hermes_dotenv

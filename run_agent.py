@@ -1766,6 +1766,17 @@ class AIAgent:
     ) -> bool:
         """Return True when this provider/model pair should use Responses API."""
         normalized_provider = (provider or "").strip().lower()
+        # Actual Computer is Responses-only (its Hermes overlay is
+        # transport="codex_responses"), for every model it serves — not just
+        # gpt-5.x. The primary path gets this from the provider registry via
+        # determine_api_mode(), but the fallback-activation ladder in
+        # agent/chat_completion_helpers.py does not consult the registry: it
+        # decides fb_api_mode from an explicit provider list plus this
+        # predicate, and defaults to chat_completions. Without this branch an
+        # `actual` fallback entry is POSTed to /v1/chat/completions, which the
+        # endpoint does not serve.
+        if normalized_provider == "actual":
+            return True
         # Nous serves GPT-5.x models via its OpenAI-compatible chat
         # completions endpoint; its /v1/responses endpoint returns 404.
         if normalized_provider == "nous":

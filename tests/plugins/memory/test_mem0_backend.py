@@ -678,3 +678,89 @@ class TestSelfHostedBackend:
         s = _StubServer()
         with pytest.raises(httpx.HTTPStatusError):
             _backend(s).delete("missing")  # 404 -> raise_for_status; 'not found' won't trip breaker
+
+
+class _FakeQdrantClient:
+    """Stands in for qdrant_client.QdrantClient: records construction and
+    serves a stale-dimension collection."""
+
+    instances = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.deleted = []
+        _FakeQdrantClient.instances.append(self)
+
+    def collection_exists(self, name):
+        return True
+
+    def get_collection(self, name):
+        class _V:
+            size = 768  # stale: expected 1536
+        class _Params:
+            vectors = _V()
+        class _Info:
+            config = type("C", (), {"params": _Params()})
+        return _Info()
+
+    def delete_collection(self, name):
+        self.deleted.append(name)
+
+    def close(self):
+        pass
+
+
+class TestDimChangeGuardQdrantShapes:
+    """#91034: the guard must reach the dimension check for every valid
+    Qdrant config shape, not only path/url."""
+
+    def _guard(self, config):
+        import plugins.memory.mem0._backend as backend_mod
+
+        saved = backend_mod.__dict__.get("QdrantClient")
+        _FakeQdrantClient.instances = []
+        import sys, types
+
+        fake_mod = types.ModuleType("qdrant_client")
+        fake_mod.QdrantClient = _FakeQdrantClient
+        sys.modules["qdrant_client"] = fake_mod
+        try:
+            backend_mod.OSSBackend._recreate_collection_if_dims_changed(
+                "qdrant", config, expected_dims=1536,
+            )
+        finally:
+            if saved is not None:
+                backend_mod.__dict__["QdrantClient"] = saved
+            del sys.modules["qdrant_client"]
+        return _FakeQdrantClient.instances
+
+    def test_host_port_config_reaches_dimension_check(self):
+        clients = self._guard({
+            "collection_name": "hermes_mem0",
+            "host": "127.0.0.1",
+            "port": 6333,
+        })
+        assert len(clients) == 1, "host+port config must not be skipped"
+        assert clients[0].kwargs["host"] == "127.0.0.1"
+        assert clients[0].kwargs["port"] == 6333
+        assert clients[0].deleted == ["hermes_mem0"], "stale dims must be dropped"
+
+    def test_url_config_still_works(self):
+        clients = self._guard({
+            "collection_name": "hermes_mem0",
+            "url": "https://q.example.com:6333",
+        })
+        assert len(clients) == 1
+        assert clients[0].deleted == ["hermes_mem0"]
+
+    def test_path_config_still_works(self):
+        clients = self._guard({
+            "collection_name": "hermes_mem0",
+            "path": "/tmp/qdrant-embed",
+        })
+        assert len(clients) == 1
+        assert clients[0].deleted == ["hermes_mem0"]
+
+    def test_unrecognized_shape_still_skips(self):
+        clients = self._guard({"collection_name": "hermes_mem0"})
+        assert clients == [], "no client should be built for an unknown shape"

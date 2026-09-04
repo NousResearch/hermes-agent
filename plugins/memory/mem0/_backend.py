@@ -257,10 +257,21 @@ class OSSBackend(Mem0Backend):
                 from qdrant_client import QdrantClient
                 path = vs_config.get("path")
                 url = vs_config.get("url")
+                host = vs_config.get("host")
+                port = vs_config.get("port")
                 if path:
                     client = QdrantClient(path=path)
                 elif url:
                     client = QdrantClient(url=url, api_key=vs_config.get("api_key"))
+                elif host and port:
+                    # Server config spelled host+port — a valid combination in
+                    # mem0's QdrantConfig — must reach the dimension check too.
+                    client = QdrantClient(
+                        host=host,
+                        port=port,
+                        api_key=vs_config.get("api_key"),
+                        https=vs_config.get("https", False),
+                    )
                 else:
                     return
                 try:

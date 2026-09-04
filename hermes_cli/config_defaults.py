@@ -2886,6 +2886,45 @@ DEFAULT_CONFIG = {
         "media_send_timeout_seconds": 300,
     },
 
+    "knowledge": {
+        # Knowledge Retrieval (RAG) subsystem — long-term semantic memory over
+        # the user's own material (Obsidian, docs, repos, PDFs, conversations).
+        # Hermes talks only to KnowledgeService; the backend below is swappable
+        # without touching the reasoning engine.
+        "enabled": True,
+        # local | anythingllm | qdrant | weaviate | chroma | pgvector, or any
+        # name registered via packages.knowledge.register_provider().
+        "provider": "local",
+        # Tried in order when the primary returns nothing or errors out.
+        "fallback_providers": [],
+        # Workspace / collection name inside the backend.
+        "workspace": "default",
+        # Default number of chunks returned to the model.
+        "top_k": 5,
+        # Retrieval result cache.
+        "cache_ttl": 300.0,
+        "cache_size": 256,
+        # Per-provider-call timeout (seconds) and bounded retry policy.
+        "timeout": 30.0,
+        "retries": 2,
+        "retry_backoff": 0.4,
+        # Chunks scoring below this after rerank are dropped.
+        "min_score": 0.05,
+        # Inject the retrieval-first guidance block into the system prompt.
+        "auto_retrieve": True,
+        # SQLite path for the built-in local provider. Empty = <hermes home>/knowledge/knowledge.db
+        "db_path": "",
+        # Sources swept by `knowledge_sync` with no explicit path. Each entry:
+        #   {"type": "obsidian|git|mkdocs|markdown|conversations",
+        #    "path": "~/vault", "workspace": "default", "include_code": false}
+        "sync_sources": [],
+        # Per-backend connection settings. Secrets belong in .env
+        # (ANYTHINGLLM_API_KEY), never here.
+        "provider_options": {
+            "anythingllm": {"base_url": "http://localhost:3001"},
+        },
+    },
+
     # Kanban multi-agent coordination — controls the dispatcher loop that
     # spawns workers for ready tasks. The dispatcher ticks every N seconds
     # (default 60), reclaims stale claims, promotes dependency-satisfied

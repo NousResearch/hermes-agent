@@ -38,6 +38,7 @@ from agent.prompt_builder import (
     HERMES_AGENT_HELP_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS,
     KANBAN_GUIDANCE,
+    KNOWLEDGE_RETRIEVAL_GUIDANCE,
     MEMORY_GUIDANCE,
     USER_PROFILE_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
@@ -538,6 +539,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         tool_guidance.append(SESSION_SEARCH_GUIDANCE)
     if "skill_manage" in agent.valid_tool_names:
         tool_guidance.append(SKILLS_GUIDANCE)
+    # Retrieval-first answering. Only injected when the knowledge subsystem is
+    # actually wired in (knowledge_search present in the schema), so prompts
+    # stay byte-identical for users who never enable it.
+    if "knowledge_search" in agent.valid_tool_names:
+        tool_guidance.append(KNOWLEDGE_RETRIEVAL_GUIDANCE)
     # Kanban worker/orchestrator lifecycle — only present when the
     # dispatcher spawned this process (kanban_show check_fn gates on
     # HERMES_KANBAN_TASK env var). Normal chat sessions never see

@@ -1730,11 +1730,11 @@ body.guest-pointer-lock :is(webview, iframe) {
     filter 75ms ease-out;
 }
 
-/* Drag-region hatch — a diagonal ///// pattern (Photoshop-style) that fades into
-   the transparent grab margin on hover (and stays while dragging) to signal the
-   composer is draggable. Inherits the root radius so it clips to the corners. */
-[data-slot='composer-drag-region'] {
-  /* Hatch frame radius (tuned by hand). */
+/* Drag-ring hatch — only the four exposed 5px strips are pointer-active. The
+   full frame stays transparent to preserve native editor hit testing. Hovering
+   any edge lights the whole ring via :has(); the wrapper never takes hits. */
+[data-slot='composer-drag-region'] > [data-drag-edge] {
+  /* Hatch edge radius (tuned by hand). */
   border-radius: 0.4rem;
   opacity: 0;
   transition: opacity 150ms ease;
@@ -1747,12 +1747,12 @@ body.guest-pointer-lock :is(webview, iframe) {
   );
 }
 
-[data-slot='composer-drag-region']:hover,
-[data-slot='composer-drag-region'][data-dragging] {
+[data-slot='composer-drag-region']:has(> [data-drag-edge]:hover) > [data-drag-edge],
+[data-slot='composer-drag-region'][data-dragging] > [data-drag-edge] {
   opacity: 0.33;
 }
 
-[data-slot='composer-root'] > .pointer-events-none {
+[data-slot='composer-root'] > [data-slot='composer-fade-overlay'] {
   background: linear-gradient(
     to bottom,
     transparent,
@@ -3476,7 +3476,7 @@ button[data-slot='aui_msg-reactions'] svg {
 
 /* The dock's fade-to-surface gradient assumes a chat column behind it; over a
    transparent HUD it's a grey smear. */
-[data-hud-shell] [data-slot='composer-root'] > .pointer-events-none {
+[data-hud-shell] [data-slot='composer-root'] > [data-slot='composer-fade-overlay'] {
   display: none !important;
 }
 

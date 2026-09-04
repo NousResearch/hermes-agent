@@ -15,8 +15,17 @@
  * host-dependent.
  */
 
+import { type ElectronApplication } from '@playwright/test'
+
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
 import { expect, test } from './test'
+
+type NativeSpellcheckParams = {
+  dictionarySuggestions: string[]
+  isEditable: boolean
+  misspelledWord: string
+  spellcheckEnabled: boolean
+}
 
 let fixture: MockBackendFixture | null = null
 
@@ -28,6 +37,216 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   await fixture?.cleanup()
   fixture = null
+})
+
+async function installNativeContextMenuCapture(app: ElectronApplication) {
+  await app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0]
+
+    if (!window) {
+      throw new Error('No BrowserWindow available for native spellcheck test')
+    }
+
+    const captured: NativeSpellcheckParams[] = []
+
+    const listener = (
+      _event: unknown,
+      params: {
+        dictionarySuggestions: string[]
+        isEditable: boolean
+        misspelledWord: string
+        spellcheckEnabled: boolean
+      }
+    ) => {
+      captured.push({
+        dictionarySuggestions: params.dictionarySuggestions,
+        isEditable: params.isEditable,
+        misspelledWord: params.misspelledWord,
+        spellcheckEnabled: params.spellcheckEnabled
+      })
+    }
+
+    window.webContents.on('context-menu', listener)
+    ;(
+      window as unknown as {
+        __nativeSpellcheckTest?: { captured: NativeSpellcheckParams[]; listener: typeof listener }
+      }
+    ).__nativeSpellcheckTest = {
+      captured,
+      listener
+    }
+  })
+}
+
+async function readNativeContextMenuCapture(app: ElectronApplication) {
+  return (await app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0]
+
+    const testState = (
+      window as unknown as { __nativeSpellcheckTest?: { captured: NativeSpellcheckParams[] } }
+    ).__nativeSpellcheckTest
+
+    return testState?.captured ?? []
+  })) as NativeSpellcheckParams[]
+}
+
+async function removeNativeContextMenuCapture(app: ElectronApplication) {
+  await app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0]
+
+    if (!window) {
+      return
+    }
+
+    const testState = (
+      window as unknown as {
+        __nativeSpellcheckTest?: { listener: (...args: never[]) => void }
+      }
+    ).__nativeSpellcheckTest
+
+    if (!testState) {
+      return
+    }
+
+    window.webContents.removeListener('context-menu', testState.listener as never)
+    delete (window as unknown as { __nativeSpellcheckTest?: unknown }).__nativeSpellcheckTest
+  })
+}
+
+test('composer enables native spellcheck without autocorrect', async () => {
+  const composer = fixture!.page.locator('[data-slot="composer-rich-input"]').first()
+
+  await expect(composer).toHaveAttribute('spellcheck', 'true')
+  await expect(composer).toHaveAttribute('autocorrect', 'off')
+  await expect(composer).toHaveAttribute('autocapitalize', 'off')
+})
+
+function isEnglishAppLocale(locale: string) {
+  return /^en([_-]|$)/i.test(locale)
+}
+
+test('synthetic noneditable spellcheck emit does not send spellcheck IPC', async () => {
+  // Main-process gate only: webContents.emit is not a native right-click.
+  // Assert the channel was not sent (sync in installContextMenuBridge).
+  // A UI not.toBeVisible would false-pass before a late renderer attach.
+  // The native recieve → receive dictionary proof is macOS + English only;
+  // this test is the cross-platform contract Linux CI can actually run.
+  const { app } = fixture!
+
+  const sentSpellcheck = await app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0]
+
+    if (!window) {
+      throw new Error('No BrowserWindow available for synthetic spellcheck guard')
+    }
+
+    const sent: string[] = []
+    const originalSend = window.webContents.send
+
+    window.webContents.send = ((channel: string, ...args: unknown[]) => {
+      sent.push(channel)
+
+      return originalSend.call(window.webContents, channel, ...args)
+    }) as typeof window.webContents.send
+
+    try {
+      window.webContents.emit('context-menu', {}, {
+        dictionarySuggestions: ['receive'],
+        isEditable: false,
+        misspelledWord: 'recieve',
+        spellcheckEnabled: true,
+        x: 0,
+        y: 0
+      })
+
+      return sent.includes('hermes:context-menu-spellcheck')
+    } finally {
+      window.webContents.send = originalSend
+    }
+  })
+
+  expect(sentSpellcheck).toBe(false)
+})
+
+test('native right-click on recieve offers receive and replaces the word', async () => {
+  // Not Linux CI parity. Chromium's misspelledWord / dictionarySuggestions
+  // for recieve → receive is a macOS + English app-locale fact. Linux CI
+  // proves the cross-platform unit/type contracts and the IPC gate above.
+  const { app, page } = fixture!
+  const composer = page.locator('[data-slot="composer-rich-input"]').first()
+
+  test.skip(
+    process.platform !== 'darwin',
+    'Native recieve→receive dictionary proof is macOS-only; not Linux CI parity'
+  )
+
+  const appLocale = await app.evaluate(({ app: electronApp }) => electronApp.getLocale())
+
+  test.skip(
+    !isEnglishAppLocale(appLocale),
+    `Native recieve→receive dictionary proof needs an English app locale (got ${appLocale})`
+  )
+
+  let capturing = false
+
+  try {
+    await installNativeContextMenuCapture(app)
+    capturing = true
+
+    await composer.fill('')
+    await composer.click()
+    await composer.pressSequentially('recieve', { delay: 80 })
+    await expect(composer).toHaveText('recieve')
+
+    const wordPoint = await composer.evaluate(element => {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+      const text = walker.nextNode()
+
+      if (!text) {
+        throw new Error('Composer has no text node for native spellcheck test')
+      }
+
+      const range = document.createRange()
+      range.selectNodeContents(text)
+      const rect = range.getBoundingClientRect()
+
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+    })
+
+    await expect
+      .poll(
+        async () => {
+          await page.keyboard.press('Escape')
+          await page.mouse.click(wordPoint.x, wordPoint.y, { button: 'right' })
+          const captured = await readNativeContextMenuCapture(app)
+
+          return captured.some(
+            params =>
+              params.isEditable &&
+              params.misspelledWord === 'recieve' &&
+              params.dictionarySuggestions.includes('receive')
+          )
+        },
+        { timeout: 15_000 }
+      )
+      .toBe(true)
+
+    const menu = page.getByRole('menu')
+    await menu.waitFor({ state: 'visible', timeout: 10_000 })
+    await expect(menu.getByRole('menuitem', { name: 'receive' })).toBeVisible()
+    await menu.getByRole('menuitem', { name: 'receive' }).click()
+
+    await expect(composer).toHaveText('receive')
+  } finally {
+    try {
+      await page.keyboard.press('Escape')
+      await composer.fill('')
+    } finally {
+      if (capturing) {
+        await removeNativeContextMenuCapture(app)
+      }
+    }
+  }
 })
 
 test('select all from the composer context menu selects the draft, not the chat', async () => {

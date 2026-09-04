@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { terminalMenuHandleFor } from '@/app/right-sidebar/terminal/terminal-context-menu'
@@ -37,7 +37,7 @@ import {
   openDomContextMenu,
   openTerminalContextMenu
 } from './store'
-import { isWebUrl, resolveDomTarget } from './target'
+import { type ContextMenuDomTarget, isWebUrl, resolveDomTarget } from './target'
 
 /** Marks a surface that owns PLAIN right-clicks itself (the user-message
  *  reaction bubble). Owned targets inside it — links, images, editables,
@@ -616,6 +616,23 @@ export function AppContextMenu() {
   const { t } = useI18n()
   const navigate = useNavigate()
   const open = useStore($contextMenu)
+  const [domMenuTarget, setDomMenuTarget] = useState<ContextMenuDomTarget | null>(null)
+  const domTarget = open?.kind === 'dom' ? open.target : null
+
+  // Native Chromium context-menu facts are emitted after the DOM gesture. Keep
+  // the Radix menu out of the hit-test surface for one frame so that event can
+  // still resolve the original editable instead of this menu or its modal lock.
+  useEffect(() => {
+    if (!domTarget) {
+      setDomMenuTarget(null)
+
+      return undefined
+    }
+
+    const frame = requestAnimationFrame(() => setDomMenuTarget(domTarget))
+
+    return () => cancelAnimationFrame(frame)
+  }, [domTarget])
 
   useEffect(() => {
     // stopPropagation beats other renderer handlers; preventDefault is never
@@ -667,7 +684,7 @@ export function AppContextMenu() {
   // them on its own context-menu event); attach them to the open menu.
   useEffect(() => window.hermesDesktop?.onContextMenuSpellcheck?.(augmentSpellcheck), [])
 
-  if (!open) {
+  if (!open || (open.kind === 'dom' && domMenuTarget !== open.target)) {
     return null
   }
 

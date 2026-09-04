@@ -13,6 +13,7 @@ import { AppContextMenu } from './app-context-menu'
 import {
   $contextMenu,
   augmentSpellcheck,
+  closeContextMenu,
   type GuestMenuHandle,
   type GuestMenuParams,
   openGuestContextMenu
@@ -186,6 +187,94 @@ describe('AppContextMenu', () => {
 
     expect(await screen.findByText('Add to dictionary')).toBeTruthy()
     expect(screen.getByText('the')).toBeTruthy()
+  })
+
+  it('keeps the mounted menu DOM when spellcheck facts arrive late', async () => {
+    installBridge()
+    mountMenu()
+    const host = attach('<textarea></textarea>')
+
+    fireEvent.contextMenu(host.querySelector('textarea')!)
+    const menu = await screen.findByRole('menu')
+
+    augmentSpellcheck({ misspelledWord: 'teh', suggestions: ['the'] })
+
+    expect(await screen.findByText('Add to dictionary')).toBeTruthy()
+    expect(screen.getByRole('menu')).toBe(menu)
+  })
+
+  it('limits late spellcheck suggestions to five and keeps Add to dictionary', async () => {
+    const contextMenuSpellcheck = vi.fn().mockResolvedValue(undefined)
+
+    installBridge({ contextMenuSpellcheck })
+    mountMenu()
+    const host = attach('<textarea></textarea>')
+
+    fireEvent.contextMenu(host.querySelector('textarea')!)
+    augmentSpellcheck({
+      misspelledWord: 'teh',
+      suggestions: ['the', 'ten', 'tech', 'tee', 'tea', 'tenth']
+    })
+
+    expect(await screen.findByText('Add to dictionary')).toBeTruthy()
+
+    for (const suggestion of ['the', 'ten', 'tech', 'tee', 'tea']) {
+      expect(screen.getByText(suggestion)).toBeTruthy()
+    }
+
+    expect(screen.queryByText('tenth')).toBeNull()
+  })
+
+  it('replaces with the selected late spellcheck suggestion after the menu closes', async () => {
+    const contextMenuSpellcheck = vi.fn().mockResolvedValue(undefined)
+
+    installBridge({ contextMenuSpellcheck })
+    mountMenu()
+    const host = attach('<textarea></textarea>')
+
+    fireEvent.contextMenu(host.querySelector('textarea')!)
+    augmentSpellcheck({ misspelledWord: 'teh', suggestions: ['the'] })
+    fireEvent.click(await screen.findByText('the'))
+
+    await waitFor(() => expect(contextMenuSpellcheck).toHaveBeenCalledWith({ kind: 'replace', word: 'the' }))
+  })
+
+  it('adds the original misspelled word to the dictionary after the menu closes', async () => {
+    const contextMenuSpellcheck = vi.fn().mockResolvedValue(undefined)
+
+    installBridge({ contextMenuSpellcheck })
+    mountMenu()
+    const host = attach('<textarea></textarea>')
+
+    fireEvent.contextMenu(host.querySelector('textarea')!)
+    augmentSpellcheck({ misspelledWord: 'teh', suggestions: ['the'] })
+    fireEvent.click(await screen.findByText('Add to dictionary'))
+
+    await waitFor(() => expect(contextMenuSpellcheck).toHaveBeenCalledWith({ kind: 'add', word: 'teh' }))
+  })
+
+  it('ignores late spellcheck facts after the menu closes', async () => {
+    installBridge()
+    mountMenu()
+    const host = attach('<textarea></textarea>')
+
+    fireEvent.contextMenu(host.querySelector('textarea')!)
+    closeContextMenu()
+    augmentSpellcheck({ misspelledWord: 'teh', suggestions: ['the'] })
+
+    expect(screen.queryByText('Add to dictionary')).toBeNull()
+  })
+
+  it('ignores late spellcheck facts after a noneditable menu replaces an editable one', async () => {
+    installBridge()
+    mountMenu()
+    const host = attach('<textarea></textarea><p>plain text</p>')
+
+    fireEvent.contextMenu(host.querySelector('textarea')!)
+    fireEvent.contextMenu(host.querySelector('p')!)
+    augmentSpellcheck({ misspelledWord: 'teh', suggestions: ['the'] })
+
+    expect(screen.queryByText('Add to dictionary')).toBeNull()
   })
 
   it('shows edit verbs without icons and with faded accelerators', async () => {

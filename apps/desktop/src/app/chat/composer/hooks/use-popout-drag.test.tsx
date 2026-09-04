@@ -2,6 +2,8 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useRef } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { ComposerDragRegion } from '../composer-drag-region'
+
 import { useComposerPopoutGestures } from './use-popout-drag'
 
 function GestureHarness({ onPopOut }: { onPopOut: () => void }) {
@@ -17,8 +19,8 @@ function GestureHarness({ onPopOut }: { onPopOut: () => void }) {
   })
 
   return (
-    <form data-testid="composer" onPointerDown={onPointerDown} ref={composerRef}>
-      <div data-slot="composer-drag-region" data-testid="drag-region" />
+    <form data-slot="composer-root" data-testid="composer" onPointerDown={onPointerDown} ref={composerRef}>
+      <ComposerDragRegion dragging={false} />
       <div data-slot="composer-surface" data-testid="surface">
         <div contentEditable data-slot="composer-rich-input">
           <span data-testid="editable-text">select me</span>
@@ -59,8 +61,47 @@ describe('useComposerPopoutGestures', () => {
     const onPopOut = vi.fn()
     render(<GestureHarness onPopOut={onPopOut} />)
 
-    dragUp(screen.getByTestId('drag-region'))
+    dragUp(window.document.querySelector('[data-drag-edge]')!)
 
     expect(onPopOut).toHaveBeenCalledOnce()
+  })
+
+  it('peels from the exposed composer-root margin when the visual frame is pointer-transparent', () => {
+    const onPopOut = vi.fn()
+    render(<GestureHarness onPopOut={onPopOut} />)
+
+    dragUp(screen.getByTestId('composer'))
+
+    expect(onPopOut).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the drag affordance pointer-active only on the five-pixel ring', () => {
+    render(<GestureHarness onPopOut={vi.fn()} />)
+
+    const region = window.document.querySelector('[data-slot="composer-drag-region"]') as HTMLElement
+    const edges = region.querySelectorAll('[data-drag-edge]')
+
+    expect(region.classList.contains('pointer-events-none')).toBe(true)
+    expect(edges).toHaveLength(4)
+
+    for (const edge of edges) {
+      expect(edge.classList.contains('pointer-events-auto')).toBe(true)
+      expect(edge.classList.contains('cursor-grab')).toBe(true)
+    }
+  })
+
+  it('switches the exposed ring to a grabbing cursor without activating its frame', () => {
+    const { rerender } = render(<ComposerDragRegion dragging={false} />)
+
+    rerender(<ComposerDragRegion dragging />)
+
+    const region = window.document.querySelector('[data-slot="composer-drag-region"]') as HTMLElement
+
+    expect(region.hasAttribute('data-dragging')).toBe(true)
+    expect(region.classList.contains('pointer-events-none')).toBe(true)
+
+    for (const edge of region.querySelectorAll('[data-drag-edge]')) {
+      expect(edge.classList.contains('cursor-grabbing')).toBe(true)
+    }
   })
 })

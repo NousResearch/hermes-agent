@@ -7328,11 +7328,17 @@ def validate_requested_model(
                 "\n  Many Anthropic-compatible proxies do not implement the Models API "
                 "(GET /v1/models).  The model name has been accepted without verification."
             )
+        if api_mode == "chat_completions":
+            message += (
+                "\n  The model name was accepted without verification — inference may fail "
+                "if this provider does not serve it.  Check the provider's model catalog "
+                "or model name."
+            )
         if probe.get("suggested_base_url"):
             message += f"\n  If this server expects `/v1`, try base URL: `{probe.get('suggested_base_url')}`"
 
         return {
-            "accepted": api_mode == "anthropic_messages",
+            "accepted": api_mode in ("chat_completions", "anthropic_messages"),
             "persist": True,
             "recognized": False,
             "message": message,

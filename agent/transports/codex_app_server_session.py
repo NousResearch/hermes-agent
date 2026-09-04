@@ -229,8 +229,7 @@ class CodexAppServerSession:
         except (CodexAppServerError, TimeoutError):
             logger.debug("turn/steer rejected for active Codex turn", exc_info=True)
             return False
-        accepted_turn_id = response.get("turnId") if isinstance(response, dict) else None
-        return accepted_turn_id in {None, turn_id}
+        return isinstance(response, dict) and response.get("turnId") == turn_id
 
     def _format_error_with_stderr(self, prefix: str, exc: Any = "", *, tail_lines: int = _STDERR_TAIL_LINES) -> str:
         """User-facing error string plus the force-redacted stderr tail (keeps secrets out of chat output)."""

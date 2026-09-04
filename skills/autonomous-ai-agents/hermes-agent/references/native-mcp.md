@@ -38,11 +38,12 @@ mcp_servers:
     args: ["mcp-server-time"]
 ```
 
-Restart Hermes Agent. On startup it will:
-1. Connect to the server
-2. Discover available tools
-3. Register them with the prefix `mcp_time_*`
-4. Inject them into all platform toolsets
+Hermes Agent connects during startup, then:
+
+1. Connects to the server.
+2. Discovers available tools.
+3. Registers them with names such as `mcp__time__get_current_time`.
+4. Injects them into the eligible platform toolsets.
 
 You can then use the tools naturally -- just ask the agent to get the current time.
 
@@ -58,8 +59,8 @@ mcp_servers:
     command: "npx"             # (required) executable to run
     args: ["-y", "pkg-name"]   # (optional) command arguments, default: []
     env:                       # (optional) environment variables for the subprocess
-      SOME_API_KEY: "value"
-    timeout: 120               # (optional) per-tool-call timeout in seconds, default: 120
+      SOME_API_KEY: "${SOME_API_KEY}"
+    timeout: 300               # (optional) per-tool-call timeout in seconds, default: 300
     connect_timeout: 60        # (optional) initial connection timeout in seconds, default: 60
 ```
 
@@ -70,8 +71,8 @@ mcp_servers:
   server_name:
     url: "https://my-server.example.com/mcp"   # (required) server URL
     headers:                                     # (optional) HTTP headers
-      Authorization: "Bearer sk-..."
-    timeout: 180               # (optional) per-tool-call timeout in seconds, default: 120
+      Authorization: "Bearer ${MCP_SERVER_API_KEY}"
+    timeout: 180               # (optional) per-tool-call timeout in seconds, default: 300
     connect_timeout: 60        # (optional) initial connection timeout in seconds, default: 60
 ```
 
@@ -84,10 +85,20 @@ mcp_servers:
 | `env`             | dict   | `{}`    | Extra environment variables for the subprocess    |
 | `url`             | string | --      | Server URL (HTTP transport, required)             |
 | `headers`         | dict   | `{}`    | HTTP headers sent with every request              |
-| `timeout`         | int    | `120`   | Per-tool-call timeout in seconds                  |
+| `timeout`         | int    | `300`   | Per-tool-call timeout in seconds                  |
 | `connect_timeout` | int    | `60`    | Timeout for initial connection and discovery      |
 
 Note: A server config must have either `command` (stdio) or `url` (HTTP), not both.
+
+### Variable Interpolation
+
+String values interpolate `${VAR}` placeholders. Both plain `${VAR}` and
+Cursor-style `${env:VAR}` are accepted, as are the context variables
+`${userHome}`, `${workspaceFolder}`, `${workspaceFolderBasename}`,
+`${pathSeparator}` and `${/}` (case-sensitive). Values resolve from the active
+profile's secret scope when multiplexing is on, otherwise from `os.environ`
+(which includes `~/.hermes/.env` loaded at startup). A variable that is unset
+keeps its literal `${VAR}` placeholder.
 
 ## How It Works
 
@@ -100,20 +111,21 @@ When Hermes Agent starts, `discover_mcp_tools()` is called during tool initializ
 3. Initializes the MCP session and calls `list_tools()` to discover available tools
 4. Registers each tool in the Hermes tool registry
 
-### Tool Naming Convention
+### Tool naming convention
 
-MCP tools are registered with the naming pattern:
+MCP tools use a double-underscore delimiter:
 
+```text
+mcp__{server_name}__{tool_name}
 ```
-mcp_{server_name}_{tool_name}
-```
 
-Hyphens and dots in names are replaced with underscores for LLM API compatibility.
+Hyphens and dots in names become underscores for LLM API compatibility.
 
 Examples:
-- Server `filesystem`, tool `read_file` → `mcp_filesystem_read_file`
-- Server `github`, tool `list-issues` → `mcp_github_list_issues`
-- Server `my-api`, tool `fetch.data` → `mcp_my_api_fetch_data`
+
+- Server `filesystem`, tool `read_file` → `mcp__filesystem__read_file`
+- Server `github`, tool `list-issues` → `mcp__github__list_issues`
+- Server `my-api`, tool `fetch.data` → `mcp__my_api__fetch_data`
 
 ### Auto-Injection
 
@@ -129,6 +141,16 @@ After discovery, MCP tools are automatically injected into all `hermes-*` platfo
 ### Idempotency
 
 `discover_mcp_tools()` is idempotent -- calling it multiple times only connects to servers that aren't already connected. Failed servers are retried on subsequent calls.
+
+### Reloading configuration
+
+Hermes watches MCP configuration by default. When
+`mcp.auto_reload_on_config_change` is `true`, a saved configuration change reconnects
+the affected servers and rebuilds the MCP tool surface. When that setting is `false`,
+run `/reload-mcp` to apply the change.
+
+Reloading changes the tool schema and invalidates the provider prompt cache for the
+active session. The next turn sends the full input prefix again.
 
 ## Transport Types
 
@@ -154,7 +176,7 @@ mcp_servers:
   remote_api:
     url: "https://mcp.example.com/mcp"
     headers:
-      Authorization: "Bearer sk-..."
+      Authorization: "Bearer ${MCP_SERVER_API_KEY}"
 ```
 
 If HTTP support is not available in your installed `mcp` version, the server will fail with an ImportError and other servers will continue normally.
@@ -168,7 +190,9 @@ For stdio servers, Hermes does NOT pass your full shell environment to MCP subpr
 - `PATH`, `HOME`, `USER`, `LANG`, `LC_ALL`, `TERM`, `SHELL`, `TMPDIR`
 - Any `XDG_*` variables
 
-All other environment variables (API keys, tokens, secrets) are excluded unless you explicitly add them via the `env` config key. This prevents accidental credential leakage to untrusted MCP servers.
+All other environment variables, including API keys and tokens, are excluded unless you
+explicitly add them through the `env` key. Put secret values in `~/.hermes/.env`, then
+reference the environment variable from `config.yaml`:
 
 ```yaml
 mcp_servers:
@@ -176,8 +200,7 @@ mcp_servers:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-github"]
     env:
-      # Only this token is passed to the subprocess
-      GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_PERSONAL_ACCESS_TOKEN}"
 ```
 
 ### Credential Stripping in Error Messages
@@ -224,7 +247,7 @@ pip install --upgrade mcp
 - Check that the server is listed under `mcp_servers` (not `mcp` or `servers`)
 - Ensure the YAML indentation is correct
 - Look at Hermes Agent startup logs for connection messages
-- Tool names are prefixed with `mcp_{server}_{tool}` -- look for that pattern
+- Tool names use `mcp__{server_name}__{tool_name}`; look for that pattern.
 
 ### Connection keeps dropping
 
@@ -241,7 +264,7 @@ mcp_servers:
     args: ["mcp-server-time"]
 ```
 
-Registers tools like `mcp_time_get_current_time`.
+Registers tools such as `mcp__time__get_current_time`.
 
 ### Filesystem Server (npx)
 
@@ -253,7 +276,7 @@ mcp_servers:
     timeout: 30
 ```
 
-Registers tools like `mcp_filesystem_read_file`, `mcp_filesystem_write_file`, `mcp_filesystem_list_directory`.
+Registers tools such as `mcp__filesystem__read_file`, `mcp__filesystem__write_file`, and `mcp__filesystem__list_directory`.
 
 ### GitHub Server with Authentication
 
@@ -263,11 +286,11 @@ mcp_servers:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-github"]
     env:
-      GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_xxxxxxxxxxxxxxxxxxxx"
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_PERSONAL_ACCESS_TOKEN}"
     timeout: 60
 ```
 
-Registers tools like `mcp_github_list_issues`, `mcp_github_create_pull_request`, etc.
+Registers tools such as `mcp__github__list_issues` and `mcp__github__create_pull_request`.
 
 ### Remote HTTP Server
 
@@ -276,7 +299,7 @@ mcp_servers:
   company_api:
     url: "https://mcp.mycompany.com/v1/mcp"
     headers:
-      Authorization: "Bearer sk-xxxxxxxxxxxxxxxxxxxx"
+      Authorization: "Bearer ${COMPANY_MCP_API_KEY}"
       X-Team-Id: "engineering"
     timeout: 180
     connect_timeout: 30
@@ -298,12 +321,12 @@ mcp_servers:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-github"]
     env:
-      GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_xxxxxxxxxxxxxxxxxxxx"
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_PERSONAL_ACCESS_TOKEN}"
 
   company_api:
     url: "https://mcp.internal.company.com/mcp"
     headers:
-      Authorization: "Bearer sk-xxxxxxxxxxxxxxxxxxxx"
+      Authorization: "Bearer ${COMPANY_MCP_API_KEY}"
     timeout: 300
 ```
 
@@ -337,8 +360,8 @@ Disable sampling for untrusted servers with `sampling: { enabled: false }`.
 
 ## Notes
 
-- MCP tools are called synchronously from the agent's perspective but run asynchronously on a dedicated background event loop
-- Tool results are returned as JSON with either `{"result": "..."}` or `{"error": "..."}`
-- The native MCP client is independent of `mcporter` -- you can use both simultaneously
-- Server connections are persistent and shared across all conversations in the same agent process
-- Adding or removing servers requires restarting the agent (no hot-reload currently)
+- MCP tools are called synchronously from the agent's perspective but run asynchronously on a dedicated background event loop.
+- Tool results are returned as JSON with either `{"result": "..."}` or `{"error": "..."}`.
+- The native MCP client is independent of `mcporter`; you can use both simultaneously.
+- Server connections persist across conversations in the same agent process.
+- Configuration changes reload automatically by default. Use `/reload-mcp` when automatic reload is disabled.

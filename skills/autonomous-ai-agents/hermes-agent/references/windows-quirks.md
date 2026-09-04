@@ -26,8 +26,9 @@ a UTF-8 BOM (Notepad does this). Re-save as UTF-8 without BOM;
 `AF_INET` socket. Root cause is usually Hermes's env scrubber dropping
 `SYSTEMROOT`/`WINDIR`/`COMSPEC` (Python's `socket` needs `SYSTEMROOT` to find
 `mswsock.dll`), not a broken Winsock LSP. The `_WINDOWS_ESSENTIAL_ENV_VARS`
-allowlist in `tools/code_execution_tool.py` covers it; if you still hit it,
-echo `os.environ` inside an `execute_code` block to confirm `SYSTEMROOT` is set.
+allowlist in `tools/code_execution_tool.py` covers it. If the error persists,
+inspect only the required value: `print(repr(os.environ.get("SYSTEMROOT")))`.
+Do not print the complete environment because it may contain credentials.
 
 ### Testing on Windows
 

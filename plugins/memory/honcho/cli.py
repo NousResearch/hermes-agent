@@ -64,11 +64,24 @@ def _local_config_path() -> Path:
     return get_hermes_home() / "honcho.json"
 
 
+class _ReadConfig(dict):
+    """The config a command works on, carrying what disk held when it was read (``snapshot``) and where
+    (``path``), so _write_config() can apply only the command's edits onto a fresh read."""
+
+    snapshot: dict
+    path: Path
+
+
 def _read_config() -> dict:
+    import copy
+    path = _config_path()
     try:
-        return json.loads(_config_path().read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return {}
+        raw = {}
+    cfg = _ReadConfig(raw)
+    cfg.snapshot, cfg.path = copy.deepcopy(raw), path
+    return cfg
 
 
 class ConfigWriteRefused(Exception):
@@ -86,12 +99,46 @@ def _refuse_unparseable(path: Path) -> None:
                                  "Fix or move the file, then re-run.") from e
 
 
+def _apply_edits(base: dict, edited: dict, current: dict) -> dict:
+    """Return ``current`` with every root key and ``hosts.<h>.<k>`` the command changed between ``base``
+    and ``edited`` applied. Keys the command left alone keep their on-disk value, so a token rotation
+    that landed while the command ran survives; a key the command set deliberately wins."""
+    import copy
+    out = copy.deepcopy(current)
+    for key in (set(base) | set(edited)) - {"hosts"}:
+        if key in edited and edited[key] != base.get(key):
+            out[key] = copy.deepcopy(edited[key])
+        elif key not in edited and key in base:
+            out.pop(key, None)
+    base_hosts, edited_hosts = base.get("hosts") or {}, edited.get("hosts") or {}
+    out_hosts = out.setdefault("hosts", {}) if (base_hosts or edited_hosts or "hosts" in current) else None
+    for host in set(base_hosts) | set(edited_hosts):
+        if host not in edited_hosts:
+            out_hosts.pop(host, None)
+            continue
+        b, e = base_hosts.get(host) or {}, edited_hosts[host]
+        block = out_hosts.setdefault(host, {})
+        for key in set(b) | set(e):
+            if key in e and e[key] != b.get(key):
+                block[key] = copy.deepcopy(e[key])
+            elif key not in e and key in b:
+                block.pop(key, None)
+    return out
+
+
 def _write_config(cfg: dict, path: Path | None = None) -> None:
-    path = path or _local_config_path()
-    _refuse_unparseable(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Persist ``cfg`` under the same cross-process lock the token refresh holds. When ``cfg`` is the
+    object _read_config() returned for this path, only the command's edits are applied onto a fresh read
+    of disk; a plain dict is written whole."""
+    from plugins.memory.honcho.oauth import _config_refresh_lock, _read_config_strict
     from utils import atomic_json_write
-    atomic_json_write(path, cfg, mode=0o600)
+    path = path or _local_config_path()
+    with _config_refresh_lock(path):
+        _refuse_unparseable(path)
+        if getattr(cfg, "path", None) == path:
+            cfg = _apply_edits(cfg.snapshot, cfg, _read_config_strict(path))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(path, cfg, mode=0o600)
 
 
 def _label(host: str) -> str:

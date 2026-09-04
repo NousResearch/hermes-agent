@@ -1198,6 +1198,14 @@ export function resolveRosterMentions(
  *  duplicate keys make React reconciliation repeat whole blocks of the list
  *  on every poll repaint (the Aug 2026 dupe-bots smear). */
 export function botRosterKey(bot: Partial<RosterRow> | null | undefined): string {
+  const identity = bot?.hostedIdentity
+
+  if (identity) {
+    return identity.installationId
+      ? `hosted-bot:${JSON.stringify([identity.installationId, identity.profile])}`
+      : `hosted-member:${JSON.stringify([identity.roomId, identity.memberId])}`
+  }
+
   return `${bot?.connectionId || 'legacy'}::${bot?.name || 'default'}`
 }
 

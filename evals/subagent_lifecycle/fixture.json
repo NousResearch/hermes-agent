@@ -1,0 +1,20 @@
+{
+  "contract_version": 1,
+  "transitions": [
+    {"from": "PENDING", "event": "start", "to": "RUNNING"},
+    {"from": "RUNNING", "event": "succeed", "to": "SUCCEEDED"},
+    {"from": "RUNNING", "event": "fail", "to": "FAILED"},
+    {"from": "RUNNING", "event": "interrupt", "to": "INTERRUPTED"},
+    {"from": "RUNNING", "event": "cancel", "to": "CANCEL_REQUESTED"},
+    {"from": "CANCEL_REQUESTED", "event": "cancel-complete", "to": "CANCELLED"}
+  ],
+  "invalid_transitions": [
+    {"from": "PENDING", "event": "succeed"},
+    {"from": "STARTING", "event": "succeed"},
+    {"from": "SUCCEEDED", "event": "run"},
+    {"from": "FAILED", "event": "cancel"},
+    {"from": "INTERRUPTED", "event": "cancel"},
+    {"from": "CANCELLED", "event": "cancel"}
+  ],
+  "terminal_states": ["SUCCEEDED", "FAILED", "INTERRUPTED", "CANCELLED"]
+}

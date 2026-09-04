@@ -111,22 +111,97 @@ def _coerce_arguments(arguments: Any) -> str:
     return arguments.strip() or "{}"
 
 
+# Category Cf as a character class.  The obvious spelling of the guard below —
+# ``any(unicodedata.category(char) == "Cf" for char in text)`` — is a
+# Python-level loop with one C call per character, and preflight runs it over
+# every string in the request.  On a long history (hundreds of KB per call,
+# dozens of calls per turn) that single line dominates preflight cost.  Cf is
+# only 21 contiguous ranges, so a compiled class does the same scan inside the
+# regex engine instead.
+#
+# Hardcoded rather than derived at import: building it from ``unicodedata``
+# costs ~80ms of startup per process, and this module is imported by every
+# short-lived agent subprocess. CPython 3.11 uses Unicode 14 while 3.12/3.13
+# use Unicode 15.x, where the Egyptian Hieroglyph format-control range gained
+# seven codepoints. Keep one pre-generated table per supported Unicode version
+# so the optimization remains byte-for-byte equivalent on every supported
+# Python. ``test_cf_class_matches_unicodedata`` reports exact missing/extra
+# codepoints if a future Unicode revision drifts from these tables.
+_FORMAT_CONTROL_UNICODE_VERSION = unicodedata.unidata_version
+_FORMAT_CONTROL_COMMON_PREFIX = (
+    "\U000000ad\U00000600-\U00000605\U0000061c\U000006dd\U0000070f"
+    "\U00000890-\U00000891\U000008e2\U0000180e\U0000200b-\U0000200f"
+    "\U0000202a-\U0000202e\U00002060-\U00002064\U00002066-\U0000206f"
+    "\U0000feff\U0000fff9-\U0000fffb\U000110bd\U000110cd"
+)
+_FORMAT_CONTROL_COMMON_SUFFIX = (
+    "\U0001bca0-\U0001bca3\U0001d173-\U0001d17a"
+    "\U000e0001\U000e0020-\U000e007f"
+)
+_FORMAT_CONTROL_PATTERNS = {
+    "14.0.0": f"[{_FORMAT_CONTROL_COMMON_PREFIX}\U00013430-\U00013438{_FORMAT_CONTROL_COMMON_SUFFIX}]",
+    "15.0.0": f"[{_FORMAT_CONTROL_COMMON_PREFIX}\U00013430-\U0001343f{_FORMAT_CONTROL_COMMON_SUFFIX}]",
+    "15.1.0": f"[{_FORMAT_CONTROL_COMMON_PREFIX}\U00013430-\U0001343f{_FORMAT_CONTROL_COMMON_SUFFIX}]",
+}
+# Unknown future runtimes use the latest known superset; the drift test then
+# fails with an actionable missing/extra list instead of an opaque mismatch.
+_FORMAT_CONTROL_RE = re.compile(
+    _FORMAT_CONTROL_PATTERNS.get(
+        _FORMAT_CONTROL_UNICODE_VERSION,
+        _FORMAT_CONTROL_PATTERNS["15.1.0"],
+    )
+)
+
+
+def _has_format_control(text: str) -> bool:
+    """True when ``text`` contains a Unicode format (Cf) codepoint.
+
+    ``str.isascii()`` short-circuits the scan: no Cf codepoint is ASCII, and
+    CPython stores the ASCII-ness of a ``str`` in its header, so the common
+    case (code, logs, command output) answers in constant time without touching
+    the buffer at all.
+    """
+    if text.isascii():
+        return False
+    return _FORMAT_CONTROL_RE.search(text) is not None
+
+
 def _neutralize_harmony_tokens(text: str) -> str:
     """Keep Harmony source readable without emitting reserved wire tokens."""
     if not text or "<" not in text or "|" not in text:
         return text
-    if not any(unicodedata.category(char) == "Cf" for char in text):
-        return _HARMONY_CONTROL_TOKEN_RE.sub(rf"<{_FULLWIDTH_PIPE}\1{_FULLWIDTH_PIPE}>", text)
-    # The backend strips Unicode format controls (e.g. U+200B) before its reserved-token
-    # check, so match on the visible text and rewrite the original spans.
-    original_positions = [i for i, char in enumerate(text) if unicodedata.category(char) != "Cf"]
-    visible_text = "".join(text[i] for i in original_positions)
-    result, cursor = [], 0
-    for match in _HARMONY_CONTROL_TOKEN_RE.finditer(visible_text):
-        start, end = original_positions[match.start()], original_positions[match.end() - 1] + 1
-        result += [text[cursor:start], f"<{_FULLWIDTH_PIPE}{match.group(1)}{_FULLWIDTH_PIPE}>"]
-        cursor = end
-    return "".join(result) + text[cursor:]
+
+    replacement = rf"<{_FULLWIDTH_PIPE}\1{_FULLWIDTH_PIPE}>"
+    if not _has_format_control(text):
+        return _HARMONY_CONTROL_TOKEN_RE.sub(replacement, text)
+
+    # U+200B is confirmed to be stripped by the Codex backend before its
+    # reserved-token check. Treat every Unicode format control equivalently so
+    # moving the character elsewhere in the token (or swapping in another Cf)
+    # cannot recreate the same visually hidden form.
+    visible_chars: List[str] = []
+    original_positions: List[int] = []
+    for index, char in enumerate(text):
+        if unicodedata.category(char) == "Cf":
+            continue
+        visible_chars.append(char)
+        original_positions.append(index)
+
+    visible_text = "".join(visible_chars)
+    matches = list(_HARMONY_CONTROL_TOKEN_RE.finditer(visible_text))
+    if not matches:
+        return text
+
+    result: List[str] = []
+    original_cursor = 0
+    for match in matches:
+        original_start = original_positions[match.start()]
+        original_end = original_positions[match.end() - 1] + 1
+        result.append(text[original_cursor:original_start])
+        result.append(f"<{_FULLWIDTH_PIPE}{match.group(1)}{_FULLWIDTH_PIPE}>")
+        original_cursor = original_end
+    result.append(text[original_cursor:])
+    return "".join(result)
 
 
 def _neutralize_harmony_structure(value: Any) -> Any:

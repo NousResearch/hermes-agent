@@ -1218,8 +1218,16 @@ class TeamsAdapter(BasePlatformAdapter):
         # TEAMS_ALLOW_ALL_USERS=true opt-in. Without one of these set, the
         # bot silently treated every clicker as authorized — meaning any
         # Teams user who could message the bot could approve dangerous commands.
-        allowed_csv = os.getenv("TEAMS_ALLOWED_USERS", "").strip()
-        allow_all = os.getenv("TEAMS_ALLOW_ALL_USERS", "").strip().lower() in {"1", "true", "yes"}
+        # Authorization config must honor the profile secret scope: under
+        # multiplexing os.environ holds the DEFAULT profile's allowlist /
+        # opt-in, so a secondary profile must not inherit it (#72348 class).
+        allowed_csv = str(_get_scoped_secret("TEAMS_ALLOWED_USERS", "") or "").strip()
+        allow_all = (
+            str(_get_scoped_secret("TEAMS_ALLOW_ALL_USERS", "") or "")
+            .strip()
+            .lower()
+            in {"1", "true", "yes"}
+        )
 
         if not allow_all:
             if not allowed_csv:

@@ -28,7 +28,7 @@ def _iso_timestamp(value: Any) -> str:
         return str(value)
     try:
         return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
-    except (OverflowError, ValueError, OSError):
+    except (OverflowError, ValueError, OSError, TypeError):
         # Corrupt timestamps must degrade to the raw value, never abort
         # the whole export (#102352).
         return str(value)

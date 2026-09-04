@@ -260,7 +260,7 @@ def _format_timestamp(value: Any) -> Optional[str]:
                 .isoformat(timespec="seconds")
                 .replace("+00:00", "Z")
             )
-        except (OverflowError, ValueError, OSError):
+        except (OverflowError, ValueError, OSError, TypeError):
             # Corrupt out-of-range/non-finite timestamps (damaged DB) must
             # degrade to the raw value, never abort the whole export (#102352).
             return str(value)

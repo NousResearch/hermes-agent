@@ -220,10 +220,12 @@ MATTERMOST_AUTO_THREAD=true
 MATTERMOST_DM_AUTO_THREAD=false
 ```
 
-`MATTERMOST_REPLY_MODE` and `mattermost.reply_mode` are deprecated compatibility
-fallbacks. When neither new setting is provided, `thread` enables automatic
-threading for both channels and DMs, while `off` leaves top-level messages flat.
-An explicitly configured new setting always wins over the legacy fallback.
+`MATTERMOST_REPLY_MODE` is a deprecated compatibility fallback. When neither new
+setting is provided, `thread` enables automatic threading for both channels and
+DMs, while `off` leaves top-level messages flat. An explicitly configured new
+setting always wins over the legacy fallback. The legacy top-level YAML key
+`mattermost.reply_mode` is not bridged by the gateway config loader; use
+`mattermost.auto_thread` and `mattermost.dm_auto_thread` instead.
 
 ## Mention Behavior
 

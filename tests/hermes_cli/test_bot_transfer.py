@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import multiprocessing
 import shutil
 import tarfile
@@ -89,7 +90,37 @@ def test_bot_export_excludes_nested_credentials_and_cron_runtime(profile_root, t
     (source / "plugins" / "demo").mkdir(parents=True)
     (source / "plugins" / "demo" / "credentials.bin").write_bytes(b"\x00private")
     (source / "cron" / "output").mkdir(parents=True)
-    (source / "cron" / "jobs.json").write_text("{}\n", encoding="utf-8")
+    (source / "cron" / "jobs.json").write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {
+                        "id": "daily",
+                        "name": "Daily summary",
+                        "prompt": "Summarize the day",
+                        "schedule": {"kind": "cron", "expr": "0 9 * * *"},
+                        "repeat": {"times": None, "completed": 7},
+                        "enabled": True,
+                        "state": "scheduled",
+                        "next_run_at": "2099-01-01T09:00:00+00:00",
+                        "last_run_at": "2026-01-01T09:00:00+00:00",
+                        "last_status": "success",
+                        "last_delivery_unverified": {"platform": "telegram"},
+                        "monitor_state": {"last_output_hash": "secret-state"},
+                        "run_claim": {"by": "source"},
+                        "fire_claim": {"by": "source"},
+                        "failure_streak": 3,
+                        "deliver": "telegram:123456:99",
+                        "failure_deliver": "discord:private",
+                        "origin": {"chat_id": "123456", "thread_id": "99"},
+                        "workdir": "C:/source/private",
+                        "attach_to_session": True,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     (source / "cron" / "output" / "last.txt").write_text(
         "private\n", encoding="utf-8"
     )
@@ -102,10 +133,28 @@ def test_bot_export_excludes_nested_credentials_and_cron_runtime(profile_root, t
     archive, _ = export_bot_profile("helper", str(tmp_path / "safe.tar.gz"))
     with tarfile.open(archive, "r:gz") as tar:
         names = set(tar.getnames())
+        cron_jobs = json.loads(tar.extractfile("helper/cron/jobs.json").read())[
+            "jobs"
+        ]
     assert "helper/cron/jobs.json" in names
     assert not any(name.endswith("/.env") for name in names)
     assert not any("cron/output" in name for name in names)
     assert "helper/cron/ticker-heartbeat" not in names
+    assert cron_jobs == [
+        {
+            "id": "daily",
+            "name": "Daily summary",
+            "prompt": "Summarize the day",
+            "schedule": {"kind": "cron", "expr": "0 9 * * *"},
+            "repeat": {"times": None, "completed": 0},
+            "enabled": False,
+            "state": "paused",
+            "paused_at": None,
+            "paused_reason": "Imported bot clone requires review.",
+            "next_run_at": None,
+            "deliver": "local",
+        }
+    ]
 
 
 def test_pull_policy_is_per_profile_and_fails_closed_for_malformed_yaml(profile_root):
@@ -215,6 +264,96 @@ def test_bot_import_resets_sender_sharing_policies(profile_root, tmp_path):
 
     assert profile_is_cloneable("shared") is False
     assert "bot_sharing" not in (imported / "config.yaml").read_text(encoding="utf-8")
+
+
+def test_bot_import_resanitizes_cron_jobs_and_keeps_them_paused(profile_root, tmp_path):
+    staged = tmp_path / "staged" / "scheduled"
+    (staged / "cron").mkdir(parents=True)
+    (staged / BOT_ID_FILENAME).write_text(
+        "a8c214f7-37ee-4f50-95a4-939a51631283\n", encoding="utf-8"
+    )
+    (staged / "cron" / "jobs.json").write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {
+                        "id": "source-job",
+                        "prompt": "Run safely",
+                        "schedule": {"kind": "interval", "minutes": 5},
+                        "repeat": {"times": 10, "completed": 4},
+                        "enabled": True,
+                        "next_run_at": "2000-01-01T00:00:00+00:00",
+                        "deliver": "telegram:123456:99",
+                        "failure_deliver": "telegram:123456:99",
+                        "origin": {"chat_id": "123456", "thread_id": "99"},
+                        "monitor_state": {"last_output_hash": "source"},
+                        "last_run_at": "1999-01-01T00:00:00+00:00",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    archive = tmp_path / "scheduled.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(staged, arcname="scheduled")
+
+    imported, _ = import_bot_profile(str(archive))
+    job = json.loads((imported / "cron" / "jobs.json").read_text(encoding="utf-8"))[
+        "jobs"
+    ][0]
+
+    assert job["enabled"] is False
+    assert job["state"] == "paused"
+    assert job["next_run_at"] is None
+    assert job["deliver"] == "local"
+    assert job["repeat"] == {"times": 10, "completed": 0}
+    from cron.jobs import is_job_runnable
+
+    assert is_job_runnable(job) is False
+    assert not {
+        "origin",
+        "failure_deliver",
+        "monitor_state",
+        "last_run_at",
+    } & job.keys()
+
+
+def test_bot_import_reactivates_a_deleted_profile_name(profile_root, tmp_path):
+    source = _source_profile(profile_root)
+    archive, _ = export_bot_profile("helper", str(tmp_path / "helper.tar.gz"))
+    shutil.rmtree(source)
+    destination = profile_root / "profiles" / "helper"
+    profiles.mark_named_profile_deleted(destination)
+
+    imported, _ = import_bot_profile(str(archive))
+
+    assert imported == destination
+    assert profiles.profile_exists("helper") is True
+    assert any(item.name == "helper" for item in profiles.list_profiles())
+    assert ("helper", destination) in profiles.profiles_to_serve(multiplex=True)
+    assert profiles.named_profile_is_deleted(destination) is False
+
+
+def test_profile_import_restores_deleted_marker_when_publication_fails(
+    profile_root, tmp_path, monkeypatch
+):
+    source = _source_profile(profile_root)
+    archive, _ = export_bot_profile("helper", str(tmp_path / "helper.tar.gz"))
+    shutil.rmtree(source)
+    destination = profile_root / "profiles" / "helper"
+    profiles.mark_named_profile_deleted(destination)
+    monkeypatch.setattr(
+        profiles.shutil,
+        "move",
+        lambda *_args: (_ for _ in ()).throw(OSError("publish failed")),
+    )
+
+    with pytest.raises(OSError, match="publish failed"):
+        import_bot_profile(str(archive))
+
+    assert profiles.named_profile_is_deleted(destination) is True
+    assert profiles.profile_exists("helper") is False
 
 
 def test_bot_import_bounds_expanded_archive_and_leaves_no_profile(

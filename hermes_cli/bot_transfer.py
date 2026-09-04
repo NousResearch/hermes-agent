@@ -8,6 +8,7 @@ reject a second copy even when the first copy was renamed.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import tempfile
@@ -63,6 +64,31 @@ BOT_CLONE_SAFE_BINARY_SUFFIXES = frozenset(
         ".webp",
         ".woff",
         ".woff2",
+    }
+)
+
+# Cron clones carry runnable definitions, not the source gateway's scheduler,
+# delivery, filesystem, or execution state. Keep this allowlist aligned with
+# create_job's caller-owned inputs rather than its persisted runtime record.
+BOT_CLONE_CRON_FIELDS = frozenset(
+    {
+        "id",
+        "name",
+        "prompt",
+        "skills",
+        "skill",
+        "model",
+        "provider",
+        "base_url",
+        "script",
+        "no_agent",
+        "monitor_script",
+        "monitor_url",
+        "context_from",
+        "schedule",
+        "schedule_display",
+        "enabled_toolsets",
+        "reasoning_effort",
     }
 )
 
@@ -270,6 +296,42 @@ def _reset_owner_policies(staged: Path) -> None:
         raise ValueError("Could not remove owner-only sharing policy from bot clone.") from exc
 
 
+def _sanitize_clone_cron_jobs(staged: Path) -> None:
+    """Retain cron definitions while dropping source-owned state and routing."""
+    jobs_path = staged / "cron" / "jobs.json"
+    if not jobs_path.is_file():
+        return
+    try:
+        payload = json.loads(jobs_path.read_text(encoding="utf-8-sig"))
+        jobs = payload.get("jobs", []) if isinstance(payload, dict) else payload
+        if not isinstance(jobs, list) or any(not isinstance(job, dict) for job in jobs):
+            raise ValueError("jobs must be a list of objects")
+
+        sanitized = []
+        for job in jobs:
+            clone = {key: job[key] for key in BOT_CLONE_CRON_FIELDS if key in job}
+            repeat = job.get("repeat")
+            if isinstance(repeat, dict):
+                clone["repeat"] = {"times": repeat.get("times"), "completed": 0}
+            clone.update(
+                {
+                    "enabled": False,
+                    "state": "paused",
+                    "paused_at": None,
+                    "paused_reason": "Imported bot clone requires review.",
+                    "next_run_at": None,
+                    "deliver": "local",
+                }
+            )
+            sanitized.append(clone)
+        jobs_path.write_text(
+            json.dumps({"jobs": sanitized}, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError("Bot clone contains invalid cron job definitions.") from exc
+
+
 def _prepare_imported_clone(staged: Path) -> None:
     """Enforce receiver-owned policy and data boundaries before publication."""
     cron_dir = staged / "cron"
@@ -281,6 +343,7 @@ def _prepare_imported_clone(staged: Path) -> None:
                 shutil.rmtree(entry)
             else:
                 entry.unlink()
+    _sanitize_clone_cron_jobs(staged)
     _scrub_clone_files(staged)
     _reset_owner_policies(staged)
 
@@ -319,6 +382,7 @@ def export_bot_profile(name: str, output_path: str) -> tuple[Path, str]:
                 _copy_clone_tree(source, target, cron_root=entry == "cron")
             elif source.is_file():
                 shutil.copy2(source, target)
+        _sanitize_clone_cron_jobs(staged)
         _reset_owner_policies(staged)
         _scrub_clone_files(staged)
         result = Path(make_targz(base, tmpdir, canon))

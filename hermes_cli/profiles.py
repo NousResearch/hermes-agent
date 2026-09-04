@@ -2476,6 +2476,7 @@ def import_profile(
     profile_dir = get_profile_dir(canon)
     if profile_dir.exists():
         raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+    was_tombstoned = named_profile_is_deleted(profile_dir)
 
     profiles_root = _get_profiles_root()
     profiles_root.mkdir(parents=True, exist_ok=True)
@@ -2503,7 +2504,13 @@ def import_profile(
             final_source = staging_root / canon
             extracted.rename(final_source)
 
-        shutil.move(str(final_source), str(profile_dir))
+        clear_named_profile_deleted(profile_dir)
+        try:
+            shutil.move(str(final_source), str(profile_dir))
+        except BaseException:
+            if was_tombstoned:
+                mark_named_profile_deleted(profile_dir)
+            raise
 
     return profile_dir
 

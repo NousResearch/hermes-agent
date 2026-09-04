@@ -106,25 +106,22 @@ class TestHandleUpdateCommand:
 
     @pytest.mark.asyncio
     async def test_writes_pending_marker(self, tmp_path):
-        """Writes .update_pending.json with correct platform and chat info."""
+        """Writes .update_pending.json with correct platform and chat info.
+
+        Calls ``_execute_update`` directly (the post-approval path) since
+        ``/update`` now always routes through the confirm gate first.
+        """
         runner = _make_runner()
         event = _make_event(platform=Platform.TELEGRAM, chat_id="99999")
         event.message_id = "m-update"
 
-        fake_root = tmp_path / "project"
-        fake_root.mkdir()
-        (fake_root / ".git").mkdir()
-        (fake_root / "gateway").mkdir()
-        (fake_root / "gateway" / "run.py").touch()
-        fake_file = str(fake_root / "gateway" / "run.py")
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
 
         with patch("gateway.run._hermes_home", hermes_home), \
-             patch("gateway.run.__file__", fake_file), \
              patch("shutil.which", side_effect=lambda x: "/usr/bin/hermes" if x == "hermes" else "/usr/bin/setsid"), \
              patch("subprocess.Popen"):
-            result = await runner._handle_update_command(event)
+            await runner._execute_update(event, ["/usr/bin/hermes"])
 
         pending_path = hermes_home / ".update_pending.json"
         assert pending_path.exists()
@@ -139,16 +136,14 @@ class TestHandleUpdateCommand:
 
     @pytest.mark.asyncio
     async def test_fallback_when_no_setsid(self, tmp_path):
-        """Falls back to start_new_session=True when setsid is not available."""
+        """Falls back to start_new_session=True when setsid is not available.
+
+        Calls ``_execute_update`` directly (the post-approval path) since
+        ``/update`` now always routes through the confirm gate first.
+        """
         runner = _make_runner()
         event = _make_event()
 
-        fake_root = tmp_path / "project"
-        fake_root.mkdir()
-        (fake_root / ".git").mkdir()
-        (fake_root / "gateway").mkdir()
-        (fake_root / "gateway" / "run.py").touch()
-        fake_file = str(fake_root / "gateway" / "run.py")
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
 
@@ -162,10 +157,9 @@ class TestHandleUpdateCommand:
             return None
 
         with patch("gateway.run._hermes_home", hermes_home), \
-             patch("gateway.run.__file__", fake_file), \
              patch("shutil.which", side_effect=which_no_setsid), \
              patch("subprocess.Popen", mock_popen):
-            result = await runner._handle_update_command(event)
+            result = await runner._execute_update(event, ["/usr/bin/hermes"])
 
         # Verify plain bash -c fallback (no nohup, no setsid)
         call_args = mock_popen.call_args[0][0]

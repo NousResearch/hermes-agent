@@ -8,6 +8,8 @@ import json
 import logging
 import re
 import socket
+import threading
+from collections import OrderedDict
 import time
 import urllib.error
 import urllib.parse
@@ -63,6 +65,14 @@ _REAUTHORIZATION_MESSAGES = {
 _BUDGET_MESSAGES = {
     "size": "peer{kind} response exceeded the RoomLink size limit",
     "time": "peer{kind} response exceeded the RoomLink time budget"}
+
+
+_AUTH_PROBE_COOLDOWN_SECONDS = 60.0
+_MAX_AUTH_PROBE_REJECTIONS = 64
+_AUTH_PROBE_ENDPOINTS = frozenset({
+    ("GET", "/v1/room-members/capabilities"),
+    ("POST", "/v1/room-members/grants/refresh"),
+})
 
 
 class _PeerResponseTooLarge(ValueError):
@@ -231,6 +241,10 @@ class PeerRunsHTTPClient:
         self._recovery_backoff: dict[tuple[str, int], dict[str, Any]] = {}
         self._terminal_receipts: set[tuple[str, int]] = set()
         self._room_scope: dict[str, Any] | None = None
+        self._auth_probe_lock = threading.Lock()
+        self._auth_probe_rejections: OrderedDict[
+            tuple[str, str, str], tuple[float, str, int, str | None, bool]
+        ] = OrderedDict()
 
     def bind_receipt_store(self, db_path: Path | str) -> None:
         """Attach the gateway-wide durable receipt store idempotently."""
@@ -296,13 +310,31 @@ class PeerRunsHTTPClient:
                     f"HermesRoom {room_grant}" if room_grant else f"Bearer {self.api_key}"),
                 "Content-Type": "application/json", "User-Agent": "Hermes-RoomLink/1.0",
                 **(headers or {})})
+        # Cache only scoped authorization probes, keyed by the credential actually sent.
+        auth_probe_key = None
+        if room_grant and (method, path) in _AUTH_PROBE_ENDPOINTS:
+            auth_probe_key = (
+                method, path, hashlib.sha256(request.get_header("Authorization", "").encode()).hexdigest()
+            )
+            self._check_auth_probe_cooldown(auth_probe_key)
         try:
             with open_credentialed_url(request, timeout=self.timeout_seconds) as response:
                 raw = _read_body(
                     response, max_bytes=MAX_PEER_RESPONSE_BYTES, deadline=deadline, kind="",
                     ambiguous=ambiguous)
         except urllib.error.HTTPError as exc:
-            self._raise_http_error(exc, method=method, path=path, deadline=deadline)
+            try:
+                self._raise_http_error(exc, method=method, path=path, deadline=deadline)
+            except PeerRunsHTTPError as failure:
+                # The classified error also covers bounded-body size/deadline failures.
+                if auth_probe_key is not None and exc.code in {401, 403}:
+                    self._remember_auth_probe_rejection(
+                        auth_probe_key, str(failure), exc.code, failure.error_code,
+                        retryable=failure.retryable,
+                    )
+                raise
+            finally:
+                exc.close()
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             not_admitted = ambiguous and _is_proven_pre_admission_failure(exc)
             raise PeerRunsHTTPError(
@@ -666,3 +698,27 @@ class PeerRunsHTTPClient:
             body={},
             room_grant=grant,
         )
+
+    def _check_auth_probe_cooldown(self, key: tuple[str, str, str]) -> None:
+        with self._auth_probe_lock:
+            rejected = self._auth_probe_rejections.get(key)
+            if rejected is not None and self.clock() >= rejected[0]:
+                del self._auth_probe_rejections[key]
+                rejected = None
+        if rejected is not None:
+            _, message, status_code, error_code, retryable = rejected
+            raise PeerRunsHTTPError(
+                message, status_code=status_code, error_code=error_code, retryable=retryable
+            )
+
+    def _remember_auth_probe_rejection(
+        self, key: tuple[str, str, str], message: str, status_code: int, error_code: str | None,
+        *, retryable: bool = False,
+    ) -> None:
+        with self._auth_probe_lock:
+            self._auth_probe_rejections[key] = (
+                self.clock() + _AUTH_PROBE_COOLDOWN_SECONDS, message, status_code, error_code, retryable
+            )
+            self._auth_probe_rejections.move_to_end(key)
+            while len(self._auth_probe_rejections) > _MAX_AUTH_PROBE_REJECTIONS:
+                self._auth_probe_rejections.popitem(last=False)

@@ -23,6 +23,11 @@ const TAB =
 // leave uncovered, so tabs fill the bar and no sliver of gutter shows through.
 const TAB_HORIZONTAL = 'h-full min-w-0 max-w-48 not-first:border-l not-first:border-l-(--ui-stroke-quaternary)'
 
+// A closeable tab's floor: 8px label inset + the ~19px opaque ✕ chip, so the
+// shortest labels (FILES, REVIEW) clear the chip and pass under nothing but the
+// gradient. A floor, not padding — a tab already wider than it pays nothing.
+const TAB_CLOSEABLE = 'min-w-13'
+
 const TAB_VERTICAL =
   'w-full max-h-48 justify-center not-first:border-t not-first:border-t-(--ui-stroke-quaternary) [writing-mode:vertical-rl]'
 
@@ -102,7 +107,7 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
       className={cn(
         TAB,
         vertical ? TAB_VERTICAL : TAB_HORIZONTAL,
-        !vertical && onClose && 'pr-9',
+        !vertical && onClose && TAB_CLOSEABLE,
         edge,
         active
           ? cn(TAB_ACTIVE, !vertical && TAB_ACTIVE_UNDERLINE)
@@ -164,9 +169,11 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
         </span>
       )}
       {onClose && !vertical && (
-        // Hover ✕ stays absolutely positioned so hover never shifts the tab.
-        // The tab reserves a fixed right runway for this overlay, keeping the
-        // label clear of the gradient/button even for short labels like BROWSER.
+        // Hover ✕, painted OVER the label's right edge as an overlay (no
+        // layout shift, tab width never jumps on hover). The runway is a tiny
+        // transparent→`--tab-face` gradient, so the button melts into the
+        // tab's effective surface instead of hard-clipping the text under it.
+        // Short labels are kept legible by TAB_CLOSEABLE, not by padding.
         // Rendered after the dirty dot: on hover the ✕ takes the dot's spot,
         // VS Code-style.
         <span className="pointer-events-none absolute inset-y-0 right-0 flex items-stretch opacity-0 transition-opacity group-hover/tab:pointer-events-auto group-hover/tab:opacity-100">

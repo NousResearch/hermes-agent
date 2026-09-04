@@ -9,9 +9,6 @@ Security invariants under test (ported from the desktop TS provider):
 
 * the requested key travels ONLY via the ``HERMES_SECRET_KEY`` env var —
   never interpolated into the shell string (hostile key names are inert);
-* cross-key misroute guard: a single env-shaped line for a DIFFERENT key
-  never leaks as the wanted key's value;
-* base64 '=' padding is not misclassified as a dotenv line;
 * hard timeout + degrade-to-empty on every failure mode, never raise;
 * failure logging carries structured fields only — never the command
   string or any secret value.
@@ -35,11 +32,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from agent.secret_sources.command import (  # noqa: E402
+    CommandSource,
     _run_helper,
-    apply_command_secrets,
-    get_command_secret,
-    list_command_secrets,
-    parse_secret_output,
     unquote_dotenv_value,
 )
 from agent.secret_sources.base import (  # noqa: E402
@@ -106,52 +100,24 @@ def test_unquote_strips_one_layer_of_matching_quotes():
     assert unquote_dotenv_value("  plain  ") == "plain"
 
 
-def test_parse_base64_padding_not_misclassified_as_dotenv():
-    # "dGVzdA==" looks env-shaped (key `dGVzdA`, value `=`) but is a bare
-    # base64 secret and must round-trip unchanged.
-    assert parse_secret_output("dGVzdA==\n", "CMDTEST_API_KEY") == "dGVzdA=="
-
-
-
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # Real-subprocess resolution
 # ---------------------------------------------------------------------------
 
 
-def test_bare_value_helper_resolves_single_value(tmp_path):
+def test_helper_stdout_is_returned_verbatim(tmp_path):
     helper = _write_helper(tmp_path, "printf 'sk-test-bare-12345'")
-    value = get_command_secret(command=str(helper), key="CMDTEST_API_KEY")
+    value = _run_helper(str(helper), "CMDTEST_API_KEY", 3.0, 1024)
     assert value == "sk-test-bare-12345"
-
-
-
-
-
-
-
-
-
-
 
 
 def test_timeout_kills_hung_helper_and_degrades_to_empty(tmp_path):
     helper = _write_helper(tmp_path, "sleep 30")
     start = time.monotonic()
-    value = get_command_secret(
-        command=str(helper), key="CMDTEST_API_KEY", timeout_seconds=2.0
-    )
+    value = _run_helper(str(helper), "CMDTEST_API_KEY", 2.0, 1024)
     elapsed = time.monotonic() - start
     assert value is None
     assert elapsed < 6.0, f"helper not killed within the bound (took {elapsed:.1f}s)"
-
-
-
-
 
 
 def test_failure_logging_never_leaks_command_or_secret(tmp_path, capfd):
@@ -161,7 +127,7 @@ def test_failure_logging_never_leaks_command_or_secret(tmp_path, capfd):
         f"echo '{secret_value}' >&2\nexit 7",
         name="my-distinctive-helper-name.sh",
     )
-    value = get_command_secret(command=str(helper), key="CMDTEST_API_KEY")
+    value = _run_helper(str(helper), "CMDTEST_API_KEY", 3.0, 1024)
     assert value is None
     captured = capfd.readouterr()
     combined = captured.out + captured.err
@@ -172,24 +138,14 @@ def test_failure_logging_never_leaks_command_or_secret(tmp_path, capfd):
     assert "code=7" in combined  # the structured field IS logged
 
 
-
-
-
-
-def test_apply_dotenv_blob_sets_environ(tmp_path):
+def test_fetch_parses_dotenv_blob(tmp_path):
     helper = _write_helper(
         tmp_path,
         "printf 'CMDTEST_API_KEY=sk-applied\\nCMDTEST_TOKEN=tok-applied\\n'",
     )
-    result = apply_command_secrets(command=str(helper))
-    assert sorted(result.applied) == ["CMDTEST_API_KEY", "CMDTEST_TOKEN"]
+    result = CommandSource().fetch({"enabled": True, "command": str(helper)}, tmp_path)
     assert result.error is None
-    assert os.environ["CMDTEST_API_KEY"] == "sk-applied"
-    assert os.environ["CMDTEST_TOKEN"] == "tok-applied"
-
-
-
-
+    assert result.secrets == {"CMDTEST_API_KEY": "sk-applied", "CMDTEST_TOKEN": "tok-applied"}
 
 
 # ---------------------------------------------------------------------------
@@ -245,8 +201,6 @@ def test_registry_status_line_printed_once_per_home(tmp_path, monkeypatch, capsy
     assert err.count("Command helper: applied 1 secret") == 1
 
 
-
-
 def test_registry_failing_helper_does_not_block_startup(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(
@@ -256,8 +210,6 @@ def test_registry_failing_helper_does_not_block_startup(tmp_path, monkeypatch):
     # Must not raise — config/helper errors never block startup.
     env_loader._apply_external_secret_sources(tmp_path)
     assert env_loader.get_secret_source("CMDTEST_API_KEY") is None
-
-
 
 
 def test_registry_helper_error_prints_remediation(tmp_path, monkeypatch, capsys):

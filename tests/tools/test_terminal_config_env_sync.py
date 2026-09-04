@@ -71,10 +71,9 @@ def _extract_dict_keys(source: str, dict_name: str) -> set[str]:
 
 
 def _cli_env_map_keys() -> set[str]:
-    """terminal config keys bridged by cli.load_cli_config()."""
+    """terminal config keys bridged by cli.load_cli_config() (via _mirror_config_to_env)."""
     import cli
-    source = inspect.getsource(cli.load_cli_config)
-    return _extract_dict_keys(source, "env_mappings")
+    return set(cli._TERMINAL_ENV_MAPPINGS.keys())
 
 
 def _gateway_env_map_keys() -> set[str]:

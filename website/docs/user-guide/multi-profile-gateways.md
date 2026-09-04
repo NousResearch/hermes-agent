@@ -157,7 +157,7 @@ configure them only on the default profile.
 
 Port-binding platforms covered by this rule: `webhook`, `api_server`,
 `msgraph_webhook`, `feishu`, `wecom_callback`, `bluebubbles`, `sms`,
-`whatsapp_cloud`, `line`. Configure any of these **only on the default profile**;
+`whatsapp_cloud`, `line`, `teams`. Configure any of these **only on the default profile**;
 every profile is reachable through its `/p/<profile>/` prefix.
 
 Authentication follows the profile named in the URL. Unprefixed endpoints keep
@@ -213,7 +213,13 @@ keep working.
 Per-profile `.env` credential isolation is preserved and, if anything,
 stricter: a profile's keys are resolved from its own scope and are never unioned
 into a shared environment (this also means subprocesses like MCP servers and
-Kanban workers only ever see their own profile's secrets). Kanban,
+Kanban workers only ever see their own profile's secrets). Terminal settings
+(`terminal.backend`, `terminal.cwd`, `terminal.docker_volumes`,
+`terminal.docker_shared_container_key`, SSH targets, …) are likewise resolved
+per profile on every routed turn: a profile that omits a terminal key gets the
+documented default, never the launch profile's value, and a profile whose
+`config.yaml`/`.env` cannot be parsed has terminal execution refused rather than
+run under another profile's sandbox policy. Kanban,
 profile-scoped skills/memory/SOUL, and model routing all behave per-profile
 exactly as they do with separate gateways.
 
@@ -272,6 +278,12 @@ gateway:
       platform: telegram
       chat_id: "-1001234567890"
       profile: tg-profile
+
+    # A WhatsApp DM — write the phone number; JID and LID forms also match
+    - name: owner-whatsapp
+      platform: whatsapp
+      chat_id: "15551234567"
+      profile: owner
 ```
 
 Routes are matched most-specific-first (`thread_id` > `chat_id` > `guild_id`),
@@ -281,12 +293,30 @@ no route stay on the default/active profile. The routed profile gets the full
 per-profile isolation described above (config, skills, memory, credentials,
 session namespace). Routing works on every platform adapter, not just Discord.
 
+On WhatsApp and WhatsApp Cloud, a `chat_id` route matches across user-identity
+forms: a bare phone number (`15551234567`), a JID
+(`15551234567@s.whatsapp.net`), and a LID (`…@lid`) all refer to the same
+person once the bridge has paired them (the same canonicalization session keys
+and adapter allowlists already use). You can put the phone number in
+`profile_routes` and inbound DMs still match whether WhatsApp delivers a JID or
+a LID. Without a LID mapping yet, the number form still matches a JID (the
+suffix is stripped) but cannot resolve an unknown LID — that inbound falls
+through to the default profile until the mapping appears. Group chats
+(`…@g.us`) are not sender identities and still match exactly. Telegram numeric
+ids are unchanged.
+
 `profile_routes` requires `gateway.multiplex_profiles: true`; with
 multiplexing off the routes are ignored. If an explicit route matches but its
 target profile is not installed or is outside `multiplex_profile_allowlist`,
 the gateway rejects that ingress and logs the route and target. It does not run
 the default profile. Traffic that matches no route keeps the historical
 default-profile behavior.
+
+Cron jobs owned by a routed profile deliver through the shared bot too, but
+only to targets an enabled route with a `chat_id`/`thread_id` maps to that
+profile — a routed profile's job targeting an unrouted chat (or a chat routed
+to another profile) is never sent through the shared bot. Guild-only routes do
+not qualify a cron target; add a `chat_id` route for the delivery channel.
 
 ## Start, stop, or restart all gateways at once
 

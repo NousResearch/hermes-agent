@@ -14,6 +14,7 @@ import { persistBoolean, persistString, readJson, storedBoolean, storedString, w
 import { syncCronModelImpactConnection } from '@/store/cron-model-impact-scope'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
+import { isSessionRemovalPending } from './session-removal'
 import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
 
@@ -359,16 +360,19 @@ export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id
  *  the live id or the stable lineage root (see sessionPinId). The one place the
  *  "same conversation across compression" test lives. */
 export const sessionMatchesStoredId = (
-  session: Pick<SessionInfo, '_lineage_root_id' | 'id'>,
+  session: Pick<SessionInfo, '_lineage_ids' | '_lineage_root_id' | 'id'>,
   storedSessionId: string
-): boolean => session.id === storedSessionId || session._lineage_root_id === storedSessionId
+): boolean =>
+  session.id === storedSessionId ||
+  session._lineage_root_id === storedSessionId ||
+  Boolean(session._lineage_ids?.includes(storedSessionId))
 
 // Alias lookup, memoized per sessions-list reference. `lineageAliases` runs
 // per cached session state per status projection per message delta — an
 // O(sessions) scan there multiplies out to states × sessions × ~30Hz per busy
 // session, which is what made a populated recents list drag every stream. The
 // list is replaced wholesale (never mutated), so its reference is the cache key.
-type LineageRow = Pick<SessionInfo, '_lineage_root_id' | 'id'>
+type LineageRow = Pick<SessionInfo, '_lineage_ids' | '_lineage_root_id' | 'id'>
 const lineageIndexBySessions = new WeakMap<readonly LineageRow[], Map<string, string[]>>()
 
 function lineageIndex(sessions: readonly LineageRow[]): Map<string, string[]> {
@@ -397,6 +401,21 @@ function lineageIndex(sessions: readonly LineageRow[]): Map<string, string[]> {
       add(session.id, session._lineage_root_id)
       add(session._lineage_root_id, session.id)
       add(session._lineage_root_id, session._lineage_root_id)
+    }
+
+    // Chains three+ segments deep: the projected row carries every id the
+    // conversation has answered to, so a surface keyed to a MIDDLE segment
+    // (it was the tip when the surface opened) still aliases to the rest.
+    // Without this, only tip↔root connect and such a surface reads as a
+    // different conversation — one chat open twice after a compaction.
+    const ids = session._lineage_ids
+
+    if (ids && ids.length > 1) {
+      for (const a of ids) {
+        for (const b of ids) {
+          add(a, b)
+        }
+      }
     }
   }
 
@@ -1262,6 +1281,16 @@ export const requestSessionResume = (sessionId: string, ownerRoute?: SessionOwne
   const id = sessionId.trim()
 
   if (!id) {
+    return
+  }
+
+  // A chat on its way out must never be re-selected. The push path
+  // (markRuntimeGone) and the RPC seam both queue a resume off a 4001, and an
+  // idle reap can land one in the same tick as a delete — that queued request
+  // then resumes a tombstoned id, 404s, and toasts "Resume failed / Session
+  // not found" for a chat the user deliberately removed. Filtering at the
+  // producer means no consumer has to re-derive "is this id doomed".
+  if (isSessionRemovalPending(id)) {
     return
   }
 

@@ -267,6 +267,8 @@ Each toggle holds a *lease* on the engine; the model is only unloaded when the l
 
 The Desktop calls `POST /api/audio/tts-lease` with `{"lease": "<name>", "active": true|false}`; other frontends can use the same endpoint.
 
+The same lease also reaches user-declared providers, so a self-hosted TTS server can preload and unload its model on the toggles: a [command provider](#custom-command-providers) runs its optional `warm_command` / `release_command`, and a [Python plugin provider](#python-plugin-providers) gets `warm()` / `release()`.
+
 ### Custom command providers
 
 If a TTS engine you want isn't natively supported (VoxCPM, MLX-Kokoro, XTTS CLI, a voice-cloning script, anything else that exposes a CLI), you can wire it in as a **command-type provider** without writing any Python. Hermes writes the input text to a temp UTF-8 file, runs your shell command, and reads the audio file the command produced.
@@ -359,6 +361,7 @@ Use `{{` and `}}` for literal braces.
 | `voice_compatible` | `false` | When `true`, Hermes converts MP3/WAV output to Opus/OGG via ffmpeg so Telegram renders a voice bubble.      |
 | `max_text_length`  | `5000`  | Maximum input characters per command invocation; longer text is split into ordered chunks.                  |
 | `voice` / `model`  | empty   | Passed to the command as placeholder values only.                                                           |
+| `warm_command` / `release_command` | unset | Shell commands run when a surface toggles speech output on / when the last lease across surfaces is released — e.g. `curl -s localhost:5002/load?model={model}` to preload a local TTS server, and its `unload` counterpart. Best-effort and non-blocking: run in the background with the same `timeout`, `env_passthrough` and `{voice}` / `{model}` / `{speed}` placeholders as `command`; output is discarded and failures are only logged at debug. |
 
 #### Behavior notes
 
@@ -448,6 +451,7 @@ Override these on your provider class for richer integration:
 - `get_setup_schema()` → return `{name, badge, tag, env_vars: [{key, prompt, url}]}` to power the picker row in `hermes tools` / `hermes setup`. Without this, the plugin still works but its row in the picker is minimal.
 - `stream(text, *, voice, model, format, **extra)` → iterator yielding audio bytes for streaming delivery (default raises `NotImplementedError`).
 - `voice_compatible` property → set `True` if your output is Opus-compatible and the gateway should deliver it as a voice bubble (default `False` = regular audio attachment).
+- `warm()` / `release()` → called when a surface toggles speech output on / when the last lease across surfaces is released, while your provider is the configured `tts.provider` — preload or unload a local model server here. Both default to no-ops; exceptions are logged at debug and never fail the toggle.
 
 See `agent/tts_provider.py` for the full ABC including docstrings.
 

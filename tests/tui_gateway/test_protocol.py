@@ -178,6 +178,7 @@ def test_write_json(capture):
 def test_live_session_payload_replays_pending_approval(server, monkeypatch):
     """A reattached client receives the approval that was emitted while detached."""
     from tools import approval
+    from tools import approval_gateway_wait
 
     session = {
         "agent": types.SimpleNamespace(),
@@ -196,8 +197,8 @@ def test_live_session_payload_replays_pending_approval(server, monkeypatch):
     second = {"command": "rm -rf /tmp/later", "description": "later"}
     saved_queue = approval._gateway_queues.pop("stored-session", None)
     approval._gateway_queues["stored-session"] = [
-        approval._ApprovalEntry(first),
-        approval._ApprovalEntry(second),
+        approval_gateway_wait._ApprovalEntry(first),
+        approval_gateway_wait._ApprovalEntry(second),
     ]
     monkeypatch.setattr(server, "_approval_request_payload", lambda data: dict(data or {}))
 
@@ -999,7 +1000,7 @@ def test_session_resume_active_turn_payload_matches_desktop_fixture(server, monk
         "session_key": fixture["session_key"],
     }
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
-    monkeypatch.setattr(server, "_session_info", lambda _agent: fixture["info"])
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: fixture["info"])
 
     # JSON round-trip the real RPC envelope: the desktop fixture must stay
     # faithful to what the gateway actually serializes, not a copied shape.
@@ -1263,13 +1264,10 @@ def test_skills_manage_search_uses_tools_hub_sources(server):
     auth = MagicMock(return_value="auth")
     router = MagicMock(return_value=["source"])
     search = MagicMock(return_value=[result])
-    fake_hub = types.SimpleNamespace(
-        GitHubAuth=auth,
-        create_source_router=router,
-        unified_search=search,
-    )
+    fake_search = types.SimpleNamespace(create_source_router=router, unified_search=search)
+    fake_github = types.SimpleNamespace(GitHubAuth=auth)
 
-    with patch.dict(sys.modules, {"tools.skills_hub": fake_hub}):
+    with patch.dict(sys.modules, {"tools.skills_hub_search": fake_search, "tools.skills_hub_github": fake_github}):
         resp = server.handle_request({
             "id": "skills-search",
             "method": "skills.manage",

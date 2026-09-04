@@ -100,6 +100,7 @@ class TestFileToolsReadTheRecord:
 
     def test_two_sessions_resolve_into_their_own_recorded_cwds(self, tmp_path, monkeypatch):
         import tools.file_tools as ft
+        import tools.file_tools_paths as ftp
 
         wt_a = tmp_path / "wt_a"
         wt_b = tmp_path / "wt_b"
@@ -115,13 +116,14 @@ class TestFileToolsReadTheRecord:
         tt.record_session_cwd("sess-a", str(wt_a))
         tt.record_session_cwd("sess-b", str(wt_b))
 
-        assert ft._resolve_path_for_task("f.py", task_id="sess-a") == (wt_a / "f.py")
-        assert ft._resolve_path_for_task("f.py", task_id="sess-b") == (wt_b / "f.py")
+        assert ftp._resolve_path_for_task("f.py", task_id="sess-a") == (wt_a / "f.py")
+        assert ftp._resolve_path_for_task("f.py", task_id="sess-b") == (wt_b / "f.py")
 
     def test_record_beats_foreign_env_cwd_without_ownership_metadata(self, tmp_path, monkeypatch):
         """The leak-A scenario, solved structurally: the shared env's cwd is
         never consulted for path resolution — only the session's own record."""
         import tools.file_tools as ft
+        import tools.file_tools_paths as ftp
 
         wt_a = tmp_path / "wt_a"
         wt_b = tmp_path / "wt_b"
@@ -137,7 +139,7 @@ class TestFileToolsReadTheRecord:
         monkeypatch.setattr(tt, "_active_environments", {"default": _Env()})
         tt.record_session_cwd("sess-a", str(wt_a))
 
-        resolved = ft._resolve_path_for_task("f.py", task_id="sess-a")
+        resolved = ftp._resolve_path_for_task("f.py", task_id="sess-a")
         assert resolved == (wt_a / "f.py")
         assert not str(resolved).startswith(str(wt_b))
 
@@ -166,6 +168,7 @@ class TestReapedEnvFallbackIsFillOnly:
 
     def _reap(self, monkeypatch, tmp_path, task_id, stale_cwd):
         import tools.file_tools as ft
+        import tools.file_tools_paths as ftp
 
         class _StaleFileOps:
             cwd = stale_cwd

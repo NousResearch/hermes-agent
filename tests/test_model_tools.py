@@ -1,7 +1,7 @@
 """Tests for model_tools.py — function call dispatch, agent-loop interception, legacy toolsets."""
 
 import json
-from unittest.mock import ANY, call, patch
+from unittest.mock import patch
 
 
 from model_tools import (
@@ -10,7 +10,6 @@ from model_tools import (
     get_toolset_for_tool,
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
-    TOOL_TO_TOOLSET_MAP,
 )
 
 
@@ -285,7 +284,7 @@ class TestPreToolCallBlocking:
         monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
         monkeypatch.setattr("model_tools.registry.dispatch",
                             lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not run")))
-        monkeypatch.setattr("tools.file_tools.notify_other_tool_call",
+        monkeypatch.setattr("tools.file_tools_read_tracking.notify_other_tool_call",
                             lambda task_id: notifications.append(task_id))
 
         result = json.loads(handle_function_call("web_search", {"q": "test"}, task_id="t1"))
@@ -328,7 +327,7 @@ class TestPreToolCallBlocking:
             return json.dumps({"ok": True})
 
         monkeypatch.setattr(
-            "hermes_cli.observability.relay_runtime.apply_tool_request_intercepts",
+            "agent.relay_runtime.apply_tool_request_intercepts",
             rewrite,
         )
         monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
@@ -395,19 +394,19 @@ class TestCoerceNumberInfNan:
     float('nan') are not JSON-compliant under strict serialization."""
 
     def test_inf_returns_original_string(self):
-        from model_tools import _coerce_number
+        from tools.arg_coercion import _coerce_number
         assert _coerce_number("inf") == "inf"
 
 
     def test_nan_returns_original_string(self):
-        from model_tools import _coerce_number
+        from tools.arg_coercion import _coerce_number
         assert _coerce_number("nan") == "nan"
 
 
 
     def test_normal_numbers_still_coerce(self):
         """Guard against over-correction — real numbers still coerce."""
-        from model_tools import _coerce_number
+        from tools.arg_coercion import _coerce_number
         assert _coerce_number("42") == 42
         assert _coerce_number("3.14") == 3.14
         assert _coerce_number("1e3") == 1000
@@ -509,3 +508,41 @@ class TestDisabledToolsetsPostureToolset:
             )
         }
         assert "write_file" not in no_file
+
+
+# =========================================================================
+# Tool Search bridge dispatch
+# =========================================================================
+
+class TestBridgeDispatch:
+    """handle_function_call routes tool_search/tool_describe inline, unwraps tool_call,
+    and refuses tool_call targets outside the session-scoped deferrable catalog."""
+
+    def test_tool_search_and_describe_return_json_strings(self):
+        with patch("model_tools.get_tool_definitions", return_value=[]):
+            out = handle_function_call("tool_search", {"queries": ["anything"]})
+            assert isinstance(out, str) and json.loads(out) is not None
+            out = handle_function_call("tool_describe", {"names": ["nope"]})
+            assert isinstance(out, str) and json.loads(out) is not None
+
+    def test_tool_call_bad_args_error(self):
+        with patch("model_tools.get_tool_definitions", return_value=[]):
+            result = json.loads(handle_function_call("tool_call", {}))
+        assert "requires a 'name'" in result["error"]
+
+    def test_tool_call_rejects_out_of_scope_and_unwraps_in_scope(self):
+        import tools.tool_search as ts
+        with patch("model_tools.get_tool_definitions", return_value=[]), \
+             patch.object(ts, "resolve_underlying_call", return_value=("mcp_x", {"a": 1}, None)), \
+             patch.object(ts, "scoped_deferrable_names", return_value=frozenset()):
+            result = json.loads(handle_function_call("tool_call", {"name": "mcp_x"}))
+        assert "not available in this session" in result["error"]
+
+        with patch("model_tools.get_tool_definitions", return_value=[]), \
+             patch.object(ts, "resolve_underlying_call", return_value=("mcp_x", {"a": 1}, None)), \
+             patch.object(ts, "scoped_deferrable_names", return_value=frozenset({"mcp_x"})), \
+             patch.object(ts, "validate_deferred_call_args", return_value=None), \
+             patch("model_tools.registry.dispatch", return_value='{"ok": true}') as disp:
+            out = handle_function_call("tool_call", {"name": "mcp_x"}, task_id="t")
+        assert json.loads(out) == {"ok": True}
+        assert disp.call_args.args[0] == "mcp_x" and disp.call_args.args[1] == {"a": 1}

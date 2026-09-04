@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-01T18:20:04Z",
+  "updated_at": "2026-09-03T07:08:39Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -85,6 +85,10 @@
           "description": ""
         },
         {
+          "id": "google/gemini-3.8-flash",
+          "description": ""
+        },
+        {
           "id": "google/gemini-3.7-flash",
           "description": ""
         },
@@ -159,6 +163,18 @@
         },
         {
           "id": "meta/muse-spark-1.2",
+          "description": ""
+        },
+        {
+          "id": "meta/muse-spark-1.2-contributor",
+          "description": ""
+        },
+        {
+          "id": "meta/muse-spark-1.3",
+          "description": ""
+        },
+        {
+          "id": "meta/muse-spark-1.3-contributor",
           "description": ""
         },
         {
@@ -260,6 +276,9 @@
         },
         {
           "id": "google/gemini-3.1-pro-preview"
+        },
+        {
+          "id": "google/gemini-3.8-flash"
         },
         {
           "id": "google/gemini-3.7-flash"

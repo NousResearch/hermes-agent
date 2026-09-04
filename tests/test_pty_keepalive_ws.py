@@ -3,6 +3,7 @@ import json
 import pytest
 
 from hermes_cli import web_server
+import hermes_cli.web_server_chat as _web_server_chat
 
 
 class FakeBridge:
@@ -37,22 +38,22 @@ def pty_keepalive_harness(monkeypatch):
         spawned.bridges.append(b)
         return b
 
-    monkeypatch.setattr(web_server.PtyBridge, "spawn", staticmethod(fake_spawn))
-    monkeypatch.setattr(web_server, "_ws_auth_reason", lambda ws: (None, "test"))
-    monkeypatch.setattr(web_server, "_ws_host_origin_reason", lambda ws: None)
-    monkeypatch.setattr(web_server, "_ws_client_reason", lambda ws: None)
+    monkeypatch.setattr(_web_server_chat.PtyBridge, "spawn", staticmethod(fake_spawn))
+    monkeypatch.setattr(_web_server_chat, "_ws_auth_reason", lambda ws: (None, "test"))
+    monkeypatch.setattr(_web_server_chat, "_ws_host_origin_reason", lambda ws: None)
+    monkeypatch.setattr(_web_server_chat, "_ws_client_reason", lambda ws: None)
 
     async def fake_argv(**kw):
         resume = "child" if kw.get("resume") == "parent" else kw.get("resume")
         env = {"HERMES_TUI_RESUME": resume} if resume else {}
         return (["x", resume or "fresh"], "/tmp", env)
 
-    monkeypatch.setattr(web_server, "_resolve_chat_argv_async", fake_argv)
+    monkeypatch.setattr(_web_server_chat, "_resolve_chat_argv_async", fake_argv)
 
     try:
         yield spawned
     finally:
-        web_server.PTY_REGISTRY._sessions.clear()
+        _web_server_chat.PTY_REGISTRY._sessions.clear()
 
 
 @pytest.mark.asyncio
@@ -105,7 +106,7 @@ async def test_attach_token_reuses_default_chat_after_active_session_fallback(
 
     active_session_file = tmp_path / "active-session.json"
     monkeypatch.setattr(
-        web_server,
+        _web_server_chat,
         "_active_session_file_for_channel",
         lambda app, channel: active_session_file,
     )

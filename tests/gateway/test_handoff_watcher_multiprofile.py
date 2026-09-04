@@ -15,6 +15,7 @@ These tests pin the two halves of the fix:
 """
 
 import asyncio
+import threading
 import types
 from pathlib import Path
 
@@ -111,14 +112,14 @@ async def test_watcher_enters_profile_scope_for_each_home(monkeypatch):
         def __init__(self, home):
             self.home = home
 
-        def __enter__(self):
+        async def __aenter__(self):
             entered.append(self.home)
             return self
 
-        def __exit__(self, *exc):
+        async def __aexit__(self, *exc):
             return False
 
-    monkeypatch.setattr(run, "_profile_runtime_scope", _SpyScope)
+    monkeypatch.setattr(run, "_async_profile_runtime_scope", _SpyScope)
 
     async def _no_sleep(_seconds):
         return None
@@ -160,6 +161,68 @@ async def test_watcher_enters_profile_scope_for_each_home(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_slow_profile_secret_load_does_not_block_event_loop(monkeypatch, tmp_path):
+    """A slow profile ``.env`` read must not stall unrelated loop work."""
+    profile_home = tmp_path / "profiles" / "slow"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setattr(
+        run,
+        "_handoff_watch_scopes",
+        lambda _runner: [(None, None), ("slow", profile_home)],
+    )
+
+    from agent import secret_scope
+
+    load_started = threading.Event()
+    ticker_progressed = threading.Event()
+    ticker_progressed_while_loading = []
+
+    def _slow_build(_home):
+        load_started.set()
+        ticker_progressed_while_loading.append(
+            ticker_progressed.wait(timeout=2)
+        )
+        return {}
+
+    monkeypatch.setattr(secret_scope, "build_profile_secret_scope", _slow_build)
+
+    class _DB:
+        async def list_pending_handoffs(self):
+            return []
+
+    fake = types.SimpleNamespace(
+        _session_db=_DB(),
+        _running=False,
+    )
+
+    async def _process_handoff(_row, _profile_name=None):
+        return None
+
+    fake._process_handoff = _process_handoff
+
+    real_sleep = asyncio.sleep
+
+    async def _skip_initial_delay(seconds):
+        await real_sleep(0 if seconds == 5 else seconds)
+
+    monkeypatch.setattr(run.asyncio, "sleep", _skip_initial_delay)
+    async def _ticker():
+        assert await asyncio.to_thread(load_started.wait, 5)
+        ticker_progressed.set()
+
+    watcher = asyncio.create_task(
+        run.GatewayRunner._handoff_watcher(fake, interval=0.0)
+    )
+    ticker = asyncio.create_task(_ticker())
+    await asyncio.wait_for(asyncio.gather(watcher, ticker), timeout=5)
+
+    assert ticker_progressed_while_loading == [True], (
+        "profile secret loading blocked the asyncio event loop until the "
+        "filesystem operation completed"
+    )
+
+
+@pytest.mark.asyncio
 async def test_each_scope_resolves_its_own_store_and_profile(monkeypatch):
     """The whole point: a DIFFERENT ``state.db`` per scope, and the profile
     name reaches ``_process_handoff`` so delivery uses that profile's adapter.
@@ -183,15 +246,15 @@ async def test_each_scope_resolves_its_own_store_and_profile(monkeypatch):
         def __init__(self, home):
             self.home = home
 
-        def __enter__(self):
+        async def __aenter__(self):
             active["home"] = self.home
             return self
 
-        def __exit__(self, *exc):
+        async def __aexit__(self, *exc):
             active["home"] = None
             return False
 
-    monkeypatch.setattr(run, "_profile_runtime_scope", _SpyScope)
+    monkeypatch.setattr(run, "_async_profile_runtime_scope", _SpyScope)
 
     async def _no_sleep(_seconds):
         return None

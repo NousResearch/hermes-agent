@@ -22,11 +22,13 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
+    _api_request_profile,
     _approval_event_choices,
     cors_middleware,
     security_headers_middleware,
 )
 from tools import approval as approval_mod
+from tools import approval_gateway_wait
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +68,13 @@ def _make_adapter(api_key: str = "") -> APIServerAdapter:
     config = PlatformConfig(enabled=True, extra=extra)
     adapter = APIServerAdapter(config)
     return adapter
+
+
+def _claim_run(adapter: APIServerAdapter, run_id: str) -> None:
+    """Stamp *run_id* as owned by the unprefixed (default) request scope."""
+    request = MagicMock()
+    request.headers = {}
+    adapter._run_owners[run_id] = adapter._run_idempotency_scope(request)
 
 
 def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
@@ -413,12 +422,12 @@ class TestRunEvents:
                 assert auth_adapter._run_approval_sessions[attacker_run] == attacker_run
                 assert auth_adapter._run_approval_sessions[victim_run] != auth_adapter._run_approval_sessions[attacker_run]
 
-                victim_entry = approval_mod._ApprovalEntry({
+                victim_entry = approval_gateway_wait._ApprovalEntry({
                     "command": "bash -c victim-danger",
                     "description": "victim approval",
                     "pattern_keys": ["shell-c"],
                 })
-                attacker_entry = approval_mod._ApprovalEntry({
+                attacker_entry = approval_gateway_wait._ApprovalEntry({
                     "command": "bash -c attacker-danger",
                     "description": "attacker approval",
                     "pattern_keys": ["shell-c"],
@@ -468,6 +477,7 @@ class TestSteerRun:
         adapter._active_run_agents["run_123"] = agent
         adapter._run_streams["run_123"] = queue
         adapter._set_run_status("run_123", "running")
+        _claim_run(adapter, "run_123")
 
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/v1/runs/run_123/steer", json={"input": "tighten the ending"})
@@ -500,6 +510,7 @@ class TestSteerRun:
     async def test_steer_inactive_run_returns_409(self, adapter):
         app = _create_runs_app(adapter)
         adapter._set_run_status("run_done", "completed")
+        _claim_run(adapter, "run_done")
 
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/v1/runs/run_done/steer", json={"input": "hello"})
@@ -515,6 +526,7 @@ class TestSteerRun:
         agent.steer.return_value = True
         adapter._active_run_agents["run_123"] = agent
         adapter._set_run_status("run_123", "running")
+        _claim_run(adapter, "run_123")
 
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/v1/runs/run_123/steer", json={"input": ""})
@@ -641,7 +653,7 @@ class TestRunLifecycleSweep:
                 assert isinstance(task, asyncio.Task)
                 assert not task.done()
 
-                pending = approval_mod._ApprovalEntry({
+                pending = approval_gateway_wait._ApprovalEntry({
                     "command": "bash -c long-running",
                     "description": "approval after stream TTL",
                     "pattern_keys": ["shell-c"],
@@ -679,6 +691,92 @@ class TestRunLifecycleSweep:
                 stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
                 assert stop_resp.status == 200
                 mock_agent.interrupt.assert_called_once_with("Stop requested via API")
+
+
+# ---------------------------------------------------------------------------
+# Run ownership across served profiles (#93689 / #90415)
+# ---------------------------------------------------------------------------
+
+
+class TestRunOwnershipAcrossProfiles:
+    """Every served profile holds a valid key under multiplex; only the
+    creating profile may see or control a run."""
+
+    KEYS = {"victim": "sk-victim-profile-key-0001", "attacker": "sk-attacker-profile-key-01"}
+
+    @classmethod
+    def _profile_app(cls, adapter: APIServerAdapter) -> web.Application:
+        """Runs routes behind a stand-in for the /p/<profile>/ middleware:
+        the routed profile arrives in ``X-Test-Profile`` and each profile
+        authenticates with its own key, as under gateway.multiplex_profiles."""
+
+        @web.middleware
+        async def stamp_profile(request, handler):
+            token = _api_request_profile.set(request.headers.get("X-Test-Profile"))
+            try:
+                return await handler(request)
+            finally:
+                _api_request_profile.reset(token)
+
+        adapter._expected_api_key = lambda: cls.KEYS.get(_api_request_profile.get(), "")
+        app = _create_runs_app(adapter)
+        app.middlewares.append(stamp_profile)
+        app.router.add_post(
+            "/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream
+        )
+        return app
+
+    @pytest.mark.asyncio
+    async def test_unstamped_run_state_fails_closed(self, adapter):
+        """Run state with no owner stamp is nobody's — not everybody's."""
+        app = _create_runs_app(adapter)
+        adapter._active_run_agents["run_unstamped"] = MagicMock()
+        adapter._set_run_status("run_unstamped", "running")
+
+        async with TestClient(TestServer(app)) as cli:
+            get_resp = await cli.get("/v1/runs/run_unstamped")
+            stop_resp = await cli.post("/v1/runs/run_unstamped/stop")
+
+        assert (get_resp.status, stop_resp.status) == (404, 404)
+
+    @pytest.mark.asyncio
+    async def test_session_chat_stream_run_is_owned_by_creating_profile(self, adapter):
+        """The session-chat-stream run mint claims ownership like /v1/runs does."""
+        app = self._profile_app(adapter)
+        victim = {"X-Test-Profile": "victim", "Authorization": f"Bearer {self.KEYS['victim']}"}
+        attacker = {"X-Test-Profile": "attacker", "Authorization": f"Bearer {self.KEYS['attacker']}"}
+        gate = asyncio.Event()
+
+        async def slow_run_agent(**kwargs):
+            await gate.wait()
+            return {"final_response": "ok"}, {}
+
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_get_existing_session_or_404", new=AsyncMock(return_value=({"id": "s1"}, None))),
+                patch.object(adapter, "_conversation_history_for_session", new=AsyncMock(return_value=[])),
+                patch.object(adapter, "_run_agent", new=slow_run_agent),
+            ):
+                stream = await cli.post(
+                    "/api/sessions/s1/chat/stream", json={"message": "hi"}, headers=victim
+                )
+                await stream.content.readline()
+                (run_id,) = list(adapter._run_statuses)
+                assert run_id in adapter._run_owners
+
+                foreign_get = await cli.get(f"/v1/runs/{run_id}", headers=attacker)
+                foreign_stop = await cli.post(f"/v1/runs/{run_id}/stop", headers=attacker)
+                own_get = await cli.get(f"/v1/runs/{run_id}", headers=victim)
+                assert (foreign_get.status, foreign_stop.status, own_get.status) == (404, 404, 200)
+
+                gate.set()
+                await stream.text()
+
+        # The owner outlives the terminal status and goes with the last surface.
+        assert run_id in adapter._run_owners
+        adapter._run_statuses.pop(run_id)
+        adapter._release_run_owner_if_forgotten(run_id)
+        assert run_id not in adapter._run_owners
 
 
 # ---------------------------------------------------------------------------
@@ -862,7 +960,7 @@ class TestRunsProviderAuthFailure:
 
 
 def _use_idempotency_db(adapter, path):
-    from gateway.platforms.api_server import RunIdempotencyStore
+    from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 
     adapter._run_idempotency_store.close()
     adapter._run_idempotency_store = RunIdempotencyStore(str(path))
@@ -1017,7 +1115,7 @@ class TestRunIdempotency:
         assert calls == 1
 
     def test_restart_durability_and_terminal_semantics(self, tmp_path):
-        from gateway.platforms.api_server import RunIdempotencyStore
+        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 
         path = tmp_path / "idem.db"
         for terminal in ("completed", "failed", "cancelled"):
@@ -1044,7 +1142,7 @@ class TestRunIdempotency:
             restarted.close()
 
     def test_tenant_isolation_and_retention(self, tmp_path):
-        from gateway.platforms.api_server import RunIdempotencyStore
+        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 
         store = RunIdempotencyStore(str(tmp_path / "idem.db"))
         assert (
@@ -1060,7 +1158,7 @@ class TestRunIdempotency:
     def test_retention_never_releases_an_active_idempotency_reservation(
         self, tmp_path
     ):
-        from gateway.platforms.api_server import RunIdempotencyStore
+        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 
         store = RunIdempotencyStore(str(tmp_path / "idem.db"))
         with patch("gateway.platforms.api_server.time.time", return_value=100):
@@ -1131,51 +1229,6 @@ class TestRunIdempotency:
         assert record["run_id"] == "run-room"
 
         now[0] = horizon + 1
-        store.reserve(
-            "third-scope",
-            "third-key",
-            "third-fingerprint",
-            "run-third",
-            {"run_id": "run-third", "status": "queued"},
-        )
-        assert store.lookup(
-            "room-scope",
-            "room:task-1:1",
-            "room-fingerprint",
-        ) == ("missing", None)
-        store.close()
-
-    def test_explicit_home_acknowledgement_releases_terminal_receipt(
-        self, tmp_path, monkeypatch
-    ):
-        from gateway.platforms import api_server_run_idempotency as idempotency
-
-        now = [100.0]
-        monkeypatch.setattr(idempotency.time, "time", lambda: now[0])
-        store = idempotency.RunIdempotencyStore(str(tmp_path / "idem.db"))
-        assert store.reserve(
-            "room-scope",
-            "room:task-1:1",
-            "room-fingerprint",
-            "run-room",
-            {"run_id": "run-room", "status": "completed"},
-            retention_until=now[0] + 30 * 24 * 60 * 60,
-        )[0] == "created"
-        assert store.acknowledge_terminal("room-scope", "run-room") is True
-        store.reserve(
-            "other-scope",
-            "other-key",
-            "other-fingerprint",
-            "run-other",
-            {"run_id": "run-other", "status": "queued"},
-        )
-        assert store.lookup(
-            "room-scope",
-            "room:task-1:1",
-            "room-fingerprint",
-        )[0] == "reused"
-
-        now[0] += store.ACKNOWLEDGED_RETENTION_SECONDS + 1
         store.reserve(
             "third-scope",
             "third-key",
@@ -1323,7 +1376,7 @@ class TestRunIdempotency:
     async def test_dead_owner_nonterminal_status_becomes_interrupted(
         self, tmp_path
     ):
-        from gateway.platforms.api_server import RunIdempotencyStore
+        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 
         path = tmp_path / "idem.db"
         scope = hashlib.sha256(
@@ -1414,7 +1467,7 @@ class TestHostedRoomRuns:
         self, auth_adapter
     ):
         run_id = "run-room-approval"
-        current = approval_mod._ApprovalEntry({
+        current = approval_gateway_wait._ApprovalEntry({
             "request_id": "approval-B",
             "command": "rm -rf build-B",
         })
@@ -1822,8 +1875,7 @@ class TestHostedRoomRuns:
 
         for target in (
             "gateway.platforms.api_server.time.time",
-            "gateway.hosted_room_peer.time.time",
-            "gateway.hosted_rooms.time.time",
+            "gateway.hosted_rooms_common.time.time",
         ):
             monkeypatch.setattr(target, lambda: 200)
         claims = {

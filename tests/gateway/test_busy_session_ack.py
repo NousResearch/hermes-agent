@@ -208,7 +208,7 @@ class TestBusySessionAck:
         agent.steer = MagicMock(return_value=True)
         runner._running_agents[sk] = agent
 
-        with patch("gateway.run.merge_pending_message_event") as mock_merge:
+        with patch("gateway.platforms.base.merge_pending_message_event") as mock_merge:
             await runner._handle_active_session_busy_message(event, sk)
 
         # VERIFY: Agent was steered, NOT interrupted

@@ -65,7 +65,7 @@ Each import triggers the module's `registry.register()` calls. Errors in optiona
 
 After core tool discovery, MCP tools and plugin tools are also discovered:
 
-1. **MCP tools** — `tools.mcp_tool.discover_mcp_tools()` reads MCP server config and registers tools from external servers.
+1. **MCP tools** — `tools.mcp_tool_discovery.discover_mcp_tools()` (re-exported by the `tools.mcp_tool` facade) reads MCP server config and registers tools from external servers.
 2. **Plugin tools** — `hermes_cli.plugins.discover_plugins()` loads user/project/pip plugins that may register additional tools.
 
 ## Tool availability checking (`check_fn`)
@@ -132,7 +132,7 @@ When the model returns a `tool_call`, the flow is:
 ```
 Model response with tool_call
     ↓
-run_agent.py agent loop
+agent loop (`agent/conversation_loop.py`, via `run_agent.py`'s `AIAgent` facade)
     ↓
 model_tools.handle_function_call(name, args, task_id, user_task)
     ↓

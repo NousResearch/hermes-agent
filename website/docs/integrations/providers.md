@@ -36,8 +36,8 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **xAI (Grok) — Responses API** | `XAI_API_KEY` in `~/.hermes/.env` (provider: `xai`) |
 | **xAI Grok OAuth (SuperGrok)** | `hermes model` → "xAI Grok OAuth (SuperGrok / Premium+)" — browser login, no API key. See [guide](../guides/xai-grok-oauth.md) |
 | **Qwen Cloud (Alibaba DashScope)** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`; mainland-China endpoint: `alibaba-cn`) |
-| **Alibaba Cloud (Coding Plan)** | `ALIBABA_CODING_PLAN_API_KEY` (falls back to `DASHSCOPE_API_KEY`) (provider: `alibaba-coding-plan`, alias: `alibaba_coding`; mainland-China endpoint: `alibaba-coding-plan-cn`) — separate billing SKU, different endpoint |
-| **Alibaba Cloud (Token Plan)** | `ALIBABA_TOKEN_PLAN_API_KEY` in `~/.hermes/.env` (provider: `alibaba-token-plan`; mainland-China endpoint: `alibaba-token-plan-cn`) — Model Studio flat-token tier |
+| **Alibaba Cloud (Coding Plan)** | `ALIBABA_CODING_PLAN_API_KEY` (falls back to `DASHSCOPE_API_KEY`) (provider: `alibaba-coding-plan`, alias: `alibaba_coding`; mainland-China endpoint: `alibaba-coding-plan-cn` with `ALIBABA_CODING_PLAN_CN_API_KEY`, falling back to the shared keys) — separate billing SKU, different endpoint |
+| **Alibaba Cloud (Token Plan)** | `ALIBABA_TOKEN_PLAN_API_KEY` in `~/.hermes/.env` (provider: `alibaba-token-plan`; mainland-China endpoint: `alibaba-token-plan-cn` with `ALIBABA_TOKEN_PLAN_CN_API_KEY`, falling back to the shared key) — Model Studio flat-token tier |
 | **Kilo Code** | `KILOCODE_API_KEY` in `~/.hermes/.env` (provider: `kilocode`) |
 | **Xiaomi MiMo** | `XIAOMI_API_KEY` in `~/.hermes/.env` (provider: `xiaomi`, aliases: `mimo`, `xiaomi-mimo`) |
 | **Tencent TokenHub** | `TOKENHUB_API_KEY` in `~/.hermes/.env` (provider: `tencent-tokenhub`, aliases: `tencent`, `tokenhub`, `tencentmaas`) |
@@ -60,6 +60,8 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **StepFun** | `STEPFUN_API_KEY` in `~/.hermes/.env` (provider: `stepfun`) |
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
+
+All three OpenCode providers send an opaque, per-conversation `x-opencode-session` header on every request (main turns on every transport plus auxiliary calls such as compression and titles). OpenCode uses it to pin a conversation to one backend so its prompt cache stays warm; the value is derived from the Hermes session id and carries no personal data.
 
 For the official API-key path, see the dedicated [Google Gemini guide](/guides/google-gemini).
 
@@ -327,7 +329,7 @@ model:
 Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, `META_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
 
 :::note Meta contributor tier
-`muse-spark-1.2-contributor` is Meta's discounted tier — Meta may train on your prompts and completions, so [interactive model selection asks for confirmation](../user-guide/configuring-models.md) before using it. Use `muse-spark-1.2` (standard pricing, no training) for confidential work.
+`muse-spark-1.2-contributor` and `muse-spark-1.3-contributor` are Meta's contributor tiers — Meta may train on your prompts and completions, so [interactive model selection asks for confirmation](../user-guide/configuring-models.md) before using either. For current pricing and rate limits, see [Meta Model API pricing and rate limits](https://dev.meta.ai/docs/pricing-rate-limits/). Use the standard `muse-spark-1.2` / `muse-spark-1.3` (no training) for confidential work.
 :::
 
 :::note Z.AI Endpoint Auto-Detection
@@ -502,6 +504,8 @@ hermes chat --provider alibaba_coding --model qwen3-coder-plus
 ```
 
 `alibaba_coding` uses the same `DASHSCOPE_API_KEY` your `alibaba` entry already uses — no separate key needed, just a different routing target. Before this provider was registered, users who set `provider: alibaba_coding` in `config.yaml` silently fell through to OpenRouter routing.
+
+For the mainland-China endpoint (`alibaba-coding-plan-cn`, `https://coding.dashscope.aliyuncs.com/v1`) set `ALIBABA_CODING_PLAN_CN_API_KEY`. The CN provider still falls back to `ALIBABA_CODING_PLAN_API_KEY` / `DASHSCOPE_API_KEY`, but with only the shared key set the `/model` picker lists just the international row — set the CN key (or `provider: alibaba-coding-plan-cn` in `config.yaml`) to surface the CN one. The same applies to `alibaba-token-plan-cn` with `ALIBABA_TOKEN_PLAN_CN_API_KEY`.
 
 ### MiniMax (OAuth)
 

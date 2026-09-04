@@ -125,9 +125,9 @@ class TestAppendToSqlite:
         mock_db = MagicMock()
         released = []
 
-        with patch("hermes_state.get_shared_session_db", return_value=mock_db), \
+        with patch("hermes_state_registry.acquire", return_value=mock_db), \
              patch(
-                 "hermes_state.release_or_close",
+                 "hermes_state_registry.release_or_close",
                  side_effect=lambda db: released.append(db),
              ):
             _append_to_sqlite("sess_1", {"role": "assistant", "content": "hello"})

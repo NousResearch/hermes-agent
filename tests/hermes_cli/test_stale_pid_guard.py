@@ -176,13 +176,13 @@ class TestStopProcessTrees:
 class TestKillStaleDashboardProcesses:
     """dashboard_procs win32 kill branch guard behaviour."""
 
-    def _fake_m(self, pids=(12345,)):
-        m = mock.Mock()
-        m._find_stale_dashboard_pids.return_value = list(pids)
-        return m
+    def _patch_find(self, pids=(12345,)):
+        from hermes_cli import main_dashboard
+
+        return mock.patch.object(main_dashboard, "_find_stale_dashboard_pids", return_value=list(pids))
 
     def test_foreign_pid_reported_not_killed(self):
-        with mock.patch.object(dashboard_procs, "_m", return_value=self._fake_m()), mock.patch.object(
+        with self._patch_find(), mock.patch.object(
             dashboard_procs.sys, "platform", "win32"
         ), mock.patch(
             "gateway.status.get_process_start_time", return_value=123
@@ -197,7 +197,7 @@ class TestKillStaleDashboardProcesses:
         run.assert_not_called()
 
     def test_hermes_pid_killed(self):
-        with mock.patch.object(dashboard_procs, "_m", return_value=self._fake_m()), mock.patch.object(
+        with self._patch_find(), mock.patch.object(
             dashboard_procs.sys, "platform", "win32"
         ), mock.patch(
             "gateway.status.get_process_start_time", return_value=123

@@ -59,7 +59,7 @@ vi.mock('./roster-actions', () => ({ openRosterBot }))
 const noop = () => undefined
 
 function renderRow(bot: RosterRow) {
-  render(<BotRow bot={bot} onDelete={noop} onEdit={noop} onGroup={noop} />)
+  render(<BotRow bot={bot} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />)
 
   return screen.getByRole('button')
 }

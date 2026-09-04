@@ -105,6 +105,48 @@ def test_deepseek_v4_pro_pricing_entry_exists():
     assert float(entry.cache_read_cost_per_million) == 0.003625
 
 
+def test_bundled_pricing_skips_endpoint_metadata(monkeypatch):
+    """An exact bundled price must not block on the provider's /models API."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("endpoint metadata should not be fetched")
+        ),
+    )
+
+    entry = get_pricing_entry(
+        "deepseek-chat",
+        provider="deepseek",
+        base_url="https://api.deepseek.com/v1",
+    )
+
+    assert entry is not None
+    assert entry.source == "official_docs_snapshot"
+
+
+def test_unknown_model_falls_back_to_endpoint_metadata(monkeypatch):
+    """Models absent from the bundled table still use endpoint pricing."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {
+            "deepseek-future": {
+                "pricing": {"prompt": "0.000001", "completion": "0.000002"}
+            }
+        },
+    )
+
+    entry = get_pricing_entry(
+        "deepseek-future",
+        provider="deepseek",
+        base_url="https://api.deepseek.com/v1",
+    )
+
+    assert entry is not None
+    assert entry.source == "provider_models_api"
+    assert entry.input_cost_per_million == Decimal("1")
+    assert entry.output_cost_per_million == Decimal("2")
+
+
 
 
 def test_deepseek_deprecated_aliases_price_as_v4_flash():

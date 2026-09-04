@@ -152,12 +152,18 @@ def test_reacting_never_mutates_message_content(session, db):
 def test_latest_user_message_is_the_agents_default_target(session, db):
     """The agent reacts to "the message that triggered me" without an id."""
     key, rows = session
-    assert db.latest_user_message_row_id(key) == rows[0]
+    assert db.latest_message_row_id(key, role="user") == rows[0]
 
     db.append_message(key, "user", "thanks!")
     newest = db.get_messages_as_conversation(key, include_row_ids=True)[-1]["_row_id"]
 
-    assert db.latest_user_message_row_id(key) == newest
+    assert db.latest_message_row_id(key, role="user") == newest
+
+    # Role-targeting contract: a newer ASSISTANT message must not become the
+    # agent's default target — it always means the latest USER message.
+    db.append_message(key, "assistant", "you're welcome")
+    assert db.latest_message_row_id(key, role="user") == newest
+    assert db.latest_message_row_id(key, role="assistant") != newest
 
 
 def test_row_id_is_opt_in_and_never_reaches_the_provider(session, db):

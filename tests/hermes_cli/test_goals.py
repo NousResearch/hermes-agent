@@ -798,3 +798,38 @@ class TestContractAndBackgroundCompose:
         assert verdict == "wait"
         assert wait_directive and wait_directive.get("pid") == 4242
 
+
+class TestBlockedVerdict:
+    """#100954: a genuinely unachievable goal must be refused, not completed."""
+
+    def test_parse_judge_response_accepts_blocked(self):
+        from hermes_cli.goals import _parse_judge_response
+
+        verdict, reason, parse_failed, _wd = _parse_judge_response(
+            '{"verdict": "blocked", "reason": "the repo was deleted"}'
+        )
+        assert verdict == "blocked"
+        assert reason == "the repo was deleted"
+        assert parse_failed is False
+
+    def test_blocked_verdict_pauses_goal_instead_of_done(self, hermes_home):
+        from unittest.mock import patch
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="blocked-sid")
+        mgr.set("delete a repository that does not exist")
+        with patch(
+            "hermes_cli.goals.judge_goal",
+            return_value=("blocked", "the repo does not exist", False, None, False),
+        ):
+            decision = mgr.evaluate_after_turn(
+                "The repo cannot be deleted: it does not exist."
+            )
+
+        assert decision["verdict"] == "blocked"
+        assert decision["status"] == "paused"
+        assert decision["should_continue"] is False
+        assert "unachievable" in decision["message"].lower()
+        assert mgr.state is not None
+        assert mgr.state.status == "paused"
+        assert "unachievable" in (mgr.state.paused_reason or "").lower()

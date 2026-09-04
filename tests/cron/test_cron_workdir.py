@@ -142,6 +142,7 @@ class TestTickWorkdirPartition:
 
     def test_workdir_jobs_overlap_on_parallel_pool(self, tmp_path, monkeypatch):
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
         import threading
 
         workdir_a = tmp_path / "a"
@@ -192,6 +193,7 @@ class TestRunJobTerminalCwd:
         import os
         import sys
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
 
         class FakeAgent:
             def __init__(self, **kwargs):
@@ -233,7 +235,7 @@ class TestRunJobTerminalCwd:
 
         # Stub scheduler helpers that would otherwise hit the filesystem / config.
         monkeypatch.setattr(sched, "_build_job_prompt", lambda job, prerun_script=None, **kw: "hi")
-        monkeypatch.setattr(sched, "_resolve_origin", lambda job: None)
+        monkeypatch.setattr(sched_delivery, "_resolve_origin", lambda job: None)
         monkeypatch.setattr(sched, "_resolve_delivery_target", lambda job: None)
         monkeypatch.setattr(sched, "_resolve_cron_enabled_toolsets", lambda job, cfg: None)
         # Unlimited inactivity so the poll loop returns immediately.
@@ -256,6 +258,7 @@ class TestRunJobTerminalCwd:
         """
         import os
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
 
         # Pin TERMINAL_CWD to a sentinel via monkeypatch so we control both
         # the before-value and the after-value regardless of cross-test state.
@@ -290,6 +293,7 @@ class TestRunJobTerminalCwd:
     ):
         import os
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
         from tools.terminal_tool import get_session_cwd
 
         baseline = str(tmp_path / "baseline")

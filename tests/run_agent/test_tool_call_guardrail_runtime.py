@@ -45,11 +45,11 @@ def _make_agent(
     platform: str | None = None,
 ) -> AIAgent:
     with (
-        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs(*tool_names)),
-        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs(*tool_names)),
+        patch("model_tools.check_toolset_requirements", return_value={}),
         patch("hermes_cli.config.load_config", return_value=config or {}),
         patch("hermes_cli.config.load_config_readonly", return_value=config or {}),
-        patch("run_agent.OpenAI"),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -129,7 +129,7 @@ def test_default_sequential_path_warns_repeated_exact_failure_without_blocking_e
     msg = SimpleNamespace(content="", tool_calls=[tc])
     messages = []
 
-    with patch("run_agent.handle_function_call", return_value=json.dumps({"error": "boom"})) as mock_hfc:
+    with patch("model_tools.handle_function_call", return_value=json.dumps({"error": "boom"})) as mock_hfc:
         agent._execute_tool_calls_sequential(msg, messages, "task-1")
 
     mock_hfc.assert_called_once()
@@ -155,7 +155,7 @@ def test_config_enabled_hard_stop_blocks_repeated_exact_failure_before_execution
     msg = SimpleNamespace(content="", tool_calls=[tc])
     messages = []
 
-    with patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as mock_hfc:
+    with patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as mock_hfc:
         agent._execute_tool_calls_sequential(msg, messages, "task-1")
 
     mock_hfc.assert_not_called()
@@ -175,7 +175,7 @@ def test_sequential_after_call_appends_guidance_to_tool_result_without_extra_mes
     msg = SimpleNamespace(content="", tool_calls=[tc])
     messages = []
 
-    with patch("run_agent.handle_function_call", return_value=json.dumps({"error": "boom"})):
+    with patch("model_tools.handle_function_call", return_value=json.dumps({"error": "boom"})):
         agent._execute_tool_calls_sequential(msg, messages, "task-1")
 
     assert [m["role"] for m in messages] == ["tool"]
@@ -203,7 +203,7 @@ def test_same_tool_failure_warning_tells_model_to_recover_with_tools():
     msg = SimpleNamespace(content="", tool_calls=[tc])
     messages = []
 
-    with patch("run_agent.handle_function_call", return_value=json.dumps({"exit_code": 1})):
+    with patch("model_tools.handle_function_call", return_value=json.dumps({"exit_code": 1})):
         agent._execute_tool_calls_sequential(msg, messages, "task-1")
 
     content = messages[0]["content"]
@@ -236,7 +236,7 @@ def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_
         executed.append((name, args, kwargs["tool_call_id"]))
         return json.dumps({"ok": args["query"]})
 
-    with patch("run_agent.handle_function_call", side_effect=fake_handle):
+    with patch("model_tools.handle_function_call", side_effect=fake_handle):
         agent._execute_tool_calls_concurrent(msg, messages, "task-1")
 
     assert executed == [("web_search", allowed_args, "c-allow")]
@@ -345,7 +345,7 @@ def test_relay_rewrite_is_guarded_before_dispatch_in_concurrent_path():
     agent.tool_start_callback = lambda *args: starts.append(args)
     with (
         patch("agent.relay_tools.execute", side_effect=relay_execute),
-        patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch,
+        patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch,
     ):
         agent._execute_tool_calls_concurrent(msg, messages, "task-1")
 
@@ -366,7 +366,7 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
             "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
             return_value=("plugin policy", None),
         ),
-        patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as mock_hfc,
+        patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as mock_hfc,
     ):
         agent._execute_tool_calls_sequential(msg, messages, "task-1")
 
@@ -390,7 +390,7 @@ def test_default_run_conversation_warns_without_guardrail_halt():
     agent.client.chat.completions.create.side_effect = responses
 
     with (
-        patch("run_agent.handle_function_call", return_value=json.dumps({"error": "boom"})) as mock_hfc,
+        patch("model_tools.handle_function_call", return_value=json.dumps({"error": "boom"})) as mock_hfc,
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
@@ -436,7 +436,7 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     agent._disable_streaming = True
 
     with (
-        patch("run_agent.handle_function_call", return_value=json.dumps({"error": "boom"})),
+        patch("model_tools.handle_function_call", return_value=json.dumps({"error": "boom"})),
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),

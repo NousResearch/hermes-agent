@@ -141,6 +141,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\nMód reatha: `{mode}`\\n\\nRoghnaigh rogha:"
     choice_fast:           "fast — Priority Processing ar siúl"
     choice_normal:         "normal — gnáthphróiseáil"
+    choice_auto:           "auto — tapa do na chéad soicindí de gach seal"
+    choice_cold:           "cold — tapa don chéad seal de sheisiún amháin"
 
   footer:
     status:                "📎 Buntásc rite: **{state}**\nRéimsí: `{fields}`\nArdán: `{platform}`"

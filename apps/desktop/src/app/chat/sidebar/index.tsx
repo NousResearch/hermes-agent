@@ -89,7 +89,6 @@ import {
   $projectScope,
   $projectTree,
   $projectTreeLoading,
-  $removedSessionIds,
   $reposScanning,
   ALL_PROJECTS,
   enterProject,
@@ -127,6 +126,7 @@ import {
 } from '@/store/session'
 import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
+import { $removedSessionIds } from '@/store/session-removal'
 import { $focusedStoredSessionId, $workingSessionIds, type SplitDir } from '@/store/session-states'
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'

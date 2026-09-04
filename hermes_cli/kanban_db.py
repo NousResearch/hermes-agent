@@ -6254,6 +6254,65 @@ def edit_completed_task_result(
     return True
 
 
+def edit_task_fields(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+    priority: Optional[int] = None,
+) -> bool:
+    """Edit a task's ``title`` / ``body`` / ``priority`` in place.
+
+    Backs the documented ``hermes kanban edit <id> [--title ...] [--body ...]
+    [--priority N]`` contract (#52371). Allowed on any non-archived task —
+    including ``running`` ones, since only the edited columns are touched
+    (claim/heartbeat state is left alone). Only provided fields are updated;
+    fields whose value is unchanged are skipped so a no-op edit records no
+    event. ``title`` must be non-blank when provided. Returns False when the
+    task is missing; raises RuntimeError for archived tasks (matching
+    ``set_model_override``).
+    """
+    if title is not None and not title.strip():
+        raise ValueError("title cannot be blank")
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT title, body, priority, status FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            return False
+        if row["status"] == "archived":
+            raise RuntimeError(f"cannot edit archived task {task_id}")
+        sets: list[str] = []
+        params: list[Any] = []
+        changed_fields: list[str] = []
+        if title is not None and title.strip() != (row["title"] or ""):
+            sets.append("title = ?")
+            params.append(title.strip())
+            changed_fields.append("title")
+        if body is not None and (body or "") != (row["body"] or ""):
+            sets.append("body = ?")
+            params.append(body)
+            changed_fields.append("body")
+        if priority is not None and int(priority) != int(row["priority"] or 0):
+            sets.append("priority = ?")
+            params.append(int(priority))
+            changed_fields.append("priority")
+        if sets:
+            params.append(task_id)
+            conn.execute(
+                f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?",
+                tuple(params),
+            )
+            _append_event(conn, task_id, "edited", {"fields": changed_fields})
+    # Task-mutation observer (RFC #58548), fired AFTER the txn commits —
+    # only when a row actually changed (a no-op edit mutates nothing).
+    if changed_fields:
+        notify_task_updated(conn, task_id, changed_fields)
+    return True
+
+
 def block_task(
     conn: sqlite3.Connection,
     task_id: str,

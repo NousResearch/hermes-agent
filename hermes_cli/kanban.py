@@ -641,12 +641,28 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 
     p_edit = sub.add_parser(
         "edit",
-        help="Edit recovery fields on an already-completed task",
+        help="Edit a task in place (title/body/priority), or backfill a done task's result",
     )
     p_edit.add_argument("task_id")
     p_edit.add_argument(
+        "--title",
+        default=None,
+        help="New task title (in-place edit, any non-archived state)",
+    )
+    p_edit.add_argument(
+        "--body",
+        default=None,
+        help="New task body / goal text (in-place edit, any non-archived state)",
+    )
+    p_edit.add_argument(
+        "--priority",
+        type=int,
+        default=None,
+        help="New priority tiebreaker (in-place edit)",
+    )
+    p_edit.add_argument(
         "--result",
-        required=True,
+        default=None,
         help="Backfilled task result text for a done task",
     )
     p_edit.add_argument(
@@ -2422,7 +2438,59 @@ def _cmd_complete(args: argparse.Namespace) -> int:
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:
+    title = getattr(args, "title", None)
+    body = getattr(args, "body", None)
+    priority = getattr(args, "priority", None)
+    result = getattr(args, "result", None)
+    summary = getattr(args, "summary", None)
     raw_meta = getattr(args, "metadata", None)
+    field_flags = [f for f in (title, body, priority) if f is not None]
+
+    if result is not None and field_flags:
+        print(
+            "kanban: --result/--summary/--metadata backfill completed tasks and "
+            "cannot be combined with --title/--body/--priority",
+            file=sys.stderr,
+        )
+        return 2
+    if field_flags and (summary is not None or raw_meta):
+        # Same incompatibility as above, reached when --result was omitted:
+        # fail loudly instead of silently dropping the recovery flags.
+        print(
+            "kanban: --summary/--metadata backfill completed tasks and "
+            "cannot be combined with --title/--body/--priority",
+            file=sys.stderr,
+        )
+        return 2
+    if result is None and not field_flags:
+        print(
+            "kanban: edit needs --title/--body/--priority (in-place edit) or "
+            "--result (completed-task backfill)",
+            file=sys.stderr,
+        )
+        return 2
+
+    if field_flags:
+        try:
+            with kb.connect_closing() as conn:
+                if not kb.edit_task_fields(
+                    conn,
+                    args.task_id,
+                    title=title,
+                    body=body,
+                    priority=priority,
+                ):
+                    print(
+                        f"cannot edit {args.task_id} (unknown id)",
+                        file=sys.stderr,
+                    )
+                    return 1
+        except (ValueError, RuntimeError) as exc:
+            print(f"kanban: {exc}", file=sys.stderr)
+            return 2
+        print(f"Edited {args.task_id}")
+        return 0
+
     metadata = None
     if raw_meta:
         try:
@@ -2436,8 +2504,8 @@ def _cmd_edit(args: argparse.Namespace) -> int:
         if not kb.edit_completed_task_result(
             conn,
             args.task_id,
-            result=args.result,
-            summary=getattr(args, "summary", None),
+            result=result,
+            summary=summary,
             metadata=metadata,
         ):
             print(

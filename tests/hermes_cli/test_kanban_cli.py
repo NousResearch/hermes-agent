@@ -175,6 +175,83 @@ def test_run_slash_reclaim_running_task(kanban_home):
 
 
 # ---------------------------------------------------------------------------
+# /kanban edit — in-place title/body/priority editing (issue #52371)
+# ---------------------------------------------------------------------------
+
+
+def _create_editable_task(title="edit me"):
+    out = kc.run_slash(f"create '{title}' --assignee alice")
+    assert "Created" in out, out
+    # The create output line is "Created <task_id> ..." — pull the id.
+    tid = None
+    with kb.connect_closing() as conn:
+        tasks = kb.list_tasks(conn, assignee="alice")
+        assert tasks, out
+        tid = tasks[-1].id
+    return tid
+
+
+def test_run_slash_edit_body_in_place(kanban_home):
+    tid = _create_editable_task()
+    out = kc.run_slash(f"edit {tid} --body 'updated body'")
+    assert "Edited" in out, out
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.body == "updated body"
+
+
+def test_run_slash_edit_title_and_priority_in_place(kanban_home):
+    tid = _create_editable_task()
+    out = kc.run_slash(f"edit {tid} --title 'renamed' --priority 3")
+    assert "Edited" in out, out
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.title == "renamed"
+        assert task.priority == 3
+
+
+def test_run_slash_edit_unknown_task_fails(kanban_home):
+    out = kc.run_slash("edit t_missing --body 'x'")
+    assert "cannot edit" in out, out
+
+
+def test_run_slash_edit_no_fields_is_usage_error(kanban_home):
+    tid = _create_editable_task()
+    out = kc.run_slash(f"edit {tid}")
+    assert "edit needs" in out.lower(), out
+
+
+def test_run_slash_edit_result_not_mixable_with_field_flags(kanban_home):
+    tid = _create_editable_task()
+    out = kc.run_slash(f"edit {tid} --result 'done text' --body 'b'")
+    assert "cannot be combined" in out.lower(), out
+
+
+def test_run_slash_edit_summary_not_mixable_with_field_flags(kanban_home):
+    # --summary/--metadata without --result used to error as "required:
+    # --result"; combined with field flags they must STILL be rejected loudly
+    # rather than silently dropped by the in-place path.
+    tid = _create_editable_task()
+    out = kc.run_slash(f"edit {tid} --body 'b' --summary 's'")
+    assert "cannot be combined" in out.lower(), out
+
+
+def test_run_slash_edit_result_backfill_still_works(kanban_home):
+    # Existing completed-task recovery contract must keep working unchanged.
+    tid = _create_editable_task()
+    with kb.connect_closing() as conn:
+        kb.complete_task(conn, tid, result="original result")
+    out = kc.run_slash(f"edit {tid} --result 'backfilled'")
+    assert "Edited" in out, out
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.result == "backfilled"
+
+
+# ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
 

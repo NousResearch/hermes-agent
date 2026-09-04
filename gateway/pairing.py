@@ -479,6 +479,12 @@ class PairingStore:
         # Protects all read-modify-write cycles. The gateway runs multiple
         # platform adapters concurrently in threads sharing one PairingStore.
         self._lock = threading.RLock()
+        # Approved-users file cache, keyed by (mtime_ns, size). The authz
+        # gate calls is_approved once per inbound message, so without this
+        # the file is re-read and re-parsed per message. Approvals change
+        # only through explicit pairing writes (this process or the pairing
+        # CLI), which always bump the mtime, so a stat-keyed cache is exact.
+        self._approved_cache: dict = {}
         self._profile = profile  # for diagnostics / log lines
 
     @property
@@ -544,9 +550,33 @@ class PairingStore:
 
     # ----- Approved users -----
 
+    def _load_approved(self, platform: str) -> dict:
+        """Load the approved-users file, cached by (mtime_ns, size).
+
+        A stat is cheap; a read + JSON parse is not, and the authz gate
+        calls this on every inbound message. Same-process writes bump the
+        mtime via _save_json and external writes (the pairing CLI) do too,
+        so the stat key is an exact invalidator. The loud PermissionError
+        warning in _load_json still runs on every real read. Callers must
+        not mutate the returned dict.
+        """
+        path = self._approved_path(platform)
+        try:
+            st = path.stat()
+            key = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            key = (0, 0)
+        cached = self._approved_cache.get(platform)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        data = self._load_json(path)
+        self._approved_cache[platform] = (key, data)
+        return data
+
     def is_approved(self, platform: str, user_id: str) -> bool:
         """Check if a user is approved (paired) on a platform."""
-        approved = self._load_json(self._approved_path(platform))
+        with self._lock:
+            approved = self._load_approved(platform)
         for approved_user_id in approved:
             if self._user_ids_match(platform, approved_user_id, user_id):
                 return True

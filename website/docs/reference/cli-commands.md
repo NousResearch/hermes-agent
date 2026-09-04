@@ -1577,6 +1577,7 @@ Subcommands:
 | `prune` | Delete sessions matching filters: time bounds `--older-than`/`--newer-than`/`--before`/`--after` (durations like `5h`/`2d`, bare days, or ISO timestamps); attributes `--source`, `--title`, `--model`, `--provider`, `--branch`, `--end-reason`, `--user`, `--chat-id`, `--chat-type`, `--cwd`; numeric bounds `--min/--max-messages`, `--min/--max-tokens`, `--min/--max-cost`, `--min/--max-tool-calls`; plus `--include-archived`, `--dry-run`, `--yes`. Default: older than 90 days. |
 | `archive` | Bulk-archive (soft-hide, no deletion) sessions matching the same filters as `prune`. Requires at least one filter. |
 | `stats` | Show session-store statistics. |
+| `usage <session-id> [--json]` | Show token/cost usage for one session — totals plus a per-model route breakdown (main loop, auxiliary tasks, delegation routes). Accepts a unique ID prefix. `--json` emits a machine-readable report. |
 | `rename <session-id> <title>` | Set or change a session title. |
 | `optimize` | Reclaim disk space: merge FTS5 index segments + VACUUM. Non-destructive — no session data changes. |
 | `optimize-storage` | Migrate the full-text search index to the compact v23 external-content layout; on large databases this reclaims a large fraction of `state.db`. |
@@ -1588,13 +1589,14 @@ Subcommands:
 ## `hermes insights`
 
 ```bash
-hermes insights [--days N] [--source platform]
+hermes insights [--days N] [--source platform] [--json]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--days <n>` | Analyze the last `n` days (default: 30). |
 | `--source <platform>` | Filter by source such as `cli`, `telegram`, or `discord`. |
+| `--json` | Output the full insights report as machine-readable JSON. |
 
 ## `hermes claw`
 

@@ -1075,18 +1075,20 @@ hermes sessions <subcommand>
 | `delete <session-id>` | 删除单个会话。 |
 | `prune` | 删除旧会话。 |
 | `stats` | 显示会话存储统计信息。 |
+| `usage <session-id> [--json]` | 显示单个会话的令牌/费用使用情况 — 总计及按模型路由的明细（主循环、辅助任务、委派路由）。接受唯一的 ID 前缀。`--json` 输出机器可读报告。 |
 | `rename <session-id> <title>` | 设置或更改会话标题。 |
 
 ## `hermes insights`
 
 ```bash
-hermes insights [--days N] [--source platform]
+hermes insights [--days N] [--source platform] [--json]
 ```
 
 | 选项 | 说明 |
 |--------|-------------|
 | `--days <n>` | 分析最近 `n` 天（默认：30）。 |
 | `--source <platform>` | 按来源过滤，如 `cli`、`telegram` 或 `discord`。 |
+| `--json` | 以机器可读的 JSON 格式输出完整的分析报告。 |
 
 ## `hermes claw`
 

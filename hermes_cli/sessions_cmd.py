@@ -1435,6 +1435,131 @@ def cmd_sessions(args, sessions_parser=None):
             else:
                 print("Aborted — nothing was changed.")
 
+    elif action == "usage":
+        resolved_session_id = db.resolve_session_id(args.session_id)
+        if not resolved_session_id:
+            print(f"Session not found: {args.session_id}")
+            db.close()
+            return
+        session = db.get_session(resolved_session_id)
+
+        with db._lock:
+            usage_rows = db._conn.execute(
+                """SELECT model, billing_provider, billing_mode, task,
+                          api_call_count, input_tokens, output_tokens,
+                          cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                          estimated_cost_usd, actual_cost_usd, cost_status
+                     FROM session_model_usage
+                    WHERE session_id = ?
+                    ORDER BY (input_tokens + output_tokens + cache_read_tokens +
+                              cache_write_tokens + reasoning_tokens) DESC""",
+                (resolved_session_id,),
+            ).fetchall()
+
+        def _num(v):
+            return v or 0
+
+        breakdown = []
+        for r in usage_rows:
+            r = dict(r)
+            breakdown.append(
+                {
+                    "model": r["model"],
+                    "provider": r["billing_provider"] or None,
+                    "billing_mode": r["billing_mode"] or None,
+                    "task": r["task"] or "main",
+                    "api_calls": _num(r["api_call_count"]),
+                    "input_tokens": _num(r["input_tokens"]),
+                    "output_tokens": _num(r["output_tokens"]),
+                    "cache_read_tokens": _num(r["cache_read_tokens"]),
+                    "cache_write_tokens": _num(r["cache_write_tokens"]),
+                    "reasoning_tokens": _num(r["reasoning_tokens"]),
+                    "estimated_cost_usd": r["estimated_cost_usd"],
+                    "actual_cost_usd": r["actual_cost_usd"],
+                    "cost_status": r["cost_status"] or None,
+                }
+            )
+
+        totals = {
+            "input_tokens": _num(session.get("input_tokens")),
+            "output_tokens": _num(session.get("output_tokens")),
+            "cache_read_tokens": _num(session.get("cache_read_tokens")),
+            "cache_write_tokens": _num(session.get("cache_write_tokens")),
+            "reasoning_tokens": _num(session.get("reasoning_tokens")),
+            "api_calls": _num(session.get("api_call_count")),
+            "tool_calls": _num(session.get("tool_call_count")),
+            "estimated_cost_usd": session.get("estimated_cost_usd"),
+            "actual_cost_usd": session.get("actual_cost_usd"),
+            "cost_status": session.get("cost_status") or None,
+        }
+        totals["total_tokens"] = (
+            totals["input_tokens"]
+            + totals["output_tokens"]
+            + totals["cache_read_tokens"]
+            + totals["cache_write_tokens"]
+        )
+
+        if getattr(args, "json", False):
+            print(
+                _json.dumps(
+                    {
+                        "session_id": resolved_session_id,
+                        "title": session.get("title"),
+                        "source": session.get("source"),
+                        "model": session.get("model"),
+                        "provider": session.get("billing_provider") or None,
+                        "started_at": session.get("started_at"),
+                        "totals": totals,
+                        "by_model": breakdown,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                    default=str,
+                )
+            )
+        else:
+            title = session.get("title") or "(untitled)"
+            print(f"\nSession {resolved_session_id[:12]} — {title}")
+            print(f"  Model:        {session.get('model') or 'unknown'}")
+            if session.get("billing_provider"):
+                print(f"  Provider:     {session['billing_provider']}")
+            print(f"  Input:        {totals['input_tokens']:,}")
+            if totals["cache_read_tokens"]:
+                print(f"  Cache read:   {totals['cache_read_tokens']:,}")
+            if totals["cache_write_tokens"]:
+                print(f"  Cache write:  {totals['cache_write_tokens']:,}")
+            print(f"  Output:       {totals['output_tokens']:,}")
+            if totals["reasoning_tokens"]:
+                print(f"  Reasoning:    {totals['reasoning_tokens']:,}")
+            print(f"  Total:        {totals['total_tokens']:,}")
+            print(f"  API calls:    {totals['api_calls']:,}")
+            print(f"  Tool calls:   {totals['tool_calls']:,}")
+            cost = totals["actual_cost_usd"] or totals["estimated_cost_usd"]
+            if cost:
+                prefix = "" if totals["actual_cost_usd"] else "~"
+                print(f"  Cost:         {prefix}${float(cost):.4f}")
+            if breakdown:
+                print("\n  Per-route breakdown:")
+                for b in breakdown:
+                    btotal = (
+                        b["input_tokens"]
+                        + b["output_tokens"]
+                        + b["cache_read_tokens"]
+                        + b["cache_write_tokens"]
+                    )
+                    bcost = b["actual_cost_usd"] or b["estimated_cost_usd"]
+                    cost_str = ""
+                    if bcost:
+                        bprefix = "" if b["actual_cost_usd"] else "~"
+                        cost_str = f", {bprefix}${float(bcost):.4f}"
+                    task = f" [{b['task']}]" if b["task"] != "main" else ""
+                    provider = f" via {b['provider']}" if b["provider"] else ""
+                    print(
+                        f"    {b['model']}{provider}{task}: "
+                        f"{btotal:,} tokens, {b['api_calls']} calls{cost_str}"
+                    )
+            print()
+
     elif action == "stats":
         total = db.session_count()
         msgs = db.message_count()

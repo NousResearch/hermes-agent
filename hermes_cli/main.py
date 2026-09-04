@@ -13328,6 +13328,7 @@ def cmd_tools(args):
 
 
 def cmd_insights(args):
+    as_json = bool(getattr(args, "json", False))
     db = None
     try:
         from hermes_state import SessionDB
@@ -13336,9 +13337,21 @@ def cmd_insights(args):
         db = SessionDB()
         engine = InsightsEngine(db)
         report = engine.generate(days=args.days, source=args.source)
-        print(engine.format_terminal(report))
+        if as_json:
+            import json as _json
+
+            # default=str covers any non-JSON-native values (Decimal,
+            # datetime) that slip into computed breakdowns.
+            print(_json.dumps(report, indent=2, ensure_ascii=False, default=str))
+        else:
+            print(engine.format_terminal(report))
     except Exception as e:
-        print(f"Error generating insights: {e}")
+        if as_json:
+            import json as _json
+
+            print(_json.dumps({"error": str(e)}))
+        else:
+            print(f"Error generating insights: {e}")
     finally:
         if db is not None:
             try:
@@ -14875,6 +14888,22 @@ def main():
     )
 
     sessions_subparsers.add_parser("stats", help="Show session store statistics")
+
+    sessions_usage = sessions_subparsers.add_parser(
+        "usage",
+        help="Show token/cost usage for one session, with per-model breakdown",
+        description="Display token counts, API/tool call counts, cost, and a "
+        "per-model route breakdown for a single session. Accepts a full "
+        "session ID or unique prefix.",
+    )
+    sessions_usage.add_argument(
+        "session_id", help="Session ID (or unique prefix) to inspect"
+    )
+    sessions_usage.add_argument(
+        "--json",
+        action="store_true",
+        help="Output usage data as machine-readable JSON",
+    )
 
     sessions_rename = sessions_subparsers.add_parser(
         "rename", help="Set or change a session's title"

@@ -3096,18 +3096,23 @@ class TestRunConversation:
         assert result["completed"] is True
         system = agent.client.chat.completions.create.call_args.kwargs["messages"][0]
         assert system["role"] == "system"
-        assert system["content"] == [
-            {
-                "type": "text",
-                "text": "stable instructions",
-                "cache_control": {"type": "ephemeral"},
-            },
-            {
-                "type": "text",
-                "text": "\n\nsession context",
-                "cache_control": {"type": "ephemeral"},
-            },
-        ]
+        # Contract, not clock bytes: the static prefix block stays byte-identical
+        # (provider prefix cache stays warm) and the volatile tail block carries
+        # the per-turn stamp followed by the session context. Both blocks keep
+        # their ephemeral cache marks exactly as before the feature landed.
+        assert isinstance(system["content"], list)
+        assert system["content"][0] == {
+            "type": "text",
+            "text": "stable instructions",
+            "cache_control": {"type": "ephemeral"},
+        }
+        tail = system["content"][1]
+        assert tail["type"] == "text"
+        assert tail["cache_control"] == {"type": "ephemeral"}
+        # Tail = base remainder (session context) + the per-turn stamp, in that
+        # order: the composer appends the stamp after the byte-stable base.
+        assert tail["text"].startswith("\n\nsession context")
+        assert "Current time: " in tail["text"]
 
     def test_codex_content_filter_incomplete_routes_to_policy_fallback(self, agent):
         self._setup_agent(agent)

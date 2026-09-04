@@ -426,10 +426,12 @@ class TestHTTP413Compression:
         assert result["completed"] is True
         assert len(request_payloads) == 2
         assert len(request_payloads[1]["messages"]) < len(request_payloads[0]["messages"])
-        assert request_payloads[1]["messages"][0] == {
-            "role": "system",
-            "content": "compressed prompt",
-        }
+        # Contract, not clock bytes: the compressed prompt stays the byte-stable
+        # base and the per-turn stamp rides after it (composer appends it after
+        # the base on the retry, exactly as on the first attempt).
+        assert request_payloads[1]["messages"][0]["role"] == "system"
+        assert request_payloads[1]["messages"][0]["content"].startswith("compressed prompt")
+        assert "Current time: " in request_payloads[1]["messages"][0]["content"]
         assert request_payloads[1]["messages"][1] == {
             "role": "user",
             "content": "compressed summary",

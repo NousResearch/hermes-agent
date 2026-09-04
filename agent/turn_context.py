@@ -995,12 +995,39 @@ def build_api_messages(
     # Final system message = cached prompt + ephemeral additions (API-time only).
     # Plugin/recall context goes into the user message, never the system prompt: the
     # prompt is built ONCE per session and replayed verbatim (stable cache prefix).
-    effective_system = active_system_prompt or ""
-    if agent.ephemeral_system_prompt:
-        effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+    effective_system = compose_effective_system_tail(agent, active_system_prompt or "")
     if effective_system:
         api_messages = [{"role": "system", "content": effective_system}] + api_messages
     return api_messages, effective_system
+
+
+def compose_effective_system_tail(agent, base_prompt: str) -> str:
+    """Append the per-turn timestamp and persistent ephemeral prompt.
+
+    The ONE shared composer for every request-only system message
+    assembly.  The base prompt (the byte-stable cached prefix) is always
+    preserved unchanged; the per-turn ``_current_turn_timestamp`` (set
+    once per turn in ``run_conversation``) and the persistent
+    ``ephemeral_system_prompt`` ride after it, in that order, at
+    API-call time.  Mutating the ephemeral prompt itself would stack
+    timestamps on a cached gateway agent (``ts2\\nts1\\nbase``); a
+    dedicated attribute avoids that.
+
+    Sites: ``build_api_messages`` here, ``_sync_failover_system_message``
+    in ``agent.conversation_loop``, and the max-iterations summary in
+    ``agent.chat_completion_helpers``.  Missing timestamp (older agent
+    stubs) and missing ephemeral prompt both degrade to today's
+    behaviour.
+    """
+    parts = []
+    _ts = getattr(agent, "_current_turn_timestamp", "") or ""
+    if _ts:
+        parts.append(_ts)
+    if getattr(agent, "ephemeral_system_prompt", None):
+        parts.append(agent.ephemeral_system_prompt)
+    if not parts:
+        return base_prompt
+    return (base_prompt + "\n\n" + "\n\n".join(parts)).strip()
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

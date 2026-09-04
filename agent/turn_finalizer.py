@@ -632,4 +632,19 @@ def finalize_turn(
 
     agent._turn_preflight_display_snapshot = None
     agent._turn_received_provider_response = False
+
+    # Temporal-claim guard (companion to the per-turn timestamp feature).
+    # The stamp makes "now" authoritative every turn; this check surfaces
+    # model output that contradicts it. Log-only, never mutates the
+    # response, never raises — a checker bug must not break a turn.
+    try:
+        _ts_stamp = getattr(agent, "_current_turn_timestamp", "") or ""
+        if final_response and _ts_stamp:
+            from agent.temporal_guard import check_temporal_claims
+
+            for _flag in check_temporal_claims(final_response, _ts_stamp):
+                logger.warning("Temporal-claim check: %s", _flag)
+    except Exception:
+        pass  # Guard is best-effort observability
+
     return result

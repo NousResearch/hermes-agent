@@ -219,6 +219,9 @@ class _EngineCollector:
         handler,
         description: str = "",
         args_hint: str = "",
+        argument_mode: str | None = None,
+        *,
+        busy_safe_subcommands=(),
     ) -> None:
         """Forward to the global plugin command registry."""
         clean = (name or "").lower().strip().lstrip("/").replace(" ", "-")
@@ -243,7 +246,7 @@ class _EngineCollector:
             pass
 
         try:
-            from hermes_cli.plugins import get_plugin_manager
+            from hermes_cli.plugins import PluginContext, get_plugin_manager
             manager = get_plugin_manager()
             if clean in manager._plugin_commands:
                 # Don't clobber a regular plugin's command — same conflict
@@ -254,11 +257,24 @@ class _EngineCollector:
                     self._engine_name, clean,
                 )
                 return
+            hint = (args_hint or "").strip()
+            mode = (
+                argument_mode
+                if argument_mode in {"options", "text", "mixed"}
+                else ("text" if hint else None)
+            )
             manager._plugin_commands[clean] = {
                 "handler": handler,
                 "description": description or "Context engine command",
                 "plugin": f"context-engine:{self._engine_name}",
-                "args_hint": (args_hint or "").strip(),
+                "plugin_key": f"context-engine:{self._engine_name}",
+                "args_hint": hint,
+                "argument_mode": mode,
+                "busy_safe_subcommands": (
+                    PluginContext._normalize_busy_safe_subcommands(
+                        busy_safe_subcommands
+                    )
+                ),
             }
             self._registered_commands.append(clean)
             logger.debug(

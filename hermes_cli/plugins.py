@@ -2175,6 +2175,22 @@ class PluginContext:
 
     # -- slash command registration -------------------------------------------
 
+    @staticmethod
+    def _normalize_busy_safe_subcommands(values: Iterable[str]) -> Tuple[str, ...]:
+        """Normalize the public busy-safe verb list once for every registrar."""
+        normalized: List[str] = []
+        for raw_subcommand in values or ():
+            if not isinstance(raw_subcommand, str):
+                raise TypeError("busy_safe_subcommands entries must be strings")
+            subcommand = raw_subcommand.strip().lower()
+            if any(char.isspace() for char in subcommand):
+                raise ValueError(
+                    "busy_safe_subcommands entries must be single tokens"
+                )
+            if subcommand not in normalized:
+                normalized.append(subcommand)
+        return tuple(normalized)
+
     @_serialized_replacement
     def register_command(
         self,
@@ -2183,6 +2199,8 @@ class PluginContext:
         description: str = "",
         args_hint: str = "",
         argument_mode: str | None = None,
+        *,
+        busy_safe_subcommands: Iterable[str] = (),
     ) -> Optional[PluginRegistration]:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
@@ -2203,6 +2221,12 @@ class PluginContext:
         ``argument_mode`` tells the desktop composer how text after the command
         name behaves (``options``, ``text``, or ``mixed``). Omit it to infer
         ``text`` whenever ``args_hint`` is set, so ``/myplugin `` stays typeable.
+
+        ``busy_safe_subcommands`` opts specific first argument tokens into
+        authorization-aware dispatch while an agent is already running. The
+        empty string represents the bare command. Once a command opts in, any
+        unlisted first token is rejected mid-turn rather than interrupting or
+        queueing the active agent. Omit it to preserve the legacy busy behavior.
 
         Names conflicting with built-in commands are rejected with a warning.
         """
@@ -2239,6 +2263,9 @@ class PluginContext:
             "plugin_key": self.manifest.key or self.manifest.name,
             "args_hint": hint,
             "argument_mode": mode,
+            "busy_safe_subcommands": self._normalize_busy_safe_subcommands(
+                busy_safe_subcommands
+            ),
         }
         self._manager._plugin_commands[clean] = entry
         handle = self._track_replacement(
@@ -7057,6 +7084,14 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
+
+
+def get_plugin_command_entry(name: str) -> Optional[dict]:
+    """Return normalized metadata for a plugin slash command, if registered."""
+    clean = (name or "").lower().strip().lstrip("/").replace("_", "-")
+    if not clean:
+        return None
+    return _ensure_plugins_discovered()._plugin_commands.get(clean)
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

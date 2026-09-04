@@ -1157,13 +1157,51 @@ def register(ctx):
 
 After registration, users can type `/mystatus` in any session. The command appears in autocomplete, `/help` output, and the Telegram bot menu.
 
-**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "", args_hint: str = "")`
+**Signature:**
+
+```python
+ctx.register_command(
+    name: str,
+    handler: Callable,
+    description: str = "",
+    args_hint: str = "",
+    argument_mode: str | None = None,
+    *,
+    busy_safe_subcommands: Iterable[str] = (),
+)
+```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `name` | `str` | Command name without the leading slash (e.g. `"lcm"`, `"mystatus"`) |
 | `handler` | `Callable[[str], str \| None]` | Called with the raw argument string. May also be `async`. |
 | `description` | `str` | Shown in `/help`, autocomplete, and Telegram bot menu |
+| `args_hint` | `str` | Optional argument hint shown by native command pickers |
+| `argument_mode` | `str \| None` | Desktop composer behavior: `options`, `text`, or `mixed` |
+| `busy_safe_subcommands` | `Iterable[str]` | First argument tokens allowed while an agent is running; `""` means the bare command |
+
+#### Busy-safe control commands
+
+Plugin commands keep their legacy busy behavior unless they explicitly opt in.
+Use `busy_safe_subcommands` only for deterministic control-plane operations that
+are safe to run without interrupting the active agent:
+
+```python
+def register(ctx):
+    ctx.register_command(
+        "worker",
+        handler=handle_worker,
+        description="Inspect or control the worker",
+        busy_safe_subcommands=("status", "pause", "stop"),
+    )
+```
+
+Hermes compares only the lower-cased first argument token. The bare command is
+represented by `""`. Once a plugin opts in, listed tokens dispatch inline and
+unlisted tokens reject without invoking the handler, interrupting the agent, or
+queueing the command as user text. Normal slash-command authorization still
+applies, and inline gateway responses are delivered as notify-worthy control
+messages. Sync and async legacy `handler(raw_args)` callables are both supported.
 
 **Key differences from `register_cli_command()`:**
 

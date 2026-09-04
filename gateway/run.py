@@ -3159,6 +3159,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    _mark_notify_metadata,
     _prefix_within_utf16_limit,
     _reply_anchor_for_event,
     build_auto_tts_output_path,
@@ -11270,6 +11271,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return text
         return (enriched_text or text).strip()
 
+    async def _dispatch_busy_plugin_command(
+        self,
+        *,
+        plugin_name: str,
+        plugin_entry: dict,
+        event: MessageEvent,
+    ) -> Optional[str]:
+        """Authorize, validate, and dispatch one opted-in busy plugin command."""
+        denied = self._check_slash_access(event.source, plugin_name)
+        if denied is not None:
+            return denied
+
+        plugin_args = (event.get_command_args() or "").strip()
+        plugin_verb = plugin_args.split(None, 1)[0].lower() if plugin_args else ""
+        busy_safe = set(plugin_entry.get("busy_safe_subcommands") or ())
+        if plugin_verb not in busy_safe:
+            return (
+                f"⏳ Agent is running — `/{plugin_name}` can't run mid-turn. "
+                "Wait for the current response or `/stop` first."
+            )
+
+        handler = plugin_entry.get("handler")
+        if not callable(handler):
+            logger.warning("Plugin command /%s has no callable handler", plugin_name)
+            return "Plugin command failed."
+        try:
+            result = handler(plugin_args)
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception:
+            logger.warning(
+                "Busy-safe plugin command dispatch failed for /%s",
+                plugin_name,
+                exc_info=True,
+            )
+            return "Plugin command failed."
+        return str(result) if result else None
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -11413,6 +11452,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return True
         if getattr(event, "internal", False):
             return False
+
+        # Plugin commands opt into mid-turn dispatch one first-token verb at a
+        # time. Once opted in, unlisted verbs reject here instead of reaching
+        # the generic queue/steer/interrupt path. Legacy plugin commands omit
+        # busy_safe_subcommands and keep their existing behavior.
+        plugin_name = (event.get_command() or "").replace("_", "-")
+        plugin_entry = None
+        if plugin_name:
+            try:
+                from hermes_cli.plugins import get_plugin_command_entry
+
+                plugin_entry = get_plugin_command_entry(plugin_name)
+            except Exception:
+                logger.warning(
+                    "Plugin command metadata lookup failed for /%s",
+                    plugin_name,
+                    exc_info=True,
+                )
+        if plugin_entry and plugin_entry.get("busy_safe_subcommands"):
+            response = await self._dispatch_busy_plugin_command(
+                plugin_name=plugin_name,
+                plugin_entry=plugin_entry,
+                event=event,
+            )
+            if response:
+                text, ephemeral_ttl = adapter._unwrap_ephemeral(response)
+                if text:
+                    anchor = self._reply_anchor_for_event(event)
+                    sent = await adapter._send_with_retry(
+                        chat_id=event.source.chat_id,
+                        content=text,
+                        reply_to=anchor,
+                        metadata=_mark_notify_metadata(
+                            self._thread_metadata_for_source(event.source, anchor)
+                        ),
+                    )
+                    if ephemeral_ttl > 0 and sent.success and sent.message_id:
+                        adapter._schedule_ephemeral_delete(
+                            chat_id=event.source.chat_id,
+                            message_id=sent.message_id,
+                            ttl_seconds=ephemeral_ttl,
+                        )
+            return True
 
         _busy_state = self._peek_session_state(session_key)
         running_agent = _busy_state.turn.agent if _busy_state else None
@@ -19422,6 +19504,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
 
+            # Plugin commands are outside the built-in CommandDef registry.
+            # Resolve their explicit busy-safe policy before generic busy input
+            # can interrupt or queue the active turn.
+            _plugin_name_inner = (_evt_cmd or "").replace("_", "-")
+            _plugin_entry_inner = None
+            if _plugin_name_inner:
+                try:
+                    from hermes_cli.plugins import get_plugin_command_entry
+
+                    _plugin_entry_inner = get_plugin_command_entry(
+                        _plugin_name_inner
+                    )
+                except Exception:
+                    logger.warning(
+                        "Plugin command metadata lookup failed for /%s",
+                        _plugin_name_inner,
+                        exc_info=True,
+                    )
+            if (
+                _plugin_entry_inner
+                and _plugin_entry_inner.get("busy_safe_subcommands")
+            ):
+                return await self._dispatch_busy_plugin_command(
+                    plugin_name=_plugin_name_inner,
+                    plugin_entry=_plugin_entry_inner,
+                    event=event,
+                )
+
             # /status and /context are intentionally pre-gate so users
             # always see session state.
             if _cmd_def_inner and _cmd_def_inner.name == "status":
@@ -20149,11 +20259,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Normalize underscores to hyphens so Telegram's underscored
                 # autocomplete form matches plugin commands registered with
                 # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
+                plugin_name = command.replace("_", "-")
+                plugin_handler = get_plugin_command_handler(plugin_name)
                 if plugin_handler:
+                    # Plugin commands are slash capabilities too. Keep their
+                    # cold-path authorization identical to busy-safe dispatch.
+                    denied = self._check_slash_access(source, plugin_name)
+                    if denied is not None:
+                        return denied
                     user_args = event.get_command_args().strip()
                     result = plugin_handler(user_args)
-                    if asyncio.iscoroutine(result):
+                    if inspect.isawaitable(result):
                         result = await result
                     return str(result) if result else None
             except Exception as e:

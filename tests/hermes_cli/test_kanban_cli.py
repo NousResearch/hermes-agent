@@ -70,6 +70,45 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
+def test_show_survives_iso_strings_in_integer_timestamp_columns(kanban_home):
+    """`kanban show` must not crash on ISO-8601 strings written into the
+    INTEGER timestamp columns by raw SQL outside the mutators (#97455).
+
+    SQLite's type affinity accepts those writes silently; both output modes
+    must keep the card readable, with the stray values coerced back to
+    epoch ints instead of raising ``invalid literal for int()``.
+    """
+    iso_utc = "2026-08-28T14:35:22+00:00"
+    iso_z = "2026-08-28T16:58:56.613Z"
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="corrupted card", assignee="alice")
+        assert kb.claim_task(conn, task_id)
+        assert kb.complete_task(conn, task_id, summary="done")
+        conn.execute(
+            "UPDATE task_runs SET ended_at = ? WHERE task_id = ?",
+            (iso_utc, task_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET completed_at = ? WHERE id = ?",
+            (iso_z, task_id),
+        )
+        conn.execute(
+            "UPDATE task_events SET created_at = ? WHERE task_id = ?",
+            (iso_z, task_id),
+        )
+        conn.commit()
+
+    output = kc.run_slash(f"show {task_id}")
+    assert f"Task {task_id}: corrupted card" in output
+    assert "invalid literal" not in output
+
+    payload = json.loads(kc.run_slash(f"show {task_id} --json"))
+    assert payload["task"]["id"] == task_id
+    assert isinstance(payload["task"]["completed_at"], int)
+    assert all(isinstance(r["ended_at"], int) for r in payload["runs"])
+    assert all(isinstance(e["created_at"], int) for e in payload["events"])
+
+
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")

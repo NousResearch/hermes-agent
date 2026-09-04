@@ -86,6 +86,7 @@ import logging
 import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
@@ -481,6 +482,45 @@ _CTX_MAX_COMMENTS       = 30      # most recent N comments shown in full
 _CTX_MAX_FIELD_BYTES    = 4 * 1024   # 4 KB per summary/error/metadata/result
 _CTX_MAX_BODY_BYTES     = 8 * 1024   # 8 KB per task.body (opening post)
 _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
+
+
+def _coerce_epoch(value: Any) -> Optional[int]:
+    """Coerce a timestamp-column value to a unix-epoch int, tolerating strays.
+
+    The timestamp columns of ``tasks`` / ``task_runs`` / ``task_events`` are
+    declared INTEGER, but SQLite's type affinity lets an ISO-8601 string (or
+    an epoch-as-str) land there silently when a row is written outside the
+    mutators — e.g. a worker shell running raw SQL (#97455). Every mutator in
+    this module writes ``int(time.time())``, so readers only need to tolerate
+    foreign rows: numeric values pass through, timezone-aware ISO-8601
+    strings are converted to epoch seconds, and anything else degrades to
+    ``None`` instead of crashing every later read of the card. Naive ISO
+    strings are NOT guessed at a timezone — an unparseable clock reading is
+    dropped rather than rendered as a wrong time.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            return int(s)
+        except ValueError:
+            pass
+        try:
+            iso = s[:-1] + "+00:00" if s.endswith("Z") else s
+            dt = datetime.fromisoformat(iso)
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            return None
+        return int(dt.timestamp())
+    return None
 
 
 def _relative_age(ts: Optional[int], now: Optional[int] = None) -> str:
@@ -1162,15 +1202,15 @@ class Task:
             status=row["status"],
             priority=row["priority"],
             created_by=row["created_by"],
-            created_at=row["created_at"],
-            started_at=row["started_at"],
-            completed_at=row["completed_at"],
+            created_at=(_coerce_epoch(row["created_at"]) or 0),
+            started_at=_coerce_epoch(row["started_at"]),
+            completed_at=_coerce_epoch(row["completed_at"]),
             workspace_kind=row["workspace_kind"],
             workspace_path=row["workspace_path"],
             branch_name=row["branch_name"] if "branch_name" in keys else None,
             project_id=row["project_id"] if "project_id" in keys else None,
             claim_lock=row["claim_lock"],
-            claim_expires=row["claim_expires"],
+            claim_expires=_coerce_epoch(row["claim_expires"]),
             tenant=row["tenant"] if "tenant" in keys else None,
             result=row["result"] if "result" in keys else None,
             idempotency_key=row["idempotency_key"] if "idempotency_key" in keys else None,
@@ -1192,7 +1232,9 @@ class Task:
                 row["max_runtime_seconds"] if "max_runtime_seconds" in keys else None
             ),
             last_heartbeat_at=(
-                row["last_heartbeat_at"] if "last_heartbeat_at" in keys else None
+                _coerce_epoch(row["last_heartbeat_at"])
+                if "last_heartbeat_at" in keys
+                else None
             ),
             current_run_id=(
                 row["current_run_id"] if "current_run_id" in keys else None
@@ -1279,12 +1321,12 @@ class Run:
             step_key=row["step_key"],
             status=row["status"],
             claim_lock=row["claim_lock"],
-            claim_expires=row["claim_expires"],
+            claim_expires=_coerce_epoch(row["claim_expires"]),
             worker_pid=row["worker_pid"],
             max_runtime_seconds=row["max_runtime_seconds"],
-            last_heartbeat_at=row["last_heartbeat_at"],
-            started_at=int(row["started_at"]),
-            ended_at=(int(row["ended_at"]) if row["ended_at"] is not None else None),
+            last_heartbeat_at=_coerce_epoch(row["last_heartbeat_at"]),
+            started_at=(_coerce_epoch(row["started_at"]) or 0),
+            ended_at=_coerce_epoch(row["ended_at"]),
             outcome=row["outcome"],
             summary=row["summary"],
             metadata=meta,
@@ -4301,7 +4343,7 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
                 task_id=r["task_id"],
                 kind=r["kind"],
                 payload=payload,
-                created_at=r["created_at"],
+                created_at=(_coerce_epoch(r["created_at"]) or 0),
                 run_id=(int(r["run_id"]) if "run_id" in r.keys() and r["run_id"] is not None else None),
             )
         )
@@ -9490,8 +9532,8 @@ def check_respawn_guard(
             # blocker_auth regex so the stamped rate-limit text doesn't
             # re-trap the task.
             return None
-        ended_at = latest_run["ended_at"]
-        if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
+        ended_at = _coerce_epoch(latest_run["ended_at"])
+        if ended_at is not None and (now - ended_at) < rl_cooldown:
             return "rate_limit_cooldown"
         # Cooldown elapsed — allow the respawn. Return early so the
         # blocker_auth check below doesn't catch the rate-limit text we
@@ -9525,7 +9567,7 @@ def check_respawn_guard(
         (task_id, cutoff),
     ).fetchone()
     if recent_completed:
-        completed_at = int(recent_completed["ended_at"] or 0)
+        completed_at = _coerce_epoch(recent_completed["ended_at"]) or 0
         requeued_after = conn.execute(
             "SELECT 1 FROM task_events "
             "WHERE task_id = ? AND created_at >= ? "
@@ -11253,10 +11295,12 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         if role_rows:
             lines.append(f"## Recent work by @{task.assignee}")
             for row in role_rows:
-                ts = time.strftime(
-                    "%Y-%m-%d %H:%M", time.localtime(int(row["ended_at"]))
+                ended = _coerce_epoch(row["ended_at"])
+                ts = (
+                    time.strftime("%Y-%m-%d %H:%M", time.localtime(ended))
+                    if ended is not None else "?"
                 )
-                age = _relative_age(row["ended_at"], _now)
+                age = _relative_age(ended, _now)
                 ts_disp = f"{ts}, {age}" if age else ts
                 s = (row["summary"] or "").strip().splitlines()
                 first = s[0][:200] if s else "(no summary)"
@@ -11808,7 +11852,7 @@ def unseen_events_for_sub(
             payload = None
         out.append(Event(
             id=r["id"], task_id=r["task_id"], kind=r["kind"],
-            payload=payload, created_at=r["created_at"],
+            payload=payload, created_at=(_coerce_epoch(r["created_at"]) or 0),
             run_id=(int(r["run_id"]) if "run_id" in r.keys() and r["run_id"] is not None else None),
         ))
         max_id = max(max_id, int(r["id"]))

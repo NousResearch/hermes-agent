@@ -10,6 +10,7 @@ import sys
 import time
 import types
 import unittest.mock
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -483,6 +484,68 @@ def test_delete_task_removes_task_and_cascades(kanban_home):
         assert len(kb.list_comments(conn, t)) == 0
         assert len(kb.list_events(conn, t)) == 0
         assert len(kb.list_runs(conn, t)) == 0
+
+
+def test_coerce_epoch_matrix():
+    """_coerce_epoch tolerates foreign timestamp values (#97455)."""
+    assert kb._coerce_epoch(1785902715) == 1785902715
+    assert kb._coerce_epoch(1785902715.25) == 1785902715
+    assert kb._coerce_epoch("1785902715") == 1785902715
+    # Timezone-aware ISO-8601 — both spellings observed in the wild —
+    # convert to epoch seconds.
+    assert kb._coerce_epoch("2026-08-28T14:35:22+00:00") == int(
+        datetime(2026, 8, 28, 14, 35, 22, tzinfo=timezone.utc).timestamp()
+    )
+    assert kb._coerce_epoch("2026-08-28T16:58:56.613Z") == int(
+        datetime(2026, 8, 28, 16, 58, 56, 613000, tzinfo=timezone.utc).timestamp()
+    )
+    # A naive ISO string has no timezone to trust — dropped, not guessed.
+    assert kb._coerce_epoch("2026-08-04T21:05:15.679975") is None
+    assert kb._coerce_epoch("not a timestamp") is None
+    assert kb._coerce_epoch("") is None
+    assert kb._coerce_epoch(None) is None
+    assert kb._coerce_epoch(True) is None
+
+
+def test_readers_coerce_iso_strings_in_integer_timestamp_columns(kanban_home):
+    """Rows written outside the mutators must not make a card unreadable.
+
+    SQLite's type affinity lets raw SQL store ISO-8601 strings into the
+    INTEGER timestamp columns (#97455); the row mappers must coerce them
+    back to epoch ints instead of raising ``invalid literal for int()``.
+    """
+    iso_utc = "2026-08-28T14:35:22+00:00"
+    iso_z = "2026-08-28T16:58:56.613Z"
+    expected = int(
+        datetime(2026, 8, 28, 14, 35, 22, tzinfo=timezone.utc).timestamp()
+    )
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="corrupted card", assignee="alice")
+        assert kb.claim_task(conn, t)
+        assert kb.complete_task(conn, t, summary="done")
+        conn.execute(
+            "UPDATE task_runs SET ended_at = ? WHERE task_id = ?", (iso_utc, t)
+        )
+        conn.execute(
+            "UPDATE tasks SET completed_at = ? WHERE id = ?", (iso_z, t)
+        )
+        conn.execute(
+            "UPDATE task_events SET created_at = ? WHERE task_id = ?", (iso_z, t)
+        )
+        conn.commit()
+
+        runs = kb.list_runs(conn, t)
+        assert len(runs) == 1
+        assert runs[0].ended_at == expected
+        assert isinstance(runs[0].started_at, int)
+
+        task = kb.get_task(conn, t)
+        assert task is not None
+        assert isinstance(task.completed_at, int)
+
+        events = kb.list_events(conn, t)
+        assert events and all(isinstance(e.created_at, int) for e in events)
+
 
 
 

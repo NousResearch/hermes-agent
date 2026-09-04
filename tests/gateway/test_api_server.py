@@ -180,6 +180,7 @@ class TestAdapterInit:
 
     def test_create_agent_forwards_runtime_config(self, monkeypatch):
         captured = {}
+        reasoning_callback = MagicMock()
 
         class FakeAgent:
             def __init__(self, **kwargs):
@@ -217,9 +218,13 @@ class TestAdapterInit:
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
         monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
 
-        agent = adapter._create_agent(session_id="api-session")
+        agent = adapter._create_agent(
+            session_id="api-session",
+            reasoning_callback=reasoning_callback,
+        )
 
         assert isinstance(agent, FakeAgent)
+        assert captured["reasoning_callback"] is reasoning_callback
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
         assert captured["checkpoints_enabled"] is True
         assert captured["checkpoint_max_snapshots"] == 7
@@ -363,6 +368,7 @@ class TestAgentExecution:
         mock_agent.session_prompt_tokens = 1
         mock_agent.session_completion_tokens = 2
         mock_agent.session_total_tokens = 3
+        reasoning_callback = MagicMock()
 
         model_options = {"reasoning": {"enabled": False}, "fast": False}
         with patch.object(adapter, "_create_agent", return_value=mock_agent) as mock_create_agent:
@@ -373,6 +379,7 @@ class TestAgentExecution:
                 requested_model="MiniMax-M3",
                 requested_provider="minimax",
                 model_options=model_options,
+                reasoning_callback=reasoning_callback,
             )
 
         # _run_agent annotates result with the effective agent.session_id
@@ -386,6 +393,7 @@ class TestAgentExecution:
         assert create_kwargs["requested_model"] == "MiniMax-M3"
         assert create_kwargs["requested_provider"] == "minimax"
         assert create_kwargs["model_options"] == model_options
+        assert create_kwargs["reasoning_callback"] is reasoning_callback
         mock_agent.run_conversation.assert_called_once_with(
             user_message="hello",
             conversation_history=[],
@@ -625,6 +633,58 @@ class TestDisconnectedAgentReap:
 
 
 class TestRunEventCallback:
+
+    @pytest.mark.asyncio
+    async def test_run_emits_live_reasoning_not_completion_preview(self, adapter, monkeypatch):
+        """Run events must use model deltas, not completed assistant text."""
+        class FakeAgent:
+            session_prompt_tokens = 1
+            session_completion_tokens = 2
+            session_total_tokens = 3
+
+            def __init__(self, **kwargs):
+                self.session_id = kwargs["session_id"]
+                self.reasoning_callback = kwargs["reasoning_callback"]
+                self.stream_delta_callback = kwargs["stream_delta_callback"]
+                self.tool_progress_callback = kwargs["tool_progress_callback"]
+
+            def run_conversation(self, user_message, conversation_history, task_id):
+                del user_message, conversation_history, task_id
+                self.reasoning_callback("")
+                self.reasoning_callback("check facts")
+                self.tool_progress_callback(
+                    "reasoning.available", "_thinking", "answer misclassified", None
+                )
+                self.stream_delta_callback("answer")
+                return {"final_response": "answer"}
+
+        monkeypatch.setattr(adapter, "_create_agent", lambda **kwargs: FakeAgent(**kwargs))
+        app = web.Application()
+        app.router.add_post("/v1/runs", adapter._handle_runs)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/runs", json={"input": "reason first"})
+            assert resp.status == 202
+            run_id = (await resp.json())["run_id"]
+
+            events = []
+            queue = adapter._run_streams[run_id]
+            while True:
+                event = await asyncio.wait_for(queue.get(), timeout=2)
+                if event is None:
+                    break
+                events.append(event)
+
+        streamed = [
+            (event["event"], event.get("delta"))
+            for event in events
+            if event["event"] in {"reasoning.delta", "message.delta"}
+        ]
+        assert streamed == [
+            ("reasoning.delta", "check facts"),
+            ("message.delta", "answer"),
+        ]
+        assert not any(event["event"] == "reasoning.available" for event in events)
+        assert "answer misclassified" not in str(events)
 
     @pytest.mark.asyncio
     async def test_subagent_events_redact_secrets_and_carry_child_session(self, adapter):
@@ -873,6 +933,7 @@ class TestCapabilitiesEndpoint:
             assert data["runtime"]["split_runtime"] is False
             assert "API-server host" in data["runtime"]["description"]
             assert data["features"]["chat_completions"] is True
+            assert data["features"]["reasoning_streaming"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
             assert data["features"]["runs_idempotency"] == {
@@ -1038,6 +1099,52 @@ class TestChatCompletionsEndpoint:
         assert kwargs["requested_model"] == "MiniMax-M3"
         assert kwargs["requested_provider"] == "minimax"
         assert kwargs["model_options"] == model_options
+
+    @pytest.mark.asyncio
+    async def test_stream_emits_reasoning_content_before_answer(self, adapter):
+        """OpenAI-compatible SSE keeps reasoning separate from answer text."""
+        async def fake_run(**kwargs):
+            kwargs["reasoning_callback"]("")
+            kwargs["reasoning_callback"]("check ")
+            kwargs["reasoning_callback"]("facts")
+            kwargs["stream_delta_callback"]("answer")
+            return {
+                "final_response": "answer",
+                "session_id": "chat-reasoning-session",
+            }, {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+
+        app = _create_app(adapter)
+        with patch.object(adapter, "_run_agent", side_effect=fake_run):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": adapter._model_name,
+                        "messages": [{"role": "user", "content": "reason first"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+        deltas = []
+        for line in body.splitlines():
+            if not line.startswith("data: ") or line == "data: [DONE]":
+                continue
+            payload = json.loads(line[len("data: "):])
+            choices = payload.get("choices") or []
+            if choices:
+                delta = choices[0].get("delta") or {}
+                if "reasoning_content" in delta:
+                    deltas.append(("reasoning", delta["reasoning_content"]))
+                if "content" in delta:
+                    deltas.append(("content", delta["content"]))
+
+        assert deltas == [
+            ("reasoning", "check "),
+            ("reasoning", "facts"),
+            ("content", "answer"),
+        ]
 
 
     @pytest.mark.asyncio
@@ -1369,6 +1476,62 @@ class TestResponsesEndpoint:
             assert data["output"][0]["content"][0]["type"] == "output_text"
             assert data["output"][0]["content"][0]["text"] == "Paris is the capital of France."
 
+    @pytest.mark.asyncio
+    async def test_batch_preserves_reasoning_output_item(self, adapter):
+        """Non-streaming Responses aggregates turn reasoning into one item."""
+        result = {
+            "final_response": "answer",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "check facts",
+                    "tool_calls": [{
+                        "id": "call_lookup",
+                        "function": {"name": "lookup", "arguments": "{}"},
+                    }],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_lookup",
+                    "content": "facts",
+                },
+                {
+                    "role": "assistant",
+                    "content": "answer",
+                    "reasoning": "form answer",
+                },
+            ],
+            "session_id": "responses-batch-reasoning-session",
+        }
+        app = _create_app(adapter)
+        with patch.object(
+            adapter,
+            "_run_agent",
+            new=AsyncMock(return_value=(
+                result,
+                {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+            )),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"input": "reason first", "store": False},
+                )
+                assert resp.status == 200
+                payload = await resp.json()
+
+        assert [item["type"] for item in payload["output"]] == [
+            "function_call", "function_call_output", "reasoning", "message"
+        ]
+        reasoning_items = [
+            item for item in payload["output"] if item["type"] == "reasoning"
+        ]
+        assert len(reasoning_items) == 1
+        assert reasoning_items[0]["summary"] == [
+            {"type": "summary_text", "text": "check facts\n\nform answer"}
+        ]
+
 
     @pytest.mark.asyncio
     async def test_previous_response_id_stores_compressed_transcript_directly(self, adapter):
@@ -1618,6 +1781,77 @@ class TestResponsesEndpoint:
 
 class TestResponsesStreaming:
 
+    @pytest.mark.asyncio
+    async def test_stream_emits_reasoning_item_and_live_deltas(self, adapter):
+        """Responses SSE must stream reasoning and retain it in output items."""
+        async def fake_run(**kwargs):
+            kwargs["reasoning_callback"]("")
+            kwargs["reasoning_callback"]("check ")
+            kwargs["reasoning_callback"]("facts")
+            kwargs["stream_delta_callback"]("answer")
+            return {
+                "final_response": "answer",
+                "messages": [{
+                    "role": "assistant",
+                    "content": "answer",
+                    # Live deltas are authoritative when the completed
+                    # provider payload contains an augmented representation.
+                    "reasoning_content": "check facts plus final-only detail",
+                }],
+                "session_id": "responses-reasoning-session",
+            }, {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+
+        app = _create_app(adapter)
+        with patch.object(adapter, "_run_agent", side_effect=fake_run):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"input": "reason first", "stream": True, "store": False},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+        events = []
+        for block in body.split("\n\n"):
+            event_name = None
+            payload = None
+            for line in block.splitlines():
+                if line.startswith("event: "):
+                    event_name = line[len("event: "):]
+                elif line.startswith("data: "):
+                    payload = json.loads(line[len("data: "):])
+            if event_name and payload is not None:
+                events.append((event_name, payload))
+
+        live = [
+            payload["delta"]
+            for name, payload in events
+            if name == "response.reasoning_text.delta"
+        ]
+        assert live == ["check ", "facts"]
+
+        reasoning_added = next(
+            payload for name, payload in events
+            if name == "response.output_item.added"
+            and payload["item"]["type"] == "reasoning"
+        )
+        message_added = next(
+            payload for name, payload in events
+            if name == "response.output_item.added"
+            and payload["item"]["type"] == "message"
+        )
+        assert reasoning_added["output_index"] < message_added["output_index"]
+
+        completed = next(
+            payload["response"] for name, payload in events
+            if name == "response.completed"
+        )
+        assert [item["type"] for item in completed["output"]] == [
+            "reasoning", "message"
+        ]
+        assert completed["output"][0]["content"] == [
+            {"type": "reasoning_text", "text": "check facts"}
+        ]
 
     @pytest.mark.asyncio
     async def test_stream_task_done_callback_enqueues_eos_for_responses(self, adapter):
@@ -1700,7 +1934,9 @@ class TestResponsesStreaming:
         stream_q = api_mod.ThreadSafeAsyncQueue()
 
         async def _agent_coro():
-            # Feed one partial delta into the stream queue...
+            # Feed partial reasoning and answer deltas into the stream queue...
+            stream_q.put_nowait(("__reasoning__", "partial "))
+            stream_q.put_nowait(("__reasoning__", "thought"))
             stream_q.put_nowait("partial output")
             # ...then give the drain loop a moment to pick it up before
             # raising CancelledError to simulate a server-side cancel.
@@ -1742,6 +1978,15 @@ class TestResponsesStreaming:
             for part in item.get("content", [])
         )
         assert "partial output" in output_text
+        reasoning_items = [
+            item
+            for item in stored["response"].get("output", [])
+            if item.get("type") == "reasoning"
+        ]
+        assert len(reasoning_items) == 1
+        assert reasoning_items[0]["content"] == [
+            {"type": "reasoning_text", "text": "partial thought"}
+        ]
 
     @pytest.mark.asyncio
     async def test_stream_client_disconnect_persists_incomplete_snapshot(self, adapter):

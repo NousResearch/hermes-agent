@@ -202,13 +202,6 @@ def _make_run_event_callback(
                 "duration": round(kwargs.get("duration", 0), 3),
                 "error": kwargs.get("is_error", False),
             })
-        elif event_type == "reasoning.available":
-            _push({
-                "event": "reasoning.available",
-                "run_id": run_id,
-                "timestamp": ts,
-                "text": preview or "",
-            })
         elif event_type in {"subagent.start", "subagent.complete"}:
             event = {
                 "event": event_type,
@@ -254,10 +247,10 @@ def _make_run_event_callback(
                     value = redact_sensitive_text(value, force=True)
                 event[key] = value
             _push(event)
-        # _thinking, subagent.tool, and subagent_progress are intentionally
-        # not forwarded on the /v1/runs stream: they are high-volume UI
-        # noise. Lifecycle boundaries (start/complete) still need to land
-        # so clients can observe delegate_task timeouts and failures.
+        # _thinking, completion-time reasoning.available, subagent.tool, and
+        # subagent_progress are intentionally not forwarded on the /v1/runs
+        # stream. Live model reasoning uses the dedicated callback below;
+        # forwarding the completed preview would duplicate or mislabel text.
 
     return _callback
 
@@ -656,6 +649,20 @@ async def _handle_runs(
         except Exception:
             pass
 
+    def _reasoning_cb(delta: Optional[str]) -> None:
+        """Push live reasoning without mixing it into message.delta."""
+        if not delta or run_id not in self._run_streams:
+            return
+        try:
+            loop.call_soon_threadsafe(_put_event_if_active, {
+                "event": "reasoning.delta",
+                "run_id": run_id,
+                "timestamp": time.time(),
+                "delta": delta,
+            })
+        except Exception:
+            pass
+
     initial_status = self._set_run_status(
         run_id,
         "queued",
@@ -735,6 +742,7 @@ async def _handle_runs(
                     ephemeral_system_prompt=ephemeral_system_prompt,
                     session_id=session_id,
                     stream_delta_callback=_text_cb,
+                    reasoning_callback=_reasoning_cb,
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
                     requested_model=agent_overrides.get("requested_model"),

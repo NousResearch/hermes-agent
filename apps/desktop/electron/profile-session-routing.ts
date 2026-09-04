@@ -438,18 +438,32 @@ export async function findRemoteOwnerProfileForSession(
     return null
   }
 
-  const params = new URLSearchParams()
-  params.set('limit', '200')
-  params.set('offset', '0')
+  const scanProfile = async (profile: string): Promise<null | string> => {
+    // The backend caps /api/sessions page size at 100 (`le=100`): a limit=200
+    // probe is rejected with 422, which used to abort the whole owner sweep and
+    // strand the open on the local backend. Page through 100-row windows until
+    // the id is found or the remote list is exhausted.
+    const PAGE = 100
 
-  const matches = await Promise.all(
-    remoteProfiles.map(async profile => {
+    for (let offset = 0; ; offset += PAGE) {
+      const params = new URLSearchParams()
+      params.set('limit', String(PAGE))
+      params.set('offset', String(offset))
+
       const list = await listForProfile(profile, params).catch(() => null)
       const rows = Array.isArray(list?.sessions) ? (list.sessions as Array<Record<string, unknown>>) : []
 
-      return rows.some(row => row?.id === sessionId || row?._lineage_root_id === sessionId) ? profile : null
-    })
-  )
+      if (rows.some(row => row?.id === sessionId || row?._lineage_root_id === sessionId)) {
+        return profile
+      }
+
+      if (rows.length < PAGE) {
+        return null
+      }
+    }
+  }
+
+  const matches = await Promise.all(remoteProfiles.map(scanProfile))
 
   return matches.find(profile => profile !== null) ?? null
 }

@@ -35,6 +35,7 @@ import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 const DEFAULT_EXEC_TIMEOUT_MS = 20_000
@@ -431,6 +432,8 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData,
 
     let stdout = ''
     let stderr = ''
+    const stdoutDecoder = new StringDecoder('utf8')
+    const stderrDecoder = new StringDecoder('utf8')
     let settled = false
 
     const timer: any = setTimeout(() => {
@@ -478,10 +481,10 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData,
     }
 
     child.stdout?.on('data', d => {
-      stdout += d.toString()
+      stdout += stdoutDecoder.write(Buffer.isBuffer(d) ? d : Buffer.from(d))
     })
     child.stderr?.on('data', d => {
-      stderr += d.toString()
+      stderr += stderrDecoder.write(Buffer.isBuffer(d) ? d : Buffer.from(d))
     })
     child.on('error', error => {
       if (settled) {
@@ -501,6 +504,8 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData,
       settled = true
       clearTimeout(timer)
       signal?.removeEventListener('abort', onAbort)
+      stdout += stdoutDecoder.end()
+      stderr += stderrDecoder.end()
       resolve({ code, stdout, stderr })
     })
   })
@@ -820,6 +825,7 @@ class SshConnection {
       const child = this._spawnFn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'] })
       tunnel.child = child
       let stderr = ''
+      const stderrDecoder = new StringDecoder('utf8')
       let readyConfirmed = false
       let settled = false
       let downHandled = false
@@ -873,7 +879,7 @@ class SshConnection {
           return
         }
 
-        stderr = `${stderr}${String(d)}`.slice(-16_384)
+        stderr = `${stderr}${stderrDecoder.write(Buffer.isBuffer(d) ? d : Buffer.from(d))}`.slice(-16_384)
 
         if (readyPattern.test(stderr)) {
           readyConfirmed = true
@@ -881,12 +887,16 @@ class SshConnection {
         }
       })
       child.on('error', (error: any) => onDown(`tunnel process failed (${error?.message || error})`, error))
-      child.on('exit', (code: any) =>
+      child.on('exit', (code: any) => {
+        stderr = `${stderr}${stderrDecoder.end()}`.slice(-16_384)
         onDown(`tunnel process exited with code ${code}`, new Error(`tunnel process exited with code ${code}`))
-      )
-      child.on('close', (code: any) =>
+      })
+      child.on('close', (code: any) => {
+        // decoder.end() is idempotent (a second call returns '') — this flushes
+        // only if 'exit' did not fire first.
+        stderr = `${stderr}${stderrDecoder.end()}`.slice(-16_384)
         onDown(`tunnel process closed with code ${code}`, new Error(`tunnel process closed with code ${code}`))
-      )
+      })
     })
   }
 

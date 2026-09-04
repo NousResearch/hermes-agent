@@ -1561,7 +1561,9 @@ stt:
     # no_speech_prob_threshold: 0.6  # drop a segment only if no_speech_prob > this...
     # logprob_threshold: -1.0       # ...AND avg_logprob < this (both must hit — quiet real speech survives)
     # unload_after_idle_seconds: 0  # 0=never unload (default); e.g. 300 releases the model after 5min idle (frees VRAM on GPU; next voice message reloads it)
-  language: "en"               # GLOBAL language hint for every STT provider (per-provider language wins). Set "" for auto-detect.
+    # fallback_language: "en"       # re-transcribe with this language when auto-detect is not confident (short/accented clips); "" = never
+    # language_confidence_threshold: 0.6  # faster-whisper language_probability below this triggers the fallback
+  language: ""                 # GLOBAL language hint for every STT provider (per-provider language wins). "" = auto-detect (default); a set value is forced.
   # groq:
   #   model: "whisper-large-v3-turbo"
   #   language: ""             # blank = stt.language > HERMES_LOCAL_STT_LANGUAGE > auto-detect

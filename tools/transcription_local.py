@@ -157,6 +157,9 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
 _VAD_MIN_SILENCE_MS_DEFAULT = 500
 _NO_SPEECH_PROB_THRESHOLD_DEFAULT = 0.6
 _LOGPROB_THRESHOLD_DEFAULT = -1.0
+# Auto-detect confidence gate: faster-whisper's language_probability below this on an
+# auto-detected clip triggers a second pass with ``stt.local.fallback_language``.
+_LANGUAGE_CONFIDENCE_THRESHOLD_DEFAULT = 0.6
 
 
 def build_local_transcribe_kwargs(stt_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -186,6 +189,34 @@ def build_local_transcribe_kwargs(stt_config: Optional[Dict[str, Any]] = None) -
     if isinstance(initial_prompt, str) and initial_prompt.strip():
         kwargs["initial_prompt"] = initial_prompt
     return kwargs
+
+
+def low_confidence_fallback_language(info: Any, local_cfg: Dict[str, Any]) -> Optional[str]:
+    """The language to re-transcribe with when faster-whisper AUTO-detected one at low
+    confidence, else None.
+
+    Whisper's language detection misreads short or accented clips, which users see as a
+    voice note transcribed in the wrong language. Forcing one language for everyone
+    (the pre-2026-09 default ``stt.language: "en"``) fixed that for English speakers and
+    turned every non-English voice note into nonsense. This gate keeps auto-detect as
+    the default and reserves the forced language for the low-confidence case only:
+    ``stt.local.fallback_language`` (``""`` = never) and
+    ``stt.local.language_confidence_threshold`` (faster-whisper's ``language_probability``).
+    A forced language (config, env or a pre_transcription hook) never reaches here.
+    """
+    fallback = str(local_cfg.get("fallback_language") or "").strip().lower()
+    if not fallback:
+        return None
+    try:
+        probability = float(getattr(info, "language_probability"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    threshold = _config_number(
+        local_cfg, "language_confidence_threshold", _LANGUAGE_CONFIDENCE_THRESHOLD_DEFAULT)
+    detected = str(getattr(info, "language", "") or "").strip().lower()
+    if detected == fallback or probability >= threshold:
+        return None
+    return fallback
 
 
 def _confidence_thresholds(local_cfg: Dict[str, Any]) -> tuple[float, float]:

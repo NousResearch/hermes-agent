@@ -30,7 +30,8 @@ from tools.transcription_audio import (
 from tools.transcription_local import (
     _get_idle_unload_seconds, _has_local_command, _join_confident_segments,
     _load_local_whisper_model, _looks_like_cuda_lib_error, _normalize_local_model,
-    _transcribe_local_command, _try_lazy_install_stt, build_local_transcribe_kwargs)
+    _transcribe_local_command, _try_lazy_install_stt, build_local_transcribe_kwargs,
+    low_confidence_fallback_language)
 # The ``_transcribe_<provider>`` handlers are looked up in this module's globals by _dispatch_stt_provider.
 from tools.transcription_cloud import (  # noqa: F401  (handlers dispatched via globals())
     _has_xai_stt_credentials, _resolve_openai_audio_client_config, _transcribe_deepinfra,
@@ -379,6 +380,17 @@ def _transcribe_local(
                            "evicting cached model and retrying on CPU (int8).", exc)
             model = _replace_cached_model_on_cpu(model_name)
             segments, info = model.transcribe(file_path, **transcribe_kwargs)
+        # A forced language (config, env or hook) is honoured as-is. An auto-detected one
+        # gets a confidence gate: a low-probability guess (short/accented clips) is redone
+        # with stt.local.fallback_language instead of forcing one language for everyone.
+        if "language" not in transcribe_kwargs:
+            fallback = low_confidence_fallback_language(info, local_cfg)
+            if fallback:
+                logger.info("Local whisper auto-detected %s at p=%.2f (below the confidence "
+                            "threshold) — retrying with fallback language %r",
+                            info.language, info.language_probability, fallback)
+                segments, info = model.transcribe(
+                    file_path, **{**transcribe_kwargs, "language": fallback})
         transcript = _join_confident_segments(segments, local_cfg)
         logger.info("Transcribed %s via local whisper (%s, lang=%s, %.1fs audio)",
                     Path(file_path).name, model_name, info.language, info.duration)

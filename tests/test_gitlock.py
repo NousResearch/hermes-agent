@@ -137,3 +137,71 @@ def test_is_ancestor_false_for_unknown_rev(repo: Path) -> None:
 
 def test_is_ancestor_false_for_nonexistent_repo(tmp_path: Path) -> None:
     assert is_ancestor_of_head(tmp_path / "missing", "HEAD") is False
+
+
+def test_windows_probe_uses_the_ansi_codec_not_utf8_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tasklist probe must resolve its codec with ``locale.getencoding()``.
+
+    ``tasklist`` emits the console/ANSI code page.  Under Python UTF-8 Mode --
+    which Hermes turns on for its own processes -- ``getpreferredencoding(False)``
+    reports ``utf-8``, so a bare ``text=True`` decodes CP932 bytes as UTF-8.
+    That failure lands in ``subprocess``' reader thread, not at the call site:
+    ``run()`` returns normally with ``stdout`` set to ``None``, ``.lower()``
+    raises ``AttributeError``, the blanket ``except`` swallows it, and the probe
+    answers "no git running" -- silently disabling the guard that stops
+    :func:`clear_stale_git_locks` from yanking a lock a live fetch is holding.
+    """
+    import hermes_cli.gitlock as gitlock
+
+    captured: dict = {}
+    payload = '"\u30a4\u30e1\u30fc\u30b8\u540d","PID"\n"git.exe","4321"\n'.encode("cp932")
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured.update(kwargs)
+        codec = kwargs.get("encoding")
+        text = payload.decode(codec, kwargs.get("errors", "replace")) if codec else None
+        return subprocess.CompletedProcess(cmd, 0, stdout=text, stderr="")
+
+    monkeypatch.setattr(gitlock.subprocess, "run", fake_run)
+    monkeypatch.setattr(gitlock.locale, "getencoding", lambda: "cp932")
+    monkeypatch.setattr(gitlock.locale, "getpreferredencoding", lambda *a, **k: "utf-8")
+
+    # ``os.name`` is restored before the assertions run: leaving it flipped
+    # would make pytest build a path object for the wrong OS while rendering
+    # a failure, turning a readable assertion error into an INTERNALERROR.
+    with monkeypatch.context() as ctx:
+        ctx.setattr(gitlock.os, "name", "nt")
+        running = gitlock._git_proc_running()
+
+    assert running is True
+    assert captured["cmd"][0] == "tasklist"
+    assert captured["encoding"] == "cp932"
+    assert captured["errors"] == "replace"
+
+
+def test_posix_probe_passes_an_explicit_codec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pgrep branch must not fall back to the locale default either."""
+    import hermes_cli.gitlock as gitlock
+
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(gitlock.subprocess, "run", fake_run)
+
+    with monkeypatch.context() as ctx:
+        ctx.setattr(gitlock.os, "name", "posix")
+        running = gitlock._git_proc_running()
+
+    assert running is False
+    assert captured["cmd"][0] == "pgrep"
+    assert captured["encoding"] == "utf-8"
+    assert captured["errors"] == "replace"

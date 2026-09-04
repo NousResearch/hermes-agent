@@ -27,6 +27,7 @@ This module provides two small, defensive helpers used by the update paths:
 
 from __future__ import annotations
 
+import locale
 import logging
 import os
 import subprocess
@@ -50,6 +51,23 @@ STALE_LOCK_MIN_AGE_SECONDS = 10 * 60
 LOCK_NAMES = ("shallow.lock", "index.lock", "HEAD.lock", "MERGE_HEAD.lock")
 
 
+def _tasklist_encoding() -> str:
+    """Codec for decoding ``tasklist.exe`` output on Windows.
+
+    ``tasklist`` emits the console/ANSI code page, not UTF-8 -- CP932 on a
+    Japanese host. ``locale.getpreferredencoding(False)`` is the wrong probe
+    here because it honours Python UTF-8 Mode, which Hermes turns on for its
+    own processes, so it reports ``utf-8`` while the child is still emitting
+    CP932. ``locale.getencoding()`` ignores UTF-8 Mode and returns the real
+    code page. Same resolution as ``_schtasks_encoding()`` in
+    :mod:`hermes_cli.gateway_windows` (#89907).
+    """
+    try:
+        return locale.getencoding() or "utf-8"
+    except Exception:
+        return "utf-8"
+
+
 def _git_proc_running() -> bool:
     """True when a ``git`` process is currently running.
 
@@ -59,13 +77,16 @@ def _git_proc_running() -> bool:
     """
     try:
         if os.name == "nt":
-            out = subprocess.run(
+            probe = subprocess.run(
                 ["tasklist", "/FI", "IMAGENAME eq git.exe", "/FO", "CSV"],
-                capture_output=True, text=True, timeout=10,
-            ).stdout.lower()
+                capture_output=True, timeout=10,
+                text=True, encoding=_tasklist_encoding(), errors="replace",
+            )
+            out = (probe.stdout or "").lower()
             return "git.exe" in out
         out = subprocess.run(
-            ["pgrep", "-x", "git"], capture_output=True, text=True, timeout=10,
+            ["pgrep", "-x", "git"], capture_output=True, timeout=10,
+            text=True, encoding="utf-8", errors="replace",
         )
         return out.returncode == 0
     except Exception:
@@ -184,7 +205,8 @@ def is_ancestor_of_head(repo_root: Path, rev: str) -> bool:
         result = subprocess.run(
             ["git", "merge-base", "--is-ancestor", rev, "HEAD"],
             cwd=str(repo_root),
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, timeout=10,
+            text=True, encoding="utf-8", errors="replace",
         )
         return result.returncode == 0
     except Exception:

@@ -102,6 +102,171 @@ def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
     assert f"{project_dir}:/workspace" in run_args_str
 
 
+def test_auto_mount_disabled_by_default(monkeypatch, tmp_path):
+    """Host cwd should not be mounted unless the caller explicitly opts in."""
+    project_dir = tmp_path / "my-project"
+    project_dir.mkdir()
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(
+        cwd="/root",
+        host_cwd=str(project_dir),
+        auto_mount_cwd=False,
+    )
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
+    assert f"{project_dir}:/workspace" not in run_args_str
+
+
+def test_auto_mount_skipped_when_workspace_already_mounted(monkeypatch, tmp_path):
+    """Explicit user volumes for /workspace should take precedence over cwd mount."""
+    project_dir = tmp_path / "my-project"
+    project_dir.mkdir()
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(
+        cwd="/workspace",
+        host_cwd=str(project_dir),
+        auto_mount_cwd=True,
+        volumes=[f"{other_dir}:/workspace"],
+    )
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
+    assert f"{other_dir}:/workspace" in run_args_str
+    assert run_args_str.count(":/workspace") == 1
+
+
+def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
+    """Persistent mode should still prefer the configured host cwd at /workspace."""
+    project_dir = tmp_path / "my-project"
+    project_dir.mkdir()
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(
+        cwd="/workspace",
+        persistent_filesystem=True,
+        host_cwd=str(project_dir),
+        auto_mount_cwd=True,
+        task_id="test-persistent-auto-mount",
+    )
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
+    assert f"{project_dir}:/workspace" in run_args_str
+    assert "/sandboxes/docker/test-persistent-auto-mount/workspace:/workspace" not in run_args_str
+
+
+def test_persistent_home_and_workspace_mounts_are_selinux_labeled(monkeypatch, tmp_path):
+    """Persistent /root and /workspace bind mounts must carry the :z SELinux
+    label so containers can write to them on SELinux-enforcing hosts (e.g.
+    Fedora/RHEL + podman) — without it these mounts default to user_home_t
+    and every write fails with Permission denied despite correct Unix
+    ownership. :z is a no-op on non-SELinux hosts, so this is safe
+    everywhere.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr("tools.environments.base.get_sandbox_dir", lambda: tmp_path)
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(
+        cwd="/workspace",
+        persistent_filesystem=True,
+        task_id="test-selinux-labels",
+    )
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
+    assert ":/root:z" in run_args_str
+    assert ":/workspace:z" in run_args_str
+
+
+def test_auto_mounted_host_cwd_is_selinux_labeled(monkeypatch, tmp_path):
+    """The opt-in host-cwd-to-/workspace bind mount also needs :z, same
+    reasoning as test_persistent_home_and_workspace_mounts_are_selinux_labeled.
+    """
+    project_dir = tmp_path / "my-project"
+    project_dir.mkdir()
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(
+        cwd="/workspace",
+        host_cwd=str(project_dir),
+        auto_mount_cwd=True,
+    )
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
+    assert f"{project_dir}:/workspace:z" in run_args_str
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("/home/user/projects:/workspace/projects", "/home/user/projects:/workspace/projects:z"),
+        ("/home/user/data:/data:ro", "/home/user/data:/data:ro,z"),
+        ("~/datasets:/data", "~/datasets:/data:z"),
+        ("./relative:/data", "./relative:/data:z"),
+    ],
+)
+def test_docker_volumes_host_paths_are_selinux_labeled(monkeypatch, tmp_path, raw, expected):
+    """User-configured `terminal.docker_volumes` host-directory bind mounts
+    need the same :z label as the internal mount sites — otherwise a
+    correctly-configured docker_volumes entry still hits Permission denied
+    on SELinux-enforcing hosts. Preserves any user-provided mode (:ro).
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(volumes=[raw])
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
+    assert expected in run_args_str
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "my-named-volume:/data",
+        "my-named-volume:/data:ro",
+    ],
+)
+def test_docker_volumes_named_volumes_are_not_selinux_labeled(monkeypatch, tmp_path, raw):
+    """Named Docker/podman volumes (no leading /, ~, or .) aren't host
+    directories — SELinux relabeling doesn't apply, and appending :z would
+    silently change the volume driver's interpretation of the mount, so
+    these must pass through unmodified."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(volumes=[raw])
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
+    assert raw in run_args_str
+    assert f"{raw}:z" not in run_args_str
+    assert f"{raw},z" not in run_args_str
+
+
 def test_non_persistent_cleanup_removes_container(monkeypatch):
     """When persist_across_processes=false, cleanup() must docker stop AND
     docker rm so containers don't leak across hermes processes.
@@ -1491,6 +1656,77 @@ def test_credential_mount_skipped_when_source_missing(monkeypatch, tmp_path, cap
         "source not found" in rec.getMessage()
         for rec in caplog.records
     )
+
+
+def test_credential_mount_works_when_source_is_valid_file(monkeypatch, tmp_path):
+    """Credential mount should proceed normally when source is a valid file."""
+    valid_file = tmp_path / "token.json"
+    valid_file.write_text('{"token": "REDACTED"}')
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    fake_mounts = [
+        {"host_path": str(valid_file), "container_path": "/root/.hermes/token.json"},
+    ]
+    monkeypatch.setattr(
+        "tools.credential_files.get_credential_file_mounts",
+        lambda: fake_mounts,
+    )
+    monkeypatch.setattr(
+        "tools.credential_files.get_skills_directory_mount",
+        lambda: [],
+    )
+    monkeypatch.setattr(
+        "tools.credential_files.get_cache_directory_mounts",
+        lambda: [],
+    )
+
+    _make_dummy_env()
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
+    assert "token.json" in run_args_str
+
+
+def test_credential_skills_cache_mounts_are_selinux_labeled(monkeypatch, tmp_path):
+    """Credential file, skills directory, and cache directory mounts are all
+    read-only host bind mounts built the same way as /workspace and /root —
+    they need the same :z SELinux label or they're unreadable inside the
+    container on SELinux-enforcing hosts.
+    """
+    valid_file = tmp_path / "token.json"
+    valid_file.write_text('{"token": "REDACTED"}')
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    cache_dir = tmp_path / "cache" / "documents"
+    cache_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    monkeypatch.setattr(
+        "tools.credential_files.get_credential_file_mounts",
+        lambda: [{"host_path": str(valid_file), "container_path": "/root/.hermes/token.json"}],
+    )
+    monkeypatch.setattr(
+        "tools.credential_files.get_skills_directory_mount",
+        lambda: [{"host_path": str(skills_dir), "container_path": "/root/.hermes/skills"}],
+    )
+    monkeypatch.setattr(
+        "tools.credential_files.get_cache_directory_mounts",
+        lambda: [{"host_path": str(cache_dir), "container_path": "/root/.hermes/cache/documents"}],
+    )
+
+    _make_dummy_env()
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
+    assert f"{valid_file}:/root/.hermes/token.json:ro,z" in run_args_str
+    assert f"{skills_dir}:/root/.hermes/skills:ro,z" in run_args_str
+    assert f"{cache_dir}:/root/.hermes/cache/documents:ro,z" in run_args_str
 
 
 # ── s6-overlay /init image handling (issue #34628) ────────────────

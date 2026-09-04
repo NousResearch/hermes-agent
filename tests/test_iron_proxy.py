@@ -294,6 +294,57 @@ def test_start_proxy_idempotent_when_already_running(hermes_home, monkeypatch):
 
 
 
+def test_docker_egress_args_full_path(hermes_home, monkeypatch):
+    """Wire up everything (config, CA, mappings, fake running proxy) and
+    verify the docker helper emits the right mounts and env."""
+
+    from tools.environments.docker import _egress_proxy_args_for_docker
+    from hermes_cli.config import load_config, save_config
+
+    # Materialize config, CA, mappings.
+    state = ip._proxy_state_dir()
+    ca = state / "ca.crt"
+    ca.write_text("fake-ca")
+    (state / "ca.key").write_text("fake-key")
+    mapping = _sample_mapping("OPENROUTER_API_KEY")
+    proxy_cfg = ip.build_proxy_config(
+        mappings=[mapping], ca_cert=ca, ca_key=state / "ca.key", tunnel_port=9090,
+    )
+    ip.write_proxy_config(proxy_cfg)
+    ip.write_mappings([mapping])
+
+    cfg = load_config()
+    cfg.setdefault("proxy", {})["enabled"] = True
+    cfg["proxy"]["enforce_on_docker"] = True
+    save_config(cfg)
+
+    # Fake running proxy.
+    (state / "iron-proxy.pid").write_text("99999")
+    monkeypatch.setattr(ip, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(ip, "_port_listening", lambda h, p: True)
+
+    vol, env, host = _egress_proxy_args_for_docker()
+    # CA mount present and in -v form
+    assert "-v" in vol
+    assert any("hermes-egress-ca.crt" in arg for arg in vol)
+    # Env contains both casings of HTTPS_PROXY and the CA env vars
+    assert env["HTTPS_PROXY"].endswith(":9090")
+    assert env["https_proxy"] == env["HTTPS_PROXY"]
+    assert env["REQUESTS_CA_BUNDLE"].endswith("hermes-egress-ca.crt")
+    assert env["NODE_EXTRA_CA_CERTS"] == env["REQUESTS_CA_BUNDLE"]
+    # NO_PROXY excludes loopback
+    assert "127.0.0.1" in env["NO_PROXY"]
+    # Per-mapping proxy token is surfaced under both the standard provider env
+    # name (so existing SDKs work without egress-specific code) and the
+    # introspection name.
+    assert env["OPENROUTER_API_KEY"] == mapping.proxy_token
+    assert env["HERMES_PROXY_TOKEN_OPENROUTER_API_KEY"] == mapping.proxy_token
+    # Linux host-gateway mapping
+    assert host == ["--add-host", "host.docker.internal:host-gateway"]
+    # CA cert bind mount must carry the SELinux :z label alongside :ro, or
+    # containers on SELinux-enforcing hosts (Fedora/RHEL + podman) can't
+    # read it — same root cause as the /workspace and /root mounts.
+    assert any(arg.endswith("hermes-egress-ca.crt:ro,z") for arg in vol)
 
 
 

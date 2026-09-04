@@ -101,6 +101,30 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
     return normalized
 
 
+def _selinux_label_user_volume(vol: str) -> str:
+    """Append the SELinux ``z`` relabel option to a user-configured
+    ``docker_volumes`` entry, iff it's a host-directory bind mount.
+
+    ``-v`` entries come in two shapes: ``host_path:container_path[:opts]``
+    (a bind mount — needs the label, same as every other internal mount
+    site) and ``volume_name:container_path[:opts]`` (a named Docker/podman
+    volume, which is unaffected by the host's SELinux context and whose
+    user-provided opts — e.g. ``:ro``, ``:nocopy`` — should pass through
+    untouched). Host paths are distinguished by a leading ``/``, ``~``, or
+    ``.`` per the documented ``docker_volumes`` format; anything else is
+    treated as a named volume and left alone.
+    """
+    parts = vol.split(":")
+    if len(parts) not in (2, 3) or not parts[0].startswith(("/", "~", ".")):
+        return vol
+
+    host_path, container_path = parts[0], parts[1]
+    opts = [o for o in parts[2].split(",") if o] if len(parts) == 3 else []
+    if "z" not in opts and "Z" not in opts:
+        opts.append("z")
+    return f"{host_path}:{container_path}:{','.join(opts)}"
+
+
 def _load_hermes_env_vars() -> dict[str, str]:
     """Load ~/.hermes/.env values without failing Docker command execution."""
     try:
@@ -520,7 +544,7 @@ def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str
         return ([], {}, [])
 
     container_ca = "/etc/ssl/certs/hermes-egress-ca.crt"
-    volume_args = ["-v", f"{status.ca_cert_path}:{container_ca}:ro"]
+    volume_args = ["-v", f"{status.ca_cert_path}:{container_ca}:ro,z"]
 
     # tunnel_port serves CONNECT (HTTPS); the plain-HTTP forward listener
     # is on tunnel_port + 1 (see build_proxy_config's listener-role notes).
@@ -994,6 +1018,7 @@ class DockerEnvironment(BaseEnvironment):
             if not vol:
                 continue
             if ":" in vol:
+                vol = _selinux_label_user_volume(vol)
                 volume_args.extend(["-v", vol])
                 if ":/workspace" in vol:
                     workspace_explicitly_mounted = True
@@ -1020,13 +1045,13 @@ class DockerEnvironment(BaseEnvironment):
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
             writable_args.extend([
-                "-v", f"{self._home_dir}:/root",
+                "-v", f"{self._home_dir}:/root:z",
             ])
             if not bind_host_cwd and not workspace_explicitly_mounted:
                 self._workspace_dir = str(sandbox / "workspace")
                 os.makedirs(self._workspace_dir, exist_ok=True)
                 writable_args.extend([
-                    "-v", f"{self._workspace_dir}:/workspace",
+                    "-v", f"{self._workspace_dir}:/workspace:z",
                 ])
         else:
             if not bind_host_cwd and not workspace_explicitly_mounted:
@@ -1040,7 +1065,7 @@ class DockerEnvironment(BaseEnvironment):
 
         if bind_host_cwd:
             logger.info("Mounting configured host cwd to /workspace: %s", host_cwd_abs)
-            volume_args = ["-v", f"{host_cwd_abs}:/workspace", *volume_args]
+            volume_args = ["-v", f"{host_cwd_abs}:/workspace:z", *volume_args]
         elif workspace_explicitly_mounted:
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
 
@@ -1072,7 +1097,7 @@ class DockerEnvironment(BaseEnvironment):
                     continue
                 volume_args.extend([
                     "-v",
-                    f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro",
+                    f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro,z",
                 ])
                 logger.info(
                     "Docker: mounting credential %s -> %s",
@@ -1092,7 +1117,7 @@ class DockerEnvironment(BaseEnvironment):
                     continue
                 volume_args.extend([
                     "-v",
-                    f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro",
+                    f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro,z",
                 ])
                 logger.info(
                     "Docker: mounting skills dir %s -> %s",
@@ -1114,7 +1139,7 @@ class DockerEnvironment(BaseEnvironment):
                     continue
                 volume_args.extend([
                     "-v",
-                    f"{cache_mount['host_path']}:{cache_mount['container_path']}:ro",
+                    f"{cache_mount['host_path']}:{cache_mount['container_path']}:ro,z",
                 ])
                 logger.info(
                     "Docker: mounting cache dir %s -> %s",

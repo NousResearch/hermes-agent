@@ -2,8 +2,12 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
+import textwrap
 from threading import Event, Thread
 
 import pytest
@@ -12,6 +16,83 @@ from hermes_cli import config
 from hermes_state_wal import apply_wal_with_fallback
 from utils import atomic_yaml_write
 import hermes_state_wal as wal
+
+
+def test_partial_config_import_cannot_invert_config_and_module_locks(tmp_path):
+    script = textwrap.dedent(
+        """
+        from pathlib import Path
+        from threading import Event, Thread
+        import os, sqlite3, sys
+
+        import providers
+        import hermes_state_wal as wal
+
+        partial_ready = Event()
+        opener_inside_resolve = Event()
+        importer_load_returned = Event()
+        original_resolve = wal.resolve_journal_mode
+
+        def controlled_list_providers():
+            module = sys.modules["hermes_cli.config"]
+            assert module.__spec__._initializing
+            assert hasattr(module, "_CONFIG_LOCK") and hasattr(module, "load_config")
+            partial_ready.set()
+            assert opener_inside_resolve.wait(5)
+            module.load_config()
+            importer_load_returned.set()
+            return []
+
+        def controlled_resolve():
+            opener_inside_resolve.set()
+            return original_resolve()
+
+        providers.list_providers = controlled_list_providers
+        wal.resolve_journal_mode = controlled_resolve
+        root = Path(os.environ["STATE_CONFIG_TEST_ROOT"]) / "cold-import"
+        root.mkdir()
+        os.environ["HOME"] = str(root)
+        os.environ["HERMES_HOME"] = str(root / ".hermes")
+        database = root / "state.db"
+        with sqlite3.connect(database) as connection:
+            connection.execute("CREATE TABLE retained (value TEXT)")
+        outcomes = []
+
+        def importer():
+            import hermes_cli.config
+            outcomes.append("import-returned")
+
+        def opener():
+            with sqlite3.connect(database) as connection:
+                outcomes.append(f"open:{wal.apply_wal_with_fallback(connection)}")
+
+        importing = Thread(target=importer)
+        opening = Thread(target=opener)
+        importing.start()
+        assert partial_ready.wait(5)
+        opening.start()
+        importing.join(5)
+        opening.join(5)
+        assert importer_load_returned.is_set()
+        assert not importing.is_alive() and not opening.is_alive(), outcomes
+        assert "import-returned" in outcomes
+        assert any(value.startswith("open:") for value in outcomes)
+        """
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).parents[1],
+        env={
+            **os.environ,
+            "HOME": str(tmp_path),
+            "HERMES_HOME": str(tmp_path / ".hermes"),
+            "STATE_CONFIG_TEST_ROOT": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 @pytest.mark.parametrize("mode,require_wal", [("delete", False), ("wal", False), ("wal", True)])

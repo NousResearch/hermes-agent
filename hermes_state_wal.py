@@ -193,6 +193,8 @@ def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.
     runtime is delivered, keep new databases out of WAL.
     """
     config_module = sys.modules.get("hermes_cli.config")
+    if getattr(getattr(config_module, "__spec__", None), "_initializing", False):
+        config_module = None
     config_lock = getattr(config_module, "_CONFIG_LOCK", None)
     acquired = config_lock is not None and config_lock.acquire(blocking=False)
     try:

@@ -29,7 +29,7 @@ PROVIDER = {
 
 def test_existing_slot_parameters_can_be_edited_without_model_picker():
     with patch("hermes_cli.moa_cmd._model_options", return_value=[PROVIDER]), patch(
-        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 2]
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 2, 0]
     ) as choice, patch("builtins.input", return_value="1200") as prompt, patch(
         "hermes_cli.main._prompt_reasoning_effort_selection", return_value="high"
     ):
@@ -46,12 +46,13 @@ def test_existing_slot_parameters_can_be_edited_without_model_picker():
     assert [call.args[0] for call in choice.call_args_list] == [
         "Edit existing slot",
         "Max tokens",
+        "Reasoning effort",
     ]
 
 
 def test_existing_slot_parameter_editor_can_keep_current_values():
     with patch("hermes_cli.moa_cmd._model_options", return_value=[PROVIDER]), patch(
-        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 0]
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 0, 0]
     ), patch("builtins.input", side_effect=AssertionError("value prompt must not run")), patch(
         "hermes_cli.main._prompt_reasoning_effort_selection", return_value=None
     ):
@@ -60,7 +61,7 @@ def test_existing_slot_parameter_editor_can_keep_current_values():
 
 def test_existing_slot_parameter_editor_can_clear_max_tokens_override():
     with patch("hermes_cli.moa_cmd._model_options", return_value=[PROVIDER]), patch(
-        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 1]
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 1, 0]
     ), patch("builtins.input", side_effect=AssertionError("value prompt must not run")), patch(
         "hermes_cli.main._prompt_reasoning_effort_selection", return_value="none"
     ):
@@ -96,9 +97,37 @@ def test_existing_slot_can_still_change_provider_and_model():
     }
 
 
+def test_replacing_with_same_model_preserves_effort_when_selection_is_skipped():
+    with patch("hermes_cli.moa_cmd._model_options", return_value=[PROVIDER]), patch(
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[1, 0, 0]
+    ), patch("hermes_cli.main._prompt_reasoning_effort_selection", return_value=None):
+        slot = _pick_slot(CURRENT)
+
+    assert slot == {
+        "provider": "openrouter",
+        "model": "anthropic/claude-opus-4.8",
+        "reasoning_effort": "low",
+    }
+
+
+def test_replacing_with_changed_model_does_not_carry_effort_when_selection_is_skipped():
+    provider = {
+        "slug": "openai-codex",
+        "name": "OpenAI Codex",
+        "models": ["gpt-5.6-sol"],
+        "capabilities": {"gpt-5.6-sol": {"reasoning": True}},
+    }
+    with patch("hermes_cli.moa_cmd._model_options", return_value=[provider]), patch(
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[1, 0, 0]
+    ), patch("hermes_cli.main._prompt_reasoning_effort_selection", return_value=None):
+        slot = _pick_slot(CURRENT)
+
+    assert slot == {"provider": "openai-codex", "model": "gpt-5.6-sol"}
+
+
 def test_custom_max_tokens_reprompts_until_positive_integer(capsys):
     with patch("hermes_cli.moa_cmd._model_options", return_value=[PROVIDER]), patch(
-        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 2]
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 2, 0]
     ), patch("builtins.input", side_effect=["invalid", "0", "2048"]), patch(
         "hermes_cli.main._prompt_reasoning_effort_selection", return_value=None
     ):
@@ -115,21 +144,45 @@ def test_non_reasoning_slot_does_not_offer_reasoning_control():
     ), patch("hermes_cli.main._prompt_reasoning_effort_selection") as prompt:
         slot = _pick_slot(current)
 
-    assert slot == current
+    assert slot == {key: value for key, value in current.items() if key != "reasoning_effort"}
+    prompt.assert_not_called()
+
+
+def test_unknown_reasoning_capability_preserves_existing_override():
+    provider = {**PROVIDER, "capabilities": {}}
+    with patch("hermes_cli.moa_cmd._model_options", return_value=[provider]), patch(
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 0]
+    ), patch("hermes_cli.main._prompt_reasoning_effort_selection") as prompt:
+        slot = _pick_slot(CURRENT)
+
+    assert slot == CURRENT
+    prompt.assert_not_called()
+
+
+def test_existing_slot_parameter_editor_can_unset_reasoning_effort():
+    with patch("hermes_cli.moa_cmd._model_options", return_value=[PROVIDER]), patch(
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 0, 1]
+    ), patch("hermes_cli.main._prompt_reasoning_effort_selection") as prompt:
+        slot = _pick_slot(CURRENT)
+
+    assert slot == {key: value for key, value in CURRENT.items() if key != "reasoning_effort"}
     prompt.assert_not_called()
 
 
 def test_aggregator_editor_does_not_offer_or_persist_max_tokens():
     with patch("hermes_cli.moa_cmd._model_options", return_value=[PROVIDER]), patch(
-        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0]
+        "hermes_cli.moa_cmd._prompt_choice", side_effect=[0, 0]
     ) as choice, patch(
         "hermes_cli.main._prompt_reasoning_effort_selection", return_value="high"
     ):
         slot = _pick_slot(CURRENT, role="aggregator")
 
     assert "max_tokens" not in slot
-    assert choice.call_count == 1
-    assert choice.call_args.args[1][0] == "Keep provider/model; edit reasoning_effort"
+    assert [call.args[0] for call in choice.call_args_list] == [
+        "Edit existing slot",
+        "Reasoning effort",
+    ]
+    assert choice.call_args_list[0].args[1][0] == "Keep provider/model; edit reasoning_effort"
 
 
 def test_configure_marks_reference_and_aggregator_slot_roles():

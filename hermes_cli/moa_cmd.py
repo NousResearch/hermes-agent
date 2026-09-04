@@ -75,16 +75,18 @@ def _provider_for_slot(
     return next((provider for provider in providers if provider.get("slug") == provider_slug), None)
 
 
-def _model_supports_reasoning(provider: dict[str, Any], model: str) -> bool:
+def _model_supports_reasoning(provider: dict[str, Any], model: str) -> bool | None:
     capabilities = provider.get("capabilities")
     model_capabilities = capabilities.get(model) if isinstance(capabilities, dict) else None
-    return isinstance(model_capabilities, dict) and bool(model_capabilities.get("reasoning"))
+    if not isinstance(model_capabilities, dict) or "reasoning" not in model_capabilities:
+        return None
+    return bool(model_capabilities["reasoning"])
 
 
 def _slot_reasoning_effort(
     provider: dict[str, Any], model: str, current_effort: str = ""
 ) -> str | None:
-    if not _model_supports_reasoning(provider, model):
+    if _model_supports_reasoning(provider, model) is not True:
         return None
 
     from hermes_cli.main import _prompt_reasoning_effort_selection
@@ -124,11 +126,24 @@ def _edit_slot_parameters(
 
     current_effort = str(slot.get("reasoning_effort") or "").strip().lower()
     if provider is not None:
-        effort = _slot_reasoning_effort(
-            provider, str(slot.get("model") or ""), current_effort
-        )
-        if effort:
-            slot["reasoning_effort"] = effort
+        model = str(slot.get("model") or "")
+        reasoning_support = _model_supports_reasoning(provider, model)
+        if reasoning_support is False:
+            slot.pop("reasoning_effort", None)
+        elif reasoning_support is True:
+            effort_action = _prompt_choice(
+                "Reasoning effort",
+                [
+                    "Keep or change reasoning effort",
+                    "Use provider default (unset override)",
+                ],
+            )
+            if effort_action == 1:
+                slot.pop("reasoning_effort", None)
+            else:
+                effort = _slot_reasoning_effort(provider, model, current_effort)
+                if effort:
+                    slot["reasoning_effort"] = effort
     return slot
 
 
@@ -171,7 +186,13 @@ def _pick_slot(
     model_default = models.index(current_model) if current_model in models else 0
     model = models[_prompt_choice(f"Select model for {provider.get('slug')}", models, model_default)]
     slot = {"provider": str(provider.get("slug") or ""), "model": str(model)}
-    effort = _slot_reasoning_effort(provider, str(model))
+    same_model = slot["provider"] == current_provider and slot["model"] == current_model
+    current_effort = (
+        str((current or {}).get("reasoning_effort") or "").strip().lower()
+        if same_model
+        else ""
+    )
+    effort = _slot_reasoning_effort(provider, str(model), current_effort)
     if effort:
         slot["reasoning_effort"] = effort
     return slot

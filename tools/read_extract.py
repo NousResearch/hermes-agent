@@ -451,6 +451,21 @@ def _pdf_coverage_note(path: str, display_path: Optional[str] = None) -> str:
     )
 
 
+def _finish_anydoc_bytes(text: object, data: bytes, path: str) -> str:
+    """Shared tail for the bytes door: empty check, newline trim, and the
+    PDF coverage note (prepended because read_file paginates the output,
+    so a footer on a long document would land on a page the model may
+    never fetch)."""
+    if not isinstance(text, str) or not text.strip():
+        raise ExtractionError("Document contains no extractable text")
+    text = text.rstrip("\n") + "\n"
+    if Path(path).suffix.lower() == ".pdf":
+        note = _pdf_coverage_note_from_bytes(data, path)
+        if note:
+            text = note + text
+    return text
+
+
 def _extract_anydoc_bytes(data: bytes, path: str) -> str:
     mod = _anydoc()
     if mod is None:
@@ -459,20 +474,34 @@ def _extract_anydoc_bytes(data: bytes, path: str) -> str:
         raise ExtractionError(
             f"Document too large to convert ({len(data):,} bytes, limit is {MAX_ANYDOC_BYTES:,})"
         )
+    needs_ocr = getattr(mod, "NeedsOcrError", None)
     try:
         text = mod.to_markdown_bytes(data)
     except Exception as exc:
+        if needs_ocr is not None and isinstance(exc, needs_ocr):
+            # Same contract as the path door (_extract_anydoc): a typed
+            # scanned-pages signal gets a hosted OCR attempt when a route
+            # exists, otherwise the NEEDS-OCR teaching warning. Without
+            # this branch, backend-transferred scanned PDFs got a bare
+            # convert error while path reads got OCR and recovery text.
+            pages = list(getattr(exc, "pages", []) or [])
+            enabled, api_key, api_url = _hosted_ocr_config()
+            hosted_error = ""
+            if enabled:
+                try:
+                    kwargs = {"ocr": "hosted"}
+                    if api_key:
+                        kwargs["api_key"] = api_key
+                    if api_url:
+                        kwargs["api_url"] = api_url
+                    return _finish_anydoc_bytes(
+                        mod.to_markdown_bytes(data, **kwargs), data, path
+                    )
+                except Exception as hosted_exc:  # noqa: BLE001
+                    hosted_error = f"{type(hosted_exc).__name__}: {hosted_exc}"
+            return _needs_ocr_warning(path, pages, hosted_error)
         raise ExtractionError(f"{type(exc).__name__}: {exc}") from exc
-    if not isinstance(text, str) or not text.strip():
-        raise ExtractionError("Document contains no extractable text")
-    text = text.rstrip("\n") + "\n"
-    if Path(path).suffix.lower() == ".pdf":
-        note = _pdf_coverage_note_from_bytes(data, path)
-        if note:
-            # Prepend: read_file paginates the extraction, so a footer on a
-            # long document would sit on a page the model may never fetch.
-            text = note + text
-    return text
+    return _finish_anydoc_bytes(text, data, path)
 
 
 def _pdf_coverage_note_from_bytes(data: bytes, display_path: str) -> str:

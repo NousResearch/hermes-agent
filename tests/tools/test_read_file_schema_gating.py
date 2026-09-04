@@ -216,5 +216,69 @@ class TestNeedsOcrPath(unittest.TestCase):
         self.assertEqual(m1.group(1), m2.group(1))
 
 
+class TestNeedsOcrBytesPath(unittest.TestCase):
+    """The bytes door (_extract_anydoc_bytes, used for backend-transferred
+    documents) must honor NeedsOcrError the same way the path door does:
+    hosted OCR attempt when a route exists, NEEDS-OCR teaching otherwise."""
+
+    def _fake_mod(self, hosted_result=None, hosted_exc=None):
+        class NeedsOcrError(Exception):
+            def __init__(self, pages):
+                super().__init__("needs ocr")
+                self.pages = pages
+
+        calls = []
+
+        class Mod:
+            pass
+
+        mod = Mod()
+        mod.NeedsOcrError = NeedsOcrError
+
+        def to_markdown_bytes(data, **kw):
+            calls.append(kw)
+            if not kw:
+                raise NeedsOcrError([4])
+            if hosted_exc is not None:
+                raise hosted_exc
+            return hosted_result
+
+        mod.to_markdown_bytes = to_markdown_bytes
+        return mod, calls
+
+    def test_hosted_success_returns_ocr_text(self):
+        from tools import read_extract as rx
+
+        mod, calls = self._fake_mod(hosted_result="OCR BYTES TEXT")
+        with patch.object(rx, "_anydoc", return_value=mod),              patch.object(rx, "_hosted_ocr_config",
+                          return_value=(True, "key", None)):
+            out = rx._extract_anydoc_bytes(b"pdf-bytes", "scan.pdf")
+        self.assertEqual(out, "OCR BYTES TEXT\n")
+        self.assertEqual(calls[1].get("ocr"), "hosted")
+        self.assertEqual(calls[1].get("api_key"), "key")
+
+    def test_disabled_returns_needs_ocr_warning_without_attempt(self):
+        from tools import read_extract as rx
+
+        mod, calls = self._fake_mod()
+        with patch.object(rx, "_anydoc", return_value=mod),              patch.object(rx, "_hosted_ocr_config",
+                          return_value=(False, None, None)):
+            out = rx._extract_anydoc_bytes(b"pdf-bytes", "scan.pdf")
+        self.assertIn("[NEEDS OCR", out)
+        self.assertIn("pages 4", out)
+        self.assertEqual(len(calls), 1)  # no hosted attempt
+
+    def test_hosted_failure_warns_and_names_the_error(self):
+        from tools import read_extract as rx
+
+        mod, _ = self._fake_mod(hosted_exc=RuntimeError("HTTP 500"))
+        with patch.object(rx, "_anydoc", return_value=mod),              patch.object(rx, "_hosted_ocr_config",
+                          return_value=(True, "key", None)):
+            out = rx._extract_anydoc_bytes(b"pdf-bytes", "scan.pdf")
+        self.assertIn("[NEEDS OCR", out)
+        self.assertIn("attempted and failed", out)
+        self.assertIn("HTTP 500", out)
+
+
 if __name__ == "__main__":
     unittest.main()

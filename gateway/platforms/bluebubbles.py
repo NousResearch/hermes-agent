@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from collections import OrderedDict
 from datetime import datetime
@@ -166,6 +167,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     SUPPORTS_MESSAGE_EDITING = False
     MAX_MESSAGE_LENGTH = MAX_TEXT_LENGTH
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
+    # Window in which an inbound webhook record matching text we just sent to
+    # the same chat is treated as a self-echo rather than a new user message.
+    _SELF_ECHO_WINDOW_SECONDS = 10.0
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.BLUEBUBBLES)
@@ -203,10 +207,38 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        # (chat_guid, text) -> monotonic send time. Populated on every outbound
+        # attempt (success or failure) so a server-written echo of a failed send
+        # can still be recognized even though no GUID was ever returned for it.
+        self._recent_sent_texts: "OrderedDict[tuple, float]" = OrderedDict()
 
     # ------------------------------------------------------------------
     # API helpers
     # ------------------------------------------------------------------
+
+    def _remember_sent_text(self, chat_guid: Optional[str], text: str) -> None:
+        if not chat_guid or not text:
+            return
+        self._recent_sent_texts[(chat_guid, text)] = time.monotonic()
+        while len(self._recent_sent_texts) > 200:
+            self._recent_sent_texts.popitem(last=False)
+
+    def _pop_recent_self_echo(self, chat_guid: Optional[str], text: str) -> bool:
+        """Drop a recently-sent text echoed back through the webhook.
+
+        Catches the case a robust ``isFromMe``/GUID check cannot: BlueBubbles
+        writes an outbound row to chat.db (and fires a webhook for it) even
+        when the send API call itself failed, so no GUID was ever captured for
+        it and the row's isFromMe/handle fields can't be trusted.
+        """
+        if not chat_guid or not text:
+            return False
+        key = (chat_guid, text)
+        sent_at = self._recent_sent_texts.get(key)
+        if sent_at is None:
+            return False
+        del self._recent_sent_texts[key]
+        return (time.monotonic() - sent_at) <= self._SELF_ECHO_WINDOW_SECONDS
 
     def _api_url(self, path: str) -> str:
         sep = "&" if "?" in path else "?"
@@ -576,6 +608,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 payload["method"] = "private-api"
                 payload["selectedMessageGuid"] = reply_to
                 payload["partIndex"] = 0
+            # Recorded before the call completes: BlueBubbles can write the
+            # outbound row to chat.db (and fire a webhook for it) even when
+            # this request itself errors out, so the echo must still be
+            # recognizable.
+            self._remember_sent_text(guid, chunk)
             try:
                 res = await self._api_post("/api/v1/message/text", payload)
                 data = res.get("data") or {}
@@ -1033,6 +1070,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return web.json_response({"error": "missing message fields"}, status=400)
 
         session_chat_id = chat_guid or chat_identifier
+        # A send that fails at the BlueBubbles API layer can still be written
+        # to chat.db by Messages.app, producing a webhook record whose
+        # isFromMe/handle fields are unreliable (see is_from_me check above).
+        # Recognize it here by matching text we sent to this chat moments ago.
+        if self._pop_recent_self_echo(session_chat_id, text):
+            return web.Response(text="ok")
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
         if is_group and self.require_mention:
             if not self._message_matches_mention_patterns(text):

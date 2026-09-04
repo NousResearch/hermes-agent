@@ -116,6 +116,83 @@ class TestBlueBubblesMentionGating:
         assert handled == []
 
 
+class TestBlueBubblesFailedSendEchoGuard:
+    """A send that errors at the BlueBubbles API layer can still be written to
+    chat.db by Messages.app (e.g. the account's iMessage send failed but the
+    local send attempt was recorded), producing a webhook echo whose
+    isFromMe/handle fields can't be trusted. No GUID is ever returned for a
+    failed call, so GUID-based dedupe can't catch it; the adapter must
+    recognize the echo by the text it just attempted to send.
+    """
+
+    @pytest.mark.asyncio
+    async def test_echo_of_a_failed_send_is_dropped(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;+15555550100"
+
+        async def failing_api_post(path, payload):
+            raise httpx.HTTPStatusError(
+                "500 Message Send Error", request=None, response=None
+            )
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", failing_api_post)
+
+        result = await adapter.send("+15555550100", "Looks like a pocket-text.")
+        assert result.success is False
+
+        # BlueBubbles still writes the row and fires a webhook for it, with a
+        # spoofed handle and isFromMe unset — the exact shape from the report.
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "updated-message",
+            "data": {
+                "guid": "server-written-guid",
+                "text": "Looks like a pocket-text.",
+                "handle": {"address": "+15555550100"},
+                "chatGuid": "iMessage;-;+15555550100",
+                "error": 22,
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_unrelated_inbound_text_still_dispatches(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "inbound-1",
+                "text": "hey are you there?",
+                "handle": {"address": "+15555550100"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;-;+15555550100",
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert len(handled) == 1
+        assert handled[0].text == "hey are you there?"
+
+
 class TestBlueBubblesWebhookParsing:
 
     def test_webhook_can_fall_back_to_sender_when_chat_fields_missing(self, monkeypatch):

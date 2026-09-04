@@ -8,15 +8,18 @@ import {
   $activeSessionId,
   $selectedStoredSessionId,
   setBusy,
+  setCronSessions,
   setMessagingSessions,
   setSessionOwnerHint,
   setSessions
 } from '@/store/session'
 import {
   $attentionSessionIds,
+  $sessionTiles,
   $stalledSessionIds,
   $workingSessionIds,
   clearAllSessionStates,
+  publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS
 } from '@/store/session-states'
 
@@ -38,7 +41,13 @@ vi.mock('@/hermes', async importOriginal => ({
   getLatestSessionMessages: vi.fn()
 }))
 
+vi.mock('@/store/projects', async importOriginal => ({
+  ...(await importOriginal()),
+  refreshProjectTree: vi.fn(async () => undefined)
+}))
+
 const { getLatestSessionMessages } = await import('@/hermes')
+const { refreshProjectTree } = await import('@/store/projects')
 
 const ACTIVE_RUNTIME_ID = 'runtime-active'
 const ACTIVE_STORED_ID = 'stored-active'
@@ -91,11 +100,13 @@ function useSyncHarness({
   activeIsMessaging = false,
   activeSessionId,
   activeStoredSessionId,
+  gatewayState = 'open',
   refreshActiveTranscript
 }: {
   activeIsMessaging?: boolean
   activeSessionId: string | null
   activeStoredSessionId: string | null
+  gatewayState?: string
   refreshActiveTranscript: () => Promise<void>
 }) {
   const updateSessionState: Parameters<typeof useBackgroundSync>[0]['updateSessionState'] = vi.fn(
@@ -113,7 +124,7 @@ function useSyncHarness({
     activeSessionId,
     activeStoredSessionId,
     freshDraftReady: false,
-    gatewayState: 'open',
+    gatewayState,
     refreshActiveTranscript,
     refreshCronJobs: vi.fn(),
     refreshCurrentModel: vi.fn(),
@@ -125,17 +136,23 @@ function useSyncHarness({
   })
 }
 
-function renderSync(
-  refreshActiveTranscript: () => Promise<void>,
-  options: { activeIsMessaging?: boolean; activeSessionId?: null | string; activeStoredSessionId?: null | string } = {}
-) {
-  return renderHook(() =>
-    useSyncHarness({
-      activeSessionId: ACTIVE_RUNTIME_ID,
-      activeStoredSessionId: ACTIVE_STORED_ID,
-      refreshActiveTranscript,
-      ...options
-    })
+type SyncOptions = {
+  activeIsMessaging?: boolean
+  activeSessionId?: null | string
+  activeStoredSessionId?: null | string
+  gatewayState?: string
+}
+
+function renderSync(refreshActiveTranscript: () => Promise<void>, options: SyncOptions = {}) {
+  return renderHook(
+    (props: SyncOptions) =>
+      useSyncHarness({
+        activeSessionId: ACTIVE_RUNTIME_ID,
+        activeStoredSessionId: ACTIVE_STORED_ID,
+        refreshActiveTranscript,
+        ...props
+      }),
+    { initialProps: options }
   )
 }
 
@@ -153,11 +170,13 @@ afterEach(() => {
   $activeSessionId.set(null)
   $selectedStoredSessionId.set(null)
   setSessions([])
+  setCronSessions([])
   setMessagingSessions([])
   setBusy(false)
   vi.clearAllMocks()
   vi.restoreAllMocks()
   clearAllSessionStates()
+  $sessionTiles.set([])
   resetTypingActivityTracking()
 })
 
@@ -228,7 +247,6 @@ describe('active transcript refresh', () => {
 
     const signatureRef = { current: new Map<string, string>() }
     const requestSequenceRef = { current: 0 }
-    const busyRef = { current: false }
 
     vi.mocked(getLatestSessionMessages).mockImplementation(async (storedId: string) => {
       if (storedId === TILE_STORED_ID) {
@@ -250,7 +268,6 @@ describe('active transcript refresh', () => {
     await act(async () => {
       await reconcileTileTranscriptsForTest({
         tiles: [{ storedSessionId: TILE_STORED_ID, runtimeId: TILE_RUNTIME_ID }],
-        busyRef,
         requestSequenceRef,
         signatureRef,
         updateSessionState
@@ -259,7 +276,136 @@ describe('active transcript refresh', () => {
 
     // Behavior assertions:
     expect(updaterCallCount).toBeGreaterThan(0)
-    expect(getLatestSessionMessages).toHaveBeenCalledWith(TILE_STORED_ID)
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(TILE_STORED_ID, undefined)
+  })
+
+  it('reconciles an idle tile while the main pane is busy', async () => {
+    const runtimeId = 'runtime-idle-tile'
+    const storedId = 'stored-idle-tile'
+    const idleState = createClientSessionState(storedId)
+
+    setBusy(true)
+    publishSessionState(runtimeId, idleState)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('idle tile update', storedId) as never)
+
+    const updateSessionState = vi.fn((sessionId: string, updater: (state: typeof idleState) => typeof idleState) => {
+      expect(sessionId).toBe(runtimeId)
+
+      return updater(idleState)
+    })
+
+    await reconcileTileTranscriptsForTest({
+      tiles: [{ runtimeId, storedSessionId: storedId }],
+      requestSequenceRef: { current: 0 },
+      signatureRef: { current: new Map() },
+      updateSessionState
+    })
+
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(storedId, undefined)
+    expect(updateSessionState).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not reconcile a busy tile when the main pane is idle', async () => {
+    const runtimeId = 'runtime-busy-tile'
+    const storedId = 'stored-busy-tile'
+    const liveState = createClientSessionState(storedId)
+
+    liveState.busy = true
+    liveState.messages = [
+      {
+        id: 'live-assistant',
+        parts: [{ text: 'streaming answer', type: 'text' }],
+        pending: true,
+        role: 'assistant'
+      }
+    ]
+    publishSessionState(runtimeId, liveState)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: storedId } as never)
+
+    const updateSessionState = vi.fn()
+
+    await reconcileTileTranscriptsForTest({
+      tiles: [{ runtimeId, storedSessionId: storedId }],
+      requestSequenceRef: { current: 0 },
+      signatureRef: { current: new Map() },
+      updateSessionState
+    })
+
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+    expect(updateSessionState).not.toHaveBeenCalled()
+  })
+
+  it('discards a tile snapshot when the tile closes during the read', async () => {
+    const runtimeId = 'runtime-closing-tile'
+    const storedId = 'stored-closing-tile'
+    let resolveRead: (value: unknown) => void = () => undefined
+
+    $sessionTiles.set([{ runtimeId, storedSessionId: storedId }])
+    publishSessionState(runtimeId, createClientSessionState(storedId))
+    vi.mocked(getLatestSessionMessages).mockReturnValueOnce(
+      new Promise(resolve => {
+        resolveRead = resolve
+      }) as never
+    )
+
+    const updateSessionState = vi.fn()
+
+    const reconcile = reconcileTileTranscriptsForTest({
+      requestSequenceRef: { current: 0 },
+      signatureRef: { current: new Map() },
+      updateSessionState
+    })
+
+    $sessionTiles.set([])
+    resolveRead(transcript('stale tile answer', storedId))
+    await reconcile
+
+    expect(updateSessionState).not.toHaveBeenCalled()
+  })
+
+  it('isolates tile transcript reads by connection and profile while preserving the legacy local path', async () => {
+    vi.mocked(getLatestSessionMessages).mockImplementation(async storedId => transcript(storedId, storedId) as never)
+
+    const updateSessionState: Parameters<typeof reconcileTileTranscriptsForTest>[0]['updateSessionState'] = vi.fn(
+      (_sessionId, updater) => updater({} as Parameters<typeof updater>[0])
+    )
+
+    await reconcileTileTranscriptsForTest({
+      tiles: [
+        {
+          ownerRoute: {
+            connectionId: 'connection-a',
+            mode: 'remote',
+            profile: 'shared-profile',
+            targetProfile: 'target-a'
+          },
+          runtimeId: 'runtime-a',
+          storedSessionId: 'stored-a'
+        },
+        {
+          ownerRoute: { connectionId: 'connection-b', mode: 'remote', profile: 'shared-profile' },
+          runtimeId: 'runtime-b',
+          storedSessionId: 'stored-b'
+        },
+        { runtimeId: 'runtime-local', storedSessionId: 'stored-local' }
+      ],
+      requestSequenceRef: { current: 0 },
+      signatureRef: { current: new Map<string, string>() },
+      updateSessionState
+    })
+
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-a', {
+      connectionId: 'connection-a',
+      profile: 'target-a'
+    })
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-b', {
+      connectionId: 'connection-b',
+      profile: 'shared-profile'
+    })
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-local', undefined)
+    expect(updateSessionState).toHaveBeenCalledWith('runtime-a', expect.any(Function), 'stored-a')
+    expect(updateSessionState).toHaveBeenCalledWith('runtime-b', expect.any(Function), 'stored-b')
+    expect(updateSessionState).toHaveBeenCalledWith('runtime-local', expect.any(Function), 'stored-local')
   })
 
   it('skips the tile fetch entirely when nothing changed (signature-gated)', async () => {
@@ -287,13 +433,11 @@ describe('active transcript refresh', () => {
     signatureRef.current.set(`tile:${TILE_STORED_ID}`, preSignature)
 
     const updateSessionState = vi.fn()
-    const busyRef = { current: false }
     const requestSequenceRef = { current: 0 }
 
     await act(async () => {
       await reconcileTileTranscriptsForTest({
         tiles: [{ storedSessionId: TILE_STORED_ID, runtimeId: TILE_RUNTIME_ID }],
-        busyRef,
         requestSequenceRef,
         signatureRef,
         updateSessionState
@@ -343,14 +487,15 @@ describe('active transcript refresh', () => {
     const refresh = vi.fn(async () => undefined)
 
     renderSync(refresh)
-    expect(refresh).not.toHaveBeenCalled()
+    // Exactly the one connect-time pull (#94779) — no timer after it.
+    expect(refresh).toHaveBeenCalledTimes(1)
 
     await act(async () => {
       vi.advanceTimersByTime(60_000)
       await Promise.resolve()
     })
 
-    expect(refresh).not.toHaveBeenCalled()
+    expect(refresh).toHaveBeenCalledTimes(1)
   })
 
   it('retains the existing periodic backstop for messaging sessions', async () => {
@@ -373,11 +518,12 @@ describe('active transcript refresh', () => {
 
   it('only defers an external tick while busy, then refreshes once after idle', async () => {
     $changeEventsAvailable.set(true)
-    setBusy(true)
     const refresh = vi.fn(async () => undefined)
 
     renderSync(refresh)
+    refresh.mockClear() // drop the connect-time pull; this test is about busy transitions
 
+    act(() => setBusy(true))
     act(() => setBusy(false))
     expect(refresh).not.toHaveBeenCalled()
     act(() => setBusy(true))
@@ -392,12 +538,31 @@ describe('active transcript refresh', () => {
     await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
   })
 
+  it('pulls the open transcript once per (re)connect, not on session switches (#94779)', () => {
+    $changeEventsAvailable.set(true)
+    const refresh = vi.fn(async () => undefined)
+
+    const { rerender } = renderSync(refresh, { gatewayState: 'connecting' })
+    expect(refresh).not.toHaveBeenCalled()
+
+    rerender({ gatewayState: 'open' })
+    expect(refresh).toHaveBeenCalledTimes(1)
+
+    rerender({ activeSessionId: 'runtime-other', activeStoredSessionId: 'stored-other', gatewayState: 'open' })
+    expect(refresh).toHaveBeenCalledTimes(1)
+
+    rerender({ activeSessionId: 'runtime-other', activeStoredSessionId: 'stored-other', gatewayState: 'closed' })
+    rerender({ activeSessionId: 'runtime-other', activeStoredSessionId: 'stored-other', gatewayState: 'open' })
+    expect(refresh).toHaveBeenCalledTimes(2)
+  })
+
   it('coalesces a burst of global session-change ticks', async () => {
     vi.useFakeTimers()
     $changeEventsAvailable.set(true)
     const refresh = vi.fn(async () => undefined)
 
     renderSync(refresh)
+    refresh.mockClear() // drop the connect-time pull; this test is about tick coalescing
 
     act(() => {
       for (let index = 0; index < 20; index += 1) {
@@ -412,6 +577,16 @@ describe('active transcript refresh', () => {
     })
 
     expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('refreshes the project tree on a sessions.changed tick, alongside the sessions list (#100354)', async () => {
+    $changeEventsAvailable.set(true)
+
+    renderSync(vi.fn(async () => undefined))
+
+    act(() => notifySessionsChanged())
+
+    await waitFor(() => expect(refreshProjectTree).toHaveBeenCalledTimes(1))
   })
 })
 
@@ -432,6 +607,19 @@ describe('reconcileActiveTranscript', () => {
     expect(getLatestSessionMessages).toHaveBeenCalledWith(ACTIVE_STORED_ID, 'messaging-profile')
     expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.at(-1)?.parts[0]).toMatchObject({
       text: 'telegram answer'
+    })
+  })
+
+  it('resolves and hydrates a cron session from the cron sessions store', async () => {
+    setCronSessions([{ id: ACTIVE_STORED_ID, profile: 'cron-profile', source: 'cron' } as never])
+    const fixture = makeRefresh(resolveActiveTranscriptSession)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('cron progress') as never)
+
+    await fixture.refresh()
+
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(ACTIVE_STORED_ID, 'cron-profile')
+    expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.at(-1)?.parts[0]).toMatchObject({
+      text: 'cron progress'
     })
   })
 

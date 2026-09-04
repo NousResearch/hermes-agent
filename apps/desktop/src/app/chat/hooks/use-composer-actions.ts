@@ -518,7 +518,8 @@ export function useComposerActions({
       try {
         const buffer = await blob.arrayBuffer()
         const data = new Uint8Array(buffer)
-        const savedPath = await window.hermesDesktop?.saveImageBuffer(data, blobExtension(blob))
+        const name = blob instanceof File ? blob.name : undefined
+        const savedPath = await window.hermesDesktop?.saveImageBuffer(data, blobExtension(blob), name)
 
         if (!savedPath) {
           notify({ kind: 'error', title: copy.imageAttach, message: copy.imageWriteFailed })

@@ -107,9 +107,9 @@ class TestTerminalIntegration:
     def test_hint_field_wired(self):
         # Exercise the wiring path shape without a live environment: the
         # result assembly guards on returncode != 0 and no exit_note.
-        from tools import terminal_tool
+        from tools import terminal_tool_result
         # simulate: interpret gives None, hints give a value
-        note = terminal_tool._interpret_exit_code("python x.py", 127)
+        note = terminal_tool_result._interpret_exit_code("python x.py", 127)
         assert note is None
         hint = annotate_failure("python x.py", 127, "bash: python: command not found")
         assert hint and "python3" in hint
@@ -118,8 +118,8 @@ class TestTerminalIntegration:
         # grep exit 1 is informational; annotate_failure must not be reached
         # for it in the wiring (exit_note wins). Just verify the semantics
         # table still covers it.
-        from tools import terminal_tool
-        assert terminal_tool._interpret_exit_code("grep foo bar.txt", 1) is not None
+        from tools import terminal_tool_result
+        assert terminal_tool_result._interpret_exit_code("grep foo bar.txt", 1) is not None
 
 
 class TestMaskedSuccess:

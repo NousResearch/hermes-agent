@@ -4,13 +4,15 @@ from unittest.mock import Mock
 
 import tools.browser_tool as browser_tool
 from plugins.browser.browser_use import provider as browser_use_provider
+from tools import browser_tool_session as bt_session
+from tools import browser_tool_cloud as bt_cloud
 
 
 def _isolate_browser_state(monkeypatch):
     monkeypatch.setattr(browser_tool, "_active_sessions", {})
     monkeypatch.setattr(browser_tool, "_session_last_activity", {})
-    monkeypatch.setattr(browser_tool, "_start_browser_cleanup_thread", lambda: None)
-    monkeypatch.setattr(browser_tool, "_ensure_cdp_supervisor", lambda task_id: None)
+    monkeypatch.setattr("tools.browser_tool_lifecycle._start_browser_cleanup_thread", lambda: None)
+    monkeypatch.setattr("tools.browser_tool_cdp._ensure_cdp_supervisor", lambda task_id: None)
 
 
 def test_browser_use_preserves_provider_timeout(monkeypatch):
@@ -51,9 +53,9 @@ def test_live_cloud_session_is_reused(monkeypatch):
     }
     browser_tool._active_sessions["task-1"] = existing
     provider = Mock()
-    monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: provider)
+    monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: provider)
 
-    session = browser_tool._get_session_info("task-1")
+    session = bt_session._get_session_info("task-1")
 
     assert session is existing
     provider.create_session.assert_not_called()
@@ -76,18 +78,18 @@ def test_expired_cloud_session_is_replaced_without_reusing_dead_cdp(monkeypatch)
         "cdp_url": "ws://browser-use.example/devtools/browser/new",
         "expires_at": "2999-01-01T00:05:00Z",
     }
-    monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: provider)
-    monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: "")
-    monkeypatch.setattr(browser_tool, "_stop_cdp_supervisor", Mock())
+    monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: provider)
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+    monkeypatch.setattr("tools.browser_tool_cdp._stop_cdp_supervisor", Mock())
     monkeypatch.setattr(browser_tool, "_maybe_stop_recording", Mock())
-    monkeypatch.setattr(browser_tool, "_run_browser_command", Mock())
+    monkeypatch.setattr(bt_session, "_run_browser_command", Mock())
     monkeypatch.setattr(browser_tool.os.path, "exists", lambda path: False)
 
-    session = browser_tool._get_session_info("task-1")
+    session = bt_session._get_session_info("task-1")
 
     assert session["bb_session_id"] == "browser-session-new"
     assert browser_tool._active_sessions["task-1"] is session
     assert "task-1" in browser_tool._session_last_activity
     provider.close_session.assert_called_once_with("browser-session-old")
     provider.create_session.assert_called_once_with("task-1")
-    browser_tool._run_browser_command.assert_not_called()
+    bt_session._run_browser_command.assert_not_called()

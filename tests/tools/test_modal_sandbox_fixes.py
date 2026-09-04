@@ -14,6 +14,7 @@ import os
 import sys
 from pathlib import Path
 import pytest
+from tools import approval_context
 
 # Ensure repo root is importable
 _repo_root = Path(__file__).resolve().parent.parent.parent
@@ -36,13 +37,22 @@ class TestToolResolution:
 
     def test_terminal_and_file_toolsets_resolve_all_tools(self):
         """enabled_toolsets=['terminal', 'file'] should produce 6 tools."""
+        from unittest.mock import patch as _patch
+
         from model_tools import get_tool_definitions
-        tools = get_tool_definitions(
-            enabled_toolsets=["terminal", "file"],
-            quiet_mode=True,
-        )
+        from tools.tool_search import ToolSearchConfig
+
+        # Pin the RESOLUTION contract independent of deferral policy —
+        # #97979 defers process_manage by default (legacy defer: [] override).
+        _legacy = ToolSearchConfig.from_raw({"enabled": "on", "defer": []})
+        with _patch("tools.tool_search.load_config", return_value=_legacy), \
+             _patch("tools.tool_search.load_config_readonly", return_value=_legacy):
+            tools = get_tool_definitions(
+                enabled_toolsets=["terminal", "file"],
+                quiet_mode=True,
+            )
         names = {t["function"]["name"] for t in tools}
-        expected = {"terminal", "process", "read_file", "write_file", "search_files", "patch"}
+        expected = {"terminal", "process_manage", "read_file", "write_file", "search_files", "patch"}
         assert expected == names, f"Expected {expected}, got {names}"
 
     def test_terminal_tool_present(self):
@@ -159,9 +169,10 @@ class TestCwdHandling:
             captured.update(kwargs)
             return sentinel
 
-        monkeypatch.setattr(_tt_mod, "_DockerEnvironment", _fake_docker_environment)
+        from tools.terminal_tool_backends import _create_environment
+        monkeypatch.setattr("tools.terminal_tool_backends._DockerEnvironment", _fake_docker_environment)
 
-        env = _tt_mod._create_environment(
+        env = _create_environment(
             env_type="docker",
             image="python:3.11",
             cwd="/workspace",
@@ -361,6 +372,7 @@ class TestDockerHostBindApproval:
     def test_should_skip_container_guards(self):
         """Docker skips only when isolated; other sandboxes always skip."""
         import tools.approval as A
+        from tools import approval_context
         assert A._should_skip_container_guards("docker", has_host_access=False) is True
         assert A._should_skip_container_guards("docker", has_host_access=True) is False
         assert A._should_skip_container_guards("modal", has_host_access=True) is True
@@ -403,7 +415,7 @@ class TestDockerHostBindApproval:
         monkeypatch.setattr(A, "_permanent_approved", set())
         monkeypatch.setattr(A, "_session_approved", {})
         monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
-        monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
 
     def test_host_bound_docker_requires_approval(self, monkeypatch):
         """Host-bound Docker dangerous command escalates instead of bypassing."""

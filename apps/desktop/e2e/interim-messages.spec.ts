@@ -20,16 +20,24 @@
  *
  *   display.interim_assistant_messages: true (default)
  *     → ALL interim texts AND the final text must be visible in the
- *       transcript.
+ *       settled transcript.
  *
  *   display.interim_assistant_messages: false
- *     → only the final text is visible (no message.interim events emitted,
- *       so all streamed interim text is replaced at message.complete).
+ *     → no message.interim events are emitted, so no sealed interim bubbles
+ *       are created while streaming. Since the post-turn stored-history
+ *       reconcile (sessions.changed → reconcileActiveTranscript, commit
+ *       1a2b0ca8cb) converges the visible transcript to the persisted
+ *       transcript — which has ALWAYS contained the mid-turn commentary as
+ *       real assistant rows (that is what a resume shows, flag or no flag) —
+ *       the settled DOM shows the whole turn as ONE assistant message
+ *       containing commentary + final. The flag governs live sealing only.
+ *       The test pins that converged single-message shape: every text
+ *       appears exactly once, inside a single assistant message root.
  *
  * Prerequisite: `npm run build` must have been run so dist/ exists.
  */
 
-import { expect, test, type Page } from '@playwright/test'
+import { expect, type Page, test } from '@playwright/test'
 
 import {
   type MockBackendFixture,
@@ -39,6 +47,17 @@ import {
 import { INTERIM_TEXTS, restartMockServer } from './mock-server'
 
 // ─── Helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Auto session titling (feat f726090d48, 2026-08-08) issues an auxiliary
+ * `title_generation` LLM call against the SAME provider as the chat turn.
+ * The mock server counts every completion request as a script turn, so the
+ * title call races the chat turn and steals a scripted interim turn (the
+ * stolen turn's text then never streams to the transcript). Disable the
+ * model-backed title upgrade — the instant derived title needs no LLM call —
+ * so the mock's script indices line up with real chat turns again.
+ */
+const DISABLE_AUTO_TITLE = 'auxiliary:\n  title_generation:\n    enabled: false'
 
 /** Unique trigger keyword the mock server detects to switch to the script. */
 const TRIGGER = 'E2E_INTERIM_TRIGGER'
@@ -72,7 +91,7 @@ async function sendInterimMessage(page: Page): Promise<void> {
   )
 
   // Give the renderer a moment to settle any final state updates
-  // (hydration, session refresh) before asserting.
+  // (hydration, stored-history reconcile, session refresh) before asserting.
   await page.waitForTimeout(2000)
 }
 
@@ -90,11 +109,13 @@ async function countTranscriptMessagesContaining(page: Page, text: string): Prom
   return page.evaluate(
     (search) => {
       const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
+
       if (!viewport) {
         return 0
       }
 
       let count = 0
+
       const walker = document.createTreeWalker(
         viewport,
         NodeFilter.SHOW_ELEMENT,
@@ -102,27 +123,44 @@ async function countTranscriptMessagesContaining(page: Page, text: string): Prom
           acceptNode: (node) => {
             const el = node as HTMLElement
             const directText = el.textContent ?? ''
+
             if (!directText.includes(search)) {
               return NodeFilter.FILTER_SKIP
             }
+
             // Only count leaf-ish elements to avoid double-counting.
             const hasChildWithText = Array.from(el.children).some(
               (child) => (child.textContent ?? '').includes(search),
             )
+
             if (hasChildWithText) {
               return NodeFilter.FILTER_SKIP
             }
+
             return NodeFilter.FILTER_ACCEPT
           },
         },
       )
+
       while (walker.nextNode()) {
         count++
       }
+
       return count
     },
     text,
   )
+}
+
+/** Count assistant message roots in the settled transcript. */
+async function countAssistantMessageRoots(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
+
+    return viewport
+      ? viewport.querySelectorAll('[data-slot="aui_assistant-message-root"]').length
+      : 0
+  })
 }
 
 // ─── Flag ON: interim_assistant_messages = true (default) ─────────────
@@ -134,7 +172,7 @@ test.describe('interim assistant messages — flag ON (default)', () => {
 
   test.beforeAll(async () => {
     restartMockServer()
-    fixture = await setupMockBackend()
+    fixture = await setupMockBackend({ extraConfig: DISABLE_AUTO_TITLE })
     await waitForAppReady(fixture, 120_000)
   })
 
@@ -147,8 +185,10 @@ test.describe('interim assistant messages — flag ON (default)', () => {
     await sendInterimMessage(page)
 
     // Every interim text (turns with visible text + tool calls) must be
-    // present in the transcript as its own sealed message — NOT wiped by
-    // message.complete.
+    // present in the settled transcript — NOT wiped by message.complete.
+    // (Live, each seals as its own bubble; the post-turn stored-history
+    // reconcile then converges the turn into one assistant message that
+    // still carries all of them.)
     for (const interimText of INTERIM_TEXTS.interims) {
       await expect
         .poll(
@@ -165,6 +205,13 @@ test.describe('interim assistant messages — flag ON (default)', () => {
         { timeout: 15_000, message: 'final text should be visible' },
       )
       .toBeGreaterThanOrEqual(1)
+
+    // No duplicates: the reconcile must CONVERGE (replace the sealed live
+    // bubbles), never render a stored copy alongside a live one.
+    for (const text of [...INTERIM_TEXTS.interims, INTERIM_TEXTS.finalText]) {
+      const count = await countTranscriptMessagesContaining(page, text)
+      expect(count, `"${text}" must not be duplicated after reconcile`).toBe(1)
+    }
   })
 })
 
@@ -179,6 +226,7 @@ test.describe('interim assistant messages — flag OFF', () => {
     restartMockServer()
     fixture = await setupMockBackend({
       extraDisplayConfig: '  interim_assistant_messages: false',
+      extraConfig: DISABLE_AUTO_TITLE,
     })
     await waitForAppReady(fixture, 120_000)
   })
@@ -187,7 +235,7 @@ test.describe('interim assistant messages — flag OFF', () => {
     await fixture?.cleanup()
   })
 
-  test('only the final response is visible; all interim texts are wiped', async () => {
+  test('settled transcript converges to stored history as a single turn message', async () => {
     const page = fixture.page
     await sendInterimMessage(page)
 
@@ -199,17 +247,29 @@ test.describe('interim assistant messages — flag OFF', () => {
       )
       .toBeGreaterThanOrEqual(1)
 
-    // NONE of the interim texts should be visible — with the flag off,
-    // the tui_gateway never installs interim_assistant_callback, so no
-    // message.interim events are emitted. All streamed interim text is
-    // accumulated into the streaming bubble and replaced by
-    // message.complete.
-    for (const interimText of INTERIM_TEXTS.interims) {
-      const count = await countTranscriptMessagesContaining(page, interimText)
-      expect(
-        count,
-        `interim text "${interimText}" should NOT be visible when flag is off`,
-      ).toBe(0)
+    // With the flag off, the tui_gateway never installs
+    // interim_assistant_callback, so no message.interim events fire and no
+    // sealed interim bubbles are created while streaming. After
+    // message.complete, the stored-history reconcile (sessions.changed →
+    // reconcileActiveTranscript) converges the view to the persisted
+    // transcript, which contains the mid-turn commentary as real assistant
+    // rows — exactly what a resume of this session would show. Pin that
+    // converged shape: ONE assistant message root for the whole turn…
+    await expect
+      .poll(
+        () => countAssistantMessageRoots(page),
+        { timeout: 15_000, message: 'the settled turn should render as one assistant message' },
+      )
+      .toBe(1)
+
+    // …containing every commentary text and the final text exactly once.
+    for (const text of [...INTERIM_TEXTS.interims, INTERIM_TEXTS.finalText]) {
+      await expect
+        .poll(
+          () => countTranscriptMessagesContaining(page, text),
+          { timeout: 15_000, message: `"${text}" should appear exactly once in the converged turn` },
+        )
+        .toBe(1)
     }
   })
 })

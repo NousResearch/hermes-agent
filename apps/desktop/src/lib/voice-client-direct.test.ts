@@ -139,12 +139,11 @@ describe('transcribeAudioClientDirect', () => {
       usage: { prompt_audio_seconds: 4, total_tokens: 388 },
       finish_reason: null
     }
+
     const fetchMock = vi.fn(async () => new Response(JSON.stringify(voxtral), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
 
-    expect(await transcribeAudioClientDirect(new Blob(['x'], { type: 'audio/webm' }))).toBe(
-      'Hallo, bist du da?'
-    )
+    expect(await transcribeAudioClientDirect(new Blob(['x'], { type: 'audio/webm' }))).toBe('Hallo, bist du da?')
   })
 
   it('returns null (relay) when the provider is not client-callable', async () => {
@@ -296,9 +295,7 @@ describe('transcriptFromOpenAiMultipartBody', () => {
   })
 
   it('treats a JSON envelope with empty text as silence', () => {
-    expect(transcriptFromOpenAiMultipartBody(JSON.stringify({ text: '  ', model: 'voxtral-mini-latest' }))).toBe(
-      ''
-    )
+    expect(transcriptFromOpenAiMultipartBody(JSON.stringify({ text: '  ', model: 'voxtral-mini-latest' }))).toBe('')
   })
 
   it('leaves a non-envelope JSON object intact', () => {

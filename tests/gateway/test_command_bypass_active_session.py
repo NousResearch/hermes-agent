@@ -186,18 +186,34 @@ class TestCommandBypassActiveSession:
 
     @pytest.mark.asyncio
     async def test_background_bypasses_guard(self):
-        """/background must bypass so it spawns a parallel task, not an interrupt."""
+        """/bg must bypass so it spawns a parallel task, not an interrupt."""
         adapter = _make_adapter()
         sk = _session_key()
         adapter._active_sessions[sk] = asyncio.Event()
 
-        await adapter.handle_message(_make_event("/background summarize HN"))
+        await adapter.handle_message(_make_event("/bg summarize HN"))
 
         assert sk not in adapter._pending_messages, (
-            "/background was queued as a pending message instead of being dispatched"
+            "/bg was queued as a pending message instead of being dispatched"
         )
-        assert any("handled:background" in r for r in adapter.sent_responses), (
-            "/background response was not sent back to the user"
+        assert any("handled:bg" in r for r in adapter.sent_responses), (
+            "/bg response was not sent back to the user"
+        )
+
+    @pytest.mark.asyncio
+    async def test_btw_bypasses_guard(self):
+        """/btw must bypass so the side question dispatches mid-run."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/btw which file was that?"))
+
+        assert sk not in adapter._pending_messages, (
+            "/btw was queued as a pending message instead of being dispatched"
+        )
+        assert any("handled:btw" in r for r in adapter.sent_responses), (
+            "/btw response was not sent back to the user"
         )
 
     @pytest.mark.asyncio

@@ -313,10 +313,11 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             label="Observation mode",
             kind=KIND_SELECT,
             default="directional",
-            description="Per-peer observation preset. Directional observes all directions; unified shares one view.",
+            description="Per-peer observation preset. Directional observes all directions; unified shares one AI-local view; shared-brain uses the user-global representation for multi-client recall.",
             options=(
                 ProviderFieldOption("directional", "Directional"),
                 ProviderFieldOption("unified", "Unified"),
+                ProviderFieldOption("shared-brain", "Shared brain (user-global)"),
             ),
             group="Observation",
         ),

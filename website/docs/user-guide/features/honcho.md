@@ -20,7 +20,7 @@ Honcho is integrated into the [Memory Providers](./memory-providers.md) system. 
 | User profile | ✔ Manual agent curation | ✔ Automatic dialectic reasoning |
 | Session summary | — | ✔ Session-scoped context injection |
 | Multi-agent isolation | — | ✔ Per-peer profile separation |
-| Observation modes | — | ✔ Unified or directional observation |
+| Observation modes | — | ✔ Directional, unified, or shared-brain observation |
 | Conclusions (derived insights) | — | ✔ Server-side reasoning about patterns |
 | Search across history | ✔ FTS5 session search | ✔ Semantic search over conclusions |
 
@@ -181,7 +181,7 @@ Flipping `pinUserPeer` from `true` to `false` does not migrate data — memory a
 `pinPeerName` is a legacy alias for `pinUserPeer` — still read for back-compat (`pinUserPeer` wins where both are set), never written. Re-running setup migrates it onto the canonical key.
 :::
 
-## Observation (Directional vs. Unified)
+## Observation (Directional, Unified, Shared-Brain)
 
 Honcho models a conversation as peers exchanging messages. Each peer has two observation toggles that map 1:1 to Honcho's `SessionPeerConfig`:
 
@@ -195,7 +195,8 @@ Two peers × two toggles = four flags. `observationMode` is a shorthand preset:
 | Preset | User flags | AI flags | Semantics |
 |--------|-----------|----------|-----------|
 | `"directional"` (default) | me: on, others: on | me: on, others: on | Full mutual observation. Enables cross-peer dialectic — "what does the AI know about the user, based on what the user said and the AI replied." |
-| `"unified"` | me: on, others: off | me: off, others: on | Shared-pool semantics — the AI observes the user's messages only, the user peer only self-models. Single-observer pool. |
+| `"unified"` | me: on, others: off | me: off, others: on | Shared-pool semantics — the AI observes the user's messages only, the user peer only self-models. Single-observer pool. Recall still runs from the AI peer's local view. |
+| `"shared-brain"` (alias `"global"`) | me: on, others: off | me: off, others: off | User-global recall. Search, context, profile, and dialectic query the user peer's global self-representation, so facts ingested by other clients that share the same workspace and user peer are visible. Use this when Hermes plus another harness share one Honcho "brain." |
 
 Override the preset with an explicit `observation` block for per-peer control:
 
@@ -211,10 +212,11 @@ Common patterns:
 | Intent | Config |
 |--------|--------|
 | Full observation (most users) | `"observationMode": "directional"` |
+| Multi-client shared workspace | `"observationMode": "shared-brain"` |
 | AI shouldn't re-model the user from its own replies | `"ai": {"observeMe": true, "observeOthers": false}` |
 | Strong persona the AI peer shouldn't update from self-observation | `"ai": {"observeMe": false, "observeOthers": true}` |
 
-Server-side toggles set via the [Honcho dashboard](https://app.honcho.dev) win over local defaults — Hermes syncs them back at session init.
+Server-side toggles set via the [Honcho dashboard](https://app.honcho.dev) win over **implicit local defaults** — Hermes syncs them back at session init. An explicit `observationMode` or `observation` object in `honcho.json` stays authoritative so a `shared-brain` (or granular) override is not reverted by stale session peer config.
 
 ## Tools
 

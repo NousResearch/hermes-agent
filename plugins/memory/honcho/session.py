@@ -188,6 +188,11 @@ class HonchoSessionManager:
         self._user_observe_others: bool = config.user_observe_others if config else True
         self._ai_observe_me: bool = config.ai_observe_me if config else True
         self._ai_observe_others: bool = config.ai_observe_others if config else True
+        # Explicit local observationMode / observation object is authoritative.
+        # Stale SessionPeerConfig on older sessions must not flip the manager.
+        self._observation_explicit: bool = bool(
+            getattr(config, "observation_explicit", False)
+        ) if config else False
         self._message_max_chars: int = (
             config.message_max_chars if config else 25000
         )
@@ -419,19 +424,7 @@ class HonchoSessionManager:
                 server_user, server_ai = self._authed_call(
                     "peer configuration read", _read_server_configs
                 )
-                if server_user.observe_me is not None:
-                    self._user_observe_me = server_user.observe_me
-                if server_user.observe_others is not None:
-                    self._user_observe_others = server_user.observe_others
-                if server_ai.observe_me is not None:
-                    self._ai_observe_me = server_ai.observe_me
-                if server_ai.observe_others is not None:
-                    self._ai_observe_others = server_ai.observe_others
-                logger.debug(
-                    "Honcho observation synced from server: user(me=%s,others=%s) ai(me=%s,others=%s)",
-                    self._user_observe_me, self._user_observe_others,
-                    self._ai_observe_me, self._ai_observe_others,
-                )
+                self._apply_server_observation(server_user, server_ai)
             except HonchoAuthError:
                 raise
             except Exception as e:
@@ -1417,6 +1410,51 @@ class HonchoSessionManager:
             return session.assistant_peer_id
 
         return normalized
+
+    def _apply_server_observation(self, server_user: Any, server_ai: Any) -> bool:
+        """Maybe copy SessionPeerConfig back onto manager-scoped flags.
+
+        Returns True when local flags were overwritten. Explicit local
+        observationMode / observation config stays authoritative so a
+        shared-brain (or granular) override is not reverted by stale
+        observe_others=true on older sessions.
+        """
+        local = (
+            self._user_observe_me,
+            self._user_observe_others,
+            self._ai_observe_me,
+            self._ai_observe_others,
+        )
+        incoming = (
+            server_user.observe_me if server_user.observe_me is not None else local[0],
+            server_user.observe_others if server_user.observe_others is not None else local[1],
+            server_ai.observe_me if server_ai.observe_me is not None else local[2],
+            server_ai.observe_others if server_ai.observe_others is not None else local[3],
+        )
+        if incoming == local:
+            logger.debug(
+                "Honcho observation synced from server: user(me=%s,others=%s) ai(me=%s,others=%s)",
+                *local,
+            )
+            return False
+        if self._observation_explicit:
+            logger.info(
+                "Honcho observation: keeping explicit local config "
+                "user(me=%s,others=%s) ai(me=%s,others=%s); "
+                "server had user(me=%s,others=%s) ai(me=%s,others=%s)",
+                *local, *incoming,
+            )
+            return False
+        self._user_observe_me = incoming[0]
+        self._user_observe_others = incoming[1]
+        self._ai_observe_me = incoming[2]
+        self._ai_observe_others = incoming[3]
+        logger.debug(
+            "Honcho observation synced from server: user(me=%s,others=%s) ai(me=%s,others=%s)",
+            self._user_observe_me, self._user_observe_others,
+            self._ai_observe_me, self._ai_observe_others,
+        )
+        return True
 
     def _resolve_observer_target(
         self,

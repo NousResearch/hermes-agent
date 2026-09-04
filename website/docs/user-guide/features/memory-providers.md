@@ -95,7 +95,7 @@ The legacy `hermes honcho setup` command still works (it now redirects to `herme
 | `recallMode` | `'hybrid'` | `hybrid` (auto-inject + tools), `context` (inject only), `tools` (tools only) |
 | `writeFrequency` | `'async'` | When to flush messages: `async` (background thread), `turn` (sync), `session` (batch on end), or integer N |
 | `saveMessages` | `true` | Whether to persist messages to Honcho API |
-| `observationMode` | `'directional'` | `directional` (all on) or `unified` (shared pool). Override with `observation` object |
+| `observationMode` | `'directional'` | `directional` (all on), `unified` (AI-local shared pool), or `shared-brain` (user-global multi-client recall). Override with `observation` object |
 | `messageMaxChars` | `25000` | Max chars per message (chunked if exceeded) |
 | `dialecticMaxInputChars` | `10000` | Max chars for dialectic query input to `peer.chat()` |
 | `sessionStrategy` | `'per-directory'` | `per-directory`, `per-repo`, `per-session`, `global` |
@@ -158,7 +158,7 @@ The mapping:
 | **Workspace** | Shared environment. All Hermes profiles under one workspace see the same user identity. |
 | **User peer** (`peerName`) | The human. Shared across profiles in the workspace. |
 | **AI peer** (`aiPeer`) | One per Hermes profile. Host key `hermes` → default; `hermes.<profile>` for others. |
-| **Observation** | Per-peer toggles controlling what Honcho models from whose messages. `directional` (default, all four on) or `unified` (single-observer pool). |
+| **Observation** | Per-peer toggles controlling what Honcho models from whose messages. `directional` (default, all four on), `unified` (single-observer pool, AI-local recall), or `shared-brain` (user-global recall for multi-client workspaces). |
 
 ### New profile, fresh Honcho peer
 
@@ -200,11 +200,12 @@ Each host block can override the observation config independently. Example: a co
 Presets via `observationMode`:
 
 - **`"directional"`** (default) — all four flags on. Full mutual observation; enables cross-peer dialectic.
-- **`"unified"`** — user `observeMe: true`, AI `observeOthers: true`, rest false. Single-observer pool; AI models the user but not itself, user peer only self-models.
+- **`"unified"`** — user `observeMe: true`, AI `observeOthers: true`, rest false. Single-observer pool; AI models the user but not itself, user peer only self-models. Recall still uses the AI peer's local view.
+- **`"shared-brain"`** (alias `"global"`) — user `observeMe: true`, rest false. Recall uses the user peer's global representation, so facts written by other clients that share the same workspace and user peer are visible.
 
-Server-side toggles set via the [Honcho dashboard](https://app.honcho.dev) win over local defaults — synced back at session init.
+Server-side toggles set via the [Honcho dashboard](https://app.honcho.dev) win over implicit local defaults — synced back at session init. An explicit `observationMode` or `observation` object stays authoritative.
 
-See the [Honcho page](./honcho.md#observation-directional-vs-unified) for the full observation reference.
+See the [Honcho page](./honcho.md#observation-directional-unified-shared-brain) for the full observation reference.
 
 ### Gateway identity mapping
 

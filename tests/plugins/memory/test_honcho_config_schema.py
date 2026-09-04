@@ -53,7 +53,11 @@ def test_declares_the_new_field_kinds():
     assert by_key["dialecticMaxChars"].kind == KIND_NUMBER
     assert by_key["userPeerAliases"].kind == KIND_JSON
     assert by_key["recallMode"].allowed_values() == {"hybrid", "context", "tools"}
-    assert by_key["observationMode"].allowed_values() == {"directional", "unified"}
+    assert by_key["observationMode"].allowed_values() == {
+        "directional",
+        "unified",
+        "shared-brain",
+    }
 
 
 def test_selects_constrain_their_values():

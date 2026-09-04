@@ -382,6 +382,49 @@ class TestObservationModeMigration:
         assert cfg.user_observe_others is False
         assert cfg.ai_observe_me is False
         assert cfg.ai_observe_others is True
+        assert cfg.observation_explicit is True
+
+
+    def test_shared_brain_preset_selects_user_global_flags(self, tmp_path):
+        """shared-brain (and alias global) flips ai_observe_others off."""
+        from plugins.memory.honcho.client import (
+            _normalize_observation_mode,
+            _resolve_observation,
+        )
+
+        assert _normalize_observation_mode("global") == "shared-brain"
+        assert _normalize_observation_mode("user-global") == "shared-brain"
+        # Pre-existing alias must keep pointing at unified.
+        assert _normalize_observation_mode("shared") == "unified"
+
+        flags = _resolve_observation("shared-brain", None)
+        assert flags["user_observe_me"] is True
+        assert flags["user_observe_others"] is False
+        assert flags["ai_observe_me"] is False
+        assert flags["ai_observe_others"] is False
+
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "apiKey": "k",
+            "hosts": {"hermes": {
+                "enabled": True,
+                "observationMode": "global",
+            }},
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        assert cfg.observation_mode == "shared-brain"
+        assert cfg.ai_observe_others is False
+        assert cfg.observation_explicit is True
+
+
+    def test_implicit_defaults_are_not_observation_explicit(self, tmp_path):
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "apiKey": "k",
+            "hosts": {"hermes": {"enabled": True, "aiPeer": "hermes"}},
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        assert cfg.observation_explicit is False
 
 
 class TestGetHonchoClient:

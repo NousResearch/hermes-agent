@@ -123,9 +123,10 @@ Or use the shorthand presets:
 | Preset | User | AI | Use case |
 |--------|------|----|----------|
 | `"directional"` (default) | me:on, others:on | me:on, others:on | Multi-agent, full memory |
-| `"unified"` | me:on, others:off | me:off, others:on | Single agent, user-only modeling |
+| `"unified"` | me:on, others:off | me:off, others:on | Single agent, user-only modeling (AI-local recall) |
+| `"shared-brain"` (alias `"global"`) | me:on, others:off | me:off, others:off | Multi-client shared workspace — user-global recall |
 
-Settings changed in the [Honcho dashboard](https://app.honcho.dev) are synced back on session init -- server-side config wins over local defaults.
+Settings changed in the [Honcho dashboard](https://app.honcho.dev) are synced back on session init when local observation is using defaults. An explicit `observationMode` or `observation` object stays authoritative.
 
 ### Sessions
 

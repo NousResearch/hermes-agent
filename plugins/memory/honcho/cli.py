@@ -899,15 +899,14 @@ def cmd_setup(args) -> None:
             print("  Identity mapping left untouched.")
 
     # --- 4. Observation mode ---
+    from plugins.memory.honcho.client import _normalize_observation_mode
     current_obs = hermes_host.get("observationMode") or cfg.get("observationMode", "directional")
     print("\n  Observation mode:")
-    print("    directional  -- all observations on, each AI peer builds its own view (default)")
-    print("    unified      -- user observes self, AI observes others only")
+    print("    directional   -- all observations on, each AI peer builds its own view (default)")
+    print("    unified       -- user observes self, AI observes others only")
+    print("    shared-brain  -- user-global recall for multi-client shared workspaces")
     new_obs = _prompt("Observation mode", default=current_obs)
-    if new_obs in {"unified", "directional"}:
-        hermes_host["observationMode"] = new_obs
-    else:
-        hermes_host["observationMode"] = "directional"
+    hermes_host["observationMode"] = _normalize_observation_mode(new_obs)
 
     # --- 5. Write frequency ---
     current_wf = str(hermes_host.get("writeFrequency") or cfg.get("writeFrequency", "async"))

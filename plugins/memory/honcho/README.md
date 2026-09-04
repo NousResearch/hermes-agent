@@ -207,7 +207,7 @@ Pick **[e]** at the prompt to set the three keys directly instead of going throu
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `recallMode` | string | `"hybrid"` | `"hybrid"` (auto-inject + tools), `"context"` (auto-inject only, tools hidden), `"tools"` (tools only, no injection). Legacy `"auto"` → `"hybrid"` |
-| `observationMode` | string | `"directional"` | Preset: `"directional"` (all on) or `"unified"` (user observes self, AI observes others). Use `observation` object for granular control |
+| `observationMode` | string | `"directional"` | Preset: `"directional"` (all on), `"unified"` (user observes self, AI observes others), or `"shared-brain"` (user-global recall for multi-client workspaces). Use `observation` object for granular control |
 | `observation` | object | — | Per-peer observation config (see Observation section) |
 
 ### Write Behavior
@@ -330,6 +330,7 @@ Maps 1:1 to Honcho's per-peer `SessionPeerConfig`. When present, overrides `obse
 Presets:
 - `"directional"` (default): all four `true`
 - `"unified"`: user `observeMe=true`, AI `observeOthers=true`, rest `false`
+- `"shared-brain"` (alias `"global"`): user `observeMe=true`, rest `false`. Recall uses the user peer's global representation — the correct mode when multiple agents or harnesses share one Honcho workspace and user peer.
 
 ### Hardcoded Limits
 

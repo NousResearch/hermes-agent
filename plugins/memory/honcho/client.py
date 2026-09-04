@@ -322,8 +322,16 @@ def _resolve_optional_float(*values: Any) -> float | None:
     return None
 
 
-_VALID_OBSERVATION_MODES = {"unified", "directional"}
-_OBSERVATION_MODE_ALIASES = {"shared": "unified", "separate": "directional", "cross": "directional"}
+_VALID_OBSERVATION_MODES = {"unified", "directional", "shared-brain"}
+# "shared" stays mapped to unified — that alias predates shared-brain.
+# "global" is the issue-suggested name for the user-global / shared-brain preset.
+_OBSERVATION_MODE_ALIASES = {
+    "shared": "unified",
+    "separate": "directional",
+    "cross": "directional",
+    "global": "shared-brain",
+    "user-global": "shared-brain",
+}
 
 
 def _normalize_observation_mode(val: str) -> str:
@@ -343,6 +351,12 @@ _OBSERVATION_PRESETS = {
         "user_observe_me": True, "user_observe_others": False,
         "ai_observe_me": False, "ai_observe_others": True,
     },
+    # User-global recall: queries run as the user peer (target=None), so facts
+    # ingested by other clients that share the same user peer are visible.
+    "shared-brain": {
+        "user_observe_me": True, "user_observe_others": False,
+        "ai_observe_me": False, "ai_observe_others": False,
+    },
 }
 
 
@@ -353,7 +367,7 @@ def _resolve_observation(
     """Resolve per-peer observation booleans.
 
     Config forms:
-      String shorthand:  ``"observationMode": "directional"``
+      String shorthand:  ``"observationMode": "directional"`` / ``"unified"`` / ``"shared-brain"``
       Granular object:   ``"observation": {"user": {"observeMe": true, "observeOthers": true},
                                            "ai": {"observeMe": true, "observeOthers": false}}``
 
@@ -462,7 +476,8 @@ class HonchoClientConfig:
     # entirely (fully async first turn; context surfaces on later turns).
     first_turn_base_wait: float = 3.0
     first_turn_dialectic_wait: float = 2.0
-    # Observation mode: legacy string shorthand ("directional" or "unified").
+    # Observation mode: legacy string shorthand
+    # ("directional", "unified", or "shared-brain").
     # Kept for backward compat; granular per-peer booleans below are preferred.
     observation_mode: str = "directional"
     # Per-peer observation booleans — maps 1:1 to Honcho's SessionPeerConfig.
@@ -471,6 +486,10 @@ class HonchoClientConfig:
     user_observe_others: bool = True
     ai_observe_me: bool = True
     ai_observe_others: bool = True
+    # True when honcho.json set observationMode or a granular observation
+    # object. Session init must not overwrite those flags from stale
+    # server-side SessionPeerConfig ("last session init wins").
+    observation_explicit: bool = False
     # Session resolution
     session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
@@ -800,6 +819,12 @@ class HonchoClientConfig:
                 host_block.get("observationMode")
                 or raw.get("observationMode")
                 or ("unified" if _explicitly_configured else "directional")
+            ),
+            observation_explicit=bool(
+                host_block.get("observationMode")
+                or raw.get("observationMode")
+                or host_block.get("observation")
+                or raw.get("observation")
             ),
             **_resolve_observation(
                 _normalize_observation_mode(

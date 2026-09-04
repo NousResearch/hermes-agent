@@ -62,6 +62,7 @@ async def test_native_fallback_guard_is_opt_in_and_context_local(consumer, tmp_p
     _state, _runner, adapter = consumer
     path = tmp_path / "fallback.txt"
     path.write_text("fallback", encoding="utf-8")
+    path.chmod(0o600)
     adapter.fallback = True
     result = await adapter.send_document(
         chat_id="chat", file_path=str(path), file_name="visible.txt"

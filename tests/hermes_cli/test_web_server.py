@@ -5375,3 +5375,87 @@ def test_mount_spa_dynamic_web_dist_recheck(tmp_path, monkeypatch):
     res2 = client.get("/")
     assert res2.status_code == 200
     assert "Test" in res2.text
+
+
+# ---------------------------------------------------------------------------
+# SSH remote token adoption (#103001): the SPA handlers must serve the LIVE
+# module token, not the import-time closure copy.
+# ---------------------------------------------------------------------------
+
+
+class TestHeadlessServeTokenFollowsSshAdoption:
+    """``hermes serve --ssh-session-token-file`` adopts the file token via
+    ``_apply_ssh_session_token`` AFTER ``web_server_dashboard`` was imported.
+    The handshake page and the SPA index must reflect the adopted value, or the
+    renderer authenticates with a credential the auth middleware rejects and
+    every /api call 401s."""
+
+    @staticmethod
+    def _headless_client(monkeypatch, *, gated: bool):
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+
+        monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
+        spa_app = FastAPI()
+        spa_app.state.auth_required = gated
+        _web_server_dashboard.mount_spa(spa_app)
+        return TestClient(spa_app)
+
+    def test_handshake_page_serves_adopted_ssh_token(self, monkeypatch):
+        import re
+        import hermes_cli.web_server as ws
+
+        adopted = "a" * 64
+        before = ws._SESSION_TOKEN
+        assert adopted != before
+        client = self._headless_client(monkeypatch, gated=False)
+        try:
+            ws._apply_ssh_session_token(adopted)
+            resp = client.get("/")
+            assert resp.status_code == 200
+            match = re.search(
+                r'window\.__HERMES_SESSION_TOKEN__\s*=\s*("(?:\\.|[^"\\])*")',
+                resp.text,
+            )
+            assert match, resp.text
+            import json as _json
+
+            assert _json.loads(match.group(1)) == adopted
+        finally:
+            ws._apply_ssh_session_token(before)
+
+    def test_spa_index_serves_adopted_ssh_token(self, tmp_path, monkeypatch):
+        import re
+        import hermes_cli.web_server as ws
+
+        dist = tmp_path / "web_dist"
+        dist.mkdir()
+        (dist / "index.html").write_text(
+            "<html><head></head><body>SPA</body></html>", encoding="utf-8"
+        )
+        monkeypatch.setattr(ws, "WEB_DIST", dist)
+        monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
+
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+
+        adopted = "b" * 64
+        before = ws._SESSION_TOKEN
+        assert adopted != before
+        spa_app = FastAPI()
+        _web_server_dashboard.mount_spa(spa_app)
+        client = TestClient(spa_app)
+        try:
+            ws._apply_ssh_session_token(adopted)
+            resp = client.get("/chat")
+            assert resp.status_code == 200
+            match = re.search(
+                r'window\.__HERMES_SESSION_TOKEN__\s*=\s*("(?:\\.|[^"\\])*")',
+                resp.text,
+            )
+            assert match, resp.text
+            import json as _json
+
+            assert _json.loads(match.group(1)) == adopted
+        finally:
+            ws._apply_ssh_session_token(before)

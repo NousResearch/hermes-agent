@@ -5484,7 +5484,18 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # getattr() — tests build adapters via object.__new__() (no __init__).
         if getattr(self, "_send_path_degraded", False):
-            return SendResult(success=False, error="send_path_degraded", retryable=True)
+            # The reconnect ladder needs up to one full polling-health window
+            # before getUpdates can confirm the replacement transport.  Without
+            # this cadence hint, BasePlatformAdapter burns both generic retries
+            # in ~6 seconds and strands a completed final in the delivery ledger
+            # while the same adapter recovers moments later.
+            return SendResult(
+                success=False,
+                error="send_path_degraded",
+                retryable=True,
+                retry_after=_POLLING_PROGRESS_TIMEOUT,
+                error_kind="transient",
+            )
 
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():

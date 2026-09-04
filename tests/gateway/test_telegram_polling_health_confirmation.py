@@ -10,8 +10,14 @@ reconnect is a reliable hung-poll signature.
 
 import asyncio
 import logging
+
+import pytest
+
 from gateway.config import Platform  # noqa: E402
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import (  # noqa: E402
+    _POLLING_PROGRESS_TIMEOUT,
+    TelegramAdapter,
+)
 
 
 def _bare_adapter():
@@ -83,3 +89,18 @@ class TestPollingHealthConfirmation:
             rec for rec in caplog.records if "confirmed healthy" in rec.getMessage()
         ]
         assert not a._polling_progress_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_degraded_send_retries_on_polling_health_cadence(self):
+        """A turn-final send must not burn both generic retries before
+        Telegram's bounded reconnect cycle can produce one healthy poll."""
+        a = _bare_adapter()
+        a._bot = object()
+
+        result = await a.send("chat-1", "the answer")
+
+        assert result.success is False
+        assert result.error == "send_path_degraded"
+        assert result.retryable is True
+        assert result.retry_after == _POLLING_PROGRESS_TIMEOUT
+        assert result.error_kind == "transient"

@@ -16,6 +16,7 @@ import {
   $busy,
   $currentCwd,
   $selectedStoredSessionId,
+  $sessions,
   getSessionOwnerHint,
   ownerLookupSessionRows,
   sessionMatchesStoredId,
@@ -31,6 +32,7 @@ import {
   setSessionStalled
 } from '@/store/session-states'
 import { loadArchivedSessions } from '@/store/sidebar-archive'
+import { activeSubagentsForStoredSession, restoreActiveSubagents, type SubagentPayload } from '@/store/subagents'
 
 import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
@@ -986,4 +988,35 @@ export function useBackgroundSync({
       void refreshHermesConfig()
     }
   }, [activeSessionId, freshDraftReady, gatewayState, refreshCurrentModel, refreshHermesConfig])
+
+  // The gateway can outlive a renderer reload, but this store cannot. Re-seed
+  // the resumed conversation once its concrete runtime binding is known. This
+  // is activation-scoped, never a poll: live subagent events remain the update
+  // path after the snapshot lands.
+  useEffect(() => {
+    if (gatewayState !== 'open' || !activeSessionId || !activeStoredSessionId) {
+      return
+    }
+
+    let cancelled = false
+    const runtimeSessionId = activeSessionId
+    const storedSessionId = activeStoredSessionId
+
+    void requestGateway<{ active?: SubagentPayload[] }>('delegation.status', { session_id: runtimeSessionId })
+      .then(response => {
+        if (cancelled) {
+          return
+        }
+
+        const active = Array.isArray(response.active) ? response.active : []
+        const owned = activeSubagentsForStoredSession(storedSessionId, active, $sessions.get())
+
+        restoreActiveSubagents(runtimeSessionId, owned)
+      })
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeConnectionId, activeGatewayProfile, activeSessionId, activeStoredSessionId, gatewayState, requestGateway])
 }

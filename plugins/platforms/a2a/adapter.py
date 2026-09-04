@@ -61,6 +61,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 9900
 _ORPHAN_TIMEOUT = 300  # seconds before a pending task is considered orphaned
+_ORPHAN_GRACE = 60  # slack added on top of a served agent's configured route timeout
 _WATCHDOG_INTERVAL = 60  # seconds between orphaned task watchdog runs
 _MAX_BODY = 1_048_576  # 1MB max request body — prevents DoS via memory exhaustion
 _SSE_KEEPALIVE = 5  # seconds between SSE keepalive comments
@@ -506,12 +507,29 @@ class A2AAdapter(BasePlatformAdapter):
 
     # ── Orphaned task watchdog ─────────────────────────────────────────────
 
+    def _orphan_timeout_for(self, agent_slug: str) -> int:
+        """Orphan deadline for a task routed to ``agent_slug``.
+
+        A forwarded profile may legitimately run for its configured route
+        ``timeout`` (e.g. 900 s); the watchdog must not fail the task at the
+        300 s floor while the subprocess is still allowed to run.
+        """
+        agent = self._agents.get(agent_slug or "") or {}
+        try:
+            route_timeout = int(agent.get("timeout") or 0)
+        except (TypeError, ValueError):
+            route_timeout = 0
+        return max(_ORPHAN_TIMEOUT, route_timeout + _ORPHAN_GRACE)
+
     def _watchdog_loop(self) -> None:
         """Background thread that fails orphaned tasks (keeps them queryable)."""
         while not self._watchdog_stop.wait(_WATCHDOG_INTERVAL):
             try:
-                for tid in self.tasks.fail_orphans(_ORPHAN_TIMEOUT):
-                    logger.warning("A2A: orphaned task %s marked failed (timeout %ds)", tid, _ORPHAN_TIMEOUT)
+                for tid in self.tasks.fail_orphans(
+                    _ORPHAN_TIMEOUT,
+                    timeout_for=lambda rec: self._orphan_timeout_for(rec.get("agent_slug", "")),
+                ):
+                    logger.warning("A2A: orphaned task %s marked failed", tid)
                     protocol.metrics.tasks_failed += 1
             except Exception:
                 logger.debug("A2A: watchdog error", exc_info=True)

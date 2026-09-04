@@ -837,6 +837,9 @@ class TestGetModelCapabilities:
         assert caps.supports_vision is True
         assert caps.supports_reasoning is True
 
+        api_caps = get_model_capabilities("openai-api", "gpt-6-astra")
+        assert api_caps == caps
+
 
 # ---------------------------------------------------------------------------
 # Per-model metadata overrides (model_overrides config)

@@ -3184,6 +3184,19 @@ class TestCodexAdapterPromptCacheKey:
         ])
         assert "prompt_cache_retention" not in captured
 
+    def test_astra_auxiliary_request_uses_official_contract(self):
+        adapter, captured = self._build_adapter(
+            base_url="https://api.openai.com/v1",
+            model="gpt-6-astra",
+        )
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"enabled": False, "effort": "none"}},
+        )
+        assert captured["reasoning"]["effort"] == "low"
+        assert captured["prompt_cache_options"] == {"ttl": "30m"}
+        assert "prompt_cache_retention" not in captured
+
     def test_codex_backend_forwards_auxiliary_service_tier(self):
         adapter, captured = self._build_adapter(
             base_url="https://chatgpt.com/backend-api/codex",

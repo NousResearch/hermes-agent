@@ -79,7 +79,9 @@ def test_astra_is_offered_only_by_successful_account_discovery(monkeypatch):
         discovered = M.provider_model_ids("openai-api", force_refresh=True)
     with patch.object(M, "fetch_api_models", return_value=["gpt-5.6-sol"]):
         not_entitled = M.provider_model_ids("openai-api", force_refresh=True)
+    with patch.object(M, "fetch_api_models", side_effect=RuntimeError("discovery unavailable")):
+        discovery_failed = M.provider_model_ids("openai-api", force_refresh=True)
 
     assert "gpt-6-astra" in discovered
     assert "gpt-6-astra" not in not_entitled
-
+    assert "gpt-6-astra" not in discovery_failed

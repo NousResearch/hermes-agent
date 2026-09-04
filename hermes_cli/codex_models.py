@@ -96,7 +96,7 @@ def _finalize_codex_models(model_ids: List[str], *, allow_astra: bool = False) -
     """
     finalized = _add_forward_compat_models(model_ids)
     if not allow_astra:
-        finalized = [model for model in finalized if model.lower() != "gpt-6-astra"]
+        finalized = [model for model in finalized if model.lower().rsplit("/", 1)[-1] != "gpt-6-astra"]
     return _add_context_variants(finalized)
 
 

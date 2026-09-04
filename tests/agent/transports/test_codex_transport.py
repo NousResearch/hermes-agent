@@ -51,6 +51,7 @@ class TestCodexBuildKwargs:
                 "top_p": 0.9,
                 "top_logprobs": 5,
                 "logprobs": True,
+                "reasoning": {"effort": "none"},
                 "include": ["reasoning.encrypted_content", "message.output_text.logprobs"],
                 "prompt_cache_retention": "24h",
                 "prompt_cache_options": {"ttl": "1h"},
@@ -63,6 +64,31 @@ class TestCodexBuildKwargs:
         assert kw["include"] == ["reasoning.encrypted_content"]
         for unsupported in ("temperature", "top_p", "top_logprobs", "logprobs"):
             assert unsupported not in kw
+        assert transport.preflight_kwargs(kw)["prompt_cache_options"] == {"ttl": "30m"}
+
+    @pytest.mark.parametrize("effort", ["none", "minimal"])
+    def test_astra_normalizes_unsupported_low_efforts_after_overrides(self, transport, effort):
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url="https://api.openai.com/v1",
+            request_overrides={"reasoning": {"effort": effort}},
+        )
+
+        assert kw["reasoning"]["effort"] == "low"
+
+    @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
+    def test_astra_accepts_complete_effort_ladder(self, transport, effort):
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url="https://api.openai.com/v1",
+            reasoning_config={"enabled": True, "effort": effort},
+        )
+
+        assert kw["reasoning"]["effort"] == effort
 
     def test_astra_proxy_does_not_receive_official_cache_options(self, transport):
         kw = transport.build_kwargs(

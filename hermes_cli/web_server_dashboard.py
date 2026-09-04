@@ -102,7 +102,7 @@ def mount_spa(application: FastAPI):
     with a missing dist per-request (404 JSON / ``check_dir=False``), so a long-lived
     ``--skip-build`` process recovers the moment a build appears on disk — no restart.
     """
-    from hermes_cli.web_server import WEB_DIST, _DASHBOARD_EMBEDDED_CHAT_ENABLED, _SESSION_TOKEN, app
+    from hermes_cli.web_server import WEB_DIST, _DASHBOARD_EMBEDDED_CHAT_ENABLED, app
 
     # `hermes serve` is the headless backend: it must NEVER serve the browser SPA, even if a
     # dist is lying around, so only the JSON-RPC/WS/API surface is reachable.
@@ -118,6 +118,11 @@ def mount_spa(application: FastAPI):
             # See #94227, #95575.
             gated = bool(getattr(application.state, "auth_required", False))
             if full_path == "" and not gated:
+                # SSH Desktop applies its per-connection token after the SPA routes are
+                # mounted. Read the facade state at request time so the handshake page
+                # advertises the same token the auth middleware currently validates.
+                from hermes_cli.web_server import _SESSION_TOKEN
+
                 return HTMLResponse(
                     "<!doctype html><html><head><script>"
                     f"window.__HERMES_SESSION_TOKEN__={json.dumps(_SESSION_TOKEN)};"
@@ -151,6 +156,9 @@ def mount_spa(application: FastAPI):
             return JSONResponse({"error": "Frontend not built. Run: cd web && npm run build"}, status_code=404)
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
+        # Keep this late-bound for the same SSH Desktop lifecycle as the headless root.
+        from hermes_cli.web_server import _SESSION_TOKEN
+
         token_js = "" if gated else f'window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
         bootstrap_script = (
             f"<script>{token_js}"

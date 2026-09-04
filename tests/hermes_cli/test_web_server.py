@@ -5065,6 +5065,26 @@ class TestServeIndexMissingIndex:
         assert resp.status_code == 200
         assert "SPA-rebuilt" in resp.text
 
+    def test_index_uses_session_token_applied_after_spa_mount(
+        self, tmp_path, monkeypatch
+    ):
+        client, _dist = self._client_with_dist(
+            tmp_path, monkeypatch, write_index=True
+        )
+        import hermes_cli.web_server as ws
+
+        original_token = ws._SESSION_TOKEN
+        try:
+            ws._apply_ssh_session_token("ssh-token-applied-after-mount")
+            resp = client.get("/")
+            assert resp.status_code == 200
+            assert (
+                'window.__HERMES_SESSION_TOKEN__="ssh-token-applied-after-mount"'
+                in resp.text
+            )
+        finally:
+            ws._apply_ssh_session_token(original_token)
+
 
 class TestHeadlessServeTokenPage:
     """Headless `hermes serve` must serve the Desktop token handshake page
@@ -5109,6 +5129,24 @@ class TestHeadlessServeTokenPage:
 
         assert _json.loads(match.group(1)) == ws._SESSION_TOKEN
         assert "window.__HERMES_AUTH_REQUIRED__=false" in resp.text
+
+    def test_root_uses_session_token_applied_after_spa_mount(self, monkeypatch):
+        import json as _json
+        import re
+
+        client, ws = self._headless_client(monkeypatch, gated=False)
+        original_token = ws._SESSION_TOKEN
+        try:
+            ws._apply_ssh_session_token("ssh-token-applied-after-mount")
+            resp = client.get("/")
+            match = re.search(
+                r'window\.__HERMES_SESSION_TOKEN__\s*=\s*("(?:\\.|[^"\\])*")',
+                resp.text,
+            )
+            assert match, resp.text
+            assert _json.loads(match.group(1)) == "ssh-token-applied-after-mount"
+        finally:
+            ws._apply_ssh_session_token(original_token)
 
     def test_root_stays_404_json_when_auth_gated(self, monkeypatch):
         client, ws = self._headless_client(monkeypatch, gated=True)

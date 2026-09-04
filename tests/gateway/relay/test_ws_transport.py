@@ -181,7 +181,11 @@ class _Revoking4401Server:
 @pytest.mark.asyncio
 async def test_4401_after_handshake_is_terminal_no_reconnect():
     """A 4401 close AFTER a successful handshake = a revoked credential (opt-out):
-    the transport latches auth_revoked and does NOT spin the reconnect supervisor."""
+    the transport latches auth_revoked and does NOT spin the reconnect supervisor.
+
+    Since the expired-token fix, the transport first re-dials ONCE with a fresh
+    token; this stub 4401s every dial, so that retry is also refused and the
+    latch still lands — the terminal contract is unchanged."""
     srv = _Revoking4401Server(send_descriptor_first=True)
     await srv.start()
     try:
@@ -203,6 +207,154 @@ async def test_4401_after_handshake_is_terminal_no_reconnect():
         # Give a reconnect (if it were going to happen) time to NOT happen.
         await asyncio.sleep(0.2)
         assert t._supervisor is None
+    finally:
+        await t.disconnect()
+        await srv.stop()
+
+
+# ── Expired upgrade token vs revoked secret (incident 2026-09-02) ─────────────
+
+
+class _ExpiredToken4401Server:
+    """Connector stub for the expired-vs-revoked ambiguity. Every dial gets a
+    descriptor on hello (the upgrade itself is never refused). After the
+    descriptor the stub closes 4401 on the dials whose 1-based index is in
+    ``close_4401_on`` (``None`` = every dial) with the given reason; other dials
+    stay open and serve as a normal connector. ``dials`` counts connections."""
+
+    def __init__(self, *, close_4401_on: set[int] | None, reason: str = "unauthorized"):
+        self._server = None
+        self.url = ""
+        self.dials = 0
+        self._close_on = close_4401_on
+        self._reason = reason
+
+    async def start(self):
+        self._server = await websockets.serve(self._handle, "127.0.0.1", 0)
+        port = next(iter(self._server.sockets)).getsockname()[1]
+        self.url = f"ws://127.0.0.1:{port}"
+
+    async def stop(self):
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+
+    async def _handle(self, ws):
+        self.dials += 1
+        dial = self.dials
+        async for raw in ws:
+            for line in str(raw).split("\n"):
+                if not line.strip():
+                    continue
+                frame = json.loads(line)
+                if frame.get("type") == "hello":
+                    await ws.send(json.dumps({"type": "descriptor", "descriptor": DESCRIPTOR}) + "\n")
+                    if self._close_on is None or dial in self._close_on:
+                        await asyncio.sleep(0.05)  # let the descriptor land first
+                        await ws.close(code=4401, reason=self._reason)
+                        return
+
+
+def _transport(url: str) -> WebSocketRelayTransport:
+    return WebSocketRelayTransport(
+        url, "discord", "appShared",
+        gateway_id="gw-x", upgrade_secret="secret-x",
+        reconnect=True, reconnect_backoff_s=5.0,  # slow: proves the retry bypasses backoff
+    )
+
+
+async def _wait_until(pred, *, timeout_s: float = 2.0) -> bool:
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while asyncio.get_running_loop().time() < deadline:
+        if pred():
+            return True
+        await asyncio.sleep(0.02)
+    return pred()
+
+
+@pytest.mark.asyncio
+async def test_4401_after_handshake_redials_once_with_fresh_token_and_recovers():
+    """A single post-handshake 4401 (an expired upgrade token after a scale-to-zero
+    suspend) must NOT latch revocation: the transport re-dials immediately with a
+    fresh token, the connector accepts it, and the relay stays live."""
+    srv = _ExpiredToken4401Server(close_4401_on={1})
+    await srv.start()
+    t = _transport(srv.url)
+    try:
+        await t.connect()
+        await t.handshake()
+        assert srv.dials == 1
+        # The 4401 close lands, the fresh-token re-dial connects (well inside the
+        # 5s reconnect backoff, so this is the immediate retry, not the supervisor).
+        assert await _wait_until(lambda: srv.dials == 2 and t._descriptor is not None)
+        assert t.auth_revoked is False
+        # The new reader is running against a live socket; no fatal state.
+        assert t._reader is not None and not t._reader.done()
+        assert t._ws is not None
+        assert t._supervisor is None
+        await asyncio.sleep(0.2)
+        assert srv.dials == 2  # exactly one re-dial, no extra spinning
+        assert t.auth_revoked is False
+    finally:
+        await t.disconnect()
+        await srv.stop()
+
+
+@pytest.mark.asyncio
+async def test_4401_on_fresh_token_redial_latches_revocation_after_exactly_one_retry():
+    """If the connector 4401s the FRESH token too, the secret really is gone:
+    latch auth_revoked after exactly one retry (2 dials total) and stop."""
+    srv = _ExpiredToken4401Server(close_4401_on=None)
+    await srv.start()
+    t = _transport(srv.url)
+    try:
+        await t.connect()
+        await t.handshake()
+        assert await _wait_until(lambda: t.auth_revoked)
+        assert srv.dials == 2
+        assert t._supervisor is None
+        await asyncio.sleep(0.2)
+        assert srv.dials == 2  # terminal: no further dials
+        assert t._supervisor is None
+    finally:
+        await t.disconnect()
+        await srv.stop()
+
+
+@pytest.mark.asyncio
+async def test_4401_with_reason_expired_never_latches_and_reconnects_normally():
+    """A connector that labels the close reason 'expired' is explicitly saying the
+    token aged out: never a revocation, even repeatedly — take the normal
+    reconnect path (backoff supervisor) instead."""
+    srv = _ExpiredToken4401Server(close_4401_on={1}, reason="expired")
+    await srv.start()
+    t = _transport(srv.url)
+    t._reconnect_backoff_s = 0.05  # normal path: should reconnect via the supervisor
+    try:
+        await t.connect()
+        await t.handshake()
+        assert await _wait_until(lambda: t._supervisor is not None)
+        assert t.auth_revoked is False
+        assert await _wait_until(lambda: srv.dials == 2 and t._descriptor is not None)
+        assert t.auth_revoked is False
+        assert t._reader is not None and not t._reader.done()
+    finally:
+        await t.disconnect()
+        await srv.stop()
+
+
+@pytest.mark.asyncio
+async def test_4401_with_reason_expired_repeated_still_never_latches():
+    """Even a second 'expired' 4401 in a row is not a revocation."""
+    srv = _ExpiredToken4401Server(close_4401_on={1, 2}, reason="expired")
+    await srv.start()
+    t = _transport(srv.url)
+    t._reconnect_backoff_s = 0.05
+    try:
+        await t.connect()
+        await t.handshake()
+        assert await _wait_until(lambda: srv.dials == 3 and t._descriptor is not None)
+        assert t.auth_revoked is False
     finally:
         await t.disconnect()
         await srv.stop()

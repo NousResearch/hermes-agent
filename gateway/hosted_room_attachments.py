@@ -819,55 +819,11 @@ class HostedRoomAttachmentStore:
         normalized_event = _identifier(event_id, label="event_id") if event_id is not None else None
         now = float(self.clock())
         with self._transaction() as conn:
-            row = conn.execute(
-                "SELECT * FROM hosted_room_attachments WHERE attachment_id=? AND room_id=?",
-                (attachment_id, room_id),
-            ).fetchone()
-            if row is None or str(row["state"]) != "committed":
-                raise AttachmentNotFoundError("attachment is not committed for this room")
-            if row["expires_at"] is not None and float(row["expires_at"]) <= now:
-                raise AttachmentNotFoundError("attachment has expired")
-            if normalized_event is not None and str(row["event_id"] or "") != normalized_event:
-                raise AttachmentNotFoundError("attachment is not owned by this room event")
-            if int(row["viewer_access"] or 0):
-                # Room-visible files need a published owner even for member reads.
-                # A pre-event commitment is staging, not authority to expose bytes.
-                if (
-                    conn.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_events'"
-                    ).fetchone()
-                    is None
-                ):
-                    raise AttachmentNotFoundError(
-                        "attachment is not published in this room"
-                    )
-                owner = conn.execute(
-                    """SELECT payload_json FROM hosted_room_events
-                       WHERE room_id=? AND event_id=? AND kind IN ('message.user', 'message.member')""",
-                    (room_id, str(row["event_id"] or "")),
-                ).fetchone()
-                manifest = {
-                    key: row[key]
-                    for key in ("attachment_id", "kind", "name", "size", "mime")
-                }
-                payload = (
-                    json.loads(owner["payload_json"]) if owner is not None else None
-                )
-                published = (
-                    payload.get("attachments") if isinstance(payload, Mapping) else None
-                )
-                if not isinstance(published, list) or manifest not in published:
-                    raise AttachmentNotFoundError(
-                        "attachment is not published in this room"
-                    )
-            recipients = json.loads(str(row["recipient_member_ids_json"]))
-            if viewer:
-                if int(row["viewer_access"] or 0) != 1:
-                    raise AttachmentNotFoundError(
-                        "attachment is unavailable to Group Chat viewers"
-                    )
-            elif recipient_member_id not in recipients:
-                raise AttachmentNotFoundError("attachment is unavailable to this recipient")
+            row = self._read_committed_row(
+                conn, room_id=room_id, attachment_id=attachment_id,
+                recipient_member_id=recipient_member_id,
+                normalized_event=normalized_event, viewer=viewer, now=now,
+            )
             data = self._read_blob(
                 blob_id=str(row["blob_id"]),
                 size=int(row["size"]),
@@ -1049,6 +1005,153 @@ class HostedRoomAttachmentStore:
             "blobs": int(blob["count"]),
             "physical_bytes": int(blob["bytes"]),
         }
+
+
+    def read_viewer(
+        self,
+        *,
+        room_id: Any,
+        attachment_id: Any,
+        event_id: Any | None = None,
+        recipient_member_id: Any = None,
+        authority_gateway_id: Any,
+        authority_epoch: Any,
+    ) -> AttachmentData:
+        """Read for a live hosted viewer, fencing revocation across byte I/O."""
+
+        room_id = _identifier(room_id, label="room_id")
+        attachment_id = _attachment_id(attachment_id)
+        normalized_event = _identifier(event_id, label="event_id") if event_id is not None else None
+        recipient_member_id = (
+            _identifier(recipient_member_id, label="recipient_member_id")
+            if recipient_member_id is not None else ""
+        )
+        authority_gateway_id = _identifier(authority_gateway_id, label="authority_gateway_id")
+        if isinstance(authority_epoch, bool) or not isinstance(authority_epoch, int) or authority_epoch < 1:
+            raise AttachmentError("authority_epoch must be a positive integer")
+        scope = {
+            "room_id": room_id,
+            "authority_gateway_id": authority_gateway_id,
+            "authority_epoch": authority_epoch,
+        }
+        selection = {
+            "room_id": room_id,
+            "attachment_id": attachment_id,
+            "recipient_member_id": recipient_member_id,
+            "normalized_event": normalized_event,
+            "viewer": True,
+        }
+        with self._transaction() as conn:
+            conn.execute("BEGIN")
+            self._require_viewer_room(conn, **scope)
+            row = self._read_committed_row(conn, **selection, now=float(self.clock()))
+
+        # No execution lock or SQLite snapshot spans filesystem/hash work.
+        data = self._read_blob(
+            blob_id=str(row["blob_id"]), size=int(row["size"]), sha256=str(row["sha256"]),
+        )
+        with self._transaction() as conn:
+            conn.execute("BEGIN")
+            self._require_viewer_room(conn, **scope)
+            current = self._read_committed_row(conn, **selection, now=float(self.clock()))
+            if current["blob_id"] != row["blob_id"] or self._metadata(current) != self._metadata(row):
+                raise AttachmentNotFoundError("attachment changed during viewer read")
+        return AttachmentData(self._metadata(current), data)
+
+
+    @staticmethod
+    def _require_viewer_room(
+        conn: sqlite3.Connection,
+        *,
+        room_id: str,
+        authority_gateway_id: str,
+        authority_epoch: int,
+    ) -> None:
+        from gateway.hosted_rooms_common import table_exists as _table_exists
+
+        if not _table_exists(conn, "hosted_rooms"):
+            raise AttachmentNotFoundError("Group Chat is unavailable to viewers")
+        room = conn.execute(
+            """SELECT authority_gateway_id, authority_epoch, disbanded_at
+               FROM hosted_rooms WHERE room_id=?""",
+            (room_id,),
+        ).fetchone()
+        if (
+            room is None
+            or room["disbanded_at"] is not None
+            or room["authority_gateway_id"] != authority_gateway_id
+            or room["authority_epoch"] != authority_epoch
+        ):
+            raise AttachmentNotFoundError("Group Chat viewer authority changed")
+        # Files-only sources need not install the optional safety/retirement schema.
+        for table in ("hosted_room_quarantine", "hosted_room_disband_fences"):
+            if _table_exists(conn, table) and conn.execute(
+                f"SELECT 1 FROM {table} WHERE room_id=?", (room_id,),
+            ).fetchone() is not None:
+                raise AttachmentNotFoundError("Group Chat is unavailable to viewers")
+
+
+    @staticmethod
+    def _read_committed_row(
+        conn: sqlite3.Connection,
+        *,
+        room_id: str,
+        attachment_id: str,
+        recipient_member_id: str,
+        normalized_event: str | None,
+        viewer: bool,
+        now: float,
+    ) -> sqlite3.Row:
+        row = conn.execute(
+            "SELECT * FROM hosted_room_attachments WHERE attachment_id=? AND room_id=?",
+            (attachment_id, room_id),
+        ).fetchone()
+        if row is None or str(row["state"]) != "committed":
+            raise AttachmentNotFoundError("attachment is not committed for this room")
+        if row["expires_at"] is not None and float(row["expires_at"]) <= now:
+            raise AttachmentNotFoundError("attachment has expired")
+        if normalized_event is not None and str(row["event_id"] or "") != normalized_event:
+            raise AttachmentNotFoundError("attachment is not owned by this room event")
+        if int(row["viewer_access"] or 0):
+            # Room-visible files need a published owner even for member reads.
+            # A pre-event commitment is staging, not authority to expose bytes.
+            if (
+                conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_events'"
+                ).fetchone()
+                is None
+            ):
+                raise AttachmentNotFoundError(
+                    "attachment is not published in this room"
+                )
+            owner = conn.execute(
+                """SELECT payload_json FROM hosted_room_events
+                       WHERE room_id=? AND event_id=? AND kind IN ('message.user', 'message.member')""",
+                (room_id, str(row["event_id"] or "")),
+            ).fetchone()
+            manifest = {
+                key: row[key]
+                for key in ("attachment_id", "kind", "name", "size", "mime")
+            }
+            payload = (
+                json.loads(owner["payload_json"]) if owner is not None else None
+            )
+            published = (
+                payload.get("attachments") if isinstance(payload, Mapping) else None
+            )
+            if not isinstance(published, list) or manifest not in published:
+                raise AttachmentNotFoundError(
+                    "attachment is not published in this room"
+                )
+        recipients = json.loads(str(row["recipient_member_ids_json"]))
+        if viewer:
+            if int(row["viewer_access"] or 0) != 1:
+                raise AttachmentNotFoundError(
+                    "attachment is unavailable to Group Chat viewers"
+                )
+        elif recipient_member_id not in recipients:
+            raise AttachmentNotFoundError("attachment is unavailable to this recipient")
+        return row
 
 
 __all__ = [

@@ -669,6 +669,16 @@ class HostedRoomService:
     ) -> AttachmentData:
         """Return verified bytes only when send-time recipient ownership permits it."""
 
+        if viewer:
+            room = self._owned_room(room_id)
+            return self.attachments.read_viewer(
+                room_id=room["room_id"],
+                attachment_id=attachment_id,
+                event_id=event_id,
+                recipient_member_id=recipient_member_id,
+                authority_gateway_id=room["authority_gateway_id"],
+                authority_epoch=room["authority_epoch"],
+            )
         return self.attachments.read(
             room_id=room_id,
             attachment_id=attachment_id,

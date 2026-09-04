@@ -26,11 +26,14 @@ branch a given scenario happens to take.
 """
 
 import asyncio
+import logging
+from types import SimpleNamespace
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.session import SessionSource
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 CURSOR = " ▉"
@@ -230,6 +233,38 @@ async def test_suppression_requires_the_complete_answer_on_the_wire(
             f"content_delivered={consumer.final_content_delivered}) "
             f"verdict={consumer.delivered_final_matches(FULL)!r} wire={adapter.wire!r}"
         )
+
+
+@pytest.mark.asyncio
+async def test_no_delivery_signal_is_not_reported_as_a_duplicate_risk(caplog):
+    """A consumer that delivered no final content requires the normal final send.
+
+    Its existence alone cannot produce a duplicate: both delivery signals are
+    false. The diagnostic should retain that fact without raising a duplicate
+    alert for the health-check monitor.
+    """
+    from gateway.run import GatewayRunner
+
+    consumer = SimpleNamespace(
+        final_response_sent=False,
+        final_content_delivered=False,
+        delivered_final_matches=lambda final_text: False,
+    )
+    turn_ctx = SimpleNamespace(
+        stream_consumer_holder=[consumer],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="chat-1"),
+        session_key="agent:main:telegram:dm:chat-1",
+    )
+    response = {"final_response": "Complete final answer."}
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        await GatewayRunner._run_agent_mark_streamed_delivery(
+            object.__new__(GatewayRunner), response, turn_ctx
+        )
+
+    assert response.get("already_sent") is not True
+    assert "possible duplicate send" not in caplog.text
+    assert "normal final send required" in caplog.text
 
 
 @pytest.mark.parametrize(

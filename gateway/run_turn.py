@@ -3633,9 +3633,18 @@ class GatewayTurnMixin:
                     ok=("Edited streamed message %s for session %s to include plugin-transformed content.", _sc.message_id, _sk),
                     fail_result=None, fail_exc="Failed to edit streamed message for session %s: %s",
                 )
+        elif _sc is not None and not (_streamed or _previewed or _content_delivered):
+            # No stream delivery signal was set, so the normal final send is the only answer delivery.
+            # A consumer's mere existence cannot duplicate a reply and must not raise a delivery alarm.
+            logger.info(
+                "Stream consumer completed without user-visible final delivery for session %s: "
+                "normal final send required (streamed=%s previewed=%s content_delivered=%s "
+                "transformed=%s final_len=%d).",
+                _sk, _streamed, _previewed, _content_delivered, _transformed, len(_final),
+            )
         elif _sc is not None:
-            # DUPLICATE-RISK DIAGNOSTIC: a stream consumer existed but suppression did NOT fire; log the
-            # decision inputs ("signal never set" vs "ack-pending race").
+            # A delivery signal existed but could not prove the complete final was rendered. Keep this
+            # as a warning for the genuine acknowledgement/mismatch diagnostic family.
             logger.warning(
                 "Normal final-send NOT suppressed despite active stream consumer for session %s: "
                 "streamed=%s previewed=%s content_delivered=%s transformed=%s final_len=%d — "

@@ -756,6 +756,28 @@ class TestConversationStartedTwoLine:
         assert "Conversation started:" in vol
         assert "as of the last context rebuild" not in vol
 
+    def test_windows_locale_strftime_error_does_not_abort_prompt(self):
+        class _UnicodeFailingDateTime(datetime):
+            def strftime(self, fmt):
+                if "%Z" in fmt:
+                    raise UnicodeEncodeError(
+                        "utf-8", "\udce9", 0, 1, "surrogates not allowed"
+                    )
+                return super().strftime(fmt)
+
+            def tzname(self):
+                return "Paris \udce9"
+
+        current = _UnicodeFailingDateTime(
+            2026, 7, 14, 13, 5, tzinfo=ZoneInfo("Europe/Paris")
+        )
+        with patch("hermes_time.now", return_value=current):
+            vol = self._volatile(self._agent("20260714_090000_fresh"))
+
+        assert "Conversation started: Tuesday, July 14, 2026" in vol
+        assert "Paris �" in vol
+        vol.encode("utf-8")
+
     def test_timeless_bot_chat_unaffected(self):
         agent = self._agent("20200110_090000_old")
         agent._bot_chat_timeless_prompt = True

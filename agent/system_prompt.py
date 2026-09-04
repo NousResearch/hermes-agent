@@ -960,7 +960,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         _plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory")
     )
 
-    from hermes_time import get_timezone as _hermes_tz, now as _hermes_now
+    from hermes_time import (
+        get_timezone as _hermes_tz,
+        now as _hermes_now,
+        safe_strftime,
+    )
     now = _hermes_now()
     # Date-only (not minute-precision) so the system prompt is byte-stable
     # for the full day.  Minute-precision changes invalidate prefix-cache KV
@@ -983,16 +987,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _iana = getattr(_tz, "key", None)
     if _iana:
         _zone_bits.append(_iana)
-    _abbrev = now.strftime("%Z")
+    _abbrev = safe_strftime(now, "%Z")
     if _abbrev and _abbrev != _iana:
         _zone_bits.append(_abbrev)
-    _offset = now.strftime("%z")
+    _offset = safe_strftime(now, "%z")
     if _offset:  # '-0400' -> 'UTC-04:00'
         _zone_bits.append(f"UTC{_offset[:3]}:{_offset[3:]}")
     _zone_suffix = f" ({', '.join(_zone_bits)})" if _zone_bits else ""
     _start = _session_start_like(agent, now)
     timestamp_line = (
-        f"Conversation started: {_start.strftime('%A, %B %d, %Y')}{_zone_suffix}"
+        f"Conversation started: {safe_strftime(_start, '%A, %B %d, %Y')}{_zone_suffix}"
     )
     # Second line (maintainer design, salvaging #96224's anchor): long-lived
     # sessions — Bot Mode forever-chats, messenger channels people never
@@ -1004,10 +1008,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # the added line costs no extra cache churn. Same-day sessions skip the
     # second line entirely — nothing to correct, and the single-line shape
     # stays byte-identical for the day (prefix-cache safe).
-    if now.strftime("%Y%m%d") != _start.strftime("%Y%m%d"):
+    if safe_strftime(now, "%Y%m%d") != safe_strftime(_start, "%Y%m%d"):
         timestamp_line += (
             f"\nToday's date (as of the last context rebuild): "
-            f"{now.strftime('%A, %B %d, %Y')} — trust this over the start "
+            f"{safe_strftime(now, '%A, %B %d, %Y')} — trust this over the start "
             f"date for what day it is now; query tools for exact time."
         )
     # Bot Chat sessions are effectively eternal — a birth date frozen in the

@@ -25,6 +25,7 @@ from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_time import safe_strftime
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 def check_mark(ok: bool) -> str:
@@ -60,7 +61,7 @@ def _format_iso_timestamp(value) -> str:
             parsed = parsed.replace(tzinfo=timezone.utc)
     except Exception:
         return value
-    return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    return safe_strftime(parsed.astimezone(), "%Y-%m-%d %H:%M:%S %Z")
 
 
 def _format_relative_ts(ts: float) -> str:

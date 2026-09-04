@@ -11,6 +11,8 @@ import re
 from datetime import datetime
 from typing import Any, Optional, Tuple
 
+from hermes_time import safe_strftime
+
 
 # Current gateway format: [Tue 2026-04-28 13:40:53 CEST]
 _HUMAN_TIMESTAMP_RE = re.compile(
@@ -82,7 +84,7 @@ def format_message_timestamp(ts_value: Any, tz=None) -> str:
         dt = datetime.fromtimestamp(epoch, tz=tz)
     else:
         dt = datetime.fromtimestamp(epoch).astimezone()
-    return "[" + dt.strftime("%a %Y-%m-%d %H:%M:%S %Z") + "]"
+    return "[" + safe_strftime(dt, "%a %Y-%m-%d %H:%M:%S %Z") + "]"
 
 
 def strip_leading_message_timestamps(content: str, tz=None) -> Tuple[str, Optional[float]]:

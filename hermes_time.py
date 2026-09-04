@@ -15,10 +15,13 @@ crashes due to a bad timezone string.
 
 import logging
 import os
+import re
 import threading
 from datetime import datetime
-from hermes_constants import get_config_path
 from typing import Dict, Optional, Tuple
+
+from agent.message_sanitization import _sanitize_surrogates
+from hermes_constants import get_config_path
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,99 @@ except ImportError:
 # multiplex switches. Call reset_cache() after in-place config changes.
 _cache_lock = threading.Lock()
 _tz_cache: Dict[Tuple[str, str], Tuple[str, Optional[ZoneInfo]]] = {}
+
+_WEEKDAY_NAMES = (
+    ("Monday", "Mon"),
+    ("Tuesday", "Tue"),
+    ("Wednesday", "Wed"),
+    ("Thursday", "Thu"),
+    ("Friday", "Fri"),
+    ("Saturday", "Sat"),
+    ("Sunday", "Sun"),
+)
+_MONTH_NAMES = (
+    ("January", "Jan"),
+    ("February", "Feb"),
+    ("March", "Mar"),
+    ("April", "Apr"),
+    ("May", "May"),
+    ("June", "Jun"),
+    ("July", "Jul"),
+    ("August", "Aug"),
+    ("September", "Sep"),
+    ("October", "Oct"),
+    ("November", "Nov"),
+    ("December", "Dec"),
+)
+_LOCALE_DIRECTIVE_RE = re.compile(r"(?<!%)%(?:[EO])?([aAbBchpXxZz])")
+
+
+def _numeric_utc_offset(value: datetime) -> str:
+    offset = value.utcoffset()
+    if offset is None:
+        return ""
+    total_seconds = int(offset.total_seconds())
+    sign = "+" if total_seconds >= 0 else "-"
+    total_seconds = abs(total_seconds)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    suffix = f"{seconds:02d}" if seconds else ""
+    return f"{sign}{hours:02d}{minutes:02d}{suffix}"
+
+
+def _portable_directive(value: datetime, directive: str) -> str:
+    weekday_long, weekday_short = _WEEKDAY_NAMES[value.weekday()]
+    month_long, month_short = _MONTH_NAMES[value.month - 1]
+    hour = getattr(value, "hour", 0)
+    minute = getattr(value, "minute", 0)
+    second = getattr(value, "second", 0)
+    replacements = {
+        "a": weekday_short,
+        "A": weekday_long,
+        "b": month_short,
+        "h": month_short,
+        "B": month_long,
+        "c": (
+            f"{weekday_short} {month_short} {value.day:02d} "
+            f"{hour:02d}:{minute:02d}:{second:02d} {value.year:04d}"
+        ),
+        "p": "AM" if hour < 12 else "PM",
+        "X": f"{hour:02d}:{minute:02d}:{second:02d}",
+        "x": f"{value.year:04d}-{value.month:02d}-{value.day:02d}",
+        "z": _numeric_utc_offset(value),
+    }
+    if directive == "Z":
+        try:
+            return value.tzname() or ""
+        except UnicodeEncodeError:
+            return ""
+    return replacements[directive]
+
+
+def safe_strftime(value: datetime, fmt: str) -> str:
+    """Format a datetime without leaking invalid locale surrogates.
+
+    Some Windows locale/code-page combinations raise ``UnicodeEncodeError``
+    inside ``strftime`` before Python receives a string. Retry with portable
+    replacements for locale-sensitive directives, then scrub any surrogate
+    code points returned by the platform or ``tzname()``.
+    """
+    try:
+        rendered = value.strftime(fmt)
+    except UnicodeEncodeError:
+        replacements: Dict[str, str] = {}
+
+        def replace_directive(match: re.Match[str]) -> str:
+            token = f"__HERMES_TIME_{len(replacements)}__"
+            replacements[token] = _sanitize_surrogates(
+                _portable_directive(value, match.group(1))
+            )
+            return token
+
+        rendered = value.strftime(_LOCALE_DIRECTIVE_RE.sub(replace_directive, fmt))
+        for token, replacement in replacements.items():
+            rendered = rendered.replace(token, replacement)
+    return _sanitize_surrogates(rendered)
 
 
 def _timezone_cache_identity() -> Tuple[str, str]:

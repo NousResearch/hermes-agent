@@ -64,6 +64,37 @@ class TestHermesTimeNow:
         assert offset_hours in {-5, -4}
 
 
+class _UnicodeFailingDateTime(datetime):
+    """Model Windows strftime failing before it can return locale text."""
+
+    def strftime(self, fmt):
+        if any(code in fmt for code in ("%A", "%B", "%Z", "%z")):
+            raise UnicodeEncodeError("utf-8", "\udce9", 0, 1, "surrogates not allowed")
+        return super().strftime(fmt)
+
+    def tzname(self):
+        return "Paris \udce9"
+
+
+class TestSafeStrftime:
+    def test_sanitizes_surrogates_returned_by_platform(self):
+        class _ReturningSurrogate:
+            def strftime(self, _fmt):
+                return "Paris \udce9"
+
+        assert hermes_time.safe_strftime(_ReturningSurrogate(), "%Z") == "Paris �"
+
+    def test_recovers_when_windows_locale_formatting_raises(self):
+        value = _UnicodeFailingDateTime(
+            2026, 7, 14, 13, 5, tzinfo=timezone(timedelta(hours=2))
+        )
+
+        rendered = hermes_time.safe_strftime(value, "%A, %B %d, %Y %H:%M %Z %z")
+
+        assert rendered == "Tuesday, July 14, 2026 13:05 Paris � +0200"
+        rendered.encode("utf-8")
+
+
 
 
 

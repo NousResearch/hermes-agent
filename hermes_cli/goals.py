@@ -43,6 +43,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_time import safe_strftime
 
 logger = logging.getLogger(__name__)
 
@@ -1249,7 +1250,9 @@ def judge_goal(
     # truth.
     clean_subgoals = [s.strip() for s in (subgoals or []) if s and s.strip()]
     background_block = _render_background_block(background_processes)
-    current_time = datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    current_time = safe_strftime(
+        datetime.now(tz=timezone.utc).astimezone(), "%Y-%m-%d %H:%M:%S %Z"
+    )
 
     if contract is not None and not contract.is_empty():
         contract_block = contract.render_block()

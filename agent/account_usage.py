@@ -11,6 +11,7 @@ import httpx
 from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
 from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
 from hermes_cli.runtime_provider import resolve_runtime_provider
+from hermes_time import safe_strftime
 
 if TYPE_CHECKING:
     from typing import TypeGuard
@@ -79,7 +80,7 @@ def _format_reset(dt: Optional[datetime]) -> str:
     delta = dt - _utc_now()
     total_seconds = int(delta.total_seconds())
     if total_seconds <= 0:
-        return f"now ({local_dt.strftime('%Y-%m-%d %H:%M %Z')})"
+        return f"now ({safe_strftime(local_dt, '%Y-%m-%d %H:%M %Z')})"
     hours, rem = divmod(total_seconds, 3600)
     minutes = rem // 60
     if hours >= 24:
@@ -89,7 +90,7 @@ def _format_reset(dt: Optional[datetime]) -> str:
         rel = f"in {hours}h {minutes}m"
     else:
         rel = f"in {minutes}m"
-    return f"{rel} ({local_dt.strftime('%Y-%m-%d %H:%M %Z')})"
+    return f"{rel} ({safe_strftime(local_dt, '%Y-%m-%d %H:%M %Z')})"
 
 
 def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, markdown: bool = False) -> list[str]:

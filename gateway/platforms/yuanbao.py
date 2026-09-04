@@ -4788,7 +4788,22 @@ class MessageSender:
 
     @staticmethod
     def strip_cron_wrapper(content: str) -> str:
-        """Strip scheduler cron header/footer wrapper for cleaner Yuanbao output."""
+        """Strip scheduler cron header/footer wrapper for cleaner Yuanbao output.
+
+        Supports both legacy header-style (``Cronjob Response:`` at top) and
+        new footer-style (useful content first, ``Cronjob Response:`` after
+        ``-------------`` separator at bottom) wrappers.
+        """
+        # --- new footer-style: "<body>\n\n-------------\nCronjob Response: ...\n(job_id: ...)" ---
+        footer_marker = "\n\n-------------\nCronjob Response: "
+        footer_pos = content.rfind(footer_marker)
+        if footer_pos >= 0:
+            # Footer header must contain job_id marker to avoid false positives
+            if "\n(job_id: " in content[footer_pos:]:
+                body = content[:footer_pos].strip()
+                return body or content
+
+        # --- legacy header-style: "Cronjob Response: ...\n(job_id: ...)\n-------------\n\n<body>\n\nTo stop..." ---
         if not content.startswith("Cronjob Response: "):
             return content
 

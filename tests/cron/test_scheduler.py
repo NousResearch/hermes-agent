@@ -379,7 +379,9 @@ class TestDeliverResultWrapping:
         assert "(job_id: test-job)" in sent_content
         assert "-------------" in sent_content
         assert "Here is today's summary." in sent_content
-        assert "To stop or manage this job" in sent_content
+        # Footer-style wrapper: useful payload first, cron identifier after separator
+        assert sent_content.index("Here is today's summary.") < sent_content.index("Cronjob Response:")
+        assert "To stop or manage this job" not in sent_content
 
 
     def test_relay_fronted_home_uses_relay_config_and_live_adapter(self, monkeypatch, tmp_path):

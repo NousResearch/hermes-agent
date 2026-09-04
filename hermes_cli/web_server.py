@@ -6203,6 +6203,8 @@ def _serialize_field_value(field: ProviderField, value: Any) -> str:
 
 
 def _flat_json_path(provider: ProviderConfigSchema) -> Path:
+    if provider.config_file:
+        return get_hermes_home() / provider.config_file
     return get_hermes_home() / provider.name / "config.json"
 
 
@@ -7504,6 +7506,7 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
     "kanban_decomposer",
     "profile_describer",
     "curator",
+    "memory_extraction",
 )
 
 

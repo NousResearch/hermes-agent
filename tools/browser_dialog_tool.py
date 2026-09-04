@@ -28,22 +28,13 @@ logger = logging.getLogger(__name__)
 BROWSER_DIALOG_SCHEMA: Dict[str, Any] = {
     "name": "browser_dialog",
     "description": (
-        "Respond to a native JavaScript dialog (alert / confirm / prompt / "
-        "beforeunload) that is currently blocking the page.\n\n"
-        "**Workflow:** call ``browser_snapshot`` first — if a dialog is open, "
-        "it appears in the ``pending_dialogs`` field with ``id``, ``type``, "
-        "and ``message``. Then call this tool with ``action='accept'`` or "
-        "``action='dismiss'``.\n\n"
-        "**Prompt dialogs:** pass ``prompt_text`` to supply the response "
-        "string. Ignored for alert/confirm/beforeunload.\n\n"
-        "**Multiple dialogs:** if more than one dialog is queued (rare — "
-        "happens when a second dialog fires while the first is still open), "
-        "pass ``dialog_id`` from the snapshot to disambiguate.\n\n"
-        "**Availability:** only present when a CDP-capable backend is "
-        "attached — Browserbase sessions, local Chromium-family browser via "
-        "``/browser connect``, or ``browser.cdp_url`` in config.yaml. "
-        "Not available on Camofox (REST-only) or the default Playwright "
-        "local browser (CDP port is hidden)."
+        "Respond to a native JS dialog (alert/confirm/prompt/beforeunload) "
+        "blocking the page. Call browser_snapshot first — if a dialog is open, "
+        "it appears in pending_dialogs with id, type, and message. Then call "
+        "with action='accept' or 'dismiss'. For prompt() dialogs, pass "
+        "prompt_text. If multiple dialogs are queued (rare), pass dialog_id "
+        "from the snapshot to disambiguate. Only available with a CDP-capable "
+        "backend (Browserbase, '/browser connect', or browser.cdp_url in config)."
     ),
     "parameters": {
         "type": "object",

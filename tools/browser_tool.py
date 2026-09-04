@@ -2874,7 +2874,7 @@ atexit.register(_stop_browser_cleanup_thread)
 BROWSER_TOOL_SCHEMAS = [
     {
         "name": "browser_navigate",
-        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, .yml, .csv, .xml, raw.githubusercontent.com, or any documented API endpoint — prefer curl via the terminal tool or web_extract; the browser stack is overkill and much slower for these. Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact page snapshot with interactive elements and ref IDs — no need to call browser_snapshot separately after navigating.",
+        "description": "Navigate to a URL. Must be called before other browser tools. For plain-text endpoints (.md, .txt, .json, .yaml, .csv, .xml, raw.githubusercontent.com, API endpoints) prefer web_extract or curl via terminal — the browser stack is overkill. Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact snapshot with ref IDs — no need to call browser_snapshot after navigating.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -2888,7 +2888,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_snapshot",
-        "description": "Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @e1, @e2) for browser_click and browser_type. full=false (default): compact view with interactive elements. full=true: complete page content. Snapshots over 15000 chars are truncated or LLM-summarized; when that happens the complete snapshot is saved to a file and the output includes its path so you can page through the rest with read_file. Requires browser_navigate first. Note: browser_navigate already returns a compact snapshot — use this to refresh after interactions that change the page, or with full=true for complete content.",
+        "description": "Text snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (@e1, @e2) for browser_click/browser_type. full=false (default): interactive elements only. full=true: complete content. Snapshots over 15000 chars are truncated/summarized; the full snapshot is saved to a file (path included in output) — page through with read_file. Requires browser_navigate first. Use to refresh after interactions change the page, or with full=true for complete content.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -2982,7 +2982,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_vision",
-        "description": "Take a screenshot of the current page so you can inspect it visually. Use this when you need to understand what the page looks like - especially for CAPTCHAs, visual verification challenges, complex layouts, or cases where the text snapshot misses important visual information. When your active model has native vision, the screenshot is attached to your context directly and you inspect it on the next turn; otherwise Hermes falls back to an auxiliary vision model and returns a text analysis. Includes a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
+        "description": "Screenshot the current page for visual inspection — CAPTCHAs, visual challenges, complex layouts, or when the text snapshot misses visual info. On vision-capable models the screenshot is attached directly; otherwise an auxiliary vision model returns text analysis. Includes screenshot_path — share with the user via MEDIA:<screenshot_path>. Requires browser_navigate first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -3001,7 +3001,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_console",
-        "description": "Get browser console output and JavaScript errors from the current page. Returns console.log/warn/error/info messages and uncaught JS exceptions. Use this to detect silent JavaScript errors, failed API calls, and application warnings. Requires browser_navigate to be called first. When 'expression' is provided, evaluates JavaScript in the page context and returns the result — use this for DOM inspection, reading page state, or extracting data programmatically.",
+        "description": "Get browser console output and JS errors (console.log/warn/error/info + uncaught exceptions). Use to detect silent JS errors, failed API calls, warnings. When 'expression' is provided, evaluates JavaScript in the page context and returns the result — use for DOM inspection, reading page state, or extracting data. Requires browser_navigate first.",
         "parameters": {
             "type": "object",
             "properties": {

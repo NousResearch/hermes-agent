@@ -510,16 +510,29 @@ class TestEscapeNormalizedNewString:
         assert "\tprint(\"after\")" in new
         assert "\\t" not in new
 
-    def test_carriage_return_in_new_string_unescaped(self):
-        """File has real CR, model sends literal \\r in new_string."""
+    def test_carriage_return_escapes_in_new_string_unescaped(self):
+        """CRLF file + model serializing endings as literal ``\\r\\n`` escapes
+        matches via the exact strategy and lands as real CRLF — exactly once
+        (no doubled carriage returns)."""
         content = "line1\r\nline2\r\n"
         old_string = "line1\\r\\nline2\\r\\n"
         new_string = "replaced\\r\\n"
         new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
         assert err is None, f"Unexpected error: {err}"
         assert count == 1
-        assert strategy == "escape_normalized"
-        assert "replaced\r" in new
+        assert strategy == "exact"
+        assert new == "replaced\r\n"
+
+    def test_literal_cr_escapes_preserved_on_lf_file(self):
+        """LF-dominant file: ``\\r`` escapes in old/new strings are genuine
+        source content and must survive verbatim."""
+        content = "x = \"a\\rb\"\n"
+        old_string = "x = \"a\\rb\""
+        new_string = "x = \"a\\rc\""
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None and count == 1
+        assert strategy == "exact"
+        assert new == "x = \"a\\rc\"\n"
 
     def test_newline_in_new_string_NOT_unescaped(self):
         """``\\n`` is intentionally left alone — newlines serialize correctly
@@ -715,3 +728,69 @@ class TestBackslashDoublingDrift:
         result, count, strategy, err = self.replace(content, old, new)
         assert count == 0
         assert err is not None and "apostrophe" in err
+
+
+class TestLineEndings:
+    """CRLF files (Windows/git checkouts) must match LF-authored old_strings,
+    and successful edits must preserve the file's dominant EOL so they don't
+    rewrite the whole file's line-ending style."""
+
+    def test_crlf_content_matches_lf_old_string(self):
+        content = "def foo():\r\n    return 1\r\n"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "def foo():\n    return 1", "def bar():\n    return 2"
+        )
+        assert err is None and count == 1
+        assert strategy == "exact"
+        assert new == "def bar():\r\n    return 2\r\n"
+
+    def test_crlf_preserved_around_replacement(self):
+        content = "a = 1\r\nb = 2\r\nc = 3\r\n"
+        new, count, _, err = fuzzy_find_and_replace(content, "b = 2", "b = 20")
+        assert err is None and count == 1
+        assert new == "a = 1\r\nb = 20\r\nc = 3\r\n"
+        assert "\n" not in new.replace("\r\n", "")  # no stray lone-LF lines
+
+    def test_crlf_old_string_matches_lf_content(self):
+        content = "x = 1\ny = 2\n"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "y = 2\r\n", "y = 3\r\n"
+        )
+        assert err is None and count == 1
+        assert strategy == "exact"
+        assert new == "x = 1\ny = 3\n"
+
+    def test_crlf_replace_all(self):
+        content = "tag\r\ntag\r\ntag\r\n"
+        new, count, _, err = fuzzy_find_and_replace(
+            content, "tag", "item", replace_all=True
+        )
+        assert err is None and count == 3
+        assert new == "item\r\nitem\r\nitem\r\n"
+
+    def test_single_line_crlf_file(self):
+        content = "hello\r\n"
+        new, count, _, err = fuzzy_find_and_replace(content, "hello", "hi")
+        assert err is None and count == 1
+        assert new == "hi\r\n"
+
+    def test_failure_returns_original_crlf_content_untouched(self):
+        content = "one\r\ntwo\r\n"
+        new, count, _, err = fuzzy_find_and_replace(content, "nope", "x")
+        assert count == 0 and err is not None
+        assert new == content  # byte-identical CRLF preserved
+
+    def test_no_match_returns_original_crlf_content(self):
+        content = "one\r\ntwo\r\n"
+        new, count, _, err = fuzzy_find_and_replace(content, "zzz\r\n", "q")
+        assert count == 0 and err is not None
+        assert new == content
+
+    def test_is_already_applied_crlf_agnostic(self):
+        from tools.fuzzy_match import is_already_applied
+
+        content = "alpha\r\nbeta_value\r\n"
+        # new_string present in CRLF file, typed with LF; old_string gone → applied
+        assert is_already_applied(content, "old_line", "beta_value") is True
+        # new_string present but old_string still present → not applied
+        assert is_already_applied(content, "beta_value", "alpha") is False

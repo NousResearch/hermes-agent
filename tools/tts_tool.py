@@ -13,6 +13,7 @@ Built-in TTS providers:
 - NeuTTS (local, free, no API key): On-device TTS via neutts
 - KittenTTS (local, free, no API key): On-device 25MB model
 - Piper (local, free, no API key): OHF-Voice/piper1-gpl neural VITS, 44 languages
+- Kokoro (local, free, no API key): Kokoro-82M neural TTS via ONNX Runtime, 7+ languages
 
 Custom command providers:
 - Users can declare any number of named providers with ``type: command``
@@ -205,6 +206,21 @@ def _import_piper():
     return PiperVoice
 
 
+def _import_kokoro():
+    """Lazy import Kokoro. Returns the Kokoro class or raises ImportError.
+
+    Kokoro is an optional, fully-local neural TTS engine (82M params,
+    Apache-licensed). ``pip install kokoro-onnx`` provides an ONNX Runtime
+    wrapper with bundled espeak-ng via the ``espeakng-loader`` dependency
+    (prebuilt DLLs for Linux / macOS / Windows, x86_64 + ARM64 — no system
+    espeak-ng install needed). Model files (``kokoro-v1.0.*.onnx`` +
+    ``voices-v1.0.bin``) are NOT bundled by pip and are downloaded on first
+    use to ``~/.hermes/cache/kokoro-models/``.
+    """
+    from kokoro_onnx import Kokoro
+    return Kokoro
+
+
 # ===========================================================================
 # Defaults
 # ===========================================================================
@@ -222,6 +238,21 @@ MANAGED_OPENAI_TTS_MODELS = frozenset({"gpt-4o-mini-tts"})
 DEFAULT_KITTENTTS_MODEL = "KittenML/kitten-tts-nano-0.8-int8"  # 25MB
 DEFAULT_KITTENTTS_VOICE = "Jasper"
 DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
+# Kokoro-82M defaults. int8 model (114MB) is the CPU-optimized default —
+# fastest on CPU, lightest footprint. Users on dedicated GPUs can switch to
+# ``fp32`` (325MB, fastest on GPU) or ``fp16`` (163MB) via tts.kokoro.model.
+DEFAULT_KOKORO_VOICE = "af_heart"  # flagship American female voice
+DEFAULT_KOKORO_LANG = "en-us"
+DEFAULT_KOKORO_MODEL = "int8"  # int8 / fp16 / fp32
+KOKORO_MODEL_FILES = {
+    "int8": "kokoro-v1.0.int8.onnx",  # 114MB — best for CPU
+    "fp16": "kokoro-v1.0.fp16.onnx",   # 163MB
+    "fp32": "kokoro-v1.0.onnx",        # 325MB — best for GPU
+}
+KOKORO_VOICES_FILE = "voices-v1.0.bin"
+KOKORO_DOWNLOAD_BASE = (
+    "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1"
+)
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MINIMAX_MODEL = "speech-02-hd"
@@ -305,6 +336,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
     "piper": 5000,        # local VITS model, phoneme-based; practical cap
+    "kokoro": 5000,       # local 82M ONNX model; practical cap
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
@@ -808,6 +840,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "neutts",
     "kittentts",
     "piper",
+    "kokoro",
     "deepinfra",
 })
 
@@ -3338,6 +3371,206 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
 
 
 # ===========================================================================
+# Provider: Kokoro (local, neural, 82M params)
+# ===========================================================================
+
+# Module-level cache for Kokoro model instances. Keyed by
+# (model_path, voices_path, use_cuda) so switching models or device
+# invalidates correctly. LRU-bounded by _tts_cache_get_or_load.
+_kokoro_model_cache: Dict[str, Any] = {}
+
+
+def _check_kokoro_available() -> bool:
+    """Check whether the kokoro-onnx package is importable."""
+    try:
+        import importlib.util
+        return importlib.util.find_spec("kokoro_onnx") is not None
+    except Exception:
+        return False
+
+
+def _get_kokoro_models_dir() -> Path:
+    """Return the directory where Hermes caches Kokoro model files.
+
+    Resolves to ``~/.hermes/cache/kokoro-models/`` under the active
+    HERMES_HOME so downloads follow profile boundaries.
+    """
+    from hermes_constants import get_hermes_dir
+    root = Path(get_hermes_dir("cache/kokoro-models", "kokoro_models_cache"))
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _download_kokoro_file(filename: str, dest_dir: Path, timeout: int = 600) -> Path:
+    """Download a Kokoro model/voices file from GitHub releases.
+
+    Returns the local path. Raises RuntimeError on network/HTTP failure.
+    Uses stdlib urllib to avoid adding a requests dependency. The
+    ``timeout`` is a per-socket-operation timeout (connect, each read
+    chunk) — not a wall-clock cap — so large downloads that are
+    progressing won't abort, but a stalled connection will.
+    """
+    import shutil
+    import urllib.request
+
+    dest = dest_dir / filename
+    if dest.exists() and dest.stat().st_size > 0:
+        return dest
+
+    url = f"{KOKORO_DOWNLOAD_BASE}/{filename}"
+    logger.info("[Kokoro] Downloading %s from %s (first use)", filename, url)
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            with open(tmp, "wb") as f:
+                shutil.copyfileobj(resp, f)
+        # Atomic-ish move so a partial download never replaces a good file.
+        os.replace(tmp, dest)
+    except Exception as exc:
+        # Clean up a partial .tmp if it exists.
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"Kokoro download failed for '{filename}': {exc}"
+        ) from exc
+    logger.info("[Kokoro] Downloaded %s (%s bytes)", filename, f"{dest.stat().st_size:,}")
+    return dest
+
+
+def _resolve_kokoro_model_paths(
+    kokoro_config: Dict[str, Any],
+    models_dir: Path,
+) -> Tuple[str, str]:
+    """Resolve the model .onnx and voices .bin paths.
+
+    Accepts:
+      - ``tts.kokoro.model_path``: absolute path to a user's own .onnx file
+        (voices path still auto-resolved / downloaded).
+      - ``tts.kokoro.model``: one of ``int8`` (default), ``fp16``, ``fp32``
+        → resolves to the known GitHub release file, downloaded on first use.
+      - ``tts.kokoro.voices_path``: absolute path to a user's own .bin file.
+        Defaults to auto-download of ``voices-v1.0.bin``.
+
+    Returns ``(model_path, voices_path)`` as absolute strings.
+    """
+    # --- Model path ---
+    model_path = kokoro_config.get("model_path")
+    if model_path:
+        candidate = Path(model_path).expanduser()
+        if not candidate.exists():
+            raise RuntimeError(
+                f"Kokoro model_path does not exist: {candidate}"
+            )
+        model_path_str = str(candidate)
+    else:
+        model_variant = str(kokoro_config.get("model") or DEFAULT_KOKORO_MODEL).strip().lower()
+        filename = KOKORO_MODEL_FILES.get(model_variant)
+        if not filename:
+            raise RuntimeError(
+                f"Unknown Kokoro model variant '{model_variant}'. "
+                f"Choose one of: {', '.join(sorted(KOKORO_MODEL_FILES))} "
+                f"or set tts.kokoro.model_path to a custom .onnx file."
+            )
+        model_path_str = str(_download_kokoro_file(filename, models_dir))
+
+    # --- Voices path ---
+    voices_path = kokoro_config.get("voices_path")
+    if voices_path:
+        voices_candidate = Path(voices_path).expanduser()
+        if not voices_candidate.exists():
+            raise RuntimeError(
+                f"Kokoro voices_path does not exist: {voices_candidate}"
+            )
+        voices_path_str = str(voices_candidate)
+    else:
+        voices_path_str = str(_download_kokoro_file(KOKORO_VOICES_FILE, models_dir))
+
+    return model_path_str, voices_path_str
+
+
+def _generate_kokoro_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech using the local Kokoro engine.
+
+    Loads the ONNX model once per process (cached by model+voices+device) and
+    writes a WAV file via soundfile. Caller is responsible for converting to
+    MP3/Opus via ffmpeg when a different output format is required.
+
+    Kokoro's G2P (misaki/espeak-ng) is newline-sensitive — it truncates
+    synthesis at the first ``\\n``. The public ``text_to_speech_tool``
+    wrapper already flattens newlines via ``prepare_spoken_text`` before
+    reaching this function, so no newline handling is needed here.
+    """
+    Kokoro = _import_kokoro()
+
+    kokoro_config = tts_config.get("kokoro") or {} if isinstance(tts_config, dict) else {}
+    voice_name = kokoro_config.get("voice") or DEFAULT_KOKORO_VOICE
+    lang = kokoro_config.get("lang") or DEFAULT_KOKORO_LANG
+    speed = float(kokoro_config.get("speed", 1.0))
+    use_cuda = bool(kokoro_config.get("use_cuda", False))
+
+    models_dir = Path(kokoro_config.get("models_dir") or _get_kokoro_models_dir()).expanduser()
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    model_path, voices_path = _resolve_kokoro_model_paths(kokoro_config, models_dir)
+
+    cache_key = f"{model_path}::{voices_path}::cuda={use_cuda}"
+
+    def _load_kokoro_model():
+        logger.info("[Kokoro] Loading model: %s (cuda=%s)", model_path, use_cuda)
+        if use_cuda:
+            try:
+                import onnxruntime as ort
+                session = ort.InferenceSession(
+                    model_path,
+                    providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+                )
+                instance = Kokoro.from_session(session, voices_path)
+                logger.info("[Kokoro] Model loaded (CUDA)")
+                return instance
+            except Exception as exc:
+                logger.warning(
+                    "[Kokoro] CUDA session creation failed (%s); "
+                    "falling back to CPU", exc
+                )
+        instance = Kokoro(model_path, voices_path)
+        logger.info("[Kokoro] Model loaded (CPU)")
+        return instance
+
+    model = _tts_cache_get_or_load(_kokoro_model_cache, cache_key, _load_kokoro_model)
+
+    # Kokoro.create returns (samples_np, sample_rate_int).
+    samples, sample_rate = model.create(
+        text, voice=voice_name, speed=speed, lang=lang,
+    )
+
+    # Save as WAV via soundfile (same pattern as KittenTTS).
+    import soundfile as sf
+    wav_path = output_path
+    if not output_path.endswith(".wav"):
+        wav_path = output_path.rsplit(".", 1)[0] + ".wav"
+
+    sf.write(wav_path, samples, sample_rate)
+
+    # Convert to desired format if caller requested mp3/ogg
+    if wav_path != output_path:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
+            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+            try:
+                os.remove(wav_path)
+            except OSError:
+                pass
+        else:
+            # No ffmpeg — keep WAV and return that path
+            os.rename(wav_path, output_path)
+
+    return output_path
+
+
+# ===========================================================================
 # Provider: KittenTTS (local, lightweight)
 # ===========================================================================
 
@@ -3652,6 +3885,19 @@ def _text_to_speech_single(
             logger.info("Generating speech with Piper (local)...")
             _generate_piper_tts(text, file_str, tts_config)
 
+        elif provider == "kokoro":
+            try:
+                _import_kokoro()
+            except ImportError:
+                return json.dumps({
+                    "success": False,
+                    "error": "Kokoro provider selected but 'kokoro-onnx' package not installed. "
+                             "Run 'hermes tools' and select Kokoro under TTS, or install manually: "
+                             "pip install kokoro-onnx soundfile",
+                }, ensure_ascii=False)
+            logger.info("Generating speech with Kokoro (local)...")
+            _generate_kokoro_tts(text, file_str, tts_config)
+
         else:
             # Default: Edge TTS (free), with NeuTTS as local fallback
             edge_available = True
@@ -3725,7 +3971,7 @@ def _text_to_speech_single(
                 voice_compatible = file_str.endswith(".ogg")
         elif (
             want_opus
-            and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}
+            and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper", "kokoro"}
             and not file_str.endswith(".ogg")
         ):
             opus_path = _convert_to_opus(file_str)
@@ -4052,6 +4298,8 @@ def check_tts_requirements() -> bool:
         return _check_kittentts_available()
     if provider == "piper":
         return _check_piper_available()
+    if provider == "kokoro":
+        return _check_kokoro_available()
 
     try:
         from agent.tts_registry import get_provider
@@ -4758,6 +5006,7 @@ if __name__ == "__main__":
         minimax_status = f"unavailable ({exc})"
     print(f"  MiniMax:    {minimax_status}")
     print(f"  Piper:      {'installed' if _check_piper_available() else 'not installed (pip install piper-tts)'}")
+    print(f"  Kokoro:     {'installed' if _check_kokoro_available() else 'not installed (pip install kokoro-onnx soundfile)'}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {_default_output_dir()}")
 

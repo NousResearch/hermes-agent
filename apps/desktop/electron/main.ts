@@ -3449,8 +3449,53 @@ function forceKillProcessTree(pid) {
   try {
     execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], hiddenWindowsChildOptions({ stdio: 'ignore' }))
   } catch {
-    // Already gone, or no permission — best effort; the unlock wait below is
-    // the real gate.
+    // The tracked PID may already be gone. On Windows, a venv python.exe is a
+    // launcher stub that spawns the real interpreter as a CHILD and then exits.
+    // By the time we kill on quit, the launcher (the PID we tracked) is already
+    // dead and taskkill /T finds nothing to tree-kill — leaving the real Python
+    // process orphaned, holding the DuckDB file lock forever (WAL never
+    // checkpoints). Find detached `hermes_cli.main serve` processes directly.
+    let processOutput = ''
+    try {
+      processOutput = execFileSync(
+        'wmic',
+        ['process', 'where', "name='python.exe'", 'get', 'ProcessId,CommandLine', '/format:csv'],
+        hiddenWindowsChildOptions({ encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'] })
+      )
+    } catch {
+      try {
+        processOutput = execFileSync(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            "$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process | " +
+              "Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -match 'hermes_cli\\.main\\s+serve' } | " +
+              'Select-Object -ExpandProperty ProcessId'
+          ],
+          hiddenWindowsChildOptions({ encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'] })
+        )
+      } catch {
+        processOutput = ''
+      }
+    }
+
+    for (const line of String(processOutput).split(/\r?\n/)) {
+      const trimmed = line.trim()
+      const parts = trimmed.split(',')
+      const orphanPid = /^\d+$/.test(trimmed)
+        ? parseInt(trimmed, 10)
+        : parseInt(parts[parts.length - 1], 10)
+      const isTargeted = /^\d+$/.test(trimmed) || (trimmed.includes('hermes_cli.main') && trimmed.includes('serve'))
+      if (Number.isInteger(orphanPid) && orphanPid > 0 && isTargeted) {
+        try {
+          execFileSync('taskkill', ['/PID', String(orphanPid), '/F'], hiddenWindowsChildOptions({ stdio: 'ignore' }))
+        } catch {
+          // Already gone — best effort.
+        }
+      }
+    }
   }
 }
 
@@ -18167,4 +18212,17 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin' || isQuittingForHandoff) {
     app.quit()
   }
+})
+
+// Safety net: before-quit can be skipped entirely when heldQuitForActiveWork
+// returns early (user clicks "Keep Running"), and on Windows the venv launcher
+// PID we tracked may already be gone by the time we try to kill it (the
+// launcher spawns the real interpreter as a child and exits). will-quit fires
+// after all windows are closed and is the last chance for cleanup before the
+// process exits. Re-running stopBackendChild here is safe — it no-ops if the
+// child is already killed — and forceKillProcessTree's wmic fallback catches
+// orphaned `hermes serve` processes that the tracked PID can't reach.
+app.on('will-quit', () => {
+  stopBackendChild(backendConnectionState.getProcess())
+  stopAllPoolBackends()
 })

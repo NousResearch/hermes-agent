@@ -385,6 +385,14 @@ TOOL_CATEGORIES = {
                 "post_setup": "piper",
             },
             {
+                "name": "Kokoro",
+                "badge": "local · free",
+                "tag": "Kokoro-82M neural TTS via ONNX, high quality (model ~114MB int8)",
+                "env_vars": [],
+                "tts_provider": "kokoro",
+                "post_setup": "kokoro",
+            },
+            {
                 "name": "DeepInfra TTS",
                 "badge": "paid",
                 "tag": "Chatterbox, Qwen3-TTS, … — live catalog from api.deepinfra.com",
@@ -2263,6 +2271,31 @@ def _run_post_setup(post_setup_key: str):
         _print_info("    Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md")
         _print_info("    Switch voices by setting tts.piper.voice in ~/.hermes/config.yaml")
 
+    elif post_setup_key == "kokoro":
+        try:
+            __import__("kokoro_onnx")
+            _print_success("    kokoro-onnx is already installed")
+        except ImportError:
+            _print_info("    Installing kokoro-onnx + soundfile (model downloaded on first use, ~114MB int8)...")
+            try:
+                result = _pip_install(["-U", "kokoro-onnx", "soundfile", "--quiet"], timeout=300)
+                if result.returncode == 0:
+                    _print_success("    kokoro-onnx installed")
+                else:
+                    _print_warning("    kokoro-onnx install failed:")
+                    _print_info(f"      {(result.stderr or '').strip()[:300]}")
+                    _print_info("    Run manually: uv pip install -U kokoro-onnx soundfile")
+                    return
+            except subprocess.TimeoutExpired:
+                _print_warning("    kokoro-onnx install timed out (>5min)")
+                _print_info("    Run manually: uv pip install -U kokoro-onnx soundfile")
+                return
+        _print_info("    Default voice: af_heart (American female, flagship voice)")
+        _print_info("    Model files (kokoro-v1.0.int8.onnx + voices-v1.0.bin) download on first TTS call")
+        _print_info("    Full voice list: https://github.com/thewh1teagle/kokoro-onnx/blob/main/VOICES.md")
+        _print_info("    Switch voices by setting tts.kokoro.voice in ~/.hermes/config.yaml")
+        _print_info("    For GPU acceleration: uv pip install onnxruntime-gpu and set tts.kokoro.use_cuda: true")
+
     elif post_setup_key == "ddgs":
         try:
             __import__("ddgs")
@@ -2448,7 +2481,7 @@ def run_post_setup_command(args) -> int:
     """``hermes tools post-setup <key>`` — non-interactive post-setup runner.
 
     Runs the install/bootstrap hook a provider declares (npm install for
-    browser/Camofox, pip install for kittentts/piper/ddgs, cua-driver fetch,
+    browser/Camofox, pip install for kittentts/piper/kokoro/ddgs, cua-driver fetch,
     etc.). This is the stable, scriptable target the dashboard spawns so the
     GUI can drive backend setup without re-implementing the install logic.
     Returns a process exit code (0 ok, 2 unknown key).
@@ -3651,7 +3684,7 @@ _POST_SETUP_INSTALLED: dict = {
     # provider-setup flow that would have run the post_setup hook).
     #
     # Only entries here are gated; other post_setup hooks (kittentts,
-    # piper, agent_browser, etc.) keep their existing behaviour. Add an
+    # piper, kokoro, agent_browser, etc.) keep their existing behaviour. Add an
     # entry when (a) the post_setup is the ONLY install side-effect for
     # a no-key provider, and (b) an installed-state check is local, bounded,
     # and doesn't trigger a heavy import.
@@ -3752,13 +3785,14 @@ def _camofox_installed() -> bool:
 
 # post_setup_key -> predicate(): True when the install side-effect is already
 # satisfied. Used by ``provider_readiness_status`` to decide whether a keyless
-# post_setup row (KittenTTS, Piper, Local Browser, …) is honestly "ready" or
+# post_setup row (KittenTTS, Piper, Kokoro, Local Browser, …) is honestly "ready" or
 # still "needs_setup". Mirrors the installed-checks ``_run_post_setup`` itself
 # performs before installing. ``xai_grok`` is intentionally absent — it is a
 # credential bootstrap, not an install, and is handled as an auth check.
 _POST_SETUP_READY: dict = {
     "kittentts": lambda: _module_installed("kittentts"),
     "piper": lambda: _module_installed("piper"),
+    "kokoro": lambda: _module_installed("kokoro_onnx"),
     "faster_whisper": lambda: _module_installed("faster_whisper"),
     "ddgs": lambda: _module_installed("ddgs"),
     "langfuse": lambda: _module_installed("langfuse"),

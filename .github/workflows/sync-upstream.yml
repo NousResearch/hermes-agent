@@ -1,0 +1,66 @@
+name: Sync upstream
+
+# Keep this fork's main in step with NousResearch/hermes-agent.
+# Runs weekly and on demand: merges upstream main into fork main.
+# - Clean merge  -> pushes directly to main (triggers the full CI suite).
+# - Conflicts    -> opens a PR with the conflicted merge for manual resolution.
+#
+# This is the fork's "updates can't silently break us" guarantee:
+# every sync lands on main only after the inherited CI suite passes.
+
+on:
+  schedule:
+    - cron: '0 3 * * 1'   # Monday 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout fork main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Configure git
+        run: |
+          git config user.name "hermes-fork-sync[bot]"
+          git config user.email "hermes-fork-sync[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch upstream main
+
+      - name: Merge upstream main
+        id: merge
+        continue-on-error: true
+        run: git merge --no-edit upstream/main
+
+      - name: Push when clean
+        if: steps.merge.outcome == 'success'
+        run: git push origin main
+
+      - name: Open sync PR on conflict
+        if: steps.merge.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BRANCH="sync/upstream-$(date +%F)"
+          git switch -c "$BRANCH"
+          git push origin "$BRANCH"
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "Upstream sync $(date +%F) (conflicts)" \
+            --body "Merging upstream main into the fork produced conflicts. Resolve them in this PR, verify, and merge. The customizations live in the commits on top of upstream — keep them."

@@ -1513,6 +1513,91 @@ def build_turn_context(
                 except Exception as _spill_exc:
                     logger.warning("hook context spill failed: %s", _spill_exc)
             _ctx_parts.append(_piece)
+
+        # Plugin-routed answerer model: any pre_llm_call hook may optionally
+        # return {"model": "...", "provider": "..."} (in addition to or instead
+        # of "context").  This lets an intent-router plugin swap the answerer
+        # model per turn (e.g. route temporal questions to a stronger model)
+        # without touching the gateway.  Only fire when the requested model
+        # actually differs from the agent's current one — otherwise the
+        # client-rebuild in switch_model would churn on every non-routed turn.
+        #
+        # Provider-change safety (#47828): when the hook routes to a DIFFERENT
+        # provider, agent.switch_model() must receive that provider's own
+        # base_url/api_key/api_mode.  Passing the current (old) provider's
+        # endpoint pairs the new provider label with the old host and every
+        # request 400s.  So route through the same resolver the /model command
+        # uses (hermes_cli.model_switch.switch_model) when the provider
+        # changes, and only then apply the resolved creds.  For a same-provider
+        # model swap the current base_url/api_key stay valid and a resolver
+        # round-trip would be pure overhead — apply directly.
+        _routed_model = ""
+        _routed_provider = ""
+        for r in _pre_results:
+            if isinstance(r, dict) and r.get("model"):
+                _routed_model = str(r["model"]).strip()
+                _routed_provider = str(r.get("provider") or "").strip() or ""
+                break
+        if _routed_model and _routed_model != getattr(agent, "model", ""):
+            _was_model = getattr(agent, "model", "?") or "?"
+            _cur_provider = getattr(agent, "provider", "") or ""
+            _provider_changed = bool(_routed_provider) and (
+                _routed_provider.strip().lower() != _cur_provider.strip().lower()
+            )
+            try:
+                if _provider_changed:
+                    from hermes_cli.model_switch import switch_model as _resolve_switch
+                    from hermes_cli.config import load_config as _load_cfg
+                    from hermes_cli.config import get_compatible_custom_providers as _compat_provs
+
+                    _cfg = _load_cfg()
+                    _res = _resolve_switch(
+                        raw_input=_routed_model,
+                        current_provider=_cur_provider,
+                        current_model=getattr(agent, "model", "") or "",
+                        current_base_url=getattr(agent, "base_url", "") or "",
+                        current_api_key=getattr(agent, "api_key", "") or "",
+                        is_global=False,
+                        explicit_provider=_routed_provider,
+                        user_providers=_cfg.get("providers"),
+                        custom_providers=_compat_provs(_cfg),
+                    )
+                    if _res is None or not getattr(_res, "success", False):
+                        logger.warning(
+                            "pre_llm_call route resolve failed for %s/%s: %s",
+                            _routed_model, _routed_provider,
+                            getattr(_res, "error_message", "unknown error"),
+                        )
+                        _res = None
+                    if _res is not None:
+                        agent.switch_model(
+                            _res.new_model or _routed_model,
+                            _res.target_provider or _routed_provider,
+                            api_key=_res.api_key,
+                            base_url=_res.base_url,
+                            api_mode=_res.api_mode,
+                        )
+                        logger.info(
+                            "pre_llm_call routed answerer to model=%s provider=%s (was %s; provider change)",
+                            _res.new_model or _routed_model,
+                            _res.target_provider or _routed_provider,
+                            _was_model,
+                        )
+                else:
+                    agent.switch_model(
+                        _routed_model,
+                        _routed_provider or _cur_provider,
+                        getattr(agent, "api_key", "") or "",
+                        getattr(agent, "base_url", "") or "",
+                        getattr(agent, "api_mode", "") or "",
+                    )
+                    logger.info(
+                        "pre_llm_call routed answerer to model=%s provider=%s (was %s; same provider)",
+                        _routed_model, _routed_provider or _cur_provider,
+                        _was_model,
+                    )
+            except Exception as _route_exc:
+                logger.warning("pre_llm_call model route failed: %s", _route_exc)
         if _ctx_parts:
             plugin_user_context = "\n\n".join(_ctx_parts)
     except Exception as exc:

@@ -915,6 +915,10 @@ export const ar = defineLocale({
         curator: {
           label: 'المنسّق',
           hint: 'مراجعة استخدام المهارات'
+        },
+        memory_extraction: {
+          label: 'استخراج الذاكرة',
+          hint: 'استخراج حقائق الذاكرة لكل دور'
         }
       }
     },

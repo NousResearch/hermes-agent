@@ -199,6 +199,10 @@ def start_loop_liveness_watchdog(
                 mark_exited(exit_code, reason="loop_liveness_watchdog")
             except Exception:
                 pass
+            # Windows has no service supervisor to receive this exit code —
+            # arm our own replacement before dying so the restart contract
+            # still holds.
+            _spawn_windows_self_replacement(exit_code)
             os._exit(exit_code)
             return
 
@@ -310,6 +314,68 @@ def resolve_shutdown_watchdog_delay(
     except (TypeError, ValueError):
         grace = DEFAULT_SHUTDOWN_WATCHDOG_GRACE_S
     return drain + grace
+
+
+def _spawn_windows_self_replacement(exit_code: int) -> bool:
+    """Best-effort Windows stand-in for the missing service supervisor.
+
+    The exit-code contract ("exiting with 75 so the service supervisor can
+    restart it") only holds under systemd/s6/launchd. On Windows there is no
+    supervisor: a Scheduled Task fired once at logon and considers itself
+    done, so a gateway taking the exit-75 route stays dead until an external
+    poller notices (minutes later, or forever on stock installs). Arm the
+    post-update detached respawn watcher BEFORE dying so the process honours
+    its own restart contract: the watcher waits for this PID to vanish and
+    respawns the recorded argv, windowless, with correct detach flags
+    (see hermes_cli.gateway._spawn_gateway_restart_watcher).
+
+    Deliberately conservative: Windows-only, and only for
+    ``GATEWAY_SERVICE_RESTART_EXIT_CODE`` — intentional stops and other
+    exit paths keep their exact upstream semantics. Never raises; on any
+    failure the caller proceeds to ``os._exit`` unchanged.
+    """
+    if sys.platform != "win32":
+        return False
+    if exit_code != GATEWAY_SERVICE_RESTART_EXIT_CODE:
+        return False
+    try:
+        import json as _json
+
+        from gateway.status import _get_pid_path
+
+        try:
+            record = _json.loads(_get_pid_path().read_text(encoding="utf-8"))
+        except Exception:
+            logger.debug(
+                "Self-replacement: pid file unreadable; skipping respawn arming",
+                exc_info=True,
+            )
+            return False
+        old_pid = int(record.get("pid") or 0)
+        run_argv = [str(part) for part in (record.get("argv") or [])]
+        if old_pid != os.getpid() or not run_argv:
+            logger.debug(
+                "Self-replacement: pid file stale (pid=%r, want %r); skipping",
+                old_pid,
+                os.getpid(),
+            )
+            return False
+        # Imported lazily at exit time: hermes_cli.gateway is heavyweight and
+        # shutdown_watchdog must stay cheap to import from bare-loop tests.
+        from hermes_cli.gateway import launch_detached_gateway_restart_by_cmdline
+
+        armed = launch_detached_gateway_restart_by_cmdline(old_pid, run_argv)
+        if armed:
+            logger.warning(
+                "No Windows service supervisor exists to honour exit code %d — "
+                "armed detached self-replacement watcher; gateway will respawn "
+                "immediately after this exit.",
+                exit_code,
+            )
+        return bool(armed)
+    except Exception:
+        logger.debug("Self-replacement arming failed", exc_info=True)
+        return False
 
 
 def _write_watchdog_dump(
@@ -443,6 +509,9 @@ def arm_shutdown_watchdog(
             mark_exited(exit_code, reason="shutdown_watchdog")
         except Exception:
             pass
+        # Same Windows supervisor-gap handling as the loop-liveness path;
+        # no-op unless this exit carries the restart-contract code.
+        _spawn_windows_self_replacement(exit_code)
         os._exit(exit_code)
 
     try:

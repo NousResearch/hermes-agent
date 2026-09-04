@@ -116,7 +116,8 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
   { key: 'mcp' },
   { key: 'title_generation' },
   { key: 'review' },
-  { key: 'curator' }
+  { key: 'curator' },
+  { key: 'memory_extraction' }
 ]
 
 const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', models: [] }]

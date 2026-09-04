@@ -70,6 +70,47 @@ def _unicode_normalize(text: str) -> str:
         text = text.replace(char, repl)
     return text
 
+def _normalize_line_endings(text: str) -> str:
+    """Normalize real CRLF and lone-CR bytes to LF so matching is EOL-agnostic.
+
+    git checkouts on Windows store CRLF on disk while model-authored
+    old/new strings are LF, which made the precise strategies miss and
+    pushed edits into similarity fallbacks (wrong-region / wrong-indent
+    risk). Normalizing both sides up front lets the precise strategies
+    hit on CRLF files.
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _is_crlf_dominant(text: str) -> bool:
+    """True when ``text`` uses CRLF for at least half of its newlines."""
+    crlf = text.count("\r\n")
+    return bool(crlf) and crlf >= text.count("\n") - crlf
+
+
+def _normalize_literal_escapes(text: str) -> str:
+    """Normalize model-authored ``\\r\\n``/``\\r`` escape sequences to LF.
+
+    Inside JSON tool-call arguments, Windows line endings arrive as the
+    literal two-character sequences backslash-r + backslash-n rather than
+    real control bytes. This is only safe to apply when the *file* is
+    CRLF-dominant (see callers): on LF files such escapes are genuine
+    source content and must survive verbatim.
+    """
+    return text.replace("\\r\\n", "\n").replace("\\r", "\n")
+
+
+def _restore_dominant_eol(text: str, original: str) -> str:
+    """Re-apply ``original``'s dominant line-ending style onto LF ``text``.
+
+    Only converts when the file is dominantly CRLF (``crlf >= lone_lf``);
+    LF files round-trip untouched. Single-line files without newlines
+    stay as-is.
+    """
+    if _is_crlf_dominant(original):
+        return text.replace("\n", "\r\n")
+    return text
+
 
 def is_already_applied(content: str, old_string: str, new_string: str) -> bool:
     """Return True when the requested edit is already present in the file.
@@ -89,6 +130,14 @@ def is_already_applied(content: str, old_string: str, new_string: str) -> bool:
     - when old_string differs from new_string, old_string must be GONE
       (still-present old text means the edit is at best half-applied).
     """
+    is_crlf = _is_crlf_dominant(content)
+    content = _normalize_line_endings(content)
+    old_string = _normalize_line_endings(old_string)
+    new_string = _normalize_line_endings(new_string)
+    if is_crlf:
+        old_string = _normalize_literal_escapes(old_string)
+        new_string = _normalize_literal_escapes(new_string)
+
     if not new_string or len(new_string.strip()) < 8:
         return False
     if new_string not in content:
@@ -139,18 +188,32 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
         - If successful: (modified_content, number_of_replacements, strategy_used, None)
         - If failed: (original_content, 0, None, error_description)
     """
+    # Windows/git checkouts keep CRLF on disk; model-authored old/new
+    # strings are LF. Normalize both sides up front so the precise
+    # strategies can hit, and restore the file's dominant EOL on success
+    # so a landed edit never rewrites the file's line-ending style. All
+    # failure paths must return the ORIGINAL content untouched.
+    original_content = content
+    original_is_crlf = _is_crlf_dominant(original_content)
+    content = _normalize_line_endings(content)
+    old_string = _normalize_line_endings(old_string)
+    new_string = _normalize_line_endings(new_string)
+    if original_is_crlf:
+        old_string = _normalize_literal_escapes(old_string)
+        new_string = _normalize_literal_escapes(new_string)
+
     if not old_string:
-        return content, 0, None, "old_string cannot be empty"
+        return original_content, 0, None, "old_string cannot be empty"
 
     if not old_string.strip():
         # A whitespace-only old_string matches trivially (a blank line, run of
         # spaces, etc.) and, when it recurs, either mass-replaces under
         # replace_all or raises a hard-to-diagnose ambiguity error. It's never
         # a meaningful anchor — reject it so the caller provides real context.
-        return content, 0, None, "old_string is only whitespace — provide non-blank text to match"
+        return original_content, 0, None, "old_string is only whitespace — provide non-blank text to match"
 
     if old_string == new_string:
-        return content, 0, None, IDENTICAL_STRINGS_ERROR
+        return original_content, 0, None, IDENTICAL_STRINGS_ERROR
 
     # Try each matching strategy in order
     strategies: List[Tuple[str, Callable]] = [
@@ -179,7 +242,7 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             # Found matches with this strategy
             if len(matches) > 1 and not replace_all:
                 locations = _format_match_locations(content, matches)
-                return content, 0, None, (
+                return original_content, 0, None, (
                     f"Found {len(matches)} matches for old_string. "
                     f"Provide more context to make it unique, or use replace_all=True. "
                     f"Matches:\n{locations}"
@@ -190,7 +253,7 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             # and make the caller narrow old_string to something a precise
             # strategy can match exactly.
             if replace_all and len(matches) > 1 and strategy_name in _SIMILARITY_STRATEGIES:
-                return content, 0, None, (
+                return original_content, 0, None, (
                     f"Found {len(matches)} approximate matches via the "
                     f"'{strategy_name}' strategy; replace_all only applies to exact "
                     f"matches. Provide the precise text (whitespace included) so an "
@@ -210,7 +273,7 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             if strategy_name != "exact":
                 drift_err = _detect_escape_drift(content, matches, old_string, new_string)
                 if drift_err:
-                    return content, 0, None, drift_err
+                    return original_content, 0, None, drift_err
 
             # Perform replacement. When the matched strategy is NOT `exact`,
             # the file's indentation may differ from what the LLM sent in
@@ -254,10 +317,13 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
                 content, matches, effective_new,
                 old_string=old_string if strategy_name != "exact" else None,
             )
-            return new_content, len(matches), strategy_name, None
+            return (
+                _restore_dominant_eol(new_content, original_content),
+                len(matches), strategy_name, None,
+            )
 
     # No strategy found a match
-    return content, 0, None, "Could not find a match for old_string in the file"
+    return original_content, 0, None, "Could not find a match for old_string in the file"
 
 
 def _detect_escape_drift(content: str, matches: List[Tuple[int, int]],
@@ -487,8 +553,11 @@ def _maybe_unescape_new_string(new_string: str,
     out = new_string
     if "\\t" in out and "\t" in matched_regions:
         out = out.replace("\\t", "\t")
-    if "\\r" in out and "\r" in matched_regions:
-        out = out.replace("\\r", "\r")
+    # ``\\r`` unescaping now happens at the entry point via
+    # ``_normalize_literal_escapes`` when the file is CRLF-dominant: real
+    # CR bytes are normalized away before matching, and on LF files a
+    # literal ``\\r`` in new_string is genuine source content that must
+    # survive verbatim.
     return out
 
 

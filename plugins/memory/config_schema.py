@@ -100,6 +100,13 @@ class ProviderConfigSchema:
     storage: str = STORAGE_FLAT_JSON
     # Optional link to the provider's config docs, shown in the full-config modal.
     docs_url: str = ""
+    # Optional override of the flat-json storage path. Defaults to
+    # ``<hermes_home>/<name>/config.json`` (a directory store). Providers whose
+    # runtime reads a native config file at the hermes-home root (e.g.
+    # ``<hermes_home>/<name>.json``) set this to that file's basename so the
+    # config panel reads/writes the SAME file the runtime uses, instead of an
+    # empty parallel store. Resolved relative to ``hermes_home``.
+    config_file: str | None = None
     fields: tuple[ProviderField, ...] = dataclass_field(default_factory=tuple)
 
     def inline_fields(self) -> tuple[ProviderField, ...]:

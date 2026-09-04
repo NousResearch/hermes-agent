@@ -2898,7 +2898,7 @@ class ShellFileOperations(FileOperations):
         # Import and use fuzzy matching
         from tools.fuzzy_match import fuzzy_find_and_replace
         
-        new_content, match_count, _strategy, error = fuzzy_find_and_replace(
+        new_content, match_count, match_strategy, error = fuzzy_find_and_replace(
             content, old_string, new_string, replace_all
         )
         
@@ -2992,6 +2992,8 @@ class ShellFileOperations(FileOperations):
             success=True,
             diff=diff,
             files_modified=[path],
+            note=(f"Matched via '{match_strategy}' strategy — not an exact text "
+                  "match; verify the diff." if match_strategy != "exact" else None),
             lint=lint_result.to_dict() if lint_result else None,
             # Propagate the LSP diagnostics already captured by the
             # internal ``write_file`` call.  Its baseline was the

@@ -36,6 +36,7 @@ import importlib.machinery
 import importlib.metadata
 import importlib.util
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import List, Optional, Tuple, TYPE_CHECKING
@@ -121,6 +122,25 @@ def _is_memory_provider_dir(path: Path) -> bool:
         return False
 
 
+def _provider_manifest_name(path: Path) -> Optional[str]:
+    """The ``name:`` declared in a directory provider's plugin.yaml manifest.
+
+    Directory providers are normally addressed by their folder name, but a
+    provider that was renamed keeps its folder under the old name while its
+    manifest declares the new identity.  Accepting the manifest name here
+    lets ``memory.provider`` in config.yaml keep using the canonical name.
+    """
+    manifest = path / "plugin.yaml"
+    if not manifest.is_file():
+        return None
+    try:
+        text = manifest.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = re.search(r"(?m)^name:\s*[\"']?([^\"'\s#]+)", text)
+    return match.group(1) if match else None
+
+
 def _iter_provider_dirs() -> List[Tuple[str, Path]]:
     """Yield ``(name, path)`` for all discovered provider directories.
 
@@ -198,6 +218,16 @@ def find_provider_dir(name: str) -> Optional[Path]:
         candidate = source_dir / name
         if candidate.is_dir() and _is_memory_provider_dir(candidate):
             return candidate
+        # Fallback: a provider whose plugin.yaml manifest declares this name
+        # (folder may predate a provider rename).  Exact folder matches above
+        # win; first manifest match wins among remaining candidates.
+        for child in sorted(source_dir.iterdir()):
+            if not child.is_dir() or child.name.startswith(("_", ".")):
+                continue
+            if child.name == name or not _is_memory_provider_dir(child):
+                continue
+            if _provider_manifest_name(child) == name:
+                return child
     # Pip entry point
     return _entry_point_package_dir(find_provider_entry_point(name))
 

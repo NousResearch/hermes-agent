@@ -211,8 +211,9 @@ class TestReapOrphanedBrowserSessions:
             _reap_orphaned_browser_sessions()
 
         assert probes == [111, 222]
-        assert d.exists()
-        assert pid_file.read_text() == "333"
+        retained = list(fake_tmpdir.glob(".hermes-browser-reap-*"))
+        assert len(retained) == 1
+        assert (retained[0] / "bu.pid").read_text() == "333"
 
     def test_pid_record_replaced_after_termination_is_retained(
         self, fake_tmpdir
@@ -245,8 +246,9 @@ class TestReapOrphanedBrowserSessions:
             _reap_orphaned_browser_sessions()
 
         assert probes == [111, 222, 222]
-        assert d.exists()
-        assert pid_file.read_text() == "333"
+        retained = list(fake_tmpdir.glob(".hermes-browser-reap-*"))
+        assert len(retained) == 1
+        assert (retained[0] / "bu.pid").read_text() == "333"
 
     def test_fresh_numeric_pid_prefix_is_retained(self, fake_tmpdir, monkeypatch):
         """An integer-looking partial write must not select/dead-check that PID."""

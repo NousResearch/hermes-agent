@@ -7396,6 +7396,30 @@ def decompose_triage_task(
         # override with its own 'workspace_kind' / 'workspace_path'.
         root_ws_kind = root_row["workspace_kind"] or "scratch"
         root_ws_path = root_row["workspace_path"]
+        # A worktree child with no explicit path still needs a REPO ANCHOR:
+        # dispatch's default (the board's ``default_workdir``) is often
+        # unset, and then the child fails to spawn with "no default_workdir
+        # set" — twice, hitting the circuit breaker (live failure class,
+        # t_ab2a7ce8 / t_2dd0f5b7, 2026-09-02). When the root row already
+        # names a repo or a worktree under ``<repo>/.worktrees/<task-id>``
+        # (typical for a dispatcher-materialized worktree root), derive the
+        # repo root from it so each child can anchor its own fresh
+        # ``<repo>/.worktrees/<child-id>`` in the SAME repository.
+        root_repo_anchor: Optional[str] = None
+        if root_ws_kind == "worktree" and root_ws_path:
+            root_path = Path(root_ws_path)
+            if _is_linked_worktree_checkout(root_path):
+                # The root row names a linked worktree checkout (the
+                # dispatcher-materialized ``<repo>/.worktrees/<root-id>``
+                # shape). Its git COMMON dir is ``<repo>/.git`` — the main
+                # repo every sibling worktree must anchor on. The bare
+                # toplevel would return the root's own checkout.
+                _common = _git_common_dir(root_path)
+                if _common is not None and _common.name == ".git":
+                    root_repo_anchor = str(_common.parent)
+            if root_repo_anchor is None:
+                _root_repo = _repo_root_for_worktree_target(root_path)
+                root_repo_anchor = str(_root_repo) if _root_repo else None
 
         # Create children. Status is 'todo' regardless of parents — we
         # link them under the root AFTER creation so the dispatcher
@@ -7421,8 +7445,12 @@ def decompose_triage_task(
                 # no lock — siblings can be promoted and dispatched
                 # concurrently. Leave the path unset so dispatch
                 # materializes a fresh <repo>/.worktrees/<child-id> per
-                # child from the board anchor.
-                child_ws_path = None
+                # child. When the root's workspace names a repo (or a
+                # worktree inside one), stamp that repo as the child's
+                # explicit anchor: dispatch otherwise falls back to the
+                # board's ``default_workdir`` and fails to spawn when the
+                # board has none.
+                child_ws_path = root_repo_anchor
             elif child_ws_kind == root_ws_kind:
                 child_ws_path = root_ws_path
             else:

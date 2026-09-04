@@ -2459,6 +2459,13 @@ export function useSessionActions({
 
       try {
         if (closingRuntimeId) {
+          // First interrupt the running turn so the worker thread stops
+          await requestForSessionProfile(removedOwner, requestGateway, 'session.interrupt', {
+            session_id: closingRuntimeId
+          }).catch(() => undefined)
+        }
+
+        if (closingRuntimeId) {
           await requestForSessionProfile(removedOwner, requestGateway, 'session.close', {
             session_id: closingRuntimeId
           }).catch(() => undefined)

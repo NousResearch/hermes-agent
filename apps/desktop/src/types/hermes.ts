@@ -205,6 +205,9 @@ export interface CustomEndpointUpdate {
   model: string
   models?: string[]
   name: string
+  /** Treat `models` as the authoritative catalogue and drop anything absent
+   *  from it. Omit (or false) to keep the additive merge (#101764). */
+  replace_models?: boolean
 }
 
 export interface CustomEndpointValidationResponse {

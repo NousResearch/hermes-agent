@@ -59,7 +59,7 @@ function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
   }
 }
 
-function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate {
+function toPayload(form: EndpointForm, models?: string[], replaceModels = false): CustomEndpointUpdate {
   const contextLength = Number.parseInt(form.contextLength, 10)
 
   return {
@@ -71,7 +71,10 @@ function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate 
     context_length: Number.isFinite(contextLength) && contextLength > 0 ? contextLength : undefined,
     discover_models: form.discoverModels,
     make_default: form.makeDefault,
-    models: models?.length ? models : undefined
+    models: models?.length ? models : undefined,
+    // Only Save asserts authority over the catalogue (#101764). Test must
+    // stay additive — it posts the same payload shape but is only probing.
+    replace_models: replaceModels || undefined
   }
 }
 
@@ -84,6 +87,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   const [endpoints, setEndpoints] = useState<CustomEndpoint[]>([])
   const [form, setForm] = useState<EndpointForm>(EMPTY_FORM)
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([])
+  // Which of `discoveredModels` the user wants persisted. An endpoint can
+  // advertise 100+ models while a plan covers two, and Save used to store
+  // every discovered id, flooding the model picker (#101764).
+  const [selectedModels, setSelectedModels] = useState<string[]>([])
+  const [modelFilter, setModelFilter] = useState('')
 
   async function refresh() {
     const data = await getCustomEndpoints()
@@ -107,6 +115,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
         if (current) {
           setForm(formFromEndpoint(current))
           setDiscoveredModels(current.models)
+          setSelectedModels(current.models)
         }
       } catch (err) {
         notifyError(err, 'Could not load custom endpoints')
@@ -119,21 +128,23 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
     void load()
 
-    return () => {
-      cancelled = true
-    }
+    return () => { cancelled = true }
   }, [])
 
   async function handleSave() {
     try {
       setSaving(true)
-      const response = await saveCustomEndpoint(toPayload(form, discoveredModels))
+      // The default model must always survive, even if the user never ticked
+      // it in the list (it may have been typed by hand).
+      const models = Array.from(new Set([...selectedModels, form.model.trim()].filter(Boolean)))
+      const response = await saveCustomEndpoint(toPayload(form, models, true))
       setEndpoints(response.endpoints)
       const saved = response.endpoints.find(endpoint => endpoint.id === response.id)
 
       if (saved) {
         setForm(formFromEndpoint(saved))
         setDiscoveredModels(saved.models)
+        setSelectedModels(saved.models)
       }
 
       if (saved && saved.is_current) {
@@ -155,6 +166,19 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
       setTesting(true)
       const response = await validateCustomEndpoint(toPayload(form))
       setDiscoveredModels(response.models)
+      // Keep whatever the user had already chosen that this probe still
+      // advertises; a re-Test must not silently re-tick 98 models they
+      // deselected. A first probe (nothing chosen yet) selects everything,
+      // preserving the pre-#101764 default of "save what you found".
+      setSelectedModels(previous => {
+        if (!previous.length) {
+          return response.models
+        }
+
+        const stillOffered = previous.filter(model => response.models.includes(model))
+
+        return stillOffered.length ? stillOffered : response.models
+      })
 
       if (response.ok) {
         if (!form.model && response.models[0]) {
@@ -209,6 +233,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
       if (form.id === endpoint.id) {
         setForm(EMPTY_FORM)
         setDiscoveredModels([])
+        setSelectedModels([])
       }
 
       onConfigSaved?.()
@@ -226,6 +251,17 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
   const allModelOptions = Array.from(new Set([...discoveredModels, form.model].filter(Boolean)))
   const canSave = form.name.trim() && form.baseUrl.trim() && form.model.trim()
+  const normalizedFilter = modelFilter.trim().toLowerCase()
+
+  const visibleModels = normalizedFilter
+    ? discoveredModels.filter(model => model.toLowerCase().includes(normalizedFilter))
+    : discoveredModels
+
+  function toggleModel(model: string, checked: boolean) {
+    setSelectedModels(previous =>
+      checked ? Array.from(new Set([...previous, model])) : previous.filter(entry => entry !== model)
+    )
+  }
 
   return (
     <SettingsContent>
@@ -241,6 +277,8 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                     onClick={() => {
                       setForm(formFromEndpoint(endpoint))
                       setDiscoveredModels(endpoint.models)
+                      setSelectedModels(endpoint.models)
+                      setModelFilter('')
                     }}
                     type="button"
                   >
@@ -259,6 +297,9 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                     </div>
                     <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
                       <span>{endpoint.model}</span>
+                      {/* Surface the stored catalogue size so a flooded save
+                          is visible without opening the editor (#101764). */}
+                      {endpoint.models.length > 1 && <span>{`${endpoint.models.length} models`}</span>}
                       {endpoint.has_api_key && <span>{endpoint.api_key_preview ?? 'API key set'}</span>}
                     </div>
                   </button>
@@ -372,6 +413,54 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 Discover models
               </label>
             </div>
+            {discoveredModels.length > 0 && (
+              <div className="grid gap-2 rounded-md border border-border/50 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs text-muted-foreground">
+                    {`Models to keep (${selectedModels.length}/${discoveredModels.length})`}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      onClick={() => setSelectedModels(discoveredModels)}
+                      size="sm"
+                      type="button"
+                      variant="ghost"
+                    >
+                      Select all
+                    </Button>
+                    <Button onClick={() => setSelectedModels([])} size="sm" type="button" variant="ghost">
+                      Select none
+                    </Button>
+                  </div>
+                </div>
+                {discoveredModels.length > 8 && (
+                  <Input
+                    onChange={event => setModelFilter(event.target.value)}
+                    placeholder="Filter models"
+                    value={modelFilter}
+                  />
+                )}
+                <div className="max-h-56 overflow-y-auto">
+                  {visibleModels.length ? (
+                    visibleModels.map(model => (
+                      <label className="flex items-center gap-2 py-1 text-xs" key={model}>
+                        <Checkbox
+                          checked={selectedModels.includes(model)}
+                          onCheckedChange={checked => toggleModel(model, checked === true)}
+                        />
+                        <span className="truncate font-mono">{model}</span>
+                        {model === form.model.trim() && <Pill tone="primary">Default</Pill>}
+                      </label>
+                    ))
+                  ) : (
+                    <p className="py-1 text-xs text-muted-foreground">No models match that filter.</p>
+                  )}
+                </div>
+                <p className="text-[0.7rem] text-muted-foreground">
+                  Only checked models are saved. The default model is always kept.
+                </p>
+              </div>
+            )}
             <div className="flex flex-wrap gap-2">
               <Button
                 disabled={testing || !form.baseUrl.trim()}
@@ -390,6 +479,8 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 onClick={() => {
                   setForm(EMPTY_FORM)
                   setDiscoveredModels([])
+                  setSelectedModels([])
+                  setModelFilter('')
                 }}
                 type="button"
                 variant="ghost"

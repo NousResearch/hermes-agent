@@ -1982,6 +1982,110 @@ class TestWebServerEndpoints:
         assert get_env_value(custom_endpoint_key_env("local-8000")) == "sk-first"
         assert get_env_value(custom_endpoint_key_env("local-8001")) == "sk-second"
 
+    def test_custom_endpoint_models_merge_by_default(self):
+        """Without replace_models, Save is additive — a partial catalogue must
+        never drop stored models (#69988 kept the merge on purpose)."""
+        from hermes_cli.config import load_config
+
+        self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "proxy",
+                "name": "Proxy",
+                "base_url": "https://llm.example.com/v1",
+                "model": "m",
+                "models": ["m", "extra-a"],
+            },
+        )
+        self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "proxy",
+                "name": "Proxy",
+                "base_url": "https://llm.example.com/v1",
+                "model": "m",
+                # A client that only knows about "m" must not wipe "extra-a".
+                "models": ["m"],
+            },
+        )
+
+        cfg = load_config()
+        assert set(cfg["providers"]["proxy"]["models"]) == {"m", "extra-a"}
+
+    def test_custom_endpoint_replace_models_prunes_and_keeps_model_settings(self):
+        """replace_models makes the submitted catalogue authoritative (#101764).
+
+        The Desktop endpoint editor shows discovered models as a checkbox
+        list; models the user unchecked must actually go away. Survivors keep
+        their stored per-model settings (context_length), and the named
+        default is always present.
+        """
+        from hermes_cli.config import load_config
+
+        self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "proxy",
+                "name": "Proxy",
+                "base_url": "https://llm.example.com/v1",
+                "model": "keep-a",
+                "api_key": "sk-x",
+                "models": ["keep-a", "keep-b", "drop-c"],
+                "context_length": 128000,
+            },
+        )
+        cfg = load_config()
+        # context_length lands on the default model's per-model settings.
+        assert cfg["providers"]["proxy"]["models"]["keep-a"] == {"context_length": 128000}
+
+        self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "proxy",
+                "name": "Proxy",
+                "base_url": "https://llm.example.com/v1",
+                "model": "keep-a",
+                "models": ["keep-a", "keep-b"],
+                "replace_models": True,
+            },
+        )
+
+        cfg = load_config()
+        models = cfg["providers"]["proxy"]["models"]
+        assert set(models) == {"keep-a", "keep-b"}, "unchecked model must be pruned"
+        assert "drop-c" not in models
+        # Survivors keep their tuning across the replace.
+        assert models["keep-a"] == {"context_length": 128000}
+
+    def test_custom_endpoint_replace_models_requires_a_catalogue(self):
+        """replace_models without models must not wipe the stored catalogue —
+        the flag only means something paired with the list it authorizes."""
+        from hermes_cli.config import load_config
+
+        self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "proxy",
+                "name": "Proxy",
+                "base_url": "https://llm.example.com/v1",
+                "model": "m",
+                "models": ["m", "extra-a"],
+            },
+        )
+        self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "proxy",
+                "name": "Proxy",
+                "base_url": "https://llm.example.com/v1",
+                "model": "m",
+                "replace_models": True,
+            },
+        )
+
+        cfg = load_config()
+        assert set(cfg["providers"]["proxy"]["models"]) == {"m", "extra-a"}
+
     def test_custom_endpoint_response_reports_a_key_held_in_env(self):
         """has_api_key must follow key_env, not just a plaintext api_key.
 

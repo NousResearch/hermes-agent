@@ -285,6 +285,16 @@ TOOLSETS = {
         "includes": []
     },
 
+    "executive_bus": {
+        "description": (
+            "Executive Capability Bus tools: discover capabilities across Hermes "
+            "profiles and delegate bounded work to another profile using profile "
+            "credential isolation and workload-aware executor ranking."
+        ),
+        "tools": ["find_capability", "delegate_to_profile"],
+        "includes": []
+    },
+
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 

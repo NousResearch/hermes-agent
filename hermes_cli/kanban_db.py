@@ -1524,6 +1524,34 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+
+CREATE TABLE IF NOT EXISTS profile_delegations (
+    id                    TEXT PRIMARY KEY,
+    task_id               TEXT NOT NULL,
+    requester_profile     TEXT NOT NULL,
+    executor_profile      TEXT NOT NULL,
+    requester_session_key TEXT,
+    requester_session_id  TEXT,
+    requester_platform    TEXT,
+    requester_chat_id     TEXT,
+    requester_thread_id   TEXT,
+    capability            TEXT NOT NULL,
+    risk                  TEXT NOT NULL,
+    request_json          TEXT NOT NULL,
+    status                TEXT NOT NULL,
+    approval_id           TEXT,
+    result_json           TEXT,
+    error                 TEXT,
+    created_at            INTEGER NOT NULL,
+    started_at            INTEGER,
+    completed_at          INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_profile_delegations_task
+    ON profile_delegations(task_id);
+CREATE INDEX IF NOT EXISTS idx_profile_delegations_requester_session
+    ON profile_delegations(requester_session_key, created_at);
+CREATE INDEX IF NOT EXISTS idx_profile_delegations_executor_status
+    ON profile_delegations(executor_profile, status);
 """
 
 
@@ -4330,6 +4358,108 @@ def _append_event(
         "VALUES (?, ?, ?, ?, ?)",
         (task_id, run_id, kind, pl, now),
     )
+
+
+def create_profile_delegation(
+    conn: sqlite3.Connection,
+    *,
+    delegation_id: str,
+    task_id: str,
+    requester_profile: str,
+    executor_profile: str,
+    requester_session_key: Optional[str] = None,
+    requester_session_id: Optional[str] = None,
+    requester_platform: Optional[str] = None,
+    requester_chat_id: Optional[str] = None,
+    requester_thread_id: Optional[str] = None,
+    capability: str,
+    risk: str,
+    request: dict,
+    approval_id: Optional[str] = None,
+    status: str = "queued",
+) -> None:
+    """Create an audit row for a cross-profile delegation request."""
+    now = int(time.time())
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO profile_delegations (
+            id, task_id, requester_profile, executor_profile,
+            requester_session_key, requester_session_id, requester_platform,
+            requester_chat_id, requester_thread_id, capability, risk,
+            request_json, status, approval_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            delegation_id, task_id, requester_profile, executor_profile,
+            requester_session_key, requester_session_id, requester_platform,
+            requester_chat_id, requester_thread_id, capability, risk,
+            json.dumps(request, ensure_ascii=False), status, approval_id, now,
+        ),
+    )
+    _append_event(conn, task_id, "profile_delegation_created", {
+        "delegation_id": delegation_id,
+        "requester_profile": requester_profile,
+        "executor_profile": executor_profile,
+        "capability": capability,
+        "risk": risk,
+        "status": status,
+        "requester_session_key": requester_session_key,
+    })
+
+
+def get_profile_delegation(conn: sqlite3.Connection, delegation_id: str) -> Optional[dict]:
+    row = conn.execute("SELECT * FROM profile_delegations WHERE id = ?", (delegation_id,)).fetchone()
+    return _profile_delegation_from_row(row) if row else None
+
+
+def get_profile_delegation_by_task(conn: sqlite3.Connection, task_id: str) -> Optional[dict]:
+    row = conn.execute("SELECT * FROM profile_delegations WHERE task_id = ? ORDER BY created_at DESC LIMIT 1", (task_id,)).fetchone()
+    return _profile_delegation_from_row(row) if row else None
+
+
+def _profile_delegation_from_row(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    for key in ("request_json", "result_json"):
+        val = data.get(key)
+        if val:
+            try:
+                data[key[:-5] if key.endswith("_json") else key] = json.loads(val)
+            except Exception:
+                data[key[:-5] if key.endswith("_json") else key] = None
+    return data
+
+
+def mark_profile_delegation_running(conn: sqlite3.Connection, delegation_id: str) -> None:
+    now = int(time.time())
+    row = get_profile_delegation(conn, delegation_id)
+    conn.execute(
+        "UPDATE profile_delegations SET status = ?, started_at = COALESCE(started_at, ?) WHERE id = ?",
+        ("running", now, delegation_id),
+    )
+    if row:
+        _append_event(conn, row["task_id"], "profile_delegation_running", {"delegation_id": delegation_id, "status": "running"})
+
+
+def complete_profile_delegation(conn: sqlite3.Connection, delegation_id: str, *, result: dict) -> None:
+    now = int(time.time())
+    row = get_profile_delegation(conn, delegation_id)
+    conn.execute(
+        "UPDATE profile_delegations SET status = ?, result_json = ?, completed_at = ? WHERE id = ?",
+        ("completed", json.dumps(result, ensure_ascii=False), now, delegation_id),
+    )
+    if row:
+        _append_event(conn, row["task_id"], "profile_delegation_completed", {"delegation_id": delegation_id, "status": "completed"})
+
+
+def fail_profile_delegation(conn: sqlite3.Connection, delegation_id: str, *, status: str = "failed", error: str) -> None:
+    now = int(time.time())
+    row = get_profile_delegation(conn, delegation_id)
+    conn.execute(
+        "UPDATE profile_delegations SET status = ?, error = ?, completed_at = ? WHERE id = ?",
+        (status, error, now, delegation_id),
+    )
+    if row:
+        _append_event(conn, row["task_id"], f"profile_delegation_{status}", {"delegation_id": delegation_id, "status": status, "error": error})
 
 
 def _end_run(

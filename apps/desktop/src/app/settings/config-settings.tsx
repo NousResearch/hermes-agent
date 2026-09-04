@@ -265,13 +265,15 @@ function ConfigSettingsInner({
     applyConfig(next)
   }
 
+  const effectiveConfig = config ?? loadedConfig
+  const effectiveSchema = schema ?? schemaResponse?.fields ?? null
   const sectionFields = useMemo(() => {
-    if (!schema || !config) {
+    if (!effectiveSchema || !effectiveConfig) {
       return new Map<string, [string, ConfigFieldSchema][]>()
     }
 
-    return sectionFieldEntries(schema, config)
-  }, [schema, config])
+    return sectionFieldEntries(effectiveSchema, effectiveConfig)
+  }, [effectiveSchema, effectiveConfig])
 
   const fields = sectionFields.get(activeSectionId) ?? []
 
@@ -281,7 +283,7 @@ function ConfigSettingsInner({
   const targetField = searchParams.get('field')
 
   useEffect(() => {
-    if (!targetField || !config || !schema) {
+    if (!targetField || !effectiveConfig || !effectiveSchema) {
       return
     }
 
@@ -313,7 +315,7 @@ function ConfigSettingsInner({
     )
 
     return () => window.clearTimeout(timeout)
-  }, [config, schema, setSearchParams, targetField])
+  }, [effectiveConfig, effectiveSchema, setSearchParams, targetField])
 
   function handleImport(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -337,9 +339,9 @@ function ConfigSettingsInner({
     e.target.value = ''
   }
 
-  if (!config || !schema) {
+  if (!effectiveConfig || !effectiveSchema) {
     // A failed config/schema fetch must surface a retry, not spin forever.
-    if ((configLoadFailed && !config) || (schemaFailed && !schema)) {
+    if ((configLoadFailed && !effectiveConfig) || (schemaFailed && !effectiveSchema)) {
       return (
         <div className="flex h-full min-h-0 flex-1">
           <PanelEmpty
@@ -377,7 +379,7 @@ function ConfigSettingsInner({
     return <SettingsSkeleton sections={[{ rows: 6 }]} />
   }
 
-  const visibleFields = activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
+  const visibleFields = activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, effectiveConfig)) : fields
 
   return (
     <SettingsContent>
@@ -422,26 +424,26 @@ function ConfigSettingsInner({
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
               <ConfigField
                 descriptionExtra={
-                  key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
-                    <MemoryConnect profile={scopeProfile} provider={String(getNested(config, key))} />
+                  key === 'memory.provider' && isExternalMemoryProvider(getNested(effectiveConfig, key)) ? (
+                    <MemoryConnect profile={scopeProfile} provider={String(getNested(effectiveConfig, key))} />
                   ) : undefined
                 }
                 enumOptions={
                   key === 'tts.elevenlabs.voice_id'
-                    ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
-                    : enumOptionsFor(key, getNested(config, key), config)
+                    ? enumOptionsFor(key, getNested(effectiveConfig, key), effectiveConfig, elevenLabsVoiceOptions ?? undefined)
+                    : enumOptionsFor(key, getNested(effectiveConfig, key), effectiveConfig)
                 }
-                onChange={value => updateConfig(setNested(config, key, value))}
+                onChange={value => updateConfig(setNested(effectiveConfig, key, value))}
                 optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
                 schema={field}
                 schemaKey={key}
-                value={getNested(config, key)}
+                value={getNested(effectiveConfig, key)}
               />
-              {key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
+              {key === 'memory.provider' && isExternalMemoryProvider(getNested(effectiveConfig, key)) ? (
                 <ProviderConfigPanel
-                  key={String(getNested(config, key))}
+                  key={String(getNested(effectiveConfig, key))}
                   profile={scopeProfile}
-                  provider={String(getNested(config, key))}
+                  provider={String(getNested(effectiveConfig, key))}
                 />
               ) : null}
             </div>

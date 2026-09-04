@@ -156,7 +156,11 @@ class GatewayTurnMixin:
 
         return model, runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_turn_agent_config(
+        self, user_message: str, model: str, runtime_kwargs: dict,
+        *, session_id: Optional[str] = None, session_key: Optional[str] = None,
+        source: Optional[SessionSource] = None, internal: bool = False,
+    ) -> dict:
         """Effective model/runtime config for one turn. With `/fast` priority on, fast-mode
         ``request_overrides`` are deep-merged OVER the per-provider ones so both reach the model."""
         from gateway.run import _deep_merge_request_overrides
@@ -179,6 +183,43 @@ class GatewayTurnMixin:
                 runtime["api_mode"], runtime["command"], tuple(runtime["args"]),
             ),
         }
+        if not internal:
+            try:
+                from hermes_cli.middleware import apply_turn_route_middleware, public_turn_route
+                result = apply_turn_route_middleware(
+                    public_turn_route(route["model"], runtime),
+                    user_message=user_message,
+                    session_id=session_id,
+                    session_key=session_key,
+                    source=source.platform.value if source and source.platform else "gateway",
+                    is_user_turn=True,
+                    is_first_turn=False,
+                    internal=False,
+                    tool_continuation=False,
+                )
+                if result.changed and isinstance(result.payload, dict):
+                    selected_model = result.payload.get("model")
+                    public_runtime = result.payload.get("runtime")
+                    public_runtime = public_runtime if isinstance(public_runtime, dict) else {}
+                    current_requested = runtime.get("requested_provider") or runtime.get("provider")
+                    current_canonical = runtime.get("provider")
+                    top_requested = result.payload.get("requested_provider")
+                    nested_requested = public_runtime.get("requested_provider")
+                    requested = nested_requested if nested_requested and nested_requested != current_requested else (top_requested or nested_requested)
+                    canonical = result.payload.get("provider") or public_runtime.get("provider")
+                    selected_provider = requested if requested and requested != current_requested else (canonical if canonical and canonical != current_canonical else (requested or canonical or current_requested))
+                    if isinstance(selected_model, str) and selected_model.strip() and isinstance(selected_provider, str) and selected_provider.strip():
+                        selected_model = selected_model.strip()
+                        selected_provider = selected_provider.strip()
+                        if selected_provider != current_requested:
+                            from gateway.run import _resolve_runtime_agent_kwargs_for_provider
+                            runtime = _resolve_runtime_agent_kwargs_for_provider(selected_provider)
+                        runtime["requested_provider"] = selected_provider
+                        route["model"] = selected_model
+                        route["runtime"] = runtime
+                        route["middleware_trace"] = result.trace
+            except Exception as exc:
+                logger.warning("Turn-route middleware failed open: %s", exc)
         if getattr(self, "_service_tier", None) != "priority":
             # None / auto / cold: the bounded window is applied per request by agent.fast_mode.
             route["request_overrides"] = base_request_overrides
@@ -2122,7 +2163,7 @@ class GatewayTurnMixin:
             reasoning_config = self._resolve_session_reasoning_config(source=source, model=model)
             self._reasoning_config = reasoning_config
             self._service_tier = self._resolve_session_service_tier(source=source)
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs, internal=True)
 
             # Enrich the prompt with image descriptions (same as the main flow).
             enriched_prompt = prompt

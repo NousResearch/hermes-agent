@@ -129,6 +129,39 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
     assert route["request_overrides"] == {}
 
 
+def test_turn_route_resolves_requested_provider_alias(monkeypatch):
+    runner = _make_runner()
+
+    def fake_apply(route, **_context):
+        return SimpleNamespace(
+            changed=True,
+            payload={**route, "model": "target", "provider": "custom",
+                     "requested_provider": "custom:beta",
+                     "runtime": {**route["runtime"], "requested_provider": "custom:beta", "api_mode": "invalid"}},
+            trace=[],
+        )
+
+    monkeypatch.setattr("hermes_cli.middleware.apply_turn_route_middleware", fake_apply)
+    resolver = MagicMock(return_value={
+        "provider": "custom", "requested_provider": "custom:beta",
+        "api_key": "beta-key", "base_url": "https://beta.example/v1", "api_mode": "responses",
+    })
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs_for_provider", resolver)
+    route = runner._resolve_turn_agent_config(
+        "route", "primary", {
+            "provider": "custom", "requested_provider": "custom:alpha",
+            "api_key": "alpha-key", "base_url": "https://alpha.example/v1",
+            "api_mode": "chat_completions",
+        }, session_id="session-1", session_key="chat-1", source=_make_source(),
+    )
+
+    resolver.assert_called_once_with("custom:beta")
+    assert route["runtime"]["provider"] == "custom"
+    assert route["runtime"]["requested_provider"] == "custom:beta"
+    assert route["runtime"]["api_key"] == "beta-key"
+    assert route["runtime"]["api_mode"] == "responses"
+
+
 @pytest.mark.asyncio
 async def test_handle_fast_command_global_flag_persists_config(monkeypatch, tmp_path):
     runner = _make_runner()
@@ -173,5 +206,3 @@ async def test_session_fast_override_beats_config_default(monkeypatch, tmp_path)
     assert runner._resolve_session_service_tier(session_key=session_key) is None
     # A different session still gets the config default.
     assert runner._resolve_session_service_tier(session_key="other-session") == "priority"
-
-

@@ -37,6 +37,17 @@ describe('deriveTimelineEntries', () => {
       ]).map(e => e.id)
     ).toEqual(['u3'])
   })
+
+  it('drops synthetic async-delegation completion turns but keeps prompts that merely mention the marker', () => {
+    expect(
+      deriveTimelineEntries([
+        { id: 'u1', role: 'user', text: '[ASYNC DELEGATION COMPLETE — deleg_abc]\nStatus: completed' },
+        { id: 'u2', role: 'user', text: '[ASYNC DELEGATION BATCH COMPLETE — deleg_batch]\nRole: leaf' },
+        { id: 'u3', role: 'user', text: 'Please explain [ASYNC DELEGATION COMPLETE — deleg_abc] to me' },
+        { id: 'u4', role: 'user', text: 'real prompt' }
+      ]).map(e => e.id)
+    ).toEqual(['u3', 'u4'])
+  })
 })
 
 describe('sameTimelineEntries', () => {

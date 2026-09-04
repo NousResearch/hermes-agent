@@ -569,7 +569,7 @@ def _sync_local_state(src: str, dst: str, source_profile: str) -> None:
         except OSError as e:
             logger.debug("real-profile snapshot: skipped Local State: %s", e)
     try:
-        with open(ls_dst, encoding="utf-8") as fh:
+        with open(ls_dst, encoding="utf-8-sig") as fh:
             state = json.load(fh)
         prof = state.get("profile")
         if isinstance(prof, dict):

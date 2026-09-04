@@ -164,7 +164,7 @@ def _run_chrome_fallback_command(task_id: str, command: str, args: List[str], ti
             proc.wait()
             return {"success": False, "error": f"Chrome fallback '{cmd}' timed out"}
         try:
-            with open(stdout_path, encoding="utf-8") as f:
+            with open(stdout_path, encoding="utf-8-sig") as f:
                 stdout = f.read().strip()
             if stdout:
                 return json.loads(stdout.split("\n")[-1])

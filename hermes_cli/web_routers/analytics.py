@@ -42,7 +42,7 @@ async def get_config_raw(profile: Optional[str] = None):
             path = get_config_path()
         if not path.exists():
             return {"yaml": "", "path": str(path)}
-        return {"yaml": path.read_text(encoding="utf-8"), "path": str(path)}
+        return {"yaml": path.read_text(encoding="utf-8-sig"), "path": str(path)}
 
     return await asyncio.to_thread(_run)
 

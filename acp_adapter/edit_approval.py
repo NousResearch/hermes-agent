@@ -59,7 +59,7 @@ def reset_edit_approval_requester(token: Token) -> None:
 def _read_text_if_exists(path: str) -> str | None:
     p = Path(path).expanduser()
     if p.is_file():
-        return p.read_text(encoding="utf-8", errors="replace")
+        return p.read_text(encoding=utf-8-sig, errors="replace")
     if p.exists():
         raise OSError(f"Cannot edit non-file path: {path}")
     return None

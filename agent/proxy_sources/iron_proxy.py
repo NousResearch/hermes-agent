@@ -382,7 +382,7 @@ def mint_proxy_token(prefix: str = "hermes-proxy") -> str:
 def _read_text_or_none(p: Path) -> Optional[str]:
     """Stripped file contents, or None when missing/unreadable/empty."""
     try:
-        return p.read_text(encoding="utf-8").strip() or None
+        return p.read_text(encoding="utf-8-sig").strip() or None
     except OSError:
         return None
 

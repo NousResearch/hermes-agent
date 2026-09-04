@@ -168,7 +168,7 @@ def run_setup(provider, hermes_home: str, config: dict) -> None:
         materialized_config = dict(provider_config)
         with contextlib.suppress(Exception):
             materialized_config = json.loads(
-                (Path(hermes_home) / "hindsight" / "config.json").read_text(encoding="utf-8")
+                (Path(hermes_home) / "hindsight" / "config.json").read_text(encoding=utf-8-sig)
             )
         llm_api_key = (
             env_writes.get("HINDSIGHT_LLM_API_KEY", "")

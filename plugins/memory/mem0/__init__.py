@@ -44,7 +44,7 @@ def _read_mem0_json(config_path: Path) -> dict:
     """Best-effort read of mem0.json; missing/corrupt file -> {}."""
     if config_path.exists():
         with suppress(Exception):
-            return json.loads(config_path.read_text(encoding="utf-8"))
+            return json.loads(config_path.read_text(encoding="utf-8-sig"))
     return {}
 
 

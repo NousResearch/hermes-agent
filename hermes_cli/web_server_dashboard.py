@@ -145,7 +145,7 @@ def mount_spa(application: FastAPI):
         and /api/ws (ticket vs token).
         """
         try:
-            html = (WEB_DIST / "index.html").read_text(encoding="utf-8")
+            html = (WEB_DIST / "index.html").read_text(encoding="utf-8-sig")
         except OSError:
             # Partial build / wiped dist / permissions: same JSON 404 as a fully-missing dist.
             return JSONResponse({"error": "Frontend not built. Run: cd web && npm run build"}, status_code=404)
@@ -179,7 +179,7 @@ def mount_spa(application: FastAPI):
         if not css_path.is_file() or not css_path.resolve().is_relative_to(WEB_DIST.resolve()):
             return JSONResponse({"error": "not found"}, status_code=404)
         prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
-        css = css_path.read_text(encoding="utf-8")
+        css = css_path.read_text(encoding="utf-8-sig")
         if prefix:
             for asset_dir in ("/fonts/", "/fonts-terminal/", "/ds-assets/", "/assets/"):
                 for quote in ("", '"', "'"):
@@ -411,7 +411,7 @@ def _discover_user_themes() -> list:
     result = []
     for f in sorted(themes_dir.glob("*.yaml")):
         try:
-            data = yaml.safe_load(f.read_text(encoding="utf-8"))
+            data = yaml.safe_load(f.read_text(encoding="utf-8-sig"))
         except Exception:
             continue
         normalised = _normalise_theme_definition(data)
@@ -548,7 +548,7 @@ def _discover_dashboard_plugins() -> list:
             if not child.is_dir() or not manifest_file.exists():
                 continue
             try:
-                data = json.loads(manifest_file.read_text(encoding="utf-8"))
+                data = json.loads(manifest_file.read_text(encoding="utf-8-sig"))
                 name = data.get("name", child.name)
                 if name in seen_names:
                     continue

@@ -270,7 +270,7 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
             target_label = payload.get("file_path") or "SKILL.md"
         with suppress(Exception):
             p = skill_dir / target_label
-            current = p.read_text(encoding="utf-8") if p.exists() else ""
+            current = p.read_text(encoding=utf-8-sig) if p.exists() else ""
 
     if action == "patch":
         old_s, new_s = payload.get("old_string") or "", payload.get("new_string") or ""

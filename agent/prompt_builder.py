@@ -1231,7 +1231,7 @@ def _read_category_descriptions(root: Path, log_fmt: str) -> dict[str, str]:
     found: dict[str, str] = {}
     for desc_file in iter_skill_index_files(root, "DESCRIPTION.md"):
         try:
-            cat_desc = parse_frontmatter(desc_file.read_text(encoding="utf-8"))[0].get("description")
+            cat_desc = parse_frontmatter(desc_file.read_text(encoding="utf-8-sig"))[0].get("description")
             if cat_desc:
                 rel = desc_file.relative_to(root)
                 found["/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"] = str(cat_desc).strip().strip("'\"")

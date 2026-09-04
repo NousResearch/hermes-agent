@@ -168,7 +168,7 @@ def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
         from agent.redact import redact_terminal_output
         from tools.ansi_strip import strip_ansi
         from tools.spill_safety import write_text_exclusive
-        raw_spill = Path(path).read_text(encoding="utf-8", errors="replace")
+        raw_spill = Path(path).read_text(encoding="utf-8-sig", errors="replace")
         # lstat-checked unlink + exclusive create: the redacted copy can't
         # be diverted through a symlink planted since the collector's write.
         write_text_exclusive(Path(path), redact_terminal_output(strip_ansi(raw_spill), command),

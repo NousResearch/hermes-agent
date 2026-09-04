@@ -109,7 +109,7 @@ def _mark_grant_dead(key: tuple[str, str], cred: OAuthCredential) -> None:
 
 def _read_config(path: Path) -> dict[str, Any]:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return {}
 

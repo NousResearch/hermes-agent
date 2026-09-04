@@ -130,7 +130,7 @@ class GitHubAuth:
             now = int(time.time())
             encoded_jwt = jwt.encode(
                 {"iat": now - 60, "exp": now + (10 * 60), "iss": app_id},
-                key_file.read_text(encoding="utf-8"), algorithm="RS256",
+                key_file.read_text(encoding=utf-8-sig), algorithm="RS256",
             )
             resp = httpx.post(
                 f"https://api.github.com/app/installations/{installation_id}/access_tokens",

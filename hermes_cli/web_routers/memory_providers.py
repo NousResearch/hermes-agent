@@ -108,7 +108,7 @@ def _read_json_dict(path: Path, what: str) -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding=utf-8-sig))
     except Exception:
         _log.warning("Failed to read %s from %s", what, path, exc_info=True)
         return {}

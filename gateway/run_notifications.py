@@ -367,7 +367,7 @@ class GatewayNotificationsMixin:
             if not path.exists():
                 continue
             with suppress(Exception):
-                pending = json.loads(path.read_text(encoding="utf-8"))
+                pending = json.loads(path.read_text(encoding="utf-8-sig"))
                 platform_str = pending.get("platform")
                 chat_id = pending.get("chat_id")
                 session_key = pending.get("session_key")
@@ -406,7 +406,7 @@ class GatewayNotificationsMixin:
 
     @staticmethod
     def _update_exit_code(paths: "_UpdatePaths") -> int:
-        return int(paths.exit_code.read_text(encoding="utf-8").strip() or "1")
+        return int(paths.exit_code.read_text(encoding="utf-8-sig").strip() or "1")
 
     @staticmethod
     def _read_update_output_since(path: Path, offset: int) -> tuple[str, int]:
@@ -514,7 +514,7 @@ class GatewayNotificationsMixin:
                 getattr(_pending_state, "persistent", None), "update_prompt_pending", False
             ):
                 try:
-                    prompt_data = json.loads(paths.prompt.read_text(encoding="utf-8"))
+                    prompt_data = json.loads(paths.prompt.read_text(encoding="utf-8-sig"))
                     prompt_text = prompt_data.get("prompt", "")
                     if prompt_text:
                         await _flush_buffer()  # user sees context before the prompt
@@ -559,7 +559,7 @@ class GatewayNotificationsMixin:
                         return True
             elif not paths.claimed.exists():
                 return True
-            pending = json.loads(paths.claimed.read_text(encoding="utf-8"))
+            pending = json.loads(paths.claimed.read_text(encoding="utf-8-sig"))
             platform_str = pending.get("platform")
             chat_id = pending.get("chat_id")
             if not paths.exit_code.exists():
@@ -604,7 +604,7 @@ class GatewayNotificationsMixin:
         if not notify_path.exists():
             return None
         try:
-            data = json.loads(notify_path.read_text(encoding="utf-8"))
+            data = json.loads(notify_path.read_text(encoding="utf-8-sig"))
             platform_str = data.get("platform")
             chat_id = data.get("chat_id")
             thread_id = data.get("thread_id")

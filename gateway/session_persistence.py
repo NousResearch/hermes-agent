@@ -283,7 +283,7 @@ class SessionPersistenceMixin:
         if not sessions_file.exists():
             return
         try:
-            with open(sessions_file, "r", encoding="utf-8") as f:
+            with open(sessions_file, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
             imported = 0
             for key, entry_data in data.items():

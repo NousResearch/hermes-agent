@@ -28,7 +28,7 @@ def _process_start_marker(pid: int) -> str:
     """
     if sys.platform == "linux":
         try:
-            stat_line = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+            stat_line = Path(f"/proc/{pid}/stat").read_text(encoding=utf-8-sig)
         except FileNotFoundError as exc:
             raise ProcessLookupError(pid) from exc
 

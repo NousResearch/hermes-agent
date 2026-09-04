@@ -210,7 +210,7 @@ def _skill_detail(node_id: str) -> dict[str, Any]:
     skill_md = Path(found["path"]) / "SKILL.md"
     if not skill_md.exists():
         return {"ok": False, "message": f"SKILL.md missing for '{node_id}'"}
-    return {"ok": True, "kind": "skill", "id": node_id, "label": node_id, "content": skill_md.read_text(encoding="utf-8")}
+    return {"ok": True, "kind": "skill", "id": node_id, "label": node_id, "content": skill_md.read_text(encoding="utf-8-sig")}
 
 
 # ── Delete ──────────────────────────────────────────────────────────────────

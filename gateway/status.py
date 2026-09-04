@@ -632,7 +632,7 @@ def _pid_exists(pid: int) -> bool:
 def _posix_is_zombie(pid: int) -> bool:
     """Zombie via ``/proc/<pid>/stat`` field 3, or ``ps -o state=`` without /proc (macOS/BSD)."""
     try:
-        stat_fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()
+        stat_fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8-sig").split()
         return len(stat_fields) > 2 and stat_fields[2] == "Z"
     except FileNotFoundError:
         with contextlib.suppress(Exception):
@@ -1060,7 +1060,7 @@ def _scoped_lock_record_is_stale(existing: dict[str, Any], existing_pid: Optiona
 def _process_is_stopped(pid: int) -> bool:
     """True for a stopped / tracing-stop state (T/t) in ``/proc/<pid>/status``."""
     with contextlib.suppress(OSError):
-        for line in Path(f"/proc/{pid}/status").read_text(encoding="utf-8").splitlines():
+        for line in Path(f"/proc/{pid}/status").read_text(encoding="utf-8-sig").splitlines():
             if line.startswith("State:"):
                 return line.split()[1] in {"T", "t"}
     return False

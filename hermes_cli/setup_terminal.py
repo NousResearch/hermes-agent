@@ -72,7 +72,7 @@ def _read_nearest_vercel_project(start: Path | None = None) -> dict[str, str]:
         if not project_file.exists():
             continue
         try:
-            data = json.loads(project_file.read_text(encoding="utf-8"))
+            data = json.loads(project_file.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
             return {}
         if not isinstance(data, dict):

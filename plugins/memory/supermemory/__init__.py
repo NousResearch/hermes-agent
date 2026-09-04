@@ -95,7 +95,7 @@ _CONFIG_SPEC: Dict[str, tuple] = {
 
 
 def _read_json_dict(path: Path) -> dict:
-    raw = _quietly(lambda: json.loads(path.read_text(encoding="utf-8")), "Failed to parse %s", path) if path.exists() else None
+    raw = _quietly(lambda: json.loads(path.read_text(encoding="utf-8-sig")), "Failed to parse %s", path) if path.exists() else None
     return raw if isinstance(raw, dict) else {}
 
 

@@ -285,7 +285,7 @@ def _running_in_docker() -> bool:
     if os.path.exists("/.dockerenv"):
         return True
     try:
-        with open("/proc/1/cgroup", "rt", encoding="utf-8") as fp:
+        with open("/proc/1/cgroup", "rt", encoding="utf-8-sig") as fp:
             return "docker" in fp.read()
     except OSError:
         return False

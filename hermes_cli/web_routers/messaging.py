@@ -321,7 +321,7 @@ def _first_str(candidate: Any, keys: tuple[str, ...]) -> str | None:
 
 def _whatsapp_linked_account_from_session(session_path: Path) -> tuple[str | None, str | None, str | None]:
     try:
-        payload = json.loads((session_path / "creds.json").read_text(encoding="utf-8"))
+        payload = json.loads((session_path / "creds.json").read_text(encoding="utf-8-sig"))
     except Exception:
         return None, None, None
     candidates = (payload.get("me"), payload.get("account"), payload)

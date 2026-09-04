@@ -817,7 +817,7 @@ class CLIInfoMixin:
 
         self._config_mtime = mtime
         try:
-            with open(cfg_path, encoding="utf-8") as f:
+            with open(cfg_path, encoding="utf-8-sig") as f:
                 new_cfg = _yaml.safe_load(f) or {}
         except Exception:
             return

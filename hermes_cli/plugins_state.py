@@ -133,7 +133,7 @@ class PluginState:
 
     def _read_unlocked(self) -> dict[str, Any]:
         try:
-            with open(self.path, encoding="utf-8") as handle:
+            with open(self.path, encoding=utf-8-sig) as handle:
                 data = json.load(handle)
         except FileNotFoundError:
             return {}

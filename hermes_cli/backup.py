@@ -1219,7 +1219,7 @@ def list_quick_snapshots(limit: int = 20, hermes_home: Optional[Path] = None) ->
         manifest_path = d / "manifest.json"
         if manifest_path.exists():
             try:
-                results.append(json.loads(manifest_path.read_text(encoding="utf-8")))
+                results.append(json.loads(manifest_path.read_text(encoding="utf-8-sig")))
             except (json.JSONDecodeError, OSError):
                 results.append({"id": d.name, "file_count": 0, "total_size": 0})
         if len(results) >= limit:
@@ -1242,7 +1242,7 @@ def restore_quick_snapshot(snapshot_id: str, hermes_home: Optional[Path] = None)
     manifest_path = snap_dir / "manifest.json"
     if not snap_dir.is_dir() or not manifest_path.exists():
         return False
-    with open(manifest_path, encoding="utf-8") as f:
+    with open(manifest_path, encoding="utf-8-sig") as f:
         meta = json.load(f)
     snap_res, home_res = snap_dir.resolve(), home.resolve()
     restored = 0
@@ -1386,7 +1386,7 @@ def _read_raw_yaml_dict(path: Path) -> Optional[Dict[str, Any]]:
         return None
     try:
         import yaml
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
     return data if isinstance(data, dict) else None

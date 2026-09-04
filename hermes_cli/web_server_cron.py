@@ -296,7 +296,7 @@ def _profile_env_value(home: Path, key: str) -> str:
         env_path = home / ".env"
         if not env_path.is_file():
             return ""
-        for line in env_path.read_text(encoding="utf-8").splitlines():
+        for line in env_path.read_text(encoding="utf-8-sig").splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
@@ -414,7 +414,7 @@ def _gateway_intentionally_stopped(profile: Optional[str]) -> bool:
     """
     import json as _json
     try:
-        data = _json.loads((_cron_profile_home(profile)[1] / "gateway_state.json").read_text(encoding="utf-8"))
+        data = _json.loads((_cron_profile_home(profile)[1] / "gateway_state.json").read_text(encoding="utf-8-sig"))
         return isinstance(data, dict) and data.get("desired_state") == "stopped"
     except Exception:
         return False

@@ -156,7 +156,7 @@ def _pid_unified_cgroup_entries(pid: int):
         cgroup_path = Path(f"/proc/{pid}/cgroup")
         if not cgroup_path.is_file():
             return
-        text = cgroup_path.read_text(encoding="utf-8", errors="replace")
+        text = cgroup_path.read_text(encoding="utf-8-sig", errors="replace")
     except (OSError, PermissionError):
         return
     for line in text.splitlines():
@@ -605,7 +605,7 @@ def _read_ssh_session_token_file(path: str) -> str:
         if uid is not None and (file_stat.st_mode & 0o777) & ~0o600:
             raise SystemExit("--ssh-session-token-file has unsafe permissions")
 
-        with os.fdopen(file_fd, "r", encoding="utf-8") as token_stream:
+        with os.fdopen(file_fd, "r", encoding="utf-8-sig") as token_stream:
             file_fd = -1
             token = token_stream.read(65)
 

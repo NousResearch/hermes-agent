@@ -237,7 +237,7 @@ def _load_sa_credentials_from(sa_value: Optional[str]) -> Any:
             raise _SACredentialError("not_found")
         else:
             try:
-                with open(sa_value, "r", encoding="utf-8") as fh:
+                with open(sa_value, "r", encoding="utf-8-sig") as fh:
                     info = json.load(fh)
             except json.JSONDecodeError as exc:
                 raise _SACredentialError("file_invalid", exc) from exc

@@ -419,7 +419,7 @@ def _clear_stale_cua_install_lock() -> None:
         if not lock_dir.is_dir():
             return
         try:
-            lines = (lock_dir / "info").read_text(encoding="utf-8", errors="replace").splitlines()
+            lines = (lock_dir / "info").read_text(encoding="utf-8-sig", errors="replace").splitlines()
             holder_pid = next((int(line.split("=", 1)[1].strip()) for line in lines
                                if line.startswith("pid=")), None)
         except (OSError, ValueError):

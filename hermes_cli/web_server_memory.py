@@ -212,7 +212,7 @@ def _normalize_memory_provider_schema(name: str, provider: Any) -> List[Dict[str
 
 def _read_json_file(path: Path) -> Dict[str, Any]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
     except Exception:
         _log.debug("Failed to read JSON config from %s", path, exc_info=True)
         return {}

@@ -480,7 +480,7 @@ def _read_gemini_persona_prompt(gemini_config: Dict[str, Any]) -> str:
         except Exception:
             path = Path.cwd() / path
     try:
-        return path.read_text(encoding="utf-8").strip()
+        return path.read_text(encoding="utf-8-sig").strip()
     except (OSError, UnicodeDecodeError) as exc:
         logger.warning("Gemini TTS persona prompt file unavailable at %s: %s", path, exc)
         return ""

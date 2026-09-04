@@ -1676,7 +1676,7 @@ def _migrate_upload(mgr, session_key: str, user_files: list[Path]) -> None:
 
 def _migrate_seed(mgr, session_key: str, agent_files: list[Path]) -> None:
     for f in agent_files:
-        content = f.read_text(encoding="utf-8").strip()
+        content = f.read_text(encoding="utf-8-sig").strip()
         if content:
             ok = mgr.seed_ai_identity(session_key, content, source=f.name)
             print(f"    {f.name}: {'seeded' if ok else 'failed'}")

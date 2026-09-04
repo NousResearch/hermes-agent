@@ -866,7 +866,7 @@ def _terminate_state_pid() -> None:
     """Server owned by another process (or an orphan): terminate via the state file's pid, then clear the state."""
     import psutil  # type: ignore
 
-    state = json.loads(supervisor.state_path().read_text(encoding="utf-8"))
+    state = json.loads(supervisor.state_path().read_text(encoding="utf-8-sig"))
     pid = int(state.get("pid") or 0)
     if pid > 0 and psutil.pid_exists(pid):
         psutil.Process(pid).terminate()

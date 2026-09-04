@@ -46,7 +46,7 @@ def _skill_file_list(skill_dir: Path) -> List[str]:
 def _load_hub_lock() -> Optional[dict]:
     """Parse the skills-hub lock; None when missing or unreadable."""
     try:
-        return json.loads((_ss()._skills_dir() / ".hub" / "lock.json").read_text(encoding="utf-8"))
+        return json.loads((_ss()._skills_dir() / ".hub" / "lock.json").read_text(encoding=utf-8-sig))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
 

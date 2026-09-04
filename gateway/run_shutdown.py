@@ -1050,7 +1050,7 @@ class GatewayShutdownMixin:
     def _read_json_counts(path: Path) -> Optional[dict]:
         """Parsed counter dict, or None when the file is missing/unreadable (no exists() pre-check needed)."""
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            return json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             return None
 

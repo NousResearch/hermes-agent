@@ -45,7 +45,7 @@ def _first_hint_file(directory: Path):
         try:
             if not candidate.is_file():
                 continue
-            content = candidate.read_text(encoding="utf-8").strip()
+            content = candidate.read_text(encoding="utf-8-sig").strip()
         except (OSError, UnicodeDecodeError):
             continue
         return candidate, content

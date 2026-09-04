@@ -159,7 +159,7 @@ def _check_files(frontmatter: Dict[str, Any], skill_dir: Path) -> Iterator[LintF
             if not script.is_file() or script.suffix not in (".py", ".sh", ".bash"):
                 continue
             try:
-                text = script.read_text(encoding="utf-8", errors="ignore")
+                text = script.read_text(encoding="utf-8-sig", errors="ignore")
             except OSError:
                 continue
             hit = [p for p in _POSIX_PRIMITIVES if p in text]

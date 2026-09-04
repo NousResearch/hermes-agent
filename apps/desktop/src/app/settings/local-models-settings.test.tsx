@@ -349,6 +349,94 @@ describe('LocalModelsSettings', () => {
 
     expect(await screen.findByText(/integrity check/)).toBeTruthy()
   })
+
+  it('retires a runtime-install error superseded by a successful retry (#102616)', async () => {
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      runtime_backend: 'metal'
+    })
+    // The failed first attempt (a transient verify miss whose captured
+    // output was empty) stays in the backend job registry forever, but a
+    // newer install job finished OK after it — the pane must not keep
+    // painting the old error next to the green up-to-date row.
+    $localRuntimeJobs.set([
+      {
+        job_id: 'ok-install',
+        kind: 'runtime-install',
+        target: 'b10679',
+        model_id: null,
+        status: 'done',
+        phase: 'done',
+        detail: '',
+        total_bytes: null,
+        done_bytes: 0,
+        error: null,
+        started_at: 2000
+      },
+      {
+        job_id: 'bad-install',
+        kind: 'runtime-install',
+        target: 'b10679',
+        model_id: null,
+        status: 'error',
+        phase: 'verifying',
+        detail: '',
+        total_bytes: null,
+        done_bytes: 0,
+        error:
+          'version check failed for /Users/x/.hermes/runtimes/llamacpp/b10679/metal/llama-b10679/llama-server: expected b10679, got:',
+        started_at: 1000
+      }
+    ])
+
+    await renderFullPane()
+
+    expect(await screen.findByText('Engine up to date')).toBeTruthy()
+    expect(screen.queryByText(/version check failed/)).toBeNull()
+  })
+
+  it('still surfaces an error that is newer than the last success of its kind', async () => {
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      runtime_backend: 'cuda'
+    })
+    // Order flipped: the failure is the LATEST word for this kind — only
+    // a strictly newer done job may retire an error, never an older one.
+    $localRuntimeJobs.set([
+      {
+        job_id: 'bad-install',
+        kind: 'runtime-install',
+        target: 'b10679',
+        model_id: null,
+        status: 'error',
+        phase: 'verifying',
+        detail: '',
+        total_bytes: null,
+        done_bytes: 0,
+        error: 'download interrupted — try again',
+        started_at: 2000
+      },
+      {
+        job_id: 'ok-install',
+        kind: 'runtime-install',
+        target: 'b10679',
+        model_id: null,
+        status: 'done',
+        phase: 'done',
+        detail: '',
+        total_bytes: null,
+        done_bytes: 0,
+        error: null,
+        started_at: 1000
+      }
+    ])
+
+    await renderFullPane()
+
+    expect(await screen.findByText(/download interrupted/)).toBeTruthy()
+  })
 })
 
 describe('quickstart', () => {

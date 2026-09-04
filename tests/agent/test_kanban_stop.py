@@ -80,10 +80,44 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
 
 # ── Integration: agent nudge + dispatcher bounded retry ──────────────
 # These tests verify the two layers compose correctly: the agent-side
-# nudge fires first (up to 2 attempts), and if the worker still exits
+# nudge fires first (up to 4 attempts now), and if the worker still exits
 # without a terminal call, the dispatcher's bounded retry (streak of 3)
 # handles it.  See also tests/hermes_cli/test_kanban_core_functionality.py
 # for the dispatcher-side streak tests.
+
+
+def test_nudge_budget_is_four(clear_kanban_env):
+    """Regression for the P0 protocol-violation fix: the stop-nudge budget
+    must be at least 4 so models that narrate intent get enough chances to
+    emit the terminal tool before the dispatcher's last-chance retry fires."""
+    import agent.kanban_stop as ks
+
+    assert ks._DEFAULT_MAX_ATTEMPTS >= 4
+
+
+def test_nudge_exhausted_at_budget(clear_kanban_env):
+    """At the budget boundary the nudge must stop so the conversation always
+    terminates (the dispatcher's last-chance retry handles the residual)."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_budget")
+    messages = [
+        {"role": "user", "content": "work kanban task"},
+        {
+            "role": "assistant",
+            "content": "Let me write the report.",
+            "tool_calls": [
+                {
+                    "id": "1",
+                    "type": "function",
+                    "function": {"name": "kanban_heartbeat", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "name": "kanban_heartbeat", "tool_call_id": "1", "content": "ok"},
+    ]
+    budget = 4
+    # Still nudges at budget-1, stops at budget.
+    assert build_kanban_stop_nudge(messages=messages, attempts=budget - 1) is not None
+    assert build_kanban_stop_nudge(messages=messages, attempts=budget) is None
 
 
 

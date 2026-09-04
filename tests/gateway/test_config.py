@@ -276,6 +276,27 @@ class TestGatewayConfigRoundtrip:
 
         assert config.get_unauthorized_dm_behavior(Platform.EMAIL) == "pair"
 
+    def test_interactive_executor_workers_precedence_and_roundtrip(self):
+        # Off by default; top-level key wins over the nested form; to_dict roundtrips.
+        assert GatewayConfig.from_dict({}).interactive_executor_workers == 0
+        both = {"interactive_executor_workers": 6, "gateway": {"interactive_executor_workers": 4}}
+        assert GatewayConfig.from_dict(both).interactive_executor_workers == 6
+        nested = GatewayConfig.from_dict({"gateway": {"interactive_executor_workers": 4}})
+        assert nested.interactive_executor_workers == 4
+        assert GatewayConfig.from_dict(nested.to_dict()).interactive_executor_workers == 4
+
+    def test_interactive_executor_workers_invalid_values_warn_and_stay_off(self, caplog):
+        caplog.set_level(logging.WARNING, logger="gateway.config")
+
+        for raw in ("several", True, 0, -2, 1.5):
+            config = GatewayConfig.from_dict({"gateway": {"interactive_executor_workers": raw}})
+            assert config.interactive_executor_workers == 0
+
+        assert any(
+            "Ignoring invalid gateway.interactive_executor_workers" in record.message
+            for record in caplog.records
+        )
+
 
 class TestLoadGatewayConfig:
     def test_shipped_template_does_not_enable_auto_reset(self, tmp_path, monkeypatch):

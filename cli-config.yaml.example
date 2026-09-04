@@ -948,6 +948,18 @@ max_concurrent_sessions: null
 # explicitly want one shared "room brain" per group/channel.
 group_sessions_per_user: true
 
+# Worker threads reserved for INTERACTIVE (human-chat) agent turns. The
+# gateway's agent-turn executor is a FIFO pool shared by every platform; on
+# installs with heavy webhook/API traffic, automated turns can occupy every
+# worker and a human chat message queues behind them — sometimes for hours —
+# before its turn even starts. A positive int (e.g. 6) gives human-chat
+# platforms (Telegram, Discord, Slack, WhatsApp, Signal, Matrix, ...) a
+# dedicated pool of that size, so batch backlog can never delay a conversation.
+# Webhook, API-server, relay and unknown/plugin platforms keep the shared pool.
+# 0 or null (default) = single shared pool, no behavior change. Also settable
+# as gateway.interactive_executor_workers (this top-level key wins).
+interactive_executor_workers: null
+
 # =============================================================================
 # Session Storage Retention (state.db)
 # =============================================================================

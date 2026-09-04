@@ -2339,6 +2339,24 @@ whatsapp:
 - Email defaults to `ignore` unless `platforms.email.unauthorized_dm_behavior: pair` is set, because inboxes can contain unrelated unread mail.
 - Platform sections override the global default, so you can keep pairing enabled broadly while making one platform quieter.
 
+## Reserved Interactive Executor Lane
+
+The messaging gateway runs every synchronous agent turn on one FIFO thread
+pool shared by all platforms. On installs with heavy webhook or API traffic,
+automated turns can hold every worker and a human chat message waits behind
+them before its turn even starts. Reserve a separate pool for human-chat
+platforms:
+
+```yaml
+interactive_executor_workers: 6  # default 0/null = single shared pool; also accepted as gateway.interactive_executor_workers
+```
+
+When set, turns from Telegram, Discord, Slack, WhatsApp, Signal, Matrix,
+Mattermost, DingTalk, Feishu, WeCom, BlueBubbles, Weixin, SMS, Email, LINE and
+Teams run on the reserved pool. Webhook, API-server, relay, and unknown or
+plugin platforms keep using the shared pool, so batch backlog can never delay
+a conversation. Invalid or non-positive values leave the lane off.
+
 ## Quick Commands
 
 Define custom commands that either run shell commands without invoking the LLM, or alias one slash command to another. Exec quick commands are zero-token and useful from messaging platforms (Telegram, Discord, etc.) for quick server checks or utility scripts.

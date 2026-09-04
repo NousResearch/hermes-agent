@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 # when using Codex with a ChatGPT account"), so listing them leaked dead picker choices. If
 # OpenAI re-enables any, live discovery (_fetch_models_from_api) picks them up automatically.
 DEFAULT_CODEX_MODELS: List[str] = [
+    # Live-verified against the ChatGPT Codex OAuth route on 2026-09-04.
+    # Keep the configured regular-Hermes default first in `/model`.
+    "gpt-6-astra-pro",
+    "gpt-6-astra",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -54,6 +58,8 @@ def _dedupe(model_ids) -> List[str]:
     """Order-preserving dedupe."""
     return list(dict.fromkeys(model_ids))
 
+_CODEX_CURATED_HEAD: List[str] = ["gpt-6-astra-pro", "gpt-6-astra"]
+
 
 def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
     """Surface newer Codex slugs missing from live discovery when an older compatible template is
@@ -89,8 +95,9 @@ def _add_context_variants(model_ids: List[str]) -> List[str]:
 
 
 def _finalize_codex_models(model_ids: List[str]) -> List[str]:
-    """Forward-compat synthesis + large-context variant synthesis."""
-    return _add_context_variants(_add_forward_compat_models(model_ids))
+    """Curated head + forward-compat and large-context synthesis."""
+    merged = _CODEX_CURATED_HEAD + [model for model in model_ids if model not in _CODEX_CURATED_HEAD]
+    return _add_context_variants(_add_forward_compat_models(merged))
 
 
 def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:

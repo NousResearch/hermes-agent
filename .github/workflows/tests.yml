@@ -118,6 +118,9 @@ jobs:
               -- scripts/run_tests.sh
           fi
         env:
+          # Bind each matrix job to its own test slice. Without this, all 12
+          # fork jobs rediscover and run the entire suite.
+          HERMES_TEST_SLICE: ${{ matrix.slice }}
           # This is the maximum number of test FILES that run together.
           # run_tests_parallel.py starts one pytest subprocess for each file
           # from a single ThreadPoolExecutor, so this value IS the limit. The

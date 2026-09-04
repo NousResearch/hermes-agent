@@ -514,7 +514,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
       .filter(entry => {
         const p = (entry.provider ?? '').toLowerCase()
 
-        return p && p !== 'auto' && p !== mainProvider
+        return p && p !== 'auto' && p !== 'main' && p !== mainProvider
       })
       .map(entry => ({ task: entry.task, provider: entry.provider, model: entry.model }))
   }, [auxiliary, mainModel])

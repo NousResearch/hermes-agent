@@ -195,7 +195,8 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
     # /new-reset and compression-ended parents are not.
     if current_lineage_root and lineage_root == current_lineage_root and not _session_left_live_context(db, session_id):
         return None
-    session_meta = _quiet(lambda: db.get_session(lineage_root) or db.get_session(session_id), None,
+    # Title-hit metadata also comes from the matched session, not the lineage root (#103184).
+    session_meta = _quiet(lambda: db.get_session(session_id) or db.get_session(lineage_root), None,
                           "get_session failed for title match %s", session_id) or {}
     if session_meta.get("source") in _HIDDEN_SESSION_SOURCES:
         return None
@@ -242,7 +243,10 @@ def _hydrate_hit(db, lineage_root: str, match_info: Dict[str, Any], result_detai
     except Exception as e:
         logging.warning("get_anchored_view failed for %s/%s: %s", hit_sid, msg_id, e, exc_info=True)
         return None
-    session_meta, full = _get_session_meta(db, lineage_root), result_detail == "full"
+    # Hydrate when/title from the session that owns the hit — a long-lived gateway
+    # lineage's root can be months older than the matched conversation (#103184).
+    session_meta, full = (_get_session_meta(db, hit_sid) or _get_session_meta(db, lineage_root),
+                          result_detail == "full")
     return _discovery_entry(
         lineage_root, session_id=hit_sid,
         when=_format_timestamp(session_meta.get("started_at") or match_info.get("session_started")),
@@ -283,6 +287,10 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
     results = [title_result] if title_result else []
     if title_result and (title_lineage := title_result.pop("_lineage_root", None)):
         seen_sessions[title_lineage] = {"_title_only": True}
+    # Same-lineage rows dropped by the live-context skip below (#103184): counted per
+    # FTS row and deduped per session so the payload can disclose the hiding instead of
+    # returning 0 results with no signal.
+    hidden_rows, hidden_sessions = 0, {}
     # Dedupe by lineage (lineage_root -> first surviving FTS row) up to `limit`. The raw
     # owning session_id stays on the row — only it pairs validly with the FTS match id.
     # Current-lineage hits are skipped UNLESS the transcript left live context
@@ -305,6 +313,18 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
         is_compacted_hit = _is_compacted_message(db, r.get("id"))
         if current_lineage_root and resolved_sid == current_lineage_root and not (
                 _session_left_live_context(db, raw_sid) or is_compacted_hit):
+            # An unended same-lineage row (e.g. a gateway predecessor whose end-write was
+            # lost across a restart) is dropped here with no signal, so the agent
+            # concludes the conversation never existed (#103184). Disclose it; the
+            # current session's own live rows are not counted — they are already in
+            # context (the same-session skip below) and hiding them is expected.
+            if raw_sid != current_session_id:
+                hidden_rows += 1
+                if raw_sid not in hidden_sessions:
+                    meta = _get_session_meta(db, raw_sid)
+                    hidden_sessions[raw_sid] = {"session_id": raw_sid,
+                                                "end_reason": meta.get("end_reason"),
+                                                "last_activity": _format_timestamp(meta.get("last_activity_at"))}
             continue
         if current_session_id and raw_sid == current_session_id and not is_compacted_hit:
             continue
@@ -318,7 +338,13 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
             results.append(entry)
     for entry in results:
         entry["link"] = _session_link(entry["session_id"], link_profile)
-    return _discover_payload(db, query, detail, results, sessions_searched=len(seen_sessions), link_hint=(
+    return _discover_payload(db, query, detail, results, sessions_searched=len(seen_sessions),
+        **({"hidden_same_lineage": {"count": hidden_rows, "sessions": list(hidden_sessions.values()),
+            "note": f"{hidden_rows} matching message(s) in {len(hidden_sessions)} same-lineage session(s) "
+            "were hidden because they are still treated as live context (unended). This can be a gateway "
+            "session whose end-write was lost. To read one anyway, scroll it directly: "
+            "session_search(session_id=..., around_message_id=...)."}} if hidden_rows else {}),
+        link_hint=(
         "When referring the user to a session, write its `link` value "
         "verbatim inline mid-sentence (it renders as a titled link) — never "
         "as markdown, in backticks, on its own line, or next to the "

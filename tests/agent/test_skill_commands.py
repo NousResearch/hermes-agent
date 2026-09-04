@@ -10,6 +10,7 @@ import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
+    find_triggered_skill_command,
     resolve_skill_command_key,
     scan_skill_commands,
 )
@@ -34,7 +35,7 @@ description: Description for {name}.
 
 {body}
 """
-    (skill_dir / "SKILL.md").write_text(content)
+    (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
     return skill_dir
 
 
@@ -52,11 +53,58 @@ def _symlink_category(skills_dir: Path, linked_root: Path, category: str) -> Pat
 
 class TestScanSkillCommands:
 
+    def test_reads_frontmatter_triggers(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "market-watch",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    triggers: [market, EUR/USD, market]\n"
+                ),
+            )
+            result = scan_skill_commands()
 
+        assert result["/market-watch"]["triggers"] == ["market", "EUR/USD"]
 
+    def test_finds_triggered_skill_by_word_boundary(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "market-watch",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    triggers: [market]\n"
+                ),
+            )
+            scan_skill_commands()
+            matched = find_triggered_skill_command("What is the market doing today?")
+            not_matched = find_triggered_skill_command("This supermarket is busy.")
 
+        assert matched is not None
+        assert matched[0] == "/market-watch"
+        assert matched[2] == "market"
+        assert not_matched is None
 
+    def test_finds_triggered_skill_with_punctuation_phrase(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "fx-watch",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    triggers: [EUR/USD]\n"
+                ),
+            )
+            scan_skill_commands()
+            matched = find_triggered_skill_command("What is happening with EUR/USD today?")
 
+        assert matched is not None
+        assert matched[0] == "/fx-watch"
+        assert matched[2] == "EUR/USD"
 
     def test_loads_skill_invocation_from_symlinked_skill_dir(self, tmp_path):
         """Slash commands should load skills symlinked under the local skills dir."""
@@ -703,7 +751,7 @@ class TestBuildSkillInvocationMessage:
             skill_dir = _make_skill(tmp_path, "test-skill")
             references = skill_dir / "references"
             references.mkdir()
-            (references / "api.md").write_text("reference")
+            (references / "api.md").write_text("reference", encoding="utf-8")
             scan_skill_commands()
             msg = build_skill_invocation_message("/test-skill", "do stuff")
 
@@ -730,7 +778,7 @@ class TestSkillDirectoryHeader:
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             skill_dir = _make_skill(tmp_path, "scripted-skill")
             (skill_dir / "scripts").mkdir()
-            (skill_dir / "scripts" / "run.js").write_text("console.log('hi')")
+            (skill_dir / "scripts" / "run.js").write_text("console.log('hi')", encoding="utf-8")
             scan_skill_commands()
             msg = build_skill_invocation_message("/scripted-skill")
 

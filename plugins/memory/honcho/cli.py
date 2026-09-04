@@ -72,8 +72,24 @@ def _read_config() -> dict:
         return {}
 
 
+class ConfigWriteRefused(Exception):
+    """honcho.json exists on disk but does not parse, so no command may overwrite it."""
+
+
+def _refuse_unparseable(path: Path) -> None:
+    """Raise ``ConfigWriteRefused`` when ``path`` exists but cannot be read or parsed. ``_read_config``
+    returns ``{}`` for such a file, and writing that back would drop every other host and root key."""
+    from plugins.memory.honcho.oauth import _read_config_strict
+    try:
+        _read_config_strict(path)
+    except (OSError, ValueError) as e:
+        raise ConfigWriteRefused(f"{path} exists but could not be read as JSON ({e}). Nothing was written. "
+                                 "Fix or move the file, then re-run.") from e
+
+
 def _write_config(cfg: dict, path: Path | None = None) -> None:
     path = path or _local_config_path()
+    _refuse_unparseable(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     from utils import atomic_json_write
     atomic_json_write(path, cfg, mode=0o600)
@@ -242,7 +258,11 @@ def _sync_profiles(verbose: bool) -> int:
 
     created = skipped = 0
     for p in (p for p in profiles if p.name != "default"):
-        if clone_honcho_for_profile(p.name):
+        try:
+            cloned = clone_honcho_for_profile(p.name)
+        except ConfigWriteRefused as e:
+            return say(f"  {e}\n") or created
+        if cloned:
             say(f"  + {p.name} -> {profile_host_key(p.name)}")
             created += 1
         else:
@@ -704,8 +724,16 @@ def _setup_tuning(cfg: dict, hermes_host: dict) -> None:
 
 def cmd_setup(args) -> None:
     """Interactive Honcho setup wizard."""
+    try:
+        _setup_wizard(args)
+    except ConfigWriteRefused as e:
+        print(f"  {e}\n")
+
+
+def _setup_wizard(args) -> None:
     cfg = _read_config()
     write_path, read_path = _local_config_path(), _config_path()
+    _refuse_unparseable(write_path)  # before the questions, not after them
     print(f"\nHoncho memory setup\n{RULE}\n  Honcho gives Hermes persistent cross-session memory.\n  Config: {write_path}")
     if read_path != write_path and read_path.exists():
         print(f"  (seeding from existing config at {read_path})")
@@ -1343,7 +1371,10 @@ def honcho_command(args) -> None:
     if handler is None:
         return print(f"  Unknown honcho command: {sub}\n"
                      "  Available: status, sessions, map, peer, mode, strategy, tokens, identity, migrate, enable, disable, sync\n")
-    handler(args)
+    try:
+        handler(args)
+    except ConfigWriteRefused as e:
+        print(f"  {e}\n")
 
 
 def register_cli(subparser) -> None:

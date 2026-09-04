@@ -272,17 +272,42 @@ class TestPersistReadFailure:
         oauth._refresh_failure_at.pop(key, None)
         assert path.read_bytes() == before
 
-    def test_corrupt_store_degrades_but_preserves_a_copy(self, tmp_path):
+    def test_corrupt_store_refuses_to_persist(self, tmp_path):
         path = tmp_path / "honcho.json"
         truncated = json.dumps(
             {"hosts": {"keep.example": _host_block(refresh="hch-rt-keep")}}
         )[:-5]
         path.write_text(truncated, encoding="utf-8")
+        cred = OAuthCredential.from_host_block(_host_block(refresh="hch-rt-new"))
 
-        assert oauth._read_config_strict(path) == {}
-        corrupt = path.with_name(path.name + ".corrupt")
-        assert corrupt.exists()
-        assert corrupt.read_text(encoding="utf-8") == truncated
+        with pytest.raises(ValueError):
+            oauth._read_config_strict(path)
+        with pytest.raises(ValueError):
+            oauth._persist_credential(path, "keep.example", cred)
+        with pytest.raises(ValueError):
+            oauth.install_grant(
+                path, "new.example",
+                {"access_token": "hch-at-new", "refresh_token": "hch-rt-new", "expires_in": 3600},
+                client_id="hermes-desktop", token_endpoint="http://localhost:8000/oauth/token",
+            )
+        assert path.read_text(encoding="utf-8") == truncated
+        assert not path.with_name(path.name + ".corrupt").exists()
+
+    def test_corrupt_store_fails_the_refresh_before_the_exchange(self, tmp_path, monkeypatch):
+        path = tmp_path / "honcho.json"
+        path.write_text("{not json", encoding="utf-8")
+        cred = OAuthCredential.from_host_block(_host_block(refresh="hch-rt-rot"))
+        key = (str(path), "rotate.example")
+        oauth._refresh_failure_at.pop(key, None)
+
+        def no_exchange(*a, **kw):  # pragma: no cover - must not run
+            raise AssertionError("exchange ran against a corrupt store")
+
+        monkeypatch.setattr(oauth, "_exchange_with_retry", no_exchange)
+        assert oauth._rotate_and_persist(path, "rotate.example", key, cred, now=1.0) is None
+        assert key in oauth._refresh_failure_at
+        oauth._refresh_failure_at.pop(key, None)
+        assert path.read_text(encoding="utf-8") == "{not json"
 
     def test_missing_store_still_bootstraps_empty(self, tmp_path):
         assert oauth._read_config_strict(tmp_path / "honcho.json") == {}
@@ -295,7 +320,6 @@ class TestPersistReadFailure:
         )
         assert "keep.example" in oauth._read_config(path).get("hosts", {})
         assert "keep.example" in oauth._read_config_strict(path).get("hosts", {})
-        assert not path.with_name(path.name + ".corrupt").exists()
 
     def test_install_grant_raises_and_preserves_store_when_unreadable(
         self, tmp_path, monkeypatch

@@ -517,6 +517,45 @@ function isToolOnlyAssistant(message: ChatMessage): boolean {
 }
 
 /**
+ * Concatenate a tool-only follow-up message's parts onto its predecessor's,
+ * dropping any incoming `tool-call` part whose `toolCallId` the predecessor
+ * already carries. A repeated id here is the SAME call re-attached (structural
+ * carry-over re-adding a cached row's tool calls, or a live-turn projection
+ * that also exists as a committed row — #87857): folding both copies into one
+ * message manufactures the duplicate key that crashes assistant-ui's
+ * `useResources`, and renaming it would render the same call twice. Genuinely
+ * new calls in the same follow-up row are preserved.
+ */
+export function concatToolPartsUnique(
+  prevParts: readonly ChatMessagePart[],
+  nextParts: readonly ChatMessagePart[]
+): ChatMessagePart[] {
+  const seen = new Set<string>()
+
+  for (const part of prevParts) {
+    if (part.type === 'tool-call' && part.toolCallId) {
+      seen.add(part.toolCallId)
+    }
+  }
+
+  const out = [...prevParts]
+
+  for (const part of nextParts) {
+    if (part.type === 'tool-call' && part.toolCallId) {
+      if (seen.has(part.toolCallId)) {
+        continue
+      }
+
+      seen.add(part.toolCallId)
+    }
+
+    out.push(part)
+  }
+
+  return out
+}
+
+/**
  * Fold each settled tool-only assistant message into the preceding assistant
  * message so its calls join that message's tool group (and can collapse into
  * the auto-scrolling window). Render-only — never mutates the `$messages` store
@@ -544,7 +583,7 @@ export function coalesceToolOnlyAssistants(messages: ChatMessage[], cache: ToolM
                   (latest, value) => (latest === undefined ? value : Math.max(latest, value)),
                   undefined
                 ),
-              parts: [...prev.parts, ...message.parts]
+              parts: concatToolPartsUnique(prev.parts, message.parts)
             }
 
       cache.set(message, { merged, parts: message.parts, prev, prevParts: prev.parts })

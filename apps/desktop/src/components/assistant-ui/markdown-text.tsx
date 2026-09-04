@@ -266,6 +266,16 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
       return <PreviewAttachment source="tool-result" target={mediaPath} />
     }
 
+    // Non-media files (PDFs, data files, anything outside MEDIA_BY_EXT):
+    // MediaAttachment's kind==='file' branch is a degraded dead-end (bare
+    // "Open <name>" anchor). Route through the preview pipeline instead —
+    // the same file card + "Open preview" the bare-path markdown-link
+    // branch below produces — so MEDIA: uniformly delivers the richest
+    // rendering for every file type.
+    if (mediaKind(mediaPath) === 'file') {
+      return <PreviewAttachment source="tool-result" target={mediaPath} />
+    }
+
     return <MediaAttachment path={mediaPath} />
   }
 
@@ -433,8 +443,6 @@ function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<
 }
 
 interface MarkdownTextSurfaceProps {
-  /** User-authorized shell execution capability. Shared/reasoning surfaces default to off. */
-  allowRunCommands?: boolean
   containerClassName?: string
   containerProps?: ComponentProps<'div'>
   defer?: boolean
@@ -526,7 +534,6 @@ function MarkdownParagraph({
 }
 
 function MarkdownTextSurface({
-  allowRunCommands = false,
   containerClassName,
   containerProps,
   defer,
@@ -632,14 +639,14 @@ function MarkdownTextSurface({
           return (
             <RichCodeBlock
               code={props.code}
-              fallback={<SyntaxHighlighter {...props} defer={isStreaming} runEnabled={allowRunCommands} />}
+              fallback={<SyntaxHighlighter {...props} defer={isStreaming} />}
               language={props.language}
               streaming={isStreaming}
             />
           )
         }
       }) as StreamdownTextComponents,
-    [allowRunCommands, disableArtifacts, isStreaming]
+    [disableArtifacts, isStreaming]
   )
 
   if (text.length > MAX_MARKDOWN_CHARS) {
@@ -709,8 +716,8 @@ export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: Markdo
   )
 }
 
-const MarkdownTextImpl = ({ allowRunCommands = false }: { allowRunCommands?: boolean }) => {
-  return <MarkdownTextSurface allowRunCommands={allowRunCommands} defer />
+const MarkdownTextImpl = () => {
+  return <MarkdownTextSurface defer />
 }
 
 export const MarkdownText = memo(MarkdownTextImpl)

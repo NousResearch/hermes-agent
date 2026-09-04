@@ -7,15 +7,19 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from agent import chat_completion_helpers
+from agent.error_classifier import FailoverReason
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
 def _make_agent(fallback_model=None):
     """Create a minimal AIAgent with optional fallback config."""
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key",
@@ -68,6 +72,28 @@ class TestFallbackChainInit:
 # ── Chain advancement ─────────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        (FailoverReason.auth, "authentication failed"),
+        (FailoverReason.billing, "billing or quota exhausted"),
+        (FailoverReason.rate_limit, "rate limit"),
+        (FailoverReason.upstream_rate_limit, "upstream model rate limit"),
+        (FailoverReason.overloaded, "provider overloaded"),
+        (FailoverReason.server_error, "provider server error"),
+        (FailoverReason.timeout, "request timeout"),
+        (FailoverReason.model_not_found, "model not found"),
+        (FailoverReason.unknown, "provider failure"),
+    ],
+)
+def test_fallback_reason_text_is_operator_friendly(reason, expected):
+    assert chat_completion_helpers._fallback_reason_text(reason) == expected
+
+
+def test_fallback_reason_text_defaults_when_reason_is_missing():
+    assert chat_completion_helpers._fallback_reason_text(None) == "provider failure"
+
+
 class TestFallbackChainAdvancement:
     def test_exhausted_returns_false(self):
         agent = _make_agent(fallback_model=None)
@@ -86,8 +112,51 @@ class TestFallbackChainAdvancement:
             assert agent.model == "gpt-4o"
             assert agent._fallback_activated is True
 
+    def test_records_user_visible_switch_with_reason(self):
+        agent = _make_agent(
+            fallback_model={"provider": "zai", "model": "glm-5.2"},
+        )
+        agent.model = "gpt-5.6-sol"
+        agent.provider = "openai-codex"
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url="https://api.z.ai/v1"), "glm-5.2"),
+        ):
+            assert agent._try_activate_fallback(FailoverReason.rate_limit) is True
 
+        expected = (
+            "⚠️ Model fallback: gpt-5.6-sol via openai-codex unavailable "
+            "(rate limit); using glm-5.2 via zai."
+        )
+        assert agent._pending_fallback_notice == [expected]
+        assert agent._retry_status_buffer[-1] == ("status", expected)
 
+    def test_records_sequential_switches_in_order(self):
+        agent = _make_agent(
+            fallback_model=[
+                {"provider": "zai", "model": "glm-5.2"},
+                {"provider": "deepseek", "model": "deepseek-v4-flash"},
+            ],
+        )
+        agent.model = "gpt-5.6-sol"
+        agent.provider = "openai-codex"
+        clients = [
+            _mock_client(base_url="https://api.z.ai/v1"),
+            _mock_client(base_url="https://api.deepseek.com/v1"),
+        ]
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            side_effect=[(clients[0], "glm-5.2"), (clients[1], "deepseek-v4-flash")],
+        ):
+            assert agent._try_activate_fallback(FailoverReason.rate_limit) is True
+            assert agent._try_activate_fallback(FailoverReason.overloaded) is True
+
+        assert agent._pending_fallback_notice == [
+            "⚠️ Model fallback: gpt-5.6-sol via openai-codex unavailable "
+            "(rate limit); using glm-5.2 via zai.",
+            "⚠️ Model fallback: glm-5.2 via zai unavailable "
+            "(provider overloaded); using deepseek-v4-flash via deepseek.",
+        ]
     def test_skips_unconfigured_provider_to_next(self):
         """If resolve_provider_client returns None, skip to next in chain."""
         fbs = [
@@ -345,3 +414,91 @@ class TestFallbackChainDedup:
         assert called == [("xai", "grok-4.5")]
         assert agent.provider == "xai"
         assert agent.model == "grok-4.5"
+
+
+# ── extra_body re-resolution on fallback activation (#75091) ─────────────
+
+
+class TestFallbackExtraBodyReResolution:
+    """Fallback activation must re-resolve extra_body key-scoped.
+
+    The old provider's custom_providers-contributed extra_body keys are
+    stale on the new backend and must be dropped; caller-provided
+    request_overrides keys must survive; the fallback provider's own
+    extra_body must be merged in (salvage of #75139).
+    """
+
+    OLD_URL = "https://old-llm.example.com/v1"
+    FB_URL = "https://fb-llm.example.com/v1"
+
+    def _agent_with_custom_providers(self, caller_extra_body=None):
+        agent = _make_agent(
+            fallback_model={
+                "provider": "custom:fbprov",
+                "model": "fb-model",
+                "base_url": self.FB_URL,
+            },
+        )
+        agent.provider = "custom"
+        agent.model = "old-model"
+        agent.base_url = self.OLD_URL
+        agent._custom_providers = [
+            {
+                "name": "oldprov",
+                "base_url": self.OLD_URL,
+                "extra_body": {"enable_thinking": True, "old_only": 1},
+            },
+            {
+                "provider_key": "fbprov",
+                "base_url": self.FB_URL,
+                "extra_body": {"top_k": 20},
+            },
+        ]
+        # Simulate the init-time merge: provider extra_body + caller keys
+        # (caller wins on conflict — agent_init._merge_custom_provider_extra_body).
+        merged = {"enable_thinking": True, "old_only": 1}
+        merged.update(caller_extra_body or {})
+        agent.request_overrides = {"extra_body": merged}
+        return agent
+
+    def _activate(self, agent):
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url=self.FB_URL), "fb-model"),
+        ), patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=128_000,
+        ):
+            assert agent._try_activate_fallback() is True
+
+    def test_stale_provider_keys_removed_and_new_provider_merged(self):
+        agent = self._agent_with_custom_providers()
+        self._activate(agent)
+        eb = agent.request_overrides.get("extra_body") or {}
+        # Old provider's contributed keys are gone.
+        assert "enable_thinking" not in eb
+        assert "old_only" not in eb
+        # Fallback provider's own extra_body is applied.
+        assert eb.get("top_k") == 20
+
+    def test_caller_override_keys_survive_fallback(self):
+        agent = self._agent_with_custom_providers(
+            caller_extra_body={"reasoning": {"effort": "high"}, "enable_thinking": False},
+        )
+        self._activate(agent)
+        eb = agent.request_overrides.get("extra_body") or {}
+        # Pure caller key survives untouched.
+        assert eb.get("reasoning") == {"effort": "high"}
+        # Caller redefined a key the old provider also set (caller won at
+        # init: False != True) — the caller's value must survive key-scoped
+        # removal.
+        assert eb.get("enable_thinking") is False
+        # But the key the old provider alone contributed is dropped.
+        assert "old_only" not in eb
+        assert eb.get("top_k") == 20
+
+    def test_non_extra_body_overrides_untouched(self):
+        agent = self._agent_with_custom_providers()
+        agent.request_overrides["temperature"] = 0.2
+        self._activate(agent)
+        assert agent.request_overrides.get("temperature") == 0.2

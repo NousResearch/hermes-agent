@@ -1,8 +1,13 @@
 import { $currentCwd } from '@/store/session'
 
-import { $chatTerminalRunRequest, setTerminalTakeover, takeChatTerminalRunRequest } from '../store'
+import {
+  $chatTerminalRunRequest,
+  $terminalInjection,
+  setTerminalTakeover,
+  takeChatTerminalRunRequest
+} from '../store'
 
-import { createTerminal } from './terminals'
+import { $activeTerminalId, createTerminal } from './terminals'
 
 // Eligibility guard, not a shell-safety classifier. Clicking Run is explicit
 // user authorization for the visible command; reject bytes that can materially
@@ -46,19 +51,34 @@ export function hasEmbeddedTerminalBridge(): boolean {
   return typeof terminal?.start === 'function' && typeof terminal.write === 'function'
 }
 
-/** Deliver one exact-terminal request. Authorization is consumed before the PTY side effect. */
-export function deliverChatTerminalRunRequest(
-  terminalId: string,
-  ptySessionId: string,
-  write: (ptySessionId: string, data: string) => Promise<boolean>
-): boolean {
+/**
+ * Hand one exact-terminal request to the existing active-terminal injection
+ * channel. The caller must only invoke this after that exact TerminalInstance
+ * reports open. Authorization is consumed before the injection side effect.
+ *
+ * `$terminalInjection.set()` notifies nanostore subscribers synchronously. A
+ * healthy live terminal therefore consumes+clears the value before set()
+ * returns. If nobody consumes it, clear it immediately so the command can never
+ * float to a later terminal session.
+ */
+export function handoffChatTerminalRunRequest(terminalId: string): boolean {
+  if ($activeTerminalId.get() !== terminalId) {
+    return false
+  }
+
   const command = takeChatTerminalRunRequest(terminalId)
 
   if (!command) {
     return false
   }
 
-  void write(ptySessionId, `${command}\r`)
+  $terminalInjection.set(command)
+
+  if ($terminalInjection.get() !== null) {
+    $terminalInjection.set(null)
+
+    return false
+  }
 
   return true
 }

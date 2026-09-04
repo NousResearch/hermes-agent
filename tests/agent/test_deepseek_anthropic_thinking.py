@@ -35,7 +35,7 @@ class TestDeepSeekAnthropicPreservesThinking:
         DeepSeek issues its own signatures and cannot validate Anthropic's —
         the strip-signed / keep-unsigned split matches the Kimi policy.
         """
-        from agent.anthropic_adapter import convert_messages_to_anthropic
+        from agent.anthropic_message_convert import convert_messages_to_anthropic
 
         messages = [
             {"role": "user", "content": "hi"},
@@ -73,7 +73,7 @@ class TestDeepSeekAnthropicPreservesThinking:
         as ignored — cache markers interfere with signature validation on
         upstreams that do check them, so Hermes strips them everywhere.
         """
-        from agent.anthropic_adapter import convert_messages_to_anthropic
+        from agent.anthropic_message_convert import convert_messages_to_anthropic
 
         messages = [
             {"role": "user", "content": "hi"},

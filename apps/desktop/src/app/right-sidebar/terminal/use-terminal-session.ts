@@ -9,18 +9,17 @@ import type { CSSProperties } from 'react'
 import { writeClipboardText } from '@/components/ui/copy-button'
 import { markRightPanePerf } from '@/debug/right-pane-events'
 import { triggerHaptic } from '@/lib/haptics'
+import { isComposerChord } from '@/lib/keybinds/chords'
 import { $previewTarget } from '@/store/preview'
 import { useTheme } from '@/themes/context'
 
-import { $chatTerminalRunRequest, $terminalInjection, cancelChatTerminalRunRequest } from '../store'
+import { $terminalInjection } from '../store'
 
 import { observeActiveTerminalResize } from './active-resize'
 import { makeTerminalReader, registerTerminalReader } from './buffer'
-import { deliverChatTerminalRunRequest } from './chat-run'
 import { mirrorSelection, terminalClipboardIntent } from './clipboard'
 import { terminalLinkHandler, terminalWebLinksAddon } from './links'
 import {
-  isAddSelectionShortcut,
   isMacPlatform,
   resolveSurfaceColor,
   terminalSelectionAnchor,
@@ -433,10 +432,6 @@ export function useTerminalSession({
   const [selectionStyle, setSelectionStyle] = useState<CSSProperties | null>(null)
   const [shellName, setShellName] = useState('shell')
 
-  const markSessionActivity = useCallback(() => {
-    hasSessionActivityRef.current = true
-  }, [])
-
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     onAddSelectionToChatRef.current = onAddSelectionToChat
@@ -481,7 +476,7 @@ export function useTerminalSession({
   // must reach the shell as clear-screen.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!isAddSelectionShortcut(event) || !readSelection().trim()) {
+      if (!isComposerChord(event) || !readSelection().trim()) {
         return
       }
 
@@ -859,7 +854,7 @@ export function useTerminalSession({
         // user last `cd`'d; the main side falls back to the launch cwd (then
         // home) if that dir no longer exists.
         .start({ cols: term.cols, cwd: initialRestoreCwdRef.current || cwd, rows: term.rows })
-        .then(session => {
+        .then(async session => {
           if (disposed) {
             void terminalApi.dispose(session.id)
 
@@ -875,8 +870,6 @@ export function useTerminalSession({
           const initial = term.hasSelection() ? term.getSelection() : ''
           selectionRef.current = initial
           selectionLabelRef.current = initial ? terminalSelectionLabel(term, shellNameRef.current, initial) : ''
-
-          setStatus('open')
 
           cleanup.push(
             terminalApi.onData(session.id, data => {
@@ -896,6 +889,14 @@ export function useTerminalSession({
               }
             })
           )
+
+          const attached = await terminalApi.attach(session.id)
+
+          if (!attached) {
+            throw new Error('Terminal session disappeared before its output stream attached')
+          }
+
+          setStatus('open')
 
           window.requestAnimationFrame(() => {
             term.clearSelection() // drop any selection painted over transient boot rows
@@ -1068,43 +1069,6 @@ export function useTerminalSession({
       termRef.current?.focus()
     })
   }, [active, status])
-
-  // Authorization is valid only while the exact fresh target remains active.
-  // Switching away during PTY startup is cancellation, never deferred execution.
-  useEffect(() => {
-    if (!active || status === 'closed') {
-      cancelChatTerminalRunRequest(id)
-    }
-  }, [active, id, status])
-
-  useEffect(() => {
-    if (!active || status !== 'open') {
-      return
-    }
-
-    const unsubscribe = $chatTerminalRunRequest.subscribe(request => {
-      const sessionId = sessionIdRef.current
-      const terminalApi = window.hermesDesktop?.terminal
-
-      if (!request || request.terminalId !== id || !sessionId || typeof terminalApi?.write !== 'function') {
-        return
-      }
-
-      const delivered = deliverChatTerminalRunRequest(id, sessionId, (ptyId, data) => terminalApi.write(ptyId, data))
-
-      if (!delivered) {
-        return
-      }
-
-      markSessionActivity()
-      termRef.current?.focus()
-    })
-
-    return () => {
-      unsubscribe()
-      cancelChatTerminalRunRequest(id)
-    }
-  }, [active, id, markSessionActivity, status])
 
   return {
     addSelectionToChat,

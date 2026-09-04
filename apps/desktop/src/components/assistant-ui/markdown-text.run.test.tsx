@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $chatTerminalRunRequest, $terminalTakeover, takeChatTerminalRunRequest } from '@/app/right-sidebar/store'
 import { $activeTerminalId, $terminals } from '@/app/right-sidebar/terminal/terminals'
-import { isRunnableShellLanguage } from '@/components/chat/shiki-highlighter'
+import { ChatRunCommandProvider, isRunnableShellLanguage } from '@/components/chat/shiki-highlighter'
 import { $currentCwd } from '@/store/session'
 
 import { MarkdownTextContent } from './markdown-text'
@@ -17,6 +17,14 @@ function installTerminalBridge() {
     configurable: true,
     value: { terminal: { start: vi.fn(), write: vi.fn() } }
   })
+}
+
+function renderRunnable(text: string, isRunning = false) {
+  return render(
+    <ChatRunCommandProvider>
+      <MarkdownTextContent isRunning={isRunning} text={text} />
+    </ChatRunCommandProvider>
+  )
 }
 
 describe('assistant markdown Run affordance security boundary', () => {
@@ -46,7 +54,7 @@ describe('assistant markdown Run affordance security boundary', () => {
   })
 
   it('queues an opted-in completed shell block into a fresh user terminal', () => {
-    render(<MarkdownTextContent allowRunCommands isRunning={false} text={fenced('bash', 'echo hello')} />)
+    renderRunnable(fenced('bash', 'echo hello'))
 
     const run = screen.getByRole('button', { name: 'Run' })
     expect(run.getAttribute('data-slot')).toBe('button')
@@ -65,7 +73,7 @@ describe('assistant markdown Run affordance security boundary', () => {
 
   it('disables every Run while one request is pending and allows a later deliberate rerun', () => {
     const text = `${fenced('bash', 'echo once')}\n\n${fenced('bash', 'echo two')}`
-    render(<MarkdownTextContent allowRunCommands isRunning={false} text={text} />)
+    renderRunnable(text)
 
     const [firstRun, secondRun] = screen.getAllByRole('button', { name: 'Run' }) as HTMLButtonElement[]
 
@@ -99,21 +107,21 @@ describe('assistant markdown Run affordance security boundary', () => {
       `echo safe\u2062id`,
       `echo safe${String.fromCodePoint(0xe0069)}id`
     ]) {
-      render(<MarkdownTextContent allowRunCommands isRunning={false} text={fenced('bash', unsafe)} />)
+      renderRunnable(fenced('bash', unsafe))
       expect(screen.queryByRole('button', { name: 'Run' })).toBeNull()
       cleanup()
     }
 
-    render(<MarkdownTextContent allowRunCommands isRunning text={fenced('bash', 'echo partial')} />)
+    renderRunnable(fenced('bash', 'echo partial'), true)
     expect(screen.queryByRole('button', { name: 'Run' })).toBeNull()
 
     cleanup()
-    render(<MarkdownTextContent allowRunCommands isRunning={false} text={fenced('console', '$ echo hello\nhello')} />)
+    renderRunnable(fenced('console', '$ echo hello\nhello'))
     expect(screen.queryByRole('button', { name: 'Run' })).toBeNull()
 
     cleanup()
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
-    render(<MarkdownTextContent allowRunCommands isRunning={false} text={fenced('bash', 'echo hello')} />)
+    renderRunnable(fenced('bash', 'echo hello'))
     expect(screen.queryByRole('button', { name: 'Run' })).toBeNull()
   })
 

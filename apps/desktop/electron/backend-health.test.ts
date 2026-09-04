@@ -11,6 +11,7 @@ import {
   isReauthRequiredError,
   isServerSideHttpError,
   makeNousCloudBackendDownError,
+  makeUnsignedOauthError,
   waitForHermesReady
 } from './backend-health'
 
@@ -219,6 +220,20 @@ test('a credentialed 401 fails fast for reauth instead of reporting a dead sessi
   assert.deepEqual(calls, [['probe', 'https://gateway.example/api/health']])
 })
 
+test('unsigned OAuth is a terminal reauth failure; needsOauthLogin alone is not', () => {
+  // The unsigned-in throw must set isReauthRequired so startHermes latches.
+  // needsOauthLogin alone (ticket 401/403) stays a Sign-in hint, not a latch —
+  // a lapsed AT cookie can still rotate from a live RT on the next mint.
+  const unsigned = makeUnsignedOauthError() as any
+
+  assert.equal(unsigned.needsOauthLogin, true)
+  assert.equal(unsigned.isReauthRequired, true)
+  assert.equal(isReauthRequiredError(unsigned), true)
+  assert.match(unsigned.message, /not signed in/i)
+  assert.equal(isReauthRequiredError({ needsOauthLogin: true }), false)
+  assert.equal(isReauthRequiredError(new Error('Could not reach the remote Hermes gateway')), false)
+})
+
 test('a credentialed 403 is also a terminal reauth failure', async () => {
   await assert.rejects(
     waitForHermesReady('https://gateway.example', {
@@ -372,7 +387,7 @@ test('isServerSideHttpError detects 502/503/504', () => {
   // Non-HTTP errors (timeouts, network failures) don't match the pattern
   assert.equal(isServerSideHttpError(new Error('connect ECONNREFUSED')), null)
   assert.equal(isServerSideHttpError(null), null)
-  assert.equal(isServerSideHttpError('503: something'), null)  // not an Error
+  assert.equal(isServerSideHttpError('503: something'), null) // not an Error
 })
 
 test('isNousCloudAgentUrl detects cloud agent hosts', () => {
@@ -504,10 +519,7 @@ test('makeNousCloudBackendDownError produces the Cloud shape and preserves cause
 test('makeNousCloudBackendDownError returns null for a Cloud 401 (routes to reauth)', () => {
   const err = new Error('Unauthorized') as any
   err.statusCode = 401
-  assert.equal(
-    makeNousCloudBackendDownError('https://ares-3009.agents.nousresearch.com', err),
-    null
-  )
+  assert.equal(makeNousCloudBackendDownError('https://ares-3009.agents.nousresearch.com', err), null)
 })
 
 test('makeNousCloudBackendDownError returns null for a non-Cloud 503 (generic remote failure)', () => {

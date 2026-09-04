@@ -16,13 +16,13 @@ import os
 import socket
 import sys
 import time
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
 
 import agent.secret_scope as secret_scope
-from gateway.config import Platform, PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.platforms.base import (
     MessageEvent,
@@ -98,6 +98,14 @@ import plugins.platforms.slack.adapter as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
 from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+
+
+def _rich_text_blocks(*elements):
+    return [{"type": "rich_text", "elements": list(elements)}]
+
+
+def _rich_text_section(*elements):
+    return {"type": "rich_text_section", "elements": list(elements)}
 
 
 def test_slack_mock_bootstrap_preserves_installed_packages():
@@ -882,6 +890,7 @@ class TestSlackProxyBehavior:
                 # (so the User-Agent prefix sticks on ``self._app.client``).
                 # Fall back to building our own fake client when not provided.
                 self.client = client if client is not None else FakeWebClient(token)
+                self.kwargs = _kwargs
                 self.registered_events = []
                 self.registered_commands = []
                 self.registered_actions = []
@@ -951,6 +960,21 @@ class TestSlackProxyBehavior:
         assert adapter._handler is not None
         assert adapter._handler.proxy == "http://proxy.example.com:3128"
         assert adapter._handler.client.proxy == "http://proxy.example.com:3128"
+        # The resolved proxy must also reach the client bolt builds per inbound
+        # request: connect() hands the URL to the before_authorize middleware,
+        # which re-applies it once that client exists.
+        pin_proxy = created_apps[0].kwargs.get("before_authorize")
+        assert callable(pin_proxy)
+        per_request_client = SimpleNamespace(proxy="reloaded-from-env")
+        continued = False
+
+        async def _continue():
+            nonlocal continued
+            continued = True
+
+        await pin_proxy(client=per_request_client, next_=_continue)
+        assert per_request_client.proxy == "http://proxy.example.com:3128"
+        assert continued is True
         assert "hermes_feedback" in created_apps[0].registered_actions
         assert "hermes_clarify_other" in created_apps[0].registered_actions
         clarify_choice_patterns = [
@@ -966,6 +990,70 @@ class TestSlackProxyBehavior:
             pattern.fullmatch("hermes_clarify_choice")
             for pattern in clarify_choice_patterns
         )
+
+    @pytest.mark.asyncio
+    async def test_before_authorize_clears_env_proxy_per_request(self, monkeypatch):
+        """The client bolt builds per request must keep the proxy decision.
+
+        ``AsyncApp._init_context`` constructs a fresh ``AsyncWebClient`` for
+        every inbound request with ``proxy=app.client.proxy``, and slack_sdk
+        turns a ``None`` proxy *argument* back into ``HTTP(S)_PROXY`` — NO_PROXY
+        never enters that decision. Exercised against the real bolt objects so
+        the kwargs injection and the middleware ordering are the ones bolt
+        actually uses.
+        """
+        async_app_mod = pytest.importorskip("slack_bolt.async_app")
+        if getattr(async_app_mod, "AsyncApp", MagicMock) is MagicMock:
+            pytest.skip("real slack-bolt is not installed")
+        from slack_bolt.middleware.authorization.async_single_team_authorization import (
+            AsyncSingleTeamAuthorization,
+        )
+        from slack_bolt.request.async_request import AsyncBoltRequest
+        from slack_bolt.response import BoltResponse
+
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.com:3128")
+        monkeypatch.setenv("NO_PROXY", "slack.com")
+
+        app_client = _slack_mod.AsyncWebClient(token="xoxb-fake")
+        _slack_mod._apply_slack_proxy(app_client, None)
+        app = async_app_mod.AsyncApp(
+            token="xoxb-fake",
+            client=app_client,
+            signing_secret="secret",
+            before_authorize=_slack_mod._slack_per_request_proxy_middleware(None),
+        )
+
+        request = AsyncBoltRequest(body={"type": "event_callback"}, mode="socket_mode")
+        app._init_context(request)
+        # The bug this guards: NO_PROXY covers the endpoint and the app client
+        # goes direct, yet the per-request client came back proxied.
+        assert request.context.client.proxy == "http://proxy.example.com:3128"
+
+        continued = False
+
+        async def _continue():
+            nonlocal continued
+            continued = True
+            return BoltResponse(status=200, body="")
+
+        await app._async_before_authorize.async_process(
+            req=request, resp=BoltResponse(status=200, body=""), next=_continue
+        )
+
+        assert continued is True
+        assert request.context.client.proxy is None
+        # base_url rides along from app.client, so the request-scoped client
+        # still talks to the same endpoint.
+        assert request.context.client.base_url == app_client.base_url
+        # ...and the pinning runs before the middleware that spends that client
+        # on auth.test.
+        middleware = app._async_middleware_list
+        authorization_index = next(
+            index
+            for index, item in enumerate(middleware)
+            if isinstance(item, AsyncSingleTeamAuthorization)
+        )
+        assert middleware.index(app._async_before_authorize) < authorization_index
 
 
 # ---------------------------------------------------------------------------
@@ -1091,6 +1179,30 @@ class TestStandaloneSendUserDmResolution:
         assert result["success"] is True
         assert session.post.call_count == 1
         assert "chat.postMessage" in session.post.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_channel_delivery_honors_unfurl_config(self):
+        _slack_mod._slack_dm_cache.clear()
+        post_resp = self._mock_resp({"ok": True, "ts": "123.456"})
+        session = self._mock_session(post_resp)
+        config = PlatformConfig(
+            enabled=True,
+            token="«redacted:xox…»",
+            extra={"unfurl_links": False, "unfurl_media": False},
+        )
+
+        with patch.object(_slack_mod.aiohttp, "ClientSession", return_value=session):
+            result = await _slack_mod._standalone_send(
+                config,
+                "C123",
+                "[Hermes](https://example.com/hermes)",
+            )
+
+        assert result["success"] is True
+        payload = session.post.call_args.kwargs["json"]
+        assert payload["text"] == "<https://example.com/hermes|Hermes>"
+        assert payload["unfurl_links"] is False
+        assert payload["unfurl_media"] is False
 
 
     @pytest.mark.asyncio
@@ -1738,6 +1850,210 @@ class TestIncomingDocumentHandling:
         assert "> Quoted line" in msg_event.text
         assert "• First bullet" in msg_event.text
         assert "• Second bullet" in msg_event.text
+
+    @pytest.mark.parametrize(
+        ("text", "section_elements"),
+        [
+            (
+                "update the path to `src/app`",
+                [
+                    {"type": "text", "text": "update the path to "},
+                    {"type": "text", "text": "src/app", "style": {"code": True}},
+                ],
+            ),
+            (
+                "use *bold* and _italic_ text",
+                [
+                    {"type": "text", "text": "use "},
+                    {"type": "text", "text": "bold", "style": {"bold": True}},
+                    {"type": "text", "text": " and "},
+                    {"type": "text", "text": "italic", "style": {"italic": True}},
+                    {"type": "text", "text": " text"},
+                ],
+            ),
+            (
+                "use *_~styled~_* text",
+                [
+                    {"type": "text", "text": "use "},
+                    {
+                        "type": "text",
+                        "text": "styled",
+                        "style": {"bold": True, "italic": True, "strike": True},
+                    },
+                    {"type": "text", "text": " text"},
+                ],
+            ),
+            (
+                "read <https://example.com/docs|the docs>",
+                [
+                    {"type": "text", "text": "read "},
+                    {
+                        "type": "link",
+                        "url": "https://example.com/docs",
+                        "text": "the docs",
+                    },
+                ],
+            ),
+        ],
+        ids=("inline-code", "inline-styles", "nested-inline-styles", "link"),
+    )
+    @pytest.mark.asyncio
+    async def test_equivalent_rich_text_is_not_duplicated(
+        self, adapter, text, section_elements
+    ):
+        event = self._make_event(
+            text=text,
+            blocks=_rich_text_blocks(_rich_text_section(*section_elements)),
+        )
+
+        await adapter._handle_slack_message(event)
+
+        assert adapter.handle_message.call_args[0][0].text == text
+
+    @pytest.mark.parametrize(
+        "text",
+        (
+            "run ```echo ok```",
+            "run\n\n```\necho ok\n```\n",
+        ),
+        ids=("compact-fence", "fence-with-surrounding-newlines"),
+    )
+    @pytest.mark.asyncio
+    async def test_equivalent_preformatted_text_is_not_duplicated(
+        self, adapter, text
+    ):
+        event = self._make_event(
+            text=text,
+            blocks=_rich_text_blocks(
+                _rich_text_section({"type": "text", "text": "run"}),
+                {
+                    "type": "rich_text_preformatted",
+                    "elements": [{"type": "text", "text": "echo ok"}],
+                },
+            ),
+        )
+
+        await adapter._handle_slack_message(event)
+
+        assert adapter.handle_message.call_args[0][0].text == text
+
+    @pytest.mark.asyncio
+    async def test_preformatted_text_also_mentioned_in_prose_is_preserved(self, adapter):
+        event = self._make_event(
+            text="run echo ok to verify the command",
+            blocks=_rich_text_blocks(
+                _rich_text_section(
+                    {"type": "text", "text": "run echo ok to verify the command"}
+                ),
+                {
+                    "type": "rich_text_preformatted",
+                    "elements": [{"type": "text", "text": "echo ok"}],
+                },
+            ),
+        )
+
+        await adapter._handle_slack_message(event)
+
+        assert adapter.handle_message.call_args[0][0].text == (
+            "run echo ok to verify the command\n```\necho ok\n```"
+        )
+
+    @pytest.mark.asyncio
+    async def test_block_only_bot_mention_does_not_duplicate_rich_text(self, adapter):
+        event = self._make_event(
+            text="update the path",
+            blocks=_rich_text_blocks(
+                _rich_text_section(
+                    {"type": "user", "user_id": "U_BOT"},
+                    {"type": "text", "text": " update the path"},
+                )
+            ),
+        )
+
+        await adapter._handle_slack_message(event)
+
+        assert adapter.handle_message.call_args[0][0].text == "update the path"
+
+    @pytest.mark.asyncio
+    async def test_secondary_workspace_bot_mention_does_not_duplicate_rich_text(
+        self, adapter
+    ):
+        adapter._team_bot_user_ids["T_SECONDARY"] = "U_SECONDARY_BOT"
+        event = self._make_event(
+            text="update the path",
+            blocks=_rich_text_blocks(
+                _rich_text_section(
+                    {"type": "user", "user_id": "U_SECONDARY_BOT"},
+                    {"type": "text", "text": " update the path"},
+                )
+            ),
+        )
+
+        await adapter._handle_slack_message(event, {"team_id": "T_SECONDARY"})
+
+        assert adapter.handle_message.call_args[0][0].text == "update the path"
+
+    @pytest.mark.asyncio
+    async def test_rich_text_list_already_in_text_is_not_duplicated(self, adapter):
+        event = self._make_event(
+            text="• first\n• second",
+            blocks=_rich_text_blocks(
+                {
+                    "type": "rich_text_list",
+                    "style": "bullet",
+                    "elements": [
+                        _rich_text_section({"type": "text", "text": "first"}),
+                        _rich_text_section({"type": "text", "text": "second"}),
+                    ],
+                }
+            ),
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "• first\n• second"
+
+    @pytest.mark.asyncio
+    async def test_rich_text_different_section_is_preserved(self, adapter):
+        event = self._make_event(
+            text="review `test/yana`",
+            blocks=_rich_text_blocks(
+                _rich_text_section(
+                    {"type": "text", "text": "also review test/prod"}
+                )
+            ),
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "review `test/yana`\nalso review test/prod"
+
+    @pytest.mark.asyncio
+    async def test_rich_text_duplicate_section_keeps_quote(self, adapter):
+        event = self._make_event(
+            text="review `test/yana`",
+            blocks=_rich_text_blocks(
+                _rich_text_section(
+                    {"type": "text", "text": "review "},
+                    {"type": "text", "text": "test/yana", "style": {"code": True}},
+                ),
+                {
+                    "type": "rich_text_quote",
+                    "elements": [
+                        _rich_text_section(
+                            {"type": "text", "text": "quoted context"}
+                        )
+                    ],
+                },
+            ),
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "review `test/yana`\n> quoted context"
 
 
 # ---------------------------------------------------------------------------
@@ -3182,6 +3498,71 @@ class TestMessageSplitting:
 
 
     @pytest.mark.asyncio
+    async def test_send_passes_explicit_unfurl_options(self, adapter):
+        adapter.config.extra["unfurl_links"] = False
+        adapter.config.extra["unfurl_media"] = False
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["unfurl_links"] is False
+        assert kwargs["unfurl_media"] is False
+
+    @pytest.mark.asyncio
+    async def test_send_preserves_default_unfurl_behavior(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "unfurl_links" not in kwargs
+        assert "unfurl_media" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_send_coerces_string_unfurl_options(self, adapter):
+        """`hermes config set` / Railway persist YAML booleans as strings.
+
+        Relay-plane parity: string "false"/"true" must coerce instead of
+        being silently dropped (which would leave previews on with no error).
+        """
+        adapter.config.extra["unfurl_links"] = "false"
+        adapter.config.extra["unfurl_media"] = "true"
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["unfurl_links"] is False
+        assert kwargs["unfurl_media"] is True
+
+    @pytest.mark.asyncio
+    async def test_send_drops_junk_unfurl_values(self, adapter):
+        """Unrecognized values keep Slack's default rather than suppressing."""
+        adapter.config.extra["unfurl_links"] = "maybe"
+        adapter.config.extra["unfurl_media"] = 0
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "unfurl_links" not in kwargs
+        assert "unfurl_media" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_send_passes_unfurl_options_to_every_chunk(self, adapter):
+        adapter.config.extra["unfurl_links"] = False
+        adapter.config.extra["unfurl_media"] = False
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com/" + "x" * 45000)
+
+        assert adapter._app.client.chat_postMessage.call_count >= 2
+        for call in adapter._app.client.chat_postMessage.call_args_list:
+            assert call.kwargs["unfurl_links"] is False
+            assert call.kwargs["unfurl_media"] is False
+
+    @pytest.mark.asyncio
     async def test_send_does_not_double_escape_entities(self, adapter):
         """Pre-escaped &amp; in sent messages must not become &amp;amp;."""
         adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
@@ -3438,15 +3819,11 @@ class TestProgressMessageThread:
         )
 
 
-class TestSlackReplyToText:
-    """Ensure MessageEvent.reply_to_text is populated on thread replies so
-    gateway.run can inject a ``[Replying to: "..."]`` prefix (parity with
-    Telegram/Discord/Feishu/WeCom)."""
+class TestSlackThreadParentContext:
+    """Ensure Slack thread roots are hydrated once, not injected every turn."""
 
     @pytest.mark.asyncio
-    async def test_slack_reply_to_text_set_on_thread_reply(self, adapter):
-        """When a thread reply arrives and the parent was posted by a bot
-        (e.g. cron summary), reply_to_text must carry the parent's text."""
+    async def test_thread_root_uses_channel_context_not_reply_to_text(self, adapter):
         adapter._channel_team = {}  # primary workspace only
         adapter._team_bot_user_ids = {}
 
@@ -3484,10 +3861,49 @@ class TestSlackReplyToText:
         ), "handle_message must be invoked for thread-reply DM"
         msg_event = adapter.handle_message.call_args[0][0]
         assert msg_event.reply_to_message_id == "1000.0"
-        # The critical assertion: parent text is exposed as reply_to_text so the
-        # gateway can inject it when not already in the session history.
-        assert msg_event.reply_to_text is not None
-        assert "メール要約" in msg_event.reply_to_text
+        assert "メール要約" in msg_event.channel_context
+        assert msg_event.reply_to_text is None
+
+    @pytest.mark.asyncio
+    async def test_active_thread_does_not_refetch_root_as_reply_text(self, adapter):
+        adapter._has_active_session_for_thread = MagicMock(return_value=True)
+        adapter._fetch_thread_parent_text = AsyncMock(return_value="original task")
+
+        event = {
+            "text": "one more detail",
+            "user": "U_USER",
+            "channel": "D123",
+            "channel_type": "im",
+            "ts": "1001.0",
+            "thread_ts": "1000.0",
+        }
+
+        with patch.object(
+            adapter, "_resolve_user_name", new=AsyncMock(return_value="Alice")
+        ):
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.channel_context is None
+        assert msg_event.reply_to_message_id == "1000.0"
+        assert msg_event.reply_to_text is None
+        adapter._fetch_thread_parent_text.assert_not_awaited()
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(enabled=True, token="fake")
+            }
+        )
+        runner.adapters = {}
+        prepared = await runner._prepare_inbound_message_text(
+            event=msg_event,
+            source=msg_event.source,
+            history=[{"role": "user", "content": "original task"}],
+        )
+
+        assert prepared == "one more detail"
+        assert "[Replying to:" not in prepared
 
 
 # ---------------------------------------------------------------------------
@@ -4286,6 +4702,45 @@ class TestThreadImageContext:
         assert "[image: shelf.jpg]" in rendered
         assert "[file: specs.pdf (application/pdf)]" in rendered
 
+    def test_render_message_text_deduplicates_main_section_and_keeps_quote(
+        self, adapter
+    ):
+        msg = {
+            "text": "<@U_BOT> review `src/app`",
+            "blocks": _rich_text_blocks(
+                _rich_text_section(
+                    {"type": "user", "user_id": "U_BOT"},
+                    {"type": "text", "text": " review "},
+                    {"type": "text", "text": "src/app", "style": {"code": True}},
+                ),
+                {
+                    "type": "rich_text_quote",
+                    "elements": [
+                        _rich_text_section(
+                            {"type": "text", "text": "quoted context"}
+                        )
+                    ],
+                },
+            ),
+        }
+
+        assert adapter._render_message_text(msg, bot_uid="U_BOT") == (
+            "review `src/app`\n> quoted context"
+        )
+
+    def test_render_message_text_deduplicates_compact_fenced_code(self, adapter):
+        msg = {
+            "text": "run ```echo ok```",
+            "blocks": _rich_text_blocks(
+                _rich_text_section({"type": "text", "text": "run"}),
+                {
+                    "type": "rich_text_preformatted",
+                    "elements": [{"type": "text", "text": "echo ok"}],
+                },
+            ),
+        }
+
+        assert adapter._render_message_text(msg) == "run ```echo ok```"
 
     # -- integration: cold-start thread hydrate ----------------------------
 
@@ -4687,3 +5142,726 @@ class TestNativeTaskCardProgress:
             "chat.stopStream",
         ]
         assert adapter._native_task_card_streams == {}
+
+
+# ---------------------------------------------------------------------------
+# TestSlackAuthoredTextDeduplication
+# ---------------------------------------------------------------------------
+
+
+# A "Copy link" URL for a Slack thread always carries query parameters, so
+# Slack HTML-escapes the ``&`` in ``event.text`` while leaving the same URL
+# raw inside ``blocks[].link.url``.
+_THREAD_PERMALINK = (
+    "https://example.slack.com/archives/C0BCDG3H66P/p1786102118226679"
+    "?thread_ts=1786102118.226679&cid=C0BCDG3H66P"
+)
+_THREAD_PERMALINK_ESCAPED = _THREAD_PERMALINK.replace("&", "&amp;")
+
+# A permalink as the Slack client pastes it — no query parameters, delivered as
+# a ``message_mention`` element rather than a plain ``link``.
+_PERMALINK = "https://example.slack.com/archives/C0BCDG3H66P/p1786102118226679"
+
+
+class TestSlackAuthoredTextDeduplication:
+    """One authored Slack message must never be appended to itself.
+
+    Slack delivers the same authored text twice — flat in ``event.text`` and
+    structurally in ``event.blocks`` — and HTML-escapes ``&``/``<``/``>`` in
+    the flat copy only. Whenever the two representations fail to compare
+    equal, the block rendering is mistaken for additional content and the
+    user sees their own message twice. Both merge sites are covered:
+    ``_handle_slack_message`` (live inbound) and ``_render_message_text``
+    (thread/parent hydration).
+    """
+
+    @staticmethod
+    def _thread_link_blocks(*trailing):
+        return _rich_text_blocks(
+            _rich_text_section(
+                {"type": "user", "user_id": "U_BOT"},
+                {"type": "text", "text": " do you see "},
+                {"type": "link", "url": _THREAD_PERMALINK},
+                {"type": "text", "text": " ?"},
+            ),
+            *trailing,
+        )
+
+    @staticmethod
+    def _thread_link_text():
+        return f"<@U_BOT> do you see <{_THREAD_PERMALINK_ESCAPED}> ?"
+
+    # -- helper-level equivalence -----------------------------------------
+
+    @pytest.mark.parametrize(
+        "flat_text,elements",
+        [
+            # Thread permalink: query params make Slack escape ``&`` in text
+            # while ``blocks[].link.url`` stays raw. The reported bug.
+            (
+                f"look <{_THREAD_PERMALINK_ESCAPED}> here",
+                [
+                    {"type": "text", "text": "look "},
+                    {"type": "link", "url": _THREAD_PERMALINK},
+                    {"type": "text", "text": " here"},
+                ],
+            ),
+            # Bare ampersand in prose.
+            ("AT&amp;T outage", [{"type": "text", "text": "AT&T outage"}]),
+            # Literal angle brackets the user typed.
+            ("use &lt;div&gt; here", [{"type": "text", "text": "use <div> here"}]),
+            # Labelled link whose label carries an ampersand.
+            (
+                "see <https://x.example|AT&amp;T>",
+                [
+                    {"type": "text", "text": "see "},
+                    {"type": "link", "url": "https://x.example", "text": "AT&T"},
+                ],
+            ),
+        ],
+    )
+    def test_escaped_entities_compare_equal(self, flat_text, elements):
+        assert (
+            _slack_mod._extract_additional_text_from_slack_blocks(
+                _rich_text_blocks(_rich_text_section(*elements)), flat_text
+            )
+            == ""
+        )
+
+    def test_genuine_quote_still_appended_next_to_escaped_link(self):
+        """Negative case: the fix must not swallow real structured content."""
+        blocks = self._thread_link_blocks(
+            {
+                "type": "rich_text_quote",
+                "elements": [
+                    _rich_text_section({"type": "text", "text": "quoted context"})
+                ],
+            }
+        )
+
+        assert (
+            _slack_mod._extract_additional_text_from_slack_blocks(
+                blocks, self._thread_link_text(), bot_uid="U_BOT"
+            )
+            == "> quoted context"
+        )
+
+    # -- live inbound path -------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_live_inbound_thread_permalink_not_duplicated(self, adapter):
+        await adapter._handle_slack_message(
+            {
+                "text": self._thread_link_text(),
+                "blocks": self._thread_link_blocks(),
+                "user": "U_USER",
+                "client_msg_id": "cm-1",
+                "channel": "D_DM",
+                "channel_type": "im",
+                "ts": "123.456",
+                "team": "T_TEAM",
+            }
+        )
+
+        adapter.handle_message.assert_awaited_once()
+        text = adapter.handle_message.await_args.args[0].text
+        assert text.count("p1786102118226679") == 1
+        assert text.count("do you see") == 1
+
+    # -- thread/parent hydration path --------------------------------------
+
+    def test_hydration_thread_permalink_not_duplicated(self, adapter):
+        rendered = adapter._render_message_text(
+            {"text": self._thread_link_text(), "blocks": self._thread_link_blocks()},
+            bot_uid="U_BOT",
+        )
+
+        assert rendered.count("p1786102118226679") == 1
+        assert rendered.count("do you see") == 1
+
+    def test_hydration_skips_message_unfurl_attachment(self, adapter):
+        """A permalink unfurl echoes the *linked* message — the live path
+        already skips it, so hydration must not re-append it either."""
+        rendered = adapter._render_message_text(
+            {
+                "text": f"<{_THREAD_PERMALINK_ESCAPED}>",
+                "attachments": [
+                    {
+                        "is_msg_unfurl": True,
+                        "text": "the linked message body",
+                        "fallback": "linked message fallback",
+                    }
+                ],
+            }
+        )
+
+        assert "the linked message body" not in rendered
+        assert "linked message fallback" not in rendered
+
+    def test_hydration_still_surfaces_regular_attachments(self, adapter):
+        """Alert-bot content lives only in attachments — keep surfacing it."""
+        rendered = adapter._render_message_text(
+            {
+                "text": "",
+                "attachments": [
+                    {"is_msg_unfurl": True, "text": "echoed message body"},
+                    {"title": "FiringAlert", "text": "disk usage 95%"},
+                ],
+            }
+        )
+
+        assert "echoed message body" not in rendered
+        assert "FiringAlert" in rendered
+        assert "disk usage 95%" in rendered
+
+    # -- Block Kit payload dump --------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_block_kit_dump_leaves_out_the_authored_rich_text(self, adapter):
+        """A single non-rich_text block must not drag the message in with it.
+
+        The dump exists for the interactive blocks bots post, and its
+        allowlist deliberately drops ``url``. Serializing the authored
+        ``rich_text`` alongside them therefore repeats the user's own
+        sentence with its links deleted — the "second copy without the
+        link" a reporter sees.
+        """
+        await adapter._handle_slack_message(
+            {
+                "text": self._thread_link_text(),
+                "blocks": self._thread_link_blocks()
+                + [{"type": "section", "text": {"type": "mrkdwn", "text": "extra"}}],
+                "user": "U_USER",
+                "client_msg_id": "cm-2",
+                "channel": "D_DM",
+                "channel_type": "im",
+                "ts": "123.457",
+                "team": "T_TEAM",
+            }
+        )
+
+        text = adapter.handle_message.await_args.args[0].text
+        assert text.count("do you see") == 1
+        assert text.count("p1786102118226679") == 1
+        # The block the agent cannot otherwise read is still surfaced.
+        assert "extra" in text
+
+    @pytest.mark.asyncio
+    async def test_no_block_kit_dump_for_a_plain_authored_message(self, adapter):
+        await adapter._handle_slack_message(
+            {
+                "text": self._thread_link_text(),
+                "blocks": self._thread_link_blocks(),
+                "user": "U_USER",
+                "client_msg_id": "cm-3",
+                "channel": "D_DM",
+                "channel_type": "im",
+                "ts": "123.458",
+                "team": "T_TEAM",
+            }
+        )
+
+        text = adapter.handle_message.await_args.args[0].text
+        assert "[Slack Block Kit payload for this message]" not in text
+
+    # -- inline elements the renderer does not know ------------------------
+
+    @staticmethod
+    def _mention_blocks(element, *trailing):
+        """The blocks Slack sends for ``@bot do you see <permalink> ?``."""
+        return _rich_text_blocks(
+            _rich_text_section(
+                {"type": "user", "user_id": "U_BOT"},
+                {"type": "text", "text": " do you see "},
+                element,
+                {"type": "text", "text": " ?"},
+            ),
+            *trailing,
+        )
+
+    @staticmethod
+    def _mention_text():
+        """``event.text`` for a pasted permalink: label equals the URL."""
+        return f"<@U_BOT> do you see <{_PERMALINK}|{_PERMALINK}> ?"
+
+    @pytest.mark.parametrize(
+        "element",
+        [
+            # Slack's own element for a pasted message permalink, as the
+            # client sends it: required ids plus an optional url/label.
+            {
+                "type": "message_mention",
+                "channel_id": "C0BCDG3H66P",
+                "message_ts": "1786102118.226679",
+                "url": _PERMALINK,
+                "text": _PERMALINK,
+            },
+            # Same element with the optional label omitted.
+            {
+                "type": "message_mention",
+                "channel_id": "C0BCDG3H66P",
+                "message_ts": "1786102118.226679",
+                "url": _PERMALINK,
+            },
+            # Slack adds inline element types without notice; one that carries
+            # a url must render rather than vanish.
+            {"type": "an_element_slack_adds_later", "url": _PERMALINK},
+            # ... and one that carries only a label.
+            {"type": "an_element_slack_adds_later", "text": _PERMALINK},
+        ],
+    )
+    def test_url_bearing_inline_elements_render_instead_of_vanishing(self, element):
+        assert (
+            _slack_mod._extract_additional_text_from_slack_blocks(
+                self._mention_blocks(element), self._mention_text(), bot_uid="U_BOT"
+            )
+            == ""
+        )
+        assert _PERMALINK in _slack_mod._extract_text_from_slack_blocks(
+            self._mention_blocks(element)
+        )
+
+    @pytest.mark.parametrize(
+        "element,rendered",
+        [
+            # Block Kit carries text as an object in many places, so an unknown
+            # element may hold one where a string belongs.
+            (
+                {
+                    "type": "an_element_slack_adds_later",
+                    "text": {"type": "plain_text", "text": "oops"},
+                },
+                "",
+            ),
+            # A string field next to it is still read.
+            (
+                {
+                    "type": "an_element_slack_adds_later",
+                    "text": {"type": "plain_text", "text": "oops"},
+                    "fallback": _PERMALINK,
+                },
+                _PERMALINK,
+            ),
+            # A known type reading a field of its own is no different.
+            ({"type": "color", "value": {"type": "plain_text", "text": "#fff"}}, ""),
+            (
+                {
+                    "type": "date",
+                    "timestamp": 1786102118,
+                    "fallback": {"type": "plain_text", "text": "Aug 7th"},
+                },
+                "",
+            ),
+            ({"type": "text", "text": {"type": "plain_text", "text": "oops"}}, ""),
+        ],
+    )
+    def test_inline_element_with_an_object_field_keeps_the_message(
+        self, element, rendered
+    ):
+        """A non-string field must not reach the caller's ``str.join``."""
+        blocks = self._mention_blocks(element)
+        flat_text = f"<@U_BOT> do you see {rendered} ?"
+
+        assert _slack_mod._extract_text_from_slack_blocks(blocks) == flat_text
+        assert (
+            _slack_mod._extract_additional_text_from_slack_blocks(
+                blocks, flat_text, bot_uid="U_BOT"
+            )
+            == ""
+        )
+
+    @pytest.mark.parametrize(
+        "flat_text",
+        [
+            # The permalink as pasted...
+            f"<@U_BOT> do you see <{_PERMALINK}|{_PERMALINK}> ?",
+            # ...and its "Copy link" form, whose query parameters the element
+            # cannot rebuild.
+            f"<@U_BOT> do you see <{_THREAD_PERMALINK_ESCAPED}> ?",
+        ],
+    )
+    def test_url_less_message_mention_is_not_duplicated(self, flat_text):
+        """``url`` is optional on this element; ``channel_id`` and
+        ``message_ts`` are not, and they rebuild the permalink's tail."""
+        blocks = self._mention_blocks(
+            {
+                "type": "message_mention",
+                "channel_id": "C0BCDG3H66P",
+                "message_ts": "1786102118.226679",
+            }
+        )
+
+        assert (
+            _slack_mod._extract_additional_text_from_slack_blocks(
+                blocks, flat_text, bot_uid="U_BOT"
+            )
+            == ""
+        )
+        assert (
+            "archives/C0BCDG3H66P/p1786102118226679"
+            in _slack_mod._extract_text_from_slack_blocks(blocks)
+        )
+
+    @pytest.mark.parametrize(
+        "element",
+        [
+            # The element's own ``url`` never carries the query parameters the
+            # flat text has...
+            {
+                "type": "message_mention",
+                "channel_id": "C0BCDG3H66P",
+                "message_ts": "1786102118.226679",
+                "url": _PERMALINK,
+                "text": "Custom label",
+            },
+            # ...and it may not carry a ``url`` at all.
+            {
+                "type": "message_mention",
+                "channel_id": "C0BCDG3H66P",
+                "message_ts": "1786102118.226679",
+                "text": "Custom label",
+            },
+        ],
+    )
+    def test_labelled_permalink_with_query_params_is_not_duplicated(self, element):
+        """A labelled link is canonicalized to ``label (url)``, so reducing the
+        permalink must stop at the query and leave the closing parenthesis."""
+        blocks = self._mention_blocks(element)
+
+        assert (
+            _slack_mod._extract_additional_text_from_slack_blocks(
+                blocks,
+                f"<@U_BOT> do you see <{_THREAD_PERMALINK_ESCAPED}|Custom label> ?",
+                bot_uid="U_BOT",
+            )
+            == ""
+        )
+
+    def test_quote_beside_a_url_less_message_mention_appended_alone(self):
+        """The quote is the only addition: the sentence around the permalink
+        must not come back as a second copy with the link blanked."""
+        blocks = self._mention_blocks(
+            {
+                "type": "message_mention",
+                "channel_id": "C0BCDG3H66P",
+                "message_ts": "1786102118.226679",
+            },
+            {
+                "type": "rich_text_quote",
+                "elements": [
+                    _rich_text_section({"type": "text", "text": "quoted context"})
+                ],
+            },
+        )
+
+        assert (
+            _slack_mod._extract_additional_text_from_slack_blocks(
+                blocks, self._mention_text(), bot_uid="U_BOT"
+            )
+            == "> quoted context"
+        )
+
+    def test_quote_containing_an_unrenderable_element_is_still_appended(self):
+        """Negative case: a quote is absent from ``event.text`` by construction,
+        so it is never a duplicate of it."""
+        blocks = _rich_text_blocks(
+            _rich_text_section({"type": "text", "text": "look at this"}),
+            {
+                "type": "rich_text_quote",
+                "elements": [
+                    {"type": "text", "text": "see "},
+                    {"type": "an_element_slack_adds_later"},
+                    {"type": "text", "text": " please"},
+                ],
+            },
+        )
+
+        additional = _slack_mod._extract_additional_text_from_slack_blocks(
+            blocks, "look at this", bot_uid="U_BOT"
+        )
+
+        assert "see" in additional
+        assert "please" in additional
+
+    @pytest.mark.parametrize(
+        ("element", "flat"),
+        [
+            # ``fallback`` and ``url`` are both optional on the rich-text date
+            # element, so an element with neither renders as nothing.
+            ({}, "<!date^1786102118^{date_short}>"),
+            ({"fallback": "Aug 7"}, "<!date^1786102118^{date_short}^|Aug 7>"),
+            (
+                {"url": "https://cal/x", "fallback": "Aug 7"},
+                "<!date^1786102118^{date_short}^https://cal/x|Aug 7>",
+            ),
+            (
+                {"url": "https://cal/x"},
+                "<!date^1786102118^{date_short}^https://cal/x>",
+            ),
+        ],
+    )
+    def test_date_element_is_not_read_as_new_content(self, element, flat):
+        """The flat field carries ``<!date^…>`` while the rich text renders the
+        fallback or the url, so both sides need reading down to one value."""
+        blocks = _rich_text_blocks(
+            _rich_text_section(
+                {"type": "user", "user_id": "U_BOT"},
+                {"type": "text", "text": " meet at "},
+                {
+                    "type": "date",
+                    "timestamp": 1786102118,
+                    "format": "{date_short}",
+                    **element,
+                },
+                {"type": "text", "text": " ok?"},
+            )
+        )
+
+        assert (
+            _slack_mod._extract_additional_text_from_slack_blocks(
+                blocks, f"<@U_BOT> meet at {flat} ok?", bot_uid="U_BOT"
+            )
+            == ""
+        )
+
+    @pytest.mark.parametrize("flat_text", ["", "New alert"])
+    def test_app_message_keeps_its_body(self, flat_text):
+        """Negative case: an app posts its body in the blocks, with a flat
+        ``text`` field that is empty or a short notification of its own."""
+        blocks = _rich_text_blocks(
+            _rich_text_section(
+                {"type": "text", "text": "Build failed on "},
+                # ``team`` carries neither a url nor a label.
+                {"type": "team", "team_id": "T123"},
+                {"type": "text", "text": " see logs"},
+            )
+        )
+
+        additional = _slack_mod._extract_additional_text_from_slack_blocks(
+            blocks, flat_text, bot_uid="U_BOT"
+        )
+
+        assert "Build failed on" in additional
+        assert "see logs" in additional
+
+    def test_hydrated_app_message_without_flat_text_keeps_its_body(self, adapter):
+        rendered = adapter._render_message_text(
+            {
+                "text": "",
+                "blocks": _rich_text_blocks(
+                    _rich_text_section(
+                        {"type": "text", "text": "Build failed on "},
+                        {"type": "team", "team_id": "T123"},
+                        {"type": "text", "text": " see logs"},
+                    )
+                ),
+            },
+            bot_uid="U_BOT",
+        )
+
+        assert "Build failed on" in rendered
+        assert "see logs" in rendered
+
+    def test_workspace_mention_is_not_read_as_new_content(self):
+        """A workspace mention renders into the flat form Slack sends."""
+        blocks = _rich_text_blocks(
+            _rich_text_section(
+                {"type": "user", "user_id": "U_BOT"},
+                {"type": "text", "text": " ping "},
+                {"type": "team", "team_id": "T123"},
+                {"type": "text", "text": " now"},
+            )
+        )
+
+        assert (
+            _slack_mod._extract_additional_text_from_slack_blocks(
+                blocks, "<@U_BOT> ping <!team^T123> now", bot_uid="U_BOT"
+            )
+            == ""
+        )
+
+    def test_color_element_is_not_read_as_new_content(self):
+        """The composer keeps the typed hex code in the flat text."""
+        blocks = _rich_text_blocks(
+            _rich_text_section(
+                {"type": "user", "user_id": "U_BOT"},
+                {"type": "text", "text": " brand is "},
+                {"type": "color", "value": "#FF0000"},
+                {"type": "text", "text": " ok?"},
+            )
+        )
+
+        assert (
+            _slack_mod._extract_additional_text_from_slack_blocks(
+                blocks, "<@U_BOT> brand is #FF0000 ok?", bot_uid="U_BOT"
+            )
+            == ""
+        )
+
+    @pytest.mark.parametrize(
+        ("element", "flat"),
+        [
+            (
+                {"type": "channel", "channel_id": "C024BE7LR"},
+                "<@U_BOT> see <#C024BE7LR|general> please",
+            ),
+            (
+                {"type": "usergroup", "usergroup_id": "SAZ94GDB8"},
+                "<@U_BOT> see <!subteam^SAZ94GDB8|@marketing> please",
+            ),
+            (
+                {"type": "user", "user_id": "U024BE7LH"},
+                "<@U_BOT> see <@U024BE7LH|nikita> please",
+            ),
+            (
+                {"type": "broadcast", "range": "here"},
+                "<@U_BOT> see <!here|@here> please",
+            ),
+        ],
+    )
+    def test_labelled_mention_is_not_read_as_new_content(self, element, flat):
+        """Slack may label any mention in the flat text while the blocks carry
+        the bare id."""
+        blocks = _rich_text_blocks(
+            _rich_text_section(
+                {"type": "user", "user_id": "U_BOT"},
+                {"type": "text", "text": " see "},
+                element,
+                {"type": "text", "text": " please"},
+            )
+        )
+
+        assert (
+            _slack_mod._extract_additional_text_from_slack_blocks(
+                blocks, flat, bot_uid="U_BOT"
+            )
+            == ""
+        )
+
+    def test_section_of_a_single_untrusted_element_is_still_delivered(self):
+        """Negative case: a mismatch is never a reason to drop content."""
+        blocks = _rich_text_blocks(
+            _rich_text_section({"type": "team", "team_id": "T123"})
+        )
+
+        assert _slack_mod._extract_additional_text_from_slack_blocks(
+            blocks, "New alert", bot_uid="U_BOT"
+        )
+
+    @pytest.mark.parametrize(
+        "flat",
+        [
+            "hey <@U_BOT|hermes> please look",
+            "hey <@U_BOT> please look",
+            "hey &lt;@U_BOT&gt; please look",
+        ],
+    )
+    def test_labelled_bot_mention_is_not_read_as_new_content(self, flat):
+        """The render drops the bot mention, so every flat form of it must be
+        dropped from the flat text too."""
+        blocks = _rich_text_blocks(
+            _rich_text_section(
+                {"type": "text", "text": "hey "},
+                {"type": "user", "user_id": "U_BOT"},
+                {"type": "text", "text": " please look"},
+            )
+        )
+
+        assert (
+            _slack_mod._extract_additional_text_from_slack_blocks(
+                blocks, flat, bot_uid="U_BOT"
+            )
+            == ""
+        )
+
+    def test_non_http_scheme_link_is_not_read_as_new_content(self):
+        """Autolinks are not limited to the schemes we happened to list."""
+        blocks = _rich_text_blocks(
+            _rich_text_section(
+                {"type": "user", "user_id": "U_BOT"},
+                {"type": "text", "text": " call "},
+                {"type": "link", "url": "tel:+15551234567"},
+                {"type": "text", "text": " now"},
+            )
+        )
+
+        assert (
+            _slack_mod._extract_additional_text_from_slack_blocks(
+                blocks, "<@U_BOT> call <tel:+15551234567> now", bot_uid="U_BOT"
+            )
+            == ""
+        )
+
+    @pytest.mark.asyncio
+    async def test_live_inbound_pasted_permalink_not_duplicated(self, adapter):
+        await adapter._handle_slack_message(
+            {
+                "text": self._mention_text(),
+                "blocks": self._mention_blocks(
+                    {
+                        "type": "message_mention",
+                        "channel_id": "C0BCDG3H66P",
+                        "message_ts": "1786102118.226679",
+                        "url": _PERMALINK,
+                        "text": _PERMALINK,
+                    }
+                ),
+                "user": "U_USER",
+                "client_msg_id": "cm-4",
+                "channel": "D_DM",
+                "channel_type": "im",
+                "ts": "123.459",
+                "team": "T_TEAM",
+            }
+        )
+
+        text = adapter.handle_message.await_args.args[0].text
+        # One line, and no second copy with the permalink blanked out.
+        assert text.count("do you see") == 1
+        assert "\n" not in text
+        assert _PERMALINK in text
+
+    def test_hydration_pasted_permalink_not_duplicated(self, adapter):
+        rendered = adapter._render_message_text(
+            {
+                "text": self._mention_text(),
+                "blocks": self._mention_blocks(
+                    {
+                        "type": "message_mention",
+                        "channel_id": "C0BCDG3H66P",
+                        "message_ts": "1786102118.226679",
+                        "url": _PERMALINK,
+                    }
+                ),
+            },
+            bot_uid="U_BOT",
+        )
+
+        assert rendered.count("do you see") == 1
+        assert "\n" not in rendered
+        assert _PERMALINK in rendered
+
+    def test_block_kit_dump_still_describes_bot_ui_blocks(self):
+        """Negative case: UI-heavy bot blocks are why the dump exists."""
+        payload = _slack_mod._serialize_slack_blocks_for_agent(
+            [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": "Deploy failed"},
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "action_id": "rollback",
+                            "text": {"type": "plain_text", "text": "Roll back"},
+                        }
+                    ],
+                },
+            ]
+        )
+
+        assert "Deploy failed" in payload
+        assert "rollback" in payload
+        assert "Roll back" in payload

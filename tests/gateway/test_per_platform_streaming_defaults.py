@@ -17,5 +17,7 @@ def test_default_per_platform_streaming_flags():
     assert plats["telegram"]["streaming"] is True
     assert plats["discord"]["streaming"] is False
     assert plats["slack"]["streaming"] is False
+    # WeCom: native streaming via msgtype: "stream" / aibot_respond_msg.
+    assert plats["wecom"]["streaming"] is True
 
 

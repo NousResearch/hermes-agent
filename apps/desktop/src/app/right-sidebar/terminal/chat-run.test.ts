@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $chatTerminalRunRequest, $terminalTakeover } from '@/app/right-sidebar/store'
+import { $chatTerminalRunRequest, $terminalInjection, $terminalTakeover } from '@/app/right-sidebar/store'
 import {
   $activeTerminalId,
   $terminals,
@@ -12,7 +12,7 @@ import {
 import { $currentCwd } from '@/store/session'
 
 import {
-  deliverChatTerminalRunRequest,
+  handoffChatTerminalRunRequest,
   hasEmbeddedTerminalBridge,
   isRunnableChatTerminalCommandText,
   MAX_CHAT_RUN_CHARS,
@@ -32,6 +32,7 @@ describe('chat terminal Run queue', () => {
     $terminals.set([])
     $activeTerminalId.set(null)
     $chatTerminalRunRequest.set(null)
+    $terminalInjection.set(null)
     $terminalTakeover.set(false)
     $currentCwd.set('/workspace')
     installTerminalBridge()
@@ -39,6 +40,7 @@ describe('chat terminal Run queue', () => {
 
   afterEach(() => {
     $chatTerminalRunRequest.set(null)
+    $terminalInjection.set(null)
     $terminals.set([])
     $activeTerminalId.set(null)
     $terminalTakeover.set(false)
@@ -81,42 +83,39 @@ describe('chat terminal Run queue', () => {
     expect($terminalTakeover.get()).toBe(true)
   })
 
-  it('delivers a request queued before the terminal-session subscription attaches', () => {
+  it('hands a queued request to the already-live exact terminal synchronously', () => {
     const terminalId = queueChatCommandInFreshTerminal('echo queued')!
-    const write = vi.fn(async () => true)
-
-    const unsubscribe = $chatTerminalRunRequest.subscribe(request => {
-      if (request?.terminalId === terminalId) {
-        deliverChatTerminalRunRequest(terminalId, 'pty-late', write)
+    const seen: string[] = []
+    const unsubscribe = $terminalInjection.subscribe(command => {
+      if (!command) {
+        return
       }
+
+      expect($chatTerminalRunRequest.get()).toBeNull()
+      seen.push(command)
+      $terminalInjection.set(null)
     })
 
-    expect(write).toHaveBeenCalledTimes(1)
-    expect(write).toHaveBeenCalledWith('pty-late', 'echo queued\r')
+    expect(handoffChatTerminalRunRequest(terminalId)).toBe(true)
+    expect(seen).toEqual(['echo queued'])
     expect($chatTerminalRunRequest.get()).toBeNull()
+    expect($terminalInjection.get()).toBeNull()
 
     unsubscribe()
   })
 
-  it('binds delivery to the target id, writes exact bytes + Enter, and clears before the bridge call', () => {
+  it('binds handoff to the active target id and fails closed without a live injection consumer', () => {
     const targetId = queueChatCommandInFreshTerminal('printf "hello"')!
+    const otherId = createTerminal('/other')
 
-    const write = vi.fn(async () => {
-      expect($chatTerminalRunRequest.get()).toBeNull()
-
-      return true
-    })
-
-    expect(deliverChatTerminalRunRequest('wrong-terminal', 'pty-1', write)).toBe(false)
-    expect(write).not.toHaveBeenCalled()
+    expect($activeTerminalId.get()).toBe(otherId)
+    expect(handoffChatTerminalRunRequest(targetId)).toBe(false)
     expect($chatTerminalRunRequest.get()?.terminalId).toBe(targetId)
 
-    expect(deliverChatTerminalRunRequest(targetId, 'pty-1', write)).toBe(true)
-    expect(write).toHaveBeenCalledWith('pty-1', 'printf "hello"\r')
+    $activeTerminalId.set(targetId)
+    expect(handoffChatTerminalRunRequest(targetId)).toBe(false)
     expect($chatTerminalRunRequest.get()).toBeNull()
-
-    expect(deliverChatTerminalRunRequest(targetId, 'pty-1', write)).toBe(false)
-    expect(write).toHaveBeenCalledTimes(1)
+    expect($terminalInjection.get()).toBeNull()
   })
 
   it('refuses a second unflushed request and does not create an extra terminal', () => {

@@ -1,65 +1,50 @@
 #!/usr/bin/env python3
-"""
-Transcription Tools Module
+"""Speech-to-text transcription used by the gateway for voice messages.
 
-Provides speech-to-text transcription with six providers:
-
-  - **local** (default, free) — faster-whisper running locally, no API key needed.
-    Auto-downloads the model (~150 MB for ``base``) on first use.
-  - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
-  - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
-  - **mistral** — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
-  - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
-    Inverse Text Normalization, diarization, 21 languages.
-  - **elevenlabs** — ElevenLabs Scribe API, requires ``ELEVENLABS_API_KEY``.
-
-Used by the messaging gateway to automatically transcribe voice messages
-sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
-
-Supported input formats: mp3, mp4, mpeg, mpga, m4a, wav, webm, ogg, aac
-
-Usage::
-
-    from tools.transcription_tools import transcribe_audio
-
-    result = transcribe_audio("/path/to/audio.ogg")
-    if result["success"]:
-        print(result["transcript"])
+Built-in providers: local (faster-whisper, default/free), local_command, groq, openai
+(also serves the managed ``nous`` selection), mistral, xai, elevenlabs, deepinfra; plus
+user-declared command providers and plugin providers. ``transcribe_audio(path)`` returns
+``{"success", "transcript", "error"?, "provider"?}``. This module owns provider resolution,
+the dispatcher and the cached local model + idle-unload state; backends live in
+``transcription_{common,audio,local,cloud,command}``.
 """
 
 import logging
 import os
-import platform
-import queue
-import re
-import shlex
 import shutil
-import subprocess
-import tempfile
 import threading
 import time
+import importlib.util as _ilu
 from pathlib import Path
 from typing import Optional, Dict, Any
-from urllib.parse import urljoin
 
-from hermes_cli._subprocess_compat import windows_hide_flags
 from utils import is_truthy_value
-from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import (
-    managed_nous_tools_enabled,
-    nous_tool_gateway_unavailable_message,
-    resolve_openai_audio_api_key,
-)
+from tools.transcription_common import (
+    BUILTIN_STT_PROVIDERS, CLOUD_STT_PROVIDERS, DEFAULT_ELEVENLABS_STT_MODEL,
+    DEFAULT_GROQ_STT_MODEL, DEFAULT_LOCAL_MODEL, DEFAULT_MISTRAL_STT_MODEL, DEFAULT_PROVIDER,
+    DEFAULT_STT_MODEL, LOCAL_STT_COMMAND_ENV, LOCAL_STT_LANGUAGE_ENV, _error_result,
+    _get_stt_section, _ok_result)
+from tools.transcription_audio import (
+    _convert_caf_to_wav, _prepare_audio_for_transcription, _trim_silence_for_cloud_stt,
+    _validate_audio_file, _validate_audio_file_size, _validate_audio_source_file)
+from tools.transcription_local import (
+    _get_idle_unload_seconds, _has_local_command, _join_confident_segments,
+    _load_local_whisper_model, _looks_like_cuda_lib_error, _normalize_local_model,
+    _transcribe_local_command, _try_lazy_install_stt, build_local_transcribe_kwargs)
+# The ``_transcribe_<provider>`` handlers are looked up in this module's globals by _dispatch_stt_provider.
+from tools.transcription_cloud import (  # noqa: F401  (handlers dispatched via globals())
+    _has_xai_stt_credentials, _resolve_openai_audio_client_config, _transcribe_deepinfra,
+    _transcribe_elevenlabs, _transcribe_groq, _transcribe_mistral, _transcribe_openai,
+    _transcribe_xai)
+from tools.transcription_command import (
+    _apply_pre_transcription_hook, _dispatch_to_plugin_provider, _enforce_prompt_length_limit,
+    _resolve_command_stt_provider_config, _transcribe_command_stt, _unregistered_stt_provider_error)
 
 logger = logging.getLogger(__name__)
 
-def get_env_value(name, default=None):
-    """Read env values through the live config module.
 
-    Tests may monkeypatch and later restore ``hermes_cli.config.get_env_value``
-    before this module is imported. Resolve the helper at call time so STT does
-    not keep a stale imported function for the rest of the test process.
-    """
+def get_env_value(name, default=None):
+    """Read env values through the live config module (resolved per call: tests monkeypatch it around import)."""
     try:
         from hermes_cli.config import get_env_value as _get_env_value
     except ImportError:
@@ -69,25 +54,12 @@ def get_env_value(name, default=None):
 
 
 def _resolve_provider_key(env_var: str, provider_id: str) -> str:
-    """Resolve an STT provider API key via the shared voice-key resolver.
-
-    Delegates to ``tools.tool_backend_helpers.resolve_provider_secret`` —
-    the single owner of STT/TTS key resolution (config > env/.env > the
-    credential pool populated by ``hermes auth add <provider_id>``).
-    Resolved at call time so tests that reload the helpers module see the
-    live function.
-    """
+    """STT API key via the shared voice-key resolver (config > env/.env > credential pool); resolved per call."""
     try:
         from tools.tool_backend_helpers import resolve_provider_secret
     except ImportError:  # pragma: no cover — helpers are in-repo
         return str(get_env_value(env_var) or "").strip()
     return resolve_provider_secret(env_var, provider_id, env_getter=get_env_value)
-
-# ---------------------------------------------------------------------------
-# Optional imports — graceful degradation
-# ---------------------------------------------------------------------------
-
-import importlib.util as _ilu
 
 
 def _safe_find_spec(module_name: str) -> bool:
@@ -97,70 +69,26 @@ def _safe_find_spec(module_name: str) -> bool:
         return module_name in globals() or module_name in os.sys.modules
 
 
-_HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
-_HAS_OPENAI = _safe_find_spec("openai")
-_HAS_MISTRAL = _safe_find_spec("mistralai")
-_HAS_PILK = _safe_find_spec("pilk")
+_HAS_FASTER_WHISPER, _HAS_OPENAI, _HAS_MISTRAL, _HAS_PILK = map(
+    _safe_find_spec, ("faster_whisper", "openai", "mistralai", "pilk"))
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-DEFAULT_PROVIDER = "local"
-DEFAULT_LOCAL_MODEL = "base"
-DEFAULT_LOCAL_STT_LANGUAGE = "en"
-DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
-DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
-DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
-DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
-LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
-LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
-COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
-
-GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
-OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
-XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
-ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
-# DeepInfra STT base URL now resolved via hermes_cli.models.deepinfra_base_url (shared).
-
-SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".oga", ".opus", ".aac", ".flac", ".caf"}
-LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
-MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
-
-# Known model sets for auto-correction
-OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"}
-GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
-
-# Singleton for the local model — loaded once, reused across calls
+# Local model singleton; the lock guards check-then-load against concurrent voice messages.
 _local_model: Optional[object] = None
 _local_model_name: Optional[str] = None
-# Guards the check-then-load of the module-global model cache above.
-# Without it, two concurrent voice messages can both see `_local_model is
-# None` and download/load the whisper model twice (#24767).
+# See #24767.
 _local_model_lock = threading.Lock()
 
-# --- Idle unload ---------------------------------------------------------------
-# The model singleton above is loaded once and never released — hundreds of MB
-# of RAM/VRAM sit idle between voice messages. On long-running gateway
-# processes (especially with local LLMs competing for the same GPU) this is
-# wasteful. A single long-lived daemon thread checks _last_transcription_time
-# and unloads the model after a configurable idle period, then exits. The next
-# voice message reloads the model and restarts the watcher transparently.
+# Idle unload: one daemon thread releases the model (hundreds of MB of RAM/VRAM) after a
+# configurable idle period, then exits; the next voice message reloads and restarts it.
+# _idle_unload_mgmt_lock serializes the start check so no duplicate watchers spawn.
 _last_transcription_time: float = 0.0
 _idle_unload_thread: Optional[threading.Thread] = None
 _idle_unload_stop = threading.Event()
-# Serializes watcher start checks so two concurrent transcriptions can't
-# both observe "no watcher alive" and spawn duplicates.
 _idle_unload_mgmt_lock = threading.Lock()
-
 _IDLE_UNLOAD_CHECK_INTERVAL = 30  # seconds between idle checks
 
-# ---------------------------------------------------------------------------
-# Config helpers
-# ---------------------------------------------------------------------------
 
-
-
+# ---- Config helpers -----------------------------------------------------
 def _load_stt_config() -> dict:
     """Load the ``stt`` section from user config, falling back to defaults."""
     try:
@@ -171,1572 +99,217 @@ def _load_stt_config() -> dict:
 
 
 def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
-    """Return whether STT is enabled in config."""
-    if stt_config is None:
-        stt_config = _load_stt_config()
-    enabled = stt_config.get("enabled", True)
-    return is_truthy_value(enabled, default=True)
+    cfg = _load_stt_config() if stt_config is None else stt_config
+    return is_truthy_value(cfg.get("enabled", True), default=True)
 
 
 def _resolve_stt_language(
-    provider_key: str,
-    stt_config: Optional[Dict[str, Any]] = None,
-    *,
-    extra_keys: tuple = (),
+    provider_key: str, stt_config: Optional[Dict[str, Any]] = None, *, extra_keys: tuple = ()
 ) -> Optional[str]:
-    """Resolve the language hint for an STT provider (class-level, all providers).
-
-    Resolution order (first non-empty wins):
-      1. ``stt.<provider>.language`` (plus any *extra_keys* aliases, e.g.
-         ElevenLabs' historical ``language_code``)
-      2. ``stt.language``           — global default for every provider
-      3. ``HERMES_LOCAL_STT_LANGUAGE`` env var (legacy escape hatch)
-      4. ``None``                   — let the provider auto-detect
-
-    Returns a stripped ISO-639-1-ish code or None. Never returns "".
-    """
+    """Language hint for an STT provider, first non-empty wins (never ""): ``stt.<provider>.language``
+    (plus *extra_keys* aliases, e.g. ``language_code``) > ``stt.language`` > ``HERMES_LOCAL_STT_LANGUAGE``
+    env > None (provider auto-detects)."""
     if stt_config is None:
         stt_config = _load_stt_config()
     provider_cfg = _get_stt_section(stt_config, provider_key)
-    candidates = [provider_cfg.get("language")]
-    for key in extra_keys:
-        candidates.append(provider_cfg.get(key))
+    candidates = [provider_cfg.get(key) for key in ("language", *extra_keys)]
     if isinstance(stt_config, dict):
         candidates.append(stt_config.get("language"))
     candidates.append(os.getenv(LOCAL_STT_LANGUAGE_ENV))
-    for candidate in candidates:
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate.strip()
-    return None
+    return next((c.strip() for c in candidates if isinstance(c, str) and c.strip()), None)
+
+
+def _openai_audio_unavailable_reason() -> Optional[str]:
+    """None when OpenAI audio has usable credentials (config, env, or managed gateway); else the reason."""
+    try:
+        # Resolve directly instead of via the boolean probe: the probe flattens
+        # _resolve_openai_audio_client_config's selection-specific ValueError into False, so a managed
+        # openai-audio gateway outage would be logged as a generic "no API key" hint (#93045).
+        _resolve_openai_audio_client_config()
+        return None
+    except ValueError as exc:
+        return str(exc)
 
 
 def _has_openai_audio_backend() -> bool:
-    """Return True when OpenAI audio can use config credentials, env credentials, or the managed gateway."""
-    try:
-        _resolve_openai_audio_client_config()
-        return True
-    except ValueError:
-        return False
-
-
-def _find_binary(binary_name: str) -> Optional[str]:
-    """Find a local binary, checking common Homebrew/local prefixes as well as PATH."""
-    for directory in COMMON_LOCAL_BIN_DIRS:
-        candidate = Path(directory) / binary_name
-        if candidate.exists() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    return shutil.which(binary_name)
-
-
-def _find_ffmpeg_binary() -> Optional[str]:
-    return _find_binary("ffmpeg")
-
-
-# Shared encode profile for every STT-bound m4a we produce (transcode and
-# silence-trim): 16 kHz mono 32 kbps AAC, faststart. One owner — codec or
-# bitrate changes must not drift between the two paths.
-_STT_M4A_ENCODE_ARGS = (
-    "-vn", "-ac", "1", "-ar", "16000",
-    "-c:a", "aac", "-b:a", "32k", "-movflags", "+faststart",
-)
-
-
-def _run_ffmpeg_stt_encode(
-    ffmpeg: str, input_path: str, output_path: str, *, audio_filter: Optional[str] = None
-) -> None:
-    """Run the shared STT m4a encode, optionally with an ``-af`` filter.
-
-    Raises on failure (CalledProcessError / TimeoutExpired) — callers own
-    the error semantics (transcode reports, trim swallows).
-    """
-    command = [ffmpeg, "-y", "-i", input_path]
-    if audio_filter:
-        command += ["-af", audio_filter]
-    command += [*_STT_M4A_ENCODE_ARGS, output_path]
-    subprocess.run(
-        command, check=True, capture_output=True, text=True,
-        encoding="utf-8", errors="replace", timeout=120,
-        stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(),
-    )
-
-
-def _transcode_audio_for_stt(file_path: str, work_dir: str) -> tuple[Optional[str], Optional[str]]:
-    """Transcode ``file_path`` to a compact, broadly-accepted .m4a for STT upload.
-
-    Newer OpenAI transcription models (``gpt-4o-transcribe``,
-    ``gpt-4o-mini-transcribe``) reject some containers the legacy ``whisper-1``
-    endpoint accepted -- notably the Ogg/Opus voice notes messaging apps send --
-    and gateway downloads occasionally arrive with a misleading extension.
-    Normalizing to 16 kHz mono AAC/m4a produces a small file the endpoints
-    accept. Returns ``(converted_path, None)`` on success or ``(None, error)``.
-    """
-    ffmpeg = _find_ffmpeg_binary()
-    if not ffmpeg:
-        return None, "audio needs transcoding for the STT API, but ffmpeg was not found"
-    converted_path = os.path.join(work_dir, f"{Path(file_path).stem or 'audio'}-stt.m4a")
-    try:
-        _run_ffmpeg_stt_encode(ffmpeg, file_path, converted_path)
-        return converted_path, None
-    except subprocess.CalledProcessError as exc:
-        details = exc.stderr.strip() or exc.stdout.strip() or str(exc)
-        logger.error("ffmpeg STT transcode failed for %s: %s", file_path, details)
-        return None, f"failed to transcode audio for the STT API: {details}"
-    except Exception as exc:  # noqa: BLE001 - transcode is best-effort
-        logger.error("unexpected STT transcode failure for %s: %s", file_path, exc, exc_info=True)
-        return None, f"failed to transcode audio for the STT API: {exc}"
-
-
-def _find_whisper_binary() -> Optional[str]:
-    return _find_binary("whisper")
-
-
-def _get_local_command_template() -> Optional[str]:
-    configured = os.getenv(LOCAL_STT_COMMAND_ENV, "").strip()
-    if configured:
-        return configured
-
-    whisper_binary = _find_whisper_binary()
-    if whisper_binary:
-        quoted_binary = shlex.quote(whisper_binary)
-        return (
-            f"{quoted_binary} {{input_path}} --model {{model}} --output_format txt "
-            "--output_dir {output_dir} --language {language}"
-        )
-    return None
-
-
-def _has_local_command() -> bool:
-    return _get_local_command_template() is not None
-
-
-def _normalize_local_model(model_name: Optional[str]) -> str:
-    """Return a valid faster-whisper model size, mapping cloud-only names to the default.
-
-    Cloud providers like OpenAI use names such as ``whisper-1`` which are not
-    valid for faster-whisper (which expects ``tiny``, ``base``, ``small``,
-    ``medium``, or ``large-v*``).  When such a name is detected we fall back to
-    the default local model and emit a warning so the user knows what happened.
-    """
-    if not model_name or model_name in OPENAI_MODELS or model_name in GROQ_MODELS:
-        if model_name and (model_name in OPENAI_MODELS or model_name in GROQ_MODELS):
-            logger.warning(
-                "STT model '%s' is a cloud-only name and cannot be used with the local "
-                "provider. Falling back to '%s'. Set stt.local.model to a valid "
-                "faster-whisper size (tiny, base, small, medium, large-v3).",
-                model_name,
-                DEFAULT_LOCAL_MODEL,
-            )
-        return DEFAULT_LOCAL_MODEL
-    return model_name
-
-
-def _normalize_local_command_model(model_name: Optional[str]) -> str:
-    return _normalize_local_model(model_name)
-
-
-def _try_lazy_install_stt() -> bool:
-    """Attempt to lazy-install faster-whisper and return True on success.
-
-    The module-level ``_HAS_FASTER_WHISPER`` flag is set at import time and
-    cached. If the package wasn't installed at startup, calling ``ensure()``
-    installs it. This function re-checks dynamically after installation so
-    the provider can use it immediately without a process restart.
-    """
-    try:
-        from tools.lazy_deps import ensure
-        # prompt=False: never raise a blocking input() prompt mid-session.
-        # Under the interactive CLI prompt_toolkit owns stdin, so a bare
-        # input() deadlocks the terminal (#40490). The install is already
-        # gated by security.allow_lazy_installs, so reaching here is opt-in.
-        ensure("stt.faster_whisper", prompt=False)
-        # Re-check dynamically after install
-        import importlib.util as _iu
-        if _iu.find_spec("faster_whisper"):
-            return True
-        logger.warning(
-            "faster-whisper was installed but importlib still cannot find it "
-            "(may require Python restart)"
-        )
-    except Exception as exc:
-        logger.warning(
-            "Lazy install of faster-whisper failed: %s. "
-            "This is often a permission issue: the Hermes process user cannot "
-            "write to the virtual environment. Try running manually as the "
-            "venv owner: `stat -c '%%u' '$(dirname $(dirname $(which python3)))'` "
-            "then `su - <owner> -c 'VIRTUAL_ENV=/opt/hermes/.venv "
-            "uv pip install faster-whisper==1.2.1'`",
-            exc,
-        )
-    return False
-
-
-# Names of the STT providers with native handlers in this module.
-# Kept in sync with ``agent.transcription_registry._BUILTIN_NAMES`` —
-# a regression test fails if they drift. The plugin hook from
-# issue #30398-style follow-up rejects plugins registering under any
-# of these names; the dispatcher in ``transcribe_audio`` short-circuits
-# them defensively as well.
-BUILTIN_STT_PROVIDERS = frozenset({
-    "local",
-    "local_command",
-    "groq",
-    "openai",
-    "mistral",
-    "xai",
-    "elevenlabs",
-    "deepinfra",
-})
-
-
-# ---------------------------------------------------------------------------
-# Command-provider registry (``stt.providers.<name>: type: command``)
-# ---------------------------------------------------------------------------
-#
-# Mirrors the TTS command-provider registry shipped in PR #17843 — same
-# placeholder grammar, same shell-quote-aware rendering, same process-tree
-# termination on timeout. Lets any whisper CLI / ASR CLI / curl pipeline
-# become an STT backend with zero Python.
-#
-# Resolution order:
-#   1. Built-in (``local``, ``local_command``, ``groq``, ``openai``,
-#      ``mistral``, ``xai``)              → native handler. **Always wins.**
-#   2. ``stt.providers.<name>: type: command``  → command-provider runner.
-#   3. Plugin-registered TranscriptionProvider  → plugin dispatch.
-#   4. No match                                 → "No STT provider available".
-#
-# The single-env-var ``HERMES_LOCAL_STT_COMMAND`` escape hatch is preserved
-# untouched via the built-in ``local_command`` path. Use the command-provider
-# registry when you want MULTIPLE shell-driven STT engines, or you want a
-# named provider you can pick via ``stt.provider`` in config.yaml.
-DEFAULT_COMMAND_STT_TIMEOUT_SECONDS = 300
-DEFAULT_COMMAND_STT_LANGUAGE = "en"
-DEFAULT_COMMAND_STT_OUTPUT_FORMAT = "txt"
-COMMAND_STT_OUTPUT_FORMATS = frozenset({"txt", "json", "srt", "vtt"})
-
-
-def _get_stt_section(stt_config: Dict[str, Any], name: str) -> Dict[str, Any]:
-    """Return an stt sub-section if it's a dict, else an empty dict."""
-    if not isinstance(stt_config, dict):
-        return {}
-    section = stt_config.get(name)
-    return section if isinstance(section, dict) else {}
-
-
-def _get_named_stt_provider_config(
-    stt_config: Dict[str, Any],
-    name: str,
-) -> Dict[str, Any]:
-    """Return the config dict for a user-declared STT command provider.
-
-    Looks up ``stt.providers.<name>`` first (the canonical location), and
-    falls back to ``stt.<name>`` so users who followed the built-in layout
-    still work. Returns an empty dict when the provider is not declared.
-
-    Built-in names are NOT special-cased here — the caller short-circuits
-    them before this is consulted, AND ``_is_command_stt_provider_config``
-    requires an explicit ``command:`` value, so a built-in section like
-    ``stt.openai`` (which has ``model``/``language`` but no ``command``)
-    can't accidentally be treated as a command provider.
-    """
-    providers = _get_stt_section(stt_config, "providers")
-    section = providers.get(name) if isinstance(providers, dict) else None
-    if isinstance(section, dict):
-        return section
-    # Back-compat: allow ``stt.<name>`` for user-declared providers too,
-    # but only when the name is not a built-in (so a user's ``stt.openai``
-    # block still means the OpenAI provider, not a custom command).
-    if name.lower() not in BUILTIN_STT_PROVIDERS:
-        legacy = _get_stt_section(stt_config, name)
-        if legacy:
-            return legacy
-    return {}
-
-
-def _is_command_stt_provider_config(config: Dict[str, Any]) -> bool:
-    """Return True when *config* declares a command-type STT provider."""
-    if not isinstance(config, dict):
-        return False
-    ptype = str(config.get("type") or "").strip().lower()
-    if ptype and ptype != "command":
-        return False
-    command = config.get("command")
-    return isinstance(command, str) and bool(command.strip())
-
-
-def _resolve_command_stt_provider_config(
-    provider: str,
-    stt_config: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
-    """Return the provider config if *provider* resolves to a command type.
-
-    Built-in provider names are rejected (they have native handlers).
-    Returns None when the name is a built-in, ``"none"``, unknown, or not
-    a command type.
-    """
-    if not provider:
-        return None
-    key = provider.lower().strip()
-    if key in BUILTIN_STT_PROVIDERS or key == "none":
-        return None
-    config = _get_named_stt_provider_config(stt_config, key)
-    if _is_command_stt_provider_config(config):
-        return config
-    return None
+    return _openai_audio_unavailable_reason() is None
 
 
 def _is_local_stt_provider(provider: str, stt_config: Dict[str, Any]) -> bool:
-    """Return whether *provider* is exempt from Hermes's remote upload cap."""
-    key = (provider or "").lower().strip()
-    if key in {"local", "local_command"}:
-        return True
-    return False
+    """Whether *provider* is exempt from Hermes's remote upload cap."""
+    return (provider or "").lower().strip() in {"local", "local_command"}
 
 
-def _iter_command_stt_providers(stt_config: Dict[str, Any]):
-    """Yield (name, config) pairs for every declared command-type STT provider."""
-    if not isinstance(stt_config, dict):
-        return
-    providers = _get_stt_section(stt_config, "providers")
-    for name, cfg in (providers or {}).items():
-        if isinstance(name, str) and name.lower() not in BUILTIN_STT_PROVIDERS:
-            if _is_command_stt_provider_config(cfg):
-                yield name, cfg
+# ---- Provider resolution ------------------------------------------------
+def _has_key(env_var: str, provider: str, *, needs_openai: bool = False, needs_mistral: bool = False):
+    """Availability probe factory: optional SDK flag AND a resolvable API key."""
+    def probe() -> bool:
+        sdk_ok = (not needs_openai or _HAS_OPENAI) and (not needs_mistral or _HAS_MISTRAL)
+        return sdk_ok and bool(_resolve_provider_key(env_var, provider))
+    return probe
 
 
-def _has_any_command_stt_provider(stt_config: Optional[Dict[str, Any]] = None) -> bool:
-    """Return True when any command-type STT provider is configured."""
-    if stt_config is None:
-        stt_config = _load_stt_config()
-    for _name, _cfg in _iter_command_stt_providers(stt_config):
-        return True
-    return False
-
-
-def _get_command_stt_timeout(config: Dict[str, Any]) -> float:
-    """Return timeout in seconds, falling back when invalid."""
-    raw = config.get("timeout", config.get("timeout_seconds", DEFAULT_COMMAND_STT_TIMEOUT_SECONDS))
+def _has_xai_stt_credentials_quietly() -> bool:
     try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return float(DEFAULT_COMMAND_STT_TIMEOUT_SECONDS)
-    if value <= 0:
-        return float(DEFAULT_COMMAND_STT_TIMEOUT_SECONDS)
-    return value
-
-
-def _get_command_stt_output_format(config: Dict[str, Any]) -> str:
-    """Return the validated output format (txt/json/srt/vtt)."""
-    raw = (
-        config.get("format")
-        or config.get("output_format")
-        or DEFAULT_COMMAND_STT_OUTPUT_FORMAT
-    )
-    fmt = str(raw).lower().strip().lstrip(".")
-    return fmt if fmt in COMMAND_STT_OUTPUT_FORMATS else DEFAULT_COMMAND_STT_OUTPUT_FORMAT
-
-
-def _shell_quote_context_stt(command_template: str, position: int) -> Optional[str]:
-    """Return the shell quote character active right before *position*.
-
-    Mirrors ``tools.tts_tool._shell_quote_context`` — kept local to avoid
-    cross-module import of a private helper. Returns ``"'"`` / ``'"'`` when
-    inside a quoted region, ``None`` for bare context.
-    """
-    quote: Optional[str] = None
-    escaped = False
-    i = 0
-    while i < position:
-        char = command_template[i]
-        if quote == "'":
-            if char == "'":
-                quote = None
-        elif quote == '"':
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                quote = None
-        elif char == "'":
-            quote = "'"
-        elif char == '"':
-            quote = '"'
-        elif char == "\\":
-            i += 1
-        i += 1
-    return quote
-
-
-def _quote_command_stt_placeholder(value: str, quote_context: Optional[str]) -> str:
-    """Quote a placeholder value for its position in a shell command template.
-
-    Mirrors ``tools.tts_tool._quote_command_tts_placeholder``.
-    """
-    if quote_context == "'":
-        return value.replace("'", r"'\''")
-    if quote_context == '"':
-        return (
-            value
-            .replace("\\", "\\\\")
-            .replace('"', r'\"')
-            .replace("$", r"\$")
-            .replace("`", r"\`")
-        )
-    if os.name == "nt":
-        return subprocess.list2cmdline([value])
-    return shlex.quote(value)
-
-
-def _render_command_stt_template(
-    command_template: str,
-    placeholders: Dict[str, str],
-) -> str:
-    """Replace supported placeholders while preserving ``{{`` / ``}}``.
-
-    Mirrors ``tools.tts_tool._render_command_tts_template``. Placeholders
-    are shell-quote-aware: ``{voice}`` inside single quotes gets
-    single-quote-safe escaping, inside double quotes gets ``$``/`` ` ``/`` " ``
-    escaping, outside quotes gets ``shlex.quote``. Doubled braces ``{{`` and
-    ``}}`` are preserved as literal ``{`` / ``}`` for users who want to
-    embed JSON snippets in their command.
-    """
-    import re
-
-    names = "|".join(re.escape(name) for name in placeholders)
-    pattern = re.compile(
-        rf"(?<!\$)(?:\{{\{{(?P<double>{names})\}}\}}|\{{(?P<single>{names})\}})"
-    )
-    replacements: list[tuple[str, str]] = []
-
-    def replace_match(match: "re.Match[str]") -> str:
-        name = match.group("double") or match.group("single")
-        token = f"__HERMES_STT_PLACEHOLDER_{len(replacements)}__"
-        replacements.append((
-            token,
-            _quote_command_stt_placeholder(
-                placeholders[name],
-                _shell_quote_context_stt(command_template, match.start()),
-            ),
-        ))
-        return token
-
-    rendered = pattern.sub(replace_match, command_template)
-    rendered = rendered.replace("{{", "{").replace("}}", "}")
-    for token, value in replacements:
-        rendered = rendered.replace(token, value)
-    return rendered
-
-
-def _terminate_command_stt_process_tree(proc: subprocess.Popen) -> None:
-    """Best-effort termination of a shell process and all of its children.
-
-    Mirrors ``tools.tts_tool._terminate_command_tts_process_tree``.
-    """
-    if proc.poll() is not None:
-        return
-
-    if os.name == "nt":
-        try:
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-                stdin=subprocess.DEVNULL,
-            )
-        except Exception:
-            proc.kill()
-        return
-
-    try:
-        import psutil  # type: ignore
-    except ImportError:
-        # psutil is optional — fall back to single-process terminate/kill
-        proc.terminate()
-        try:
-            proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        return
-
-    try:
-        parent = psutil.Process(proc.pid)
-        for child in parent.children(recursive=True):
-            try:
-                child.terminate()
-            except psutil.NoSuchProcess:
-                pass
-        parent.terminate()
-    except psutil.NoSuchProcess:
-        return
+        return _has_xai_stt_credentials()
     except Exception:
-        proc.terminate()
-
-    try:
-        proc.wait(timeout=2)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-
-    try:
-        parent = psutil.Process(proc.pid)
-        for child in parent.children(recursive=True):
-            try:
-                child.kill()
-            except psutil.NoSuchProcess:
-                pass
-        parent.kill()
-    except psutil.NoSuchProcess:
-        return
-    except Exception:
-        proc.kill()
+        return False
 
 
-def _command_stt_env_passthrough(config: Dict[str, Any]) -> list:
-    """Return the provider's ``env_passthrough`` allowlist (opt-out of scrub).
-
-    Command providers legitimately reference their own API keys in the shell
-    template (curl one-liners). The child env is scrubbed of Hermes secrets by
-    default; ``env_passthrough: [MY_API_KEY, ...]`` copies the named variables
-    back from the parent environment so a trusted template keeps working.
-    Mirrors ``tools.tts_tool._command_provider_env_passthrough``.
-    """
-    raw = config.get("env_passthrough")
-    if not isinstance(raw, (list, tuple)):
-        return []
-    return [str(item).strip() for item in raw if str(item).strip()]
+def _resolve_explicit_openai() -> str:
+    if not _HAS_OPENAI:
+        logger.warning("STT provider 'openai' configured but no API key available")
+        return "none"
+    # Resolved directly so a managed openai-audio gateway outage is logged with its real reason.
+    reason = _openai_audio_unavailable_reason()
+    if reason is None:
+        return "openai"
+    logger.warning("STT provider 'openai' configured but unavailable: %s", reason)
+    return "none"
 
 
-def _run_command_stt(
-    command: str,
-    timeout: float,
-    env_passthrough: Optional[list] = None,
-) -> subprocess.CompletedProcess:
-    """Run a command-provider shell command with process-tree idle cleanup.
-
-    Mirrors ``tools.tts_tool._run_command_tts``: ``timeout`` is an IDLE
-    timeout, reset whenever the command emits output on stdout/stderr —
-    a slow-but-alive provider survives, a silently stalled one is killed
-    (same progress-based stuck detection as the TTS runner, #50081).
-    Child env is scrubbed of Hermes secrets (salvage of #56332) while still
-    propagating delegated-child lineage markers when applicable.
-    """
-    from agent.delegation_context import delegated_child_subprocess_env
-    from tools.environments.local import hermes_subprocess_env
-
-    scrubbed = hermes_subprocess_env(inherit_credentials=False)
-    for key in env_passthrough or []:
-        value = os.environ.get(key)
-        if value is not None:
-            scrubbed[key] = value
-    popen_kwargs: Dict[str, Any] = {
-        "shell": True,
-        "stdout": subprocess.PIPE,
-        "stderr": subprocess.PIPE,
-        "text": True,
-        # Lossy UTF-8 decode — locale-mismatched bytes from the STT command
-        # must not raise in the reader threads on non-UTF-8 Windows (#45099).
-        "encoding": "utf-8",
-        "errors": "replace",
-        "env": delegated_child_subprocess_env(scrubbed),
-    }
-    if os.name == "nt":
-        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    else:
-        popen_kwargs["start_new_session"] = True
-
-    proc = subprocess.Popen(command, **popen_kwargs, stdin=subprocess.DEVNULL)
-    output_queue: "queue.Queue[tuple[str, Optional[str]]]" = queue.Queue()
-    chunks: Dict[str, list] = {"stdout": [], "stderr": []}
-    open_streams = {"stdout", "stderr"}
-
-    def read_stream(name: str, stream: Any) -> None:
-        encoding = getattr(stream, "encoding", None) or "utf-8"
-        read1 = getattr(getattr(stream, "buffer", None), "read1", None)
-        try:
-            while True:
-                if read1 is None:
-                    chunk = stream.read(65536)
-                else:
-                    data = read1(65536)
-                    chunk = data.decode(encoding, errors="replace")
-                if not chunk:
-                    break
-                output_queue.put((name, chunk))
-        finally:
-            output_queue.put((name, None))
-
-    readers = [
-        threading.Thread(
-            target=read_stream,
-            args=("stdout", proc.stdout),
-            daemon=True,
-        ),
-        threading.Thread(
-            target=read_stream,
-            args=("stderr", proc.stderr),
-            daemon=True,
-        ),
-    ]
-    for reader in readers:
-        reader.start()
-
-    deadline = time.monotonic() + timeout
-    timed_out = False
-    while open_streams:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            timed_out = True
-            break
-        try:
-            name, chunk = output_queue.get(timeout=min(0.05, remaining))
-        except queue.Empty:
-            continue
-        if chunk is None:
-            open_streams.discard(name)
-            continue
-        chunks[name].append(chunk)
-        deadline = time.monotonic() + timeout
-
-    if not timed_out:
-        try:
-            proc.wait(timeout=max(0.0, deadline - time.monotonic()))
-        except subprocess.TimeoutExpired:
-            timed_out = True
-
-    if timed_out:
-        _terminate_command_stt_process_tree(proc)
-        for reader in readers:
-            reader.join(timeout=0.5)
-        while True:
-            try:
-                name, chunk = output_queue.get_nowait()
-            except queue.Empty:
-                break
-            if chunk:
-                chunks[name].append(chunk)
-        stdout = "".join(chunks["stdout"])
-        stderr = "".join(chunks["stderr"])
-        try:
-            raise subprocess.TimeoutExpired(command, timeout)
-        except subprocess.TimeoutExpired as exc:
-            raise subprocess.TimeoutExpired(
-                command,
-                timeout,
-                output=stdout,
-                stderr=stderr,
-            ) from exc
-
-    stdout = "".join(chunks["stdout"])
-    stderr = "".join(chunks["stderr"])
-
-    if proc.returncode:
-        raise subprocess.CalledProcessError(
-            proc.returncode,
-            command,
-            output=stdout,
-            stderr=stderr,
-        )
-    return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+def _detect_local_backend() -> Optional[str]:
+    """faster-whisper > local whisper CLI > lazy-installed faster-whisper; None when nothing local works."""
+    if _HAS_FASTER_WHISPER:
+        return "local"
+    return "local_command" if _has_local_command() else ("local" if _try_lazy_install_stt() else None)
 
 
-def _read_command_stt_output(output_path: Path, stdout: str, fmt: str) -> str:
-    """Return the transcript text from a command-provider invocation.
-
-    Resolution:
-      1. If ``output_path`` exists and is non-empty → read it (raw text).
-      2. Else if ``stdout`` is non-empty → use stdout (lets users write
-         curl-style one-liners that emit transcript to stdout instead of
-         writing a file).
-      3. Else → raise RuntimeError (no usable output produced).
-
-    For JSON format, we still return the raw bytes — extracting a
-    ``text`` field is out of scope; users either configure ``format: txt``
-    or post-process JSON downstream. (Same trade-off as TTS: the runner
-    doesn't try to be clever about output shape.)
-    """
-    if output_path.exists():
-        try:
-            content = output_path.read_text(encoding="utf-8").strip()
-        except UnicodeDecodeError:
-            content = output_path.read_bytes().decode("utf-8", errors="replace").strip()
-        if content:
-            return content
-    if stdout and stdout.strip():
-        return stdout.strip()
-    raise RuntimeError(
-        f"Command STT provider wrote no output file at {output_path} "
-        f"and produced no stdout"
-    )
+def _resolve_explicit_local() -> str:
+    backend = _detect_local_backend()
+    if not backend:
+        logger.warning("STT provider 'local' configured but unavailable "
+                       "(install faster-whisper or set HERMES_LOCAL_STT_COMMAND)")
+    return backend or "none"
 
 
-def _transcribe_command_stt(
-    file_path: str,
-    provider_name: str,
-    config: Dict[str, Any],
-    stt_config: Dict[str, Any],
-    model_override: Optional[str] = None,
-    language_override: Optional[str] = None,
-    prompt: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Transcribe via a user-declared ``stt.providers.<name>: type: command``.
+def _resolve_explicit_local_command() -> str:
+    if _has_local_command():
+        return "local_command"
+    if _HAS_FASTER_WHISPER:
+        logger.info("Local STT command unavailable, using local faster-whisper")
+        return "local"
+    logger.warning("STT provider 'local_command' configured but unavailable")
+    return "none"
 
-    Placeholder grammar:
 
-    | Placeholder       | Substituted with                                          |
-    |-------------------|-----------------------------------------------------------|
-    | ``{input_path}``  | absolute path to the audio file (original location)       |
-    | ``{output_path}`` | absolute path the provider should write its transcript to |
-    | ``{output_dir}``  | parent dir of ``{output_path}``                           |
-    | ``{format}``      | configured output format (``txt`` / ``json`` / ``srt`` / ``vtt``) |
-    | ``{language}``    | configured language code (default ``en``)                 |
-    | ``{model}``       | configured model id (empty when not set)                  |
+_has_groq_key = _has_key("GROQ_API_KEY", "groq", needs_openai=True)
+_has_mistral_key = _has_key("MISTRAL_API_KEY", "mistral", needs_mistral=True)
+_has_elevenlabs_key = _has_key("ELEVENLABS_API_KEY", "elevenlabs")
+_has_deepinfra_key = _has_key("DEEPINFRA_API_KEY", "deepinfra", needs_openai=True)
 
-    All placeholders are shell-quote-aware (see ``_render_command_stt_template``).
-    Doubled braces ``{{`` and ``}}`` are preserved as literal braces.
+# Cloud providers in AUTO-DETECT priority order:
+#   name -> (explicit-selection probe, auto-detect probe, explicit warning, auto-detect log)
+# The probes differ only for openai (explicit has its own resolver in _EXPLICIT_RESOLVERS;
+# auto-detect also requires the SDK) and xai (auto-detect must never raise). DeepInfra is
+# LAST so a DEEPINFRA_API_KEY set for chat never displaces an xAI/ElevenLabs auto-selection.
+# Mistral only auto-selects when the SDK is present — no lazy-install during passive
+# auto-detection (explicit ``provider: mistral`` installs on first use).
+_CLOUD_PROVIDER_SPECS = {
+    "groq": (_has_groq_key, _has_groq_key,
+             "STT provider 'groq' configured but GROQ_API_KEY not set",
+             "No local STT available, using Groq Whisper API"),
+    "openai": (None, lambda: _HAS_OPENAI and _has_openai_audio_backend(),
+               None,
+               "No local STT available, using OpenAI Whisper API"),
+    "mistral": (_has_mistral_key, _has_mistral_key,
+                "STT provider 'mistral' configured but mistralai package not installed or MISTRAL_API_KEY not set",
+                "No local STT available, using Mistral Voxtral Transcribe API"),
+    "xai": (_has_xai_stt_credentials, _has_xai_stt_credentials_quietly,
+            "STT provider 'xai' configured but no xAI credentials are available",
+            "No local STT available, using xAI Grok STT API"),
+    "elevenlabs": (_has_elevenlabs_key, _has_elevenlabs_key,
+                   "STT provider 'elevenlabs' configured but ELEVENLABS_API_KEY not set",
+                   "No local STT available, using ElevenLabs Scribe STT API"),
+    "deepinfra": (_has_deepinfra_key, _has_deepinfra_key,
+                  "STT provider 'deepinfra' configured but DEEPINFRA_API_KEY not set (or openai package missing)",
+                  "No local STT available, using DeepInfra Whisper API")}
 
-    Returns the standard transcribe-response envelope (``success``,
-    ``transcript``, ``provider``, ``error``).
-    """
-    if prompt:
-        logger.debug(
-            "Command STT provider '%s' does not support transcription "
-            "prompts — proceeding without the prompt.", provider_name,
-        )
+# Explicit selections whose resolution is more than a probe + warning.
+_EXPLICIT_RESOLVERS = {
+    "local": _resolve_explicit_local,
+    "local_command": _resolve_explicit_local_command,
+    "openai": _resolve_explicit_openai}
 
-    command_template = str(config.get("command") or "").strip()
-    if not command_template:
-        return {
-            "success": False,
-            "transcript": "",
-            "provider": provider_name,
-            "error": f"stt.providers.{provider_name}.command is not configured",
-        }
 
-    audio = Path(file_path).expanduser()
-    if not audio.exists():
-        return {
-            "success": False,
-            "transcript": "",
-            "provider": provider_name,
-            "error": f"Audio file not found: {file_path}",
-        }
-
-    timeout = _get_command_stt_timeout(config)
-    output_format = _get_command_stt_output_format(config)
-    language = (
-        language_override
-        or config.get("language")
-        or _resolve_stt_language(provider_name, stt_config)
-        or DEFAULT_COMMAND_STT_LANGUAGE
-    )
-    model = model_override or config.get("model") or ""
-
-    try:
-        with tempfile.TemporaryDirectory(prefix=f"hermes-cmd-stt-{provider_name}-") as tmpdir:
-            output_path = Path(tmpdir) / f"transcript.{output_format}"
-            placeholders = {
-                "input_path": str(audio.resolve()),
-                "output_path": str(output_path),
-                "output_dir": str(output_path.parent),
-                "format": output_format,
-                "language": str(language),
-                "model": str(model),
-            }
-            command = _render_command_stt_template(command_template, placeholders)
-            logger.info(
-                "Transcribing %s via command STT provider '%s'...",
-                audio.name, provider_name,
-            )
-            try:
-                result = _run_command_stt(
-                    command,
-                    timeout,
-                    env_passthrough=_command_stt_env_passthrough(config),
-                )
-            except subprocess.TimeoutExpired:
-                return {
-                    "success": False,
-                    "transcript": "",
-                    "provider": provider_name,
-                    "error": (
-                        f"STT command provider '{provider_name}' timed out after "
-                        f"{timeout:g}s"
-                    ),
-                }
-            except subprocess.CalledProcessError as exc:
-                detail_parts = []
-                if exc.stderr:
-                    detail_parts.append(f"stderr: {exc.stderr.strip()}")
-                if exc.stdout:
-                    detail_parts.append(f"stdout: {exc.stdout.strip()}")
-                detail = "; ".join(detail_parts) or "no command output"
-                return {
-                    "success": False,
-                    "transcript": "",
-                    "provider": provider_name,
-                    "error": (
-                        f"STT command provider '{provider_name}' exited with code "
-                        f"{exc.returncode}: {detail}"
-                    ),
-                }
-
-            try:
-                transcript_text = _read_command_stt_output(
-                    output_path, result.stdout or "", output_format,
-                )
-            except RuntimeError as exc:
-                return {
-                    "success": False,
-                    "transcript": "",
-                    "provider": provider_name,
-                    "error": str(exc),
-                }
-
-    except OSError as exc:
-        return {
-            "success": False,
-            "transcript": "",
-            "provider": provider_name,
-            "error": f"STT command provider '{provider_name}' failed: {exc}",
-        }
-
-    logger.info(
-        "Transcribed %s via command STT provider '%s' (%d chars)",
-        audio.name, provider_name, len(transcript_text),
-    )
-    return {
-        "success": True,
-        "transcript": transcript_text,
-        "provider": provider_name,
-    }
+def _resolve_explicit_provider(provider: str) -> str:
+    """Explicit ``stt.provider`` -> usable name or ``"none"``; unknown names pass through untouched
+    so the dispatcher fails with the provider-not-registered message."""
+    resolver = _EXPLICIT_RESOLVERS.get(provider)
+    if resolver is not None:
+        return resolver()
+    spec = _CLOUD_PROVIDER_SPECS.get(provider)
+    if spec is None or spec[0]():
+        return provider
+    logger.warning(spec[2])
+    return "none"
 
 
 def _get_provider(stt_config: dict) -> str:
-    """Determine which STT provider to use.
-
-    When ``stt.provider`` is explicitly set in config, that choice is
-    honoured — no silent cloud fallback.  When no provider is configured,
-    auto-detect tries: local > groq (free) > openai (paid).
-    """
+    """Which STT provider to use: an explicit ``stt.provider`` is honoured (no silent cloud
+    fallback); otherwise auto-detect local > groq > openai > mistral > xai > elevenlabs > deepinfra."""
     if not is_stt_enabled(stt_config):
         return "none"
-
     explicit = "provider" in stt_config
     provider = stt_config.get("provider", DEFAULT_PROVIDER)
-
-    # The managed "Nous Subscription" selection (stt.provider: nous) is
-    # serviced by the OpenAI provider implementation, routed through the
-    # managed openai-audio gateway by _resolve_openai_audio_client_config.
+    # The managed "Nous Subscription" selection is the OpenAI backend routed via the managed gateway.
     if isinstance(provider, str) and provider.strip().lower() == "nous":
         provider = "openai"
-
     if explicit and provider == "local":
-        # Legacy DEFAULT_CONFIG seeded ``stt.provider: local`` on every
-        # install, so a merged-config "local" is not proof of a user pick.
-        # ``read_selection`` reads the raw config.yaml: when the raw file
-        # holds an stt selection (picker- or hand-written ``local``) it is
-        # honored; when the merged "local" came only from a legacy default
-        # merge, take the autodetect branch (which prefers local first
-        # anyway, so a genuine local user is unaffected when it's available).
+        # Legacy DEFAULT_CONFIG seeded ``stt.provider: local`` on every install, so only a
+        # raw config.yaml selection counts as explicit; otherwise autodetect (local-first anyway).
         try:
             from tools.tool_backend_helpers import read_selection
-
             if read_selection("stt") is None:
                 explicit = False
         except Exception:  # pragma: no cover — helpers are in-repo
             pass
-
-    # --- Explicit provider: respect the user's choice ----------------------
-
     if explicit:
-        if provider == "local":
-            if _HAS_FASTER_WHISPER:
-                return "local"
-            if _has_local_command():
-                return "local_command"
-            # Try lazy-install before giving up
-            if _try_lazy_install_stt():
-                return "local"
-            logger.warning(
-                "STT provider 'local' configured but unavailable "
-                "(install faster-whisper or set HERMES_LOCAL_STT_COMMAND)"
-            )
-            return "none"
-
-        if provider == "local_command":
-            if _has_local_command():
-                return "local_command"
-            if _HAS_FASTER_WHISPER:
-                logger.info("Local STT command unavailable, using local faster-whisper")
-                return "local"
-            logger.warning(
-                "STT provider 'local_command' configured but unavailable"
-            )
-            return "none"
-
-        if provider == "groq":
-            if _HAS_OPENAI and _resolve_provider_key("GROQ_API_KEY", "groq"):
-                return "groq"
-            logger.warning(
-                "STT provider 'groq' configured but GROQ_API_KEY not set"
-            )
-            return "none"
-
-        if provider == "openai":
-            if _HAS_OPENAI and _has_openai_audio_backend():
-                return "openai"
-            logger.warning(
-                "STT provider 'openai' configured but no API key available"
-            )
-            return "none"
-
-        if provider == "mistral":
-            if _HAS_MISTRAL and _resolve_provider_key("MISTRAL_API_KEY", "mistral"):
-                return "mistral"
-            logger.warning(
-                "STT provider 'mistral' configured but mistralai package "
-                "not installed or MISTRAL_API_KEY not set"
-            )
-            return "none"
-
-        if provider == "xai":
-            from tools.xai_http import resolve_xai_http_credentials
-
-            if resolve_xai_http_credentials().get("api_key"):
-                return "xai"
-            logger.warning(
-                "STT provider 'xai' configured but no xAI credentials are available"
-            )
-            return "none"
-
-        if provider == "elevenlabs":
-            if _resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs"):
-                return "elevenlabs"
-            logger.warning(
-                "STT provider 'elevenlabs' configured but ELEVENLABS_API_KEY not set"
-            )
-            return "none"
-
-        if provider == "deepinfra":
-            if _HAS_OPENAI and _resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra"):
-                return "deepinfra"
-            logger.warning(
-                "STT provider 'deepinfra' configured but DEEPINFRA_API_KEY not set "
-                "(or openai package missing)"
-            )
-            return "none"
-
-        return provider  # Unknown — let it fail downstream
-
-    # --- Auto-detect (no explicit provider):
-    #     local > groq > openai > mistral > xai > elevenlabs > deepinfra ---
-    # DeepInfra is tried LAST so adding DEEPINFRA_API_KEY (commonly set for the
-    # chat surface) never silently displaces an existing xAI/ElevenLabs STT
-    # auto-selection; a DeepInfra-only box still resolves to it. mistral is
-    # intentionally skipped while `mistralai` is quarantined on PyPI (malicious
-    # 2.4.6 release on 2026-05-12).
-
-    if _HAS_FASTER_WHISPER:
-        return "local"
-    if _has_local_command():
-        return "local_command"
-    # Try lazy-install before falling through to cloud providers
-    if _try_lazy_install_stt():
-        return "local"
-    if _HAS_OPENAI and _resolve_provider_key("GROQ_API_KEY", "groq"):
-        logger.info("No local STT available, using Groq Whisper API")
-        return "groq"
-    if _HAS_OPENAI and _has_openai_audio_backend():
-        logger.info("No local STT available, using OpenAI Whisper API")
-        return "openai"
-    # Only auto-select Mistral if the SDK is already present — don't trigger a
-    # lazy-install during passive auto-detection. Explicit `provider: mistral`
-    # (above) does lazy-install on first transcription call.
-    if _HAS_MISTRAL and _resolve_provider_key("MISTRAL_API_KEY", "mistral"):
-        logger.info("No local STT available, using Mistral Voxtral Transcribe API")
-        return "mistral"
-    try:
-        from tools.xai_http import resolve_xai_http_credentials
-
-        if resolve_xai_http_credentials().get("api_key"):
-            logger.info("No local STT available, using xAI Grok STT API")
-            return "xai"
-    except Exception:
-        pass
-    if _resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs"):
-        logger.info("No local STT available, using ElevenLabs Scribe STT API")
-        return "elevenlabs"
-    if _HAS_OPENAI and _resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra"):
-        logger.info("No local STT available, using DeepInfra Whisper API")
-        return "deepinfra"
+        return _resolve_explicit_provider(provider)
+    backend = _detect_local_backend()
+    if backend:
+        return backend
+    for name, (_probe, available, _warning, message) in _CLOUD_PROVIDER_SPECS.items():
+        if available():
+            logger.info(message)
+            return name
     return "none"
 
 
-def _unregistered_stt_provider_error(provider: str) -> Dict[str, Any]:
-    key = str(provider or "").strip()
-    return {
-        "success": False,
-        "transcript": "",
-        "provider": key,
-        "error_type": "provider_not_registered",
-        "error": (
-            f"stt.provider='{key}' is set but no built-in, command, or plugin "
-            "provider registered that name. Run `hermes plugins list` to see "
-            "installed STT plugins, or configure a command provider under "
-            f"`stt.providers.{key}.command`."
-        ),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Plugin provider dispatch (issue follow-up to #30398 — STT pluggability)
-# ---------------------------------------------------------------------------
-
-
-def _dispatch_to_plugin_provider(
-    file_path: str,
-    provider: str,
-    stt_config: Optional[Dict[str, Any]] = None,
-    *,
-    model: Optional[str] = None,
-    language: Optional[str] = None,
-    prompt: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
-    """Route the call to a plugin-registered transcription provider, or
-    return None.
-
-    Returns the transcribe-response dict on dispatch, or ``None`` when no
-    plugin claimed the provider name.
-
-    Resolution invariants enforced here:
-
-    1. Built-in provider names short-circuit — never reach the plugin
-       registry. The caller (``transcribe_audio``) handles ``local``,
-       ``groq``, ``openai``, etc. via its existing elif chain; this
-       function defensively rejects those names so a plugin can't be
-       silently dispatched under a built-in name even if it somehow
-       slipped past the registry's built-in shadow guard.
-    2. Same-name command-type provider declared under
-       ``stt.providers.<name>: type: command`` wins over a plugin. The
-       caller short-circuits to the command runner before reaching us,
-       but we re-verify here so a refactor of the caller can't silently
-       break the invariant (matches TTS PR #17843 precedence rule).
-    3. Plugin dispatch fires only when ``provider`` matches a
-       registered :class:`TranscriptionProvider` whose ``name`` equals
-       the configured value. Unknown names with no plugin registered
-       return None (caller surfaces the configured-provider error when
-       the name came from ``stt.provider``).
-    4. Availability gating: when the matched plugin reports
-       ``is_available() == False`` (missing API key, missing optional
-       SDK, etc.) this returns an error envelope identifying the
-       plugin as unavailable — **not** ``None`` — because the user
-       explicitly opted into this plugin via ``stt.provider`` and the
-       generic fallthrough message would be misleading.
-
-    Provider exceptions are caught and converted into the standard
-    error envelope (matches the legacy built-in error shapes — the
-    gateway/CLI caller already expects ``{success: False, error:
-    "...", transcript: ""}`` on failure).
-    """
-    if not provider:
-        return None
-    key = provider.lower().strip()
-    if key in BUILTIN_STT_PROVIDERS or key == "none":
-        return None
-    # Defense in depth: command-provider check should already have
-    # short-circuited the caller. If a same-name command config exists,
-    # bail so the command path wins.
-    if stt_config is not None and _is_command_stt_provider_config(
-        _get_named_stt_provider_config(stt_config, key)
-    ):
-        return None
-    try:
-        from agent.transcription_registry import get_provider
-        from hermes_cli.plugins import _ensure_plugins_discovered
-
-        _ensure_plugins_discovered()
-        plugin_provider = get_provider(key)
-        if plugin_provider is None:
-            # Long-lived sessions may have discovered plugins before a
-            # bundled backend was patched in or before config changed.
-            # Retry once with a forced refresh before surfacing fall-
-            # through. Mirrors the image_gen / browser dispatcher
-            # recovery pattern.
-            _ensure_plugins_discovered(force=True)
-            plugin_provider = get_provider(key)
-    except Exception as exc:  # noqa: BLE001 — discovery failure is non-fatal
-        logger.debug("STT plugin dispatch skipped (discovery failed): %s", exc)
-        return None
-    if plugin_provider is None:
-        return None
-
-    # Availability gate: when a plugin reports it's not configured
-    # (missing API key, missing optional SDK, etc.) surface a clean
-    # error envelope **instead of** falling through to the generic
-    # "No STT provider" message. The user explicitly set
-    # ``stt.provider: <plugin>`` in config — surfacing the plugin's
-    # own availability failure is more actionable than the generic
-    # auto-detect-failure error, and avoids routing the call into a
-    # plugin that's about to crash messily.
-    #
-    # ``is_available()`` MUST NOT raise per the ABC contract; defend
-    # anyway so a buggy plugin can't break dispatch for everyone.
-    try:
-        available = plugin_provider.is_available()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "STT plugin provider '%s' is_available() raised: %s — "
-            "treating as unavailable", key, exc, exc_info=True,
-        )
-        available = False
-    if not available:
-        logger.info(
-            "STT plugin provider '%s' reports not available; returning "
-            "unavailability envelope.", key,
-        )
-        return {
-            "success": False,
-            "transcript": "",
-            "error": (
-                f"STT plugin '{key}' is not available — check that its "
-                "required credentials / dependencies are configured."
-            ),
-            "provider": key,
-        }
-
-    logger.info("Transcribing with plugin STT provider '%s'...", key)
-    # Plugin providers receive the transcription prompt via the ABC's
-    # existing ``**extra`` kwargs — no signature change needed. The key is
-    # only sent when a prompt is actually set so providers that predate it
-    # see byte-identical calls on the no-prompt path.
-    extra_kwargs: Dict[str, Any] = {}
-    if prompt is not None:
-        extra_kwargs["prompt"] = prompt
-    try:
-        result = plugin_provider.transcribe(
-            file_path,
-            model=model,
-            language=language,
-            **extra_kwargs,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "STT plugin provider '%s' raised: %s", key, exc, exc_info=True,
-        )
-        return {
-            "success": False,
-            "transcript": "",
-            "error": f"STT plugin '{key}' raised: {exc}",
-            "provider": key,
-        }
-
-    # Defensive: plugins should return a dict matching the contract. If
-    # they don't, surface a clear error envelope rather than leaking a
-    # weird object back to the gateway.
-    if not isinstance(result, dict):
-        return {
-            "success": False,
-            "transcript": "",
-            "error": f"STT plugin '{key}' returned a non-dict result",
-            "provider": key,
-        }
-    # Stamp provider if the plugin forgot to.
-    result.setdefault("provider", key)
-    return result
-
-
-# ---------------------------------------------------------------------------
-# pre_transcription plugin hook (issue #64168 — STT prompt/vocab threading)
-# ---------------------------------------------------------------------------
-
-
-# Fields a pre_transcription hook may mutate. ``file_path`` is deliberately
-# absent — it is read-only; attempts to change it are logged and dropped.
-_PRE_TRANSCRIPTION_MUTABLE_FIELDS = ("prompt", "language", "model")
-
-# Whisper-family models silently use only the final ~224 tokens of the
-# prompt/initial_prompt; longer values waste upload bytes and can trip
-# stricter OpenAI-compatible servers. Enforce the cap client-side for the
-# whisper-family backends: truncate with a warning, never error.
-# Approximation: ~4 characters per token (no tokenizer dependency).
-_WHISPER_PROMPT_TOKEN_CAP = 224
-_PROMPT_CHARS_PER_TOKEN = 4
-# Providers whose prompt parameter feeds a whisper-family model.
-_WHISPER_PROMPT_CAPPED_PROVIDERS = frozenset(
-    {"local", "openai", "groq", "deepinfra"}
-)
-
-
-def _enforce_prompt_length_limit(
-    prompt: Optional[str], provider: str
-) -> Optional[str]:
-    """Truncate *prompt* to the provider's known token cap (fail-open).
-
-    Only whisper-family backends have a documented ~224-token prompt window;
-    other providers (mistral, plugin providers) own their own validation.
-    Truncation keeps the TAIL of the prompt because whisper conditions on
-    the final context window — the most recently appended hints survive.
-    """
-    if not prompt or provider not in _WHISPER_PROMPT_CAPPED_PROVIDERS:
-        return prompt
-    max_chars = _WHISPER_PROMPT_TOKEN_CAP * _PROMPT_CHARS_PER_TOKEN
-    if len(prompt) <= max_chars:
-        return prompt
-    logger.warning(
-        "Transcription prompt is ~%d tokens; whisper-family provider '%s' "
-        "only uses the final ~%d — truncating to the last %d characters.",
-        len(prompt) // _PROMPT_CHARS_PER_TOKEN,
-        provider,
-        _WHISPER_PROMPT_TOKEN_CAP,
-        max_chars,
-    )
-    return prompt[-max_chars:]
-
-
-def _apply_pre_transcription_hook(
-    *,
-    file_path: str,
-    provider: str,
-    model: Optional[str],
-    language: Optional[str],
-    prompt: Optional[str],
-    source: Optional[str],
-) -> tuple[Optional[str], Optional[str], Optional[str]]:
-    """Fire the ``pre_transcription`` plugin hook and merge its results.
-
-    Mirrors the ``transform_*`` hook mechanics (``transform_tool_result``):
-    gated on ``has_hook`` so the no-hook dispatch path never builds hook
-    kwargs, and fail-open — any hook-plumbing error leaves the dispatch
-    untouched. ``invoke_hook`` returns results in registration order, and
-    plugin discovery scans plugin directories in sorted order, so multiple
-    plugins' hints compose deterministically (sorted by plugin id, then
-    each plugin's own registration order). Each dict result is applied
-    field-by-field on top of the previous ones, so the last hook to write
-    a field wins (last-writer-wins per field).
-
-    Model values are accepted as-is: the dispatcher has no catalog-level
-    validation today, so a hook-set model flows through the exact same
-    per-backend normalization/auto-correction (``_normalize_local_model``,
-    the Groq/OpenAI cross-corrections) a caller-supplied model would, and
-    otherwise errors at the backend as it would today.
-
-    Returns ``(model, language_override, prompt)``. ``language_override``
-    is ``None`` unless a hook explicitly set ``language`` — backends keep
-    their existing config/env language resolution when no hook overrides
-    it.
-    """
-    try:
-        from hermes_cli.plugins import has_hook, invoke_hook
-
-        # No-hook short-circuit: keep the no-plugin dispatch path
-        # byte-identical (no kwargs built, no invoke_hook call).
-        if not has_hook("pre_transcription"):
-            return model, None, prompt
-
-        hook_results = invoke_hook(
-            "pre_transcription",
-            file_path=file_path,
-            provider=provider,
-            model=model,
-            language=language,
-            prompt=prompt,
-            source=source,
-        )
-        overrides: Dict[str, Any] = {}
-        for hook_result in hook_results:
-            if not isinstance(hook_result, dict):
-                continue
-            for key, value in hook_result.items():
-                if key == "file_path":
-                    # file_path is read-only for hooks — log and drop.
-                    logger.warning(
-                        "pre_transcription hook attempted to change "
-                        "file_path (read-only) — ignoring the attempt."
-                    )
-                    continue
-                if key not in _PRE_TRANSCRIPTION_MUTABLE_FIELDS:
-                    logger.debug(
-                        "pre_transcription hook returned unsupported field "
-                        "%r — ignoring.", key,
-                    )
-                    continue
-                if not isinstance(value, str):
-                    logger.debug(
-                        "pre_transcription hook returned non-string value "
-                        "%r for field %r — ignoring.", value, key,
-                    )
-                    continue
-                overrides[key] = value
-
-        if "model" in overrides:
-            model = overrides["model"]
-        if "prompt" in overrides:
-            # Hook results win over the static ``stt.prompt`` config value —
-            # config is the base, hooks mutate on top. An empty string
-            # clears the config prompt.
-            prompt = overrides["prompt"] or None
-        return model, overrides.get("language") or None, prompt
-    except Exception as _hook_err:  # noqa: BLE001 — hook plumbing is fail-open
-        logger.debug("pre_transcription hook error: %s", _hook_err)
-        return model, None, prompt
-
-
-# ---------------------------------------------------------------------------
-# Shared validation
-# ---------------------------------------------------------------------------
-
-
-def _validate_audio_file_size(audio_path: Path) -> Optional[Dict[str, Any]]:
-    """Return an error when *audio_path* exceeds the remote upload cap."""
-    try:
-        file_size = audio_path.stat().st_size
-    except OSError as e:
-        return {"success": False, "transcript": "", "error": f"Failed to access file: {e}"}
-    if file_size > MAX_FILE_SIZE:
-        return {
-            "success": False,
-            "transcript": "",
-            "error": f"File too large: {file_size / (1024*1024):.1f}MB (max {MAX_FILE_SIZE / (1024*1024):.0f}MB)",
-        }
-    return None
-
-
-def _validate_audio_source_file(
-    file_path: str,
-    *,
-    enforce_size_limit: bool = True,
-) -> Optional[Dict[str, Any]]:
-    """Validate source path safety (and optionally size) before any decoder runs."""
-    audio_path = Path(file_path)
-
-    if os.path.islink(audio_path):
-        return {"success": False, "transcript": "", "error": f"Path is a symbolic link: {file_path}"}
-    if not audio_path.exists():
-        return {"success": False, "transcript": "", "error": f"Audio file not found: {file_path}"}
-    if not audio_path.is_file():
-        return {"success": False, "transcript": "", "error": f"Path is not a file: {file_path}"}
-    if enforce_size_limit:
-        return _validate_audio_file_size(audio_path)
-    try:
-        audio_path.stat()
-    except OSError as e:
-        return {"success": False, "transcript": "", "error": f"Failed to access file: {e}"}
-    return None
-
-
-def _validate_audio_file(
-    file_path: str,
-    *,
-    enforce_size_limit: bool = True,
-) -> Optional[Dict[str, Any]]:
-    """Validate a supported, decoder-safe audio file."""
-    source_error = _validate_audio_source_file(
-        file_path, enforce_size_limit=enforce_size_limit
-    )
-    if source_error:
-        return source_error
-
-    audio_path = Path(file_path)
-    if audio_path.suffix.lower() not in SUPPORTED_FORMATS:
-        return {
-            "success": False,
-            "transcript": "",
-            "error": f"Unsupported format: {audio_path.suffix}. Supported: {', '.join(sorted(SUPPORTED_FORMATS))}",
-        }
-    return None
-
-
-def _prepare_audio_for_transcription(
-    file_path: str,
-) -> tuple[Optional[str], Optional[str], Optional[Dict[str, Any]]]:
-    """Convert a decoder-safe .silk source to a temporary supported WAV file."""
-    audio_path = Path(file_path)
-    if audio_path.suffix.lower() != ".silk":
-        return file_path, None, None
-    if not _HAS_PILK:
-        # pilk is a tiny silk-v3 codec binding — lazy-install it on first
-        # .silk voice note instead of bloating the base install.
-        try:
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("stt.silk", prompt=False)
-        except Exception:
-            pass
-        if not _safe_find_spec("pilk"):
-            return None, None, {
-                "success": False,
-                "transcript": "",
-                "error": "Unsupported format: .silk. Install the optional 'pilk' dependency to enable WeChat voice transcription.",
-            }
-
-    temp_dir = tempfile.mkdtemp(prefix="hermes-silk-")
-    converted_path = os.path.join(temp_dir, f"{audio_path.stem}.wav")
-    try:
-        import pilk
-
-        pilk.silk_to_wav(file_path, converted_path)
-        if not Path(converted_path).is_file() or Path(converted_path).stat().st_size == 0:
-            raise RuntimeError("pilk did not produce a readable WAV file")
-        return converted_path, temp_dir, None
-    except Exception as exc:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        logger.error("Failed to convert .silk audio %s: %s", file_path, exc, exc_info=True)
-        return None, None, {
-            "success": False,
-            "transcript": "",
-            "error": f"Failed to convert .silk audio for transcription: {exc}",
-        }
-
-# ---------------------------------------------------------------------------
-# Provider: local (faster-whisper)
-# ---------------------------------------------------------------------------
-
-
-# Substrings that identify a missing/unloadable CUDA runtime library.  When
-# ctranslate2 (the backend for faster-whisper) cannot dlopen one of these, the
-# "auto" device picker has already committed to CUDA and the model can no
-# longer be used — we fall back to CPU and reload.
-#
-# Deliberately narrow: we match on library-name tokens and dlopen phrasing so
-# we DO NOT accidentally catch legitimate runtime failures like "CUDA out of
-# memory" — those should surface to the user, not silently fall back to CPU
-# (a 32GB audio clip on CPU at int8 isn't useful either).
-_CUDA_LIB_ERROR_MARKERS = (
-    "libcublas",
-    "libcudnn",
-    "libcudart",
-    "cannot be loaded",
-    "cannot open shared object",
-    "no kernel image is available",
-    "CUBLAS_STATUS_NOT_SUPPORTED",
-    "no CUDA-capable device",
-    "CUDA driver version is insufficient",
-)
-
-
-def _looks_like_cuda_lib_error(exc: BaseException) -> bool:
-    """Heuristic: is this exception a missing/broken CUDA runtime library?
-
-    ctranslate2 raises plain RuntimeError with messages like
-    ``Library libcublas.so.12 is not found or cannot be loaded``.  We want to
-    catch missing/unloadable shared libs and driver-mismatch errors, NOT
-    legitimate runtime failures ("CUDA out of memory", model bugs, etc.).
-    """
-    msg = str(exc)
-    return any(marker in msg for marker in _CUDA_LIB_ERROR_MARKERS)
-
-
-def _sysctl_value(name: str) -> str:
-    """Return a sysctl value, or an empty string when unavailable."""
-    try:
-        return subprocess.check_output(
-            ["/usr/sbin/sysctl", "-n", name],
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=2,
-        ).strip()
-    except Exception:
-        return ""
-
-
-def _should_force_faster_whisper_cpu() -> bool:
-    """Avoid faster-whisper device autodetection paths known to hard-abort.
-
-    On Apple Silicon, especially when Python is running as x86_64 under
-    Rosetta, ctranslate2's ``device=\"auto\"`` path can abort inside native
-    code before Python can catch an exception.  Force CPU so local STT remains
-    reliable for gateway voice messages.
-    """
-    if platform.system() != "Darwin":
-        return False
-
-    machine = platform.machine().lower()
-    if machine in {"arm64", "aarch64"}:
-        return True
-
-    # Under Rosetta, platform.machine() reports x86_64.  sysctl.proc_translated
-    # tells us this process is translated, while hw.optional.arm64 distinguishes
-    # Apple Silicon hosts from Intel Macs.
-    if _sysctl_value("sysctl.proc_translated") == "1":
-        return True
-    return _sysctl_value("hw.optional.arm64") == "1"
-
-
-def _get_idle_unload_seconds(local_cfg: Dict[str, Any]) -> int:
-    """Resolve the idle unload timeout from config.
-
-    0 = never unload (default). Negative values are treated as 0.
-    """
-    try:
-        val = int(local_cfg.get("unload_after_idle_seconds", 0))
-    except (TypeError, ValueError):
-        return 0
-    return max(val, 0)
-
-
+# ---- Provider: local (faster-whisper) -----------------------------------
 def _unload_local_model() -> None:
-    """Release the cached local whisper model and free its memory.
-
-    Safe to call from any thread. The model lock prevents races with a
-    concurrent transcription that is mid-load.
-    """
+    """Release the cached local whisper model. Thread-safe via the model lock."""
     global _local_model, _local_model_name
     with _local_model_lock:
         if _local_model is not None:
-            logger.info(
-                "Unloading local whisper model '%s' after idle timeout",
-                _local_model_name or "unknown",
-            )
+            logger.info("Unloading local whisper model '%s' after idle timeout", _local_model_name or "unknown")
             _local_model = None
             _local_model_name = None
 
 
 def _start_idle_unload_watcher(timeout_seconds: int) -> None:
-    """Ensure the idle-unload watcher thread is running.
-
-    A single long-lived watcher: started only when none is alive, so the
-    per-transcription cost is one lock + one ``is_alive()`` check — no
-    stop/join/restart churn on the response path. The loop re-reads the
-    configured timeout from config every cycle, so changing
-    ``stt.local.unload_after_idle_seconds`` takes effect within one check
-    interval without a restart. After unloading (or when the timeout is set
-    to 0/never, or the model is already gone) the thread exits; the next
-    transcription restarts it.
-
-    ``timeout_seconds`` seeds the first cycle so a just-written config is
-    honored even if a concurrent config read would race.
-    """
+    """Ensure the single idle-unload watcher thread is running. The loop re-reads
+    ``stt.local.unload_after_idle_seconds`` every cycle so config edits apply within one interval;
+    ``timeout_seconds`` seeds the first cycle so a just-written config is honored even if a
+    concurrent read races. Exits after unloading, when the timeout becomes 0, or when the model is gone."""
     global _idle_unload_thread
     with _idle_unload_mgmt_lock:
         if _idle_unload_thread is not None and _idle_unload_thread.is_alive():
             return
 
         def _watch(initial_timeout=timeout_seconds):
-            timeout = initial_timeout
-            while not _idle_unload_stop.is_set():
-                if _idle_unload_stop.wait(_IDLE_UNLOAD_CHECK_INTERVAL):
-                    break
-                if _local_model is None:
-                    break
-                # Re-read the timeout each cycle: config edits apply without
-                # waiting for the next voice message.
+            while not _idle_unload_stop.wait(_IDLE_UNLOAD_CHECK_INTERVAL) and _local_model is not None:
                 try:
-                    timeout = _get_idle_unload_seconds(
-                        _load_stt_config().get("local") or {}
-                    )
+                    timeout = _get_idle_unload_seconds(_load_stt_config().get("local") or {})
                 except Exception:  # noqa: BLE001 - keep the seed value
                     timeout = initial_timeout
                 if timeout <= 0:
                     break  # unload disabled mid-flight — stand down
-                idle_for = time.monotonic() - _last_transcription_time
-                if idle_for >= timeout:
+                if time.monotonic() - _last_transcription_time >= timeout:
                     _unload_local_model()
                     break
-
         _idle_unload_stop.clear()
-        _idle_unload_thread = threading.Thread(
-            target=_watch, name="hermes-stt-idle-unload", daemon=True
-        )
+        _idle_unload_thread = threading.Thread(target=_watch, name="hermes-stt-idle-unload", daemon=True)
         _idle_unload_thread.start()
 
 
@@ -1746,1259 +319,118 @@ def _touch_transcription_time() -> None:
     _last_transcription_time = time.monotonic()
 
 
-def _load_local_whisper_model(model_name: str, device: str = "auto", compute_type: str = "auto"):
-    """Load faster-whisper with graceful CUDA → CPU fallback.
+def _get_or_load_local_model(model_name: str, local_cfg: Dict[str, Any]):
+    """Cached faster-whisper model, (re)loaded under a double-checked lock when needed. The returned
+    strong reference stays valid even if the idle watcher nulls the global mid-transcription."""
+    global _local_model, _local_model_name
+    model = _local_model
+    # Lazy-load the model (downloads on first use, ~150 MB for 'base'). Double-checked lock: concurrent
+    # voice messages must not both download/load the model (#24767). ``model`` is a strong local reference
+    # bound under the lock: the idle watcher may null the module global at any time, but this transcription
+    # keeps using the instance it grabbed.
+    if model is None or _local_model_name != model_name:
+        with _local_model_lock:
+            if _local_model is None or _local_model_name != model_name:
+                logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
+                # stt.local.device / compute_type pin a configuration where ``auto`` mis-detects.
+                _local_model = _load_local_whisper_model(model_name, device=local_cfg.get("device", "auto"),
+                                                         compute_type=local_cfg.get("compute_type", "auto"))
+                _local_model_name = model_name
+            model = _local_model
+    return model
 
-    faster-whisper's ``device="auto"`` picks CUDA when the ctranslate2 wheel
-    ships CUDA shared libs, even on hosts where the NVIDIA runtime
-    (``libcublas.so.12`` / ``libcudnn*``) isn't installed — common on WSL2
-    without CUDA-on-WSL, headless servers, and CPU-only developer machines.
-    On those hosts the load itself sometimes succeeds and the dlopen failure
-    only surfaces at first ``transcribe()`` call.
 
-    ``device`` / ``compute_type`` default to ``"auto"`` so the historical
-    behaviour is unchanged; pass explicit values from ``stt.local.device`` /
-    ``stt.local.compute_type`` to pin a configuration (#9088).
-
-    We try the requested config first (fast CUDA path when it works), and on
-    any CUDA library load failure fall back to CPU + int8.
-    """
-    force_cpu = _should_force_faster_whisper_cpu()
-    if force_cpu:
-        # Importing ctranslate2/faster-whisper itself can abort on some
-        # Apple Silicon/Rosetta installs because multiple Intel OpenMP runtimes
-        # are already loaded.  Set this before importing faster_whisper so the
-        # gateway survives, then keep inference on CPU to avoid device probing.
-        os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
-
+def _replace_cached_model_on_cpu(model_name: str):
+    """Load *model_name* on CPU/int8 and make it the cached singleton."""
+    global _local_model, _local_model_name
     from faster_whisper import WhisperModel
-    if force_cpu:
-        logger.info(
-            "Apple Silicon/Rosetta detected — loading faster-whisper on CPU "
-            "(int8) to avoid native device autodetection crashes"
-        )
-        return WhisperModel(model_name, device="cpu", compute_type="int8")
-
-    try:
-        return WhisperModel(model_name, device=device, compute_type=compute_type)
-    except Exception as exc:
-        if not _looks_like_cuda_lib_error(exc):
-            raise
-        logger.warning(
-            "faster-whisper CUDA load failed (%s) — falling back to CPU (int8). "
-            "Install the NVIDIA CUDA runtime (libcublas/libcudnn) to use GPU.",
-            exc,
-        )
-        return WhisperModel(model_name, device="cpu", compute_type="int8")
-
-
-# Silence-hallucination hardening defaults for local faster-whisper.
-# Whisper decodes SOMETHING even from pure silence/noise — often short junk
-# tokens ("You", "Thank you.", other-language phrases). Three layers kill the
-# class at the source (all tunable under ``stt.local``):
-#   1. vad_filter (Silero VAD, bundled with faster-whisper): silence never
-#      reaches the model. ``stt.local.vad: false`` restores raw behavior
-#      (e.g. transcribing music/ambient audio).
-#   2. condition_on_previous_text=False: one hallucinated token can't seed a
-#      run of them; negligible quality cost for voice-note-length audio.
-#   3. Segment confidence gate (see _is_hallucinated_segment): drops segments
-#      the model itself flags as probably-not-speech AND low-confidence.
-_VAD_MIN_SILENCE_MS_DEFAULT = 500
-_NO_SPEECH_PROB_THRESHOLD_DEFAULT = 0.6
-_LOGPROB_THRESHOLD_DEFAULT = -1.0
-
-
-def build_local_transcribe_kwargs(stt_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Build the kwargs for EVERY local faster-whisper ``model.transcribe`` call.
-
-    Single owner for the anti-hallucination hardening — any new local-whisper
-    call site must go through this helper instead of hand-rolling kwargs.
-    """
-    stt_config = stt_config if isinstance(stt_config, dict) else _load_stt_config()
-    local_cfg = stt_config.get("local") or {}
-
-    kwargs: Dict[str, Any] = {
-        "beam_size": 5,
-        # Don't feed the previous window's text back as a prompt: a single
-        # hallucinated token otherwise seeds a self-reinforcing run of them.
-        "condition_on_previous_text": False,
-    }
-
-    vad_enabled = local_cfg.get("vad", True)
-    if vad_enabled is None:
-        vad_enabled = True
-    if bool(vad_enabled):
-        kwargs["vad_filter"] = True
-        try:
-            min_silence_ms = int(
-                local_cfg.get("vad_min_silence_ms", _VAD_MIN_SILENCE_MS_DEFAULT)
-            )
-        except (TypeError, ValueError):
-            min_silence_ms = _VAD_MIN_SILENCE_MS_DEFAULT
-        kwargs["vad_parameters"] = {"min_silence_duration_ms": min_silence_ms}
-    else:
-        kwargs["vad_filter"] = False
-
-    # Push the confidence gate down into faster-whisper itself. Without this the
-    # library's own internal defaults (no_speech_threshold=0.6, log_prob_
-    # threshold=-1.0) drop low-confidence segments BEFORE they reach our
-    # _is_hallucinated_segment post-filter, so the ``stt.local`` threshold knobs
-    # were dead for that first gate. Non-English speech decodes at a lower
-    # avg_logprob, so the English-tuned defaults silently discard whole
-    # utterances. Mapping the same config values through keeps both gates in
-    # sync and makes the knobs actually usable. Defaults are unchanged, so
-    # behavior is identical unless a user tunes them.
-    no_speech_threshold, log_prob_threshold = _confidence_thresholds(local_cfg)
-    kwargs["no_speech_threshold"] = no_speech_threshold
-    kwargs["log_prob_threshold"] = log_prob_threshold
-
-    forced_lang = _resolve_stt_language("local", stt_config)
-    if forced_lang:
-        kwargs["language"] = forced_lang
-
-    initial_prompt = local_cfg.get("initial_prompt")
-    if isinstance(initial_prompt, str) and initial_prompt.strip():
-        kwargs["initial_prompt"] = initial_prompt
-
-    return kwargs
-
-
-def _confidence_thresholds(local_cfg: Dict[str, Any]) -> tuple[float, float]:
-    """Resolve (no_speech_prob, avg_logprob) gate thresholds from config."""
-    try:
-        no_speech = float(
-            local_cfg.get("no_speech_prob_threshold", _NO_SPEECH_PROB_THRESHOLD_DEFAULT)
-        )
-    except (TypeError, ValueError):
-        no_speech = _NO_SPEECH_PROB_THRESHOLD_DEFAULT
-    try:
-        logprob = float(local_cfg.get("logprob_threshold", _LOGPROB_THRESHOLD_DEFAULT))
-    except (TypeError, ValueError):
-        logprob = _LOGPROB_THRESHOLD_DEFAULT
-    return no_speech, logprob
-
-
-def _is_hallucinated_segment(segment: Any, no_speech_threshold: float, logprob_threshold: float) -> bool:
-    """True when a segment is very likely a silence hallucination.
-
-    Conservative AND gate (matches openai-whisper's own heuristic): the model
-    must BOTH think the window is non-speech (high no_speech_prob) AND have
-    decoded it with low confidence (low avg_logprob). Quiet-but-real speech
-    fails one of the two conditions and survives.
-    """
-    no_speech_prob = getattr(segment, "no_speech_prob", None)
-    avg_logprob = getattr(segment, "avg_logprob", None)
-    if no_speech_prob is None or avg_logprob is None:
-        return False
-    try:
-        no_speech_prob = float(no_speech_prob)
-        avg_logprob = float(avg_logprob)
-    except (TypeError, ValueError):
-        # Unknown segment shape (plugin/test doubles) — never drop.
-        return False
-    return no_speech_prob > no_speech_threshold and avg_logprob < logprob_threshold
-
-
-def _join_confident_segments(segments: Any, local_cfg: Dict[str, Any]) -> str:
-    """Join segment texts, dropping probable silence hallucinations."""
-    no_speech_threshold, logprob_threshold = _confidence_thresholds(local_cfg)
-    kept: list[str] = []
-    for segment in segments:
-        if _is_hallucinated_segment(segment, no_speech_threshold, logprob_threshold):
-            logger.debug(
-                "Dropping probable hallucinated segment %r (no_speech_prob=%.3f, avg_logprob=%.3f)",
-                getattr(segment, "text", ""),
-                getattr(segment, "no_speech_prob", float("nan")),
-                getattr(segment, "avg_logprob", float("nan")),
-            )
-            continue
-        kept.append(segment.text.strip())
-    return " ".join(kept).strip()
+    model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    with _local_model_lock:
+        _local_model, _local_model_name = model, model_name
+    return model
 
 
 def _transcribe_local(
-    file_path: str,
-    model_name: str,
-    *,
-    language: Optional[str] = None,
-    prompt: Optional[str] = None,
+    file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> Dict[str, Any]:
     """Transcribe using faster-whisper (local, free)."""
-    global _local_model, _local_model_name
-
-    if not _HAS_FASTER_WHISPER:
-        if not _try_lazy_install_stt():
-            return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
-
+    if not _HAS_FASTER_WHISPER and not _try_lazy_install_stt():
+        return _error_result("faster-whisper not installed")
     try:
-        local_cfg = _load_stt_config().get("local") or {}
-        # Reset the idle timer BEFORE loading/transcribing so the idle-unload
-        # watcher can't count a long in-flight transcription as idle time and
-        # unload mid-use.
-        _touch_transcription_time()
-        # Lazy-load the model (downloads on first use, ~150 MB for 'base').
-        # Double-checked lock: concurrent voice messages must not both
-        # download/load the model (#24767).
-        # ``model`` is a strong local reference bound under the lock: the idle
-        # watcher may null the module global at any time, but this
-        # transcription keeps using the instance it grabbed.
-        model = _local_model
-        if model is None or _local_model_name != model_name:
-            with _local_model_lock:
-                if _local_model is None or _local_model_name != model_name:
-                    logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
-                    # Honour stt.local.device / stt.local.compute_type from config so
-                    # users on hosts where ``auto`` mis-detects (NVIDIA libs present but
-                    # not usable, etc.) can pin a working configuration (#9088).
-                    # _load_local_whisper_model retains the CUDA→CPU fallback for the
-                    # auto/CUDA paths.
-                    _local_model = _load_local_whisper_model(
-                        model_name,
-                        device=local_cfg.get("device", "auto"),
-                        compute_type=local_cfg.get("compute_type", "auto"),
-                    )
-                    _local_model_name = model_name
-                model = _local_model
-
-        if model is None:  # defensive: load failed without raising
-            return {"success": False, "transcript": "", "error": "Local whisper model failed to load"}
-        # Shared hardened kwargs: VAD filter (default on), no cross-window
-        # conditioning, language/initial_prompt resolution — one owner for
-        # every local faster-whisper call site.
         stt_config = _load_stt_config()
-        local_config = stt_config.get("local") or {}
+        local_cfg = stt_config.get("local") or {}
+        # Reset the idle timer BEFORE loading so a long in-flight transcription isn't counted as idle.
+        _touch_transcription_time()
+        model = _get_or_load_local_model(model_name, local_cfg)
+        if model is None:  # defensive: load failed without raising
+            return _error_result("Local whisper model failed to load")
+        # pre_transcription hook overrides win over config-resolved values.
         transcribe_kwargs = build_local_transcribe_kwargs(stt_config)
-        # pre_transcription hook overrides win over the config-resolved
-        # values from build_local_transcribe_kwargs.
-        if language:
-            transcribe_kwargs["language"] = language
-        if prompt:
-            # faster-whisper's vocabulary/context hint parameter.
-            transcribe_kwargs["initial_prompt"] = prompt
-
+        transcribe_kwargs.update({k: v for k, v in (("language", language), ("initial_prompt", prompt))
+                                  if v})
         try:
             segments, info = model.transcribe(file_path, **transcribe_kwargs)
-            transcript = _join_confident_segments(segments, local_config)
         except Exception as exc:
-            # CUDA runtime libs sometimes only fail at dlopen-on-first-use,
-            # AFTER the model loaded successfully.  Evict the broken cached
-            # model, reload on CPU, retry once.  Without this the module-
-            # global `_local_model` is poisoned and every subsequent voice
-            # message on this process fails identically until restart.
+            # CUDA libs can fail at dlopen-on-first-use, AFTER loading: evict the poisoned
+            # cached model, reload on CPU and retry once, else every later message fails.
             if not _looks_like_cuda_lib_error(exc):
                 raise
-            logger.warning(
-                "faster-whisper CUDA runtime failed mid-transcribe (%s) — "
-                "evicting cached model and retrying on CPU (int8).",
-                exc,
-            )
-            from faster_whisper import WhisperModel
-            model = WhisperModel(model_name, device="cpu", compute_type="int8")
-            with _local_model_lock:
-                _local_model = model
-                _local_model_name = model_name
+            logger.warning("faster-whisper CUDA runtime failed mid-transcribe (%s) — "
+                           "evicting cached model and retrying on CPU (int8).", exc)
+            model = _replace_cached_model_on_cpu(model_name)
             segments, info = model.transcribe(file_path, **transcribe_kwargs)
-            transcript = _join_confident_segments(segments, local_config)
-
-        logger.info(
-            "Transcribed %s via local whisper (%s, lang=%s, %.1fs audio)",
-            Path(file_path).name, model_name, info.language, info.duration,
-        )
-
+        transcript = _join_confident_segments(segments, local_cfg)
+        logger.info("Transcribed %s via local whisper (%s, lang=%s, %.1fs audio)",
+                    Path(file_path).name, model_name, info.language, info.duration)
         _touch_transcription_time()
         idle_timeout = _get_idle_unload_seconds(local_cfg)
         if idle_timeout > 0:
             _start_idle_unload_watcher(idle_timeout)
-
-        return {"success": True, "transcript": transcript, "provider": "local"}
-
+        return _ok_result(transcript, "local")
     except Exception as e:
         logger.error("Local transcription failed: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
-
-
-def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], Optional[str]]:
-    """Normalize audio for local CLI STT when needed."""
-    audio_path = Path(file_path)
-    if audio_path.suffix.lower() in LOCAL_NATIVE_AUDIO_FORMATS:
-        return file_path, None
-
-    ffmpeg = _find_ffmpeg_binary()
-    if not ffmpeg:
-        return None, "Local STT fallback requires ffmpeg for non-WAV inputs, but ffmpeg was not found"
-
-    converted_path = os.path.join(work_dir, f"{audio_path.stem}.wav")
-    command = [ffmpeg, "-y", "-i", file_path, converted_path]
-
-    try:
-        subprocess.run(command, check=True, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=300, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
-        return converted_path, None
-    except subprocess.TimeoutExpired:
-        logger.error("ffmpeg conversion timed out for %s", file_path)
-        return None, "Audio conversion for local STT timed out"
-    except subprocess.CalledProcessError as e:
-        details = e.stderr.strip() or e.stdout.strip() or str(e)
-        logger.error("ffmpeg conversion failed for %s: %s", file_path, details)
-        return None, f"Failed to convert audio for local STT: {details}"
-
-
-def _convert_caf_to_wav(file_path: str) -> Optional[str]:
-    """Convert CAF to WAV using ffmpeg or afconvert (macOS)."""
-    audio_path = Path(file_path)
-    wav_path = os.path.join(audio_path.parent, f"{audio_path.stem}.wav")
-    ffmpeg = _find_ffmpeg_binary()
-    if ffmpeg:
-        try:
-            subprocess.run([ffmpeg, "-y", "-i", file_path, wav_path],
-                check=True, capture_output=True, text=True,
-                timeout=300, stdin=subprocess.DEVNULL,
-                creationflags=windows_hide_flags())
-            return wav_path
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            logger.warning("ffmpeg CAF to WAV failed for %s: %s", file_path, e)
-    afconvert = shutil.which("afconvert")
-    if afconvert:
-        try:
-            subprocess.run([afconvert, file_path, wav_path, "-d", "LEI16", "-f", "WAVE"],
-                check=True, capture_output=True, text=True,
-                timeout=300, stdin=subprocess.DEVNULL)
-            return wav_path
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            logger.warning("afconvert CAF to WAV failed for %s: %s", file_path, e)
-    return None
-
-
-def _transcribe_local_command(
-    file_path: str,
-    model_name: str,
-    *,
-    language: Optional[str] = None,
-    prompt: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Run the configured local STT command template and read back a .txt transcript."""
-    if prompt:
-        logger.debug(
-            "STT provider 'local_command' does not support transcription "
-            "prompts — proceeding without the prompt."
-        )
-
-    command_template = _get_local_command_template()
-    if not command_template:
-        return {
-            "success": False,
-            "transcript": "",
-            "error": (
-                f"{LOCAL_STT_COMMAND_ENV} not configured and no local whisper binary was found"
-            ),
-        }
-
-    # Language: hook override > stt.local.language > stt.language > env var
-    # > "en" default.
-    language = (
-        language or _resolve_stt_language("local") or DEFAULT_LOCAL_STT_LANGUAGE
-    )
-    normalized_model = _normalize_local_command_model(model_name)
-
-    try:
-        with tempfile.TemporaryDirectory(prefix="hermes-local-stt-") as output_dir:
-            prepared_input, prep_error = _prepare_local_audio(file_path, output_dir)
-            if prep_error:
-                return {"success": False, "transcript": "", "error": prep_error}
-
-            command = command_template.format(
-                input_path=shlex.quote(prepared_input),
-                output_dir=shlex.quote(output_dir),
-                language=shlex.quote(language),
-                model=shlex.quote(normalized_model),
-            )
-            # Scrub Hermes secrets from the child env (sibling path to #56332 /
-            # _run_command_stt — this local-whisper path previously inherited
-            # the full process environment).
-            from tools.environments.local import hermes_subprocess_env
-
-            child_env = hermes_subprocess_env(inherit_credentials=False)
-            subprocess.run(
-                shlex.split(command),
-                check=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=300,
-                stdin=subprocess.DEVNULL,
-                env=child_env,
-                creationflags=windows_hide_flags(),
-            )
-
-            txt_files = sorted(Path(output_dir).glob("*.txt"))
-            if not txt_files:
-                return {
-                    "success": False,
-                    "transcript": "",
-                    "error": "Local STT command completed but did not produce a .txt transcript",
-                }
-
-            transcript_text = txt_files[0].read_text(encoding="utf-8").strip()
-            logger.info(
-                "Transcribed %s via local STT command (%s, %d chars)",
-                Path(file_path).name,
-                normalized_model,
-                len(transcript_text),
-            )
-            return {"success": True, "transcript": transcript_text, "provider": "local_command"}
-
-    except KeyError as e:
-        return {
-            "success": False,
-            "transcript": "",
-            "error": f"Invalid {LOCAL_STT_COMMAND_ENV} template, missing placeholder: {e}",
-        }
-    except subprocess.CalledProcessError as e:
-        details = e.stderr.strip() or e.stdout.strip() or str(e)
-        logger.error("Local STT command failed for %s: %s", file_path, details)
-        return {"success": False, "transcript": "", "error": f"Local STT failed: {details}"}
-    except Exception as e:
-        logger.error("Unexpected error during local command transcription: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
-
-# ---------------------------------------------------------------------------
-# Provider: groq (Whisper API — free tier)
-# ---------------------------------------------------------------------------
-
-
-def _transcribe_groq(
-    file_path: str,
-    model_name: str,
-    *,
-    language: Optional[str] = None,
-    prompt: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Transcribe using Groq Whisper API (free tier available).
-
-    Honours an optional ISO-639-1 language hint resolved from a
-    ``pre_transcription`` hook override > ``stt.groq.language`` >
-    ``stt.language`` (config.yaml) > ``HERMES_LOCAL_STT_LANGUAGE`` (env).
-    When none is set, Groq Whisper auto-detects.
-    """
-    api_key = _resolve_provider_key("GROQ_API_KEY", "groq")
-    if not api_key:
-        return {"success": False, "transcript": "", "error": "GROQ_API_KEY not set"}
-
-    if not _HAS_OPENAI:
-        return {"success": False, "transcript": "", "error": "openai package not installed"}
-
-    # Auto-correct model if caller passed an OpenAI-only model
-    if model_name in OPENAI_MODELS:
-        logger.info("Model %s not available on Groq, using %s", model_name, DEFAULT_GROQ_STT_MODEL)
-        model_name = DEFAULT_GROQ_STT_MODEL
-
-    # Language: hook override > stt.groq.language > stt.language > env.
-    language = language or _resolve_stt_language("groq")
-
-    try:
-        from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
-        client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL, timeout=30, max_retries=0)
-        try:
-            create_kwargs = {
-                "model": model_name,
-                "response_format": "text",
-            }
-            if language:
-                create_kwargs["language"] = language
-            if prompt:
-                # Only send the prompt when set so the no-hook, no-config
-                # request stays byte-identical to today's.
-                create_kwargs["prompt"] = prompt
-            with open(file_path, "rb") as audio_file:
-                transcription = client.audio.transcriptions.create(
-                    file=audio_file,
-                    **create_kwargs,
-                )
-
-            transcript_text = str(transcription).strip()
-            logger.info("Transcribed %s via Groq API (%s, lang=%s, %d chars)",
-                         Path(file_path).name, model_name, language or "auto", len(transcript_text))
-
-            return {"success": True, "transcript": transcript_text, "provider": "groq"}
-        finally:
-            close = getattr(client, "close", None)
-            if callable(close):
-                close()
-
-    except PermissionError:
-        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
-    except APIConnectionError as e:
-        return {"success": False, "transcript": "", "error": f"Connection error: {e}"}
-    except APITimeoutError as e:
-        return {"success": False, "transcript": "", "error": f"Request timeout: {e}"}
-    except APIError as e:
-        return {"success": False, "transcript": "", "error": f"API error: {e}"}
-    except Exception as e:
-        logger.error("Groq transcription failed: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
-
-# ---------------------------------------------------------------------------
-# Provider: openai (Whisper API)
-# ---------------------------------------------------------------------------
-
-
-def _transcribe_openai(
-    file_path: str,
-    model_name: str,
-    *,
-    api_key: Optional[str] = None,
-    base_url: Optional[str] = None,
-    provider_label: str = "openai",
-    language: Optional[str] = None,
-    prompt: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Transcribe via the OpenAI ``audio.transcriptions.create`` SDK shape.
-
-    Also serves as the shared backend for every OpenAI-compatible STT
-    endpoint (DeepInfra etc.) — callers pass an explicit ``api_key`` /
-    ``base_url`` to skip the OpenAI-only auth chain, and a
-    ``provider_label`` so the response carries the right ``provider``
-    name.
-    """
-    if api_key is None:
-        try:
-            api_key, fallback_base = _resolve_openai_audio_client_config()
-        except ValueError as exc:
-            return {"success": False, "transcript": "", "error": str(exc)}
-        base_url = base_url or fallback_base
-
-    # Language: hook override > stt.<provider>.language > stt.language >
-    # env > auto-detect. Explicit language hint improves accuracy for
-    # non-English languages.
-    language = language or _resolve_stt_language(provider_label)
-
-    if not _HAS_OPENAI:
-        return {"success": False, "transcript": "", "error": "openai package not installed"}
-
-    # Auto-correct model if caller passed a Groq-only model. Only applies
-    # to the native OpenAI path — third-party endpoints may legitimately
-    # serve a whisper-large-v3 variant.
-    if provider_label == "openai" and model_name in GROQ_MODELS:
-        logger.info("Model %s not available on OpenAI, using %s", model_name, DEFAULT_STT_MODEL)
-        model_name = DEFAULT_STT_MODEL
-
-    try:
-        from openai import (
-            OpenAI,
-            APIError,
-            APIConnectionError,
-            APITimeoutError,
-            BadRequestError,
-        )
-        client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
-
-        def _create_transcription(path: str):
-            with open(path, "rb") as audio_file:
-                create_kwargs = {
-                    "model": model_name,
-                    "file": audio_file,
-                    "response_format": "text" if model_name == "whisper-1" else "json",
-                }
-                if language:
-                    if model_name == "gpt-transcribe":
-                        # gpt-transcribe replaces the singular ``language``
-                        # field with a ``languages`` list; the API rejects
-                        # requests that send the legacy field.
-                        create_kwargs["extra_body"] = {"languages": [language]}
-                    else:
-                        create_kwargs["language"] = language
-                    logger.debug("Using language hint '%s' for OpenAI STT", language)
-                if prompt:
-                    # Only send the prompt when set so the no-hook, no-config
-                    # request stays byte-identical to today's.
-                    create_kwargs["prompt"] = prompt
-                return client.audio.transcriptions.create(**create_kwargs)
-
-        try:
-            with tempfile.TemporaryDirectory(prefix="hermes-stt-") as work_dir:
-                try:
-                    transcription = _create_transcription(file_path)
-                except BadRequestError as exc:
-                    message = str(exc).lower()
-                    if not any(k in message for k in ("unsupported", "corrupted", "invalid file")):
-                        raise
-                    # Newer models (e.g. gpt-4o-transcribe) reject some containers
-                    # whisper-1 accepted (notably Ogg/Opus voice notes). Transcode
-                    # to a compact .m4a and retry once.
-                    converted_path, transcode_error = _transcode_audio_for_stt(file_path, work_dir)
-                    if transcode_error:
-                        return {"success": False, "transcript": "", "error": transcode_error}
-                    logger.info(
-                        "Retrying %s STT after transcoding %s to m4a (API rejected the original container)",
-                        provider_label, Path(file_path).name,
-                    )
-                    transcription = _create_transcription(converted_path)
-
-            transcript_text = _extract_transcript_text(transcription)
-            logger.info(
-                "Transcribed %s via %s (%s, %d chars)",
-                Path(file_path).name, provider_label, model_name, len(transcript_text),
-            )
-
-            return {"success": True, "transcript": transcript_text, "provider": provider_label}
-        finally:
-            close = getattr(client, "close", None)
-            if callable(close):
-                close()
-
-    except PermissionError:
-        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
-    except APIConnectionError as e:
-        return {"success": False, "transcript": "", "error": f"Connection error: {e}"}
-    except APITimeoutError as e:
-        return {"success": False, "transcript": "", "error": f"Request timeout: {e}"}
-    except APIError as e:
-        return {"success": False, "transcript": "", "error": f"API error: {e}"}
-    except Exception as e:
-        logger.error("%s transcription failed: %s", provider_label, e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
-
-# ---------------------------------------------------------------------------
-# Provider: mistral (Voxtral Transcribe API)
-# ---------------------------------------------------------------------------
-
-
-def _transcribe_mistral(
-    file_path: str,
-    model_name: str,
-    *,
-    language: Optional[str] = None,
-    prompt: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Transcribe using Mistral Voxtral Transcribe API.
-
-    Uses the ``mistralai`` Python SDK to call ``/v1/audio/transcriptions``.
-    Requires ``MISTRAL_API_KEY`` environment variable.
-    """
-    api_key = _resolve_provider_key("MISTRAL_API_KEY", "mistral")
-    if not api_key:
-        return {"success": False, "transcript": "", "error": "MISTRAL_API_KEY not set"}
-
-    try:
-        try:
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("stt.mistral", prompt=False)
-        except Exception:
-            pass
-        from mistralai.client import Mistral
-
-        with Mistral(api_key=api_key) as client:
-            with open(file_path, "rb") as audio_file:
-                complete_kwargs: Dict[str, Any] = {
-                    "model": model_name,
-                    "file": {"content": audio_file, "file_name": Path(file_path).name},
-                }
-                # Language: hook override > stt.mistral.language >
-                # stt.language > env > auto.
-                language = language or _resolve_stt_language("mistral")
-                if language:
-                    complete_kwargs["language"] = language
-                if prompt:
-                    # Only send the prompt when set so the no-hook, no-config
-                    # request stays byte-identical to today's.
-                    complete_kwargs["prompt"] = prompt
-                result = client.audio.transcriptions.complete(**complete_kwargs)
-
-            transcript_text = _extract_transcript_text(result)
-            logger.info(
-                "Transcribed %s via Mistral API (%s, %d chars)",
-                Path(file_path).name, model_name, len(transcript_text),
-            )
-            return {"success": True, "transcript": transcript_text, "provider": "mistral"}
-
-    except PermissionError:
-        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
-    except Exception as e:
-        logger.error("Mistral transcription failed: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Mistral transcription failed: {type(e).__name__}"}
-
-
-# ---------------------------------------------------------------------------
-# Provider: xAI (Grok STT API)
-# ---------------------------------------------------------------------------
-
-
-def _transcribe_xai(
-    file_path: str,
-    model_name: str,
-    *,
-    language: Optional[str] = None,
-    prompt: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Transcribe using xAI Grok STT API.
-
-    Uses the ``POST /v1/stt`` REST endpoint with multipart/form-data.
-    Supports Inverse Text Normalization, diarization, and word-level timestamps.
-    Requires ``XAI_API_KEY`` environment variable.
-    """
-    from tools.xai_http import resolve_xai_http_credentials
-
-    if prompt:
-        logger.debug(
-            "STT provider 'xai' does not support transcription prompts — "
-            "proceeding without the prompt."
-        )
-
-    # STT is an API-billed endpoint. Prefer the explicit XAI_API_KEY over the
-    # general xAI OAuth/Grok-subscription credential; subscription OAuth may be
-    # valid for Grok while returning personal-team spending-limit errors for
-    # /v1/stt. Other xAI integrations keep their existing resolver precedence.
-    direct_api_key = str(get_env_value("XAI_API_KEY") or "").strip()
-    if direct_api_key:
-        creds = {
-            "provider": "xai",
-            "api_key": direct_api_key,
-            "base_url": str(
-                get_env_value("XAI_BASE_URL") or "https://api.x.ai/v1"
-            ).strip().rstrip("/"),
-        }
-    else:
-        creds = resolve_xai_http_credentials()
-    api_key = str(creds.get("api_key") or "").strip()
-    if not api_key:
-        return {
-            "success": False,
-            "transcript": "",
-            "error": "No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY",
-        }
-
-    stt_config = _load_stt_config()
-    xai_config = stt_config.get("xai") or {}
-
-    def _resolve_base_url(resolved_creds: Dict[str, str]) -> str:
-        # OAuth bearers are pinned to the resolver-validated xAI origin;
-        # config/env base URL overrides only apply to API-key credentials.
-        if resolved_creds.get("provider") == "xai-oauth":
-            return str(
-                resolved_creds.get("base_url") or XAI_STT_BASE_URL
-            ).strip().rstrip("/")
-        return str(
-            xai_config.get("base_url")
-            or get_env_value("XAI_STT_BASE_URL")
-            or resolved_creds.get("base_url")
-            or XAI_STT_BASE_URL
-        ).strip().rstrip("/")
-
-    base_url = _resolve_base_url(creds)
-    # Language: hook override > stt.xai.language > stt.language > env.
-    language = language or _resolve_stt_language("xai", stt_config) or ""
-    # .get("format", True) already defaults to True when the key is absent;
-    # is_truthy_value only normalizes truthy/falsy strings from config.
-    use_format = is_truthy_value(xai_config.get("format", True))
-    use_diarize = is_truthy_value(xai_config.get("diarize", False))
-
-    try:
-        import requests
-        from tools.xai_http import hermes_xai_user_agent
-
-        data: Dict[str, str] = {}
-        if language:
-            data["language"] = language
-        if use_format:
-            data["format"] = "true"
-        if use_diarize:
-            data["diarize"] = "true"
-
-        def _post_transcription(bearer: str, endpoint_base_url: str):
-            with open(file_path, "rb") as audio_file:
-                return requests.post(
-                    f"{endpoint_base_url}/stt",
-                    headers={
-                        "Authorization": f"Bearer {bearer}",
-                        "User-Agent": hermes_xai_user_agent(),
-                    },
-                    files={
-                        "file": (Path(file_path).name, audio_file),
-                    },
-                    data=data,
-                    timeout=120,
-                )
-
-        response = _post_transcription(api_key, base_url)
-
-        if (
-            response.status_code in {401, 403}
-            and creds.get("provider") == "xai-oauth"
-        ):
-            logger.info(
-                "xAI STT got HTTP %d; refreshing OAuth credentials and retrying once",
-                response.status_code,
-            )
-            try:
-                refreshed_creds = resolve_xai_http_credentials(
-                    force_refresh=True,
-                    api_key_hint=api_key,
-                )
-                refreshed_key = str(refreshed_creds.get("api_key") or "").strip()
-                if refreshed_key and refreshed_key != api_key:
-                    response = _post_transcription(
-                        refreshed_key,
-                        _resolve_base_url(refreshed_creds),
-                    )
-            except Exception as retry_exc:
-                logger.warning(
-                    "xAI STT OAuth refresh-and-retry after HTTP %d failed: %s",
-                    response.status_code,
-                    retry_exc,
-                )
-
-        if response.status_code != 200:
-            detail = ""
-            try:
-                err_body = response.json()
-                detail = err_body.get("error", {}).get("message", "") or response.text[:300]
-            except Exception:
-                detail = response.text[:300]
-            return {
-                "success": False,
-                "transcript": "",
-                "error": f"xAI STT API error (HTTP {response.status_code}): {detail}",
-            }
-
-        result = response.json()
-        transcript_text = result.get("text", "").strip()
-
-        if not transcript_text:
-            return {
-                "success": False,
-                "transcript": "",
-                "error": "xAI STT returned empty transcript",
-                "no_speech": True,
-            }
-
-        logger.info(
-            "Transcribed %s via xAI Grok STT (lang=%s, %.1fs audio, %d chars)",
-            Path(file_path).name,
-            result.get("language", language),
-            result.get("duration", 0),
-            len(transcript_text),
-        )
-
-        return {"success": True, "transcript": transcript_text, "provider": "xai"}
-
-    except PermissionError:
-        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
-    except Exception as e:
-        logger.error("xAI STT transcription failed: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"xAI STT transcription failed: {e}"}
-
-
-# ---------------------------------------------------------------------------
-# Provider: ElevenLabs (Scribe STT API)
-# ---------------------------------------------------------------------------
-
-
-def _transcribe_elevenlabs(
-    file_path: str,
-    model_name: str,
-    *,
-    language: Optional[str] = None,
-    prompt: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Transcribe using ElevenLabs Scribe STT API."""
-    if prompt:
-        logger.debug(
-            "STT provider 'elevenlabs' does not support transcription "
-            "prompts — proceeding without the prompt."
-        )
-
-    api_key = _resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")
-    if not api_key:
-        return {"success": False, "transcript": "", "error": "ELEVENLABS_API_KEY not set"}
-
-    stt_config = _load_stt_config()
-    elevenlabs_config = stt_config.get("elevenlabs") or {}
-    base_url = str(
-        elevenlabs_config.get("base_url")
-        or get_env_value("ELEVENLABS_STT_BASE_URL")
-        or ELEVENLABS_STT_BASE_URL
-    ).strip().rstrip("/")
-    # Language: hook override > stt.elevenlabs.language(_code) > stt.language.
-    language_code = language or _resolve_stt_language(
-        "elevenlabs", stt_config, extra_keys=("language_code",)
-    ) or ""
-    tag_audio_events = is_truthy_value(elevenlabs_config.get("tag_audio_events", False))
-    diarize = is_truthy_value(elevenlabs_config.get("diarize", False))
-
-    try:
-        import requests
-
-        data: Dict[str, str] = {
-            "model_id": model_name,
-            "tag_audio_events": "true" if tag_audio_events else "false",
-            "diarize": "true" if diarize else "false",
-        }
-        if language_code:
-            data["language_code"] = language_code
-
-        with open(file_path, "rb") as audio_file:
-            response = requests.post(
-                f"{base_url}/speech-to-text",
-                headers={"xi-api-key": api_key},
-                files={"file": (Path(file_path).name, audio_file)},
-                data=data,
-                timeout=120,
-            )
-
-        if response.status_code != 200:
-            detail = ""
-            try:
-                err_body = response.json()
-                error_value = err_body.get("detail") or err_body.get("error")
-                if isinstance(error_value, dict):
-                    detail = str(error_value.get("message") or error_value)
-                elif error_value:
-                    detail = str(error_value)
-                else:
-                    detail = response.text[:300]
-            except Exception:
-                detail = response.text[:300]
-            return {
-                "success": False,
-                "transcript": "",
-                "error": f"ElevenLabs STT API error (HTTP {response.status_code}): {detail}",
-            }
-
-        result = response.json()
-        transcript_text = _extract_transcript_text(result)
-        if not transcript_text:
-            return {
-                "success": False,
-                "transcript": "",
-                "error": "ElevenLabs STT returned empty transcript",
-                "no_speech": True,
-            }
-
-        logger.info(
-            "Transcribed %s via ElevenLabs Scribe (%s, %d chars)",
-            Path(file_path).name,
-            model_name,
-            len(transcript_text),
-        )
-
-        return {"success": True, "transcript": transcript_text, "provider": "elevenlabs"}
-
-    except PermissionError:
-        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
-    except Exception as e:
-        logger.error("ElevenLabs STT transcription failed: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"ElevenLabs STT transcription failed: {e}"}
-
-
-# ---------------------------------------------------------------------------
-# Provider: DeepInfra (OpenAI-compatible /v1/audio/transcriptions)
-# ---------------------------------------------------------------------------
-
-
-def _transcribe_deepinfra(
-    file_path: str,
-    model_name: str,
-    *,
-    language: Optional[str] = None,
-    prompt: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Resolve DeepInfra credentials/model, then delegate to the OpenAI handler.
-
-    DeepInfra's STT endpoint is OpenAI-compatible, so the actual SDK
-    call lives in :func:`_transcribe_openai` — this wrapper only owns
-    DeepInfra-specific credential and model resolution, using the shared
-    ``hermes_cli.models`` helpers so every DeepInfra surface resolves the
-    base URL and model ids identically.
-    """
-    api_key = _resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")
-    if not api_key:
-        return {"success": False, "transcript": "", "error": "DEEPINFRA_API_KEY not set"}
-
-    from hermes_cli.models import deepinfra_base_url, deepinfra_model_ids
-
-    stt_config = _load_stt_config()
-    # ``stt.deepinfra: null`` in YAML yields None, not {} — coalesce so the
-    # ``.get`` calls don't raise (no stt.deepinfra block in DEFAULT_CONFIG to
-    # deep-merge over the null).
-    di_config = stt_config.get("deepinfra") if isinstance(stt_config, dict) else None
-    if not isinstance(di_config, dict):
-        di_config = {}
-    base_url = deepinfra_base_url(di_config)
-
-    if not model_name:
-        candidates = deepinfra_model_ids("stt")
-        if not candidates:
-            return {
-                "success": False,
-                "transcript": "",
-                "error": (
-                    "No DeepInfra STT model available. Pin one in "
-                    "config.yaml under stt.deepinfra.model, or check "
-                    "connectivity to api.deepinfra.com so the live catalog "
-                    "can be fetched."
-                ),
-            }
-        model_name = candidates[0]
-
-    return _transcribe_openai(
-        file_path,
-        model_name,
-        api_key=api_key,
-        base_url=base_url,
-        provider_label="deepinfra",
-        language=language,
-        prompt=prompt,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Cloud pre-upload silence trim
-# ---------------------------------------------------------------------------
-#
-# Local faster-whisper gets Silero VAD (build_local_transcribe_kwargs) so
-# silence never reaches the model. Cloud providers get no such protection:
-# the raw file is uploaded, so every second of silence is paid for twice —
-# once in upload time and once in per-audio-minute billing — and cloud
-# Whisper hallucinates junk tokens on silent stretches exactly like local
-# Whisper did before the VAD hardening.
-#
-# Before uploading to a built-in cloud provider we collapse long pauses with
-# ffmpeg's silenceremove filter, keeping ``stt.cloud_trim_keep_ms`` of every
-# pause so word boundaries and natural pacing survive. The trim is purely
-# best-effort — ANY of these falls back to uploading the original untouched:
-#   - ``stt.cloud_trim_silence: false``
-#   - ffmpeg or ffprobe not installed
-#   - the trim command fails or times out
-#   - the trimmed result is suspiciously empty (mostly-silence clip — the
-#     provider, not a client-side heuristic, decides whether it has speech)
-#   - the trim saves less than ~10% (re-encoding for nothing)
-#
-# Command-type and plugin providers are deliberately NOT trimmed: they may
-# wrap local CLIs that want the original bytes (and may run their own VAD).
-
-_CLOUD_TRIM_THRESHOLD_DB_DEFAULT = -40  # audio below this level counts as silence
-_CLOUD_TRIM_KEEP_MS_DEFAULT = 300  # how much of each pause survives the trim
-_CLOUD_TRIM_MIN_SAVING = 0.10  # use the trimmed file only when >=10% shorter
-_CLOUD_TRIM_MIN_RESULT_SECONDS = 0.3  # all-silence guard floor: never upload ~empty audio
-# Below this duration the trim can't pay for itself: a >=10% saving on a short
-# clip is ~a second of audio, several providers bill a per-request minimum
-# anyway (Groq: 10s), and the encode would sit on the synchronous voice-note
-# response path. Skip the whole pipeline.
-_CLOUD_TRIM_MIN_INPUT_SECONDS = 12.0
-
-# Built-in providers that upload audio to a remote API.
-CLOUD_STT_PROVIDERS = frozenset(BUILTIN_STT_PROVIDERS - {"local", "local_command"})
-
-
-def _find_ffprobe_binary() -> Optional[str]:
-    return _find_binary("ffprobe")
-
-
-def _probe_audio_duration(file_path: str) -> Optional[float]:
-    """Return the audio duration in seconds via ffprobe, or None.
-
-    Canonical sync seconds-probe. ``gateway/run.py._probe_audio_duration``
-    (async, returns a display string) and the Telegram adapter's
-    ``_probe_voice_duration_seconds`` carry local variants of the same
-    ffprobe invocation — keep the command shape in sync.
-    """
-    ffprobe = _find_ffprobe_binary()
-    if not ffprobe:
-        return None
-    command = [
-        ffprobe, "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        file_path,
-    ]
-    try:
-        result = subprocess.run(
-            command, check=True, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=30,
-            stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(),
-        )
-        return float(result.stdout.strip())
-    except Exception:  # noqa: BLE001 - probe is best-effort
-        return None
-
-
-def _cloud_trim_settings(stt_config: Dict[str, Any]) -> tuple[bool, int, int]:
-    """Resolve (enabled, threshold_db, keep_ms) for the cloud silence trim."""
-    cfg = stt_config if isinstance(stt_config, dict) else {}
-    # is_truthy_value: the module's established config-boolean normalizer —
-    # a YAML string "false" must disable, exactly like is_stt_enabled.
-    enabled = is_truthy_value(cfg.get("cloud_trim_silence", True), default=True)
-    try:
-        threshold_db = int(cfg.get("cloud_trim_threshold_db", _CLOUD_TRIM_THRESHOLD_DB_DEFAULT))
-    except (TypeError, ValueError):
-        threshold_db = _CLOUD_TRIM_THRESHOLD_DB_DEFAULT
-    try:
-        keep_ms = int(cfg.get("cloud_trim_keep_ms", _CLOUD_TRIM_KEEP_MS_DEFAULT))
-    except (TypeError, ValueError):
-        keep_ms = _CLOUD_TRIM_KEEP_MS_DEFAULT
-    return enabled, threshold_db, max(keep_ms, 0)
-
-
-def _trim_silence_for_cloud_stt(
-    file_path: str, stt_config: Dict[str, Any]
-) -> Optional[str]:
-    """Return a silence-trimmed copy of *file_path* for cloud upload, or None.
-
-    ``None`` always means "upload the original file": the trim is disabled,
-    the tools are missing, the clip is too short for a trim to pay for
-    itself, the trim failed, the clip is mostly silence, or trimming would
-    not save enough to justify the re-encode. On success the caller owns
-    deleting the returned file's parent directory.
-    """
-    enabled, threshold_db, keep_ms = _cloud_trim_settings(stt_config)
-    if not enabled:
-        return None
-    ffmpeg = _find_ffmpeg_binary()
-    if not ffmpeg:
-        logger.debug("Cloud STT silence trim skipped: ffmpeg not found")
-        return None
-    original_duration = _probe_audio_duration(file_path)
-    if not original_duration or original_duration <= 0:
-        logger.debug("Cloud STT silence trim skipped: could not probe %s", file_path)
-        return None
-    if original_duration < _CLOUD_TRIM_MIN_INPUT_SECONDS:
-        # Short clip: savings can't matter (some providers bill a 10s
-        # minimum per request anyway) — skip the encode entirely.
-        logger.debug(
-            "Cloud STT silence trim skipped for %s: %.1fs is below the %.0fs gate",
-            Path(file_path).name, original_duration, _CLOUD_TRIM_MIN_INPUT_SECONDS,
-        )
-        return None
-
-    keep_seconds = keep_ms / 1000.0
-    # start_periods=1 strips leading silence; stop_periods=-1 collapses every
-    # interior/trailing silence, keeping ``keep_seconds`` of each pause.
-    filter_expr = (
-        f"silenceremove="
-        f"start_periods=1:start_threshold={threshold_db}dB:start_silence={keep_seconds}:"
-        f"stop_periods=-1:stop_threshold={threshold_db}dB:stop_silence={keep_seconds}"
-    )
-    work_dir = tempfile.mkdtemp(prefix="hermes-stt-trim-")
-    trimmed_path = os.path.join(work_dir, f"{Path(file_path).stem or 'audio'}-trimmed.m4a")
-    # Scale the all-silence guard with keep_ms: an output consisting solely
-    # of kept pause must never be uploaded as "speech".
-    min_result_seconds = max(_CLOUD_TRIM_MIN_RESULT_SECONDS, 2 * keep_seconds)
-    keep_result = False
-    try:
-        _run_ffmpeg_stt_encode(ffmpeg, file_path, trimmed_path, audio_filter=filter_expr)
-        trimmed_duration = _probe_audio_duration(trimmed_path)
-        if not trimmed_duration or trimmed_duration < min_result_seconds:
-            # Mostly/all silence. Deciding "no speech" belongs to the
-            # provider, not a client-side dB heuristic — upload the original.
-            logger.debug(
-                "Cloud STT silence trim discarded for %s: trimmed result ~empty (%.2fs)",
-                Path(file_path).name, trimmed_duration or 0.0,
-            )
-            return None
-        if trimmed_duration > original_duration * (1 - _CLOUD_TRIM_MIN_SAVING):
-            logger.debug(
-                "Cloud STT silence trim discarded for %s: saves <%.0f%% (%.1fs -> %.1fs)",
-                Path(file_path).name, _CLOUD_TRIM_MIN_SAVING * 100,
-                original_duration, trimmed_duration,
-            )
-            return None
-        logger.info(
-            "Trimmed silence from %s before cloud STT upload (%.1fs -> %.1fs, -%d%%)",
-            Path(file_path).name, original_duration, trimmed_duration,
-            round((1 - trimmed_duration / original_duration) * 100),
-        )
-        keep_result = True
-        return trimmed_path
-    except Exception as exc:  # noqa: BLE001 - trim is best-effort
-        logger.debug("Cloud STT silence trim failed for %s: %s", file_path, exc)
-        return None
-    finally:
-        if not keep_result:
-            shutil.rmtree(work_dir, ignore_errors=True)
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+        return _error_result(f"Local transcription failed: {e}")
+
+
+# ---- Public API ---------------------------------------------------------
+def _read_block_error(file_path: str) -> Optional[Dict[str, Any]]:
+    """Refuse to ship a credential store (auth.json, .env, OAuth tokens) to an STT provider.
+    Mirrors the image-gen / video-gen read guards."""
+    from agent.file_safety import get_read_block_error
+    blocked = get_read_block_error(file_path)
+    return _error_result(blocked) if blocked else None
 
 
 def _transcribe_prepared_audio(
-    file_path: str,
-    model: Optional[str] = None,
-    source: Optional[str] = None,
-) -> Dict[str, Any]:
-    """
-    Transcribe an audio file using the configured STT provider.
-
-    Provider priority:
-      1. User config (``stt.provider`` in config.yaml)
-      2. Auto-detect: local > Groq > OpenAI > Mistral > xAI > ElevenLabs
-
-    Args:
-        file_path: Absolute path to the audio file to transcribe.
-        model:     Override the model. If None, uses config or provider default.
-        source:    Optional caller-surface label (e.g. ``"gateway"``,
-                   ``"voice_mode"``) forwarded to the ``pre_transcription``
-                   plugin hook for observability. Not used for dispatch.
-
-    Returns:
-        dict with keys:
-          - "success" (bool): Whether transcription succeeded
-          - "transcript" (str): The transcribed text (empty on failure)
-          - "error" (str, optional): Error message if success is False
-          - "provider" (str, optional): Which provider was used
-    """
-    # Refuse to feed a credential / secret store (auth.json, .env, OAuth
-    # tokens, mcp-tokens/, ...) to an STT provider: an external provider would
-    # ship its plaintext contents to a third-party API. Mirrors the local-input
-    # read guard added to image-gen (587be5b5b) and xAI video-gen (104232979).
-    from agent.file_safety import get_read_block_error
-    blocked = get_read_block_error(file_path)
-    if blocked:
-        return {"success": False, "transcript": "", "error": blocked}
-
-    # Apply common path validation before provider resolution so invalid files
-    # cannot trigger provider setup or lazy installation. The remote-upload
-    # size cap is enforced separately below, only for non-local providers.
-    error = _validate_audio_file(file_path, enforce_size_limit=False)
+    file_path: str, model: Optional[str] = None, source: Optional[str] = None) -> Dict[str, Any]:
+    """Transcribe a validated audio file with the configured STT provider. ``model`` overrides the
+    config default; ``source`` is a caller-surface label (``"gateway"``, ``"voice_mode"``) forwarded
+    to the ``pre_transcription`` hook only."""
+    # Validate before provider resolution so invalid files can't trigger provider setup
+    # or lazy installation; the remote-upload size cap applies to non-local only.
+    error = _read_block_error(file_path) or _validate_audio_file(file_path, enforce_size_limit=False)
     if error:
         return error
-
-    # Load config and determine provider
     stt_config = _load_stt_config()
     if not is_stt_enabled(stt_config):
-        return {
-            "success": False,
-            "transcript": "",
-            "error": "STT is disabled in config.yaml (stt.enabled: false).",
-        }
-
+        return _error_result("STT is disabled in config.yaml (stt.enabled: false).")
     provider = _get_provider(stt_config)
     if not _is_local_stt_provider(provider, stt_config):
         error = _validate_audio_file_size(Path(file_path))
         if error:
             return error
-
-    # Convert CAF (iMessage voice notes) to WAV for cloud STT providers.
-    if Path(file_path).suffix.lower() == ".caf" and provider not in ("local", "local_command"):
-        converted = _convert_caf_to_wav(file_path)
-        if converted:
-            file_path = converted
-        else:
-            return {"success": False, "transcript": "",
-                    "error": "CAF audio could not be converted to WAV."}
-
-    # Pre-upload silence trim for built-in cloud providers: local whisper gets
-    # Silero VAD, cloud endpoints get the raw file — collapse long pauses
-    # client-side so silence isn't uploaded, billed, or hallucinated on.
-    # Best-effort: any failure uploads the original untouched.
+        # Convert CAF (iMessage voice notes) to WAV for cloud STT providers.
+        if Path(file_path).suffix.lower() == ".caf":
+            file_path = _convert_caf_to_wav(file_path)
+            if not file_path:
+                return _error_result("CAF audio could not be converted to WAV.")
+    # Best-effort pre-upload silence trim for built-in cloud providers.
     trim_cleanup_dir: Optional[str] = None
     if provider in CLOUD_STT_PROVIDERS:
         trimmed = _trim_silence_for_cloud_stt(file_path, stt_config)
         if trimmed:
             file_path = trimmed
             trim_cleanup_dir = os.path.dirname(trimmed)
-
     try:
         return _dispatch_stt_provider(file_path, provider, stt_config, model, source)
     finally:
@@ -3006,392 +438,165 @@ def _transcribe_prepared_audio(
             shutil.rmtree(trim_cleanup_dir, ignore_errors=True)
 
 
-def _dispatch_stt_provider(
-    file_path: str,
-    provider: str,
-    stt_config: Dict[str, Any],
-    model: Optional[str] = None,
-    source: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Route *file_path* to the handler for *provider* (built-in > command > plugin)."""
-    # Optional static transcription prompt (``stt.prompt`` in config.yaml):
-    # vocabulary/context hints threaded to prompt-capable backends.
-    # Ordering: config is the base; pre_transcription hook results mutate on
-    # top, in registration order, so the last hook to set a field wins.
-    prompt = stt_config.get("prompt")
-    if not isinstance(prompt, str) or not prompt.strip():
-        prompt = None
+# Built-in provider -> (stt section, config key, default, treat-empty-as-missing). "local_command"
+# shares ``stt.local``; xAI takes no model (logging-only); deepinfra uses the live catalog when empty.
+_BUILTIN_MODEL_KEYS = {
+    "local": ("local", "model", DEFAULT_LOCAL_MODEL, False),
+    "local_command": ("local", "model", DEFAULT_LOCAL_MODEL, False),
+    "groq": ("groq", "model", DEFAULT_GROQ_STT_MODEL, True),
+    "openai": ("openai", "model", DEFAULT_STT_MODEL, False),
+    "mistral": ("mistral", "model", DEFAULT_MISTRAL_STT_MODEL, False),
+    "elevenlabs": ("elevenlabs", "model_id", DEFAULT_ELEVENLABS_STT_MODEL, False),
+    "deepinfra": ("deepinfra", "model", "", True)}
 
-    # pre_transcription plugin hook — fires after provider resolution and
-    # BEFORE any backend (built-in, command-type, or plugin-registered) is
-    # invoked. Hooks may mutate prompt/language/model; file_path is
-    # read-only. The helper short-circuits on has_hook() so the no-hook
-    # dispatch path stays byte-identical. ``language`` stays None unless a
-    # hook overrides it — backends keep their own config/env resolution.
-    model, language, prompt = _apply_pre_transcription_hook(
-        file_path=file_path,
-        provider=provider,
-        model=model,
-        language=_get_stt_section(stt_config, provider).get("language"),
-        prompt=prompt,
-        source=source,
-    )
 
-    # Whisper-family prompt windows top out around 224 tokens — truncate
-    # (keeping the tail) with a warning rather than erroring or letting a
-    # strict server reject the request.
-    prompt = _enforce_prompt_length_limit(prompt, provider)
-
-    if provider == "local":
-        local_cfg = stt_config.get("local") or {}
-        model_name = _normalize_local_model(
-            model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
-        )
-        return _transcribe_local(
-            file_path, model_name, language=language, prompt=prompt,
-        )
-
-    if provider == "local_command":
-        local_cfg = stt_config.get("local") or {}
-        model_name = _normalize_local_command_model(
-            model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
-        )
-        return _transcribe_local_command(
-            file_path, model_name, language=language, prompt=prompt,
-        )
-
-    if provider == "groq":
-        groq_cfg = stt_config.get("groq") or {}
-        model_name = model or groq_cfg.get("model") or DEFAULT_GROQ_STT_MODEL
-        return _transcribe_groq(
-            file_path, model_name, language=language, prompt=prompt,
-        )
-
-    if provider == "openai":
-        openai_cfg = stt_config.get("openai") or {}
-        model_name = model or openai_cfg.get("model", DEFAULT_STT_MODEL)
-        return _transcribe_openai(
-            file_path, model_name, language=language, prompt=prompt,
-        )
-
-    if provider == "mistral":
-        mistral_cfg = stt_config.get("mistral") or {}
-        model_name = model or mistral_cfg.get("model", DEFAULT_MISTRAL_STT_MODEL)
-        return _transcribe_mistral(
-            file_path, model_name, language=language, prompt=prompt,
-        )
-
+def _builtin_model_name(provider: str, stt_config: Dict[str, Any], model: Optional[str]) -> str:
+    """Resolve the model for a built-in provider: caller override > ``stt.<provider>`` config > default."""
+    if model:
+        return model
     if provider == "xai":
-        # xAI Grok STT doesn't use a model parameter — pass through for logging
-        model_name = model or "grok-stt"
-        return _transcribe_xai(
-            file_path, model_name, language=language, prompt=prompt,
-        )
+        return "grok-stt"
+    section, key, default, empty_is_missing = _BUILTIN_MODEL_KEYS[provider]
+    cfg = _get_stt_section(stt_config, section)
+    return (cfg.get(key) or default) if empty_is_missing else cfg.get(key, default)
 
-    if provider == "elevenlabs":
-        elevenlabs_cfg = stt_config.get("elevenlabs") or {}
-        model_name = model or elevenlabs_cfg.get("model_id", DEFAULT_ELEVENLABS_STT_MODEL)
-        return _transcribe_elevenlabs(
-            file_path, model_name, language=language, prompt=prompt,
-        )
 
-    if provider == "deepinfra":
-        di_config = stt_config.get("deepinfra")  # may be None (YAML null)
-        di_config = di_config if isinstance(di_config, dict) else {}
-        model_name = model or di_config.get("model") or ""
-        return _transcribe_deepinfra(
-            file_path, model_name, language=language, prompt=prompt,
-        )
-
-    # User-declared command-type provider
-    # (``stt.providers.<name>: type: command``). Fires after the built-in
-    # elif chain — built-in names short-circuit upstream so a user's
-    # ``stt.providers.openai.command`` can't override the real OpenAI
-    # handler — and BEFORE the plugin dispatcher, because config is more
-    # local than a plugin install (same precedence rule as TTS PR #17843).
+def _dispatch_stt_provider(
+    file_path: str, provider: str, stt_config: Dict[str, Any], model: Optional[str] = None,
+    source: Optional[str] = None) -> Dict[str, Any]:
+    """Route *file_path* to the handler for *provider* (built-in > command > plugin)."""
+    # Static ``stt.prompt`` is the base; hook results mutate on top (last hook to set a field wins).
+    prompt = stt_config.get("prompt")
+    prompt = prompt if isinstance(prompt, str) and prompt.strip() else None
+    # Fires after provider resolution and BEFORE any backend; ``language`` stays None unless a hook sets it.
+    model, language, prompt = _apply_pre_transcription_hook(
+        file_path=file_path, provider=provider, model=model,
+        language=_get_stt_section(stt_config, provider).get("language"), prompt=prompt, source=source,
+    )
+    prompt = _enforce_prompt_length_limit(prompt, provider)
+    if provider in BUILTIN_STT_PROVIDERS:
+        # Looked up in this module at call time so tests may patch ``_transcribe_*``.
+        handler = globals()[f"_transcribe_{provider}"]
+        model_name = _builtin_model_name(provider, stt_config, model)
+        if provider in ("local", "local_command"):
+            model_name = _normalize_local_model(model_name)
+        return handler(file_path, model_name, language=language, prompt=prompt)
+    # Command providers: after built-ins (``stt.providers.openai.command`` can't override the
+    # real handler) and BEFORE plugins, since config is more local than a plugin install.
+    # User-declared command-type provider (``stt.providers.<name>: type: command``). See #17843.
     command_provider_config = _resolve_command_stt_provider_config(provider, stt_config)
     if command_provider_config is not None:
-        return _transcribe_command_stt(
-            file_path,
-            provider,
-            command_provider_config,
-            stt_config,
-            model_override=model,
-            language_override=language,
-            prompt=prompt,
-        )
-
-    # Plugin-registered STT backend (e.g. OpenRouter, SenseAudio,
-    # Gemini-STT). Fires only when ``provider`` is neither a built-in
-    # nor ``"none"`` AND there is no same-name command provider. The
-    # dispatcher enforces built-ins-always-win + command-wins-over-plugin
-    # defensively. Returns None when no plugin is registered for the
-    # configured name; explicit configured names get a provider-specific
-    # error before the generic auto-detect fallback below.
-    #
-    # Plugin-scoped config namespace mirrors the built-in pattern
-    # (``stt.openai.model``, ``stt.mistral.model``): plugins read their
-    # per-provider config under ``stt.<provider>`` and the dispatcher
-    # forwards ``language`` from there. Top-level ``model`` argument
-    # overrides any config-set model.
-    plugin_cfg = stt_config.get(provider, {}) if isinstance(stt_config.get(provider), dict) else {}
-    plugin_language = language or _resolve_stt_language(provider, stt_config)
-    plugin_model = model or plugin_cfg.get("model")
+        return _transcribe_command_stt(file_path, provider, command_provider_config, stt_config,
+                                       model_override=model, language_override=language, prompt=prompt)
+    # Plugin backend: reads ``stt.<provider>`` like built-ins; the ``model`` argument overrides it.
     plugin_result = _dispatch_to_plugin_provider(
-        file_path,
-        provider,
-        stt_config,
-        model=plugin_model,
-        language=plugin_language,
-        prompt=prompt,
-    )
-    if plugin_result is not None:
-        return plugin_result
+        file_path, provider, stt_config, model=model or _get_stt_section(stt_config, provider).get("model"),
+        language=language or _resolve_stt_language(provider, stt_config), prompt=prompt)
+    return plugin_result if plugin_result is not None else _no_provider_error(provider, stt_config)
 
+
+def _no_provider_error(provider: str, stt_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Error envelope when nothing claimed *provider*: unregistered name > openai selection reason > generic hint."""
     provider_key = str(provider or "").strip().lower()
-    if (
-        "provider" in stt_config
-        and provider_key
-        and provider_key not in BUILTIN_STT_PROVIDERS
-        and provider_key != "none"
-    ):
+    if "provider" in stt_config and provider_key and provider_key not in BUILTIN_STT_PROVIDERS and provider_key != "none":
         return _unregistered_stt_provider_error(provider_key)
-
-    # No provider available
-    return {
-        "success": False,
-        "transcript": "",
-        "error": (
-            "No STT provider available. Install faster-whisper for free local "
-            f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
-            "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
-            "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, "
-            "set ELEVENLABS_API_KEY for ElevenLabs Scribe, or set VOICE_TOOLS_OPENAI_KEY "
-            "or OPENAI_API_KEY for the OpenAI Whisper API."
-        ),
-    }
+    # An explicit openai selection flattened to "none" has a specific reason (e.g. managed gateway down).
+    # Surface it — with its `hermes tools` remediation — instead of the all-provider setup hint (#93045).
+    if provider_key == "none" and str(stt_config.get("provider") or "") == "openai" and _HAS_OPENAI:
+        reason = _openai_audio_unavailable_reason()
+        if reason is not None:
+            return _error_result(reason)
+    return _error_result(
+        "No STT provider available. Install faster-whisper for free local "
+        f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
+        "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
+        "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, "
+        "set ELEVENLABS_API_KEY for ElevenLabs Scribe, or set VOICE_TOOLS_OPENAI_KEY "
+        "or OPENAI_API_KEY for the OpenAI Whisper API.")
 
 
 def transcribe_audio(
-    file_path: str,
-    model: Optional[str] = None,
-    source: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Safely validate, preprocess supported inputs, and dispatch transcription.
-
-    ``source`` is an optional caller-surface label (e.g. ``"gateway"``,
-    ``"voice_mode"``) forwarded to the ``pre_transcription`` plugin hook for
-    observability. Not used for dispatch.
-    """
-    # Refuse to feed a credential / secret store (auth.json, .env, OAuth
-    # tokens, mcp-tokens/, ...) to an STT provider — before ANY validation or
-    # preprocessing, so the refusal names the real reason rather than a
-    # format error. Mirrors the image-gen / video-gen read guards.
-    from agent.file_safety import get_read_block_error
-    blocked = get_read_block_error(file_path)
+    file_path: str, model: Optional[str] = None, source: Optional[str] = None) -> Dict[str, Any]:
+    """Validate, preprocess supported inputs, and dispatch transcription. ``source`` is a caller-surface
+    label (``"gateway"``, ``"voice_mode"``) forwarded to the ``pre_transcription`` hook only."""
+    # Secret-store refusal runs before ANY validation so the error names the real reason.
+    blocked = _read_block_error(file_path)
     if blocked:
-        return {"success": False, "transcript": "", "error": blocked}
-
-    # Cap .silk sources before the decoder runs (decoder safety). For all
-    # other inputs the remote-upload size cap is provider-scoped and enforced
-    # in _transcribe_prepared_audio, so local whisper can handle big files.
+        return blocked
+    # Cap .silk sources before the decoder runs; for other inputs the upload cap is
+    # provider-scoped in _transcribe_prepared_audio so local whisper can take big files.
     is_silk = Path(file_path).suffix.lower() == ".silk"
     source_error = _validate_audio_source_file(file_path, enforce_size_limit=is_silk)
     if source_error:
         return source_error
-
     prepared_path, cleanup_dir, prep_error = _prepare_audio_for_transcription(file_path)
-    if prep_error:
-        return prep_error
-    if prepared_path is None:
-        return {
-            "success": False,
-            "transcript": "",
-            "error": "Audio preprocessing did not produce a file for transcription.",
-        }
-
+    if prep_error or prepared_path is None:
+        return prep_error or _error_result("Audio preprocessing did not produce a file for transcription.")
     try:
-        prepared_error = _validate_audio_file(prepared_path, enforce_size_limit=False)
-        if prepared_error:
-            return prepared_error
-        return _transcribe_prepared_audio(prepared_path, model, source)
+        return (_validate_audio_file(prepared_path, enforce_size_limit=False)
+                or _transcribe_prepared_audio(prepared_path, model, source))
     finally:
         if cleanup_dir:
             shutil.rmtree(cleanup_dir, ignore_errors=True)
 
 
-def _is_local_or_private_url(url: str) -> bool:
-    """True when *url* points at a loopback/RFC-1918/LAN-internal host.
-
-    Used to decide whether an empty ``stt.openai.api_key`` is acceptable:
-    local OpenAI-compatible STT servers (faster-whisper-server, speaches,
-    vLLM whisper variants...) ignore the auth header, so users shouldn't
-    have to write a sham ``api_key: not-needed`` in config.yaml.
-    """
-    try:
-        from urllib.parse import urlparse
-        import ipaddress
-
-        host = (urlparse(url).hostname or "").lower()
-        if not host:
-            return False
-        if host == "localhost" or host.endswith((".local", ".lan", ".internal")):
-            return True
-        try:
-            return ipaddress.ip_address(host).is_private or ipaddress.ip_address(host).is_loopback
-        except ValueError:
-            return False
-    except Exception:
-        return False
-
-
-def transcribe_audio_local_fallback(
-    file_path: str,
-    model: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Try an already-installed local STT backend without changing config.
-
-    This is intended for passive inbound-media recovery after the configured
-    provider has failed. It deliberately does not lazy-install dependencies or
-    fall through to another cloud provider.
-    """
+def transcribe_audio_local_fallback(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
+    """Try an already-installed local STT backend without changing config: passive inbound-media
+    recovery after the configured provider failed — never lazy-installs or falls through to cloud."""
     error = _validate_audio_file(file_path)
     if error:
         return error
-
-    stt_config = _load_stt_config()
-    local_cfg = stt_config.get("local") or {}
-    local_model = model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
-
+    local_model = model or (_load_stt_config().get("local") or {}).get("model", DEFAULT_LOCAL_MODEL)
     if _HAS_FASTER_WHISPER:
-        return _transcribe_local(
-            file_path,
-            _normalize_local_model(local_model),
-        )
+        return _transcribe_local(file_path, _normalize_local_model(local_model))
     if _has_local_command():
-        return _transcribe_local_command(
-            file_path,
-            _normalize_local_command_model(local_model),
-        )
-    return {
-        "success": False,
-        "transcript": "",
-        "error": "No installed local STT backend is available.",
-        "provider": "local",
-    }
+        return _transcribe_local_command(file_path, _normalize_local_model(local_model))
+    return _error_result("No installed local STT backend is available.", provider="local")
 
 
-def _resolve_openai_audio_client_config() -> tuple[str, str]:
-    """Return ``(api_key, base_url)`` for the OpenAI STT client.
-
-    Strict selection semantics (switch on the stored ``stt`` provider
-    string; previously this resolver never read the stored gateway intent):
-    - ``"nous"`` (or legacy ``use_gateway: true``) → managed gateway ONLY;
-      unentitled/unreachable is a selection-naming error (a direct
-      OPENAI_API_KEY must NOT override it).
-    - any other stored stt provider → direct credentials ONLY; missing
-      credentials is a selection-naming error — no silent managed fallback.
-    - never-configured stt section → legacy ladder: config key → local
-      base_url → env key → managed gateway.
-    """
-    from tools.tool_backend_helpers import (
-        NOUS_MANAGED_PROVIDER,
-        read_selection,
-        selection_error,
-    )
-
-    stt_config = _load_stt_config()
-    openai_cfg = stt_config.get("openai") or {}
-    cfg_api_key = openai_cfg.get("api_key", "")
-    cfg_base_url = openai_cfg.get("base_url", "")
-
-    selected = read_selection("stt")
-
-    if selected == NOUS_MANAGED_PROVIDER:
-        managed_gateway = resolve_managed_tool_gateway("openai-audio")
-        if managed_gateway is None:
-            raise ValueError(selection_error(
-                "stt",
-                NOUS_MANAGED_PROVIDER,
-                "the Nous Tool Gateway is not available (not entitled or "
-                "unreachable)",
-            ))
-        return managed_gateway.nous_user_token, urljoin(
-            f"{managed_gateway.gateway_origin.rstrip('/')}/", "v1"
-        )
-
-    if selected is not None:
-        # Stored vendor selection: direct credentials only.
-        if cfg_api_key:
-            return cfg_api_key, (cfg_base_url or OPENAI_BASE_URL)
-        if cfg_base_url and _is_local_or_private_url(cfg_base_url):
-            return "not-needed", cfg_base_url
-        direct_api_key = resolve_openai_audio_api_key()
-        if direct_api_key:
-            return direct_api_key, OPENAI_BASE_URL
-        raise ValueError(selection_error(
-            "stt",
-            selected,
-            "neither stt.openai.api_key in config nor "
-            "VOICE_TOOLS_OPENAI_KEY/OPENAI_API_KEY is set",
-        ))
-
-    # Never-configured stt section: legacy credential ladder.
-    if cfg_api_key:
-        return cfg_api_key, (cfg_base_url or OPENAI_BASE_URL)
-
-    # A local OpenAI-compatible server needs no key — send a placeholder so
-    # the SDK doesn't refuse to construct a client (#25193, credit @nnnet).
-    if cfg_base_url and _is_local_or_private_url(cfg_base_url):
-        return "not-needed", cfg_base_url
-
-    direct_api_key = resolve_openai_audio_api_key()
-    if direct_api_key:
-        return direct_api_key, OPENAI_BASE_URL
-
-    managed_gateway = resolve_managed_tool_gateway("openai-audio")
-    if managed_gateway is None:
-        message = "Neither stt.openai.api_key in config nor VOICE_TOOLS_OPENAI_KEY/OPENAI_API_KEY is set"
-        if managed_nous_tools_enabled():
-            message += (
-                ". "
-                + nous_tool_gateway_unavailable_message(
-                    "managed OpenAI audio for transcription",
-                )
-            )
-        raise ValueError(message)
-
-    return managed_gateway.nous_user_token, urljoin(
-        f"{managed_gateway.gateway_origin.rstrip('/')}/", "v1"
-    )
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import platform  # noqa: F401,E402
+import queue  # noqa: F401,E402
+import re  # noqa: F401,E402
+import shlex  # noqa: F401,E402
+import subprocess  # noqa: F401,E402
+import tempfile  # noqa: F401,E402
+from urllib.parse import urljoin  # noqa: F401,E402
 
 
-def _extract_transcript_text(transcription: Any) -> str:
-    """Normalize text and JSON transcription responses to a plain string."""
-    text: Optional[str] = None
+_PLUGIN_COMPAT_LAZY = {
+    'COMMAND_STT_OUTPUT_FORMATS': ('tools.transcription_command', 'COMMAND_STT_OUTPUT_FORMATS'),
+    'COMMON_LOCAL_BIN_DIRS': ('tools.transcription_common', 'COMMON_LOCAL_BIN_DIRS'),
+    'DEFAULT_COMMAND_STT_LANGUAGE': ('tools.transcription_command', 'DEFAULT_COMMAND_STT_LANGUAGE'),
+    'DEFAULT_COMMAND_STT_OUTPUT_FORMAT': ('tools.transcription_command', 'DEFAULT_COMMAND_STT_OUTPUT_FORMAT'),
+    'DEFAULT_COMMAND_STT_TIMEOUT_SECONDS': ('tools.transcription_command', 'DEFAULT_COMMAND_STT_TIMEOUT_SECONDS'),
+    'DEFAULT_LOCAL_STT_LANGUAGE': ('tools.transcription_common', 'DEFAULT_LOCAL_STT_LANGUAGE'),
+    'ELEVENLABS_STT_BASE_URL': ('tools.transcription_common', 'ELEVENLABS_STT_BASE_URL'),
+    'GROQ_BASE_URL': ('tools.transcription_common', 'GROQ_BASE_URL'),
+    'GROQ_MODELS': ('tools.transcription_common', 'GROQ_MODELS'),
+    'LOCAL_NATIVE_AUDIO_FORMATS': ('tools.transcription_common', 'LOCAL_NATIVE_AUDIO_FORMATS'),
+    'MAX_FILE_SIZE': ('tools.transcription_common', 'MAX_FILE_SIZE'),
+    'OPENAI_BASE_URL': ('tools.transcription_common', 'OPENAI_BASE_URL'),
+    'OPENAI_MODELS': ('tools.transcription_common', 'OPENAI_MODELS'),
+    'SUPPORTED_FORMATS': ('tools.transcription_common', 'SUPPORTED_FORMATS'),
+    'XAI_STT_BASE_URL': ('tools.transcription_common', 'XAI_STT_BASE_URL'),
+    'managed_nous_tools_enabled': ('tools.tool_backend_helpers', 'managed_nous_tools_enabled'),
+    'nous_tool_gateway_unavailable_message': ('tools.tool_backend_helpers', 'nous_tool_gateway_unavailable_message'),
+    'resolve_managed_tool_gateway': ('tools.managed_tool_gateway', 'resolve_managed_tool_gateway'),
+    'resolve_openai_audio_api_key': ('tools.tool_backend_helpers', 'resolve_openai_audio_api_key'),
+    'windows_hide_flags': ('hermes_cli._subprocess_compat', 'windows_hide_flags'),
+}
 
-    if isinstance(transcription, str):
-        text = transcription.strip()
 
-    if text is None and hasattr(transcription, "text"):
-        value = getattr(transcription, "text")
-        if isinstance(value, str):
-            text = value.strip()
-
-    if text is None and isinstance(transcription, dict):
-        value = transcription.get("text")
-        if isinstance(value, str):
-            text = value.strip()
-
-    if text is None:
-        text = str(transcription).strip()
-
-    match = re.match(
-        r"\s*language\s+[\w.-]+(?:\s*<audio_language>[^<]*</audio_language>)?\s*<asr_text>\s*(?P<text>.*)",
-        text,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    if match:
-        text = match.group("text").strip()
-
-    return text
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

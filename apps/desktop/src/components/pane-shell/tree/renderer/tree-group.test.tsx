@@ -1,9 +1,11 @@
+import { fireEvent, screen } from '@testing-library/react'
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
 
+import { $layoutEditMode } from '../../edit-mode'
 import type { GroupNode } from '../model'
 
 import { TreeGroup } from './tree-group'
@@ -52,6 +54,7 @@ afterEach(() => {
   root = null
   container = null
   disposePane = null
+  $layoutEditMode.set(false)
   vi.unstubAllGlobals()
 })
 
@@ -74,5 +77,84 @@ describe('TreeGroup', () => {
     render(<TreeGroup node={terminalGroup(true)} parentAxis="column" />)
 
     expect(toggle('Restore').querySelector('i')!.className).toContain('codicon-chevron-up')
+  })
+
+  it('scopes a semantic background tint to the selected zone', () => {
+    disposePane = registry.register({
+      area: 'panes',
+      data: { height: '12rem' },
+      id: 'terminal',
+      render: () => <div>Terminal</div>,
+      title: 'Terminal'
+    })
+    vi.stubGlobal('CSS', { escape: (value: string) => value })
+
+    render(<TreeGroup node={{ ...terminalGroup(false), backgroundTint: 'cyan' }} parentAxis="column" />)
+
+    const zone = globalThis.document.querySelector<HTMLElement>('[data-tree-group="terminal-zone"]')
+
+    expect(zone?.style.getPropertyValue('--ui-chat-surface-background')).toBe(
+      'color-mix(in srgb, var(--ui-cyan) 10%, var(--ui-zone-chat-surface-background))'
+    )
+    expect(zone?.style.getPropertyValue('--ui-editor-surface-background')).toBe(
+      'color-mix(in srgb, var(--ui-cyan) 10%, var(--ui-zone-editor-surface-background))'
+    )
+    expect(zone?.style.getPropertyValue('--ui-sidebar-surface-background')).toBe(
+      'color-mix(in srgb, var(--ui-cyan) 10%, var(--ui-zone-sidebar-surface-background))'
+    )
+  })
+
+  it('offers background tint controls from the existing zone context menu', async () => {
+    disposePane = registry.register({
+      area: 'panes',
+      data: { height: '12rem' },
+      id: 'terminal',
+      render: () => <div>Terminal</div>,
+      title: 'Terminal'
+    })
+    vi.stubGlobal('CSS', { escape: (value: string) => value })
+
+    render(<TreeGroup node={terminalGroup(false)} parentAxis="column" />)
+    fireEvent.contextMenu(globalThis.document.querySelector('[data-zone-tabstrip="terminal-zone"]')!)
+
+    expect(await screen.findByText('Background tint')).toBeTruthy()
+  })
+
+  it('offers background tint controls from a headerless zone in layout edit mode', async () => {
+    disposePane = registry.register({
+      area: 'panes',
+      data: { height: '12rem' },
+      id: 'terminal',
+      render: () => <div>Terminal</div>,
+      title: 'Terminal'
+    })
+    vi.stubGlobal('CSS', { escape: (value: string) => value })
+    $layoutEditMode.set(true)
+
+    render(<TreeGroup node={{ ...terminalGroup(false), tabStrip: 'never' }} parentAxis="column" />)
+    fireEvent.contextMenu(globalThis.document.querySelector('[data-zone-edit-veil="terminal-zone"]')!)
+
+    expect(await screen.findByText('Background tint')).toBeTruthy()
+  })
+
+  it('provides keyboard-operable zone actions and native tint menu items in layout edit mode', async () => {
+    disposePane = registry.register({
+      area: 'panes',
+      data: { height: '12rem' },
+      id: 'terminal',
+      render: () => <div>Terminal</div>,
+      title: 'Terminal'
+    })
+    vi.stubGlobal('CSS', { escape: (value: string) => value })
+    $layoutEditMode.set(true)
+
+    render(<TreeGroup node={{ ...terminalGroup(false), tabStrip: 'never' }} parentAxis="column" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Zone actions' }))
+    const tintTrigger = (await screen.findByText('Background tint')).closest('[role="menuitem"]')
+
+    fireEvent.click(tintTrigger!)
+
+    expect(await screen.findByRole('menuitemradio', { name: 'Red' })).toBeTruthy()
+    expect(screen.getByRole('menuitemradio', { name: 'Default background' })).toBeTruthy()
   })
 })

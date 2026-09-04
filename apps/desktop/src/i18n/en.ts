@@ -3286,6 +3286,19 @@ export const en: Translations = {
   zones: {
     showTabStrip: 'Show tabs',
     hideTabStrip: 'Hide tabs',
+    backgroundTint: 'Background tint',
+    defaultBackground: 'Default background',
+    backgroundTintOption: tint =>
+      ({
+        red: 'Red',
+        orange: 'Orange',
+        yellow: 'Yellow',
+        green: 'Green',
+        cyan: 'Cyan',
+        blue: 'Blue',
+        purple: 'Purple'
+      })[tint] ?? tint,
+    zoneActions: 'Zone actions',
     showStripTab: title => `Show ${title}`,
     hideStripTab: title => `Hide ${title}`,
     lastTabKeptTitle: 'Last tab stays',

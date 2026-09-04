@@ -1646,4 +1646,109 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
         pass
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
-    conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# _signal_worker_tree: worker termination must signal the *process group*,
+# not just the bare PID. Kanban workers are spawned with
+# ``start_new_session=True`` so the worker PID == PGID; killing only the PID
+# leaves CLI/tool descendants alive (#80280).
+# ---------------------------------------------------------------------------
+
+
+def test_signal_worker_tree_uses_killpg_in_production(monkeypatch):
+    """When no ``signal_fn`` is provided, the production path must call
+    ``os.killpg`` (the process group) — not ``os.kill`` on the bare PID."""
+    import signal as _signal
+
+    killed_groups: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        os, "killpg",
+        lambda pgid, sig: killed_groups.append((pgid, sig)),
+    )
+
+    kb._signal_worker_tree(42_000, _signal.SIGTERM)
+
+    assert killed_groups == [(42_000, _signal.SIGTERM)]
+
+
+def test_signal_worker_tree_uses_signal_fn_when_provided(monkeypatch):
+    """The ``signal_fn`` test hook receives the bare PID so existing tests
+    keep working without needing to reason about process groups."""
+    import signal as _signal
+
+    calls: list[tuple[int, int]] = []
+    kb._signal_worker_tree(
+        42_001, _signal.SIGTERM, signal_fn=lambda pid, sig: calls.append((pid, sig)),
+    )
+    assert calls == [(42_001, _signal.SIGTERM)]
+
+
+def test_signal_worker_tree_swallows_process_lookup_error(monkeypatch):
+    """A ProcessLookupError from killpg must not propagate — the process
+    is already gone, callers treat that as a non-issue."""
+    import signal as _signal
+
+    def _raise(_pgid, _sig):
+        raise ProcessLookupError(3, "No such process")
+
+    monkeypatch.setattr(os, "killpg", _raise)
+    # Must not raise.
+    kb._signal_worker_tree(42_002, _signal.SIGTERM)
+
+
+def test_enforce_max_runtime_signals_process_group(kanban_home, monkeypatch):
+    """enforce_max_runtime must signal the process group (killpg), not just
+    the bare worker PID, so descendants are cleaned up (#80280)."""
+    import hermes_cli.kanban_db as _kb
+
+    killed_groups: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        os, "killpg",
+        lambda pgid, sig: killed_groups.append((pgid, sig)),
+    )
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+    host = _kb._claimer_id().split(":", 1)[0]
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="overrun", assignee="a", max_runtime_seconds=10,
+        )
+        kb.claim_task(conn, tid, claimer=f"{host}:w")
+        first_run = kb.latest_run(conn, tid)
+        old_started = int(time.time()) - 60
+        conn.execute(
+            "UPDATE tasks SET started_at = ?, worker_pid = ? WHERE id = ?",
+            (old_started, 99_001, tid),
+        )
+        conn.execute(
+            "UPDATE task_runs SET started_at = ?, worker_pid = ? WHERE id = ?",
+            (old_started, 99_001, first_run.id),
+        )
+
+        # No signal_fn → production path → must use killpg.
+        timed_out = kb.enforce_max_runtime(conn)
+        assert tid in timed_out
+        assert (99_001, getattr(__import__("signal"), "SIGTERM", 15)) in killed_groups
+
+
+def test_terminate_reclaimed_worker_signals_process_group(kanban_home, monkeypatch):
+    """_terminate_reclaimed_worker must signal the process group, not just
+    the bare PID, so reclaim/timeout descendants are cleaned up (#80280)."""
+    import signal as _signal
+    import hermes_cli.kanban_db as _kb
+
+    killed_groups: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        os, "killpg",
+        lambda pgid, sig: killed_groups.append((pgid, sig)),
+    )
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+    host = _kb._claimer_id().split(":", 1)[0]
+    result = _kb._terminate_reclaimed_worker(
+        99_002, f"{host}:w",
+        # No signal_fn → production path.
+    )
+    assert result["termination_attempted"] is True
+    assert (99_002, _signal.SIGTERM) in killed_groups

@@ -8261,6 +8261,48 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
+def _signal_worker_tree(
+    pid: int,
+    sig: int,
+    *,
+    signal_fn=None,
+) -> None:
+    """Send *sig* to the worker process *and* its entire process group.
+
+    Kanban workers are spawned with ``start_new_session=True`` so the worker
+    PID doubles as the POSIX process-group ID.  Signalling the bare PID would
+    leave CLI/tool descendants alive — the descendant leak reported in #80280.
+
+    When ``signal_fn`` is provided (the test hook used throughout the dispatch
+    suite) we call it with the bare PID so existing tests keep working: the
+    mock stands in for the *whole* kill decision and never needs to reason
+    about process groups.  In production we prefer ``os.killpg`` so the signal
+    reaches every descendant; on Windows (no ``killpg``) we fall back to
+    ``os.kill(pid, sig)`` which, via ``CREATE_NEW_PROCESS_GROUP`` semantics,
+    is the closest equivalent available.
+    """
+    if not pid or pid <= 0:
+        return
+    if signal_fn is not None:
+        try:
+            signal_fn(int(pid), sig)
+        except (ProcessLookupError, OSError):
+            pass
+        return
+    # Production path: signal the whole group.
+    _killpg = getattr(os, "killpg", None)
+    if _killpg is not None:
+        try:
+            _killpg(int(pid), sig)
+        except (ProcessLookupError, OSError):
+            pass
+    elif hasattr(os, "kill"):
+        try:
+            os.kill(int(pid), sig)
+        except (ProcessLookupError, OSError):
+            pass
+
+
 def _terminate_reclaimed_worker(
     pid: Optional[int],
     claim_lock: Optional[str],
@@ -8285,23 +8327,11 @@ def _terminate_reclaimed_worker(
         return info
     info["host_local"] = True
 
-    kill = signal_fn if signal_fn is not None else (
-        os.kill if hasattr(os, "kill") else None
-    )
-    if kill is None:
+    if signal_fn is None and not hasattr(os, "kill"):
         return info
 
     info["termination_attempted"] = True
-    try:
-        kill(int(pid), signal.SIGTERM)
-    except ProcessLookupError:
-        # Process is already gone — that's a successful termination, not a
-        # survival. Leaving terminated=False here would make the reclaim guard
-        # misread a dead worker as still-alive and defer forever.
-        info["terminated"] = True
-        return info
-    except OSError:
-        return info
+    _signal_worker_tree(int(pid), signal.SIGTERM, signal_fn=signal_fn)
 
     for _ in range(10):
         if not _pid_alive(pid):
@@ -8310,14 +8340,11 @@ def _terminate_reclaimed_worker(
         time.sleep(0.5)
 
     if _pid_alive(pid):
-        try:
-            # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
-            # (which maps to TerminateProcess via the stdlib shim).
-            _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-            kill(int(pid), _sigkill)
-            info["sigkill"] = True
-        except (ProcessLookupError, OSError):
-            return info
+        # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
+        # (which maps to TerminateProcess via the stdlib shim).
+        _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+        _signal_worker_tree(int(pid), _sigkill, signal_fn=signal_fn)
+        info["sigkill"] = True
 
     info["terminated"] = not _pid_alive(pid)
     return info
@@ -8478,29 +8505,23 @@ def enforce_max_runtime(
         tid = row["id"]
         # SIGTERM then SIGKILL. Keep it simple: 5 s grace. Workers that
         # want a cleaner shutdown can install their own SIGTERM handler
-        # before the grace expires.
+        # before the grace expires.  The signal targets the worker's
+        # *process group* (PGID == PID because workers start with
+        # ``start_new_session=True``) so CLI/tool descendants are cleaned
+        # up too — the descendant leak reported in #80280.
         killed = False
-        kill = signal_fn if signal_fn is not None else (
-            os.kill if hasattr(os, "kill") else None
-        )
-        if kill is not None:
-            try:
-                kill(pid, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                pass
+        if signal_fn is not None or hasattr(os, "kill"):
+            _signal_worker_tree(pid, signal.SIGTERM, signal_fn=signal_fn)
             # Short polling wait — no time.sleep on the write txn.
             for _ in range(10):
                 if not _pid_alive(pid):
                     break
                 time.sleep(0.5)
             if _pid_alive(pid):
-                try:
-                    # signal.SIGKILL doesn't exist on Windows.
-                    _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-                    kill(pid, _sigkill)
-                    killed = True
-                except (ProcessLookupError, OSError):
-                    pass
+                # signal.SIGKILL doesn't exist on Windows.
+                _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+                _signal_worker_tree(pid, _sigkill, signal_fn=signal_fn)
+                killed = True
 
         with write_txn(conn):
             retry_status = _retry_status_for_run(conn, tid)

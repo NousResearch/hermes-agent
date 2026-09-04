@@ -81,6 +81,7 @@ import {
   ALL_PROFILES,
   messagingTotalsKey,
   normalizeProfileKey,
+  profileGroupLabel,
   sidebarProfileForScope
 } from '@/store/profile'
 import {
@@ -1278,7 +1279,7 @@ export function ChatSidebar({
       const group = groups.get(key) ?? {
         color: resolveProfileColor(key, profileColors),
         id: key,
-        label: key,
+        label: profileGroupLabel(key, profiles),
         mode: 'profile',
         path: null,
         sessions: []
@@ -1293,7 +1294,7 @@ export function ChatSidebar({
     return [...groups.values()].sort((a, b) =>
       a.id === 'default' ? -1 : b.id === 'default' ? 1 : a.label.localeCompare(b.label)
     )
-  }, [profileGrouped, agentSessions, profileColors])
+  }, [profileGrouped, agentSessions, profileColors, profiles])
 
   // The flat Sessions list always shows ALL recent sessions; Projects is a
   // parallel grouped view, not a filter on this one — nothing is hidden here.

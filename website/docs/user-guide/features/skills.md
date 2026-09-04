@@ -580,9 +580,12 @@ future reuse. In practice that covers:
 
 ### What a skill entry looks like
 
-Skills capture **lessons, not logs**. Whether written in a foreground turn, by the
-background review, or by the curator's consolidation pass, an entry is a generalizable
-rule plus one clause of *why* (the mechanism), stated once. Incident narration, PR or
+A skill is the instructions for doing a class of task the most efficient and correct
+way, to your specifications: the procedure in order, the commands and tool calls that
+work, how you want the result to look, and the pitfalls that cost time. Whether written
+in a foreground turn, by the background review, or by the curator's consolidation pass,
+it captures **lessons, not logs**: a pitfall is a generalizable rule plus one clause of
+*why* (the mechanism), attached to the step it affects, stated once. Incident narration, PR or
 issue numbers, dates, and quoted chat are not skill content; the rule has to stand
 without the story behind it. Always-on rules live in `SKILL.md` itself; `references/`
 holds a small set of files named by topic (a decision table, a recipe, provider quirks),

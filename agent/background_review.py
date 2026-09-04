@@ -311,8 +311,14 @@ _MEMORY_REVIEW_PROMPT = (
 # hoarding library: one references/ file per session, incident narration instead of rules, PR numbers
 # and quotes as content, and duplicating what the repo's AGENTS.md / the tool schemas already teach.
 _LESSON_LAYER_BLOCK = (
-    "What a skill entry IS (the lesson layer):\n"
-    "  • A generalizable rule + one clause of WHY (the mechanism), imperative, task-ordered. 'Grep the "
+    "What a skill IS: the instructions for doing a class of task the most efficient and correct "
+    "way, to THIS user's specifications — the procedure, the tools and commands that work, the "
+    "order, the user's preferences for how the result should look, and the pitfalls that cost time. "
+    "A future session should be able to follow it and produce what the user wants on the first "
+    "try. Everything below is about writing that well:\n"
+    "  • Procedure first: the steps in the order they are done, with the concrete commands, tool "
+    "calls, and decision points. Lessons and pitfalls attach to the step they affect.\n"
+    "  • A pitfall is a generalizable rule + one clause of WHY (the mechanism), imperative. 'Grep the "
     "test tree for the SYMBOL before widening a helper signature — hand-rolled mocks reimplement the "
     "old shape and fail on a shard you did not run.' Not a narrative of what happened this session.\n"
     "  • No PR/issue numbers, dates, ticket IDs, or quoted user text as content — the rule must stand "

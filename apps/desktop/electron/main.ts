@@ -12548,9 +12548,14 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   entry.port = port
 
   const baseUrl = `http://127.0.0.1:${port}`
-  await Promise.race([waitForHermes(baseUrl, token), startFailed])
-  ready = true
 
+  // Adopt the token the backend actually serves BEFORE the readiness probe.
+  // The backend regenerates its session token at serve time; the spawn env pin
+  // (HERMES_DASHBOARD_SESSION_TOKEN) does not always survive the spawn (see
+  // dashboard-token.ts). Probing /api/health with the stale spawn token yields
+  // a 401 that wedges boot in an infinite repair loop (the symptom Arthur hit:
+  // "Desktop boot failed: 401 Unauthorized" repeating through repair 1/3..3/3).
+  // Adopting first lets the credentialed probe use the served token.
   const authToken = await adoptServedDashboardToken(baseUrl, token, {
     childAlive: () => child.exitCode === null && !child.killed,
     label: `Hermes backend for profile "${profile}"`,
@@ -12558,6 +12563,8 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   })
 
   entry.token = authToken
+  await Promise.race([waitForHermes(baseUrl, authToken), startFailed])
+  ready = true
 
   // Verify the WebSocket session token before declaring backend ready.
   // HTTP /api/status can pass while WS auth fails (separate transport, separate guards).

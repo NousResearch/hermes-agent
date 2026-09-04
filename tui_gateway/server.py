@@ -7477,6 +7477,18 @@ def _sync_session_key_after_compress(
                 disable_session_yolo(old_key)
             except Exception:
                 pass
+            # Carry the persisted flag onto the continuation row, same as
+            # the CLI's rotation path (cli.py after its enable/disable
+            # swap): without it a later `--resume <new_id>` loses the
+            # bypass even though the toggle-time persist wrote the old row.
+            try:
+                with _session_db(session) as db:
+                    if db is not None:
+                        db.set_session_yolo(new_session_id, True)
+            except Exception:
+                logger.debug(
+                    "failed to carry session yolo flag", exc_info=True
+                )
         try:
             register_gateway_notify(
                 new_session_id,
@@ -15022,6 +15034,25 @@ def _(rid, params: dict) -> dict:
                     disable_session_yolo(session["session_key"])
                     nv = "0"
                 agent = session.get("agent")
+                # Persist the flag to the session row, same contract as the
+                # CLI's /yolo (cli.py _persist_session_yolo): without this a
+                # TUI toggle lives only in the in-memory _session_yolo set,
+                # so --resume never restores it (_restore_session_yolo reads
+                # model_config.yolo_mode back) and nothing on disk reflects
+                # the toggle. Best-effort like the CLI: the in-memory flag
+                # is authoritative for this process either way. Use
+                # agent.session_id over session_key — after compression the
+                # key can be the ended parent while session_id is the live
+                # continuation (same rule as session finalize, #20001).
+                row_id = getattr(agent, "session_id", None) or session["session_key"]
+                try:
+                    with _session_db(session) as db:
+                        if db is not None and row_id:
+                            db.set_session_yolo(row_id, enable)
+                except Exception:
+                    logger.debug(
+                        "failed to persist session yolo flag", exc_info=True
+                    )
                 if agent is not None:
                     _emit(
                         "session.info",

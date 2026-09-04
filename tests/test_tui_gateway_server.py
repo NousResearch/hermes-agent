@@ -8246,6 +8246,119 @@ def test_config_set_yolo_toggles_session_scope():
         server._sessions.clear()
 
 
+def test_config_set_yolo_session_scope_persists_to_the_session_row(monkeypatch):
+    """A TUI /yolo toggle writes model_config.yolo_mode like the CLI's does.
+
+    Without the persist, the toggle lives only in the in-memory
+    _session_yolo set: --resume never restores it (_restore_session_yolo
+    reads the row back) and nothing on disk reflects the flip.
+    """
+    from contextlib import contextmanager
+
+    from tools.approval import clear_session
+
+    calls = []
+
+    class _RecordingDB:
+        def set_session_yolo(self, session_id, enabled):
+            calls.append((session_id, enabled))
+
+    @contextmanager
+    def _fake_session_db(session):
+        yield _RecordingDB()
+
+    monkeypatch.setattr(server, "_session_db", _fake_session_db)
+    agent = types.SimpleNamespace(session_id="live-session-id")
+    server._sessions["sid"] = _session(agent=agent)
+    try:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": "sid", "key": "yolo"},
+            }
+        )
+        server.handle_request(
+            {
+                "id": "2",
+                "method": "config.set",
+                "params": {"session_id": "sid", "key": "yolo"},
+            }
+        )
+        # agent.session_id wins over session_key (post-compression rule).
+        assert calls == [("live-session-id", True), ("live-session-id", False)]
+    finally:
+        clear_session("session-key")
+        server._sessions.clear()
+
+
+def test_compression_rotation_carries_the_persisted_yolo_flag(monkeypatch):
+    """Rotation persists onto the continuation row, like the CLI's rotation.
+
+    The toggle-time persist writes the OLD row; without the rotation carry a
+    later `--resume <new_id>` loses the bypass even though yolo survived the
+    rotation in memory.
+    """
+    from contextlib import contextmanager
+
+    from tools.approval import clear_session, enable_session_yolo
+
+    calls = []
+
+    class _RecordingDB:
+        def set_session_yolo(self, session_id, enabled):
+            calls.append((session_id, enabled))
+
+    @contextmanager
+    def _fake_session_db(session):
+        yield _RecordingDB()
+
+    monkeypatch.setattr(server, "_session_db", _fake_session_db)
+    monkeypatch.setattr(
+        server, "_transfer_active_session_slot", lambda *args, **kwargs: True
+    )
+    agent = types.SimpleNamespace(session_id="new-continuation-id")
+    session = _session(agent=agent)
+    enable_session_yolo("session-key")
+    try:
+        server._sync_session_key_after_compress(
+            "sid", session, restart_slash_worker=False
+        )
+        assert session["session_key"] == "new-continuation-id"
+        assert calls == [("new-continuation-id", True)]
+    finally:
+        clear_session("session-key")
+        clear_session("new-continuation-id")
+
+
+def test_config_set_yolo_session_scope_survives_a_failing_db(monkeypatch):
+    """Persistence is best-effort: a broken DB must not break the toggle."""
+    from contextlib import contextmanager
+
+    from tools.approval import clear_session, is_session_yolo_enabled
+
+    @contextmanager
+    def _broken_session_db(session):
+        raise RuntimeError("db unavailable")
+        yield None
+
+    monkeypatch.setattr(server, "_session_db", _broken_session_db)
+    server._sessions["sid"] = _session()
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": "sid", "key": "yolo"},
+            }
+        )
+        assert resp["result"]["value"] == "1"
+        assert is_session_yolo_enabled("session-key") is True
+    finally:
+        clear_session("session-key")
+        server._sessions.clear()
+
+
 def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatch):
     """Shift+click the desktop zap -> scope="global" flips persistent approvals.mode."""
     import yaml

@@ -324,6 +324,26 @@ class TestBuildSkillsSystemPrompt:
         # "search" should appear only once per category
         assert result.count("- search") == 1
 
+    def test_guidance_treats_descriptions_as_routing_contracts(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "specialist"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: specialist\n"
+            "description: Use for deep audits; do not use for quick checks.\n"
+            "---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "description as a routing contract" in result
+        assert "including when not to use it" in result
+        assert "Topical overlap alone is not enough" in result
+        assert "you MUST load it" in result
+
 
     def test_compact_categories_demote_nested_and_miss_cache_separately(
         self, monkeypatch, tmp_path

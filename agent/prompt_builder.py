@@ -2206,10 +2206,10 @@ def _build_skills_system_prompt_inner(
 
         result = (
             "## Skills\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
+            "Before replying, scan the skills below. Treat each description as a routing contract, "
+            "including when not to use it. If a skill's description matches your task, you MUST "
+            "load it with skill_view(name) and follow its instructions. Topical overlap alone is not "
+            "enough; when several skills match, load only those needed for the task. "
             "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
             "and proven workflows that outperform general-purpose approaches. Load the skill "
             f"even if you think you could handle the task with basic tools like {_basic_tools}. "
@@ -2225,7 +2225,7 @@ def _build_skills_system_prompt_inner(
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
             "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
+            "Proceed without loading a skill when no description matches the task."
             + hidden_note
         )
 

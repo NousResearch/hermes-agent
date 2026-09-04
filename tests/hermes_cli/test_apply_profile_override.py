@@ -98,6 +98,44 @@ class TestApplyProfileOverrideHermesHomeGuard:
             f"Expected HERMES_HOME to end with 'coder', got: {result!r}"
         )
 
+    def test_reserved_default_profile_path_resolves_to_root_without_creating_shell(
+        self, tmp_path, monkeypatch
+    ):
+        """A legacy ``profiles/default`` environment path means the root profile.
+
+        ``default`` is reserved and must never become a named-profile directory.
+        Canonicalizing the inherited path must not create that directory either.
+        """
+        hermes_root = tmp_path / ".hermes"
+        default_shell = hermes_root / "profiles" / "default"
+
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(default_shell),
+            active_profile=None,
+        )
+
+        assert result == str(hermes_root)
+        assert not default_shell.exists()
+
+    def test_explicit_reserved_default_profile_resolves_to_root_without_shell(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_root = tmp_path / ".hermes"
+        default_shell = hermes_root / "profiles" / "default"
+
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile=None,
+            argv=["hermes", "-p", "default", "gateway", "run"],
+        )
+
+        assert result == str(hermes_root)
+        assert sys.argv == ["hermes", "gateway", "run"]
+        assert not default_shell.exists()
 
     def test_sudo_explicit_profile_resolves_invoking_users_profile(self, tmp_path, monkeypatch):
         """sudo elias ... should resolve `-p elias` under SUDO_USER, not root."""
@@ -124,6 +162,69 @@ class TestApplyProfileOverrideHermesHomeGuard:
         assert sys.argv == ["hermes", "gateway", "install", "--system"]
 
 
+class TestSystemGatewayHomeOverride:
+    """System-scope gateway commands adopt the installed unit's home early."""
+
+    def _run(self, monkeypatch, tmp_path, *, argv, unit_text, existing=None):
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text(unit_text, encoding="utf-8")
+        monkeypatch.setattr(sys, "argv", argv)
+        if existing is None:
+            monkeypatch.delenv("HERMES_HOME", raising=False)
+        else:
+            monkeypatch.setenv("HERMES_HOME", existing)
+
+        from hermes_cli.main import _apply_system_gateway_home_override
+
+        _apply_system_gateway_home_override(unit_path=unit_path)
+        return os.environ.get("HERMES_HOME")
+
+    def test_adopts_installed_system_unit_home_before_config_import(
+        self, tmp_path, monkeypatch
+    ):
+        result = self._run(
+            monkeypatch,
+            tmp_path,
+            argv=["hermes", "gateway", "status", "--system"],
+            unit_text='[Service]\nEnvironment="HERMES_HOME=/home/hermes/.hermes"\n',
+        )
+        assert result == "/home/hermes/.hermes"
+
+    def test_explicit_home_is_never_overridden(self, tmp_path, monkeypatch):
+        result = self._run(
+            monkeypatch,
+            tmp_path,
+            argv=["hermes", "gateway", "status", "--system"],
+            unit_text='[Service]\nEnvironment="HERMES_HOME=/home/hermes/.hermes"\n',
+            existing="/srv/explicit-hermes-home",
+        )
+        assert result == "/srv/explicit-hermes-home"
+
+    def test_non_system_command_is_untouched(self, tmp_path, monkeypatch):
+        result = self._run(
+            monkeypatch,
+            tmp_path,
+            argv=["hermes", "gateway", "status"],
+            unit_text='[Service]\nEnvironment="HERMES_HOME=/home/hermes/.hermes"\n',
+        )
+        assert result is None
+
+    def test_relative_or_temporary_unit_home_is_refused(self, tmp_path, monkeypatch):
+        relative = self._run(
+            monkeypatch,
+            tmp_path,
+            argv=["hermes", "gateway", "status", "--system"],
+            unit_text='[Service]\nEnvironment="HERMES_HOME=.hermes"\n',
+        )
+        assert relative is None
+
+        temporary = self._run(
+            monkeypatch,
+            tmp_path,
+            argv=["hermes", "gateway", "status", "--system"],
+            unit_text='[Service]\nEnvironment="HERMES_HOME=/tmp/transient-hermes"\n',
+        )
+        assert temporary is None
 
 
 class TestSupervisedChildIgnoresStickyProfile:

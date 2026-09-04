@@ -47,6 +47,10 @@ _gateway_lock_handle = None
 # while another process holds the mutual-exclusion lock.
 _WINDOWS_LOCK_OFFSET = 1024 * 1024
 _GATEWAY_RUNNING_PID_CACHE_TTL_SECONDS = 1.0
+# Platform entries are last-known transition records, not heartbeats.  Keep a
+# short grace window for diagnostics, then discard records whose writer is no
+# longer the same live process.  A live writer is retained regardless of age.
+_PLATFORM_STATE_STALE_TTL_S = 120
 _gateway_running_pid_cache_lock = threading.Lock()
 _gateway_running_pid_cache: dict[tuple[str, bool, bool], tuple[float, tuple[Any, ...], Optional[int]]] = {}
 
@@ -1202,6 +1206,44 @@ def write_pid_file() -> None:
         raise
 
 
+def _platform_state_writer_is_live(record: Any) -> bool:
+    """Whether a platform-state record still belongs to its live writer."""
+    if not isinstance(record, dict):
+        return False
+    try:
+        writer_pid = int(record["writer_pid"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if writer_pid <= 0 or not _pid_exists(writer_pid):
+        return False
+
+    recorded_start = record.get("writer_start_time")
+    current_start = _get_process_start_time(writer_pid)
+    if (
+        recorded_start is not None
+        and current_start is not None
+        and recorded_start != current_start
+    ):
+        return False
+    return True
+
+
+def _prune_expired_platform_states(platforms: Any) -> dict[Any, Any]:
+    """Drop expired records from dead writers while preserving live routes."""
+    if not isinstance(platforms, dict):
+        return {}
+
+    retained: dict[Any, Any] = {}
+    for name, record in platforms.items():
+        updated_at = record.get("updated_at", "") if isinstance(record, dict) else ""
+        if not _marker_is_stale(updated_at, _PLATFORM_STATE_STALE_TTL_S):
+            retained[name] = record
+            continue
+        if _platform_state_writer_is_live(record):
+            retained[name] = record
+    return retained
+
+
 def write_runtime_status(
     *,
     gateway_state: Any = _UNSET,
@@ -1223,7 +1265,7 @@ def write_runtime_status(
     payload = _read_json_file(path) or _build_runtime_status_record()
     previous_payload = copy.deepcopy(payload)
     current_record = _build_pid_record()
-    payload.setdefault("platforms", {})
+    payload["platforms"] = _prune_expired_platform_states(payload.get("platforms"))
     if clear_profile_platforms:
         # Secondary-profile adapter health is stored in the process-level
         # status file as ``<profile>:<platform>``.  A fresh gateway process
@@ -1317,8 +1359,15 @@ def read_runtime_status(path: Optional[Path] = None) -> Optional[dict[str, Any]]
     profile's state file (e.g. the dashboard enumerating every profile)
     can do so without mutating ``HERMES_HOME`` in-process.  Defaults to
     the active profile's ``gateway_state.json``.
+
+    Expired platform entries from dead writers are filtered on read as well as
+    pruned on the next write.  This bounds stale status visibility even when an
+    otherwise-idle gateway emits no further transitions after startup.
     """
-    return _read_json_file(path or _get_runtime_status_path())
+    payload = _read_json_file(path or _get_runtime_status_path())
+    if payload is not None and "platforms" in payload:
+        payload["platforms"] = _prune_expired_platform_states(payload["platforms"])
+    return payload
 
 
 # Max age of a persisted ``gateway_state.json`` snapshot before its liveness

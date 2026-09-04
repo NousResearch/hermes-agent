@@ -17384,16 +17384,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         f"{platform.value} with the same credential. Give each "
                         f"profile its own {platform.value} credential."
                     )
-                    logger.error(
-                        "Profile '%s' and '%s' both configure %s with the same "
-                        "credential — refusing to start the duplicate (one "
-                        "credential cannot be consumed twice). Give each profile "
-                        "its own %s credential.",
-                        owner, profile_name, platform.value, platform.value,
+                    logger.info(
+                        "[MULTIPLEX] Profile '%s' and '%s' both configure %s with "
+                        "the same credential — keeping '%s' as the live adapter "
+                        "owner and intentionally skipping the secondary '%s' "
+                        "adapter (the shared credential remains configured for "
+                        "delivery).",
+                        owner,
+                        profile_name,
+                        platform.value,
+                        owner,
+                        profile_name,
                     )
+                    # A same-credential multiplex refusal is a deliberate skip,
+                    # not a crash: fleets that intentionally share one token
+                    # (the owner-approved "shared adapter" topology) ride the
+                    # primary profile's adapter for cron delivery. Persist it
+                    # as a clean "disabled" state — same precedent as the
+                    # relay_disabled opt-out — instead of a red "fatal" that
+                    # paints every boot's status popover (#80451 follow-up).
                     self._update_platform_runtime_status(
                         f"{profile_name}:{platform.value}",
-                        platform_state="fatal",
+                        platform_state="disabled",
                         error_code="duplicate_credential",
                         error_message=message,
                     )

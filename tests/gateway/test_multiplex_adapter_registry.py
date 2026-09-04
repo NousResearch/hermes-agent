@@ -719,9 +719,13 @@ class TestSecondaryProfileConfigHandling:
         assert adapter._runtime_status_platform_key == "reviewer:discord"
 
     @pytest.mark.asyncio
-    async def test_duplicate_credential_is_persisted_as_profile_fatal(
-        self, monkeypatch
+    async def test_duplicate_credential_is_persisted_as_profile_disabled(
+        self, monkeypatch, caplog
     ):
+        """A same-credential multiplex refusal is a deliberate skip (shared-token
+        fleets ride the primary adapter), so it persists as "disabled", not the
+        red "fatal" that status popovers render for crashes (relay_disabled
+        precedent)."""
         runner = _secondary_recovery_runner()
         config = GatewayConfig(
             multiplex_profiles=True,
@@ -742,6 +746,7 @@ class TestSecondaryProfileConfigHandling:
             "_update_platform_runtime_status",
             lambda platform, **kwargs: writes.append((platform, kwargs)),
         )
+        caplog.set_level(logging.INFO, logger="gateway.run")
         claim = runner._adapter_credential_claim(Platform.DISCORD, adapter)
 
         connected = await runner._start_one_profile_adapters(
@@ -749,11 +754,19 @@ class TestSecondaryProfileConfigHandling:
         )
 
         assert connected == 0
+        duplicate_records = [
+            record
+            for record in caplog.records
+            if "both configure discord with the same credential" in record.getMessage()
+        ]
+        assert len(duplicate_records) == 1
+        assert duplicate_records[0].levelno == logging.INFO
+        assert not any(record.levelno >= logging.ERROR for record in duplicate_records)
         assert writes == [
             (
                 "reviewer:discord",
                 {
-                    "platform_state": "fatal",
+                    "platform_state": "disabled",
                     "error_code": "duplicate_credential",
                     "error_message": (
                         "Profile 'default' and 'reviewer' both configure discord "

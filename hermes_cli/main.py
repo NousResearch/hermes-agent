@@ -650,14 +650,19 @@ def _apply_profile_override() -> None:
     # only when it already points to a specific profile directory.  The
     # distinguishing heuristic: a profile path has "profiles" as its immediate
     # parent directory name (e.g. ~/.hermes/profiles/coder or
-    # /opt/data/profiles/coder).  If HERMES_HOME points to the hermes root
-    # instead (e.g. systemd hardcodes HERMES_HOME=/root/.hermes), we must
-    # still read active_profile — the user may have switched profiles via
+    # /opt/data/profiles/coder).  The reserved ``default`` name is never a named
+    # profile: canonicalize a legacy ``profiles/default`` value back to the root
+    # without creating or using that directory.  If HERMES_HOME points to the
+    # hermes root instead (e.g. systemd hardcodes HERMES_HOME=/root/.hermes), we
+    # must still read active_profile — the user may have switched profiles via
     # `hermes profile use` and the gateway should honour that choice.
     # See issue #22502.
     hermes_home_env = os.environ.get("HERMES_HOME", "")
     if profile_name is None and hermes_home_env:
-        if Path(hermes_home_env).parent.name == "profiles":
+        profile_home = Path(hermes_home_env)
+        if profile_home.parent.name == "profiles":
+            if profile_home.name.casefold() == "default":
+                os.environ["HERMES_HOME"] = str(profile_home.parent.parent)
             return
 
     # 2. If no flag, check active_profile in the hermes root.
@@ -751,7 +756,249 @@ def _apply_profile_override() -> None:
             sys.argv = sys.argv[:start] + sys.argv[start + consume :]
 
 
+_SYSTEM_GATEWAY_VERBS_WITH_SYSTEM_FLAG = frozenset(
+    {"start", "stop", "restart", "status", "install", "uninstall"}
+)
+
+# Long-option prefixes that make an abbreviation like ``--s``/``--sy``
+# AMBIGUOUS per argparse prefix-matching, per verb.  Keys are verbs whose
+# subparser owns ``--system``; values are the other long options that start
+# with ``--s`` there.  Derived from hermes_cli/subcommands/gateway.py — the
+# parity test in test_system_gateway_privilege_boundary.py fails if the
+# real parser drifts from this table (a new ``--s…`` option or verb).
+_SYSTEM_GATEWAY_AMBIGUOUS_PREFIXES: dict[str, frozenset[str]] = {
+    "start": frozenset(),
+    "stop": frozenset(),
+    "restart": frozenset(),
+    "status": frozenset(),
+    "install": frozenset({"--start-now", "--start-on-login"}),
+    "uninstall": frozenset(),
+}
+
+# Sentinel set when (and only when) a root process adopted a system unit's
+# home directory.  hermes_cli.gateway refuses to honour unit-home-controlled
+# environment (PATH et al.) while this is set, closing the privileged
+# environment-injection seam (late review Finding 1).
+ELEVATED_SYSTEM_GATEWAY_SENTINEL = "_HERMES_SYSTEM_GATEWAY_ELEVATED"
+
+
+def _system_gateway_request(argv: list[str]) -> bool:
+    """True when argv is a real ``gateway <verb> --system`` invocation.
+
+    Mirrors the top-level parser's option/value scanning (the same seam
+    ``_first_positional_argv`` covers) so global flags before the subcommand
+    (``hermes --yolo gateway status --system``) and ``--`` passthrough agree
+    with argparse instead of drifting from it (late review Finding 2).
+    """
+    from hermes_cli._parser import top_level_value_flag_sets
+
+    required_value_flags, optional_value_flags = top_level_value_flag_sets()
+    value_flags = required_value_flags | optional_value_flags
+
+    saw_separator = False
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "--":
+            saw_separator = True
+            i += 1
+            continue
+        if saw_separator:
+            return False  # positional passthrough: not a gateway verb
+        if tok.startswith("-"):
+            if "=" in tok:
+                i += 1
+                continue
+            if tok in value_flags and i + 1 < len(argv):
+                i += 2
+                continue
+            i += 1
+            continue
+        if tok != "gateway":
+            return False
+        verb = argv[i + 1] if i + 1 < len(argv) else None
+        if verb not in _SYSTEM_GATEWAY_VERBS_WITH_SYSTEM_FLAG:
+            return False
+        # Only tokens AFTER the verb count: ``gateway status -- --system``
+        # passes ``--system`` as an output positional, not a flag.
+        return _argv_has_system_flag(
+            argv[i + 2 :], ambiguous=_SYSTEM_GATEWAY_AMBIGUOUS_PREFIXES[verb]
+        )
+    return False
+
+
+def _argv_has_system_flag(
+    tokens: list[str], *, ambiguous: frozenset[str] = frozenset()
+) -> bool:
+    """Detect ``--system`` (or an argparse abbreviation) token.
+
+    Follows argparse's prefix matching exactly: a ``--s…`` token matches
+    ``--system`` only when it is a strict prefix of ``--system`` AND no other
+    long option of that verb's subparser starts with it (``ambiguous``).
+    With no collisions a bare ``--s`` matches (argparse accepts it); with
+    collisions (e.g. ``install``'s ``--start-now``/``--start-on-login``)
+    argparse would reject the abbreviation, so we do too.  A ``--``
+    separator ends flag scanning: everything after it is positional.
+    """
+    for tok in tokens:
+        if tok == "--":
+            return False
+        if not tok.startswith("--") or tok == "--":
+            continue
+        opt, eq, _value = tok.partition("=")
+        if eq and opt == "--system":
+            # ``--system=<x>``: store_true options reject inline values in
+            # argparse, so this is an error, not a system-scope request.
+            continue
+        if not opt.startswith("--s"):
+            continue
+        if not "system".startswith(opt[2:]):
+            continue
+        if any(other.startswith(opt) for other in ambiguous):
+            continue
+        return True
+    return False
+
+
+def _resolve_ordered_environment_home(sources: list[str]) -> str | None:
+    """Apply systemd's ordered ``Environment=`` semantics to HERMES_HOME.
+
+    Walks sources in order (base unit, then ``*.conf`` drop-ins sorted by
+    filename).  Inside ``[Service]`` only, every ``Environment=`` line is
+    shlex-split into assignments; a later ``HERMES_HOME=`` assignment wins
+    and an empty value resets (clears) it.  Returns ``None`` when the value
+    is absent/reset — and also for anything unmodellable: ``EnvironmentFile=``,
+    ``UnsetEnvironment=``, ``%``-specifiers, malformed quoting (late review
+    Finding 3's fail-closed policy).
+    """
+    resolved: str | None = None
+    saw_assignment = False
+    for text in sources:
+        in_service = False
+        for raw in text.splitlines():
+            line = raw.strip()
+            if line.startswith("[") and line.endswith("]"):
+                in_service = line.casefold() == "[service]"
+                continue
+            if not in_service or not line:
+                continue
+            if line.startswith("#") or line.startswith(";"):
+                continue
+            eq = line.find("=")
+            if eq < 0:
+                continue
+            directive = line[:eq].strip()
+            if directive.casefold() in ("environmentfile", "unsetenvironment"):
+                return None
+            if directive.casefold() != "environment":
+                continue
+            body = line[eq + 1 :].strip()
+            if "%" in body:
+                return None
+            try:
+                assignments = shlex.split(body, posix=True)
+            except ValueError:
+                return None
+            for assignment in assignments:
+                if assignment == "HERMES_HOME":
+                    # Bare key (no value): treated as a reset to empty.
+                    resolved = None
+                    saw_assignment = True
+                elif assignment.startswith("HERMES_HOME="):
+                    value = assignment.split("=", 1)[1].strip()
+                    resolved = value or None
+                    saw_assignment = True
+    if not saw_assignment:
+        return None
+    return resolved
+
+
+def _systemd_unit_environment_home(unit_path: Path) -> str | None:
+    """Read HERMES_HOME from the unit with systemd ordered semantics.
+
+    The base unit is followed by its ``<unit>.d/*.conf`` drop-ins in
+    lexicographic filename order (systemd applies drop-ins after the base,
+    later files override earlier ones).  An unreadable drop-in makes the
+    effective environment unmodellable, so the override fails closed.
+    """
+    try:
+        base_text = unit_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    ordered_sources: list[str] = [base_text]
+    dropin_dir = unit_path.parent / (unit_path.name + ".d")
+    try:
+        if dropin_dir.is_dir():
+            for entry in sorted(dropin_dir.iterdir(), key=lambda p: p.name):
+                if entry.suffix != ".conf":
+                    continue
+                try:
+                    ordered_sources.append(entry.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError):
+                    return None
+    except OSError:
+        return None
+    return _resolve_ordered_environment_home(ordered_sources)
+
+
+def _apply_system_gateway_home_override(
+    *, unit_path: Path | None = None
+) -> None:
+    """Adopt a system gateway unit's HERMES_HOME before config imports.
+
+    ``sudo`` normally strips ``HERMES_HOME`` and changes ``HOME`` to ``/root``.
+    Importing :mod:`hermes_cli.config` in that state creates an unrelated
+    ``/root/.hermes`` scaffold before the gateway command can inspect the real
+    system unit.  This deliberately small, stdlib-only pre-parser reads the
+    unit's pinned home early enough to prevent that side effect.
+
+    Explicit/profile-derived ``HERMES_HOME`` always wins.  Missing, malformed,
+    relative, and temporary unit homes fail closed without changing the
+    process environment.
+
+    Privilege boundary (late review Finding 1): when this runs as root and
+    adopts the unit home, it also sets ``ELEVATED_SYSTEM_GATEWAY_SENTINEL``.
+    The later bootstrap then skips user-owned dotenv entirely and
+    :mod:`hermes_cli.gateway` resolves privileged tools absolutely, so no
+    unit-home-controlled ``.env`` (PATH hijack) can reach privileged tools.
+    """
+    if os.environ.get("HERMES_HOME", "").strip():
+        return
+
+    argv = sys.argv[1:]
+    if not _system_gateway_request(argv):
+        return
+
+    path = unit_path or Path("/etc/systemd/system/hermes-gateway.service")
+    unit_home = _systemd_unit_environment_home(path)
+    if not unit_home:
+        return
+    candidate = Path(unit_home)
+    if not candidate.is_absolute():
+        return
+    try:
+        candidate = candidate.resolve(strict=False)
+        temporary_roots = {
+            Path(tempfile.gettempdir()).resolve(strict=False),
+            Path("/var/tmp").resolve(strict=False),
+            Path("/tmp").resolve(strict=False),
+            Path("/private/tmp").resolve(strict=False),
+            Path("/private/var/tmp").resolve(strict=False),
+        }
+    except (OSError, ValueError, RuntimeError):
+        return
+    if candidate == Path(candidate.anchor):
+        return
+    if any(candidate == root or root in candidate.parents for root in temporary_roots):
+        return
+
+    os.environ["HERMES_HOME"] = str(candidate)
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        os.environ[ELEVATED_SYSTEM_GATEWAY_SENTINEL] = "1"
+
+
 _apply_profile_override()
+_apply_system_gateway_home_override()
 
 # Windows launcher self-heal — the ``hermes`` command users run is a COPY of
 # the venv console script, staged into the managed binary dir (the default
@@ -783,6 +1030,16 @@ if sys.platform == "win32":
 from hermes_cli.config import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
 
+# Privilege boundary (late review Finding 1): when the elevated system-
+# gateway context adopted a unit home, that home's user-writable ``.env``
+# must NOT be honoured into this privileged process — a PATH line there
+# would control every later privileged tool lookup.  Skip user dotenv
+# entirely in that context; config.yaml is still read later as normal
+# (read-only config, not environment injection).
+_elevated_system_gateway = bool(
+    os.environ.get(ELEVATED_SYSTEM_GATEWAY_SENTINEL)
+)
+
 # Updating dependencies must not import optional secret-manager libraries into
 # the updater process before ``uv`` replaces the environment.  On Windows,
 # Bitwarden's cryptography import maps ``_rust.pyd`` and the parent updater then
@@ -790,10 +1047,11 @@ from hermes_cli.env_loader import load_hermes_dotenv
 # flags have already been stripped above, so the first remaining argument is
 # the authoritative argparse subcommand.  Dotenv/managed config still loads;
 # only external secret fetches are unnecessary for installation maintenance.
-load_hermes_dotenv(
-    project_env=PROJECT_ROOT / ".env",
-    load_external_secrets=sys.argv[1:2] != ["update"],
-)
+if not _elevated_system_gateway:
+    load_hermes_dotenv(
+        project_env=PROJECT_ROOT / ".env",
+        load_external_secrets=sys.argv[1:2] != ["update"],
+    )
 
 # Bridge security.redact_secrets from config.yaml → HERMES_REDACT_SECRETS env
 # var BEFORE hermes_logging imports agent.redact (which snapshots the flag at

@@ -3,13 +3,19 @@ from __future__ import annotations
 import asyncio
 import os
 
+import pytest
+
 from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 from plugins.platforms.whatsapp.adapter import _bordero_pre_tool_call
 from plugins.platforms.whatsapp.adapter import _apply_yaml_config
 from gateway.config import Platform
+from gateway.config_loader import bridge_platform_shared_keys, merge_platform_sections
+from gateway.platforms.base import _thread_metadata_for_source
+from gateway.session import SessionSource
 from plugins.platforms.whatsapp.bordero_reader import (
     bordero_send_message_block,
     load_bordero_reader_config,
+    BorderoReaderConfigError,
 )
 
 
@@ -41,11 +47,71 @@ def _config():
     )
 
 
+def test_documented_yaml_keys_reach_platform_extra_and_activate_reader():
+    yaml_cfg = {
+        "whatsapp": {
+            "enabled": True,
+            "mode": "bot",
+            "bordero_read_only": True,
+            "bordero_routes": [
+                {
+                    "group_jid": UBBO,
+                    "store": "PTT",
+                    "location": "UBBO",
+                    "telegram_chat_id": "-1003743117566",
+                    "telegram_thread_id": "101",
+                },
+                {
+                    "group_jid": SALDANHA,
+                    "store": "ODI",
+                    "location": "Saldanha",
+                    "telegram_chat_id": "-1003743117566",
+                    "telegram_thread_id": "102",
+                },
+            ],
+        }
+    }
+    gateway_data = {}
+    platforms_data = merge_platform_sections(yaml_cfg, None, gateway_data)
+    bridge_platform_shared_keys(
+        yaml_cfg, None, gateway_data, platforms_data, [Platform.WHATSAPP]
+    )
+    extra = platforms_data["whatsapp"]["extra"]
+
+    assert extra["mode"] == "bot"
+    assert extra["bordero_read_only"] is True
+    assert len(extra["bordero_routes"]) == 2
+    reader = load_bordero_reader_config(extra)
+    assert reader.enabled is True
+    assert set(reader.group_jids) == {UBBO, SALDANHA}
+
+
 def _adapter():
     adapter = object.__new__(WhatsAppAdapter)
     adapter._bordero_reader = _config()
     setattr(adapter, "platform", Platform.WHATSAPP)
     return adapter
+
+
+def test_thread_metadata_preserves_bordero_route_and_secondary_profile_without_thread():
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        chat_id=UBBO,
+        profile="ops",
+        _delivery_route={
+            "group_jid": UBBO,
+            "telegram_chat_id": "-1003743117566",
+            "telegram_thread_id": "101",
+            "telegram_target": "telegram:-1003743117566:101",
+            "read_only": True,
+        },
+    )
+
+    metadata = _thread_metadata_for_source(source)
+
+    assert metadata["hermes_profile"] == "ops"
+    assert metadata["hermes_delivery_route"]["telegram_thread_id"] == "101"
+    assert metadata["disable_streaming"] is True
 
 
 def test_enabled_adapter_accepts_only_allowlisted_bordero_groups():
@@ -479,6 +545,14 @@ def test_turn_runner_metadata_preserves_bordero_route_for_stream_and_status():
     assert metadata["disable_streaming"] is True
     assert _is_read_only_delivery_route(metadata) is True
     assert _is_read_only_delivery_route({"thread_id": "normal"}) is False
+
+
+@pytest.mark.parametrize("invalid", ["true", 1, [], {}])
+def test_yaml_bridge_rejects_non_boolean_read_only_flag(monkeypatch, invalid):
+    monkeypatch.delenv("WHATSAPP_BORDERO_READ_ONLY", raising=False)
+
+    with pytest.raises(BorderoReaderConfigError, match="YAML boolean"):
+        _apply_yaml_config({}, {"bordero_read_only": invalid})
 
 
 def test_yaml_bridge_forces_internal_safety_settings(monkeypatch):

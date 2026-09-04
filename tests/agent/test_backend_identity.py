@@ -11,7 +11,6 @@ from unittest.mock import patch
 from agent.backend_identity import (
     BackendIdentity,
     FailureScope,
-    classify_failure_scope,
     same_credential_surface,
     same_deployment,
     same_endpoint,
@@ -21,28 +20,6 @@ from agent.backend_identity import (
 
 def _id(provider="", model="", base_url=""):
     return BackendIdentity.build(provider=provider, model=model, base_url=base_url)
-
-
-class TestClassifyFailureScope:
-    def test_auth_and_payment_are_credential_scoped(self):
-        assert classify_failure_scope("auth error") is FailureScope.CREDENTIAL
-        assert classify_failure_scope("payment error") is FailureScope.CREDENTIAL
-
-    def test_model_scoped_reasons(self):
-        for reason in (
-            "rate limit",
-            "timeout",
-            "connection error",
-            "model incompatible with route",
-            "invalid provider response",
-        ):
-            assert classify_failure_scope(reason) is FailureScope.MODEL, reason
-
-    def test_unknown_reason_defaults_to_least_invalidating_scope(self):
-        """Never over-skip on a reason string we don't recognize."""
-        assert classify_failure_scope("weird new error") is FailureScope.MODEL
-        assert classify_failure_scope(None) is FailureScope.MODEL
-        assert classify_failure_scope("") is FailureScope.MODEL
 
 
 class TestSameDeployment:

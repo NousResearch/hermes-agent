@@ -21,68 +21,24 @@ export function normalizeWhatsAppId(value) {
 export function summarizeParticipatingGroups(groups) {
   if (!groups || typeof groups !== 'object' || Array.isArray(groups)) return [];
   return Object.entries(groups)
-    .filter(([groupJid, metadata]) => (
-      /^\d+@g\.us$/.test(groupJid)
-      && metadata
-      && typeof metadata === 'object'
-      && typeof metadata.subject === 'string'
-      && metadata.subject.trim()
-    ))
-    .map(([groupJid, metadata]) => ({
-      group_jid: groupJid,
-      name: metadata.subject.trim(),
-    }))
-    .sort((left, right) => left.group_jid.localeCompare(right.group_jid));
+    .filter(([jid, metadata]) => /^\d+@g\.us$/.test(jid) && metadata && typeof metadata === 'object' && typeof metadata.subject === 'string' && metadata.subject.trim())
+    .map(([jid, metadata]) => ({ group_jid: jid, name: metadata.subject.trim() }))
+    .sort((a, b) => a.group_jid.localeCompare(b.group_jid));
 }
 
-export function inboundPolicyRejection({
-  fromMe = false,
-  isGroup = false,
-  mode = 'self-chat',
-  dmPolicy = 'open',
-  senderAllowed = false,
-  borderoReadOnly = false,
-  groupJid = null,
-  allowedGroupJids = null,
-} = {}) {
+export function inboundPolicyRejection({ fromMe = false, isGroup = false, mode = 'self-chat', dmPolicy = 'open', senderAllowed = false, borderoReadOnly = false, groupJid = null, allowedGroupJids = null } = {}) {
   if (borderoReadOnly && !isGroup) return 'bordero_dm_disabled';
+  if (borderoReadOnly && (!groupJid || !allowedGroupJids || !allowedGroupJids.has(groupJid))) return 'bordero_group_not_allowlisted';
   if (fromMe) return null;
   if (mode === 'self-chat') return 'self_chat_mode_rejects_non_self';
-  if (
-    isGroup
-    && borderoReadOnly
-    && (!groupJid || !allowedGroupJids || !allowedGroupJids.has(groupJid))
-  ) {
-    return 'bordero_group_not_allowlisted';
-  }
-  if (
-    (!isGroup || !borderoReadOnly)
-    && dmPolicy !== 'pairing'
-    && !senderAllowed
-  ) {
-    return 'allowlist_mismatch';
-  }
+  if ((!isGroup || !borderoReadOnly) && dmPolicy !== 'pairing' && !senderAllowed) return 'allowlist_mismatch';
   return null;
 }
 
-export function borderoWriteRejection({
-  enabled = false,
-  method = 'GET',
-  path = '',
-} = {}) {
-  const writePaths = new Set([
-    '/send',
-    '/edit',
-    '/send-media',
-    '/send-poll',
-    '/send-location',
-    '/typing',
-    '/read',
-  ]);
+export function borderoWriteRejection({ enabled = false, method = 'GET', path = '' } = {}) {
+  const writePaths = new Set(['/send', '/edit', '/send-media', '/send-poll', '/send-location', '/typing', '/read']);
   const normalizedPath = String(path).replace(/\/+$/, '') || '/';
-  if (enabled && String(method).toUpperCase() !== 'GET' && writePaths.has(normalizedPath)) {
-    return 'bordero_read_only_writes_disabled';
-  }
+  if (enabled && String(method).toUpperCase() !== 'GET' && writePaths.has(normalizedPath)) return 'bordero_read_only_writes_disabled';
   return null;
 }
 

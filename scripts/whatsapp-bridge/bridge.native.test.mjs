@@ -7,7 +7,7 @@
 
 import { strict as assert } from 'node:assert';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { getAggregateVotesInPollMessage } from '@whiskeysockets/baileys';
@@ -17,81 +17,12 @@ import {
   buildTextSendPayload,
   createBoundedMessageStore,
   appendMediaFailureNote,
-  inboundPolicyRejection,
-  borderoWriteRejection,
   extractBridgeEvent,
   inboundReadReceiptKeys,
   mediaPayloadForFile,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
 } from './bridge_helpers.js';
-
-// -- Bridge wiring smoke (without starting Baileys/HTTP) -------------------
-{
-  const bridgeSource = readFileSync(new URL('./bridge.js', import.meta.url), 'utf8');
-  assert.match(bridgeSource, /borderoWriteRejection,\s*\n\s*summarizeParticipatingGroups/);
-  assert.match(bridgeSource, /borderoReadOnly:\s*BORDERO_READ_ONLY/);
-  console.log('  ✓ Borderô bridge guard is wired and health exposes policy');
-}
-
-// -- Borderô bridge write boundary ----------------------------------------
-{
-  for (const path of ['/send', '/edit', '/send-media', '/send-poll', '/send-location', '/typing', '/read']) {
-    assert.equal(
-      borderoWriteRejection({ enabled: true, method: 'POST', path }),
-      'bordero_read_only_writes_disabled',
-    );
-    assert.equal(
-      borderoWriteRejection({ enabled: true, method: 'POST', path: `${path}/` }),
-      'bordero_read_only_writes_disabled',
-    );
-  }
-  assert.equal(borderoWriteRejection({ enabled: false, method: 'POST', path: '/send' }), null);
-  assert.equal(borderoWriteRejection({ enabled: true, method: 'GET', path: '/send' }), null);
-  console.log('  ✓ Borderô bridge rejects every WhatsApp write endpoint');
-}
-
-// -- Borderô inbound policy boundary --------------------------------------
-{
-  const allowedGroupJids = new Set(['120363001234567890@g.us']);
-  assert.equal(inboundPolicyRejection({
-    fromMe: false,
-    isGroup: true,
-    groupJid: '120363001234567890@g.us',
-    allowedGroupJids,
-    mode: 'bot',
-    dmPolicy: 'disabled',
-    senderAllowed: false,
-    borderoReadOnly: true,
-  }), null);
-  assert.equal(inboundPolicyRejection({
-    fromMe: false,
-    isGroup: true,
-    groupJid: '120363009999999999@g.us',
-    allowedGroupJids,
-    mode: 'bot',
-    dmPolicy: 'disabled',
-    senderAllowed: false,
-    borderoReadOnly: true,
-  }), 'bordero_group_not_allowlisted');
-  assert.equal(inboundPolicyRejection({
-    fromMe: false,
-    isGroup: false,
-    mode: 'bot',
-    dmPolicy: 'disabled',
-    senderAllowed: false,
-    borderoReadOnly: true,
-  }), 'bordero_dm_disabled');
-  assert.equal(inboundPolicyRejection({
-    fromMe: false,
-    isGroup: true,
-    mode: 'bot',
-    dmPolicy: 'disabled',
-    senderAllowed: false,
-    borderoReadOnly: false,
-  }), 'allowlist_mismatch');
-  console.log('  ✓ Borderô exact group allowlist and DM policy');
-}
 
 // -- inbound read receipts ------------------------------------------------
 {

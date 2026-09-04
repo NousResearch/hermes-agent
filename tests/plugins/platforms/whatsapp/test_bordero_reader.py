@@ -42,6 +42,12 @@ def test_disabled_reader_has_no_routes():
     assert config.routes == {}
 
 
+@pytest.mark.parametrize("invalid", ["true", 1, [], {}])
+def test_non_boolean_read_only_flag_is_rejected_instead_of_disabling_reader(invalid):
+    with pytest.raises(BorderoReaderConfigError, match="YAML boolean"):
+        load_bordero_reader_config({"bordero_read_only": invalid})
+
+
 def test_enabled_reader_requires_exactly_two_canonical_store_routes():
     config = load_bordero_reader_config({"bordero_read_only": True, "bordero_routes": _routes()})
 

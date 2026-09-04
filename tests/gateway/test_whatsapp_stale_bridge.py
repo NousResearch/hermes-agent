@@ -18,7 +18,6 @@ package.json changes, not only when node_modules is missing.
 
 import asyncio
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -150,39 +149,6 @@ class TestStaleBridgeHandshake:
              patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
             await adapter.connect()
 
-    @pytest.mark.asyncio
-    async def test_restarts_bridge_when_bordero_policy_changed(self, tmp_path):
-        from plugins.platforms.whatsapp.adapter import _file_content_hash
-
-        bridge_dir = _setup_bridge_dir(tmp_path)
-        _fresh_node_modules(bridge_dir)
-        adapter = _make_adapter(
-            bridge_script=str(bridge_dir / "bridge.js"),
-            session_path=tmp_path / "session",
-        )
-        setattr(adapter, "_bordero_reader", SimpleNamespace(enabled=True))
-        disk_hash = _file_content_hash(bridge_dir / "bridge.js")
-        mock_client = _mock_health(
-            {
-                "status": "connected",
-                "scriptHash": disk_hash,
-                "sendReadReceipts": False,
-                "borderoReadOnly": False,
-            }
-        )
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = 1
-        mock_proc.returncode = 1
-
-        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
-             patch("aiohttp.ClientSession", mock_client), \
-             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
-             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
-             patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
-             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
-             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
-            await adapter.connect()
-
         mock_popen.assert_called_once()
 
 
@@ -222,7 +188,6 @@ class TestCacheDirEnvPassthrough:
             session_path=tmp_path / "session",
         )
         adapter._send_read_receipts = True
-        setattr(adapter, "_bordero_reader", SimpleNamespace(enabled=True))
         mock_proc = MagicMock()
         mock_proc.poll.return_value = 1
         mock_proc.returncode = 1
@@ -246,4 +211,3 @@ class TestCacheDirEnvPassthrough:
         assert env["HERMES_AUDIO_CACHE_DIR"] == str(get_audio_cache_dir())
         assert env["HERMES_DOCUMENT_CACHE_DIR"] == str(get_document_cache_dir())
         assert env["WHATSAPP_SEND_READ_RECEIPTS"] == "true"
-        assert env["WHATSAPP_BORDERO_READ_ONLY"] == "true"

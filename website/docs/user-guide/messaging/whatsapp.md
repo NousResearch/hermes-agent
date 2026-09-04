@@ -130,60 +130,6 @@ whatsapp:
 - `unauthorized_dm_behavior: pair` is the global default. Unknown DM senders get a pairing code.
 - `whatsapp.unauthorized_dm_behavior: ignore` makes WhatsApp stay silent for unauthorized DMs, which is usually the better choice for a private number.
 
-### Silent Borderô group reader (personal number, read-only)
-
-For a personal WhatsApp number that already belongs to the two Borderô groups,
-use the opt-in reader contract below instead of an open group policy:
-
-```yaml
-# ~/.hermes/config.yaml
-# The JIDs below are intentionally invalid examples. Replace them only with
-# exact values returned by `hermes whatsapp --list-groups`.
-gateway:
-  platforms:
-    whatsapp:
-      extra:
-        bordero_read_only: true
-        mode: bot
-        dm_policy: disabled
-        group_policy: allowlist
-        send_read_receipts: false
-        bordero_routes:
-          - group_jid: "REPLACE_WITH_EXACT_UBBO_JID@g.us"
-            store: PTT
-            location: UBBO
-            telegram_chat_id: "REPLACE_WITH_TELEGRAM_CHAT_ID"
-            telegram_thread_id: "REPLACE_WITH_UBBO_TOPIC_ID"
-          - group_jid: "REPLACE_WITH_EXACT_SALDANHA_JID@g.us"
-            store: ODI
-            location: Saldanha
-            telegram_chat_id: "REPLACE_WITH_TELEGRAM_CHAT_ID"
-            telegram_thread_id: "REPLACE_WITH_SALDANHA_TOPIC_ID"
-```
-
-The reader rejects the configuration unless it contains exactly one
-`PTT → UBBO` route and one `ODI → Saldanha` route. It does not use group names
-as identity. DMs, Status, newsletters and every group outside those exact JIDs
-are discarded before the agent sees their content. Any text, media, poll,
-location, typing indicator or edit sent to those two WhatsApp groups is blocked
-by the adapter.
-
-After a *paired bridge is already running*, discover the JIDs locally with:
-
-```bash
-hermes whatsapp --list-groups
-```
-
-This command only calls the loopback `/groups` read endpoint; it does not start
-WhatsApp or display a QR code. The Telegram target must be an explicit forum
-topic. Reports and blockers are instructed to leave through that target; no
-WhatsApp reply is permitted. Keep `send_read_receipts: false` and protect the
-session directory because it contains the linked-device credentials.
-
-The Borderô writer remains a separate rollout gate: first run shadow/dry-run and
-complete the existing evidence, duplicate and Supabase read-backs. Enabling the
-reader is not authorization to activate financial writes.
-
 Then start the gateway:
 
 ```bash
@@ -191,6 +137,38 @@ hermes gateway              # Foreground
 hermes gateway install      # Install as a user service
 sudo hermes gateway install --system   # Linux only: boot-time system service
 ```
+
+## Borderô read-only reader
+
+Borderô mode is an opt-in, fail-closed reader for exactly two configured WhatsApp groups. It
+requires `mode: bot`, disables DMs and read receipts, and never sends to WhatsApp. Final reports
+are relayed only to the exact Telegram forum topics configured for each route.
+
+```yaml
+whatsapp:
+  enabled: true
+  mode: bot
+  bordero_read_only: true
+  dm_policy: disabled
+  group_policy: allowlist
+  send_read_receipts: false
+  bordero_routes:
+    - group_jid: "<PTT_GROUP_JID>@g.us"
+      store: PTT
+      location: UBBO
+      telegram_chat_id: "-1000000000000"
+      telegram_thread_id: "123"
+    - group_jid: "<ODI_GROUP_JID>@g.us"
+      store: ODI
+      location: Saldanha
+      telegram_chat_id: "-1000000000000"
+      telegram_thread_id: "456"
+```
+
+The two JIDs and Telegram topic IDs are exact identifiers, not display names. Use
+`hermes whatsapp --list-groups` to inspect group JIDs; the command performs discovery only and
+does not send messages or mark them read. The reader rejects DMs, unknown groups, malformed
+routes, and configurations that do not contain exactly PTT/UBBO and ODI/Saldanha.
 
 The gateway starts the WhatsApp bridge automatically using the saved session.
 

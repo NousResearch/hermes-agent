@@ -107,7 +107,11 @@ def load_bordero_reader_config(extra: Mapping[str, Any] | None) -> BorderoReader
     """
 
     extra = extra or {}
-    enabled = extra.get("bordero_read_only", False) is True
+    if "bordero_read_only" in extra and type(extra["bordero_read_only"]) is not bool:
+        raise BorderoReaderConfigError(
+            "bordero_read_only must be a YAML boolean (true or false)"
+        )
+    enabled = extra.get("bordero_read_only", False)
     if not enabled:
         return BorderoReaderConfig(enabled=False, routes={})
 

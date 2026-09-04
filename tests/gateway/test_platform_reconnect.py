@@ -534,7 +534,7 @@ class TestSpawnSupervised:
             delegated_child_context,
             is_delegated_child_context,
         )
-        from gateway.kanban_watchers import _to_thread_process_service
+        from gateway.kanban_watchers_common import _to_thread_process_service
         from hermes_cli.kanban_db import _assert_not_delegated_child_mutation
 
         with delegated_child_context():

@@ -20,8 +20,15 @@
  *   - A NON-primary v2 registry `remote` entry with cookie auth
  *     (`authMode: 'oauth'`, which covers dashboard basic/password providers —
  *     they authenticate via session cookies too) gets its own partition
- *     derived from the connection id. Fail closed: its requests can never see
- *     another connection's cookies, and its login window can never evict them.
+ *     derived from the connection id, but ONLY when another cookie-auth
+ *     `remote` entry (including the primary, when it is itself a `remote`
+ *     entry) shares its hostname. Chromium cookie jars
+ *     ignore the port, so that shared-host case is the only one where two
+ *     entries can actually evict or read each other's session cookie in the
+ *     legacy jar. Isolating on a different host solves nothing and costs a
+ *     real regression instead (#100373): a freshly created per-connection
+ *     partition on Windows never wrote its `Cookies` database to disk, so an
+ *     isolated gateway silently lost its session on every restart.
  *   - The registry PRIMARY and the v1 single-connection remote stay on the
  *     LEGACY shared partition, so existing signed-in users are not signed out
  *     by the upgrade.
@@ -88,6 +95,19 @@ function sanitizePartitionComponent(id: string): string {
   return encodeURIComponent(id).replace(/%/g, '_')
 }
 
+/** Hostname only (port dropped) — Chromium's cookie jar ignores the port too. */
+function safeHostname(raw: unknown): string | null {
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return null
+  }
+
+  try {
+    return new URL(raw.trim()).hostname.toLowerCase() || null
+  } catch {
+    return null
+  }
+}
+
 /**
  * Decide the Electron session partition a cookie-authenticated request against
  * `requestUrl` must ride. See the module header for the rules.
@@ -108,7 +128,7 @@ export function resolveOauthPartition(requestUrl: unknown, opts: ResolveOauthPar
   const primaryId = typeof registry.primary === 'string' ? registry.primary : ''
   const v1Norm = normalizeForMatch(opts.v1RemoteUrl)
 
-  let best: { baseNorm: string; id: string } | null = null
+  let best: { baseNorm: string; id: string; host: string | null } | null = null
 
   for (const entry of registry.connections) {
     if (!entry || typeof entry !== 'object') {
@@ -143,11 +163,39 @@ export function resolveOauthPartition(requestUrl: unknown, opts: ResolveOauthPar
     // identical URLs tie-break on the lexicographically smallest id so the
     // choice is deterministic across processes and launches.
     if (!best || baseNorm.length > best.baseNorm.length || (baseNorm.length === best.baseNorm.length && id < best.id)) {
-      best = { baseNorm, id }
+      best = { baseNorm, id, host: safeHostname((entry as any).url) }
     }
   }
 
   if (!best) {
+    return LEGACY_OAUTH_PARTITION
+  }
+
+  // Isolate only when the winning entry's hostname is shared by another
+  // cookie-auth entry (any kind of "other" — the primary or a different
+  // secondary). No collision means no port-eviction risk, so the legacy jar
+  // is both sufficient and the only one that reliably persists (#100373).
+  const collides =
+    best.host !== null &&
+    registry.connections.some(other => {
+      if (!other || typeof other !== 'object') {
+        return false
+      }
+
+      const otherId = typeof (other as any).id === 'string' ? (other as any).id.trim() : ''
+
+      if (!otherId || otherId === best!.id) {
+        return false
+      }
+
+      return (
+        (other as any).kind === 'remote' &&
+        (other as any).authMode === 'oauth' &&
+        safeHostname((other as any).url) === best!.host
+      )
+    })
+
+  if (!collides) {
     return LEGACY_OAUTH_PARTITION
   }
 

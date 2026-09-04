@@ -54,9 +54,20 @@ def live():
         kwargs["base_url"] = base_url
     client = Honcho(**kwargs)
     yield SimpleNamespace(key=key, base_url=base_url, workspace=workspace, client=client)
+    _delete_workspace(client, workspace)
+
+
+def _delete_workspace(client, workspace: str) -> None:
+    """The api refuses to delete a workspace with live sessions, so every peer's sessions go first."""
     try:
+        seen: set[str] = set()
+        for peer in client.peers(size=50):
+            for session in client.peer(str(peer.id)).sessions():
+                if session.id not in seen:
+                    seen.add(session.id)
+                    session.delete()
         client.delete_workspace(workspace)
-    except Exception as exc:  # cleanup is best-effort; the workspace name says what it is
+    except Exception as exc:  # best-effort; the workspace name says what it is
         print(f"workspace {workspace} not deleted: {exc}")
 
 

@@ -2577,6 +2577,48 @@ def _pid_file_still_matches(
         return False
 
 
+def _remove_confirmed_runtime_dir(
+    socket_dir: str,
+    pid_file: str,
+    expected_text: str,
+    expected_stat: os.stat_result,
+) -> bool:
+    """Atomically claim an obsolete runtime directory, then remove the claim.
+
+    Renaming is the only operation that can bind cleanup to the directory entry
+    we inspected. A concurrent Browser Harness writer either keeps the original
+    directory busy (rename fails, so we retain it) or recreates the original
+    name after our rename; in the latter case we delete only our private claim,
+    never the replacement session.
+    """
+    parent = os.path.dirname(socket_dir)
+    claim = os.path.join(
+        parent,
+        f".hermes-browser-reap-{os.getpid()}-{time.time_ns()}",
+    )
+    try:
+        os.rename(socket_dir, claim)
+    except OSError:
+        return False
+
+    claimed_pid_file = os.path.join(claim, os.path.basename(pid_file))
+    if not _pid_file_still_matches(
+        claimed_pid_file, expected_text, expected_stat
+    ):
+        # The runtime changed after our last validation. Put the claimed
+        # directory back when the public name is still free; otherwise retain
+        # the private claim rather than deleting uncertain evidence.
+        try:
+            if not os.path.exists(socket_dir):
+                os.rename(claim, socket_dir)
+        except OSError:
+            pass
+        return False
+
+    shutil.rmtree(claim, ignore_errors=True)
+    return True
+
+
 def _reap_orphaned_browser_sessions():
     """Scan for orphaned agent-browser daemon processes from previous runs.
 
@@ -2730,8 +2772,9 @@ def _reap_orphaned_browser_sessions():
         # is NOT a no-op — use the handle-based existence check.
         from gateway.status import _pid_exists
         if not _pid_exists(daemon_pid):
-            if _pid_file_still_matches(pid_file, pid_text, pid_stat_after):
-                shutil.rmtree(socket_dir, ignore_errors=True)
+            _remove_confirmed_runtime_dir(
+                socket_dir, pid_file, pid_text, pid_stat_after
+            )
             continue
 
         # The PID is live — but the .pid file lives in a world-writable,
@@ -2784,10 +2827,10 @@ def _reap_orphaned_browser_sessions():
                 daemon_pid, session_name,
             )
 
-        if terminated and _pid_file_still_matches(
-            pid_file, pid_text, pid_stat_after
-        ):
-            shutil.rmtree(socket_dir, ignore_errors=True)
+        if terminated:
+            _remove_confirmed_runtime_dir(
+                socket_dir, pid_file, pid_text, pid_stat_after
+            )
 
     if reaped:
         logger.info("Reaped %d orphaned browser session(s) from previous run(s)", reaped)

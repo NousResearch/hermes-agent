@@ -2605,14 +2605,9 @@ def _remove_confirmed_runtime_dir(
     if not _pid_file_still_matches(
         claimed_pid_file, expected_text, expected_stat
     ):
-        # The runtime changed after our last validation. Put the claimed
-        # directory back when the public name is still free; otherwise retain
-        # the private claim rather than deleting uncertain evidence.
-        try:
-            if not os.path.exists(socket_dir):
-                os.rename(claim, socket_dir)
-        except OSError:
-            pass
+        # The runtime changed after our claim. Keep the private claim intact as
+        # uncertain evidence. Never rename it back: on POSIX rename can replace
+        # an empty directory created concurrently at the public name.
         return False
 
     shutil.rmtree(claim, ignore_errors=True)

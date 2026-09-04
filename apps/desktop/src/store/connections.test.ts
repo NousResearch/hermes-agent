@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopConnectionsRegistry } from '@/global'
 
+import { BACKEND_BOOT_WAIT_TIMEOUT_MS } from '../lib/with-timeout'
 import { deferred } from '../test/deferred'
 
 const $activeGatewayProfile = atom('default')
@@ -794,7 +795,7 @@ describe('selectConnection', () => {
       expect(ensureGatewayAgent).not.toHaveBeenCalled()
 
       // Descriptor never arrives; deadline elapses.
-      await vi.advanceTimersByTimeAsync(60_000)
+      await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS)
       await restoring
 
       expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())

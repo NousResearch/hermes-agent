@@ -7,7 +7,8 @@ import {
   type BackendIdentity,
   createBackendOwnership,
   createBackendShutdownCoordinator,
-  parseBackendOwnership
+  parseBackendOwnership,
+  REAP_PROBE_CONCURRENCY
 } from './backend-ownership'
 
 function memoryStore(initial = '') {
@@ -252,6 +253,81 @@ test('startup reap still reaps a backend whose parent is gone or reused', async 
   assert.deepEqual(await ownership.reapOrphans(), [55])
   assert.deepEqual(stop.mock.calls, [[gone]])
   assert.deepEqual(parseBackendOwnership(store.value()), [reused])
+})
+
+test('startup reap deduplicates and overlaps parent liveness probes', async () => {
+  const first = { ...ownershipEntry({ pid: 58 }), parentPid: 400, parentStartMarker: 'os-start-parent' }
+
+  const second = {
+    ...ownershipEntry({ pid: 59, nonce: 'second' }),
+    parentPid: 400,
+    parentStartMarker: 'os-start-parent'
+  }
+
+  const store = memoryStore(stored([first, second]))
+  const release = deferred()
+
+  const matchesParent = vi.fn(async () => {
+    await release.promise
+
+    return true
+  })
+
+  const ownership = createOwnership(store, { matchesParent })
+  const reap = ownership.reapOrphans()
+
+  // Both records share one parent probe; it must be scheduled immediately,
+  // before the caller releases it, and only once.
+  await Promise.resolve()
+  assert.equal(matchesParent.mock.calls.length, 1)
+  release.resolve()
+  assert.deepEqual(await reap, [])
+  assert.deepEqual(parseBackendOwnership(store.value()), [first, second])
+})
+
+test('startup reap bounds speculative parent and identity probes', async () => {
+  const entries = Array.from({ length: REAP_PROBE_CONCURRENCY + 4 }, (_, index) => ({
+    ...ownershipEntry({ pid: 80 + index, nonce: `probe-${index}` }),
+    parentPid: 800 + index,
+    parentStartMarker: `os-start-parent-${index}`
+  }))
+
+  const store = memoryStore(stored(entries))
+  const parentRelease = deferred()
+  const identityRelease = deferred()
+  let active = 0
+  let peak = 0
+
+  const enter = async (release: Promise<void>) => {
+    active += 1
+    peak = Math.max(peak, active)
+    await release
+    active -= 1
+
+    return false
+  }
+
+  const matchesParent = vi.fn(() => enter(parentRelease.promise))
+  const matchesIdentity = vi.fn(() => enter(identityRelease.promise))
+
+  const ownership = createOwnership(store, { matchesParent, matchesIdentity })
+  const reap = ownership.reapOrphans()
+
+  // A large roster must not turn the speculative prefetch into one OS process
+  // per record. The first wave is capped even while every probe is blocked.
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.equal(matchesParent.mock.calls.length, REAP_PROBE_CONCURRENCY)
+  assert.equal(matchesIdentity.mock.calls.length, 0)
+  assert.equal(peak, REAP_PROBE_CONCURRENCY)
+
+  parentRelease.resolve()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.equal(matchesIdentity.mock.calls.length, REAP_PROBE_CONCURRENCY)
+  assert.equal(peak, REAP_PROBE_CONCURRENCY)
+
+  identityRelease.resolve()
+  assert.deepEqual(await reap, [])
+  assert.deepEqual(parseBackendOwnership(store.value()), [])
 })
 
 test('startup reap preserves a record when parent liveness probing fails', async () => {

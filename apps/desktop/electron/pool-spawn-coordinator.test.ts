@@ -320,6 +320,9 @@ test('setLimit rejects a non-positive or fractional cap', () => {
     .readFileSync(path.join(here, '..', 'src', 'lib', 'with-timeout.ts'), 'utf8')
     .replace(/\r\n/g, '\n')
 
+  const backendReadySource = fs.readFileSync(path.join(here, 'backend-ready.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const backendHealthSource = fs.readFileSync(path.join(here, 'backend-health.ts'), 'utf8').replace(/\r\n/g, '\n')
+
   test('main.ts bounds the slot wait below the renderer backend-boot budget', () => {
     const slotWait = Number(/const POOL_SLOT_WAIT_MS = ([\d_]+)/.exec(mainSource)?.[1]?.replace(/_/g, ''))
 
@@ -332,6 +335,26 @@ test('setLimit rejects a non-positive or fractional cap', () => {
     assert.ok(slotWait < bootBudget, `slot wait ${slotWait}ms must be below the boot budget ${bootBudget}ms`)
     assert.match(mainSource, /localBackendSpawnCoordinator\.request\(poolKey, \{ timeoutMs: POOL_SLOT_WAIT_MS \}\)/)
     assert.doesNotMatch(mainSource, /request\(poolKey, \{ timeoutMs: POOL_IDLE_MS \}\)/)
+  })
+
+  test('renderer boot budget leaves headroom for post-port readiness', () => {
+    const bootBudget = Number(
+      /export const BACKEND_BOOT_WAIT_TIMEOUT_MS = ([\d_]+)/.exec(withTimeoutSource)?.[1]?.replace(/_/g, '')
+    )
+    const portBudget = Number(
+      /const DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS = ([\d_]+)/.exec(backendReadySource)?.[1]?.replace(/_/g, '')
+    )
+    const readinessBudget = Number(
+      /export const DEFAULT_BACKEND_READY_TIMEOUT_MS = ([\d_]+)/.exec(backendHealthSource)?.[1]?.replace(/_/g, '')
+    )
+
+    assert.ok(Number.isFinite(bootBudget), 'BACKEND_BOOT_WAIT_TIMEOUT_MS must be a literal')
+    assert.ok(Number.isFinite(portBudget), 'DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS must be a literal')
+    assert.ok(Number.isFinite(readinessBudget), 'DEFAULT_BACKEND_READY_TIMEOUT_MS must be a literal')
+    assert.ok(
+      bootBudget > portBudget + readinessBudget,
+      `boot budget ${bootBudget}ms must exceed port ${portBudget}ms + readiness ${readinessBudget}ms`
+    )
   })
 
   test('main.ts pushes the live pool max into the coordinator when the preference changes', () => {

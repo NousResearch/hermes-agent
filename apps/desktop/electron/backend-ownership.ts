@@ -34,7 +34,7 @@ export interface BackendOwnershipDeps {
    * up to two identity probes (parent + backend) plus a stop — on Windows
    * those shell out to PowerShell, whose 5.1 cold starts are slow (#87169).
    * Without a bound, a large roster could stall boot for minutes while the
-   * renderer's 45s backend-boot budget expires and the user stares at the
+   * renderer's backend-boot budget expires and the user stares at the
    * connecting screen. When the budget is exhausted the sweep preserves the
    * unprocessed records for the next launch and returns what it reaped.
    */
@@ -43,6 +43,81 @@ export interface BackendOwnershipDeps {
 
 /** Default budget for one reap sweep (see `reapDeadlineMs`). */
 export const REAP_ORPHANS_DEADLINE_MS = 5_000
+
+/** Maximum number of OS-backed ownership probes allowed in flight at once. */
+export const REAP_PROBE_CONCURRENCY = 4
+
+interface PendingReapProbe {
+  run: () => Promise<unknown>
+  resolve: (value: unknown) => void
+  reject: (reason?: unknown) => void
+}
+
+/**
+ * Keep speculative process-table probes bounded while allowing the reap pass
+ * to overlap independent records. `close()` abandons queued work that was not
+ * needed before the sweep's deadline; already-running probes are allowed to
+ * settle because the dependency has no cancellation contract.
+ */
+function createReapProbePool(limit = REAP_PROBE_CONCURRENCY) {
+  const pending: PendingReapProbe[] = []
+  let active = 0
+  let closed = false
+
+  function drain() {
+    while (!closed && active < limit && pending.length > 0) {
+      const next = pending.shift() as PendingReapProbe
+      active += 1
+
+      void Promise.resolve()
+        .then(() => next.run())
+        .then(
+          value => {
+            next.resolve(value)
+          },
+          error => {
+            next.reject(error)
+          }
+        )
+        .then(() => {
+          active -= 1
+          drain()
+        })
+    }
+  }
+
+  function schedule<T>(run: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      if (closed) {
+        reject(new Error('Ownership probe pool is closed.'))
+
+        return
+      }
+
+      pending.push({
+        reject,
+        resolve: value => resolve(value as T),
+        run
+      })
+      drain()
+    })
+  }
+
+  function close() {
+    if (closed) {
+      return
+    }
+
+    closed = true
+    const error = new Error('Ownership probe was not started before the reap sweep ended.')
+
+    while (pending.length > 0) {
+      pending.shift()?.reject(error)
+    }
+  }
+
+  return { close, schedule }
+}
 
 export interface BackendClaim extends BackendIdentity {
   command?: string
@@ -236,73 +311,139 @@ export function createBackendOwnership(deps: BackendOwnershipDeps) {
 
       const survivors: BackendOwnershipEntry[] = []
       const reaped: number[] = []
-      const deadline = Date.now() + (deps.reapDeadlineMs ?? REAP_ORPHANS_DEADLINE_MS)
 
-      for (let i = 0; i < entries.length; i += 1) {
-        // Budget exhausted: preserve the unprocessed records so a later launch
-        // can retry them. A slow identity probe must never stall boot — the
-        // renderer's backend-boot budget is 45s and the spawn itself needs
-        // most of it.
-        if (Date.now() >= deadline) {
-          survivors.push(...entries.slice(i))
+      // Parent liveness is probed through the OS process table. On Windows
+      // that probe shells out to PowerShell, so doing it once per record
+      // serially can delay startup by minutes when an older ownership file
+      // contains many backends belonging to the same Electron parent. Probe
+      // each distinct (PID, start-marker) pair once and enqueue it through the
+      // bounded pool before the identity/stop pass. Reaping itself remains
+      // sequential so stop failures preserve the exact record and cannot race
+      // each other.
+      const probePool = createReapProbePool()
+      const parentProbes = new Map<string, Promise<boolean | undefined>>()
+      const identityProbes = new Map<string, Promise<boolean | undefined>>()
 
-          break
-        }
-
-        const entry = entries[i]
-
-        // A backend whose Electron parent is still running is NOT an orphan:
-        // reaping it would kill a live instance's session. This is what stops
-        // a second launch from SIGTERMing the running instance's backend even
-        // if it reaches reapOrphans (see main.ts startHermes + #87295).
-        let parentAlive: boolean | undefined
-
-        try {
-          parentAlive = await deps.matchesParent(entry)
-        } catch {
-          survivors.push(entry)
-
+      for (const entry of entries) {
+        if (!Number.isInteger(entry.parentPid) || !isNonEmptyString(entry.parentStartMarker)) {
           continue
         }
 
-        if (parentAlive === true) {
-          survivors.push(entry)
+        const key = `${entry.parentPid}\u0000${entry.parentStartMarker}`
 
-          continue
-        }
-
-        let matches: boolean | undefined
-
-        try {
-          matches = await deps.matchesIdentity(entry)
-        } catch {
-          survivors.push(entry)
-
-          continue
-        }
-
-        if (matches === false) {
-          continue
-        }
-
-        if (matches !== true) {
-          survivors.push(entry)
-
-          continue
-        }
-
-        try {
-          await deps.stop(entry)
-          reaped.push(entry.pid)
-        } catch {
-          // Preserve failed ownership so a later startup can retry it.
-          survivors.push(entry)
+        if (!parentProbes.has(key)) {
+          const probe = probePool.schedule(() => deps.matchesParent(entry))
+          // A record may leave this speculative probe unawaited. Mark the
+          // rejection handled so a late OS probe cannot surface as an
+          // unhandled rejection after the sweep has returned.
+          probe.catch(() => undefined)
+          parentProbes.set(key, probe)
         }
       }
 
-      write(survivors)
+      // Identity probes also consult the OS process table (and on Windows
+      // may invoke PowerShell). Enqueue one probe per exact identity up front
+      // through the same bounded pool, so a large stale roster cannot turn
+      // startup into N concurrent PowerShell processes. A parent that is found
+      // alive still wins below; its speculative identity result is simply
+      // ignored.
+      for (const entry of entries) {
+        const key = `${entry.pid}\u0000${entry.startMarker}\u0000${entry.nonce}\u0000${entry.profile}`
 
-      return reaped
+        if (!identityProbes.has(key)) {
+          const probe = probePool.schedule(() => deps.matchesIdentity(entry))
+          // A record may leave this speculative probe unawaited. Mark the
+          // rejection handled so a late OS probe cannot surface as an
+          // unhandled rejection after the sweep has returned.
+          probe.catch(() => undefined)
+          identityProbes.set(key, probe)
+        }
+      }
+
+      // Scheduling the deduplicated probes is synchronous and intentionally
+      // outside the sweep budget. Establish the deadline after that bounded
+      // bookkeeping so a sub-millisecond test/clock tick cannot skip the
+      // first record before any real probe has been attempted.
+      const deadline = Date.now() + (deps.reapDeadlineMs ?? REAP_ORPHANS_DEADLINE_MS)
+
+      try {
+        for (let i = 0; i < entries.length; i += 1) {
+          // Budget exhausted: preserve the unprocessed records so a later launch
+          // can retry them. A slow identity probe must never stall boot — the
+          // renderer's backend-boot budget covers the port-announcement and
+          // health phases, but the sweep still has to yield promptly.
+          if (Date.now() >= deadline) {
+            survivors.push(...entries.slice(i))
+
+            break
+          }
+
+          const entry = entries[i]
+
+          // A backend whose Electron parent is still running is NOT an orphan:
+          // reaping it would kill a live instance's session. This is what stops
+          // a second launch from SIGTERMing the running instance's backend even
+          // if it reaches reapOrphans (see main.ts startHermes + #87295).
+          let parentAlive: boolean | undefined
+
+          try {
+            const key =
+              Number.isInteger(entry.parentPid) && isNonEmptyString(entry.parentStartMarker)
+                ? `${entry.parentPid}\u0000${entry.parentStartMarker}`
+                : undefined
+
+            parentAlive = key ? await parentProbes.get(key) : await deps.matchesParent(entry)
+          } catch {
+            survivors.push(entry)
+
+            continue
+          }
+
+          if (parentAlive === true) {
+            survivors.push(entry)
+
+            continue
+          }
+
+          let matches: boolean | undefined
+
+          try {
+            const key = `${entry.pid}\u0000${entry.startMarker}\u0000${entry.nonce}\u0000${entry.profile}`
+            matches = await identityProbes.get(key)
+          } catch {
+            survivors.push(entry)
+
+            continue
+          }
+
+          if (matches === false) {
+            continue
+          }
+
+          if (matches !== true) {
+            survivors.push(entry)
+
+            continue
+          }
+
+          try {
+            await deps.stop(entry)
+            reaped.push(entry.pid)
+          } catch {
+            // Preserve failed ownership so a later startup can retry it.
+            survivors.push(entry)
+          }
+        }
+
+        write(survivors)
+
+        return reaped
+      } finally {
+        // Drop queued speculative work once the ordered sweep has either
+        // consumed its budget or completed. Running probes are bounded and are
+        // allowed to settle, but no new OS process-table work starts afterward.
+        probePool.close()
+      }
     },
 
     clear(): void {

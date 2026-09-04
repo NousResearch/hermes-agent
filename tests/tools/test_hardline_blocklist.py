@@ -103,6 +103,11 @@ _HARDLINE_BLOCK = [
     "kill --signal KILL -1",
     "kill --signal=9 -1",
     "sudo kill -s TERM -1",
+    # separated signal operands in carrier positions (#102389)
+    "kill -9 -s TERM -1",
+    "ls; kill --signal KILL -1",
+    "$(kill -s KILL -1)",
+    'bash -c "kill -s KILL -1"',
     # Shutdown / reboot / halt
     "shutdown -h now",
     "shutdown -r now",

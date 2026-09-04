@@ -909,6 +909,9 @@ def _build_prompt(
         '- If you have nothing new to add, reply with exactly "(pass)".',
         "- Mention a teammate by handle to pull them into the next round; do not repeat points already made.",
         "- Never reveal content from private conversations. Your reply is published verbatim.",
+        "- Write only your own line. The \"@handle:\" prefixes above mark who "
+        "said what; they are not a format to copy. Never write a line for "
+        "another participant \u2014 every member gets its own turn.",
     ]
     fixed_bytes = len("\n".join([*opening, *rules]).encode("utf-8"))
     available = max(0, driver.MAX_PROMPT_BYTES - fixed_bytes - 1)

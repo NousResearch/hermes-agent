@@ -42,6 +42,13 @@ _FORBIDDEN_FILES = ("README.md", "CHANGELOG.md", "install.sh", ".env", ".env.exa
 # Presence of the load-bearing section is checked, not exact ordering, so the
 # linter is not a change-detector.
 _EXPECTED_SECTIONS = ("When to Use", "When to use")
+# incident-log-shape: at least this many PR/issue refs AND this density (per 1k chars of prose).
+_INCIDENT_REF_MIN = 4
+_INCIDENT_REF_PER_KCHAR = 0.5  # the 100k incident-log SKILL.md this targets sat at ~0.7
+# references-sprawl: a skill carrying more reference files than this is hoarding per-session notes.
+# Calibration: a deliberately curated large workflow skill sits near 50 topical files; the hoarding
+# shape this catches was 443 one-per-session files.
+_MAX_REFERENCE_FILES = 60
 
 ERROR = "error"
 WARNING = "warning"
@@ -123,6 +130,12 @@ def _check_body(body: str, skill_dir: Optional[Path]) -> Iterator[LintFinding]:
     if not any(re.search(rf"^#+\s+{re.escape(s)}", body, re.M) for s in _EXPECTED_SECTIONS):
         yield _warn("missing-section", "no '## When to Use' section found; skills need explicit "
                     "trigger conditions near the top.")
+    # Incident-log shape: a skill body dense in PR/issue numbers is narrating history instead of
+    # stating rules. Threshold is per 1k chars so a long body with one citation is fine.
+    refs = len(re.findall(r"(?<![\w/])#\d{3,6}\b|\b(?:PR|issue)\s*#?\d{3,6}\b", prose))
+    if refs >= _INCIDENT_REF_MIN and refs / max(len(prose), 1) * 1000 >= _INCIDENT_REF_PER_KCHAR:
+        yield _warn("incident-log-shape", f"{refs} PR/issue references in prose; write the generalizable "
+                    "rule + why and drop the incident numbers — the rule must stand without the story.")
     if skill_dir is None:
         return
     # Dangling links. Only references/, templates/, assets/ are reliably skill-owned;
@@ -162,6 +175,13 @@ def _check_files(frontmatter: Dict[str, Any], skill_dir: Path) -> Iterator[LintF
         if (skill_dir / fname).exists():
             yield _warn("forbidden-file",
                         f"skill ships '{fname}'; skills should not include scaffolding/config files.")
+    refs_dir = skill_dir / "references"
+    if refs_dir.is_dir():
+        n_refs = sum(1 for p in refs_dir.rglob("*.md") if not any(part.startswith("_") for part in p.parts))
+        if n_refs > _MAX_REFERENCE_FILES:
+            yield _warn("references-sprawl",
+                        f"{n_refs} files under references/; that is a per-session log, not topical depth. "
+                        "Merge same-topic files into one rule set and drop incident narration.")
 
 
 def lint_content(content: str, *, skill_dir: Optional[Path] = None) -> List[LintFinding]:

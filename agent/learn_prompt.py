@@ -18,6 +18,9 @@ that instructs the live agent to:
      corpora) get the knowledge-base layout — a lean SKILL.md index plus
      per-chapter ``references/`` files loaded on demand via ``skill_view``
      (the shape popularized by virgiliojr94/book-to-skill).
+  3. Persist any durable facts about the user or their environment that the
+     sources surfaced via the ``memory`` tool; requests with no procedure in
+     them skip steps 2 and 2b entirely and save only memory.
 
 There is no separate distillation engine and no model-tool footprint: the
 agent does the work with its existing toolset, so this works identically on
@@ -209,7 +212,22 @@ def build_learn_prompt(user_request: str) -> str:
         "1b. Apply every requirement, focus, and constraint in the request to "
         "the skill you author — these govern what the SKILL.md covers and "
         "emphasizes, not just which sources you read.\n"
-        "2. Save the skill with `skill_manage`. First check the available "
+        "1c. While gathering sources, watch for durable facts about the USER "
+        "or their environment that are worth remembering across sessions "
+        "(preferences, conventions, paths, corrections) but are NOT "
+        "procedures — procedures belong in the skill. Persist those via the "
+        "`memory` tool (action=\"add\", or \"replace\" to update an existing "
+        "entry), keeping entries compact; do not paste source content "
+        "wholesale into memory.\n"
+        "2. If there is NO procedure to teach — the request only asks you to "
+        "remember durable facts — skip steps 2 and 2b entirely: do not author "
+        "a skill; save those facts via the `memory` tool (step 1c) and report "
+        "them back instead. For example: `remember our prod deploy key lives "
+        "in ~/.config/deploy.env` is memory-only; `document our release flow "
+        "from these notes` is skill-only; `document our release flow from "
+        "these notes, and remember keys live in ~/.config/deploy.env` needs "
+        "BOTH. Otherwise, save the skill with `skill_manage`. "
+        "First check the available "
         "skills for one covering this source or topic. If one exists, load it "
         "with `skill_view`, then extend its SKILL.md with `skill_manage` patch "
         "(or edit for a necessary full rewrite) and add or update supporting "
@@ -231,7 +249,9 @@ def build_learn_prompt(user_request: str) -> str:
         f"{_SOURCE_HYGIENE}\n\n"
         f"{_AUTHORING_STANDARDS}\n\n"
         f"{_KNOWLEDGE_SKILL_STANDARDS}\n\n"
-        "When done, tell the user the skill name, its category, a one-line "
-        "summary of what it captured, and — for a knowledge-base skill — the "
-        "list of reference files it can load on demand."
+        "When done, tell the user what you saved: if you authored a skill, "
+        "its name, category, a one-line summary of what it captured, and — "
+        "for a knowledge-base skill — the list of reference files it can load "
+        "on demand; if you saved durable facts to memory, summarize the "
+        "memory entries written."
     )

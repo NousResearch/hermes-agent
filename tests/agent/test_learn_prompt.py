@@ -108,6 +108,55 @@ class TestBuildLearnPrompt:
         assert 'action="create"' in prompt
 
 
+class TestDurableFactPersistence:
+    def test_persists_durable_facts_via_memory_tool(self):
+        # Issue #94456: /learn routed everything to skill authoring, so
+        # "/learn remember our deploy key lives in ~/.config/deploy.env"
+        # produced a useless one-off skill instead of a durable memory entry.
+        prompt = build_learn_prompt(
+            "remember that our prod deploy key lives in ~/.config/deploy.env"
+        )
+        low = prompt.lower()
+        assert "memory" in low
+        assert "skill_manage" in low
+        assert "not paste source content wholesale into memory" in low
+
+    def test_fact_only_requests_may_skip_skill_authoring(self):
+        # The issue's literal patch still mandated ONE SKILL.md even when the
+        # request contains no procedure at all — reproducing the exact failure
+        # it describes. The prompt must let pure-fact requests skip step 2.
+        prompt = build_learn_prompt(
+            "remember that our prod deploy key lives in ~/.config/deploy.env"
+        )
+        low = prompt.lower()
+        assert "no procedure" in low
+        assert "skip steps 2 and 2b" in low
+        assert "do not author a skill" in low
+
+    def test_structural_invariants_ordering_and_memory_params(self):
+        # Substring presence alone can't catch reordering: 1c must sit
+        # between 1b and 2, and 2 before 2b (issue #94456 specifies the slot).
+        prompt = build_learn_prompt(
+            "remember that our prod deploy key lives in ~/.config/deploy.env"
+        )
+        # Slice past the interpolated request block first: `.index()` returns
+        # the FIRST match, so a multi-line user request containing its own
+        # numbered lines ("…\n2. bar") would otherwise shadow the step
+        # headers and falsely fail the ordering assertion.
+        body = prompt[prompt.index("Do this:\n"):]
+        assert (
+            body.index("\n1b.")
+            < body.index("\n1c.")
+            < body.index("\n2.")
+            < body.index("\n2b.")
+        )
+        # Memory persistence names its explicit tool parameters; dropping
+        # either loses the add/replace update semantics the guidance
+        # depends on — pin both, not just the common case.
+        assert 'action="add"' in prompt
+        assert '"replace"' in prompt
+
+
 class TestLearnRegistryWiring:
     def test_learn_is_registered_and_resolves(self):
         from hermes_cli.commands import resolve_command

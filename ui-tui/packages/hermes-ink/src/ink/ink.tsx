@@ -811,6 +811,7 @@ export default class Ink {
       terminalWidth,
       terminalRows,
       altScreen: this.altScreenActive,
+      freezeScrollFollow: this.altScreenActive && (this.selection.isDragging || hasSelection(this.selection)),
       prevFrameContaminated: this.prevFrameContaminated
     })
 

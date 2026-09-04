@@ -9317,6 +9317,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 provider = canonical_custom_identity(
                     base_url=result.base_url or None,
                     model=result.new_model or None,
+                    api_mode=result.api_mode or None,
                 ) or None
             except Exception:
                 provider = None
@@ -9394,6 +9395,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 stored_provider = canonical_custom_identity(
                     base_url=stored_base_url or None,
                     model=stored_model or None,
+                    api_mode=stored_api_mode or None,
                 ) or None
             except Exception:
                 stored_provider = None

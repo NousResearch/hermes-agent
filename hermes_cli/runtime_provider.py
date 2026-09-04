@@ -949,7 +949,9 @@ def has_named_custom_provider(requested_provider: str) -> bool:
         return False
 
 
-def find_custom_provider_identity(base_url: str) -> Optional[str]:
+def find_custom_provider_identity(
+    base_url: str, *, api_mode: Optional[str] = None,
+) -> Optional[str]:
     """Map an endpoint URL back to its canonical ``custom:<name>`` menu key.
 
     Returns the ``custom:<normalized-name>`` slug of the first ``providers:``
@@ -973,8 +975,15 @@ def find_custom_provider_identity(base_url: str) -> Optional[str]:
     except Exception:
         return None
 
+    def _entry_api_mode(entry: Dict[str, Any]) -> Optional[str]:
+        raw = entry.get("api_mode")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip().lower()
+        return None
+
     providers = config.get("providers")
     if isinstance(providers, dict):
+        fallback: Optional[str] = None
         for ep_name, entry in providers.items():
             if not isinstance(entry, dict):
                 continue
@@ -982,12 +991,19 @@ def find_custom_provider_identity(base_url: str) -> Optional[str]:
                 entry.get("api") or entry.get("url") or entry.get("base_url") or ""
             )
             if _normalize_base_url_for_match(entry_url) == target:
-                return custom_provider_slug(str(ep_name), str(ep_name))
+                slug = custom_provider_slug(str(ep_name), str(ep_name))
+                if api_mode and _entry_api_mode(entry) == api_mode.lower():
+                    return slug
+                if fallback is None:
+                    fallback = slug
+        if fallback is not None:
+            return fallback
 
     try:
         custom_providers = get_compatible_custom_providers(config)
     except Exception:
         custom_providers = None
+    cp_fallback: Optional[str] = None
     for entry in custom_providers or []:
         if not isinstance(entry, dict):
             continue
@@ -995,15 +1011,23 @@ def find_custom_provider_identity(base_url: str) -> Optional[str]:
         if not isinstance(name, str) or not name.strip():
             continue
         if _normalize_base_url_for_match(entry.get("base_url")) == target:
-            return custom_provider_slug(
+            slug = custom_provider_slug(
                 name,
                 str(entry.get("provider_key", "") or ""),
             )
+            if api_mode and _entry_api_mode(entry) == api_mode.lower():
+                return slug
+            if cp_fallback is None:
+                cp_fallback = slug
+    if cp_fallback is not None:
+        return cp_fallback
 
     return None
 
 
-def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
+def find_custom_provider_identity_by_model(
+    model: str, *, api_mode: Optional[str] = None,
+) -> Optional[str]:
     """Map a model id back to the ``custom:<name>`` entry that serves it.
 
     Returns the ``custom:<normalized-name>`` slug of the first ``providers:``
@@ -1046,18 +1070,32 @@ def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
                         return True
         return False
 
+    def _entry_api_mode(entry: Dict[str, Any]) -> Optional[str]:
+        raw = entry.get("api_mode")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip().lower()
+        return None
+
     providers = config.get("providers")
     if isinstance(providers, dict):
+        fallback: Optional[str] = None
         for ep_name, entry in providers.items():
             if not isinstance(entry, dict):
                 continue
             if _entry_serves_model(entry):
-                return custom_provider_slug(str(ep_name), str(ep_name))
+                slug = custom_provider_slug(str(ep_name), str(ep_name))
+                if api_mode and _entry_api_mode(entry) == api_mode.lower():
+                    return slug
+                if fallback is None:
+                    fallback = slug
+        if fallback is not None:
+            return fallback
 
     try:
         custom_providers = get_compatible_custom_providers(config)
     except Exception:
         custom_providers = None
+    cp_fallback: Optional[str] = None
     for entry in custom_providers or []:
         if not isinstance(entry, dict):
             continue
@@ -1065,10 +1103,16 @@ def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
         if not isinstance(name, str) or not name.strip():
             continue
         if _entry_serves_model(entry):
-            return custom_provider_slug(
+            slug = custom_provider_slug(
                 name,
                 str(entry.get("provider_key", "") or ""),
             )
+            if api_mode and _entry_api_mode(entry) == api_mode.lower():
+                return slug
+            if cp_fallback is None:
+                cp_fallback = slug
+    if cp_fallback is not None:
+        return cp_fallback
 
     return None
 
@@ -1078,6 +1122,7 @@ def canonical_custom_identity(
     base_url: Optional[str] = None,
     config_provider: Optional[str] = None,
     model: Optional[str] = None,
+    api_mode: Optional[str] = None,
 ) -> Optional[str]:
     """Recover a routable ``custom:<name>`` identity for a bare custom provider.
 
@@ -1114,13 +1159,13 @@ def canonical_custom_identity(
     """
     # 1. Reverse-lookup by endpoint URL.
     if base_url:
-        identity = find_custom_provider_identity(base_url)
+        identity = find_custom_provider_identity(base_url, api_mode=api_mode)
         if identity:
             return identity
 
     # 2. Reverse-lookup by the session's model name.
     if model:
-        identity = find_custom_provider_identity_by_model(model)
+        identity = find_custom_provider_identity_by_model(model, api_mode=api_mode)
         if identity:
             return identity
 

@@ -371,3 +371,46 @@ def test_a_healthy_openrouter_pool_is_not_reported_as_cooling(
     resolved = rp.resolve_runtime_provider(requested="openrouter")
 
     assert resolved.get(CREDENTIALS_COOLING_DOWN_KEY) is None
+
+
+def test_a_scoped_custom_slug_probes_its_own_pool_not_a_siblings(
+    tmp_path, monkeypatch
+):
+    """Two endpoints may share a base_url; only the name tells them apart.
+
+    A runtime requested in the scoped ``custom:<name>`` form carries that
+    verbatim, and the pool-key helper matches on the endpoint's BARE
+    configured name. Passing the scoped form through missed the name match and
+    fell back to a base_url match, resolving to whichever sibling was
+    configured first -- so a benched endpoint read as healthy (and a healthy
+    one could read as benched).
+    """
+    url = "https://shared.example.test/v1"
+    alpha_key = "sk-test-alpha-" + "0" * 32
+    bravo_key = "sk-test-bravo-" + "0" * 32
+    healthy = _benched_row("a0", alpha_key, "config:alpha")
+    healthy.pop("last_status")
+    healthy.pop("last_error_code")
+    _pool_home(
+        tmp_path,
+        monkeypatch,
+        {
+            "custom:alpha": [healthy],
+            "custom:bravo": [_benched_row("b0", bravo_key, "config:bravo")],
+        },
+        "model:\n"
+        "  default: m\n"
+        "  provider: alpha\n"
+        "custom_providers:\n"
+        f"  - name: alpha\n    base_url: {url}\n    api_key: {alpha_key}\n    model: m\n"
+        f"  - name: bravo\n    base_url: {url}\n    api_key: {bravo_key}\n    model: m\n",
+    )
+
+    bravo = rp.resolve_runtime_provider(requested="custom:bravo")
+    alpha = rp.resolve_runtime_provider(requested="custom:alpha")
+
+    assert getattr(rp.pool_for_runtime(bravo), "provider", None) == "custom:bravo"
+    assert bravo.get(CREDENTIALS_COOLING_DOWN_KEY) is not None
+    # The sibling sharing the URL is untouched by the other's bench.
+    assert getattr(rp.pool_for_runtime(alpha), "provider", None) == "custom:alpha"
+    assert alpha.get(CREDENTIALS_COOLING_DOWN_KEY) is None

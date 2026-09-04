@@ -3315,12 +3315,16 @@ def _resolve_runtime_agent_kwargs() -> dict:
     resolve credentials using the fallback provider chain from config.yaml
     before giving up.
 
-    The primary can also resolve successfully but come back flagged: when
-    every credential in its pool is serving a 429, the runtime carries
-    ``CREDENTIALS_COOLING_DOWN_KEY``. Sending that request would just 429
-    again, so the chain is tried first — skipping entries whose own pool is
-    cooling — and the flagged primary is kept only when nothing else is
-    usable. A cooldown demotes a provider; it does not disqualify it.
+    The primary can also resolve successfully but still be unusable: when
+    every credential in its pool is serving a 429. That is asked of
+    ``runtime_credentials_cooling_down_until``, which reads the
+    ``CREDENTIALS_COOLING_DOWN_KEY`` annotation when resolution stamped one and
+    otherwise probes the pool directly — so a primary that pins an explicit
+    api_key/base_url, and therefore never passes an annotating branch, is
+    covered too. Sending that request would just 429 again, so the chain is
+    tried first — skipping entries whose own pool is cooling — and the flagged
+    primary is kept only when nothing else is usable. A cooldown demotes a
+    provider; it does not disqualify it.
     """
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider,
@@ -3353,19 +3357,15 @@ def _resolve_runtime_agent_kwargs() -> dict:
     # spending the request. If nothing in the chain resolves, keep this runtime
     # anyway: a cooldown DEMOTES the primary, it does not disqualify it, and
     # the real upstream 429 is better than refusing to run.
-    # One owner for the decision, shared with the CLI, cron and one-shot
-    # callers -- this used to be a fifth hand-rolled copy of the same shape,
-    # down to its own timestamp degrade path. This module's own
+    # One owner for the decision, shared with the cron and one-shot callers --
+    # this used to be a fourth hand-rolled copy of the same shape, down to its
+    # own timestamp degrade path. This module's own
     # `_fallback_runtime_is_rate_limited` / `_resolve_fallback_entry_runtime`
-    # are handed over so they stay the seam for anything that swaps them here.
-    try:
-        _chain = get_fallback_chain(_load_gateway_runtime_config())
-    except Exception:
-        logger.debug("Could not read the fallback chain", exc_info=True)
-        _chain = []
+    # are handed over so they stay the seam for anything that swaps them here;
+    # note they govern the CHAIN ENTRIES, not the primary check above them.
     _demotion = demote_if_rate_limited(
         runtime,
-        _chain,
+        lambda: get_fallback_chain(_load_gateway_runtime_config()),
         is_rate_limited=_fallback_runtime_is_rate_limited,
         resolve_entry=_resolve_fallback_entry_runtime,
     )

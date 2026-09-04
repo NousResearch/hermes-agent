@@ -35,13 +35,12 @@ def test_an_entry_with_no_model_is_skipped_not_adopted():
         seen.append(entry.get("provider"))
         return _runtime(entry["provider"])
 
-    runtime, model, entry = resolve_non_cooling_fallback_runtime(
+    runtime, model = resolve_non_cooling_fallback_runtime(
         chain, is_rate_limited=lambda _rt: False, resolve_entry=_resolve
     )
 
     assert model == "z-ai/glm-5.2"
     assert runtime["provider"] == "openrouter"
-    assert entry is chain[1]
     # The model-less entry is refused before it is even resolved.
     assert seen == ["openrouter"]
 
@@ -54,21 +53,21 @@ def test_a_cooling_fallback_is_passed_over_for_a_healthy_one_further_down():
         {"provider": "openrouter", "model": "z-ai/glm-5.2"},
     ]
 
-    runtime, model, entry = resolve_non_cooling_fallback_runtime(
+    runtime, model = resolve_non_cooling_fallback_runtime(
         chain,
         is_rate_limited=lambda rt: rt["provider"] == "zai",
         resolve_entry=lambda e: _runtime(e["provider"]),
     )
 
     assert runtime["provider"] == "openrouter"
-    assert entry is chain[1]
+    assert model == "z-ai/glm-5.2"
 
 
 def test_every_fallback_cooling_still_beats_the_benched_primary():
     """A different quota bucket has a chance the primary provably does not."""
     chain = [{"provider": "zai", "model": "glm-5.2"}]
 
-    runtime, model, _entry = resolve_non_cooling_fallback_runtime(
+    runtime, model = resolve_non_cooling_fallback_runtime(
         chain,
         is_rate_limited=lambda _rt: True,
         resolve_entry=lambda e: _runtime(e["provider"]),
@@ -79,25 +78,31 @@ def test_every_fallback_cooling_still_beats_the_benched_primary():
 
 
 def test_a_healthy_primary_is_never_demoted():
-    result = demote_if_rate_limited(_runtime("gemini"), [{"provider": "x", "model": "y"}])
+    chain_reads = []
+
+    def _chain():
+        chain_reads.append(1)
+        return [{"provider": "x", "model": "y"}]
+
+    result = demote_if_rate_limited(_runtime("gemini"), _chain)
 
     assert isinstance(result, Demotion)
     assert result.switched is False
     assert result.model is None
-    assert result.cooling_until is None
+    # The healthy path must not pay for a config read it cannot use.
+    assert chain_reads == []
 
 
-def test_a_benched_primary_with_an_empty_chain_reports_its_window_and_stays():
+def test_a_benched_primary_with_an_empty_chain_keeps_running_on_it():
     """A cooldown DEMOTES a provider; it does not disqualify it.
 
-    The caller still needs the reset time on the turn it had to stay put --
-    that is what a long-lived session's return is scheduled against.
+    With nothing to hand over to, the real upstream 429 beats refusing to run.
     """
     until = time.time() + 1800
     primary = _runtime("gemini", **{CREDENTIALS_COOLING_DOWN_KEY: until})
 
-    result = demote_if_rate_limited(primary, [])
+    result = demote_if_rate_limited(primary, lambda: [])
 
     assert result.switched is False
     assert result.runtime is primary
-    assert result.cooling_until == until
+    assert result.model is None

@@ -6576,8 +6576,16 @@ def run_job(
         # mistaken for the operator changing their configured provider.
         from hermes_cli.provider_cooldown import demote_if_rate_limited
 
+        # The provider/model drift guard below deliberately keeps comparing
+        # `primary_provider_for_drift` / `primary_model_for_drift`, which were
+        # captured before resolution: it exists to catch the operator's global
+        # config drifting under an unpinned job, not to police a runtime
+        # fallback the operator configured on purpose. The pre-existing
+        # AuthError walk behaves the same way -- the difference is that a
+        # cooldown recurs every tick while the quota stays drained, so an
+        # unpinned job can spend a whole window on the fallback's provider.
         _demotion = demote_if_rate_limited(
-            runtime, get_fallback_chain(_cfg), subject=f"Job '{job_id}'"
+            runtime, lambda: get_fallback_chain(_cfg), subject=f"Job '{job_id}'"
         )
         runtime = _demotion.runtime
         if _demotion.switched:
@@ -6688,9 +6696,17 @@ def run_job(
         runtime_provider = str(runtime.get("provider") or "").strip().lower()
         if runtime_provider:
             try:
-                from agent.credential_pool import load_pool
-                pool = load_pool(runtime_provider)
-                if pool.has_credentials():
+                # Not `load_pool(runtime_provider)`: a custom endpoint resolves
+                # with provider "custom" but keeps its credentials under its own
+                # `custom:<name>` key, so the bare name reads an empty pool and
+                # the agent gets nothing to rotate through on a later 429. This
+                # helper prefers the pool resolution already attached to the
+                # runtime and otherwise resolves the scoped key. Pre-existing
+                # for any custom-provider job; a demotion to a named custom
+                # fallback makes it reachable far more often.
+                from hermes_cli.runtime_provider import pool_for_runtime
+                pool = pool_for_runtime(runtime)
+                if pool is not None and pool.has_credentials():
                     credential_pool = pool
                     logger.info(
                         "Job '%s': loaded credential pool for provider %s with %d entries",

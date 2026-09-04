@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 from hermes_cli import auth as auth_mod
 from agent.credential_pool import (
+    CUSTOM_POOL_PREFIX,
     CredentialPool,
     PooledCredential,
     credential_pool_matches_provider,
@@ -2099,8 +2100,18 @@ def pool_for_runtime(runtime: Optional[Dict[str, Any]]) -> Optional[CredentialPo
         return attached
     try:
         if provider == "custom":
+            # `get_custom_provider_pool_key` matches on the endpoint's bare
+            # configured name, but a runtime can be requested in the scoped
+            # `custom:<name>` form and carries that verbatim. Passing it
+            # through misses the name match and silently falls back to a
+            # base_url match -- which resolves to a SIBLING's pool when two
+            # endpoints share a URL, the exact collision the name-first rule
+            # exists to prevent.
+            requested = str(runtime.get("requested_provider") or "")
+            if requested.lower().startswith(CUSTOM_POOL_PREFIX):
+                requested = requested[len(CUSTOM_POOL_PREFIX):]
             pool_key = get_custom_provider_pool_key(
-                runtime.get("base_url"), runtime.get("requested_provider")
+                runtime.get("base_url"), requested or None
             )
             if not pool_key:
                 return None

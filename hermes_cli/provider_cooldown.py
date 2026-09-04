@@ -6,12 +6,14 @@ deliberately does not raise, because the same function also answers status
 probes, model pickers and readiness checks, for which a cooling-down provider
 is still a configured one.  Acting on that report is the caller's decision.
 
-Four callers now own a fallback chain and need the identical three answers --
-the gateway, the interactive CLI (which is also the kanban worker's entry
-point, since a card dispatches as ``hermes chat -q``), cron jobs, and one-shot
-runs.  Duplicating the walk four times is how the same entry starts resolving
-differently depending on who asked, so the policy lives here and each caller
-supplies only its own chain.
+Three callers now own a fallback chain and need the identical answers -- the
+gateway, cron jobs, and one-shot runs.  Duplicating the walk once per caller is
+how the same entry starts resolving differently depending on who asked, so the
+policy lives here and each caller supplies only its own chain.
+
+The interactive CLI is deliberately NOT one of them yet: it wastes a request
+per session the same way, but a long-lived session also has to decide when it
+returns to the primary, and that is its own change.
 
 The policy itself, in one line: a cooldown DEMOTES a provider, it does not
 disqualify it.
@@ -86,7 +88,7 @@ def resolve_non_cooling_fallback_runtime(
     resolve_entry: Optional[
         Callable[[dict[str, Any]], Optional[dict[str, Any]]]
     ] = None,
-) -> tuple[Optional[dict[str, Any]], Optional[str], Optional[dict[str, Any]]]:
+) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """First entry in *chain* that resolves AND is not itself rate-limited.
 
     Used when the primary's pooled credentials are all benched by a 429.
@@ -94,16 +96,9 @@ def resolve_non_cooling_fallback_runtime(
     doomed request one hop down the chain, so those entries are passed over
     in favour of a later, healthy one.
 
-    Returns ``(runtime, model, entry)`` for the chosen entry, or a triple of
-    ``None`` when nothing in the chain is usable — the caller then keeps the
-    primary, because a cooldown demotes a provider rather than disqualifying
-    it.
-
-    The *entry* comes back because resolving it once is not enough for a
-    long-lived caller: an entry defined by an inline ``base_url`` rather than
-    a registered provider name cannot be re-resolved from its provider name
-    alone, so a caller that will resolve again next turn needs the entry to
-    pin the same endpoint.
+    Returns ``(runtime, model)`` for the chosen entry, or ``(None, None)``
+    when nothing in the chain is usable — the caller then keeps the primary,
+    because a cooldown demotes a provider rather than disqualifying it.
 
     ``is_rate_limited`` / ``resolve_entry`` exist so a caller that already
     owns these decisions (the gateway) keeps its own module-level names as
@@ -113,9 +108,7 @@ def resolve_non_cooling_fallback_runtime(
     _is_rate_limited = is_rate_limited or runtime_is_rate_limited
     _resolve_entry = resolve_entry or resolve_fallback_entry_runtime
 
-    cooling_but_resolvable: Optional[
-        tuple[dict[str, Any], str, dict[str, Any]]
-    ] = None
+    cooling_but_resolvable: Optional[tuple[dict[str, Any], str]] = None
     for entry in chain or []:
         if not isinstance(entry, dict):
             continue
@@ -137,23 +130,23 @@ def resolve_non_cooling_fallback_runtime(
                 "the chain", entry.get("provider") or "?",
             )
             if cooling_but_resolvable is None:
-                cooling_but_resolvable = (runtime, model, entry)
+                cooling_but_resolvable = (runtime, model)
             continue
         logger.info(
             "Fallback provider resolved: %s model=%s",
             entry.get("provider") or runtime.get("provider"), model,
         )
-        return runtime, model or None, entry
+        return runtime, model or None
 
     # Everything left is cooling too. A benched fallback still beats a benched
     # primary that has no chance of a different quota bucket.
     if cooling_but_resolvable is not None:
-        runtime, model, entry = cooling_but_resolvable
+        runtime, model = cooling_but_resolvable
         logger.warning(
             "Every fallback is rate-limited too — using the first one anyway"
         )
-        return runtime, model or None, entry
-    return None, None, None
+        return runtime, model or None
+    return None, None
 
 
 def cooldown_label(until: float) -> str:
@@ -172,35 +165,20 @@ def cooldown_label(until: float) -> str:
 
 @dataclass(frozen=True)
 class Demotion:
-    """What :func:`demote_if_rate_limited` decided.
-
-    ``switched`` is the one question most callers ask; ``entry`` matters only
-    to a caller that will resolve again on a later turn and must land on the
-    same endpoint.
-    """
+    """What :func:`demote_if_rate_limited` decided."""
 
     runtime: dict[str, Any]
     model: Optional[str] = None
-    cooling_until: Optional[float] = None
-    entry: Optional[dict[str, Any]] = None
-
-    @property
-    def switched(self) -> bool:
-        """Whether a fallback actually took over.
-
-        Keyed on ``entry`` because that is the thing the walk sets last and
-        only on success. ``model`` is guaranteed non-empty alongside it: the
-        walk refuses a model-less entry outright, since swapping the provider
-        while keeping the primary's model name would send e.g. a Gemini model
-        id to OpenRouter.
-        """
-        return self.entry is not None
+    #: Stated outright rather than inferred from ``model``: a derived flag
+    #: would rest on the walk refusing model-less entries elsewhere, which is
+    #: not an invariant this object owns.
+    switched: bool = False
 
 
 
 def demote_if_rate_limited(
     runtime: dict[str, Any],
-    chain: Optional[list[dict[str, Any]]],
+    chain: Callable[[], Optional[list[dict[str, Any]]]],
     *,
     subject: str = "Primary provider",
     is_rate_limited: Optional[Callable[[dict[str, Any]], bool]] = None,
@@ -222,12 +200,14 @@ def demote_if_rate_limited(
     * ``model`` is the fallback's model, or ``None`` when nothing was swapped.
       Provider and model move together: swapping one while keeping the other
       would send e.g. a Gemini model id to OpenRouter.
-    * ``cooling_until`` is the reset time whenever the runtime WAS benched,
-      including the case where nothing in the chain could take over. A caller
-      that owes a return (a long-lived session) needs that time even on the
-      turn it had to stay put.
-    * ``entry`` is the chain entry that took over, for a caller that must pin
-      the same endpoint when it resolves again.
+
+    *chain* is a callable, not a list: the healthy path is the common one and
+    reading the chain there costs a config load per call for no reason. It is
+    invoked only once the primary is known to be benched.
+
+    *is_rate_limited* governs the CHAIN ENTRIES only; whether the primary
+    itself is benched is always asked of
+    :func:`runtime_credentials_cooling_down_until` directly.
 
     *subject* names the demoted party in the log line, so a cron job can say
     which job it was.
@@ -236,10 +216,15 @@ def demote_if_rate_limited(
 
     cooling_until = runtime_credentials_cooling_down_until(runtime)
     if not cooling_until:
-        return Demotion(runtime)
+        return Demotion(runtime)  # nothing benched, nothing to decide
 
-    fb_runtime, fb_model, fb_entry = resolve_non_cooling_fallback_runtime(
-        chain, is_rate_limited=is_rate_limited, resolve_entry=resolve_entry
+    try:
+        entries = chain()
+    except Exception:
+        logger.debug("Could not read the fallback chain", exc_info=True)
+        entries = None
+    fb_runtime, fb_model = resolve_non_cooling_fallback_runtime(
+        entries, is_rate_limited=is_rate_limited, resolve_entry=resolve_entry
     )
     if fb_runtime is None:
         logger.warning(
@@ -248,7 +233,7 @@ def demote_if_rate_limited(
             subject,
             runtime.get("provider") or "?",
         )
-        return Demotion(runtime, cooling_until=cooling_until)
+        return Demotion(runtime)
 
     logger.warning(
         "%s: %s is rate-limited until %s — using fallback %s/%s until it lifts",
@@ -258,4 +243,4 @@ def demote_if_rate_limited(
         fb_runtime.get("provider") or "?",
         fb_model,
     )
-    return Demotion(fb_runtime, fb_model, cooling_until, fb_entry)
+    return Demotion(fb_runtime, fb_model, switched=True)

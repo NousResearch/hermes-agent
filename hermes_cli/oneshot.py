@@ -464,7 +464,7 @@ def _run_agent(
     # Gemini model id to OpenRouter.
     from hermes_cli.provider_cooldown import demote_if_rate_limited
 
-    _demotion = demote_if_rate_limited(runtime, get_fallback_chain(cfg))
+    _demotion = demote_if_rate_limited(runtime, lambda: get_fallback_chain(cfg))
     runtime = _demotion.runtime
     if _demotion.switched:
         effective_model = _demotion.model

@@ -55,6 +55,7 @@ from hermes_cli.config import (
     save_env_value,
     write_platform_config_field,
 )
+from hermes_cli._subprocess_compat import resolve_executable
 
 # display_hermes_home is imported lazily at call sites to avoid ImportError
 # when hermes_constants is cached from a pre-update version during `hermes update`.
@@ -4123,6 +4124,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         _get_restart_drain_timeout(),
         _get_cron_drain_timeout(),
     )
+    reload_executable = resolve_executable("kill") or "kill"
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
@@ -4181,7 +4183,7 @@ RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
-ExecReload=/bin/kill -USR1 $MAINPID
+ExecReload={reload_executable} -USR1 $MAINPID
 ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
 TimeoutStopSec={restart_timeout}
 StandardOutput=journal
@@ -4220,7 +4222,7 @@ RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
-ExecReload=/bin/kill -USR1 $MAINPID
+ExecReload={reload_executable} -USR1 $MAINPID
 ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
 TimeoutStopSec={restart_timeout}
 StandardOutput=journal

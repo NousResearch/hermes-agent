@@ -47,7 +47,11 @@ import urllib.error
 import urllib.parse
 import zipfile
 
-from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
+from hermes_cli._subprocess_compat import (
+    resolve_executable,
+    windows_detach_flags,
+    windows_hide_flags,
+)
 from hermes_cli.install_identity import get_install_id as _shared_get_install_id
 import urllib.request
 from pathlib import Path
@@ -6591,10 +6595,15 @@ def _run_setup_command(
     shell: bool = False,
     timeout: int = 180,
 ) -> subprocess.CompletedProcess:
+    executable = None
+    if shell:
+        executable = resolve_executable("bash")
+        if executable is None:
+            raise FileNotFoundError("no bash executable found")
     return subprocess.run(
         command,
         shell=shell,
-        executable="/bin/bash" if shell else None,
+        executable=executable,
         env=_memory_provider_setup_env(),
         capture_output=True,
         text=True,

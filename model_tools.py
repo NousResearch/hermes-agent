@@ -29,6 +29,7 @@ from contextvars import ContextVar
 import logging
 import threading
 import time
+import traceback
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import (
@@ -834,19 +835,37 @@ from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 
 
 def _sanitize_tool_error(error_msg: str) -> str:
-    """Strip structural framing tokens from a tool error before showing it to the model.
+    """Redact secrets and strip framing tokens before model/persistence use.
 
     See _TOOL_ERROR_ROLE_TAG_RE docstring above for rationale.
     """
     if not error_msg:
         return "[TOOL_ERROR] "
-    sanitized = _TOOL_ERROR_ROLE_TAG_RE.sub("", error_msg)
+    from agent.redact import redact_tool_boundary_text
+
+    sanitized = redact_tool_boundary_text(error_msg)
+    sanitized = _TOOL_ERROR_ROLE_TAG_RE.sub("", sanitized)
     sanitized = _TOOL_ERROR_FENCE_OPEN_RE.sub("", sanitized)
     sanitized = _TOOL_ERROR_FENCE_CLOSE_RE.sub("", sanitized)
     sanitized = _TOOL_ERROR_CDATA_RE.sub("", sanitized)
     if len(sanitized) > _TOOL_ERROR_MAX_LEN:
         sanitized = sanitized[:_TOOL_ERROR_MAX_LEN - 3] + "..."
     return f"[TOOL_ERROR] {sanitized}"
+
+
+def _redact_tool_result(value: Any) -> Any:
+    """Apply dispatch-time pre-projection after every dispatch/hook."""
+    from agent.redact import redact_tool_boundary_value
+
+    return redact_tool_boundary_value(value)
+
+
+def _safe_exception_frames(exc: BaseException) -> str:
+    """Return traceback locations without rendering exception values."""
+    return " -> ".join(
+        f"{frame.filename}:{frame.lineno} in {frame.name}"
+        for frame in traceback.extract_tb(exc.__traceback__)
+    )
 
 
 # =========================================================================
@@ -1310,6 +1329,7 @@ def handle_function_call(
     _dispatch_start = time.monotonic()
 
     def _return_bridge_result(result: Any) -> Any:
+        result = _redact_tool_result(result)
         _emit_post_tool_call_hook(
             function_name=function_name,
             function_args=function_args,
@@ -1467,6 +1487,7 @@ def handle_function_call(
                 logger.debug("pre_tool_call hook error: %s", _hook_err)
 
             if block_message is not None:
+                block_message = _redact_tool_result(block_message)
                 result = tool_error(block_message)
                 _emit_post_tool_call_hook(
                     function_name=function_name,
@@ -1597,6 +1618,7 @@ def handle_function_call(
                     reset_current_observability_context(_approval_tokens)
                 except Exception:
                     pass
+        result = _redact_tool_result(result)
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
 
         _emit_post_tool_call_hook(
@@ -1649,12 +1671,19 @@ def handle_function_call(
         except Exception as _hook_err:
             logger.debug("transform_tool_result hook error: %s", _hook_err)
 
-        return result
+        return _redact_tool_result(result)
 
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
-        logger.exception(error_msg)
-        result = tool_error(_sanitize_tool_error(error_msg))
+        redacted_error = _sanitize_tool_error(error_msg)
+        logger.error(
+            "Tool %s execution error [%s]: %s; stack=%s",
+            function_name,
+            type(e).__name__,
+            redacted_error,
+            _safe_exception_frames(e),
+        )
+        result = tool_error(redacted_error)
         duration_ms = (
             int((time.monotonic() - _dispatch_start) * 1000)
             if _dispatch_start is not None
@@ -1672,7 +1701,7 @@ def handle_function_call(
             duration_ms=duration_ms,
             status="error",
             error_type=type(e).__name__,
-            error_message=str(e),
+            error_message=_redact_tool_result(str(e)),
             middleware_trace=list(_tool_middleware_trace),
         )
         return result

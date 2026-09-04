@@ -12,6 +12,8 @@ import os
 import re
 import shlex
 import threading
+from collections.abc import Mapping
+from typing import Any
 from urllib.parse import unquote_plus
 
 # Basenames treated as ``.env`` files by _command_reads_env_file. Imported
@@ -1072,6 +1074,390 @@ def redact_sensitive_text(
     return text
 
 
+# ---------------------------------------------------------------------------
+# Mandatory dispatch-time tool-result / exception pre-projection
+# ---------------------------------------------------------------------------
+#
+# Dispatch results can flow to observers and later sinks.  This pre-projection
+# is therefore not optional and never preserves a credential prefix or suffix.
+# It complements, rather than replaces, the canonical durable/model-facing sink
+# sanitizer selected by the maintainers.
+
+TOOL_SECRET_PLACEHOLDER = "[REDACTED_SECRET]"
+_MIN_RUNTIME_SECRET_CHARS = 6
+_TOOL_BEARER_RE = re.compile(
+    r"\b(Bearer\s+)([^\s,;\"']{8,})",
+    re.IGNORECASE,
+)
+_TOOL_DISCORD_WEBHOOK_RE = re.compile(
+    r"https://(?:canary\.)?discord(?:app)?\.com/api/"
+    r"(?:v\d+/)?webhooks/\d+/[A-Za-z0-9._-]{8,}",
+    re.IGNORECASE,
+)
+
+
+def _runtime_loaded_secret_values() -> tuple[str, ...]:
+    """Return in-scope runtime secret values without exposing metadata.
+
+    Mirror ``agent.secret_scope.get_secret`` authority: an active multiplexed
+    scope is authoritative, while a non-multiplexed scope is an overlay over
+    credential-named process environment values.  Values are sorted
+    longest-first so overlapping values are replaced deterministically.
+    """
+    values: set[str] = set()
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        scope = current_secret_scope()
+        multiplex_active = is_multiplex_active()
+    except Exception:
+        scope = None
+        # Failing to establish the multiplexing authority must not widen the
+        # proof scope into process-global credentials.
+        multiplex_active = True
+
+    candidates = list(scope.values()) if scope is not None else []
+    if not multiplex_active:
+        # Iterate names first and only resolve values for credential-shaped
+        # keys. ``os.environ.items()`` materializes every value, including the
+        # overwhelmingly common non-secret settings, on every boundary call.
+        # The cheap name prefilter contains every keyword accepted by
+        # ``_key_has_secret_keyword`` and therefore cannot exclude a key that
+        # the authoritative boundary check would accept.
+        for key in os.environ:
+            if key == "HERMES_REDACT_SECRETS":
+                continue
+            # A cheap, false-negative-free prefilter keeps ordinary runtime
+            # metadata (TERMINAL_*, PATH, HOME, and similar) away from the
+            # boundary-aware regex validator. Every keyword accepted by
+            # ``_KEY_KEYWORD_RE`` contains at least one token below.
+            upper_key = key.upper()
+            if not (
+                "KEY" in upper_key
+                or "TOKEN" in upper_key
+                or "SECRET" in upper_key
+                or "PASS" in upper_key
+                or "PW" in upper_key
+                or "CREDENTIAL" in upper_key
+                or "AUTH" in upper_key
+            ):
+                continue
+            if _key_has_secret_keyword(key):
+                candidates.append(os.environ.get(key))
+
+    # During an active turn, the resolved provider credential is held in the
+    # context-local main runtime.  It may originate from auth.json or OAuth
+    # rather than .env, so it is not necessarily present in either source
+    # above.  The accessor returns an empty value outside an active turn.
+    try:
+        from agent.auxiliary_client import _runtime_main_value
+
+        candidates.append(_runtime_main_value("api_key"))
+    except Exception:
+        pass
+
+    for value in candidates:
+        if not isinstance(value, str):
+            continue
+        if len(value) < _MIN_RUNTIME_SECRET_CHARS:
+            continue
+        if value == TOOL_SECRET_PLACEHOLDER:
+            continue
+        values.add(value)
+    return tuple(sorted(values, key=lambda item: (-len(item), item)))
+
+
+def _redact_tool_url_credentials(text: str) -> str:
+    """Replace credential-bearing URL components with the fixed sentinel."""
+    def _redact_param(match: re.Match) -> str:
+        if _canonical_url_param_name(match.group(2)) not in _SENSITIVE_QUERY_PARAMS:
+            return match.group(0)
+        return f"{match.group(1)}{match.group(2)}={TOOL_SECRET_PLACEHOLDER}"
+
+    def _redact_userinfo(match: re.Match) -> str:
+        return f"{match.group(1)}{TOOL_SECRET_PLACEHOLDER}@"
+
+    text = _STRICT_URL_PARAM_RE.sub(_redact_param, text)
+    return _STRICT_URL_USERINFO_RE.sub(_redact_userinfo, text)
+
+
+def _has_tool_bearer_hint(folded_text: str) -> bool:
+    """Return a false-negative-free literal gate for the Bearer matcher.
+
+    This gate is deliberately not an exact matcher. The authoritative regex
+    owns whitespace and token validation; the regex is skipped only when its
+    required case-insensitive ``Bearer`` literal is absent altogether.
+    """
+    return "bearer" in folded_text
+
+
+def _has_tool_config_hint(folded_text: str) -> bool:
+    """Return the literal superset required by config field matchers.
+
+    Every key language accepted by the lowercase ENV, dotted, anchored,
+    JSON, or YAML matcher contains at least one of these literals.  The
+    authoritative matcher and its match-local validators remain responsible
+    for syntax and false-positive rejection.
+    """
+    return any(
+        marker in folded_text
+        for marker in (
+            "key",
+            "token",
+            "secret",
+            "pass",
+            "pw",
+            "credential",
+            "auth",
+            "bearer",
+        )
+    )
+
+
+def _has_tool_telegram_hint(text: str) -> bool:
+    """Return whether a colon has the matcher's required digit prefix."""
+    offset = 0
+    while True:
+        colon = text.find(":", offset)
+        if colon < 0:
+            return False
+        cursor = colon - 1
+        digits = 0
+        while cursor >= 0 and text[cursor].isdigit():
+            digits += 1
+            if digits >= 8:
+                return True
+            cursor -= 1
+        offset = colon + 1
+
+
+def _has_tool_url_param_hint(text: str) -> bool:
+    """Return the required literal gate for strict URL parameters."""
+    return "=" in text
+
+
+def _has_tool_url_userinfo_hint(text: str) -> bool:
+    """Return a false-negative-free literal gate for URL userinfo.
+
+    The authoritative matcher requires a literal ``//`` before its literal
+    ``@``. A scheme and its colon are outside that match, so requiring
+    ``://`` would incorrectly exclude network-path references.
+    """
+    return "//" in text and "@" in text
+
+
+def _tool_boundary_secret_snapshot() -> tuple[str, ...]:
+    """Capture one immutable, invocation-local boundary authority snapshot."""
+    return _runtime_loaded_secret_values()
+
+
+def redact_tool_boundary_text(
+    text: Any,
+    *,
+    _secret_snapshot: tuple[str, ...] | None = None,
+) -> str:
+    """Redact one text value at the dispatch-time pre-projection.
+
+    This pre-projection ignores the operator-facing
+    ``security.redact_secrets`` preference and always emits the single fixed
+    sentinel. Runtime-loaded values are removed first, then recognizable
+    credential forms provide defense in depth. Canonical durable-sink
+    ownership remains outside this helper.
+    """
+    if text is None:
+        return ""
+    if not isinstance(text, str):
+        text = str(text)
+    if not text:
+        return text
+
+    if _secret_snapshot is None:
+        _secret_snapshot = _tool_boundary_secret_snapshot()
+
+    for secret in _secret_snapshot:
+        if secret in text:
+            text = text.replace(secret, TOOL_SECRET_PLACEHOLDER)
+
+    if _has_known_prefix_substring(text):
+        text = _mask_control_split_tokens(
+            text,
+            lambda _token: TOOL_SECRET_PLACEHOLDER,
+        )
+        text = _PREFIX_RE.sub(TOOL_SECRET_PLACEHOLDER, text)
+
+    folded_text = text.casefold()
+    if "discord" in folded_text and "/webhooks/" in folded_text:
+        text = _TOOL_DISCORD_WEBHOOK_RE.sub(TOOL_SECRET_PLACEHOLDER, text)
+    if _has_tool_bearer_hint(folded_text):
+        text = _TOOL_BEARER_RE.sub(
+            lambda match: match.group(1) + TOOL_SECRET_PLACEHOLDER,
+            text,
+        )
+
+    if "authorization" in folded_text:
+        text = _AUTH_HEADER_RE.sub(
+            lambda match: (
+                match.group(1)
+                + (match.group(2) or "")
+                + TOOL_SECRET_PLACEHOLDER
+            ),
+            text,
+        )
+    if ":" in text and any(
+        marker in folded_text
+        for marker in (
+            "x-api-key",
+            "x-goog-api-key",
+            "api-key",
+            "apikey",
+            "x-api-token",
+            "x-auth-token",
+            "x-access-token",
+        )
+    ):
+        text = _SECRET_HEADER_RE.sub(
+            lambda match: match.group(1) + TOOL_SECRET_PLACEHOLDER,
+            text,
+        )
+
+    if "=" in text and _has_tool_config_hint(folded_text):
+        def _redact_assignment(match: re.Match) -> str:
+            name, quote, value = match.group(1), match.group(2), match.group(3)
+            if _ENV_LOOKUP_VALUE_RE.match(value):
+                return match.group(0)
+            if not _key_has_secret_keyword(name):
+                return match.group(0)
+            if not _assignment_value_requires_redaction(name, value):
+                return match.group(0)
+            return (
+                f"{name}={quote}{TOOL_SECRET_PLACEHOLDER}{quote}"
+            )
+
+        text = _ENV_ASSIGN_RE.sub(_redact_assignment, text)
+        text = _ENV_ASSIGN_LOWER_RE.sub(_redact_assignment, text)
+        if _CFG_SECRET_WORD_RE.search(text):
+            text = _CFG_DOTTED_RE.sub(_redact_assignment, text)
+            text = _CFG_ANCHORED_RE.sub(_redact_assignment, text)
+
+    if ":" in text and '"' in text and _has_tool_config_hint(folded_text):
+        def _redact_json_assignment(match: re.Match) -> str:
+            key, value = match.group(1), match.group(2)
+            if _ENV_LOOKUP_VALUE_RE.match(value):
+                return match.group(0)
+            if not _assignment_value_requires_redaction(key, value):
+                return match.group(0)
+            return f'{key}: "{TOOL_SECRET_PLACEHOLDER}"'
+
+        text = _JSON_FIELD_RE.sub(_redact_json_assignment, text)
+    if ":" in text and _has_tool_config_hint(folded_text):
+        def _redact_yaml_assignment(match: re.Match) -> str:
+            key, separator, value = match.group(1), match.group(2), match.group(3)
+            if _ENV_LOOKUP_VALUE_RE.match(value):
+                return match.group(0)
+            if not _key_has_secret_keyword(key):
+                return match.group(0)
+            if not _assignment_value_requires_redaction(key, value):
+                return match.group(0)
+            return f"{key}{separator}{TOOL_SECRET_PLACEHOLDER}"
+
+        text = _YAML_ASSIGN_RE.sub(_redact_yaml_assignment, text)
+
+    if "BEGIN" in text and "PRIVATE KEY" in text:
+        text = _PRIVATE_KEY_RE.sub(TOOL_SECRET_PLACEHOLDER, text)
+    if ":" in text and _has_tool_telegram_hint(text):
+        text = _TELEGRAM_RE.sub(
+            lambda match: (match.group(1) or "")
+            + match.group(2)
+            + ":"
+            + TOOL_SECRET_PLACEHOLDER,
+            text,
+        )
+    if "://" in text:
+        text = _DB_CONNSTR_RE.sub(
+            lambda match: (
+                match.group(1) + TOOL_SECRET_PLACEHOLDER + match.group(3)
+            ),
+            text,
+        )
+        text = _URL_BARE_TOKEN_RE.sub(
+            lambda match: (
+                match.group(1) + TOOL_SECRET_PLACEHOLDER + match.group(3)
+            ),
+            text,
+        )
+    if "eyJ" in text:
+        text = _JWT_RE.sub(TOOL_SECRET_PLACEHOLDER, text)
+
+    if _has_tool_url_param_hint(text) or _has_tool_url_userinfo_hint(text):
+        text = _redact_tool_url_credentials(text)
+    return text
+
+
+def redact_tool_boundary_value(
+    value: Any,
+    *,
+    _secret_snapshot: tuple[str, ...] | None = None,
+) -> Any:
+    """Recursively redact supported tool-result values without mutation.
+
+    Strings and UTF-8-decodable bytes keep their type.  Mapping/list/tuple/set
+    containers keep their shape, and exceptions become diagnostic strings with
+    only their message redacted.  Unsupported objects pass through so this
+    safety layer cannot silently change tool API contracts.
+    """
+    if _secret_snapshot is None:
+        _secret_snapshot = _tool_boundary_secret_snapshot()
+
+    if isinstance(value, str):
+        return redact_tool_boundary_text(value, _secret_snapshot=_secret_snapshot)
+    if isinstance(value, bytes):
+        try:
+            decoded = value.decode("utf-8")
+        except UnicodeDecodeError:
+            return value
+        return redact_tool_boundary_text(
+            decoded,
+            _secret_snapshot=_secret_snapshot,
+        ).encode("utf-8")
+    if isinstance(value, BaseException):
+        return redact_tool_boundary_text(
+            str(value),
+            _secret_snapshot=_secret_snapshot,
+        )
+    if isinstance(value, Mapping):
+        return {
+            redact_tool_boundary_value(
+                key,
+                _secret_snapshot=_secret_snapshot,
+            ): redact_tool_boundary_value(
+                item,
+                _secret_snapshot=_secret_snapshot,
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            redact_tool_boundary_value(item, _secret_snapshot=_secret_snapshot)
+            for item in value
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            redact_tool_boundary_value(item, _secret_snapshot=_secret_snapshot)
+            for item in value
+        )
+    if isinstance(value, set):
+        return {
+            redact_tool_boundary_value(item, _secret_snapshot=_secret_snapshot)
+            for item in value
+        }
+    if isinstance(value, frozenset):
+        return frozenset(
+            redact_tool_boundary_value(item, _secret_snapshot=_secret_snapshot)
+            for item in value
+        )
+    return value
+
+
 # Commands whose stdout is an environment-variable dump (KEY=value lines),
 # NOT source code. For these, terminal-output redaction must run the
 # ENV-assignment pass (code_file=False) so opaque tokens with no recognized
@@ -1315,6 +1701,11 @@ def _has_nested_unbounded_repeat(pattern: str) -> bool:
 _PREFIX_SUBSTRINGS = tuple(
     _extract_literal_prefix(p) for p in _PREFIX_PATTERNS
 )
+_PREFIX_PUNCTUATION_FREE_SUBSTRINGS = tuple(
+    prefix
+    for prefix in _PREFIX_SUBSTRINGS
+    if "-" not in prefix and "_" not in prefix
+)
 
 
 def _has_known_prefix_substring(text: str) -> bool:
@@ -1322,7 +1713,10 @@ def _has_known_prefix_substring(text: str) -> bool:
 
     Used as a cheap pre-check before invoking the expensive ``_PREFIX_RE``.
     """
-    return any(p in text for p in _PREFIX_SUBSTRINGS)
+    candidates = _PREFIX_SUBSTRINGS
+    if "-" not in text and "_" not in text:
+        candidates = _PREFIX_PUNCTUATION_FREE_SUBSTRINGS
+    return any(prefix in text for prefix in candidates)
 
 
 # ---------------------------------------------------------------------------
@@ -1358,12 +1752,17 @@ def _rebuild_prefix_matcher() -> None:
     globals up at call time, so swapping the module attributes (atomic
     under the GIL) propagates immediately to every caller.
     """
-    global _PREFIX_RE, _PREFIX_SUBSTRINGS
+    global _PREFIX_RE, _PREFIX_SUBSTRINGS, _PREFIX_PUNCTUATION_FREE_SUBSTRINGS
     combined = _PREFIX_PATTERNS + _plugin_patterns()
     _PREFIX_RE = re.compile(
         r"(?<![A-Za-z0-9_-])(" + "|".join(combined) + r")(?![A-Za-z0-9_-])"
     )
     _PREFIX_SUBSTRINGS = tuple(_extract_literal_prefix(p) for p in combined)
+    _PREFIX_PUNCTUATION_FREE_SUBSTRINGS = tuple(
+        prefix
+        for prefix in _PREFIX_SUBSTRINGS
+        if "-" not in prefix and "_" not in prefix
+    )
 
 
 def register_redaction_patterns(patterns, source: str = "plugin") -> int:

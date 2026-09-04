@@ -22,6 +22,7 @@ import logging
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
@@ -34,6 +35,29 @@ _MAX_TOOL_ERROR_CHARS = 2048
 _TOOL_ERROR_TRUNCATION_MARKER = "… [truncated]"
 # Logs keep more of the body than the model sees, but still a bounded amount.
 _MAX_LOGGED_ERROR_CHARS = 8192
+
+
+def _redact_tool_boundary(value, *, secret_snapshot=None):
+    """Apply the mandatory dispatch-time secret pre-projection."""
+    from agent.redact import redact_tool_boundary_value
+
+    return redact_tool_boundary_value(value, _secret_snapshot=secret_snapshot)
+
+
+def _capture_tool_boundary_secret_snapshot():
+    """Capture authority once for one immediate, hook-free projection."""
+    from agent.redact import _tool_boundary_secret_snapshot
+
+    return _tool_boundary_secret_snapshot()
+
+
+def _safe_exception_frames(exc: BaseException) -> str:
+    """Return stack locations without rendering exception values or locals."""
+    frames = traceback.extract_tb(exc.__traceback__)
+    return " -> ".join(
+        f"{frame.filename}:{frame.lineno} in {frame.name}"
+        for frame in frames
+    )
 
 
 def _bound_error_text(text: str) -> str:
@@ -1140,6 +1164,7 @@ class ToolRegistry:
         other value as a string error keeps logging, hooks, budgeting, and
         persistence from receiving values they cannot safely slice or size.
         """
+        result = _redact_tool_boundary(result)
         if isinstance(result, str):
             return _bound_json_error_result(result)
         if (
@@ -1189,19 +1214,23 @@ class ToolRegistry:
                 result = entry.handler(args, **kwargs)
             return self._normalize_handler_result(name, result)
         except Exception as e:
-            # exc_info already renders the exception, so keep the message copy bounded.
-            logger.exception(
-                "Tool %s dispatch error: %s", name, _bound_error_text(str(e))
+            raw = f"Tool execution failed: {type(e).__name__}: {e}"
+            redacted = _redact_tool_boundary(raw)
+            logger.error(
+                "Tool %s dispatch error [%s]: %s; stack=%s",
+                name,
+                type(e).__name__,
+                _bound_error_text(redacted),
+                _safe_exception_frames(e),
             )
             # Route through the sanitizer so framing tokens / CDATA / fences
             # in exception strings don't reach the model as structural noise.
             # See model_tools._sanitize_tool_error for rationale.
-            raw = f"Tool execution failed: {type(e).__name__}: {e}"
             try:
                 from model_tools import _sanitize_tool_error
-                sanitized = _sanitize_tool_error(raw)
+                sanitized = _sanitize_tool_error(redacted)
             except Exception:
-                sanitized = raw  # defensive: never let the sanitizer block error propagation
+                sanitized = redacted
             return tool_error(sanitized)
 
     # ------------------------------------------------------------------
@@ -1351,9 +1380,16 @@ def tool_error(message, **extra) -> str:
     '{"error": "bad input", "success": false}'
     """
     # Bound the context-bound copy so a raw exception can't bloat history across retries.
-    result = {"error": _bound_error_text(str(message))}
+    secret_snapshot = _capture_tool_boundary_secret_snapshot()
+    result = {
+        "error": _bound_error_text(
+            _redact_tool_boundary(str(message), secret_snapshot=secret_snapshot)
+        )
+    }
     if extra:
-        result.update(extra)
+        result.update(
+            _redact_tool_boundary(extra, secret_snapshot=secret_snapshot)
+        )
     return json.dumps(result, ensure_ascii=False)
 
 

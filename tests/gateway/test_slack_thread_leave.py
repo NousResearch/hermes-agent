@@ -43,6 +43,28 @@ def _adapter(tmp_path) -> SlackAdapter:
     return adapter
 
 
+def test_pattern_matching_bare_leave_never_mutes_thread(tmp_path):
+    adapter = _adapter(tmp_path)
+    adapter.config.extra["mention_patterns"] = [r"^!leave$"]
+
+    asyncio.run(adapter._handle_slack_message(
+        _event("!leave", ts="101.000", thread_ts="100.000")))
+
+    assert not adapter._thread_participation.is_muted("T1", "C123", "100.000")
+
+
+def test_pattern_only_match_never_rejoins_muted_thread(tmp_path):
+    adapter = _adapter(tmp_path)
+    adapter.config.extra["mention_patterns"] = [r"^wake up$"]
+    assert adapter._thread_participation.mute("T1", "C123", "100.000").persisted
+
+    asyncio.run(adapter._handle_slack_message(
+        _event("wake up", ts="101.000", thread_ts="100.000")))
+
+    assert adapter._thread_participation.is_muted("T1", "C123", "100.000")
+    adapter.handle_message.assert_not_awaited()
+
+
 def test_direct_leave_mutes_active_thread_until_direct_mention_rejoins(tmp_path):
     adapter = _adapter(tmp_path)
 
@@ -90,6 +112,14 @@ def test_direct_leave_mutes_active_thread_until_direct_mention_rejoins(tmp_path)
         )
     )
     adapter.handle_message.assert_not_awaited()
+
+    asyncio.run(
+        adapter._handle_slack_message(
+            _event("<@UOTHER> !leave", ts="102.500", thread_ts="100.000")
+        )
+    )
+    adapter.handle_message.assert_not_awaited()
+    assert adapter._thread_participation.is_muted("T1", "C123", "100.000")
 
     asyncio.run(
         adapter._handle_slack_message(

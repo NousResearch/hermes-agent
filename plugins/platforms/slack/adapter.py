@@ -3835,6 +3835,16 @@ class SlackAdapter(BasePlatformAdapter):
             return False
         return True
 
+    @staticmethod
+    def _slack_participation_mention_text(text: str, bot_uid: Optional[str]) -> Optional[str]:
+        """Return text sans this bot's exact Slack mention, or None when absent."""
+        if not bot_uid:
+            return None
+        token = f"<@{bot_uid}>"
+        if token not in text:
+            return None
+        return text.replace(token, "").strip()
+
     async def _channel_gate_allows(
         self, *, channel_id: str, routing_text: str, bot_uid: str, is_mentioned: bool,
         is_thread_reply: bool, event_thread_ts, user_id: str, team_id: str, is_dm: bool,
@@ -4258,6 +4268,7 @@ class SlackAdapter(BasePlatformAdapter):
         is_mentioned = bool(
             (bot_uid and f"<@{bot_uid}>" in routing_text)
             or self._slack_message_matches_mention_patterns(routing_text))
+        participation_text = self._slack_participation_mention_text(original_text, bot_uid)
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
         # Internal triggers (reactions) skip the mention requirement but NOT
@@ -4267,9 +4278,8 @@ class SlackAdapter(BasePlatformAdapter):
             return
         if not is_one_to_one_dm and bot_uid and not self._allowed_channel_gate_allows(channel_id):
             return
-        if is_mentioned and thread_ts:
-            mention_stripped = original_text.replace(f"<@{bot_uid}>", "").strip()
-            if is_thread_reply and mention_stripped.lower() == "!leave":
+        if participation_text is not None and thread_ts:
+            if is_thread_reply and participation_text.lower() == "!leave":
                 result = self._thread_participation_store().mute(
                     team_id, channel_id, thread_ts)
                 marker = self._workspace_message_marker(team_id, thread_ts)

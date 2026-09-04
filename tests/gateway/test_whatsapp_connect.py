@@ -99,6 +99,7 @@ def _connect_patches(mock_proc, mock_fh, mock_client_cls=None):
         patch("builtins.open", return_value=mock_fh),
         patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock),
         patch("plugins.platforms.whatsapp.adapter.asyncio.create_task"),
+        patch("plugins.platforms.whatsapp.adapter._wait_port_free", new_callable=AsyncMock, return_value=True),
     ]
     if mock_client_cls is not None:
         base.append(patch("aiohttp.ClientSession", mock_client_cls))
@@ -158,7 +159,7 @@ class TestDataInitialized:
         patches = _connect_patches(mock_proc, mock_fh, mock_client_cls)
 
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7], patches[8], \
+             patches[5], patches[6], patches[7], patches[8], patches[9], \
              patch.object(type(adapter), "_poll_messages", return_value=MagicMock()):
             # Must NOT raise NameError
             result = await adapter.connect()
@@ -188,7 +189,7 @@ class TestFileHandleClosedOnError:
         patches = _connect_patches(mock_proc, mock_fh)
 
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7]:
+             patches[5], patches[6], patches[7], patches[8]:
             result = await adapter.connect()
 
         assert result is False
@@ -300,7 +301,7 @@ class TestBridgeRuntimeFailure:
         patches = _connect_patches(mock_proc, mock_fh, mock_client_cls)
 
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7], patches[8]:
+             patches[5], patches[6], patches[7], patches[8], patches[9]:
             result = await adapter.connect()
 
         assert result is False
@@ -536,3 +537,150 @@ class TestNoCredsPreflight:
         # but the fatal-error code is NOT the "not paired" one.
         assert result is False
         assert adapter._fatal_error_code != "whatsapp_not_paired"
+
+
+# ---------------------------------------------------------------------------
+# Port-free wait (gateway restart / :3000 race)
+# ---------------------------------------------------------------------------
+
+class TestWaitPortFree:
+    """The new-gateway vs leftover-bridge race on the WhatsApp port."""
+
+    def test_windows_probe_reads_netstat_listeners(self):
+        from plugins.platforms.whatsapp.adapter import _windows_listener_pids
+
+        netstat_output = (
+            "  Proto  Local Address          Foreign Address        State           PID\n"
+            "  TCP    127.0.0.1:3000         0.0.0.0:0              LISTENING       12345\n"
+            "  TCP    127.0.0.1:3001         0.0.0.0:0              LISTENING       99999\n"
+        )
+        with patch(
+            "plugins.platforms.whatsapp.adapter.subprocess.run",
+            return_value=MagicMock(stdout=netstat_output),
+        ):
+            pids = _windows_listener_pids(3000)
+
+        assert pids == [12345]
+
+    def test_bind_probe_reports_occupied_port(self):
+        import socket
+
+        from plugins.platforms.whatsapp.adapter import _port_is_bindable
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+            listener.listen(1)
+
+            assert _port_is_bindable(port) is False
+
+    @pytest.mark.linux_only
+    def test_bind_probe_tolerates_time_wait_residue(self):
+        """A killed bridge leaves TIME_WAIT sockets on the port.
+        The Node bridge binds with SO_REUSEADDR (Node's default).  After
+        disconnect() SIGTERMs it, its accepted connections linger in
+        TIME_WAIT for ~60s; a plain bind() then fails EADDRINUSE while a
+        SO_REUSEADDR bind succeeds.  The probe must mirror the bridge's bind
+        semantics, or every ordinary restart misfires as "port busy".
+        An active LISTEN socket still defeats a SO_REUSEADDR bind, so the
+        duplicate-bridge protection is unaffected.
+        """
+        import socket
+        import time
+
+        from plugins.platforms.whatsapp.adapter import _port_is_bindable
+
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        listener.listen(5)
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client.settimeout(2)
+        client.connect(("127.0.0.1", port))
+        conn, _ = listener.accept()
+        # Server-side active close puts this tuple into TIME_WAIT.
+        conn.close()
+        client.close()
+        listener.close()
+
+        # Wait until a plain bind hits EADDRINUSE, proving the residue exists
+        # (otherwise the test would pass vacuously on a free port).
+        deadline = time.monotonic() + 2.0
+        residue_seen = False
+        while time.monotonic() < deadline:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                try:
+                    probe.bind(("127.0.0.1", port))
+                except OSError:
+                    residue_seen = True
+                    break
+            finally:
+                probe.close()
+            time.sleep(0.05)
+        if not residue_seen:
+            pytest.skip("could not produce TIME_WAIT residue on this host")
+
+        assert _port_is_bindable(port) is True
+
+    @pytest.mark.asyncio
+    async def test_probe_failure_is_not_reported_as_free(self):
+        from plugins.platforms.whatsapp.adapter import _wait_port_free
+
+        with patch("plugins.platforms.whatsapp.adapter._port_is_bindable", return_value=None), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock):
+            result = await _wait_port_free(3000, timeout=0.3, interval=0.1)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_stops_when_monotonic_deadline_passes(self):
+        from plugins.platforms.whatsapp.adapter import _wait_port_free
+
+        fake_loop = MagicMock()
+        fake_loop.time.side_effect = [100.0, 111.0]
+        with patch("plugins.platforms.whatsapp.adapter.asyncio.get_running_loop", return_value=fake_loop), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.to_thread", new_callable=AsyncMock, return_value=False) as probe, \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock) as sleep:
+            result = await _wait_port_free(3000, timeout=10.0, interval=0.2)
+
+        assert result is False
+        probe.assert_awaited_once()
+        sleep.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_returns_immediately_when_port_is_free(self):
+        from plugins.platforms.whatsapp.adapter import _wait_port_free
+
+        with patch("plugins.platforms.whatsapp.adapter._port_is_bindable", return_value=True):
+            ok = await _wait_port_free(3000, timeout=2.0, interval=0.2)
+        assert ok is True
+
+    @pytest.mark.asyncio
+    async def test_gives_up_after_bounded_rounds_when_busy(self):
+        from plugins.platforms.whatsapp.adapter import _wait_port_free
+
+        sleeps = []
+
+        async def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        with patch("plugins.platforms.whatsapp.adapter._port_is_bindable", return_value=False), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", side_effect=fake_sleep):
+            ok = await _wait_port_free(3000, timeout=1.0, interval=0.2)
+        assert ok is False
+        assert len(sleeps) == 5
+
+    @pytest.mark.asyncio
+    async def test_poll_loop_stops_quietly_while_shutting_down(self):
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._shutting_down = True
+        adapter._bridge_process = None
+        adapter._http_session = MagicMock()
+        adapter._http_session.get = MagicMock(
+            side_effect=AssertionError("poll must not hit the bridge while shutting down")
+        )
+
+        await adapter._poll_messages()

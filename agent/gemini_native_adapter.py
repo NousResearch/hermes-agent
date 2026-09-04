@@ -33,6 +33,46 @@ from agent.gemini_schema import sanitize_gemini_tool_parameters
 
 logger = logging.getLogger(__name__)
 
+# Lone surrogates (U+D800..U+DFFF) are invalid in UTF-8 and crash
+# json.dumps(...).encode("utf-8") inside httpx. Native Gemini can return
+# them as JSON-escaped lone surrogates in functionCall args (issue #102757).
+# Clean them at the Gemini boundary so a single bad tool arg does not
+# poison the whole session history.
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
+
+def _sanitize_surrogate_text(text: str) -> str:
+    if _SURROGATE_RE.search(text):
+        return _SURROGATE_RE.sub("\ufffd", text)
+    return text
+
+
+def _sanitize_surrogate_structure(payload: Any) -> bool:
+    """Replace lone surrogates in nested dict/list payloads in-place. Returns True if replaced."""
+    found = False
+
+    def _walk(node: Any) -> None:
+        nonlocal found
+        if isinstance(node, dict):
+            for key, value in list(node.items()):
+                if isinstance(value, str):
+                    if _SURROGATE_RE.search(value):
+                        node[key] = _SURROGATE_RE.sub("\ufffd", value)
+                        found = True
+                elif isinstance(value, (dict, list)):
+                    _walk(value)
+        elif isinstance(node, list):
+            for idx, value in enumerate(node):
+                if isinstance(value, str):
+                    if _SURROGATE_RE.search(value):
+                        node[idx] = _SURROGATE_RE.sub("\ufffd", value)
+                        found = True
+                elif isinstance(value, (dict, list)):
+                    _walk(value)
+
+    _walk(payload)
+    return found
+
 try:
     import hermes_cli as _hermes_cli
 
@@ -337,6 +377,12 @@ def _translate_tool_call_to_gemini(
         args = {"_raw": args_raw}
     if not isinstance(args, dict):
         args = {"_value": args}
+    # Sanitize lone surrogates that may have entered history via a prior
+    # Gemini functionCall (issue #102757). The translate-time sanitize
+    # in translate_gemini_response handles new returns, but history replay
+    # must also be clean — otherwise building the next request's
+    # functionCall.args poisons json.dumps inside httpx.
+    _sanitize_surrogate_structure(args)
 
     part: Dict[str, Any] = {
         "functionCall": {
@@ -768,17 +814,32 @@ def translate_gemini_response(resp: Dict[str, Any], model: str) -> SimpleNamespa
         if not isinstance(part, dict):
             continue
         if part.get("thought") is True and isinstance(part.get("text"), str):
-            reasoning_pieces.append(part["text"])
+            reasoning_pieces.append(_sanitize_surrogate_text(part["text"]))
             continue
         if isinstance(part.get("text"), str):
-            text_pieces.append(part["text"])
+            text_pieces.append(_sanitize_surrogate_text(part["text"]))
             continue
         fc = part.get("functionCall")
         if isinstance(fc, dict) and fc.get("name"):
+            # Sanitize lone surrogates in the model-returned args before
+            # they enter the session. A Gemini functionCall can carry
+            # JSON-escaped lone surrogates (e.g. job_id "\ud800") that
+            # would otherwise poison all future turns with
+            # UnicodeEncodeError on json.dumps (issue #102757).
+            fc_args = fc.get("args") or {}
+            if isinstance(fc_args, dict):
+                # Work on a shallow copy so we don't mutate the raw response
+                fc_args = dict(fc_args)
+                _sanitize_surrogate_structure(fc_args)
+            else:
+                fc_args = {}
             try:
-                args_str = json.dumps(fc.get("args") or {}, ensure_ascii=False)
+                args_str = json.dumps(fc_args, ensure_ascii=False)
             except (TypeError, ValueError):
                 args_str = "{}"
+            # Belt-and-suspenders: if any surrogate survived the structured
+            # pass (e.g. non-dict args), clean the serialized string too.
+            args_str = _sanitize_surrogate_text(args_str)
             tool_call = SimpleNamespace(
                 id=(
                     str(fc["id"])
@@ -911,17 +972,24 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
         if not isinstance(part, dict):
             continue
         if part.get("thought") is True and isinstance(part.get("text"), str):
-            chunks.append(_make_stream_chunk(model=model, reasoning=part["text"]))
+            chunks.append(_make_stream_chunk(model=model, reasoning=_sanitize_surrogate_text(part["text"])))
             continue
         if isinstance(part.get("text"), str) and part["text"]:
-            chunks.append(_make_stream_chunk(model=model, content=part["text"]))
+            chunks.append(_make_stream_chunk(model=model, content=_sanitize_surrogate_text(part["text"])))
         fc = part.get("functionCall")
         if isinstance(fc, dict) and fc.get("name"):
-            name = str(fc["name"])
+            name = _sanitize_surrogate_text(str(fc["name"]))
+            fc_args = fc.get("args") or {}
+            if isinstance(fc_args, dict):
+                fc_args = dict(fc_args)
+                _sanitize_surrogate_structure(fc_args)
+            else:
+                fc_args = {}
             try:
-                args_str = json.dumps(fc.get("args") or {}, ensure_ascii=False, sort_keys=True)
+                args_str = json.dumps(fc_args, ensure_ascii=False, sort_keys=True)
             except (TypeError, ValueError):
                 args_str = "{}"
+            args_str = _sanitize_surrogate_text(args_str)
             thought_signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else ""
             call_key = json.dumps(
                 {

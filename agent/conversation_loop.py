@@ -5022,54 +5022,65 @@ def run_conversation(
                 # first to strip surrogates, then once more for pure
                 # ASCII-only locale sanitization if needed.
                 # -----------------------------------------------------------
-                if isinstance(api_error, UnicodeEncodeError) and getattr(agent, '_unicode_sanitization_passes', 0) < 2:
+                if getattr(agent, '_unicode_sanitization_passes', 0) < 2:
                     _err_str = str(api_error).lower()
-                    _is_ascii_codec = "'ascii'" in _err_str or "ascii" in _err_str
-                    # Detect surrogate errors — utf-8 codec refusing to
-                    # encode U+D800..U+DFFF.  The error text is:
-                    #   "'utf-8' codec can't encode characters in position
-                    #    N-M: surrogates not allowed"
-                    _is_surrogate_error = (
-                        "surrogate" in _err_str
-                        or ("'utf-8'" in _err_str and not _is_ascii_codec)
-                    )
-                    # Sanitize surrogates from both the canonical `messages`
-                    # list AND `api_messages` (the API-copy, which may carry
-                    # `reasoning_content`/`reasoning_details` transformed
-                    # from `reasoning` — fields the canonical list doesn't
-                    # have directly).  Also clean `api_kwargs` if built and
-                    # `prefill_messages` if present.  Mirrors the ASCII
-                    # codec recovery below.
-                    _surrogates_found = _sanitize_messages_surrogates(messages)
-                    if isinstance(api_messages, list):
-                        if _sanitize_messages_surrogates(api_messages):
-                            _surrogates_found = True
-                    if isinstance(api_kwargs, dict):
-                        if _sanitize_structure_surrogates(api_kwargs):
-                            _surrogates_found = True
-                    if isinstance(getattr(agent, "prefill_messages", None), list):
-                        if _sanitize_messages_surrogates(agent.prefill_messages):
-                            _surrogates_found = True
-                    # Gate the retry on the error type, not on whether we
-                    # found anything — _force_ascii_payload / the extended
-                    # surrogate walker above cover all known paths, but a
-                    # new transformed field could still slip through.  If
-                    # the error was a surrogate encode failure, always let
-                    # the retry run; the proactive sanitizer at line ~8781
-                    # runs again on the next iteration.  Bounded by
-                    # _unicode_sanitization_passes < 2 (outer guard).
-                    if _surrogates_found or _is_surrogate_error:
-                        agent._unicode_sanitization_passes += 1
-                        if _surrogates_found:
-                            agent._buffer_vprint(
-                                "⚠️  Stripped invalid surrogate characters from messages. Retrying..."
-                            )
-                        else:
-                            agent._buffer_vprint(
-                                "⚠️  Surrogate encoding error — retrying after full-payload sanitization..."
-                            )
-                        continue
-                    if _is_ascii_codec:
+                    # Some providers (notably the native Gemini httpx path)
+                    # raise the surrogates error wrapped in a higher-level
+                    # exception (GeminiAPIError / HTTPError) whose type is
+                    # not UnicodeEncodeError but whose message still carries
+                    # "surrogates not allowed". Detect by string, not type
+                    # alone, so the stranded-surrogate history is cleaned
+                    # instead of being retried verbatim 3 times (issue #102757).
+                    _is_surrogate_string = "surrogate" in _err_str
+                    _is_unicode_type = isinstance(api_error, UnicodeEncodeError)
+                    if _is_surrogate_string or _is_unicode_type or "'utf-8'" in _err_str:
+                        _is_ascii_codec = "'ascii'" in _err_str or "ascii" in _err_str
+                        # Detect surrogate errors — utf-8 codec refusing to
+                        # encode U+D800..U+DFFF.  The error text is:
+                        #   "'utf-8' codec can't encode characters in position
+                        #    N-M: surrogates not allowed"
+                        _is_surrogate_error = (
+                            "surrogate" in _err_str
+                            or ("'utf-8'" in _err_str and not _is_ascii_codec)
+                        )
+                        # Sanitize surrogates from both the canonical `messages`
+                        # list AND `api_messages` (the API-copy, which may carry
+                        # `reasoning_content`/`reasoning_details` transformed
+                        # from `reasoning` — fields the canonical list doesn't
+                        # have directly).  Also clean `api_kwargs` if built and
+                        # `prefill_messages` if present.  Mirrors the ASCII
+                        # codec recovery below.
+                        _surrogates_found = _sanitize_messages_surrogates(messages)
+                        if isinstance(api_messages, list):
+                            if _sanitize_messages_surrogates(api_messages):
+                                _surrogates_found = True
+                        if isinstance(api_kwargs, dict):
+                            if _sanitize_structure_surrogates(api_kwargs):
+                                _surrogates_found = True
+                        if isinstance(getattr(agent, "prefill_messages", None), list):
+                            if _sanitize_messages_surrogates(agent.prefill_messages):
+                                _surrogates_found = True
+                        # Gate the retry on the error type, not on whether we
+                        # found anything — _force_ascii_payload / the extended
+                        # surrogate walker above cover all known paths, but a
+                        # new transformed field could still slip through.  If
+                        # the error was a surrogate encode failure, always let
+                        # the retry run; the proactive sanitizer at line ~8781
+                        # runs again on the next iteration.  Bounded by
+                        # _unicode_sanitization_passes < 2 (outer guard).
+                        if _surrogates_found or _is_surrogate_error:
+                            agent._unicode_sanitization_passes += 1
+                            if _surrogates_found:
+                                agent._buffer_vprint(
+                                    "⚠️  Stripped invalid surrogate characters from messages. Retrying..."
+                                )
+                            else:
+                                agent._buffer_vprint(
+                                    "⚠️  Surrogate encoding error — retrying after full-payload sanitization..."
+                                )
+                            continue
+                    if "'ascii'" in _err_str or "ascii" in _err_str:
+                        _is_ascii_codec = True
                         agent._force_ascii_payload = True
                         # ASCII codec: the system encoding can't handle
                         # non-ASCII characters at all. Sanitize all

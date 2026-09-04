@@ -919,6 +919,18 @@ def _(rid, params: dict) -> dict:
         if not sid_key:
             return _err(rid, 4001, "no session key")
 
+        # Ensure the notification poller is running for this session so that
+        # loop/heartbeat wakeups fire. The poller is started at session init,
+        # but if it died or was never started for this session, (re)start it
+        # here. Safe to call multiple times.
+        try:
+            stop_event = session.get("_notif_stop")
+            if stop_event is None or stop_event.is_set():
+                _start_notification_poller(sid, session)
+        except Exception:
+            # Poller startup is best-effort; loop state is still saved.
+            pass
+
         mgr = LoopManager(session_id=sid_key)
         result = dispatch_loop_command(mgr, arg)
         output = result.get("output") or ""

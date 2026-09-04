@@ -784,7 +784,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action == "type":
-        res = backend.type_text(args.get("text", ""),
+        res = backend.type_text(args.get("text", ""), element=args.get("element"),
                                 delivery_mode=delivery_mode, bring_to_front=bring_to_front)
         return _maybe_follow_capture(backend, res, capture_after)
 

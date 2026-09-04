@@ -112,7 +112,9 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "description": (
                     "The 1-based SOM index returned by the last "
                     "`capture(mode='som')` call. Strongly preferred over "
-                    "raw coordinates."
+                    "raw coordinates. For action='type', binds the text "
+                    "insertion to that captured field so a focus change cannot "
+                    "silently redirect typing to another control."
                 ),
             },
             "coordinate": {

@@ -115,6 +115,16 @@ Use the group's number from your own list in place of `7`. These examples use `/
 
 Group Chat controls require an authorized account. If Hermes asks you to choose a Home chat, `/sethome` selects where scheduled updates and cross-chat messages arrive; it does not grant access by itself. A shared Home chat also asks you to confirm that its readers, including people added later, can see Group Chat activity posted there. Approve or deny Bot commands only from the owner's authorized main Hermes chat. Before using `Retry`, check the recent activity: an earlier attempt with an unknown outcome may already have acted, and retrying can repeat those actions.
 
+### Get a file or the latest reply
+
+Open a Group Chat from `/group`, choose **Files**, then select a file. The list includes files shared by both people and Bots, newest first. Telegram and Discord offer native choices; text-only clients show a get command beside each result.
+
+- `/group 7 files brief`: find a file by name or by who shared it.
+- `/group 7 file a3f9c2e1`: get the exact file identified in that group's list. Use the ID shown beside your file, not this example ID.
+- `/group 7 reply`: get the latest complete Bot reply as a Markdown document.
+
+Browsing does not run a Bot. Files arrive as normal documents when the messaging app supports them. If delivery cannot be confirmed, check the chat before explicitly retrying: the file may already be there. Files from Desktop-driven groups remain available on their Desktop; they are not a remotely hosted file catalog. Gateways need both Group Chat file browsing and messaging-file support for this workflow.
+
 ## Bot-to-bot messaging
 
 Bots message each other with attribution, and you can hand work off from any chat:

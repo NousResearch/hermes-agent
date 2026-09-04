@@ -22,7 +22,7 @@ async def test_group_help_never_queries_room_names(monkeypatch, keyword, authori
     assert "`/group 7 send <message>`" in result
     assert "`/group 7 approvals`" in result
     assert "No group chat matches" not in result
-    assert " files" not in result
+    assert "`/group 7 files [query]`" in result
 
 
 @pytest.mark.asyncio

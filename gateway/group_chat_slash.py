@@ -305,12 +305,17 @@ class GroupChatSlashCommandsMixin:
 
     @staticmethod
     def _group_chat_help(command: str) -> str:
+        from agent.i18n import t
+
         return "\n".join([
             "**Group Chats**",
             "",
             f"`{command}` - Choose a Group Chat.",
             f"`{command} 7` - Check recent activity.",
             f"`{command} 7 bots` - See who's in the group.",
+            t("gateway.group_files.help_find", command=f"`{command} 7 files [query]`"),
+            t("gateway.group_files.help_get", command=f"`{command} 7 file <file-id>`"),
+            t("gateway.group_files.help_reply", command=f"`{command} 7 reply`"),
             f"`{command} 7 send <message>` - Send a message to the group.",
             f"`{command} 7 stop` - Stop the current work.",
             f"`{command} 7 retry` - Retry work that needs attention.",
@@ -369,6 +374,12 @@ class GroupChatSlashCommandsMixin:
         query = self._group_chat_command_args(event).strip()
         try:
             words = query.split()
+            if len(words) >= 2 and words[0].isdecimal() and words[1].casefold() in {"files", "file", "reply"}:
+                try:
+                    from gateway.hosted_room_messaging_files import handle_command
+                except ImportError:
+                    return "File browsing isn't available for this Group Chat yet."
+                return await handle_command(self, event, service, query)
             if (
                 words
                 and words[0].isdecimal()
@@ -571,6 +582,14 @@ class GroupChatSlashCommandsMixin:
                             f"Run `{rooms_command} {words[0]} bots` again."
                         )
 
+                picker_callback, reusable = _on_room_selected, False
+                try:
+                    from gateway.hosted_room_messaging_files import room_picker_callback
+                    picker_callback, reusable = room_picker_callback(
+                        self, event, service, rooms_command, _on_room_selected
+                    )
+                except ImportError:
+                    pass
                 picker_sent = await self._try_send_group_choice_picker(
                     event,
                     session_key,
@@ -646,8 +665,9 @@ class GroupChatSlashCommandsMixin:
                         f"See all: {rooms_command} list"
                     ),
                     choices=choices,
-                    on_choice_selected=_on_room_selected,
+                    on_choice_selected=picker_callback,
                     disclosure_stamp=disclosure_stamp,
+                    **({"reusable": True} if reusable else {}),
                 )
                 if picker_sent:
                     return None
@@ -681,6 +701,14 @@ class GroupChatSlashCommandsMixin:
                     rooms_command=rooms_command,
                     page=page,
                 )
+
+            if query.isdecimal():
+                try:
+                    from gateway.hosted_room_messaging_files import try_room_menu
+                    if await try_room_menu(self, event, service, resolve_room(rooms, query), rooms_command):
+                        return None
+                except ImportError:
+                    pass
 
             def _detail() -> str:
                 room = resolve_room(rooms, query)

@@ -117,6 +117,31 @@ class RoomControlHTTPClient:
     def summary(self) -> dict[str, Any]:
         return self._request(method="GET")
 
+    def list_files(self, *, target_profile: str, **options):
+        from gateway.hosted_room_control_files_client import list_files
+
+        return list_files(self, target_profile=target_profile, **options)
+
+    def read_file(self, *, target_profile: str, **selection):
+        from gateway.hosted_room_control_files_client import read_file
+
+        return read_file(self, target_profile=target_profile, **selection)
+
+    def read_shared_message(self, *, target_profile: str, event_id: str):
+        from gateway.hosted_room_control_files_client import read_shared_message
+
+        return read_shared_message(self, target_profile=target_profile, event_id=event_id)
+
+    def resolve_file(self, *, target_profile: str, code: str):
+        from gateway.hosted_room_control_files_client import resolve_file
+
+        return resolve_file(self, target_profile=target_profile, code=code)
+
+    def latest_shared_message(self, *, target_profile: str):
+        from gateway.hosted_room_control_files_client import latest_shared_message
+
+        return latest_shared_message(self, target_profile=target_profile)
+
     def revoke(self) -> None:
         self._request(method="DELETE")
 

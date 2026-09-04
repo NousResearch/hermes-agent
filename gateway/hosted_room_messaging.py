@@ -827,6 +827,21 @@ class MessagingRoomBackend:
         self.db_path = db_path
         self.service = service
 
+    def list_files(self, *, room, profile="default", **options):
+        from gateway.hosted_room_file_access import list_room_files
+
+        return list_room_files(self, room=room, profile=profile, **options)
+
+    def read_file(self, *, room, profile="default", **selection):
+        from gateway.hosted_room_file_access import read_room_file
+
+        return read_room_file(self, room=room, profile=profile, **selection)
+
+    def read_shared_message(self, *, room, event_id, profile="default"):
+        from gateway.hosted_room_shared_message_access import read_shared_message
+
+        return read_shared_message(self, room=room, event_id=event_id, profile=profile)
+
     def status(self, room_id: str) -> dict[str, Any]:
         from gateway import hosted_room_messaging_approvals as approvals
 

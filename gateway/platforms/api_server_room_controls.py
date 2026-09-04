@@ -21,6 +21,8 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
+    from gateway.platforms import api_server_room_control_files
+
     async def read(request):
         from gateway.platforms import api_server
 
@@ -52,7 +54,7 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
         ("GET", "/v1/room-controls/{room_id}", read),
         ("POST", "/v1/room-controls/{room_id}", mutate),
         ("DELETE", "/v1/room-controls/{room_id}", revoke),
-    ]
+    ] + api_server_room_control_files._http_routes(self)
 
 
 def _control_token(request: "web.Request") -> str:

@@ -7171,7 +7171,14 @@ class BasePlatformAdapter(ABC):
                         self.name, len(_response_pre_extract), event.source.chat_id,
                     )
 
-            # Determine overall success for the processing hook
+            # Determine overall success for the processing hook.
+            # A refused message never reached a turn, so `not bool(response)`
+            # would score it SUCCESS and paint the ack reaction — telling the
+            # sender the agent accepted them and then went silent. CANCELLED
+            # leaves the message unreacted, which is what a refusal looks like.
+            authorization_refused = bool(
+                getattr(event, "_hermes_authorization_refused", False)
+            )
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag (#60671).
             self._streaming_tts_completed_turns.discard(
@@ -7182,10 +7189,16 @@ class BasePlatformAdapter(ABC):
                 )
                 or ""
             )
+            if authorization_refused:
+                _outcome = ProcessingOutcome.CANCELLED
+            else:
+                _outcome = (
+                    ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE
+                )
             await self._run_processing_hook(
                 "on_processing_complete",
                 event,
-                ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE,
+                _outcome,
             )
 
             # The active drain owns debounce state. If a queue-mode timer has

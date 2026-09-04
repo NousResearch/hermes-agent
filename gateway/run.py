@@ -18947,9 +18947,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # sender). Defer to _is_user_authorized so that path runs.
             if not self._is_user_authorized_for_source(source):
                 logger.debug("Ignoring message with no user_id from %s", source.platform.value)
+                # Mark the refusal so the reaction-ack flow does not score this
+                # as a completed turn (see _process_message_background).
+                event._hermes_authorization_refused = True
                 return None
         elif not self._is_user_authorized_for_source(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
+            # Every exit below is a refusal: no turn runs, whether we stay
+            # silent or answer with a pairing code. Mark it once here so the
+            # reaction-ack flow leaves the message unreacted instead of ✅.
+            event._hermes_authorization_refused = True
             # In DMs: offer pairing code. In groups: silently ignore.
             if (
                 source.chat_type == "dm"

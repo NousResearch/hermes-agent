@@ -65,6 +65,12 @@ describe('MarkdownTextContent artifacts', () => {
     expect(artifactsForSession('session-artifacts')).toHaveLength(0)
   })
 
+  it('renders a copy control on a fenced code block', async () => {
+    render(<MarkdownTextContent isRunning={false} text={fenced('js', SMALL_SNIPPET)} />)
+
+    expect(await screen.findByRole('button', { name: 'Copy code' })).toBeTruthy()
+  })
+
   it('does not register while the message is still streaming', async () => {
     render(<MarkdownTextContent isRunning text={fenced('html', HTML_DOC)} />)
 

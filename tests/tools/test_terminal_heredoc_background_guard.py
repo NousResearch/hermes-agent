@@ -23,9 +23,9 @@ real background operator is not.
 """
 
 from tools.shell_heredoc import strip_inert_heredoc_bodies
+from tools.terminal_tool_guards import _strip_quotes
 from tools.terminal_tool import (
     _foreground_background_guidance as guidance,
-    _strip_quotes,
 )
 
 # Build commands without a literal '&' in this source where convenient, so the

@@ -319,6 +319,129 @@ def test_bot_import_resanitizes_cron_jobs_and_keeps_them_paused(profile_root, tm
     } & job.keys()
 
 
+def test_bot_clone_rehomes_cron_scripts_and_runs_them_from_receiver(
+    profile_root, tmp_path, monkeypatch
+):
+    source = _source_profile(profile_root)
+    scripts = source / "scripts"
+    (scripts / "checks").mkdir(parents=True)
+    script = scripts / "probe.py"
+    monitor_script = scripts / "checks" / "monitor.py"
+    script.write_text("print('copied job')\n", encoding="utf-8")
+    monitor_script.write_text("print('copied monitor')\n", encoding="utf-8")
+    (source / "cron").mkdir()
+    (source / "cron" / "jobs.json").write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {
+                        "id": "script-job",
+                        "prompt": "",
+                        "schedule": {"kind": "interval", "minutes": 5},
+                        "script": str(script.resolve()),
+                        "no_agent": True,
+                    },
+                    {
+                        "id": "monitor-job",
+                        "prompt": "Check changes",
+                        "schedule": {"kind": "interval", "minutes": 5},
+                        "monitor_script": str(monitor_script.resolve()),
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    archive, _ = export_bot_profile("helper", str(tmp_path / "helper.tar.gz"))
+    shutil.rmtree(source)
+    imported, _ = import_bot_profile(str(archive), name="receiver")
+    jobs = json.loads((imported / "cron" / "jobs.json").read_text(encoding="utf-8"))[
+        "jobs"
+    ]
+
+    assert jobs[0]["script"] == "probe.py"
+    assert jobs[1]["monitor_script"] == "checks/monitor.py"
+    from cron import scheduler
+
+    monkeypatch.setattr(scheduler, "_hermes_home", imported)
+    assert scheduler._run_job_script(jobs[0]["script"]) == (True, "copied job")
+    assert scheduler._run_job_script(jobs[1]["monitor_script"]) == (
+        True,
+        "copied monitor",
+    )
+
+
+@pytest.mark.parametrize("field", ["script", "monitor_script"])
+@pytest.mark.parametrize("path_kind", ["outside", "missing"])
+def test_bot_export_rejects_uncloneable_cron_script_paths(
+    profile_root, tmp_path, field, path_kind
+):
+    source = _source_profile(profile_root)
+    (source / "cron").mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("print('outside')\n", encoding="utf-8")
+    value = str(outside.resolve()) if path_kind == "outside" else "missing.py"
+    (source / "cron" / "jobs.json").write_text(
+        json.dumps({"jobs": [{"id": "unsafe", field: value}]}),
+        encoding="utf-8",
+    )
+    archive = tmp_path / f"unsafe-export-{field}-{path_kind}.tar.gz"
+
+    with pytest.raises(ValueError, match="invalid cron job definitions"):
+        export_bot_profile("helper", str(archive))
+
+    assert not archive.exists()
+
+
+@pytest.mark.parametrize("field", ["script", "monitor_script"])
+@pytest.mark.parametrize("value", ["../outside.py", "missing.py"])
+def test_bot_import_rejects_unsafe_or_missing_cron_script_paths(
+    profile_root, tmp_path, field, value
+):
+    staged = tmp_path / "staged" / "unsafe-script"
+    (staged / "cron").mkdir(parents=True)
+    (staged / "scripts").mkdir()
+    (staged / BOT_ID_FILENAME).write_text(
+        "a8c214f7-37ee-4f50-95a4-939a51631283\n", encoding="utf-8"
+    )
+    (staged / "cron" / "jobs.json").write_text(
+        json.dumps({"jobs": [{"id": "unsafe", field: value}]}),
+        encoding="utf-8",
+    )
+    archive = tmp_path / f"unsafe-{field}-{Path(value).name}.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(staged, arcname="unsafe-script")
+
+    with pytest.raises(ValueError, match="invalid cron job definitions"):
+        import_bot_profile(str(archive))
+
+    assert not (profile_root / "profiles" / "unsafe-script").exists()
+
+
+def test_bot_import_rejects_absolute_cron_script_path(profile_root, tmp_path):
+    staged = tmp_path / "staged" / "absolute-script"
+    (staged / "cron").mkdir(parents=True)
+    (staged / "scripts").mkdir()
+    script = staged / "scripts" / "probe.py"
+    script.write_text("print('must stay relative')\n", encoding="utf-8")
+    (staged / BOT_ID_FILENAME).write_text(
+        "a8c214f7-37ee-4f50-95a4-939a51631283\n", encoding="utf-8"
+    )
+    (staged / "cron" / "jobs.json").write_text(
+        json.dumps({"jobs": [{"id": "absolute", "script": str(script.resolve())}]}),
+        encoding="utf-8",
+    )
+    archive = tmp_path / "absolute-script.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(staged, arcname="absolute-script")
+
+    with pytest.raises(ValueError, match="invalid cron job definitions"):
+        import_bot_profile(str(archive))
+
+    assert not (profile_root / "profiles" / "absolute-script").exists()
+
+
 def test_bot_import_reactivates_a_deleted_profile_name(profile_root, tmp_path):
     source = _source_profile(profile_root)
     archive, _ = export_bot_profile("helper", str(tmp_path / "helper.tar.gz"))

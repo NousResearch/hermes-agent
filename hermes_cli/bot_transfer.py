@@ -296,7 +296,35 @@ def _reset_owner_policies(staged: Path) -> None:
         raise ValueError("Could not remove owner-only sharing policy from bot clone.") from exc
 
 
-def _sanitize_clone_cron_jobs(staged: Path) -> None:
+def _normalize_clone_script_path(
+    value: object,
+    *,
+    scripts_root: Path,
+    allow_absolute: bool,
+) -> str:
+    """Return a portable path for a regular file owned by ``scripts_root``."""
+    if not isinstance(value, str) or not value.strip() or "\x00" in value:
+        raise ValueError("cron script path must be a non-empty string")
+    try:
+        raw = Path(value).expanduser()
+        if raw.is_absolute() and not allow_absolute:
+            raise ValueError("imported cron script path must be relative")
+        root = scripts_root.resolve()
+        resolved = raw.resolve() if raw.is_absolute() else (root / raw).resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("cron script path is invalid") from exc
+    try:
+        relative = resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("cron script path resolves outside the scripts directory") from exc
+    if not resolved.is_file():
+        raise ValueError("cron script path does not identify a regular file")
+    return relative.as_posix()
+
+
+def _sanitize_clone_cron_jobs(
+    staged: Path, *, source_scripts_root: Optional[Path] = None
+) -> None:
     """Retain cron definitions while dropping source-owned state and routing."""
     jobs_path = staged / "cron" / "jobs.json"
     if not jobs_path.is_file():
@@ -310,6 +338,20 @@ def _sanitize_clone_cron_jobs(staged: Path) -> None:
         sanitized = []
         for job in jobs:
             clone = {key: job[key] for key in BOT_CLONE_CRON_FIELDS if key in job}
+            scripts_root = source_scripts_root or staged / "scripts"
+            for field in ("script", "monitor_script"):
+                if clone.get(field) is None:
+                    continue
+                relative = _normalize_clone_script_path(
+                    clone[field],
+                    scripts_root=scripts_root,
+                    allow_absolute=source_scripts_root is not None,
+                )
+                if source_scripts_root is not None and not (
+                    staged / "scripts" / Path(relative)
+                ).is_file():
+                    raise ValueError("cron script file is excluded from the bot clone")
+                clone[field] = relative
             repeat = job.get("repeat")
             if isinstance(repeat, dict):
                 clone["repeat"] = {"times": repeat.get("times"), "completed": 0}
@@ -382,7 +424,9 @@ def export_bot_profile(name: str, output_path: str) -> tuple[Path, str]:
                 _copy_clone_tree(source, target, cron_root=entry == "cron")
             elif source.is_file():
                 shutil.copy2(source, target)
-        _sanitize_clone_cron_jobs(staged)
+        _sanitize_clone_cron_jobs(
+            staged, source_scripts_root=profile_dir / "scripts"
+        )
         _reset_owner_policies(staged)
         _scrub_clone_files(staged)
         result = Path(make_targz(base, tmpdir, canon))

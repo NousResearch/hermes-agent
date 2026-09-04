@@ -562,14 +562,7 @@ class DeliveryRouter:
                     send_metadata["user_id"] = home.user_id
                 if home.scope_id:
                     send_metadata["scope_id"] = home.scope_id
-        # ntfy has no native per-conversation identity: chat_id IS the target
-        # topic. The adapter's send() honors metadata.publish_topic first
-        # (subscribe-in/publish-out split deployments), then falls back to the
-        # fixed publish topic — so without this bridge, cron deliveries to
-        # `ntfy:<topic>` (or a non-home NTFY_HOME_CHANNEL) are pinned to the
-        # adapter's configured publish topic instead of reaching the addressed
-        # topic. Mirror what tools/send_message_tool._send_via_adapter does for
-        # ntfy so cron delivery and the send tool route identically.
+        # ntfy: chat_id is the target topic (mirror send_message_tool).
         if target.platform.value == "ntfy" and target.chat_id:
             send_metadata["publish_topic"] = target.chat_id
         is_named_telegram_private_topic = False

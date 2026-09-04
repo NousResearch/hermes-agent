@@ -26,6 +26,7 @@ import {
   openForward,
   ownershipDirectory,
   pidIsOurDashboard,
+  probeRemoteHermesHome,
   probeRemotePlatform,
   PROTOCOL_VERSION,
   readLockfile,
@@ -243,6 +244,10 @@ test('listRemoteHermesProfiles inventories Mini-style profile dirs without spawn
   ])
 
   assert.deepEqual(await listRemoteHermesProfiles(ssh), ['default', 'bob', 'dixie', 'goose', 'rambo'])
+  assert.ok(
+    ssh.calls.some(c => c.startsWith('sh -c ') && c.includes('ls -1 ')),
+    'listing must execute under sh -c'
+  )
   assert.equal(
     ssh.calls.some(cmd => cmd.includes('serve') || cmd.includes('dashboard')),
     false
@@ -269,6 +274,10 @@ test('listRemoteHermesProfiles rejects a hostile HERMES_HOME', async () => {
 test('locateHermes prefers the explicit profile path when executable', async () => {
   const ssh = fakeSsh([[/\[ -x .*\/opt\/hermes/, 'OK']])
   assert.equal(await locateHermes(ssh, '/opt/hermes'), '/opt/hermes')
+  assert.ok(
+    ssh.calls.some(c => c.startsWith('sh -c ') && c.includes('[ -x ')),
+    'executable check must run under sh -c'
+  )
 })
 
 test('locateHermes throws (no silent fallback) when an EXPLICIT path is not executable', async () => {
@@ -396,6 +405,31 @@ test('probeRemotePlatform rejects unsupported remote platforms', async () => {
   )
 })
 
+test('probeRemoteHermesHome resolves custom HERMES_HOME and defaults to ~/.hermes', async () => {
+  const customSsh = fakeSsh([[/HERMES_HOME/, '/custom/hermes/home\n']])
+  assert.equal(await probeRemoteHermesHome(customSsh), '/custom/hermes/home')
+  assert.ok(
+    customSsh.calls.some(c => c.startsWith('sh -c ') && c.includes('echo "${HERMES_HOME:-$HOME/.hermes}"')),
+    'probe must be wrapped in sh -c to prevent syntax errors on non-POSIX login shells (e.g. fish)'
+  )
+
+  const defaultSsh = fakeSsh([[/HERMES_HOME/, '']])
+  assert.equal(await probeRemoteHermesHome(defaultSsh), '~/.hermes')
+})
+
+test('probeRemoteHermesHome classifies failure as a transient transport error', async () => {
+  const failure = new Error('SSH channel closed')
+  await assert.rejects(
+    () => probeRemoteHermesHome(fakeSsh([[/HERMES_HOME/, failure]])),
+    (err: any) => {
+      assert.equal(err.kind, 'transient-transport-error')
+      assert.equal(err.cause, failure)
+
+      return true
+    }
+  )
+})
+
 test('ownership paths are isolated by ownership ID and spawn nonce', () => {
   assert.equal(ownershipDirectory(OWNERSHIP_ID), `~/.hermes/desktop-ssh/${OWNERSHIP_ID}`)
   assert.equal(lockfilePath(OWNERSHIP_ID), `~/.hermes/desktop-ssh/${OWNERSHIP_ID}/backend.lock.json`)
@@ -403,7 +437,12 @@ test('ownership paths are isolated by ownership ID and spawn nonce', () => {
 })
 
 test('readLockfile returns null ONLY for a missing/empty lockfile', async () => {
-  assert.equal(await readLockfile(fakeSsh([[/cat/, '']]), OWNERSHIP_ID), null)
+  const missingSsh = fakeSsh([[/cat/, '']])
+  assert.equal(await readLockfile(missingSsh, OWNERSHIP_ID), null)
+  assert.ok(
+    missingSsh.calls.some(c => c.startsWith('sh -c ') && c.includes('cat ')),
+    'readLockfile must execute under sh -c'
+  )
   const good = ownedLock({ pid: 1, port: 2 })
   assert.deepEqual(await readLockfile(fakeSsh([[/cat/, JSON.stringify(good)]]), OWNERSHIP_ID), good)
 })
@@ -507,12 +546,18 @@ test('writeLockfile mkdir -ps and stamps the schema version', async () => {
   const ssh = fakeSsh([])
   await writeLockfile(ssh, OWNERSHIP_ID, ownedLock({ pid: 7, port: 9 }))
   const cmd = ssh.calls.join('\n')
+  assert.match(cmd, /^sh -c /)
   assert.match(cmd, /mkdir -p/)
   assert.match(cmd, new RegExp(`"schemaVersion":${LOCKFILE_SCHEMA_VERSION}`))
 })
 
 test('remotePidAlive maps kill -0 ALIVE/DEAD', async () => {
-  assert.equal(await remotePidAlive(fakeSsh([[/kill -0/, 'ALIVE']]), 123), true)
+  const aliveSsh = fakeSsh([[/kill -0/, 'ALIVE']])
+  assert.equal(await remotePidAlive(aliveSsh, 123), true)
+  assert.ok(
+    aliveSsh.calls.some(c => c.startsWith('sh -c ') && c.includes('kill -0 123')),
+    'remotePidAlive must execute under sh -c'
+  )
   assert.equal(await remotePidAlive(fakeSsh([[/kill -0/, 'DEAD']]), 123), false)
   assert.equal(await remotePidAlive(fakeSsh([]), null), false)
 })
@@ -1172,7 +1217,7 @@ test('connect() fresh spawn writes hermesHome + protocolVersion into the lockfil
     [/kill -0 700/, 'ALIVE'],
     [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=45500\n'],
     [
-      /printf '%s' '/,
+      /schemaVersion/,
       c => {
         writes.push(c)
 
@@ -1794,6 +1839,7 @@ test('remote SSH ownership capability requires both secure bootstrap flags', asy
   ])
 
   assert.equal(await remoteSupportsSshOwnership(supported, '/x/hermes'), true)
+  assert.match(helpProbe, /^sh -c /)
   assert.match(helpProbe, /ssh-session-token-file/)
   assert.match(helpProbe, /ssh-owner-nonce/)
 

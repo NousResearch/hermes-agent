@@ -99,9 +99,10 @@ class TestResolveAuthorPeerId:
         mgr = _manager(_config(), runtime_id="7654321")
         assert mgr.resolve_author_peer_id("telegram:dm1", "bot:") == "bot-"
 
-    def test_pin_peer_name_collapses_bot_authors_too(self):
+    def test_pin_peer_name_does_not_collapse_bot_authors(self):
+        """The pin unifies the operator's accounts; a bot's words never land under the human's peer."""
         mgr = _manager(_config(pin_peer_name=True), runtime_id="7654321")
-        assert mgr.resolve_author_peer_id("telegram:dm1", "bot:coder") is None
+        assert mgr.resolve_author_peer_id("telegram:dm1", "bot:coder") == "coder"
 
     def test_display_name_never_becomes_a_peer_id(self):
         """Display names are attacker-influenceable on most platforms."""

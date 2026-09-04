@@ -878,6 +878,71 @@ class GatewaySessionCommandsMixin:
             return None
         return t("gateway.resume.blocked_not_owner", name=name)
 
+    async def _handle_retitle_command(self, event: MessageEvent) -> str:
+        """Handle /retitle — regenerate the session title from the last N turns.
+
+        DB-only by default: the session title updates but the Telegram topic /
+        Discord thread name is left untouched unless the operator enabled
+        ``auxiliary.title_generation.retitle.touch_platform_names``.
+
+        Optional arg: ``force`` overwrites even a user-set title.
+        """
+        source = event.source
+        session_entry = await self.async_session_store.get_or_create_session(source)
+        session_id = session_entry.session_id
+
+        if not self._session_db:
+            return self._session_db_unavailable_reply()
+
+        from agent.title_generator import _retitle_config, retitle_session
+
+        cfg = _retitle_config()
+        # Operator kill switch.
+        if not cfg.get("enabled", True):
+            return t("gateway.retitle.disabled")
+
+        args = (event.get_command_args() or "").strip().lower()
+        force = args == "force"
+        turns_window = int(cfg.get("turns_window", 10) or 10)
+        touch = bool(cfg.get("touch_platform_names", False))
+
+        # get_messages is an async method on AsyncSessionDB (it offloads the
+        # blocking SQLite work to a worker thread internally). Await it.
+        history = await self._session_db.get_messages(
+            session_id,
+            latest=True,
+            limit=turns_window * 2,
+        )
+        if not history:
+            return t("gateway.retitle.no_history")
+
+        # retitle_session is sync + blocking (it calls call_llm), so wrap it in
+        # to_thread. Pass the underlying raw SessionDB (not the async wrapper)
+        # so the worker can call get_session_title_source / set_auto_title /
+        # get_conversation_root synchronously.
+        raw_db = getattr(self._session_db, "_db", self._session_db)
+        result = await asyncio.to_thread(
+            retitle_session,
+            raw_db,
+            session_id,
+            history,
+            turns_window=turns_window,
+            force=force,
+            touch_platform_names=touch,
+        )
+
+        if result:
+            return t("gateway.retitle.done", title=result)
+        # Distinguish user-title-held from other no-op paths so the response
+        # tells the user WHY nothing changed.
+        try:
+            src = await self._session_db.get_session_title_source(session_id)
+            if src == "user" and not force:
+                return t("gateway.retitle.user_held")
+        except Exception:
+            pass
+        return t("gateway.retitle.no_change")
+
     async def _handle_resume_command(self, event: MessageEvent) -> str:
         """Handle /resume command — list or switch to a previous session."""
         if not self._session_db:

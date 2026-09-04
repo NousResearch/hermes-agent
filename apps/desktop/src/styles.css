@@ -617,6 +617,16 @@
     background: color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent);
   }
 
+  /* A surface that FADES INTO the field (a pane tab's hover ✕ runway) declares
+     `data-glass-field` and reads `--glass-field` for its endpoint. Under glass
+     the surface tokens are transparent, so a fade aimed at one goes
+     transparent→transparent and the runway vanishes; the field is the <body>
+     mix above, so that is what a fade must land on. Inert with glass off:
+     the caller's own fallback (its surface token) applies. */
+  :root[data-hermes-glass] [data-glass-field] {
+    --glass-field: color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent);
+  }
+
   /* Sidebar scope (the Finder shape): glass rail, opaque content column.
      <body> stays the one painter but splits at the rail's visual edge — the
      store publishes it as --glass-rail-edge (live-tracked through collapse

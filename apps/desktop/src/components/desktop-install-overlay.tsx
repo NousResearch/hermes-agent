@@ -343,6 +343,25 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
     }
   }, [state.error])
 
+  // Escape dismisses a failed install the same way the footer's Close button
+  // does -- local-only, no resetBootstrap + reload. Scoped to the failed
+  // state so a running install is still only cancellable via its own button.
+  useEffect(() => {
+    if (!state.error) {
+      return
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setState(EMPTY_STATE)
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [state.error])
+
   // The choice remains mounted while main hands off to local bootstrap. Once
   // a manifest/failure takes ownership (or a later repair presents a fresh
   // choice), this transient button state must not leak across phases — so it
@@ -673,6 +692,9 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
                 <code className="font-mono text-(--ui-text-secondary)">%LOCALAPPDATA%\hermes\logs\</code>
               </span>
               <div className="flex gap-2">
+                <Button onClick={() => setState(EMPTY_STATE)} size="sm" variant="ghost">
+                  {t.common.close}
+                </Button>
                 <Button
                   onClick={async () => {
                     const text = state.log

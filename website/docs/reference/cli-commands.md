@@ -515,12 +515,15 @@ terminal(command='hermes group send DevTeam "Plan the release checklist" --as "P
 |--------|-------------|
 | `list` | Hosted groups on this machine with members and whether this gateway manages them. |
 | `create <name> --member …` | Create a hosted group of 2–6 local profiles (`default` is addressed as `hermes`). |
-| `send <group> [message]` | Append a user message (argument or stdin). `--thread` picks the thread (default `cli`; sanitized to `[A-Za-z0-9._:-]`); `--event-id` makes retries idempotent; `--wait` follows the deliberation. |
+| `send <group> [message]` | Append a user message (argument or stdin). The thread follows the session (see below); `--thread` overrides (sanitized to `[A-Za-z0-9._:-]`); `--event-id` makes retries idempotent; `--wait` follows the deliberation. |
 | `log <group>` | Print the committed transcript (`User (<label>)` / `@handle` lines) from `--since`. |
 
-Threads: a room keeps only the **latest pending user message per thread**, so
-concurrent relays should pass distinct `--thread` values, and a new relaying
-session should start its own thread rather than reuse another session's.
+Threads follow the **relaying session**: the first `send` from a session
+starts a new room thread, later sends from the same session
+(`$HERMES_SESSION_ID`, which Hermes sets for every tool an agent spawns, or
+`--session`) continue it, and a different session gets its own thread.
+`--new-thread` starts over; `--thread` overrides for that send only. A room
+keeps only the latest pending user message per thread.
 
 Exit codes: `0` settled/bounded, `1` error, `2` usage, `3` timeout (replies
 received so far are already printed), `4` superseded by a room stop. A room

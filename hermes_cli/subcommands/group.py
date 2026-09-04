@@ -17,12 +17,15 @@ driven headlessly by the gateway's hosted-room worker.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
 import sys
+import tempfile
 import time
 import uuid
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Protocol
 
@@ -96,6 +99,105 @@ class Transport(Protocol):
 
 
 _TRANSPORTS: list[Transport] = []
+
+# ── session → thread continuity ──────────────────────────────────────────────
+#
+# A relaying session (Discord thread, CLI chat) that sends twice into the same
+# room should land in the SAME room thread, while a different session starts a
+# new one. The agent cannot be trusted to remember a minted thread id across
+# turns, so the CLI binds (room, session) → thread on the first send and reuses
+# it. The session id comes from HERMES_SESSION_ID (set per turn by the agent
+# runtime for tools it spawns) or --session; --new-thread breaks the binding.
+
+_THREAD_BINDINGS_FILE = "thread-bindings.json"
+_THREAD_BINDINGS_MAX = 500
+
+
+def _bindings_path() -> Path:
+    # Machine root (profile-independent), beside state.db.
+    return hosted_rooms.default_db_path().parent / "group_relay" / _THREAD_BINDINGS_FILE
+
+
+def _read_bindings(path: Path) -> dict[str, dict[str, Any]]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+@contextlib.contextmanager
+def _bindings_lock(path: Path) -> Iterator[None]:
+    """Serialize read-modify-write across relays. flock where available;
+    a no-op elsewhere (the write below is still atomic per file)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".lock")
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover — Windows
+        yield
+        return
+    with open(lock_path, "a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _mutate_bindings(mutate: Callable[[dict[str, dict[str, Any]]], None]) -> None:
+    """Locked, atomic read-modify-write of the bindings file. Never raises."""
+    try:
+        path = _bindings_path()
+        with _bindings_lock(path):
+            data = _read_bindings(path)
+            mutate(data)
+            # Unique temp per writer: a shared name let two writers clobber
+            # each other's temp before os.replace.
+            fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".bindings-", suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(data, handle)
+            os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _binding_key(ref: RoomRef, session_id: str) -> str:
+    return f"{ref.kind}:{ref.room_id}:{session_id}"
+
+
+def bound_thread(ref: RoomRef, session_id: str) -> str | None:
+    """The room thread this session already writes to, if any."""
+    entry = _read_bindings(_bindings_path()).get(_binding_key(ref, session_id))
+    thread = entry.get("thread") if isinstance(entry, dict) else None
+    return str(thread) if thread else None
+
+
+def bind_thread(ref: RoomRef, session_id: str, thread: str) -> None:
+    """Remember that ``session_id`` continues ``thread`` in ``ref``. Never raises."""
+    if not session_id or not thread:
+        return
+
+    def mutate(data: dict[str, dict[str, Any]]) -> None:
+        data[_binding_key(ref, session_id)] = {"thread": thread, "at": int(time.time())}
+        if len(data) > _THREAD_BINDINGS_MAX:
+            oldest = sorted(
+                data.items(),
+                key=lambda kv: kv[1].get("at", 0) if isinstance(kv[1], dict) else 0,
+            )
+            for key, _ in oldest[: len(data) - _THREAD_BINDINGS_MAX]:
+                data.pop(key, None)
+
+    _mutate_bindings(mutate)
+
+
+def forget_thread(ref: RoomRef, session_id: str) -> None:
+    _mutate_bindings(lambda data: data.pop(_binding_key(ref, session_id), None))
+
+
+def _session_id(args) -> str:
+    explicit = str(getattr(args, "session", None) or "").strip()
+    return explicit or (os.getenv("HERMES_SESSION_ID") or "").strip()
 
 
 def register_transport(transport: Transport) -> None:
@@ -449,13 +551,28 @@ def _cmd_send(args) -> int:
     ref = resolve_room(args.group, kind=getattr(args, "kind", None))
     transport = _transport_for(ref.kind)
     label = (args.as_label or f"{_profile()} relay").strip()
+    session = _session_id(args)
+    if args.thread:
+        thread = thread_id(args.thread)
+    elif session and not args.new_thread and bound_thread(ref, session):
+        thread = str(bound_thread(ref, session))
+    elif session:
+        # New thread for this session: a session-derived label, distinct
+        # from other sessions' threads. Transports that mint their thread on
+        # delivery bind it after --wait instead (see below).
+        thread = thread_id(f"s-{session}") if ref.kind == "hosted" else DEFAULT_THREAD
+        forget_thread(ref, session)
+    else:
+        thread = DEFAULT_THREAD
     sent = transport.send(
         ref,
         text=text,
-        thread=thread_id(args.thread),
+        thread=thread,
         label=label,
         event_key=args.event_id,
     )
+    if session and ref.kind == "hosted" and not args.thread:
+        bind_thread(ref, session, sent.thread)
     if not args.wait:
         if args.json:
             print(
@@ -481,6 +598,10 @@ def _cmd_send(args) -> int:
         poll_seconds=float(args.poll),
         on_reply=(lambda *_: None) if args.json else _print_reply,
     )
+    if session and summary.get("thread") and not args.thread:
+        # An explicit --thread is a one-off; it must not redirect the
+        # session's implicit continuity.
+        bind_thread(ref, session, str(summary["thread"]))
     if args.json:
         print(json.dumps({"kind": ref.kind, "room_id": ref.room_id, "name": ref.name, **summary}, indent=2))
     else:
@@ -543,11 +664,13 @@ def build_group_parser(subparsers) -> None:
             "agent session; its output carries the members' replies."
         ),
         epilog=(
-            "Threads: hosted rooms accept any --thread label (sanitized to "
-            "[A-Za-z0-9._:-]); omit it for the shared 'cli' thread. A room keeps "
-            "only the LATEST pending user message per thread, so concurrent relays "
-            "should use distinct --thread values. A new relaying session should "
-            "start a new thread rather than reuse another session's.\n"
+            "Threads follow the relaying SESSION: the first send from a session "
+            "starts a new room thread; later sends from the same session "
+            "($HERMES_SESSION_ID, or --session) continue it; a different session "
+            "gets its own thread. --new-thread starts over; --thread <id|label> "
+            "overrides for that send only (it does not change the session's "
+            "thread). Without any session id the shared 'cli' thread is used. "
+            "A room keeps only the LATEST pending user message per thread.\n"
             "\n"
             "Exit codes: 0 settled/bounded, 1 error, 2 usage, 3 timeout "
             "(partial replies already printed), 4 superseded by a room stop. A "
@@ -577,7 +700,19 @@ def build_group_parser(subparsers) -> None:
     send = actions.add_parser("send", help="Relay a message into a group as the user")
     send.add_argument("group", help="Group name or room_id")
     send.add_argument("text", nargs="?", default=None, help="Message text (or stdin)")
-    send.add_argument("--thread", default=None, help="Thread label (see epilog)")
+    send.add_argument("--thread", default=None, help="Explicit thread (see epilog)")
+    send.add_argument(
+        "--session",
+        default=None,
+        metavar="ID",
+        help="Relaying session id for thread continuity (default: $HERMES_SESSION_ID)",
+    )
+    send.add_argument(
+        "--new-thread",
+        action="store_true",
+        default=False,
+        help="Start a new room thread even if this session already has one",
+    )
     send.add_argument(
         "--as",
         dest="as_label",

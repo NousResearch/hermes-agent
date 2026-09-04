@@ -551,7 +551,20 @@ def _lookup_supports_vision(
         # reintroduce the bug. This preserves the historical
         # network-on-cold-cache behavior for this one path; the fetch is
         # cached (4h TTL) and backoff-limited after failures.
-        caps = get_model_capabilities(provider, model, allow_network=True)
+        # Valid Codex `-900k` picker variants (e.g. `gpt-5.6-sol-900k`)
+        # are Hermes-side aliases — the catalog only knows the base slug,
+        # so resolve caps against the stripped id. The strip is conditional
+        # on base eligibility: ineligible aliases pass through unchanged
+        # and gain no capabilities (#102189). Runtime model id untouched —
+        # the transport owns wire normalization.
+        lookup_model = model
+        if (provider or "").strip().lower() == "openai-codex":
+            try:
+                from agent.model_metadata import strip_codex_context_variant_suffix
+                lookup_model = strip_codex_context_variant_suffix(model)
+            except Exception:
+                lookup_model = model
+        caps = get_model_capabilities(provider, lookup_model, allow_network=True)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("image_routing: caps lookup failed for %s:%s — %s", provider, model, exc)
     if caps is not None:

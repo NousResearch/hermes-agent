@@ -21,7 +21,7 @@ from agent.memory_manager import sanitize_context
 from agent.memory_provider import MemoryProvider, is_trivial_prompt
 from agent.turn_author import a2a_key
 from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path, spawn_context_thread
-from plugins.memory.honcho.client import _host_block, _HostLookup, spawn_context_thread
+from plugins.memory.honcho.client import _host_block, _HostLookup, join_plugin_threads, spawn_context_thread
 from plugins.memory.honcho.dialectic import DialecticMixin
 from plugins.memory.honcho.session_peers import assistant_peer_id_for, sanitize_peer_id
 from plugins.memory.honcho.session_context import usable_honcho_summary
@@ -306,7 +306,8 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             with self._init_lock if blocking else contextlib.nullcontext():
                 if not self._can_start_init() or (self._init_thread and self._init_thread.is_alive()):
                     return
-                self._init_thread = spawn_context_thread(lambda: self._run_session_init("background"), name="honcho-session-init")
+                self._init_thread = spawn_context_thread(lambda: self._run_session_init("background"),
+                                                         name="honcho-session-init", owner=self)
                 self._init_thread.start()
                 if wait_timeout > 0:
                     self._init_thread.join(timeout=wait_timeout)
@@ -799,8 +800,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             return tool_error("Honcho memory writes are off during a bot-to-bot turn. Conclusions and profile edits describe the human.")
         return None
 
-    @staticmethod
-    def _spawn_write(fn: Callable[[], None], name: str, fail_msg: str) -> threading.Thread:
+    def _spawn_write(self, fn: Callable[[], None], name: str, fail_msg: str) -> threading.Thread:
         """Run a Honcho write off-thread; failures are debug-logged, never raised into the turn."""
         def _run():
             try:
@@ -808,7 +808,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             except Exception as e:
                 logger.debug(fail_msg, e)
 
-        thread = spawn_context_thread(_run, name=name)
+        thread = spawn_context_thread(_run, name=name, owner=self)
         thread.start()
         return thread
 
@@ -984,21 +984,41 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             logger.error("Honcho tool %s failed: %s", tool_name, e)
             return tool_error(f"Honcho {tool_name} failed: {e}")
 
+    # Shutdown never joins for less than this; a thread blocked in httpx can hold the HTTP timeout.
+    _SHUTDOWN_JOIN_FLOOR = 5.0
+
+    def _shutdown_join_budget(self) -> float:
+        """One join window for every plugin thread: the floor, or the configured HTTP timeout when
+        that is longer, so a thread blocked in a Honcho call can finish before the interpreter
+        finalizes (#33485)."""
+        try:
+            from plugins.memory.honcho.client_cache import _resolve_timeout_from_sources
+            return max(self._SHUTDOWN_JOIN_FLOOR, _resolve_timeout_from_sources(self._config))
+        except Exception:
+            return self._SHUTDOWN_JOIN_FLOOR
+
     def shutdown(self) -> None:
+        """Join the write threads, flush and stop the manager, then join every other thread this
+        provider or its manager spawned, all within one budget. A daemon thread still blocked in
+        httpx I/O when the interpreter finalizes aborts the process (#37632)."""
         self._recall_generation = object()
-        for t in (self._prefetch_thread, self._sync_thread, self._memwrite_thread):
+        budget = self._shutdown_join_budget()
+        deadline = time.monotonic() + budget
+        for t in (self._sync_thread, self._memwrite_thread):
             if t and t.is_alive():
-                t.join(timeout=5.0)
+                t.join(timeout=max(0.0, deadline - time.monotonic()))
         manager = self._manager
-        if not manager or (self._init_thread and self._init_thread.is_alive() and not self._session_initialized):
-            return
-        # saveMessages: false skips persistence, but the async-writer thread must still
-        # be joined so daemon threads aren't left blocked in httpx I/O at interpreter exit.
-        with contextlib.suppress(Exception):
-            if getattr(self._config, "save_messages", True):
-                manager.shutdown()  # flush_all() + join the writer
-            else:
-                manager.stop_async_writer()
+        if manager and not (self._init_thread and self._init_thread.is_alive() and not self._session_initialized):
+            # saveMessages: false skips persistence, but the async-writer thread must still be joined.
+            with contextlib.suppress(Exception):
+                if getattr(self._config, "save_messages", True):
+                    manager.shutdown()  # flush_all() + join the writer
+                else:
+                    manager.stop_async_writer()
+        left = join_plugin_threads((self, manager), timeout=max(0.0, deadline - time.monotonic()))
+        if left:
+            logger.warning("Honcho shutdown timed out after %.1fs with %d thread(s) still running: %s",
+                           budget, len(left), ", ".join(left))
 
 
 def register(ctx) -> None:

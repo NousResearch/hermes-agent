@@ -1,21 +1,23 @@
-"""Regression tests for #28712 — kanban dispatcher must not auto-promote
-worker-initiated ``kanban_block`` (sticky blocks), but must keep
-auto-recovering circuit-breaker blocks.
+"""Regression tests for #28712 — sticky blocked tasks survive recompute.
 
-The bug: when a worker called ``kanban_block(reason="review-required:
-...")`` to hand off to a human, the dispatcher's ``recompute_ready``
-would promote the task back to ``ready`` on the next tick.  The fresh
-worker found nothing to do (work already applied), exited cleanly, and
-got recorded as a ``protocol_violation`` → ``gave_up`` → promote → loop
-until manual intervention.
+The original bug: when a worker called ``kanban_block(reason=
+"review-required: ...")`` to hand off to a human, the dispatcher's
+``recompute_ready`` would promote the task back to ``ready`` on the next
+tick.  The fresh worker found nothing to do (work already applied),
+exited cleanly, and got recorded as a ``protocol_violation`` →
+``gave_up`` → promote → loop until manual intervention.
 
 These tests pin down:
 
 * Worker / operator-initiated blocks are sticky and survive
   ``recompute_ready``.
-* Circuit-breaker blocks (``gave_up`` event, status flipped via
-  ``_record_task_failure``) still auto-recover — the original intent
-  of #40c1decb3 is preserved.
+* Circuit-breaker trips (``gave_up`` event via ``_record_task_failure``,
+  including systemic effective_limit=1) are also sticky — a higher
+  configured ``kanban.failure_limit`` must not unlock them via
+  ``recompute_ready`` (2026-07-27 cohort / t_3892a21a). Explicit
+  ``kanban_unblock`` / ``unblock_task`` remains the recovery path.
+* Legacy / direct SQL ``status='blocked'`` with neither sticky event
+  still auto-recovers under the consecutive_failures guard.
 * An explicit ``kanban_unblock`` clears the sticky state.
 * The full block → promote → crash → ``gave_up`` loop is broken after
   this fix: subsequent ticks leave the task blocked.
@@ -83,6 +85,43 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
 # ---------------------------------------------------------------------------
 
 
+def test_gave_up_event_makes_block_sticky_until_unblock(kanban_home: Path) -> None:
+    """Circuit-breaker ``gave_up`` is sticky against ``recompute_ready``.
+
+    Systemic trips accumulate ``failures=1`` while config limit may be 2;
+    the durable park signal is the ``gave_up`` event itself, not the
+    numeric comparison alone. Explicit ``unblock_task`` remains the
+    recovery path (emits ``unblocked`` which clears stickiness).
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", parents=[parent])
+        kb.complete_task(conn, parent, result="ok")
+
+        # Status + event match what _record_task_failure writes when
+        # the breaker trips.
+        conn.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=1 "
+            "WHERE id=?",
+            (child,),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'gave_up', NULL, ?)",
+            (child, int(time.time())),
+        )
+        conn.commit()
+
+        # Config-shaped recompute with a higher failure_limit must not
+        # unlock the breaker trip.
+        promoted = kb.recompute_ready(conn, failure_limit=2)
+        assert promoted == 0
+        assert kb.get_task(conn, child).status == "blocked"
+
+        assert kb.unblock_task(conn, child)
+        task = kb.get_task(conn, child)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
 
 
 # ---------------------------------------------------------------------------

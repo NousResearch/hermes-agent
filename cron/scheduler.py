@@ -9,6 +9,7 @@ import contextvars
 import errno
 import json
 import logging
+import weakref
 import os
 import re
 import subprocess
@@ -582,6 +583,47 @@ def get_running_job_ids() -> "frozenset[str]":
         return frozenset(_running_job_ids | _running_fire_owners.keys())
 
 
+# Listeners the gateway attaches so a cron job's start and end persist its active-work
+# count (``gateway_state.json``) the way a chat turn boundary does. Without them a cron
+# that outlives the last chat turn leaves ``active_agents`` stale — a fleet converge then
+# reads "mid-turn" for days — and a cron that runs with no chat turn open is invisible to
+# the file. Bound methods are held weakly so a gone runner drops out; notification runs
+# OUTSIDE ``_running_lock`` (a listener may read ``get_running_job_ids``) and a raising
+# listener never reaches the scheduler.
+_running_jobs_listeners: List[Any] = []
+
+
+def add_running_jobs_listener(listener: Callable[[], None]) -> None:
+    """Call ``listener()`` after every running-job register/release (cron start/end)."""
+    ref = weakref.WeakMethod(listener) if hasattr(listener, "__self__") else listener
+    with _running_lock:
+        if ref not in _running_jobs_listeners:
+            _running_jobs_listeners.append(ref)
+
+
+def remove_running_jobs_listener(listener: Callable[[], None]) -> None:
+    """Detach ``listener`` (idempotent)."""
+    ref = weakref.WeakMethod(listener) if hasattr(listener, "__self__") else listener
+    with _running_lock:
+        _running_jobs_listeners[:] = [r for r in _running_jobs_listeners if r != ref]
+
+
+def _notify_running_jobs_changed() -> None:
+    with _running_lock:
+        snapshot = list(_running_jobs_listeners)
+    for ref in snapshot:
+        fn = ref() if isinstance(ref, weakref.WeakMethod) else ref
+        if fn is None:
+            with _running_lock:
+                if ref in _running_jobs_listeners:
+                    _running_jobs_listeners.remove(ref)
+            continue
+        try:
+            fn()
+        except Exception:
+            logger.debug("running-jobs listener failed", exc_info=True)
+
+
 def try_register_running_job(job_id: str) -> bool:
     """Atomically add ``job_id`` to the in-flight set; False (caller must skip) if already mid-run.
     Single dedupe owner for ticker + manual runs (the fire claim's 300s TTL is outlived by real
@@ -602,7 +644,8 @@ def try_register_running_job(job_id: str) -> bool:
         # can bound. Sentinel is replaced by the real future once ``pool.submit`` returns.
         _running_since[job_id] = time.time()
         _running_futures[job_id] = _FUTURE_PENDING
-        return True
+    _notify_running_jobs_changed()
+    return True
 
 
 def release_running_job(job_id: str) -> None:
@@ -611,6 +654,7 @@ def release_running_job(job_id: str) -> None:
         _running_job_ids.discard(job_id)
         _running_since.pop(job_id, None)
         _running_futures.pop(job_id, None)
+    _notify_running_jobs_changed()
 
 
 def _inflight_min_allowance_minutes() -> float:

@@ -1257,6 +1257,11 @@ class SlackAdapter(BasePlatformAdapter):
         # eviction (key[2] is the thread ts).
         self._active_status_threads: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
         self._ACTIVE_STATUS_THREADS_MAX = 1000
+        # Serialize Slack Assistant API status writes per workspace thread.
+        # A delayed "is thinking" request must never land after a completion
+        # clear: the pause flag alone cannot reach a send_typing call that is
+        # already awaiting the Slack API.
+        self._status_thread_locks: Dict[Tuple[str, str, str], asyncio.Lock] = {}
         # Native progress streams share Slack's workspace/thread isolation.
         # Each stream owns a lock so concurrent start/append/stop calls cannot
         # race into duplicate streams or append after finalization.
@@ -3669,15 +3674,58 @@ class SlackAdapter(BasePlatformAdapter):
                     _status = f"still working… ({_human})"
                 else:
                     _status = "is thinking..."
-            await self._get_client(chat_id, team_id=team_id).assistant_threads_setStatus(
-                channel_id=chat_id,
-                thread_ts=thread_ts,
-                status=_status,
-            )
+            if status_key:
+                async with self._status_thread_lock(status_key):
+                    # A completion can clear the thread while this refresh
+                    # waits for its turn. Do not resurrect its status
+                    # afterward — the final clear must be the last status
+                    # write Slack observes.
+                    if status_key not in self._active_status_threads:
+                        return
+                    await self._get_client(
+                        chat_id, team_id=team_id
+                    ).assistant_threads_setStatus(
+                        channel_id=chat_id,
+                        thread_ts=thread_ts,
+                        status=_status,
+                    )
+            else:
+                await self._get_client(
+                    chat_id, team_id=team_id
+                ).assistant_threads_setStatus(
+                    channel_id=chat_id,
+                    thread_ts=thread_ts,
+                    status=_status,
+                )
         except Exception as e:
             # Silently ignore — may lack assistant:write scope or not be
             # in an assistant-enabled context. Falls back to reactions.
             logger.debug("[Slack] assistant.threads.setStatus failed: %s", e)
+
+    def _status_thread_lock(self, key: Tuple[str, str, str]) -> asyncio.Lock:
+        """Return the lock that orders Assistant API writes for one thread.
+
+        This only orders when each write is *initiated* against Slack, not
+        the order Slack applies them in; an internal retry on the earlier
+        request could still in principle land it after the later one. If a
+        "status still stuck" report ever recurs with this lock in place,
+        that residual reordering is where to look next.
+        """
+        lock = self._status_thread_locks.get(key)
+        if lock is None:
+            if len(self._status_thread_locks) > self._ACTIVE_STATUS_THREADS_MAX:
+                # Never evict a lock for a thread that still tracks a status:
+                # a waiter in the release-to-wake handoff window reads as
+                # unlocked, but its thread is still registered, so this
+                # filter keeps the handoff race out of the sweep.
+                for old_key in [
+                    k
+                    for k, v in self._status_thread_locks.items()
+                    if not v.locked() and k not in self._active_status_threads
+                ][: self._ACTIVE_STATUS_THREADS_MAX // 2]:
+                    self._status_thread_locks.pop(old_key, None)
+            lock = self._status_thread_locks[key] = asyncio.Lock()
+        return lock
 
     async def stop_typing(self, chat_id: str, metadata=None) -> None:
         """Clear the assistant thread status indicator."""
@@ -3694,14 +3742,20 @@ class SlackAdapter(BasePlatformAdapter):
             )
         requested_team_id = self._metadata_team_id(metadata)
         active = None
+        resolved_key = None
         ambiguous_tracked = False
+        # Resolution only PEEKS at the tracked entry; the pop happens inside
+        # the per-thread lock below. Popping here would let a send_typing that
+        # re-registered its entry while this clear was mid-flight pass its
+        # in-lock re-check and resurrect the status right after the clear.
         if requested_thread_ts:
             if requested_team_id:
                 active_key = self._workspace_thread_key(
                     requested_team_id, chat_id, requested_thread_ts
                 )
-                if active_key:
-                    active = self._active_status_threads.pop(active_key, None)
+                if active_key and active_key in self._active_status_threads:
+                    resolved_key = active_key
+                    active = self._active_status_threads.get(active_key)
             else:
                 # Do not trust the mutable channel-only workspace fallback for
                 # a thread-specific cleanup: Slack Connect workspaces can share
@@ -3713,7 +3767,8 @@ class SlackAdapter(BasePlatformAdapter):
                     if key[1] == str(chat_id) and key[2] == requested_thread_ts
                 ]
                 if len(matching_keys) == 1:
-                    active = self._active_status_threads.pop(matching_keys[0], None)
+                    resolved_key = matching_keys[0]
+                    active = self._active_status_threads.get(matching_keys[0])
                 ambiguous_tracked = len(matching_keys) > 1
         else:
             # Metadata-free cleanup is safe only if exactly one status exists
@@ -3725,7 +3780,8 @@ class SlackAdapter(BasePlatformAdapter):
                 if key[1] == str(chat_id)
             ]
             if len(matching_keys) == 1:
-                active = self._active_status_threads.pop(matching_keys[0], None)
+                resolved_key = matching_keys[0]
+                active = self._active_status_threads.get(matching_keys[0])
         if isinstance(active, str):
             thread_ts = active
             team_id = ""
@@ -3749,12 +3805,37 @@ class SlackAdapter(BasePlatformAdapter):
             team_id = requested_team_id or team_id
         if not thread_ts:
             return
+        lock_key = self._workspace_thread_key(team_id, chat_id, str(thread_ts))
         try:
-            await self._get_client(chat_id, team_id=team_id).assistant_threads_setStatus(
-                channel_id=chat_id,
-                thread_ts=thread_ts,
-                status="",
-            )
+            # send_typing may already be in a slow Assistant API call.
+            # Serialize the clear behind it so the final clear is always the
+            # last status write Slack observes. The tracked entry is popped
+            # INSIDE the lock, after a successful clear: any send_typing
+            # queued behind this clear then fails its in-lock re-check and
+            # skips its write instead of resurrecting the status (a genuinely
+            # new turn is re-set by the next typing refresh tick), and a
+            # failed clear stays retryable.
+            if lock_key:
+                async with self._status_thread_lock(lock_key):
+                    await self._get_client(
+                        chat_id, team_id=team_id
+                    ).assistant_threads_setStatus(
+                        channel_id=chat_id,
+                        thread_ts=thread_ts,
+                        status="",
+                    )
+                    if resolved_key:
+                        self._active_status_threads.pop(resolved_key, None)
+            else:
+                await self._get_client(
+                    chat_id, team_id=team_id
+                ).assistant_threads_setStatus(
+                    channel_id=chat_id,
+                    thread_ts=thread_ts,
+                    status="",
+                )
+                if resolved_key:
+                    self._active_status_threads.pop(resolved_key, None)
         except Exception as e:
             logger.debug("[Slack] assistant.threads.setStatus clear failed: %s", e)
 

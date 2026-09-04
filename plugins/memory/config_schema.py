@@ -21,6 +21,7 @@ KIND_SECRET = "secret"
 KIND_BOOL = "bool"
 KIND_NUMBER = "number"
 KIND_JSON = "json"
+KIND_SEGMENTED = "segmented"
 
 # Storage backends understood by web_server (see its read/write dispatch).
 STORAGE_FLAT_JSON = "flat_json"
@@ -37,6 +38,28 @@ class ProviderFieldOption:
 
 
 @dataclass(frozen=True)
+class ProviderFieldCondition:
+    """Declarative visibility condition. Multiple conditions are ANDed."""
+
+    key: str
+    values: tuple[str, ...] = ()
+    pattern: str = ""
+
+
+@dataclass(frozen=True)
+class ProviderConfigAction:
+    """Provider-owned operation rendered by the shared Desktop form."""
+
+    name: str
+    label: str
+    description: str = ""
+    after_field: str = ""
+    payload_fields: tuple[str, ...] = ()
+    visible_when: tuple[ProviderFieldCondition, ...] = ()
+    refresh_after: bool = False
+
+
+@dataclass(frozen=True)
 class ProviderField:
     """One configurable field. Stored in exactly one place by ``kind``: non-secret
     kinds under ``key`` in the provider's storage; ``secret`` in the env store under
@@ -49,6 +72,7 @@ class ProviderField:
     default: str = ""
     description: str = ""
     placeholder: str = ""
+    search_placeholder: str = ""
     options: tuple[ProviderFieldOption, ...] = ()
     env_key: str | None = None
     aliases: tuple[str, ...] = ()
@@ -57,6 +81,13 @@ class ProviderField:
     group: str = ""
     # Longer help text surfaced as an info tooltip next to the field label.
     info: str = ""
+    help_url: str = ""
+    help_label: str = ""
+    required: bool = False
+    read_only: bool = False
+    visible_when: tuple[ProviderFieldCondition, ...] = ()
+    dynamic_options: bool = False
+    searchable: bool = False
     # Host-block placement: "host" (per-profile) or "root"; flat-json ignores it.
     scope: str = "host"
 
@@ -77,6 +108,13 @@ class ProviderConfigSchema:
     storage: str = STORAGE_FLAT_JSON
     # Optional link to the provider's config docs, shown in the full-config modal.
     docs_url: str = ""
+    description: str = ""
+    # Atomic provider-managed forms use actions; ordinary providers keep the
+    # existing storage-backed GET/PUT path.
+    submit_action: str = ""
+    submit_label: str = "Save changes"
+    status_action: str = ""
+    actions: tuple[ProviderConfigAction, ...] = dataclass_field(default_factory=tuple)
     fields: tuple[ProviderField, ...] = dataclass_field(default_factory=tuple)
 
     def inline_fields(self) -> tuple[ProviderField, ...]:

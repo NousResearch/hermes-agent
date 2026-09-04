@@ -2,9 +2,9 @@
 
 OpenViking (Volcengine/ByteDance) organizes agent knowledge into a viking:// hierarchy
 with tiered context (L0 abstract / L1 overview / L2 full), automatic memory extraction
-on session commit, and semantic search. Config comes from env vars (OPENVIKING_ENDPOINT
-/ _API_KEY / _ACCOUNT / _USER / _AGENT) or a linked OpenViking CLI config (ovcli.conf).
-The interactive setup wizard lives in ``_setup.py``.
+on session commit, and semantic search. Config comes from OPENVIKING_* env vars or a
+linked OpenViking CLI config (ovcli.conf). The interactive setup wizard lives in
+``_setup.py`` and the Desktop adapter lives in ``_desktop.py``.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from contextlib import suppress
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set
 from urllib.parse import quote, unquote, urlparse
 from urllib.request import url2pathname
 
@@ -56,7 +56,16 @@ _OVCLI_CONFIG_ENV = "OPENVIKING_CLI_CONFIG_FILE"
 _OVCLI_DEFAULT_RELATIVE_PATH = ".openviking/ovcli.conf"
 _OVCLI_SAVED_PREFIX = "ovcli.conf."
 _CONNECTION_KEYS = ("endpoint", "api_key", "account", "user", "agent")
-_OPENVIKING_ENV_KEYS = tuple(f"OPENVIKING_{key.upper()}" for key in _CONNECTION_KEYS)
+_OPENVIKING_ENV_KEYS = (
+    "OPENVIKING_URL",
+    "OPENVIKING_API_KEY",
+    "OPENVIKING_ACCOUNT",
+    "OPENVIKING_USER",
+    "OPENVIKING_ACTOR_PEER_ID",
+)
+_OPENVIKING_LEGACY_ENV_KEYS = ("OPENVIKING_ENDPOINT", "OPENVIKING_AGENT")
+_OPENVIKING_ENV_KEYS_TO_REMOVE = (*_OPENVIKING_ENV_KEYS, *_OPENVIKING_LEGACY_ENV_KEYS, _OVCLI_CONFIG_ENV)
+_OPENVIKING_ENV_KEYS_FOR_STATUS = _OPENVIKING_ENV_KEYS + _OPENVIKING_LEGACY_ENV_KEYS
 _TIMEOUT = 30.0
 _SESSION_DRAIN_TIMEOUT = 10.0
 _DEFERRED_COMMIT_TIMEOUT = (_TIMEOUT * 2) + 5.0
@@ -73,7 +82,11 @@ _RECALL_SUMMARY_KEYS = ("abstract", "overview", "text", "content")
 
 
 def _cfg_field(key: str, description: str, **extra) -> dict:
-    return {"key": key, "description": description, **extra, "env_var": f"OPENVIKING_{key.upper()}"}
+    env_key = {
+        "endpoint": "OPENVIKING_URL",
+        "agent": "OPENVIKING_ACTOR_PEER_ID",
+    }.get(key, f"OPENVIKING_{key.upper()}")
+    return {"key": key, "description": description, **extra, "env_var": env_key}
 
 
 _NUM = {"type": "number", "minimum": 0.25, "maximum": 60.0, "step": 0.25}
@@ -547,8 +560,13 @@ def _default_ovcli_config_path() -> Path:
     return Path.home() / _OVCLI_DEFAULT_RELATIVE_PATH
 
 
-def _resolve_ovcli_config_path(config_path: str = "") -> Path:
-    chosen = os.environ.get(_OVCLI_CONFIG_ENV, "").strip() or config_path
+def _resolve_ovcli_config_path(
+    config_path: str = "",
+    *,
+    env_values: Optional[Mapping[str, str]] = None,
+) -> Path:
+    source = os.environ if env_values is None else env_values
+    chosen = str(source.get(_OVCLI_CONFIG_ENV, "")).strip() or config_path
     return Path(chosen).expanduser() if chosen else _default_ovcli_config_path()
 
 
@@ -566,15 +584,20 @@ def _connection_values_from_ovcli(data: dict) -> dict:
     endpoint_value = _clean_config_value(data.get("url"))
     api_key = _clean_config_value(data.get("api_key")) or _clean_config_value(data.get("root_api_key"))
     root_api_key = _clean_config_value(data.get("root_api_key"))
-    send_identity = not api_key or api_key == root_api_key  # user keys derive tenant server-side
+    actor_peer_id = _clean_config_value(data.get("actor_peer_id"))
+    agent_id = _clean_config_value(data.get("agent_id"))
+    if actor_peer_id and agent_id:
+        raise ValueError("actor_peer_id cannot be used with agent_id")
     return {
         # No URL -> no endpoint; the resolver continues to config.yaml, then the default.
         "endpoint": _normalize_openviking_url(endpoint_value) if endpoint_value else "",
         "api_key": api_key,
         "root_api_key": root_api_key,
-        "account": _clean_config_value(data.get("account") or data.get("account_id")) if send_identity else "",
-        "user": _clean_config_value(data.get("user") or data.get("user_id")) if send_identity else "",
-        "agent": _clean_config_value(data.get("actor_peer_id") or data.get("agent_id")),
+        # Tenant identity remains available in user, root, and keyless profiles.
+        # The client decides whether a request should send these headers.
+        "account": _clean_config_value(data.get("account") or data.get("account_id")),
+        "user": _clean_config_value(data.get("user") or data.get("user_id")),
+        "agent": actor_peer_id or agent_id,
     }
 
 
@@ -687,7 +710,10 @@ def _profile_identity(path: Path) -> str:
         return str(path.expanduser())
 
 
-def _discover_ovcli_profiles() -> list[_OvcliProfile]:
+def _discover_ovcli_profiles(
+    *,
+    env_values: Optional[Mapping[str, str]] = None,
+) -> list[_OvcliProfile]:
     """env-pointed config, then saved ``ovcli.conf.<name>`` files, then the active
     ``ovcli.conf`` — which is only listed on its own when no saved profile has
     identical connection values and nothing else was found."""
@@ -700,7 +726,8 @@ def _discover_ovcli_profiles() -> list[_OvcliProfile]:
             seen_paths.add(identity)
             profiles.append(profile)
 
-    env_path = os.environ.get(_OVCLI_CONFIG_ENV, "").strip()
+    source = os.environ if env_values is None else env_values
+    env_path = str(source.get(_OVCLI_CONFIG_ENV, "")).strip()
     if env_path:
         add(Path(env_path).expanduser(), source="env", name=_OVCLI_CONFIG_ENV)
 
@@ -727,6 +754,20 @@ def _discover_ovcli_profiles() -> list[_OvcliProfile]:
     return profiles
 
 
+def _profile_display_name(profile: _OvcliProfile) -> str:
+    if profile.source == "env":
+        filename = profile.path.name
+        if filename == _default_ovcli_config_path().name:
+            return "Current OpenViking config"
+        saved_name = filename.removeprefix(_OVCLI_SAVED_PREFIX)
+        if saved_name != filename and _is_valid_ovcli_profile_name(saved_name):
+            return saved_name
+        return filename
+    if profile.source == "active":
+        return "Current OpenViking config"
+    return profile.name
+
+
 def _is_local_openviking_url(value: str) -> bool:
     try:
         candidate = _normalize_openviking_url(value)
@@ -734,6 +775,12 @@ def _is_local_openviking_url(value: str) -> bool:
         return False
     parsed = urlparse(candidate)
     return parsed.scheme.lower() == "http" and (parsed.hostname or "").lower() in _LOCAL_OPENVIKING_HOSTS
+
+
+def _is_openviking_service_endpoint(endpoint: str) -> bool:
+    return _normalize_openviking_url(endpoint) == _normalize_openviking_url(
+        _OPENVIKING_SERVICE_ENDPOINT
+    )
 
 
 def _load_hermes_openviking_config() -> dict:
@@ -748,36 +795,74 @@ def _load_hermes_openviking_config() -> dict:
         return {}
 
 
-def _ovcli_values_for(provider_config: dict) -> dict:
+def _ovcli_values_for(
+    provider_config: dict,
+    *,
+    env_values: Optional[Mapping[str, str]] = None,
+) -> dict:
     """Connection values from the linked ovcli profile, or {} when none is linked."""
     if not provider_config.get("use_ovcli_config"):
         return {}
-    ovcli_path = _resolve_ovcli_config_path(str(provider_config.get("ovcli_config_path") or ""))
+    ovcli_path = _resolve_ovcli_config_path(
+        str(provider_config.get("ovcli_config_path") or ""),
+        env_values=env_values,
+    )
     return _connection_values_from_ovcli(_load_ovcli_config(ovcli_path))
 
 
-def _resolve_connection_settings(provider_config: Optional[dict] = None) -> dict:
+def _env_value(
+    name: str,
+    env_values: Optional[Mapping[str, str]] = None,
+) -> Optional[str]:
+    source = os.environ if env_values is None else env_values
+    return str(source[name]).strip() if name in source else None
+
+
+def _first_nonempty(*values: Optional[str], default: str = "") -> str:
+    return next((value for value in values if value), default)
+
+
+def _resolve_connection_settings(
+    provider_config: Optional[dict] = None,
+    *,
+    env_values: Optional[Mapping[str, str]] = None,
+) -> dict:
     """Layering: env -> linked ovcli profile -> config.yaml -> built-in default.
     An env account/user (even empty) is authoritative; the secret api_key never
     comes from config.yaml."""
     provider_config = dict(provider_config or {})
-    ovcli_values = _ovcli_values_for(provider_config)
-
-    def layered(key: str, default: str = "", *, env_authoritative: bool = False) -> str:
-        env = os.environ.get(f"OPENVIKING_{key.upper()}")
-        if env is not None:
-            env = env.strip()
-            if env_authoritative:
-                return env
-        return env or ovcli_values.get(key) or _clean_config_value(provider_config.get(key)) or default
-
-    api_key_env = os.environ.get("OPENVIKING_API_KEY")
+    ovcli_values = _ovcli_values_for(provider_config, env_values=env_values)
+    endpoint_env = _env_value("OPENVIKING_URL", env_values)
+    legacy_endpoint_env = _env_value("OPENVIKING_ENDPOINT", env_values)
+    api_key_env = _env_value("OPENVIKING_API_KEY", env_values)
+    account_env = _env_value("OPENVIKING_ACCOUNT", env_values)
+    user_env = _env_value("OPENVIKING_USER", env_values)
+    agent_env = _env_value("OPENVIKING_ACTOR_PEER_ID", env_values)
+    legacy_agent_env = _env_value("OPENVIKING_AGENT", env_values)
     return {
-        "endpoint": _normalize_openviking_url(layered("endpoint", _DEFAULT_ENDPOINT)),
-        "api_key": api_key_env.strip() if api_key_env is not None else ovcli_values.get("api_key", ""),
-        "account": layered("account", env_authoritative=True),
-        "user": layered("user", env_authoritative=True),
-        "agent": layered("agent", _DEFAULT_AGENT),
+        "endpoint": _normalize_openviking_url(_first_nonempty(
+            endpoint_env,
+            legacy_endpoint_env,
+            ovcli_values.get("endpoint"),
+            _clean_config_value(provider_config.get("url")),
+            _clean_config_value(provider_config.get("endpoint")),
+            default=_DEFAULT_ENDPOINT,
+        )),
+        "api_key": api_key_env if api_key_env is not None else ovcli_values.get("api_key", ""),
+        "account": account_env if account_env is not None else _first_nonempty(
+            ovcli_values.get("account"), _clean_config_value(provider_config.get("account"))
+        ),
+        "user": user_env if user_env is not None else _first_nonempty(
+            ovcli_values.get("user"), _clean_config_value(provider_config.get("user"))
+        ),
+        "agent": _first_nonempty(
+            agent_env,
+            legacy_agent_env,
+            ovcli_values.get("agent"),
+            _clean_config_value(provider_config.get("actor_peer_id")),
+            _clean_config_value(provider_config.get("agent")),
+            default=_DEFAULT_AGENT,
+        ),
     }
 
 
@@ -800,6 +885,8 @@ def _env_line_safe(value: Any) -> str:
 
 
 def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ...] = ()) -> None:
+    if not env_path.exists() and not env_writes:
+        return
     env_path.parent.mkdir(parents=True, exist_ok=True)
     remove_set = set(remove_keys) - set(env_writes)
     # utf-8-sig + surrogateescape: a Windows editor may leave a BOM (breaks the
@@ -809,7 +896,10 @@ def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ..
     updated_keys = set()
     new_lines = []
     for line in existing_lines:
-        key_match = line.split("=", 1)[0].strip() if "=" in line else ""
+        prefix = line.lstrip()
+        if prefix.startswith("export "):
+            prefix = prefix[7:].lstrip()
+        key_match = prefix.split("=", 1)[0].strip() if "=" in prefix else ""
         if key_match in remove_set:
             continue
         if key_match in env_writes:
@@ -823,7 +913,16 @@ def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ..
 
 def _ovcli_data_from_connection_values(values: dict) -> dict:
     data = {"url": _normalize_openviking_url(_clean_config_value(values.get("endpoint")) or _DEFAULT_ENDPOINT)}
-    for out_key, in_key in (("api_key", "api_key"), ("root_api_key", "root_api_key"), ("account", "account"), ("user", "user"), ("actor_peer_id", "agent")):
+    role = _clean_config_value(values.get("api_key_type"))
+    api_key = _clean_config_value(values.get("api_key"))
+    root_api_key = _clean_config_value(values.get("root_api_key"))
+    if role == "user" and api_key:
+        data["api_key"] = api_key
+    elif role == "root" and (root_key := root_api_key or api_key):
+        data["api_key"] = root_key
+        data["root_api_key"] = root_key
+
+    for out_key, in_key in (("account", "account"), ("user", "user"), ("actor_peer_id", "agent")):
         value = _clean_config_value(values.get(in_key))
         if value:
             data[out_key] = value
@@ -891,7 +990,19 @@ def _validate_openviking_setup_values(values: dict, *, require_api_key: bool = F
                 return True, "", "user"
             raise
     except Exception as e:
-        return False, f"OpenViking validation failed: {_format_openviking_exception(e)}", None
+        message = _format_openviking_exception(e)
+        normalized = message.lower()
+        if _status_code_from_error(e) in {401, 403} and any(
+            marker in normalized
+            for marker in ("authenticationerror", "api key", "unauthorized")
+        ):
+            message = (
+                "OpenViking rejected the API key. Check the selected profile or "
+                "entered key and try again."
+            )
+        else:
+            message = f"OpenViking validation failed: {message}"
+        return False, message, None
 
 
 def _local_openviking_bind(endpoint: str) -> tuple[str, int]:
@@ -1036,7 +1147,7 @@ def _classify_runtime_openviking_health(client: _VikingClient, endpoint: str) ->
     return "unreachable", ""
 
 
-from . import _setup  # noqa: E402  (needs the helpers above at call time)
+from . import _desktop, _setup  # noqa: E402  (needs the helpers above at call time)
 
 
 # -- MemoryProvider implementation ------------------------------------------
@@ -1197,11 +1308,55 @@ class _TurnUpload:
 class OpenVikingMemoryProvider(MemoryProvider):
     """Full bidirectional memory via OpenViking context database."""
 
+    def get_desktop_config(self, *, hermes_home: str) -> Dict[str, Any]:
+        return _desktop.snapshot(hermes_home=hermes_home, probe_health=False)
+
+    def handle_desktop_config_action(
+        self,
+        action: str,
+        payload: Dict[str, Any],
+        *,
+        hermes_home: str,
+    ) -> Dict[str, Any]:
+        if action == "health":
+            return _desktop.snapshot(
+                hermes_home=hermes_home,
+                probe_health=True,
+            )["summary"]["status"]
+        if action == "start-local":
+            return _desktop.start_local(str(payload.get("url") or ""))
+        if action == "save":
+            return _desktop.save(
+                values=dict(payload.get("values") or {}),
+                hermes_home=hermes_home,
+                overwrite=bool(payload.get("overwrite", False)),
+            )
+        raise NotImplementedError(f"Unknown OpenViking config action: {action}")
+
     def backup_paths(self) -> List[str]:
-        """The resolved ovcli config (default ~/.openviking/ovcli.conf) so endpoint/api-key
-        survive backup/import. The backup walk itself drops paths outside $HOME."""
+        """Capture the active and named OpenViking CLI profiles."""
         try:
-            return [str(_resolve_ovcli_config_path())]
+            paths: List[Path] = []
+            resolved = _resolve_ovcli_config_path()
+            if resolved.exists():
+                paths.append(resolved)
+
+            config_dir = _default_ovcli_config_path().parent
+            if config_dir.exists():
+                paths.extend(
+                    path
+                    for path in sorted(config_dir.iterdir(), key=lambda item: item.name)
+                    if path.is_file() and path.name.startswith("ovcli.conf")
+                )
+
+            seen: Set[str] = set()
+            result: List[str] = []
+            for path in paths:
+                identity = _profile_identity(path)
+                if identity not in seen:
+                    seen.add(identity)
+                    result.append(str(path))
+            return result
         except Exception:
             return []
 
@@ -1254,10 +1409,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     def is_available(self) -> bool:
         """Configured? (env endpoint, config.yaml endpoint, or a linked ovcli profile). No network."""
-        if os.environ.get("OPENVIKING_ENDPOINT"):
+        if _env_value("OPENVIKING_URL") or _env_value("OPENVIKING_ENDPOINT"):
             return True
         provider_config = _load_hermes_openviking_config()
-        if _clean_config_value(provider_config.get("endpoint")):
+        if _clean_config_value(provider_config.get("url") or provider_config.get("endpoint")):
             return True
         try:
             return bool(_ovcli_values_for(provider_config).get("endpoint"))
@@ -1297,7 +1452,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return display
         display["endpoint"] = settings.get("endpoint") or _DEFAULT_ENDPOINT
         display.update({key: settings[key] for key in ("agent", "account", "user") if settings.get(key)})
-        if env_overrides := [key for key in _OPENVIKING_ENV_KEYS if key in os.environ]:
+        if env_overrides := [
+            key for key in _OPENVIKING_ENV_KEYS_FOR_STATUS if _env_value(key) is not None
+        ]:
             display["env_overrides"] = ", ".join(env_overrides)
         return display
 

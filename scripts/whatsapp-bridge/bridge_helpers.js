@@ -506,6 +506,50 @@ export function inboundReadReceiptKeys({ key, enabled }) {
   return [key];
 }
 
+// Meta AI and other WhatsApp bots can surface owner prompts as fromMe events
+// in the account's own PN chat. Reject explicit bot metadata before the
+// self-chat gate mistakes those prompts for messages sent to Hermes.
+export function isBotInteractionMessage(msg) {
+  const key = msg?.key || {};
+  const message = msg?.message || {};
+  const jids = [
+    key.remoteJid,
+    key.remoteJidAlt,
+    key.participant,
+    key.participantAlt,
+    msg?.botMessageInvokerJid,
+    msg?.botTargetId,
+  ];
+  const hasBotJid = jids.some(jid => typeof jid === 'string' && jid.endsWith('@bot'));
+
+  return Boolean(
+    hasBotJid
+    || msg?.botMessageInvokerJid
+    || msg?.botTargetId
+    || msg?.is1PBizBotMessage
+    || msg?.isSupportAiMessage
+    || message.botInvokeMessage
+    || message.botTaskMessage
+    || message.botForwardedMessage
+    || message.richResponseMessage
+  );
+}
+
+// Modern WhatsApp accounts expose a Linked Identity (LID) for the real
+// self-chat. Prefer it exclusively when available: Meta AI owner prompts can
+// be mirrored under the account's legacy phone-number JID and must not cross
+// into Hermes. Older accounts without a LID retain the PN fallback.
+export function isCanonicalSelfChat({ chatId, accountId, accountLid }) {
+  const chatNumber = String(chatId || '').replace(/@.*/, '');
+  const lidNumber = String(accountLid || '').replace(/:.*@/, '@').replace(/@.*/, '');
+  if (lidNumber) {
+    return String(chatId || '').endsWith('@lid') && chatNumber === lidNumber;
+  }
+
+  const accountNumber = String(accountId || '').replace(/:.*@/, '@').replace(/@.*/, '');
+  return Boolean(accountNumber && chatNumber === accountNumber);
+}
+
 export function mediaPayloadForFile({ buffer, filePath, mediaType, caption, fileName }) {
   const ext = filePath.toLowerCase().split('.').pop();
   const type = mediaType || inferMediaType(ext);

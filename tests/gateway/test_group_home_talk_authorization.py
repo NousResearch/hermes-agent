@@ -102,6 +102,7 @@ async def test_core_callback_uses_fresh_talk_auth_after_captured_read(
 @pytest.mark.asyncio
 async def test_still_authorized_private_source_retains_good_path(live):
     await prepare(live, "private")
-    assert "Release room" in await command(live, "/group 1")
+    assert await command(live, "/group 1") is None
+    assert "Release room" in live.adapter.calls[-1]["title"]
     assert "Queued" in await command(live, "/group 1 send allowed")
     assert live.service.sent

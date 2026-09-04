@@ -283,7 +283,7 @@ async def test_unmarked_instance_document_override_never_receives_bytes(consumer
     code = selection_digest(state.room, item)[:8]
     result = await runner._handle_rooms_command(event(f"/group 1 file {code}"))
 
-    assert "isn't available" in result
+    assert "Open Files in Hermes Desktop" in result
     assert calls == []
 
 

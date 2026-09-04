@@ -8782,13 +8782,27 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     # model survived Save, and every picker showed a single-entry list for a
     # provider serving dozens (#69988). A payload with no ``models`` (older
     # UI) still just ensures the named default is present.
+    #
+    # ``replace_models`` inverts that for one specific caller: the Desktop
+    # endpoint editor now shows the discovered catalogue as a checkbox list,
+    # so the set it submits IS the user's intended selection and models they
+    # unchecked must actually go away (#101764). Without an explicit opt-in
+    # flag an additive merge makes deselection impossible — an endpoint that
+    # advertises 100+ models could never be narrowed to the two the user's
+    # plan covers. The default stays additive so no other client can wipe a
+    # catalogue by omission.
     existing_models = entry.get("models")
-    models_map: Dict[str, Any] = dict(existing_models) if isinstance(existing_models, dict) else {}
+    stored_models: Dict[str, Any] = dict(existing_models) if isinstance(existing_models, dict) else {}
+    replace_models = bool(getattr(body, "replace_models", False)) and body.models is not None
+    models_map: Dict[str, Any] = {} if replace_models else dict(stored_models)
     for candidate in (*(body.models or ()), model):
         model_id = str(candidate).strip()
         if not model_id:
             continue
-        current = models_map.get(model_id)
+        # Carry the stored per-model settings (context_length, etc.) across a
+        # replace: dropping a model from the selection should not silently
+        # reset the tuning of the ones that stayed.
+        current = models_map.get(model_id, stored_models.get(model_id))
         models_map[model_id] = dict(current) if isinstance(current, dict) else {}
     entry["models"] = models_map
     if body.context_length and body.context_length > 0:

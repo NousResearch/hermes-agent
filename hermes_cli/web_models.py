@@ -60,6 +60,13 @@ class CustomEndpointUpdate(BaseModel):
     discover_models: bool = True
     make_default: bool = False
     models: Optional[List[str]] = None
+    # When True, ``models`` is the authoritative catalogue for this endpoint
+    # and any stored model absent from it is dropped. Default False keeps the
+    # additive merge #69988 introduced, so a client that omits ``models``
+    # (or an older UI) can never wipe a catalogue it does not know about.
+    # Only a caller that actually presents the full model set to the user —
+    # the Desktop endpoint editor's model picker — should set this.
+    replace_models: bool = False
 
 
 class MessagingPlatformUpdate(BaseModel):

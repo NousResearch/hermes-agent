@@ -10,6 +10,7 @@ Covers:
 """
 
 import json
+import queue
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -325,6 +326,135 @@ class TestAsyncWriterThread:
         mgr = make_manager(write_frequency="async")
         mgr.shutdown()
         assert mgr._async_thread is None
+
+    def test_concurrent_flushes_do_not_duplicate_messages(self, make_manager):
+        mgr = make_manager(write_frequency="turn")
+        session = _make_session(key="concurrent-flush")
+        session.add_message("user", "only once")
+        mgr._peers_cache[session.user_peer_id] = MagicMock()
+        mgr._peers_cache[session.assistant_peer_id] = MagicMock()
+        honcho_session = MagicMock()
+        mgr._sessions_cache[session.honcho_session_id] = honcho_session
+
+        observation = queue.Queue()
+        results = queue.Queue()
+        errors = queue.Queue()
+        first_upload_started = threading.Event()
+        release_upload = threading.Event()
+        counter_lock = threading.Lock()
+        upload_count = 0
+        lock_entry_count = 0
+
+        class ObservableFlushLock:
+            def __init__(self):
+                self._lock = threading.Lock()
+
+            def __enter__(self):
+                nonlocal lock_entry_count
+                with counter_lock:
+                    lock_entry_count += 1
+                    if lock_entry_count == 2:
+                        observation.put("serialized")
+                self._lock.acquire()
+                return self
+
+            def __exit__(self, _exc_type, _exc_value, _traceback):
+                self._lock.release()
+
+        def blocking_add_messages(_messages):
+            nonlocal upload_count
+            with counter_lock:
+                upload_count += 1
+                if upload_count == 1:
+                    first_upload_started.set()
+                else:
+                    observation.put("duplicate")
+            release_upload.wait(timeout=2)
+
+        def flush():
+            try:
+                results.put(mgr._flush_session(session))
+            except BaseException as exc:
+                errors.put(exc)
+
+        mgr._flush_locks[session.honcho_session_id] = ObservableFlushLock()
+        honcho_session.add_messages.side_effect = blocking_add_messages
+        first = threading.Thread(target=flush, daemon=True)
+        second = threading.Thread(target=flush, daemon=True)
+        first.start()
+        assert first_upload_started.wait(timeout=1)
+        second.start()
+
+        try:
+            outcome = observation.get(timeout=1)
+        finally:
+            release_upload.set()
+            first.join(timeout=1)
+            second.join(timeout=1)
+
+        assert outcome == "serialized"
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert errors.empty()
+        assert [results.get_nowait(), results.get_nowait()] == [True, True]
+        assert honcho_session.add_messages.call_count == 1
+
+    def test_independent_session_flushes_can_upload_in_parallel(self, make_manager):
+        mgr = make_manager(write_frequency="turn")
+        sessions = [
+            _make_session(key="parallel-a", honcho_session_id="parallel-a"),
+            _make_session(key="parallel-b", honcho_session_id="parallel-b"),
+        ]
+        barrier = threading.Barrier(2)
+        results = queue.Queue()
+
+        for session in sessions:
+            session.add_message("user", session.key)
+            mgr._peers_cache[session.user_peer_id] = MagicMock()
+            mgr._peers_cache[session.assistant_peer_id] = MagicMock()
+            remote_session = MagicMock()
+            remote_session.add_messages.side_effect = lambda _messages: barrier.wait(timeout=1)
+            mgr._sessions_cache[session.honcho_session_id] = remote_session
+
+        threads = [
+            threading.Thread(
+                target=lambda current=session: results.put(mgr._flush_session(current)),
+                daemon=True,
+            )
+            for session in sessions
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=2)
+
+        assert all(not thread.is_alive() for thread in threads)
+        assert sorted(results.get_nowait() for _ in threads) == [True, True]
+
+    def test_same_session_flush_lock_is_reentrant(self, make_manager):
+        mgr = make_manager(write_frequency="turn")
+        session = _make_session()
+        result = queue.Queue()
+        calls = 0
+
+        def nested_flush(current):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return mgr._flush_session(current)
+            return True
+
+        mgr._flush_session_locked = nested_flush
+        thread = threading.Thread(
+            target=lambda: result.put(mgr._flush_session(session)),
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=1)
+
+        assert not thread.is_alive()
+        assert result.get_nowait() is True
+        assert calls == 2
 
     def test_stop_async_writer_joins_thread_without_flushing(self, make_manager):
         mgr = make_manager(write_frequency="async")

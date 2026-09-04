@@ -203,6 +203,8 @@ class HonchoSessionManager:
         self._async_queue: queue.Queue | None = None
         self._async_thread: threading.Thread | None = None
         self._async_thread_lock = threading.Lock()
+        self._flush_locks_guard = threading.Lock()
+        self._flush_locks: dict[str, Any] = {}
         if write_frequency == "async":
             self._async_queue = queue.Queue()
 
@@ -658,7 +660,19 @@ class HonchoSessionManager:
         return session
 
     def _flush_session(self, session: HonchoSession) -> bool:
-        """Internal: write unsynced messages to Honcho synchronously."""
+        """Serialize writes per remote session without blocking unrelated sessions."""
+        with self._flush_locks_guard:
+            # RLock keeps a future same-thread retry/re-entry safe while the
+            # per-session key preserves the duplicate-upload exclusion.
+            flush_lock = self._flush_locks.setdefault(
+                session.honcho_session_id,
+                threading.RLock(),
+            )
+        with flush_lock:
+            return self._flush_session_locked(session)
+
+    def _flush_session_locked(self, session: HonchoSession) -> bool:
+        """Write unsynced messages while the flush lock is held."""
         if not session.messages:
             return True
 

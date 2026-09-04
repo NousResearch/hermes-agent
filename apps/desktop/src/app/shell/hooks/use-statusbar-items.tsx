@@ -150,6 +150,9 @@ export function useStatusbarItems({
   // Only the fields read here are selected, so an unchanged readout bails out
   // instead of rebuilding all ~9 statusbar items per token.
   const focusedBusy = useStoreSelector($focusedSessionState, state => Boolean(state?.busy))
+
+  const focusedRuntimeStartedAt = useStoreSelector($focusedSessionState, state => state?.runtimeStartedAt ?? null)
+
   const focusedTurnStartedAt = useStoreSelector($focusedSessionState, state => state?.turnStartedAt ?? null)
   // `usage` is an object, so it can't be compared as a scalar. It IS however
   // replaced wholesale rather than mutated, and only changes when the backend
@@ -176,8 +179,8 @@ export function useStatusbarItems({
 
   const turnStartedAt = primaryFocused ? primaryTurnStartedAt : focusedTurnStartedAt
 
-  // A tile's session-start + cold cwd come from its stored row (the cache only
-  // knows runtime state). Only these scalars are read off `$sessions`, so
+  // A tile's stored row supplies the cold/fallback session-start and cwd when
+  // no focused runtime value is available. Only these scalars are read off `$sessions`, so
   // select them — a whole-list `useStore` re-ran the hook on every session-list
   // write (title updates, poll refreshes, archives).
   const focusedRowStartedAt = useStoreSelector($sessions, sessions =>
@@ -235,11 +238,11 @@ export function useStatusbarItems({
   const projectTree = useStore($projectTree)
   const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
 
+  const focusedRowSessionStartedAt = focusedRowStartedAt === null ? null : focusedRowStartedAt * 1000
+
   const sessionStartedAt = primaryFocused
     ? primarySessionStartedAt
-    : focusedRowStartedAt
-      ? focusedRowStartedAt * 1000
-      : null
+    : (focusedRuntimeStartedAt ?? focusedRowSessionStartedAt)
 
   // The backend only knows a session's MEASURED occupancy once a turn has run
   // in this process, so a resumed conversation reports none and the gauge had

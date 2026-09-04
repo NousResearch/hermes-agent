@@ -140,6 +140,11 @@ class _ResponsesStream:
         self.message_item_id = f"msg_{uuid.uuid4().hex[:24]}"
         self.message_output_index: Optional[int] = None
         self.message_opened = False
+        self.reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
+        self.reasoning_output_index: Optional[int] = None
+        self.reasoning_parts: List[str] = []
+        self.reasoning_item: Optional[Dict[str, Any]] = None
+        self.reasoning_opened = False
         self.final_response_text = ""
         self.agent_error: Optional[str] = None
         self.usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
@@ -189,6 +194,17 @@ class _ResponsesStream:
             return
         text = "".join(self.final_text_parts) or self.final_response_text
         items = list(self.emitted_items)
+        if self.reasoning_item is not None and self.reasoning_parts:
+            reasoning_text = "".join(self.reasoning_parts)
+            incomplete_reasoning = {
+                **self.reasoning_item,
+                "summary": [{"type": "summary_text", "text": reasoning_text}],
+                "content": [{"type": "reasoning_text", "text": reasoning_text}],
+            }
+            items = [
+                incomplete_reasoning if item is self.reasoning_item else item
+                for item in items
+            ]
         history = self._history_with_user()
         if text:
             items.append(_message_item(text))
@@ -220,6 +236,53 @@ class _ResponsesStream:
             "type": "response.output_text.delta", "item_id": self.message_item_id,
             "output_index": self.message_output_index, "content_index": 0, "delta": delta_text,
             "logprobs": []})
+
+    async def _open_reasoning_item(self) -> None:
+        """Create the Responses reasoning item before its first live delta."""
+        if self.reasoning_opened:
+            return
+        self.reasoning_opened = True
+        self.reasoning_output_index = self.output_index
+        self.output_index += 1
+        self.reasoning_item = {
+            "id": self.reasoning_item_id,
+            "type": "reasoning",
+            "status": "in_progress",
+            "summary": [],
+            "content": [],
+        }
+        self.emitted_items.append(self.reasoning_item)
+        await self.write_event("response.output_item.added", {
+            "type": "response.output_item.added",
+            "output_index": self.reasoning_output_index,
+            "item": dict(self.reasoning_item),
+        })
+
+    async def emit_reasoning_delta(self, delta_text: str) -> None:
+        """Emit one live Responses reasoning delta in its own output item."""
+        await self._open_reasoning_item()
+        self.reasoning_parts.append(delta_text)
+        await self.write_event("response.reasoning_text.delta", {
+            "type": "response.reasoning_text.delta",
+            "item_id": self.reasoning_item_id,
+            "output_index": self.reasoning_output_index,
+            "content_index": 0,
+            "delta": delta_text,
+        })
+
+    async def close_reasoning_item(self) -> None:
+        """Finalize the reasoning output item after all live deltas are received."""
+        if not self.reasoning_opened or self.reasoning_item is None:
+            return
+        text = "".join(self.reasoning_parts)
+        self.reasoning_item["status"] = "completed"
+        self.reasoning_item["summary"] = [{"type": "summary_text", "text": text}]
+        self.reasoning_item["content"] = [{"type": "reasoning_text", "text": text}]
+        await self.write_event("response.output_item.done", {
+            "type": "response.output_item.done",
+            "output_index": self.reasoning_output_index,
+            "item": dict(self.reasoning_item),
+        })
 
     async def emit_tool_started(self, payload: Dict[str, Any]) -> None:
         """function_call ``output_item.added``; the agent's tool_call_id beats a generated call id."""
@@ -270,7 +333,9 @@ class _ResponsesStream:
         if isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str):
             tag, payload = item
             await self.flush_batch()
-            if tag == "__tool_started__":
+            if tag == "__reasoning__":
+                await self.emit_reasoning_delta(payload)
+            elif tag == "__tool_started__":
                 await self.emit_tool_started(payload)
             elif tag == "__tool_completed__":
                 await self.emit_tool_completed(payload)
@@ -315,6 +380,14 @@ class _ResponsesStream:
                 await self.emit_text_delta(agent_final)
             if agent_final and not self.final_response_text:
                 self.final_response_text = agent_final
+            # Completed-message reasoning is only a compatibility fallback; live deltas win.
+            if isinstance(result, dict) and not self.reasoning_parts:
+                turn_start = self.adapter._response_messages_turn_start_index(
+                    self.conversation_history, self.user_message, result)
+                completed_reasoning = self.adapter._extract_reasoning_text(
+                    result, start_index=turn_start)
+                if completed_reasoning:
+                    await self.emit_reasoning_delta(completed_reasoning)
             if isinstance(result, dict) and result.get("error") and not self.final_response_text:
                 self.agent_error = self._api._redact_api_error_text(result["error"])
         except Exception as e:  # noqa: BLE001
@@ -322,6 +395,7 @@ class _ResponsesStream:
             self.agent_error = self._api._redact_api_error_text(e)
 
     async def close_message_item(self) -> None:
+        await self.close_reasoning_item()
         self.final_response_text = "".join(self.final_text_parts) or self.final_response_text
         if not self.message_opened:
             return
@@ -400,9 +474,16 @@ class OpenAICompatRoutesMixin:
             # the stream early. Called from the run_conversation worker thread: put_threadsafe.
             if delta is not None:
                 stream_q.put_threadsafe(delta)
+
+        def _on_reasoning(delta):
+            """Queue live reasoning separately from assistant answer text."""
+            if delta:
+                stream_q.put_threadsafe(("__reasoning__", delta))
+
         agent_ref = [None]
         agent_task = asyncio.ensure_future(self._run_agent(
-            stream_delta_callback=_on_delta, agent_ref=agent_ref, **run_kwargs))
+            stream_delta_callback=_on_delta, reasoning_callback=_on_reasoning,
+            agent_ref=agent_ref, **run_kwargs))
         agent_task.add_done_callback(lambda _fut: stream_q.put_nowait(None))
         return agent_task, agent_ref
 
@@ -983,11 +1064,31 @@ class OpenAICompatRoutesMixin:
         return out
 
     @staticmethod
+    def _extract_reasoning_text(result: Dict[str, Any], start_index: int = 0) -> str:
+        """Return completed-message reasoning for providers without live deltas.
+
+        Live ``reasoning_callback`` output is authoritative when available; this helper is
+        only a compatibility fallback for providers that expose reasoning on completion.
+        """
+        messages = result.get("messages", []) if isinstance(result, dict) else []
+        if start_index > 0:
+            messages = messages[start_index:]
+        parts: List[str] = []
+        for msg in messages:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            reasoning = msg.get("reasoning_content") or msg.get("reasoning")
+            if isinstance(reasoning, str) and reasoning.strip():
+                parts.append(reasoning)
+        return "\n\n".join(parts)
+
+    @staticmethod
     def _extract_output_items(result: Dict[str, Any], start_index: int = 0) -> List[Dict[str, Any]]:
-        """Output items from ``result["messages"][start_index:]``: ``function_call`` per assistant
-        tool_call, ``function_call_output`` per tool message, then the final ``message``."""
+        """Build output items for the current turn, including one aggregated reasoning item."""
         from gateway.platforms.api_server import _redact_api_error_text
         items: List[Dict[str, Any]] = []
+        reasoning_text = OpenAICompatRoutesMixin._extract_reasoning_text(
+            result, start_index=start_index)
         messages = result.get("messages", [])
         if start_index > 0:
             messages = messages[start_index:]
@@ -1008,6 +1109,13 @@ class OpenAICompatRoutesMixin:
                     "id": f"fco_{uuid.uuid4().hex[:24]}", "type": "function_call_output",
                     "status": "completed", "call_id": msg.get("tool_call_id", ""),
                     "output": msg.get("content", "")})
+        if reasoning_text:
+            items.append({
+                "id": f"rs_{uuid.uuid4().hex[:24]}", "type": "reasoning",
+                "status": "completed",
+                "summary": [{"type": "summary_text", "text": reasoning_text}],
+                "content": [{"type": "reasoning_text", "text": reasoning_text}],
+            })
         final = result.get("final_response", "") or _redact_api_error_text(
             result.get("error", "(No response generated)"))
         items.append(_message_item(final))

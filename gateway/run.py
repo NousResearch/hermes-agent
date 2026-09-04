@@ -5094,6 +5094,17 @@ def _exit_with_failure_verdict(runner) -> bool:
     return True
 
 
+def _unexpected_signal_requires_restart(runner, signal_initiated_shutdown: bool) -> bool:
+    """True when an unplanned signal should make the supervisor revive the gateway."""
+    if not signal_initiated_shutdown or runner._restart_requested:
+        return False
+    logger.info(
+        "Exiting with code 1 (signal-initiated shutdown without restart "
+        "request) so the service manager can revive the gateway."
+    )
+    return True
+
+
 async def _start_gateway_shutdown_tail(
     runner, _control_server, cron_stop: threading.Event, cron_provider,
     cron_thread: threading.Thread, housekeeping_thread: threading.Thread,
@@ -5140,10 +5151,8 @@ async def _start_gateway_shutdown_tail(
     if runner.exit_code is not None:
         raise SystemExit(runner.exit_code)
 
-    # Unplanned SIGTERM exits non-zero so systemd Restart=on-failure revives us; planned stops must not.
-    if _signal_initiated_shutdown[0] and not runner._restart_requested:
-        logger.info("Exiting with code 1 (signal-initiated shutdown without restart "
-                    "request) so systemd Restart=on-failure can revive the gateway.")
+    # Unplanned SIGTERM exits non-zero so the service manager revives us; planned stops must not.
+    if _unexpected_signal_requires_restart(runner, _signal_initiated_shutdown[0]):
         return False  # → sys.exit(1) in the caller
 
     # Older restart paths may reach here without ``runner.exit_code``; keep the non-zero fallback.
@@ -5299,6 +5308,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 await _shutdown_mcp_servers_nonblocking()
             if runner.exit_code is not None:
                 raise SystemExit(runner.exit_code)
+            if _unexpected_signal_requires_restart(runner, _signal_initiated_shutdown[0]):
+                return False
             return True
         finally:
             _shutdown_gateway_health_export(runner)

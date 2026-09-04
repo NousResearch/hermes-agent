@@ -316,6 +316,8 @@ def test_file_operation_refresh_uses_observed_grant_and_exact_cleanup(
     cleaned, operated = [], []
 
     class Peer:
+        base_url = None
+
         def refresh_grant(self, **kwargs):
             assert kwargs["grant"] == routes.tokens["aging"]
             assert kwargs["capability_digest"] == routes.catalog.catalog_digest

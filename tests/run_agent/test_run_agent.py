@@ -5857,6 +5857,20 @@ class TestFallbackAnthropicProvider:
         assert agent._anthropic_client is not None
         assert agent.client is None
 
+    def test_fallback_to_kimi_coding_uses_anthropic_messages(self, agent, monkeypatch):
+        monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-" + "test")
+        agent._fallback_activated = False
+        agent._fallback_model = {"provider": "kimi-coding", "model": "k3-256k"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
+
+        result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent.api_mode == "anthropic_messages"
+        assert agent._anthropic_client is not None
+        assert agent.client is None
+
     def test_fallback_to_anthropic_enables_prompt_caching(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}

@@ -2825,22 +2825,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # An explicit ``api_mode`` on the fallback entry always wins — including
         # an explicit "chat_completions" — and suppresses all re-detection below.
         fb_api_mode_explicit = bool(str(fb.get("api_mode") or "").strip())
-        fb_api_mode = "chat_completions"
         if fb_api_mode_explicit:
             fb_api_mode = str(fb.get("api_mode")).strip()
-        elif fb_provider == "anthropic":
-            # Provider-name check must not be gated on fb_base_url_hint:
-            # an entry that names provider: anthropic without an explicit
-            # base_url uses the provider's default endpoint and must still
-            # resolve to anthropic_messages, not chat_completions.
-            fb_api_mode = "anthropic_messages"
-        elif fb_base_url_hint:
-            _orig_url = fb_base_url_hint.rstrip("/").lower()
-            if (
-                _orig_url.endswith("/anthropic")
-                or base_url_hostname(fb_base_url_hint) == "api.anthropic.com"
-            ):
-                fb_api_mode = "anthropic_messages"
+        else:
+            from hermes_cli.runtime_provider import _fallback_api_mode
+
+            fb_api_mode = _fallback_api_mode(
+                fb_provider,
+                fb_base_url_hint or "",
+                fb_model,
+            )
         
         # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env
         # when no explicit key is in the fallback config. Host match
@@ -2875,48 +2869,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # not pin api_mode explicitly. An explicit fb.api_mode (even
         # "chat_completions") must never be overridden here.
         fb_base_url = str(fb_client.base_url)
-        _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
 
-        if not fb_api_mode_explicit and fb_api_mode == "chat_completions":
-            if fb_provider == "openai-codex":
-                fb_api_mode = "codex_responses"
-            elif fb_provider in {"nous", "nous-portal", "nousresearch"}:
-                # Portal is dual-wire: anthropic/* must land on /v1/messages.
-                # resolve_provider_client still returns an OpenAI client for
-                # Nous; the anthropic_messages branch below rebuilds the native
-                # client from that credential + base_url.
-                from hermes_cli.providers import nous_api_mode
+        if not fb_api_mode_explicit:
+            from hermes_cli.runtime_provider import _fallback_api_mode
 
-                fb_api_mode = nous_api_mode(fb_model)
-            elif (
-                fb_base_url.rstrip("/").lower().endswith("/anthropic")
-                or base_url_hostname(fb_base_url) == "api.anthropic.com"
-            ):
-                # Named custom providers (e.g. cron-anthropic) resolve their
-                # base_url from config rather than the fallback entry, so the
-                # pre-resolve hint check above never sees it. Match the host
-                # the same way determine_api_mode() and _detect_api_mode_for_url()
-                # do on the primary path. (#32243, #49247)
-                fb_api_mode = "anthropic_messages"
-            elif _fb_is_azure:
-                # Azure OpenAI serves gpt-5.x on /chat/completions — does NOT
-                # support the Responses API. Stay on chat_completions.
-                fb_api_mode = "chat_completions"
-            elif agent._is_direct_openai_url(fb_base_url):
-                fb_api_mode = "codex_responses"
-            elif agent._provider_model_requires_responses_api(
-                fb_model,
-                provider=fb_provider,
-            ):
-                # GPT-5.x models usually need Responses API, but keep
-                # provider-specific exceptions like Copilot gpt-5-mini on
-                # chat completions.
-                fb_api_mode = "codex_responses"
-            elif fb_provider == "bedrock" or (
-                base_url_hostname(fb_base_url).startswith("bedrock-runtime.")
-                and base_url_host_matches(fb_base_url, "amazonaws.com")
-            ):
-                fb_api_mode = "bedrock_converse"
+            fb_api_mode = _fallback_api_mode(fb_provider, fb_base_url, fb_model)
 
         old_model = agent.model
         old_provider = agent.provider

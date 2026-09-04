@@ -116,6 +116,76 @@ async def test_send_with_retry_uses_structured_retryable_flag(
     assert sleeps == [0.25]
 
 
+# -- sidecar_internal: ambiguous class must suppress the plain-text resend --
+
+@pytest.mark.asyncio
+async def test_sidecar_internal_suppresses_retry_and_plaintext_resend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 500 ``sidecar_internal`` may have delivered upstream already; the
+    adapter must fail closed instead of double-sending (issue #94117)."""
+    adapter = _make_adapter(monkeypatch)
+    calls = 0
+
+    async def _fake_sidecar_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        raise photon_adapter.PhotonSidecarError(
+            path=path,
+            status_code=500,
+            error="internal sidecar error",
+            error_class="sidecar_internal",
+            retryable=False,
+        )
+
+    monkeypatch.setattr(photon_adapter.asyncio, "sleep", _noop_sleep)
+    monkeypatch.setattr(adapter, "_sidecar_call", _fake_sidecar_call)
+
+    result = await adapter._send_with_retry(
+        "space-1", "hello", max_retries=1, base_delay=0.25
+    )
+
+    # One send attempt only: no backoff retry, no plain-text fallback resend.
+    assert calls == 1
+    assert result.success is False
+    # _sidecar_send's PhotonSidecarError branch carries the structured
+    # classification the suppression guard reads.
+    assert result.raw_response == {
+        "error_class": "sidecar_internal",
+        "retryable": False,
+    }
+
+
+def test_sidecar_internal_in_permanent_failure_tuple() -> None:
+    """Direct pin for the suppression set (first direct coverage of the guard)."""
+    suppressed = SendResult(
+        success=False,
+        error="internal sidecar error",
+        raw_response={
+            "error_class": "sidecar_internal",
+            "retryable": False,
+        },
+    )
+    assert PhotonAdapter._should_suppress_resend_and_retry(suppressed) is True
+
+    transient = SendResult(
+        success=False,
+        error="temporary upstream failure",
+        raw_response={
+            "error_class": "upstream_transient",
+            "retryable": True,
+        },
+    )
+    assert PhotonAdapter._should_suppress_resend_and_retry(transient) is False
+
+    unstructured = SendResult(success=False, error="boom", raw_response=None)
+    assert PhotonAdapter._should_suppress_resend_and_retry(unstructured) is False
+
+
+async def _noop_sleep(delay: float) -> None:
+    return None
+
+
 # -- Gap 2: typing-indicator cooldown ---------------------------------------
 
 @pytest.mark.asyncio

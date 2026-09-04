@@ -562,7 +562,6 @@ class DeliveryRouter:
                     send_metadata["user_id"] = home.user_id
                 if home.scope_id:
                     send_metadata["scope_id"] = home.scope_id
-        # ntfy: chat_id is the target topic (mirror send_message_tool).
         if target.platform.value == "ntfy" and target.chat_id:
             send_metadata["publish_topic"] = target.chat_id
         is_named_telegram_private_topic = False

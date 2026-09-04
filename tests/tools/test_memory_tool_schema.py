@@ -18,6 +18,7 @@ backends reject.
 """
 
 import json
+from typing import Any, cast
 
 from tools.memory_tool import MEMORY_SCHEMA
 
@@ -38,3 +39,10 @@ def test_memory_schema_has_no_forbidden_top_level_combinators():
 
 def test_memory_schema_is_json_serializable():
     json.dumps(MEMORY_SCHEMA)
+
+
+def test_memory_batch_schema_requires_runtime_fields():
+    """Structured-output backends must emit fields the batch handler needs."""
+    parameters = cast(dict[str, Any], MEMORY_SCHEMA["parameters"])
+    operation = cast(dict[str, Any], parameters["properties"]["operations"]["items"])
+    assert {"action", "content", "old_text"} <= set(operation["required"])

@@ -334,6 +334,20 @@ class TestMemoryToolDispatcher:
 class TestMemoryBatch:
     """The 'operations' batch shape: atomic, all-or-nothing, final-budget."""
 
+    def test_batch_missing_old_text_returns_specific_error(self, store):
+        store.add("memory", "old entry")
+        result = json.loads(memory_tool(
+            target="memory",
+            operations=[{"action": "replace", "content": "updated entry"}],
+            store=store,
+        ))
+        assert result["success"] is False
+        assert result["error"] == (
+            "Operation 1 (replace): old_text is required. "
+            "No operations were applied (batch is all-or-nothing)."
+        )
+        assert store.memory_entries == ["old entry"]
+
     def test_batch_add_and_remove_atomic(self, store):
         store.add("memory", "stale one")
         store.add("memory", "stale two")

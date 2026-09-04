@@ -6795,6 +6795,33 @@ def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optio
         return model_name
 
 
+def _opencode_family_api_mode(provider: str, model: Optional[str]) -> Optional[str]:
+    """Per-model API mode for OpenCode Zen/Go family providers, or None.
+
+    OpenCode mixes API surfaces by model (``gpt-*``/``grok-*``/``muse-spark*``
+    → ``/v1/responses``, ``minimax-*``/``qwen*``/``claude-*`` →
+    ``/v1/messages``, the rest → ``/v1/chat/completions``). The provider
+    name alone — built-in ``opencode-go``/``opencode-zen`` or a custom
+    family entry like ``opencode-go-bridge`` (#85589) — says nothing about
+    the wire format, so auxiliary resolution must derive the transport from
+    the resolved model exactly like the main agent's runtime resolution
+    (``hermes_cli/runtime_provider.py``) does (#98799).
+    """
+    try:
+        from hermes_cli.models import (
+            opencode_model_api_mode,
+            opencode_provider_family,
+        )
+    except Exception:
+        return None
+    try:
+        if opencode_provider_family(provider) is None:
+            return None
+        return opencode_model_api_mode(provider, model) or None
+    except Exception:
+        return None
+
+
 def resolve_provider_client(
     provider: str,
     model: str = None,
@@ -7274,6 +7301,21 @@ def resolve_provider_client(
                     or "gpt-4o-mini",
                     provider,
                 )
+                # OpenCode family entries (opencode-go-bridge, #85589) serve
+                # mixed API surfaces per model — the entry's declared api_mode
+                # was persisted for whichever model was configured at save
+                # time and is stale for any other. Re-derive per model like
+                # the registry branch above (#98799).
+                _oc_entry_mode = _opencode_family_api_mode(provider, final_model)
+                if _oc_entry_mode and not api_mode:
+                    entry_api_mode = _oc_entry_mode
+                    try:
+                        from hermes_cli.models import normalize_opencode_base_url
+                        custom_base = normalize_opencode_base_url(
+                            provider, _oc_entry_mode, custom_base
+                        )
+                    except Exception:
+                        pass
                 # anthropic_messages talks to the /anthropic surface directly;
                 # OpenAI-wire paths (chat_completions / codex_responses) need the
                 # /v1 equivalent.  Rewrite only on the OpenAI-wire path so the
@@ -7461,6 +7503,21 @@ def resolve_provider_client(
         default_model = _get_aux_model_for_provider(provider)
         final_model = _normalize_resolved_model(model or default_model, provider)
 
+        # OpenCode Zen/Go mix API surfaces per model. Derive the transport
+        # from the resolved model (the same table the main agent's runtime
+        # resolution uses) so Responses-only models (gpt-5.6-luna, grok-4.5)
+        # get the Responses adapter and Anthropic-wire models (minimax, qwen)
+        # land on /v1/messages instead of every auxiliary call going to
+        # /chat/completions (#98799).
+        _oc_mode = _opencode_family_api_mode(provider, final_model)
+        if _oc_mode:
+            api_mode = _oc_mode
+            try:
+                from hermes_cli.models import normalize_opencode_base_url
+                base_url = normalize_opencode_base_url(provider, _oc_mode, base_url)
+            except Exception:
+                pass
+
         if provider == "gemini":
             from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 
@@ -7526,7 +7583,13 @@ def resolve_provider_client(
         # Anthropic-wire endpoints (Kimi Coding Plan api.kimi.com/coding,
         # /anthropic-suffixed gateways) so named providers like kimi-coding
         # land on the right transport without needing per-provider branches.
-        client = _wrap_if_needed(client, final_model, raw_base_url, api_key)
+        # Pass the api-mode-normalized base URL only for OpenCode family
+        # providers (anthropic-wire models carry the /v1-stripped URL the
+        # Anthropic SDK expects, #98799). Every other provider keeps the raw
+        # registry URL — its /anthropic suffix is what the wrap heuristics
+        # key on (e.g. minimax).
+        _wrap_base = base_url if _oc_mode else raw_base_url
+        client = _wrap_if_needed(client, final_model, _wrap_base, api_key)
 
         logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode

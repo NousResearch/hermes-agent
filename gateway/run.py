@@ -9123,9 +9123,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from agent.model_router import (
                     Candidate,
                     RoutingRequest,
-                    RouterPipeline,
-                    profile_from_config,
-                    router_config_from_dict,
+                    pipeline_from_config,
                     route_turn,
                 )
 
@@ -9160,17 +9158,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Prefer the staged pi-smart-router-compatible pipeline. Keep
                 # the legacy scorer as a last-resort compatibility path so a
                 # malformed new section never disables the old router.
-                profiles = [
-                    profile_from_config(item)
-                    for item in raw_candidates
+                # Only route across candidates whose provider runtime resolved
+                # successfully above. Build through pipeline_from_config so
+                # gateway turns use the durable state/telemetry stores too.
+                resolved_items = [
+                    item for item in raw_candidates
                     if isinstance(item, dict)
+                    and isinstance(item.get("model"), str)
+                    and item.get("model", "").strip() in runtimes
                 ]
-                profiles = [profile for profile in profiles if profile is not None]
-                if profiles:
-                    staged = RouterPipeline(
-                        profiles,
-                        router_config_from_dict(router_cfg),
-                    )
+                staged_cfg = dict(router_cfg)
+                staged_cfg["candidates"] = resolved_items
+                staged = pipeline_from_config(staged_cfg)
+                if staged is not None:
                     decision = staged.route(
                         RoutingRequest(
                             prompt_text=user_message,

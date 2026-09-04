@@ -16,7 +16,7 @@ class RecordingEnvironment:
 
     def execute(self, command, cwd=None, **kwargs):
         self.commands.append(command)
-        if command.startswith("test -e"):
+        if command.startswith(("test -e", "if test -L")):
             return {"output": "exists\n", "returncode": 0}
         if command.startswith("command -v"):
             return {"output": "yes\n", "returncode": 0}
@@ -219,7 +219,7 @@ def _multi_root_protected_search(tmp_path, monkeypatch, engine):
     def execute(command, cwd=None, **kwargs):
         nonlocal path_checks
         env.commands.append(command)
-        if command.startswith("test -e"):
+        if command.startswith(("test -e", "if test -L")):
             path_checks += 1
             output = "not_found\n" if path_checks == 1 else "exists\n"
             return {"output": output, "returncode": 0}
@@ -243,7 +243,7 @@ def test_rg_multi_root_keeps_explicit_protected_root_and_reports_actual_skips(
     absolute_operand = downloads.as_posix() in command
     anchored_operand = (
         f"cd {ops._escape_shell_arg(downloads.parent.as_posix())} &&" in command
-        and " -- '.' 'Downloads' 2>/dev/null" in command
+        and " -- '.' 'Downloads'" in command
     )
     assert absolute_operand or anchored_operand
     assert "!Downloads/**" not in command
@@ -279,7 +279,7 @@ def test_rg_multi_root_scopes_protected_globs_and_restores_absolute_paths(monkey
 
     def execute(command, cwd=None, **kwargs):
         env.commands.append(command)
-        if command.startswith("test -e"):
+        if command.startswith(("test -e", "if test -L")):
             output = "not_found\n" if "'/Users/alice /repo'" in command else "exists\n"
             return {"output": output, "returncode": 0}
         if command.startswith("command -v rg"):
@@ -301,7 +301,7 @@ def test_rg_multi_root_scopes_protected_globs_and_restores_absolute_paths(monkey
     commands = _rg_files_commands(env.commands)
     assert len(commands) == 1
     command = commands[0]
-    assert command.startswith("set -o pipefail; cd '/' && ")
+    assert "cd '/' && " in command
     assert "--sortr=modified" in command
     assert "'!Users/alice/Downloads/**'" in command
     assert "'!repo/Downloads/**'" not in command
@@ -320,7 +320,7 @@ def test_rg_scoped_multi_root_handles_dot_spaces_and_overlapping_roots(monkeypat
 
     def execute(command, cwd=None, **kwargs):
         env.commands.append(command)
-        if command.startswith("test -e"):
+        if command.startswith(("test -e", "if test -L")):
             output = "not_found\n" if "'., /Users/alice'" in command else "exists\n"
             return {"output": output, "returncode": 0}
         if command.startswith("command -v rg"):
@@ -347,7 +347,7 @@ def test_rg_scoped_multi_root_terminates_options_before_dash_prefixed_root(monke
 
     def execute(command, cwd=None, **kwargs):
         env.commands.append(command)
-        if command.startswith("test -e"):
+        if command.startswith(("test -e", "if test -L")):
             output = "not_found\n" if "'., --version'" in command else "exists\n"
             return {"output": output, "returncode": 0}
         if command.startswith("command -v rg"):
@@ -361,7 +361,7 @@ def test_rg_scoped_multi_root_terminates_options_before_dash_prefixed_root(monke
 
     command = _rg_files_commands(env.commands)[0]
     assert "cd '/Users/alice' &&" in command
-    assert " -- '.' '--version' 2>/dev/null" in command
+    assert " -- '.' '--version'" in command
     assert result.error is None
 
 

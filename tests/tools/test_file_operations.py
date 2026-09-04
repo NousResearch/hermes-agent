@@ -454,6 +454,159 @@ class TestSearchPathValidation:
         assert result.error is not None
         assert "search failed" in result.error.lower() or "Search error" in result.error
 
+    def test_dangling_symlink_root_is_classified_before_existence_check(self, mock_env):
+        commands = []
+
+        def side_effect(command, **kwargs):
+            commands.append(command)
+            if command.startswith("if test -L"):
+                return {"output": "symlink", "returncode": 0}
+            if command.startswith("if test -e"):
+                return {"output": "dangling", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        result = ShellFileOperations(mock_env).search("*.py", path="/offline-link", target="files")
+
+        assert result.error is not None
+        assert "dangling symlink" in result.error.lower()
+        assert commands[0].startswith("if test -L")
+        assert "test -e" not in commands[0].split("then", 1)[0]
+        assert not any("command -v" in command for command in commands)
+
+    def test_unresponsive_symlink_root_fails_before_search_engine(self, mock_env):
+        commands = []
+
+        def side_effect(command, **kwargs):
+            commands.append((command, kwargs.get("timeout")))
+            if command.startswith("if test -L"):
+                return {"output": "symlink", "returncode": 0}
+            if command.startswith("if test -e"):
+                return {"output": "[Command timed out after 5s]", "returncode": 124}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        result = ShellFileOperations(mock_env).search("*.py", path="/project/external", target="files")
+
+        assert result.error is not None
+        assert "symlink" in result.error.lower()
+        assert "unresponsive" in result.error.lower()
+        assert commands[-1][1] == 5
+        assert not any("command -v" in command for command, _timeout in commands)
+
+    def test_unresponsive_initial_probe_fails_before_search_engine(self, mock_env):
+        commands = []
+
+        def side_effect(command, **kwargs):
+            commands.append((command, kwargs.get("timeout")))
+            if command.startswith("if test -L"):
+                return {"output": "[Command timed out after 5s]", "returncode": 124}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        result = ShellFileOperations(mock_env).search(
+            "*.py", path="/project/unresponsive", target="files")
+
+        assert result.error is not None
+        assert "unresponsive" in result.error.lower()
+        assert commands[0][1] == 5
+        assert not any("command -v" in command for command, _timeout in commands)
+
+    def test_multi_path_reports_skipped_unresponsive_root(self, mock_env, monkeypatch):
+        ops = ShellFileOperations(mock_env)
+        monkeypatch.setattr(
+            ops,
+            "_path_exists_probe",
+            lambda path: "exists" if path == "/project" else "unresponsive",
+        )
+        monkeypatch.setattr(
+            ops,
+            "_search_files",
+            lambda *_args, **_kwargs: SearchResult(files=["/project/a.py"], total_count=1),
+        )
+
+        result = ops._try_multi_path_search(
+            "*.py", "/project /offline", "files", None, 10, 0, "content", 0)
+
+        assert result is not None
+        assert result.files == ["/project/a.py"]
+        assert "skipped unavailable" in (result.warning or "").lower()
+        assert "/offline (unresponsive root)" in (result.warning or "")
+
+    def test_broad_root_is_rejected_before_probe_or_engine_discovery(self, mock_env):
+        result = ShellFileOperations(mock_env).search("*.py", path="/", target="files")
+
+        assert result.error is not None
+        assert "too broad" in result.error.lower()
+        mock_env.execute.assert_not_called()
+
+    def test_project_below_home_is_not_rejected_as_broad(self, mock_env):
+        mock_env.cwd = "/Users/tester/project"
+        mock_env.execute.side_effect = [
+            {"output": "exists", "returncode": 0},
+            {"output": "yes", "returncode": 0},
+            {"output": "/Users/tester/project/main.py", "returncode": 0},
+        ]
+
+        result = ShellFileOperations(mock_env).search(
+            "*.py", path="/Users/tester/project", target="files")
+
+        assert result.error is None
+
+
+class TestFileSearchRipgrepDiagnostics:
+    def test_file_enumeration_surfaces_pure_rg_error(self, mock_env, monkeypatch):
+        monkeypatch.setattr(
+            "tools.file_operations_search.secrets.token_hex", lambda _size: "testmarker")
+        mock_env.execute.return_value = {
+            "output": "__HERMES_RG_DIAGNOSTIC_testmarker__rg: /offline: Interrupted system call (os error 4)\n",
+            "returncode": 2,
+        }
+
+        ops = ShellFileOperations(mock_env)
+        monkeypatch.setattr(ops, "_resolve_command", lambda _cmd: "rg")
+        result = ops._search_files_rg("*.py", "/offline", limit=10, offset=0)
+
+        assert result.files == []
+        assert result.error is not None
+        assert "Interrupted system call" in result.error
+
+    def test_file_enumeration_keeps_partial_results_and_diagnostics(self, mock_env, monkeypatch):
+        monkeypatch.setattr(
+            "tools.file_operations_search.secrets.token_hex", lambda _size: "testmarker")
+        mock_env.execute.return_value = {
+            "output": "/project/good.py\n__HERMES_RG_DIAGNOSTIC_testmarker__rg: /project/offline: Interrupted system call (os error 4)\n",
+            "returncode": 2,
+        }
+
+        ops = ShellFileOperations(mock_env)
+        monkeypatch.setattr(ops, "_resolve_command", lambda _cmd: "rg")
+        result = ops._search_files_rg("*.py", "/project", limit=10, offset=0)
+
+        assert result.error is None
+        assert result.files == ["/project/good.py"]
+        assert result.warning is not None
+        assert "Interrupted system call" in result.warning
+
+    def test_rg_prefixed_filename_is_not_misclassified_as_diagnostic(self, mock_env, monkeypatch):
+        monkeypatch.setattr(
+            "tools.file_operations_search.secrets.token_hex", lambda _size: "testmarker")
+        mock_env.execute.return_value = {
+            "output": (
+                "__HERMES_RG_DIAGNOSTIC__.py\n"
+                "__HERMES_RG_DIAGNOSTIC_testmarker__rg: /offline: I/O error\n"
+            ),
+            "returncode": 2,
+        }
+
+        ops = ShellFileOperations(mock_env)
+        monkeypatch.setattr(ops, "_resolve_command", lambda _cmd: "rg")
+        result = ops._search_files_rg("*.py", "/project", limit=10, offset=0)
+
+        assert result.error is None
+        assert result.files == ["__HERMES_RG_DIAGNOSTIC__.py"]
+        assert "I/O error" in (result.warning or "")
+
 
 class TestSearchFilesFallbackHiddenPaths:
     def _make_env(self):

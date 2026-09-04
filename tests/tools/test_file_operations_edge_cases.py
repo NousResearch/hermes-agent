@@ -235,7 +235,7 @@ class TestPaginationBounds:
 
         def fake_exec(command, *args, **kwargs):
             commands.append(command)
-            if command.startswith("test -e"):
+            if command.startswith(("test -e ", "if test -L ")):
                 return MagicMock(exit_code=0, stdout="exists")
             if "--files" in command:
                 return MagicMock(exit_code=0, stdout="a.py\n")

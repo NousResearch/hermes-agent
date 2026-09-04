@@ -7,6 +7,7 @@
 import os
 import posixpath
 import re
+import secrets
 import sys
 import threading
 from pathlib import Path
@@ -139,6 +140,20 @@ def _split_tool_diagnostics(output: str) -> tuple[str, str]:
         else:
             diagnostics.append(line)
     return '\n'.join(diagnostics), '\n'.join(payload)
+
+
+def _split_file_search_diagnostics(output: str, marker: str) -> tuple[str, str]:
+    """Separate tagged ``rg --files`` diagnostics without guessing path syntax."""
+    diagnostics: list[str] = []
+    files: list[str] = []
+    for line in output.split("\n"):
+        if not line:
+            continue
+        if line.startswith(marker):
+            diagnostics.append(line.removeprefix(marker))
+            continue
+        files.append(line)
+    return "\n".join(diagnostics), "\n".join(files)
 
 
 def _parse_search_context_line(line: str) -> tuple[str, int, str] | None:
@@ -392,8 +407,49 @@ class SearchMixin:
         return out
 
     def _path_exists_probe(self, path: str) -> str:
-        """Stdout of the existence probe: contains "exists" or "not_found"."""
-        return self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found").stdout
+        """Classify a search root without dereferencing symlink targets."""
+        quoted = self._escape_shell_arg(path)
+        result = self._exec(
+            f"if test -L {quoted}; then echo symlink; "
+            f"elif test -e {quoted}; then echo exists; else echo not_found; fi",
+            timeout=5,
+        )
+        if result.exit_code == 124:
+            return "unresponsive"
+        return result.stdout
+
+    def _symlink_target_status(self, path: str) -> str:
+        """Return reachable, dangling, or unresponsive for a symlink target."""
+        quoted = self._escape_shell_arg(path)
+        probe = self._exec(
+            f"if test -e {quoted}; then echo reachable; else echo dangling; fi",
+            timeout=5,
+        )
+        if probe.exit_code == 124:
+            return "unresponsive"
+        return "reachable" if "reachable" in probe.stdout else "dangling"
+
+    def _unbounded_search_root(self, path: str) -> Optional[str]:
+        """Return an account/filesystem root unsafe for recursive traversal."""
+        effective_cwd = getattr(self.env, "cwd", None) or self.cwd
+        raw = (path or ".").strip()
+        if not os.path.isabs(raw) and not re.match(r"^[A-Za-z]:[\\/]", raw):
+            raw = os.path.join(effective_cwd, raw)
+        normalized = os.path.normpath(raw)
+        posix = normalized.replace("\\", "/")
+        filesystem_root = posix == "/" or re.fullmatch(r"[A-Za-z]:/?", posix)
+        account_root = (
+            posix in {"/home", "/Users", "/root"}
+            or re.fullmatch(r"/(?:home|Users)/[^/]+", posix)
+            or re.fullmatch(r"[A-Za-z]:/Users/[^/]+", posix, re.IGNORECASE)
+        )
+        if filesystem_root:
+            return normalized
+        if account_root and not self._macos_search_exclusions(path):
+            return normalized
+        if self._is_broad_local_search_root(path) and not self._macos_search_exclusions(path):
+            return normalized
+        return None
 
     def _dispatch_search(self, pattern: str, path: str, target: str,
                          file_glob: Optional[str], limit: int, offset: int,
@@ -433,11 +489,37 @@ class SearchMixin:
             parts = path.split()
         if len(parts) < 2:
             return None
-        existing, missing = [], []
+        existing, missing, unavailable, broad_roots = [], [], [], []
         for p in parts:
             expanded = self._expand_path(p)
-            (existing if "exists" in self._path_exists_probe(expanded) else missing).append(expanded)
+            broad_root = self._unbounded_search_root(expanded)
+            if broad_root:
+                broad_roots.append(broad_root)
+                continue
+            status = self._path_exists_probe(expanded)
+            if "symlink" in status:
+                target_status = self._symlink_target_status(expanded)
+                if target_status == "reachable":
+                    existing.append(expanded)
+                else:
+                    unavailable.append(f"{expanded} ({target_status} symlink target)")
+            elif "unresponsive" in status:
+                unavailable.append(f"{expanded} (unresponsive root)")
+            else:
+                (existing if "exists" in status else missing).append(expanded)
         if not existing:
+            if unavailable:
+                return SearchResult(
+                    error=("Every candidate search root is unavailable: "
+                           + ", ".join(unavailable[:3])
+                           + ". Narrow the path or retry."),
+                    total_count=0)
+            if broad_roots:
+                return SearchResult(
+                    error=("Every existing path is too broad for recursive traversal: "
+                           + ", ".join(broad_roots[:3])
+                           + ". Narrow path to a project, workspace, or known artifact directory."),
+                    total_count=0)
             return None
         if target == "files":
             # One global traversal across roots so modified ordering and pagination
@@ -461,6 +543,14 @@ class SearchMixin:
             note += "; skipped missing: " + ", ".join(missing[:3])
             if len(missing) > 3:
                 note += f" (+{len(missing) - 3} more)"
+        if unavailable:
+            note += "; skipped unavailable: " + ", ".join(unavailable[:3])
+            if len(unavailable) > 3:
+                note += f" (+{len(unavailable) - 3} more)"
+        if broad_roots:
+            note += "; skipped broad roots: " + ", ".join(broad_roots[:3])
+            if len(broad_roots) > 3:
+                note += f" (+{len(broad_roots) - 3} more)"
         warning_parts = [note]
         if not merged.error:
             protected_paths = [absolute for _r, _rel, absolute in self._effective_macos_search_exclusions(existing)]
@@ -693,26 +783,47 @@ class SearchMixin:
         sort_arg = " --sortr=modified" if order == "modified" else ""
         root_args = " ".join(self._escape_native_tool_arg(root) for root in command_roots)
         cd_prefix = f"cd {self._escape_shell_arg(scoped_common)} && " if scoped_common else ""
+        diagnostic_marker = f"__HERMES_RG_DIAGNOSTIC_{secrets.token_hex(16)}__"
         # ``--`` terminates options so a dash-prefixed root is never parsed as a flag.
-        cmd = (f"set -o pipefail; {cd_prefix}{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
-               f"{exclusion_args} -- {root_args} 2>/dev/null | head -n {fetch_limit}")
+        cmd = (
+            "set -o pipefail; "
+            "diagnostics_file=$(mktemp \"${TMPDIR:-/tmp}/hermes-rg-files.XXXXXX\") || exit 1; "
+            "trap 'rm -f \"$diagnostics_file\"' EXIT; "
+            f"{cd_prefix}{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
+            f"{exclusion_args} -- {root_args} 2>\"$diagnostics_file\" "
+            f"| head -n {fetch_limit}; "
+            "rg_status=${PIPESTATUS[0]}; "
+            f"sed 's/^/{diagnostic_marker}/' \"$diagnostics_file\"; "
+            "exit \"$rg_status\""
+        )
         result = self._exec(cmd, timeout=60)
         stdout, limit_reason = _search_stdout_and_limit(result)
-        all_files = [f for f in stdout.splitlines() if f]
+        diagnostics, payload = _split_file_search_diagnostics(stdout, diagnostic_marker)
+        all_files = [f for f in payload.splitlines() if f]
         if scoped_common:
             all_files = [
                 f if posixpath.isabs(f) else posixpath.normpath(posixpath.join(scoped_common, f))
                 for f in all_files]
         bounded_sigpipe = result.exit_code == 141 and len(all_files) >= fetch_limit
-        if result.exit_code not in {0, 1, 124} and not bounded_sigpipe:
+        partial_rg_error = result.exit_code == 2 and bool(all_files)
+        if result.exit_code not in {0, 1, 124} and not bounded_sigpipe and not partial_rg_error:
             if order == "modified":
                 return SearchResult(error=(
                     "Exact modification-time order failed; ripgrep 14+ is "
                     "required. Upgrade ripgrep or use order='discovery'."))
+            if result.exit_code == 2:
+                error_msg = diagnostics.strip() or result.stdout.strip() or "File search error"
+                return SearchResult(error=f"File search failed: {error_msg}", total_count=0)
             return SearchResult(error="File search failed while running ripgrep.")
         return SearchResult(
             files=all_files[offset:offset + limit], total_count=len(all_files),
-            truncated=len(all_files) > offset + limit or bool(limit_reason), limit_reason=limit_reason)
+            truncated=len(all_files) > offset + limit or bool(limit_reason), limit_reason=limit_reason,
+            warning=(
+                "File search returned partial results; ripgrep "
+                + (f"reported: {diagnostics.strip()}" if diagnostics.strip()
+                   else f"exited with status {result.exit_code}.")
+                if partial_rg_error else None),
+        )
 
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:

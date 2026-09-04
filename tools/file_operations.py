@@ -1357,13 +1357,33 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 error=(f"Invalid file search order {order!r}; expected "
                        "'discovery' or 'modified'."))
         path = self._expand_path(path)
-        if "not_found" in self._path_exists_probe(path):
+        broad_root = self._unbounded_search_root(path)
+        if broad_root:
+            return SearchResult(
+                error=(f"Search root is too broad for recursive traversal: {broad_root}. "
+                       "Narrow path to a project, workspace, or known artifact directory."),
+                total_count=0)
+        path_status = self._path_exists_probe(path)
+        if "unresponsive" in path_status:
+            return SearchResult(error=(
+                f"Search root is unresponsive: {path}. "
+                "The bounded existence probe timed out; narrow the root or retry."))
+        if "not_found" in path_status:
             # Models often pass several paths in one string: search the parts that exist.
             multi = self._try_multi_path_search(
                 pattern, path, target, file_glob, limit, offset, output_mode, context, order)
             if multi is not None:
                 return multi
             return self._path_not_found_result(path)
+        if "symlink" in path_status:
+            target_status = self._symlink_target_status(path)
+            if target_status == "dangling":
+                return SearchResult(error=(
+                    f"Search root is a dangling symlink: {path}. Repair the link target before retrying."))
+            if target_status == "unresponsive":
+                return SearchResult(error=(
+                    f"Search root is a symlink whose target is unresponsive: {path}. "
+                    "Repair or remount the target filesystem before retrying."))
         result = self._dispatch_search(pattern, path, target, file_glob, limit, offset,
                                        output_mode, context, order)
         exclusions = self._macos_search_exclusions(path)

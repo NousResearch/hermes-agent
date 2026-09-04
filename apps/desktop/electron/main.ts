@@ -10935,9 +10935,10 @@ async function fetchJsonForProfile(profile, path) {
   return requestJsonForProfile(profile, path, 'GET')
 }
 
-// Issue an arbitrary method against a profile's resolved backend, parsed JSON.
-async function requestJsonForProfile(profile: string, path: string, method: string, body?: string) {
-  const conn = await ensureBackend(profile)
+// Issue a request against an already-resolved backend. Keeping this separate
+// lets the legacy v1 session-list compatibility path capture the exact
+// descriptor that served the rows before binding its registry identity.
+async function requestJsonForConnection(conn, path: string, method: string, body?: string) {
   const url = `${conn.baseUrl}${path}`
   const opts = { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }
 
@@ -10954,6 +10955,13 @@ async function requestJsonForProfile(profile: string, path: string, method: stri
   }
 
   return fetchJson(url, conn.token, { ...opts, headers: conn.headers })
+}
+
+// Issue an arbitrary method against a profile's resolved backend, parsed JSON.
+async function requestJsonForProfile(profile: string, path: string, method: string, body?: string) {
+  const conn = await ensureBackend(profile)
+
+  return requestJsonForConnection(conn, path, method, body)
 }
 
 async function probeRemoteAuthMode(rawUrl) {
@@ -16221,11 +16229,23 @@ const rowsOf = data => (Array.isArray(data?.sessions) ? data.sessions : [])
 // A remote profile's session list, read from its remote host and tagged with the
 // desktop-facing profile name (the remote's /api/sessions doesn't know it).
 async function remoteSessionList(profile, searchParams) {
-  const data = await fetchRemoteProfileSessions(profile, searchParams, fetchJsonForProfile)
+  let resolvedConnection = null
+  const data = await fetchRemoteProfileSessions(profile, searchParams, async (requestedProfile, path) => {
+    resolvedConnection = await ensureBackend(requestedProfile)
+
+    return requestJsonForConnection(resolvedConnection, path, 'GET')
+  })
+  const connectionId = resolvedConnection
+    ? resolvedConnectionId(readDesktopConnectionsRegistry(), resolvedConnection)
+    : null
 
   for (const s of rowsOf(data)) {
     s.profile = profile
     s.is_default_profile = false
+
+    if (connectionId) {
+      s.connection_id = connectionId
+    }
   }
 
   return { ...(data as any), sessions: rowsOf(data) }
@@ -16302,7 +16322,7 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
   remoteParams.set('limit', String(limit + offset))
   remoteParams.set('offset', '0')
 
-  const remoteSet = new Set(remoteProfiles)
+  const remoteSet = new Set<string>(remoteProfiles)
   const merged = rowsOf(base).filter(s => !remoteSet.has(s?.profile))
   const profileTotals = { ...(base.profile_totals || {}) }
   let total = (Number(base.total) || 0) - remoteProfiles.reduce((n, p) => n + (profileTotals[p] || 0), 0)

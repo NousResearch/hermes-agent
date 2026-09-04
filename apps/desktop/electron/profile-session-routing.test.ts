@@ -206,6 +206,13 @@ test('merged profile windows retain pinned rows outside the recency window', () 
   assert.deepEqual(mergeProfileSessionWindow(rows, 0, 3), [rows[0], rows[1], rows[2], rows[3], rows[4]])
 })
 
+test('merged profile windows retain pinned same-id sessions from another gateway', () => {
+  const visible = { id: 'shared-id', profile: 'default', connection_id: 'gw-a', pinned: false }
+  const pinned = { id: 'shared-id', profile: 'default', connection_id: 'gw-b', pinned: true }
+
+  assert.deepEqual(mergeProfileSessionWindow([visible, pinned], 0, 1), [visible, pinned])
+})
+
 test('remote session reads keep small requests on one call', async () => {
   const calls: Array<{ profile: string | null; path: string }> = []
   const expected = { sessions: [{ id: 'session-1' }], total: 1, limit: 20, offset: 0 }
@@ -389,10 +396,16 @@ test('registry sources: a dead gateway contributes nothing instead of breaking t
   )
 })
 
-test('splice: registry rows dedupe by id and extend per-profile totals', () => {
+/**
+ * Handoff provenance: exact hostile fixture from the independent visual
+ * evidence/sidebar lane (#193085, source commit d541f577b59880685f81873b34b2a66fabf7b25b).
+ * Keep this fixture on the receipt-owner branch so the owner repair is proved
+ * against the same profile/gateway identity collision that was observed there.
+ */
+test('splice: registry rows keep profile and gateway twins distinct', () => {
   const merged: unknown[] = [
     { id: 'local-1', profile: 'default', last_active: 100 },
-    { id: 'dupe', profile: 'work', last_active: 90 }
+    { id: 'dupe', profile: 'work', connection_id: 'gw-1', last_active: 90 }
   ]
 
   const totals: Record<string, number> = { default: 1, work: 1 }
@@ -401,20 +414,64 @@ test('splice: registry rows dedupe by id and extend per-profile totals', () => {
     merged,
     [
       { id: 'dupe', profile: 'work', connection_id: 'gw-1', last_active: 95 },
+      { id: 'dupe', profile: 'research', connection_id: 'gw-1', last_active: 94 },
+      { id: 'dupe', profile: 'work', connection_id: 'gw-2', last_active: 93 },
       { id: 'remote-1', profile: 'hermes-claude', connection_id: 'gw-1', last_active: 120 },
       { id: 'remote-2', connection_id: 'gw-1', last_active: 110 }
     ],
     totals
   )
 
-  assert.equal(added, 2)
+  assert.equal(added, 4)
   assert.deepEqual(
-    merged.map(row => (row as any).id),
-    ['local-1', 'dupe', 'remote-1', 'remote-2']
+    merged.map(row => [(row as any).id, (row as any).profile, (row as any).connection_id]),
+    [
+      ['local-1', 'default', undefined],
+      ['dupe', 'work', 'gw-1'],
+      ['dupe', 'research', 'gw-1'],
+      ['dupe', 'work', 'gw-2'],
+      ['remote-1', 'hermes-claude', 'gw-1'],
+      ['remote-2', undefined, 'gw-1']
+    ]
   )
   assert.equal(totals['hermes-claude'], 1)
   assert.equal(totals.default, 2) // untagged registry row counts under default
-  assert.equal(totals.work, 1) // deduped row does not double-count
+  assert.equal(totals.work, 2) // the exact gw-1 row dedupes; gw-2 is distinct
+  assert.equal(totals.research, 1)
+})
+
+test('splice: configured v1 remote rows dedupe against their registry twin only', () => {
+  const merged: unknown[] = [
+    { id: 'legacy-remote', profile: 'work' },
+    { id: 'local-default', profile: 'default' }
+  ]
+  const totals: Record<string, number> = { work: 1, default: 1 }
+
+  const { added } = spliceRegistrySessionRows(
+    merged,
+    [
+      { id: 'legacy-remote', profile: 'work', connection_id: 'gw-work' },
+      { id: 'legacy-remote', profile: 'work', connection_id: 'gw-other' },
+      { id: 'local-default', profile: 'default', connection_id: 'gw-remote' }
+    ],
+    totals
+  )
+
+  // An unqualified v1 row has no proven gateway owner. It must not wildcard
+  // dedupe either of two legitimate registry gateways with the same id.
+  assert.equal(added, 3)
+  assert.deepEqual(
+    merged.map(row => [(row as any).id, (row as any).profile, (row as any).connection_id]),
+    [
+      ['legacy-remote', 'work', undefined],
+      ['local-default', 'default', undefined],
+      ['legacy-remote', 'work', 'gw-work'],
+      ['legacy-remote', 'work', 'gw-other'],
+      ['local-default', 'default', 'gw-remote']
+    ]
+  )
+  assert.equal(totals.work, 3)
+  assert.equal(totals.default, 2)
 })
 
 test('finds the remote owner profile for a hint-less session read (#85834)', async () => {

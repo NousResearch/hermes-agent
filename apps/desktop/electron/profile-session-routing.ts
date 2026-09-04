@@ -82,6 +82,18 @@ function isPinned(row: unknown): boolean {
   return Boolean(row && typeof row === 'object' && 'pinned' in row && row.pinned)
 }
 
+function sessionProfile(row: unknown): string {
+  return row && typeof row === 'object' && 'profile' in row && typeof row.profile === 'string'
+    ? row.profile.trim() || 'default'
+    : 'default'
+}
+
+function sessionConnectionId(row: unknown): string {
+  return row && typeof row === 'object' && 'connection_id' in row && typeof row.connection_id === 'string'
+    ? row.connection_id.trim()
+    : ''
+}
+
 function profileSessionId(row: unknown): string | null {
   const id = sessionId(row)
 
@@ -89,10 +101,11 @@ function profileSessionId(row: unknown): string | null {
     return null
   }
 
-  const profile =
-    row && typeof row === 'object' && 'profile' in row && typeof row.profile === 'string' ? row.profile : ''
+  return `${sessionConnectionId(row)}\0${sessionProfile(row)}\0${id}`
+}
 
-  return `${profile}\0${id}`
+function registrySessionIdentity(row: unknown): string | null {
+  return profileSessionId(row)
 }
 
 export function mergeProfileSessionWindow(rows: unknown[], offset: number, limit: number): unknown[] {
@@ -282,36 +295,34 @@ export async function fetchRegistrySessionRows(
 }
 
 /** Splice registry-gateway rows into an already-merged unified list: dedupe by
- *  session id (a v1 remote-override splice may already carry a row), keep the
- *  recency sort, and extend the per-profile totals so truncation flags stay
- *  honest. Mutates and returns `merged`/`profileTotals` the way the v1 splice
- *  does. */
+ *  owning connection, profile, and session id. Legacy v1 remote rows are
+ *  normalized with their exact resolved registry connection before this splice
+ *  (when that identity can be proven); unresolved rows stay distinct from all
+ *  tagged registry rows, preserving genuine gateway twins. Mutates and returns
+ *  `merged`/`profileTotals` the way the v1 splice does. */
 export function spliceRegistrySessionRows(
   merged: unknown[],
   registryRows: unknown[],
   profileTotals: Record<string, number>
 ): { added: number } {
-  const seen = new Set(merged.map(sessionId).filter((id): id is string => id !== null))
+  const seen = new Set(merged.map(registrySessionIdentity).filter((identity): identity is string => identity !== null))
   let added = 0
 
   for (const row of registryRows) {
-    const id = sessionId(row)
+    const identity = registrySessionIdentity(row)
 
-    if (id && seen.has(id)) {
+    if (identity && seen.has(identity)) {
       continue
     }
 
-    if (id) {
-      seen.add(id)
+    if (identity) {
+      seen.add(identity)
     }
 
     merged.push(row)
     added += 1
 
-    const profile =
-      row && typeof row === 'object' && 'profile' in row && typeof row.profile === 'string' && row.profile
-        ? row.profile
-        : 'default'
+    const profile = sessionProfile(row)
 
     profileTotals[profile] = (profileTotals[profile] || 0) + 1
   }

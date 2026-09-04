@@ -398,6 +398,7 @@ class CompressionCommitFence:
         self._last_progress = time.monotonic()
         self._progress_observed = False
         self._deadline: float | None = None
+        self._route_deadline_aborted = False
         self._retain_cancelled_lock_until_worker_done = False
         # Set once the active-row watermark is captured: later rows survive as tail, so hosts may keep admission.
         self._commit_watermark_fenced = False
@@ -409,6 +410,7 @@ class CompressionCommitFence:
         seconds = float(seconds)
         if seconds <= 0:
             raise ValueError("total compression ceiling must be positive")
+        self._route_deadline_aborted = False
         self._deadline = time.monotonic() + seconds
 
     def touch_progress(self) -> None:
@@ -437,6 +439,15 @@ class CompressionCommitFence:
         waiting (see ``auxiliary_client.aux_stream_deadline``).
         """
         return self._deadline
+
+    def mark_route_deadline_abort(self) -> None:
+        """Publish that the worker unwound because this deadline expired."""
+        self._route_deadline_aborted = True
+
+    @property
+    def route_deadline_aborted(self) -> bool:
+        """Whether the worker observed this route's deadline cancellation."""
+        return self._route_deadline_aborted
 
     def seconds_since_progress(self) -> float:
         """Seconds since the worker last reported forward progress."""
@@ -494,6 +505,16 @@ class CompressionCommitFence:
     def is_cancelled(self) -> bool:
         """True after cancellation won before the commit boundary."""
         return self._cancelled or self._admission_revoked or self.deadline_exceeded
+
+    @property
+    def cancellation_requested(self) -> bool:
+        """True only after the host actively cancelled this attempt."""
+        return self._cancelled or self._admission_revoked
+
+    @property
+    def commit_started(self) -> bool:
+        """Whether this attempt ever entered the commit boundary."""
+        return self._commit_started
 
     def retain_compression_lock_until_worker_done(self) -> None:
         """Prevent a timed-out live worker from overlapping a retry."""
@@ -903,7 +924,10 @@ def _await_worker_within_budget(
         since_progress = fence.seconds_since_progress()
         wait_slice = min(max(idle - since_progress, 0.005), remaining_ceiling)
         try:
-            return True, future.result(timeout=wait_slice)
+            result = future.result(timeout=wait_slice)
+            if fence.deadline_exceeded and not fence.commit_started:
+                return False, result
+            return True, result
         except concurrent.futures.TimeoutError:
             waited = time.monotonic() - wait_started
             since_progress = fence.seconds_since_progress()
@@ -1068,6 +1092,7 @@ def run_compress_context_with_progress_timeout(
         if settled:
             handled_exit = True
             return result
+        deadline_abort_result = result if fence.route_deadline_aborted else None
 
         # F6: a not-yet-started future must not linger as a stale queued job.
         # cancel() is a no-op for a running worker (fence handles that path).
@@ -1124,6 +1149,8 @@ def run_compress_context_with_progress_timeout(
             )
         # Leave the future on the shared pool: fence cancel won, so a late
         # commit cannot land (same detachment model as gateway hygiene).
+        if deadline_abort_result is not None:
+            return deadline_abort_result
         return messages, _resolve_fallback_prompt()
     finally:
         if not handled_exit:
@@ -2668,13 +2695,13 @@ def _run_summary_dispatch(
         # in the finally below so it cannot leak into later attempts (e.g. a manual /compress force-clear).
         # See #76354.
         _install_compression_cancelled_check(
-            agent.context_compressor, lambda: commit_fence.is_cancelled, attempt_generation
+            agent.context_compressor, lambda: commit_fence.cancellation_requested, attempt_generation
         )
 
     def _compression_cancel_requested() -> bool:
         return bool(
             (hard_cancel_event is not None and hard_cancel_event.is_set())
-            or (commit_fence is not None and commit_fence.is_cancelled)
+            or (commit_fence is not None and commit_fence.cancellation_requested)
         )
 
     try:
@@ -2692,8 +2719,8 @@ def _run_summary_dispatch(
                 aux_interrupt_protection(cancel_check=_compression_cancel_requested),
             ):
                 compressed = compress_fn(messages, **compress_kwargs)
-                # Freeze a hard stop that arrived after the last provider attempt but before session state rotates.
-                if hard_cancel_event is not None and hard_cancel_event.is_set():
+                # Freeze an active stop that arrived after the last provider attempt but before session state rotates.
+                if _compression_cancel_requested():
                     raise AuxiliaryExplicitCancellation()
     finally:
         if commit_fence is not None:
@@ -3413,6 +3440,9 @@ def _run_summary_phase(
             attempt_generation=attempt.generation, hard_cancel_event=hard_cancel_event,
         )
     except AuxiliaryExplicitCancellation:
+        hard_cancelled = bool(hard_cancel_event is not None and hard_cancel_event.is_set())
+        if not hard_cancelled and commit_fence is not None and commit_fence.deadline_exceeded:
+            commit_fence.mark_route_deadline_abort()
         try:
             attempt.restore_compressor(agent.context_compressor)
         except BaseException as _rollback_exc:
@@ -3433,7 +3463,13 @@ def _run_summary_phase(
         _stop_heartbeat("context compression cancelled")
         lease.release()
         _emit_aborted_attempt_telemetry(
-            agent, attempt.started_at, (STALL_INTERRUPTED_FAILURE_CLASS if _stall_backoff else "explicit_interrupt")
+            agent,
+            attempt.started_at,
+            (
+                "route_deadline"
+                if commit_fence is not None and commit_fence.route_deadline_aborted
+                else (STALL_INTERRUPTED_FAILURE_CLASS if _stall_backoff else "explicit_interrupt")
+            ),
         )
         return _SummaryPhase(messages=messages, abort_prompt=_existing_system_prompt(agent, system_message))
     except BaseException as _compress_exc:

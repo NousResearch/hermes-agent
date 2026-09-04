@@ -2825,9 +2825,28 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # An explicit ``api_mode`` on the fallback entry always wins — including
         # an explicit "chat_completions" — and suppresses all re-detection below.
         fb_api_mode_explicit = bool(str(fb.get("api_mode") or "").strip())
+        fb_named_api_mode = ""
+        if str(fb_provider or "").strip().lower().startswith("custom:"):
+            _fb_provider_key = str(fb_provider).split(":", 1)[1].strip().lower()
+            for _cp in getattr(agent, "_custom_providers", None) or []:
+                if not isinstance(_cp, dict):
+                    continue
+                _cp_keys = {
+                    str(_cp.get("provider_key") or "").strip().lower(),
+                    str(_cp.get("name") or "").strip().lower(),
+                }
+                if _fb_provider_key in _cp_keys:
+                    fb_named_api_mode = str(
+                        _cp.get("api_mode") or _cp.get("transport") or ""
+                    ).strip()
+                    break
         fb_api_mode = "chat_completions"
         if fb_api_mode_explicit:
             fb_api_mode = str(fb.get("api_mode")).strip()
+        elif fb_named_api_mode:
+            # A named custom provider's declared transport is authoritative.
+            # Do not infer Responses solely from a GPT-looking model name.
+            fb_api_mode = fb_named_api_mode
         elif fb_provider == "anthropic":
             # Provider-name check must not be gated on fb_base_url_hint:
             # an entry that names provider: anthropic without an explicit
@@ -2877,7 +2896,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         fb_base_url = str(fb_client.base_url)
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
 
-        if not fb_api_mode_explicit and fb_api_mode == "chat_completions":
+        if not (fb_api_mode_explicit or fb_named_api_mode) and fb_api_mode == "chat_completions":
             if fb_provider == "openai-codex":
                 fb_api_mode = "codex_responses"
             elif fb_provider in {"nous", "nous-portal", "nousresearch"}:

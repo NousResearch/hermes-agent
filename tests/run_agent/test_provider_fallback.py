@@ -528,6 +528,7 @@ class TestFallbackExtraBodyReResolution:
             {
                 "provider_key": "fbprov",
                 "base_url": self.FB_URL,
+                "api_mode": "chat_completions",
                 "extra_body": {
                     "reasoning": {"enabled": True, "effort": "medium"},
                 },
@@ -536,6 +537,7 @@ class TestFallbackExtraBodyReResolution:
 
         self._activate(agent)
 
+        assert agent.api_mode == "chat_completions"
         assert agent.reasoning_config == {"enabled": True, "effort": "max"}
         assert agent.request_overrides["extra_body"]["reasoning"] == {
             "enabled": True,

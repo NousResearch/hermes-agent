@@ -1860,6 +1860,9 @@ DEFAULT_CONFIG = {
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
+        # Inbound voice notes: auto uses native audio only when the active model advertises it;
+        # native prefers inline audio; stt always transcribes before the model turn.
+        "audio_mode": "auto",
         # Named-profile allowlist for multiplex mode. None = serve all; [] = default only.
         "multiplex_profile_allowlist": None,
         # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database

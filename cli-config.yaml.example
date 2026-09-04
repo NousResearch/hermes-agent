@@ -1233,9 +1233,14 @@ agent:
   #     style: "terse"
 
 # =============================================================================
-# Gateway Lifecycle
+# Gateway
 # =============================================================================
 gateway:
+  # Route inbound voice notes. auto uses native audio only when the active model
+  # advertises audio input; native prefers inline audio; stt always transcribes.
+  # Payload-construction failures fall back to STT for only the rejected clips.
+  audio_mode: auto
+
   # Post-interrupt grace for running agents during an unexpected SIGTERM.
   # Adapter, bridge, and database teardown starts after this many seconds even
   # if an agent has not unwound. Keep it below the service-manager stop budget.

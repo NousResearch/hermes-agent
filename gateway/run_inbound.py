@@ -1333,12 +1333,12 @@ class GatewayInboundMixin:
     @staticmethod
     def _classify_inbound_media(
         event: MessageEvent, pending_stt_prepared: bool
-    ) -> Tuple[list, list, list, list]:
-        """Split ``event.media_urls`` into (image, STT-voice, audio-file, video) paths. Per-attachment
+    ) -> Tuple[list, list, list, list, list]:
+        """Split media into image, voice, native-voice metadata, audio-file, and video lists. Per-attachment
         MIME wins over the message-level type (a document sent alongside an image must not be routed
         as an image). MessageType.AUDIO / mixed DOCUMENT audio is a file attachment, never STT."""
         from gateway.run import _event_media_is_audio, _event_media_is_image, _event_media_is_stt_input
-        image_paths, audio_paths, audio_file_paths, video_paths = [], [], [], []
+        image_paths, audio_paths, audio_attachments, audio_file_paths, video_paths = [], [], [], [], []
         for i, path in enumerate(event.media_urls or []):
             mtype = event.media_types[i] if i < len(event.media_types) else ""
             if _event_media_is_image(event, i):
@@ -1348,9 +1348,10 @@ class GatewayInboundMixin:
                     audio_file_paths.append(path)
                 elif not pending_stt_prepared and _event_media_is_stt_input(event, i):
                     audio_paths.append(path)
+                    audio_attachments.append({"path": path, "mime_type": mtype})
             if mtype.startswith("video/") or (not mtype and event.message_type == MessageType.VIDEO):
                 video_paths.append(path)
-        return image_paths, audio_paths, audio_file_paths, video_paths
+        return image_paths, audio_paths, audio_attachments, audio_file_paths, video_paths
 
     async def _enrich_inbound_images(
         self, source: SessionSource, session_key: str, message_text: str, image_paths: list[str]
@@ -1413,6 +1414,45 @@ class GatewayInboundMixin:
                 _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
                 await self._echo_stt_transcripts(_echo_adapter, source, _successful_transcripts, metadata=_echo_meta)
         return message_text
+
+    async def _route_inbound_voice(
+        self, event: MessageEvent, source: SessionSource, session_key: str, message_text: str,
+        audio_paths: list[str], audio_attachments: list[Dict[str, str]],
+    ) -> str:
+        """Stage voice notes for native input, or preserve the established STT path."""
+        mode = await asyncio.to_thread(
+            self._decide_audio_input_mode, source=source, session_key=session_key,
+        )
+        if mode == "native":
+            self._session_state(session_key).persistent.native_audio_attachments = [
+                dict(item) for item in audio_attachments
+            ]
+            logger.info(
+                "Audio routing: native. %d voice attachment(s) will be sent inline.",
+                len(audio_attachments),
+            )
+            return message_text
+        logger.info("Audio routing: STT. Transcribing %d voice attachment(s).", len(audio_paths))
+        return await self._enrich_inbound_voice(event, source, message_text, audio_paths)
+
+    async def _transcribe_native_audio_fallback(
+        self, audio_paths: List[str], *, source: SessionSource,
+        reply_to_message_id: Optional[str] = None,
+    ) -> str:
+        """Transcribe only native voice clips rejected during final payload construction."""
+        fallback_text, transcripts = await self._enrich_message_with_transcription("", audio_paths)
+        if transcripts and self._should_echo_stt_transcripts():
+            adapter = self._adapter_for_source(source)
+            if adapter:
+                metadata = self._thread_metadata_for_source(source, reply_to_message_id)
+                await self._echo_stt_transcripts(
+                    adapter,
+                    source,
+                    transcripts,
+                    metadata=metadata,
+                    log_context="Native audio STT fallback",
+                )
+        return fallback_text
 
     @staticmethod
     def _inbound_attachment_display_name(path: str) -> Tuple[str, str]:
@@ -1605,15 +1645,20 @@ class GatewayInboundMixin:
         # Prefer the caller's resolved session key so this write key matches the consume key at the
         # run_conversation site; derive it here only for tests and legacy standalone callers.
         session_key = session_key or self._session_key_for_source(source)
-        # Reset only this session's per-call buffer; other sessions may be concurrently preparing.
+        # Reset only this session's per-call buffers; other sessions may be concurrently preparing.
         self._consume_pending_native_image_paths(session_key)
+        self._consume_pending_native_audio_attachments(session_key)
 
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
-        image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(event, _pending_stt_prepared)
+        image_paths, audio_paths, audio_attachments, audio_file_paths, video_paths = self._classify_inbound_media(
+            event, _pending_stt_prepared,
+        )
         if image_paths:
             message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
         if audio_paths:
-            message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
+            message_text = await self._route_inbound_voice(
+                event, source, session_key, message_text, audio_paths, audio_attachments,
+            )
         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
         message_text = self._prepend_inbound_document_notes(event, message_text)
         message_text = self._prepend_inbound_reply_context(event, source, message_text)
@@ -1646,6 +1691,14 @@ class GatewayInboundMixin:
         if paths:
             state.persistent.native_image_paths = []
         return paths
+
+    def _consume_pending_native_audio_attachments(self, session_key: str) -> List[Dict[str, str]]:
+        """Consume this session's one-shot native voice attachment buffer."""
+        state = self._peek_session_state(session_key)
+        attachments = list(state.persistent.native_audio_attachments or []) if state is not None else []
+        if attachments:
+            state.persistent.native_audio_attachments = []
+        return [dict(item) for item in attachments]
 
     async def _mark_durable_active_turn(self, event: "MessageEvent", session_key: str) -> bool:
         """Persist the exact resolved routing key for this running turn."""
@@ -1846,6 +1899,65 @@ class GatewayInboundMixin:
         except Exception as exc:
             logger.debug("image_routing: decision failed, falling back to text — %s", exc)
             return "text"
+
+    def _decide_audio_input_mode(
+        self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
+        user_config: Optional[dict] = None, provider: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> str:
+        """Resolve native/STT routing against the effective model for this session turn."""
+        try:
+            from agent.audio_routing import decide_audio_input_mode
+            from agent.auxiliary_client import _read_main_model, _read_main_provider
+            from gateway.run import _load_gateway_config
+            from hermes_cli.config import load_config
+
+            cfg = user_config if isinstance(user_config, dict) else load_config()
+            raw_cfg = user_config if isinstance(user_config, dict) else _load_gateway_config()
+            raw_gateway = raw_cfg.get("gateway") if isinstance(raw_cfg.get("gateway"), dict) else {}
+            if "audio_mode" in raw_cfg:
+                configured_mode = raw_cfg.get("audio_mode")
+            elif "audio_mode" in raw_gateway:
+                configured_mode = raw_gateway.get("audio_mode")
+            else:
+                configured_mode = getattr(getattr(self, "config", None), "audio_mode", "auto")
+
+            resolved_provider = (provider or "").strip()
+            resolved_model = (model or "").strip()
+            if (not resolved_provider or not resolved_model) and (source is not None or session_key):
+                try:
+                    turn_model, runtime_kwargs = self._resolve_session_agent_runtime(
+                        source=source, session_key=session_key, user_config=cfg,
+                    )
+                    runtime = runtime_kwargs if isinstance(runtime_kwargs, dict) else {}
+                    if not resolved_model and isinstance(turn_model, str):
+                        resolved_model = turn_model.strip()
+                    if not resolved_provider and isinstance(runtime.get("provider"), str):
+                        resolved_provider = runtime["provider"].strip()
+                except Exception as exc:
+                    logger.debug(
+                        "audio_routing: session runtime resolution failed, falling back to process runtime — %s",
+                        exc,
+                    )
+
+            resolved_provider = resolved_provider or _read_main_provider()
+            resolved_model = resolved_model or _read_main_model()
+            mode = decide_audio_input_mode(
+                resolved_provider,
+                resolved_model,
+                str(configured_mode or "auto"),
+            )
+            logger.info(
+                "Audio routing decision: mode=%s provider=%s model=%s configured=%s",
+                mode,
+                resolved_provider or "unknown",
+                resolved_model or "unknown",
+                configured_mode or "auto",
+            )
+            return mode
+        except Exception as exc:
+            logger.debug("audio_routing: decision failed, falling back to STT — %s", exc)
+            return "stt"
 
     async def _enrich_message_with_vision(self, user_text: str, image_paths: List[str]) -> str:
         """Auto-analyze user-attached images with the vision tool and prepend the descriptions.

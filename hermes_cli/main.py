@@ -1731,6 +1731,16 @@ def cmd_chat(args):
         if emit_partial_update_hint(e):
             sys.exit(1)
         raise
+    except KeyboardInterrupt:
+        # SIGINT during startup/run must be a clean, standard exit — not an
+        # unhandled traceback with exit code null. The signal handler in
+        # cli.py (_signal_handler_q) raises KeyboardInterrupt to unwind the
+        # main thread; if the interrupt lands before cli_main's own
+        # run-loop try/except (e.g. during agent init or credential
+        # validation, both of which make network calls), it would otherwise
+        # escape cmd_chat entirely. Exit 130 (128+SIGINT) is the standard
+        # convention for an interrupt-cancelled process.
+        sys.exit(130)
 
 
 def cmd_gateway(args):

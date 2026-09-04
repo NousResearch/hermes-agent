@@ -3,9 +3,11 @@ into a local profile's canonical Bot Chat session as a real inbound turn.
 
 Covers token parsing, target resolution (own profile / named / missing),
 preflight exemption, create-time validation, the subprocess delivery lane,
-and the delivery-targets listing used by UI pickers.
+the single-owner session-lock retry/backoff (#99956), the per-profile turn
+lock, and the delivery-targets listing used by UI pickers.
 """
 
+import contextlib
 import subprocess
 from unittest import mock
 
@@ -15,11 +17,19 @@ from cron import scheduler as sched
 from cron.scheduler import (
     BOT_CHAT_PLATFORM,
     _deliver_to_bot_chat,
+    _is_session_lock_refusal,
     _preflight_check_delivery,
     _resolve_bot_chat_target,
     _resolve_delivery_targets,
     parse_bot_chat_deliver_token,
 )
+
+
+def _no_turn_lock():
+    """Neutralize the per-profile turn lock for subprocess-lane assertions."""
+    return mock.patch.object(
+        sched, "_bot_chat_delivery_lock", return_value=contextlib.nullcontext()
+    )
 
 
 # ── token parsing ────────────────────────────────────────────────────────────
@@ -127,7 +137,8 @@ def test_deliver_runs_canonical_bot_chat_lane():
         calls["kwargs"] = kwargs
         return _completed()
 
-    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+    with _no_turn_lock(), \
+         mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
          mock.patch.object(sched.shutil, "which", return_value="/usr/bin/hermes"):
         err = _deliver_to_bot_chat({"id": "j1", "name": "Daily digest"}, "the output", "")
 
@@ -152,7 +163,8 @@ def test_deliver_named_profile_uses_p_flag_and_clears_home():
         calls["kwargs"] = kwargs
         return _completed()
 
-    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+    with _no_turn_lock(), \
+         mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
          mock.patch.object(sched.shutil, "which", return_value="/usr/bin/hermes"), \
          mock.patch.dict(sched.os.environ, {"HERMES_HOME": "/tmp/other-profile"}):
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "research")
@@ -165,19 +177,21 @@ def test_deliver_named_profile_uses_p_flag_and_clears_home():
 
 
 def test_deliver_failure_returns_error_string():
-    with mock.patch.object(
-        sched.subprocess, "run", return_value=_completed(returncode=1, stderr="boom")
-    ), mock.patch.object(sched.shutil, "which", return_value="/usr/bin/hermes"):
+    with _no_turn_lock(), \
+         mock.patch.object(
+            sched.subprocess, "run", return_value=_completed(returncode=1, stderr="boom")
+        ), mock.patch.object(sched.shutil, "which", return_value="/usr/bin/hermes"):
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
     assert err is not None
     assert "boom" in err
 
 
 def test_deliver_timeout_returns_error_string():
-    with mock.patch.object(
-        sched.subprocess, "run",
-        side_effect=subprocess.TimeoutExpired(cmd="hermes", timeout=600),
-    ), mock.patch.object(sched.shutil, "which", return_value="/usr/bin/hermes"):
+    with _no_turn_lock(), \
+         mock.patch.object(
+            sched.subprocess, "run",
+            side_effect=subprocess.TimeoutExpired(cmd="hermes", timeout=600),
+        ), mock.patch.object(sched.shutil, "which", return_value="/usr/bin/hermes"):
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
     assert err is not None
     assert "timed out" in err
@@ -193,13 +207,185 @@ def test_deliver_message_carries_cron_attribution(tmp_path):
             captured["message"] = fh.read()
         return _completed()
 
-    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+    with _no_turn_lock(), \
+         mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
          mock.patch.object(sched.shutil, "which", return_value="/usr/bin/hermes"):
         _deliver_to_bot_chat({"id": "j1", "name": "Daily digest"}, "the payload", "")
 
     assert 'Cronjob "Daily digest" output' in captured["message"]
     assert "not the user" in captured["message"]
     assert "the payload" in captured["message"]
+
+
+# ── single-owner session-lock handling (#99956) ──────────────────────────────
+
+def test_is_session_lock_refusal():
+    assert _is_session_lock_refusal(
+        "Session bot-chat already has a live owner (desktop, pid 42)"
+    ) is True
+    assert _is_session_lock_refusal(
+        "Hermes is at the active session limit (3/3)."
+    ) is True
+    assert _is_session_lock_refusal("") is False
+    assert _is_session_lock_refusal("invalid api key") is False
+    assert _is_session_lock_refusal("model not found") is False
+
+
+def test_deliver_retries_then_succeeds_when_session_owned():
+    """A transient single-owner refusal (bot mid-turn) is retried with backoff."""
+    calls = {"n": 0}
+
+    def fake_run(argv, **kwargs):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return _completed(
+                returncode=1,
+                stderr="Session bot-chat already has a live owner (desktop, pid 42)",
+            )
+        return _completed()
+
+    with _no_turn_lock(), \
+         mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+         mock.patch.object(sched.shutil, "which", return_value="/usr/bin/hermes"), \
+         mock.patch.object(sched.time, "sleep", lambda _s: None):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert err is None
+    assert calls["n"] == 3
+
+
+def test_deliver_gives_up_after_session_owned_retries():
+    """A persistently owned session gives up with a clear, actionable error."""
+    calls = {"n": 0}
+
+    def fake_run(argv, **kwargs):
+        calls["n"] += 1
+        return _completed(
+            returncode=1,
+            stderr="Session bot-chat already has a live owner (desktop, pid 42)",
+        )
+
+    with _no_turn_lock(), \
+         mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+         mock.patch.object(sched.shutil, "which", return_value="/usr/bin/hermes"), \
+         mock.patch.object(sched.time, "sleep", lambda _s: None):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert err is not None
+    assert "open on another surface" in err
+    assert calls["n"] == sched._BOT_CHAT_LOCK_RETRY_ATTEMPTS
+
+
+def test_deliver_backoff_doubles_within_30s_budget():
+    """Backoff delays double each attempt (2→4→8→16s) and stay within ~30s."""
+    calls = {"n": 0}
+    sleeps = []
+
+    def fake_run(argv, **kwargs):
+        calls["n"] += 1
+        return _completed(
+            returncode=1,
+            stderr="Session bot-chat already has a live owner (desktop, pid 42)",
+        )
+
+    with _no_turn_lock(), \
+         mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+         mock.patch.object(sched.shutil, "which", return_value="/usr/bin/hermes"), \
+         mock.patch.object(sched.time, "sleep", side_effect=sleeps.append):
+        _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    # Powers of two, one delay between each pair of attempts.
+    assert sleeps == [2.0, 4.0, 8.0, 16.0]
+    assert sum(sleeps) <= 30.0
+
+
+def test_deliver_reports_active_session_limit():
+    """The active-session cap refusal gets its own actionable message."""
+    with _no_turn_lock(), \
+         mock.patch.object(
+            sched.subprocess, "run",
+            return_value=_completed(
+                returncode=1,
+                stderr="Hermes is at the active session limit (3/3).",
+            ),
+        ), mock.patch.object(sched.shutil, "which", return_value="/usr/bin/hermes"), \
+         mock.patch.object(sched.time, "sleep", lambda _s: None):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+    assert err is not None
+    assert "active session limit" in err
+
+
+def test_deliver_does_not_retry_non_lock_failures():
+    """Auth/quota/config/model errors are not retried (a retry cannot fix them)."""
+    calls = {"n": 0}
+
+    def fake_run(argv, **kwargs):
+        calls["n"] += 1
+        return _completed(returncode=1, stderr="invalid api key")
+
+    with _no_turn_lock(), \
+         mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+         mock.patch.object(sched.shutil, "which", return_value="/usr/bin/hermes"), \
+         mock.patch.object(sched.time, "sleep", lambda _s: None):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert err is not None
+    assert "invalid api key" in err
+    assert calls["n"] == 1
+
+
+# ── per-profile turn lock (#99956) ───────────────────────────────────────────
+
+def test_bot_chat_delivery_lock_resolves_own_profile(tmp_path, monkeypatch):
+    from tools import bot_relay
+
+    captured = {}
+
+    def fake_acquire(root, name, timeout_seconds=None):
+        captured["root"] = str(root)
+        captured["name"] = name
+        return contextlib.nullcontext()
+
+    monkeypatch.setattr(bot_relay, "acquire_turn_lock", fake_acquire)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    with sched._bot_chat_delivery_lock(""):
+        pass
+    assert captured["name"] == "default"
+    assert captured["root"] == str(tmp_path / ".hermes")
+
+
+def test_bot_chat_delivery_lock_uses_named_profile(tmp_path, monkeypatch):
+    from tools import bot_relay
+
+    captured = {}
+
+    def fake_acquire(root, name, timeout_seconds=None):
+        captured["root"] = str(root)
+        captured["name"] = name
+        return contextlib.nullcontext()
+
+    monkeypatch.setattr(bot_relay, "acquire_turn_lock", fake_acquire)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    with sched._bot_chat_delivery_lock("research"):
+        pass
+    assert captured["name"] == "research"
+    assert captured["root"] == str(tmp_path / ".hermes")
+
+
+def test_bot_chat_delivery_lock_derives_own_name_from_profile_home(tmp_path, monkeypatch):
+    from tools import bot_relay
+
+    captured = {}
+
+    def fake_acquire(root, name, timeout_seconds=None):
+        captured["name"] = name
+        return contextlib.nullcontext()
+
+    monkeypatch.setattr(bot_relay, "acquire_turn_lock", fake_acquire)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "research"))
+    with sched._bot_chat_delivery_lock(""):
+        pass
+    assert captured["name"] == "research"
 
 
 # ── delivery-targets listing (UI pickers) ────────────────────────────────────

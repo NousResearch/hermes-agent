@@ -298,7 +298,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onLoadMoreSessions: () => Promise<void> | void
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
-  onDeleteSession: (sessionId: string) => void
+  onDeleteSession: (sessionId: string, profile?: string) => boolean | Promise<boolean | void> | void
   onArchiveSession: (sessionId: string) => void
   onBranchSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
@@ -1899,6 +1899,7 @@ export function ChatSidebar({
               <SidebarCronJobsSection
                 jobs={cronJobs}
                 label={s.cronJobs}
+                onDeleteRun={async (sessionId, profile) => (await onDeleteSession(sessionId, profile)) !== false}
                 onManageJob={onManageCronJob}
                 onOpenRun={onResumeSession}
                 onToggle={() => setSidebarCronOpen(!cronOpen)}

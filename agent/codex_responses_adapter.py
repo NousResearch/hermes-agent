@@ -30,6 +30,30 @@ def _classify_responses_issuer(
     return f"other:{base_url}" if base_url else "other"
 
 
+# Issuers whose reasoning continuity is carried only by ``encrypted_content``. Plaintext reasoning items
+# (visible ``content``/``summary`` text, no blob) are the third-party-gateway shape (issuer ``other[:base_url]``,
+# e.g. Kimi or DeepSeek behind a translating gateway) and are never captured for or replayed to these.
+_ENCRYPTED_REASONING_ISSUERS = frozenset({"codex_backend", "xai_responses", "github_responses"})
+
+
+def _reasoning_plaintext(item: Any) -> tuple[List[str], List[str]]:
+    """``(content reasoning_text texts, summary texts)`` of a reasoning item (dict or SDK object)."""
+    content_texts = [
+        text for part in _as_list(_field(item, "content"))
+        if _field(part, "type") == "reasoning_text" and _nonempty_str(text := _field(part, "text"))
+    ]
+    summary_texts = [text for part in _as_list(_field(item, "summary")) if _nonempty_str(text := _field(part, "text"))]
+    return content_texts, summary_texts
+
+
+def _is_plaintext_reasoning_item(item: Any) -> bool:
+    """Reasoning item with visible text but no ``encrypted_content`` blob."""
+    if _nonempty_str(_field(item, "encrypted_content")):
+        return False
+    content_texts, summary_texts = _reasoning_plaintext(item)
+    return bool(content_texts or summary_texts)
+
+
 # Per-process throttle for the cross-issuer skip warning.
 _CROSS_ISSUER_WARN_EMITTED = False
 
@@ -332,8 +356,13 @@ def _replay_reasoning_items(
     global _CROSS_ISSUER_WARN_EMITTED
     replayed: List[Dict[str, Any]] = []
     for ri in _as_list(msg.get("codex_reasoning_items")):
-        if not (isinstance(ri, dict) and ri.get("encrypted_content")):
+        if not isinstance(ri, dict):
             continue
+        if not ri.get("encrypted_content"):
+            # Plaintext reasoning replays only to third-party issuers; first-party backends seal continuity in
+            # encrypted_content, so even an unstamped legacy plaintext item never reaches them.
+            if not _is_plaintext_reasoning_item(ri) or current_issuer_kind in _ENCRYPTED_REASONING_ISSUERS:
+                continue
         item_id = ri.get("id")
         if (item_id and item_id in seen_item_ids) or (ri.get("type") == "compaction" and not native_compaction_eligible):
             continue
@@ -620,23 +649,28 @@ def _preflight_function_call_output(item: Dict[str, Any], idx: int, ctx: _Prefli
 
 
 def _preflight_encrypted(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Optional[Dict[str, Any]]:
-    """``reasoning`` / ``compaction`` items: opaque, issuer-sealed; forward only API-defined fields."""
+    """``reasoning`` / ``compaction`` items: opaque, issuer-sealed; forward only API-defined fields. A
+    ``reasoning`` item with visible text and no blob (third-party gateway) is forwarded as ``summary`` + ``content``."""
     encrypted = item.get("encrypted_content")
-    if not _nonempty_str(encrypted):
-        return None
     if item["type"] == "compaction":
-        return {"type": "compaction", "encrypted_content": encrypted}
+        return {"type": "compaction", "encrypted_content": encrypted} if _nonempty_str(encrypted) else None
+    plaintext = not _nonempty_str(encrypted)
+    if plaintext and not _is_plaintext_reasoning_item(item):
+        return None
     # ``id`` is used only for local dedup and NOT forwarded (store=False → server-side 404).
     item_id = item.get("id")
     if _nonempty_str(item_id):
         if item_id in ctx.seen_ids:
             return None
         ctx.seen_ids.add(item_id)
-    summary = _as_list(item.get("summary"))
-    return {
-        "type": "reasoning", "encrypted_content": encrypted,
-        "summary": _neutralize_harmony_structure(summary) if ctx.sanitize_harmony_tokens else summary,
-    }
+    sanitize = _neutralize_harmony_structure if ctx.sanitize_harmony_tokens else (lambda value: value)
+    out: Dict[str, Any] = {"type": "reasoning", "summary": sanitize(_as_list(item.get("summary")))}
+    if plaintext:
+        if isinstance(item.get("content"), list):
+            out["content"] = sanitize(item["content"])
+    else:
+        out["encrypted_content"] = encrypted
+    return out
 
 
 def _preflight_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
@@ -846,8 +880,10 @@ def _extract_responses_message_text(item: Any) -> str:
 
 
 def _extract_responses_reasoning_text(item: Any) -> str:
-    """Compact reasoning text from a Responses reasoning item (summary, else ``text``)."""
-    chunks = _text_chunks(getattr(item, "summary", None))
+    """Compact reasoning text from a Responses reasoning item: full ``content`` reasoning_text (third-party
+    gateways) first, else ``summary``, else ``text``."""
+    content_texts, summary_texts = _reasoning_plaintext(item)
+    chunks = content_texts or summary_texts
     text = getattr(item, "text", None)
     return "\n".join(chunks).strip() if chunks else (text.strip() if isinstance(text, str) else "")
 
@@ -905,6 +941,33 @@ def _capture_encrypted_item(item: Any, item_type: str, issuer_kind: Optional[str
     return raw_item
 
 
+def _capture_plaintext_reasoning(item: Any, issuer_kind: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Replay item for a reasoning item that carries visible text but no ``encrypted_content`` (third-party
+    gateways fronting Kimi, DeepSeek, ...). Mirrors the received ``summary``/``content`` shape and stamps the
+    issuer. Never captured for first-party issuers: their continuity contract is the encrypted blob, and this
+    keeps their wire byte-identical. Without replay, Preserved-Thinking models lose their chain after the first
+    tool call, stop reasoning, and end the turn early."""
+    if issuer_kind in _ENCRYPTED_REASONING_ISSUERS:
+        return None
+    content_texts, summary_texts = _reasoning_plaintext(item)
+    if not (content_texts or summary_texts):
+        return None
+    item_id = getattr(item, "id", None)
+    if isinstance(item_id, str) and item_id.startswith("rs_tmp_"):
+        logger.debug("Skipping transient Codex reasoning item during normalization: %s", item_id)
+        return None
+    raw_item: Dict[str, Any] = {
+        "type": "reasoning", "summary": [{"type": "summary_text", "text": text} for text in summary_texts],
+    }
+    if content_texts:
+        raw_item["content"] = [{"type": "reasoning_text", "text": text} for text in content_texts]
+    if issuer_kind:
+        raw_item["_issuer_kind"] = issuer_kind
+    if _nonempty_str(item_id):
+        raw_item["id"] = item_id
+    return raw_item
+
+
 class _OutputScan:
     """Accumulated view of one Responses ``output`` list (phase 1 of normalization)."""
 
@@ -933,6 +996,8 @@ class _OutputScan:
                 # Compaction checkpoints ride the codex_reasoning_items sidecar (persistence,
                 # replay, cross-issuer guard and kill switch for free).
                 raw_item = _capture_encrypted_item(item, item_type, issuer_kind)
+                if raw_item is None and item_type == "reasoning":
+                    raw_item = _capture_plaintext_reasoning(item, issuer_kind)
                 if raw_item is not None:
                     self.reasoning_items_raw.append(raw_item)
                     if item_type == "compaction":
@@ -1025,9 +1090,7 @@ def _normalize_codex_response(response: Any, *, issuer_kind: Optional[str] = Non
     # Reasoning-only: for Codex/xAI/GitHub, status=completed means "still thinking" → incomplete so the continuation
     # retries. Other backends trust response.status — forcing incomplete there stalls for minutes on a final state.
     reasoning_only = (scan.reasoning_items_raw or reasoning_parts or scan.saw_reasoning_item) and not final_text
-    trusted_final = (
-        response_status == "completed" and issuer_kind not in ("codex_backend", "xai_responses", "github_responses")
-    )
+    trusted_final = response_status == "completed" and issuer_kind not in _ENCRYPTED_REASONING_ISSUERS
     if tool_calls:
         finish_reason = "tool_calls"
     elif response_incomplete_content_filter:

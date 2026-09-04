@@ -440,6 +440,19 @@ export const zhHantChrome = {
   },
 
   zones: {
+    backgroundTint: '背景色調',
+    defaultBackground: '預設背景',
+    backgroundTintOption: tint =>
+      ({
+        red: '紅色',
+        orange: '橙色',
+        yellow: '黃色',
+        green: '綠色',
+        cyan: '青色',
+        blue: '藍色',
+        purple: '紫色'
+      })[tint] ?? tint,
+    zoneActions: '區域操作',
     showTabStrip: '顯示分頁',
     hideTabStrip: '隱藏分頁',
     showStripTab: title => `顯示 ${title}`,

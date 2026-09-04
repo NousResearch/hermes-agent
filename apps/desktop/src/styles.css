@@ -398,6 +398,9 @@
     --ui-sidebar-surface-background: var(--ui-bg-sidebar);
     --ui-chat-surface-background: var(--ui-bg-chrome);
     --ui-editor-surface-background: var(--ui-bg-chrome);
+    --ui-zone-chat-surface-background: var(--ui-bg-chrome);
+    --ui-zone-editor-surface-background: var(--ui-bg-chrome);
+    --ui-zone-sidebar-surface-background: var(--ui-bg-sidebar);
     /* The integrated terminal wears the transcript's background, not the
        editor's — it reads as part of the conversation surface. Its own token so
        the two can diverge without dragging the terminal along, and so a skin
@@ -657,6 +660,9 @@
     --ui-chat-surface-background: transparent;
     --ui-sidebar-surface-background: transparent;
     --ui-editor-surface-background: transparent;
+    --ui-zone-chat-surface-background: transparent;
+    --ui-zone-editor-surface-background: transparent;
+    --ui-zone-sidebar-surface-background: transparent;
     --ui-terminal-surface-background: var(--ui-bg-chrome);
   }
 
@@ -708,6 +714,9 @@
   :root[data-hermes-glass] [data-glass-opaque] {
     --ui-chat-surface-background: var(--ui-bg-chrome);
     --ui-editor-surface-background: var(--ui-bg-chrome);
+    --ui-zone-chat-surface-background: var(--ui-bg-chrome);
+    --ui-zone-editor-surface-background: var(--ui-bg-chrome);
+    --ui-zone-sidebar-surface-background: var(--ui-bg-sidebar);
     --ui-sidebar-surface-background: var(--ui-bg-sidebar);
   }
 
@@ -729,6 +738,9 @@
       transparent
     );
     --ui-editor-surface-background: var(--ui-bg-chrome);
+    --ui-zone-chat-surface-background: var(--ui-bg-chrome);
+    --ui-zone-editor-surface-background: var(--ui-bg-chrome);
+    --ui-zone-sidebar-surface-background: var(--ui-bg-sidebar);
   }
 
   /* The status bar spans the rail AND the content column. Transparent, it

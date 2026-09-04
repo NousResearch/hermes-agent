@@ -29,6 +29,14 @@ export type Orientation = 'row' | 'column'
  */
 export type TabStripMode = 'always' | 'never'
 
+/** Curated semantic hues for tinting a zone without storing arbitrary CSS. */
+export const ZONE_BACKGROUND_TINTS = ['red', 'orange', 'yellow', 'green', 'cyan', 'blue', 'purple'] as const
+export type ZoneBackgroundTint = (typeof ZONE_BACKGROUND_TINTS)[number]
+
+export function isZoneBackgroundTint(value: unknown): value is ZoneBackgroundTint {
+  return typeof value === 'string' && ZONE_BACKGROUND_TINTS.includes(value as ZoneBackgroundTint)
+}
+
 export interface SplitNode {
   type: 'split'
   id: string
@@ -51,6 +59,8 @@ export interface GroupNode {
    *  only by the zone menu and the toggle command. Minimize ignores it — a
    *  minimized group IS its strip. */
   tabStrip?: TabStripMode
+  /** Optional theme-aware background tint. Absent follows the active skin. */
+  backgroundTint?: ZoneBackgroundTint
 }
 
 export type LayoutNode = SplitNode | GroupNode
@@ -69,7 +79,8 @@ export const group = (panes: string[], options?: Partial<Omit<GroupNode, 'type' 
   panes,
   active: options?.active ?? panes[0] ?? '',
   minimized: options?.minimized,
-  tabStrip: options?.tabStrip
+  tabStrip: options?.tabStrip,
+  backgroundTint: options?.backgroundTint
 })
 
 export const split = (
@@ -547,6 +558,23 @@ export function setGroupTabStrip(root: LayoutNode, groupId: string, tabStrip: Ta
   return mapGroups(root, g => (g.id === groupId ? { ...g, tabStrip } : g))
 }
 
+/** Apply a curated tint to one zone; undefined returns it to the active skin. */
+export function setGroupBackgroundTint(
+  root: LayoutNode,
+  groupId: string,
+  backgroundTint: ZoneBackgroundTint | undefined
+): LayoutNode {
+  return mapGroups(root, group => {
+    if (group.id !== groupId) {
+      return group
+    }
+
+    const { backgroundTint: _current, ...untinted } = group
+
+    return backgroundTint ? { ...untinted, backgroundTint } : untinted
+  })
+}
+
 function replaceNode(node: LayoutNode, id: string, make: (g: GroupNode) => LayoutNode): LayoutNode {
   if (node.type === 'group') {
     return node.id === id ? make(node) : node
@@ -608,10 +636,24 @@ export function setSplitWeights(root: LayoutNode, splitId: string, weights: numb
  */
 export function migratePersistedTree(node: LayoutNode): LayoutNode {
   if (node.type === 'group') {
-    const { headerHidden, ...rest } = node as GroupNode & { headerHidden?: unknown }
+    const {
+      backgroundTint: rawBackgroundTint,
+      headerHidden,
+      ...rest
+    } = node as GroupNode & {
+      backgroundTint?: unknown
+      headerHidden?: unknown
+    }
+
     const tabStrip = rest.tabStrip === 'always' || rest.tabStrip === 'never' ? rest.tabStrip : undefined
 
-    return headerHidden === undefined && rest.tabStrip === tabStrip ? node : { ...rest, tabStrip }
+    const backgroundTint = isZoneBackgroundTint(rawBackgroundTint) ? rawBackgroundTint : undefined
+
+    if (headerHidden === undefined && rest.tabStrip === tabStrip && rawBackgroundTint === backgroundTint) {
+      return node
+    }
+
+    return { ...rest, tabStrip, ...(backgroundTint ? { backgroundTint } : {}) }
   }
 
   return { ...node, children: node.children.map(migratePersistedTree) }

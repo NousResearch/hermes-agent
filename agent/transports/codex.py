@@ -273,9 +273,11 @@ def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:
     """Astra cache semantics apply only to the official OpenAI API host."""
     if not _is_astra_model(model):
         return False
-    from utils import base_url_host_matches
+    from utils import base_url_hostname
 
-    return base_url_host_matches(str(base_url or ""), "api.openai.com")
+    # Astra's account-gated cache contract is for the canonical API origin only.
+    # Do not extend it to subdomains (or lookalike hosts) by suffix matching.
+    return base_url_hostname(str(base_url or "")).lower() == "api.openai.com"
 
 
 def _codex_efforts_for_route(model: Any, base_url: Any, *, is_codex_backend: bool = False) -> tuple[str, ...]:

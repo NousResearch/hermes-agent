@@ -158,3 +158,59 @@ def test_writeback_roundtrip_byte_identical_when_unchanged(tmp_path):
     out = _run_py(code, {"HERMES_HOME": str(home)}, tmp_path)
     assert out["identical"] is True
     assert out["parsed"]["custom_prompt"] == "keep ${NOT_SET_VAR}"
+
+
+def test_legacy_scalar_placeholder_is_rejected_at_load_time(tmp_path: Path):
+    """The historical ``model: test`` outage fails before provider use."""
+    home = tmp_path / "home"
+    home.mkdir()
+    original = "model: test\n"
+    (home / "config.yaml").write_text(original, encoding="utf-8")
+    code = """
+import json
+import os
+from pathlib import Path
+from hermes_cli.config import InvalidUserConfigError, load_config
+try:
+    load_config()
+except InvalidUserConfigError as exc:
+    result = {"rejected": True, "message": str(exc)}
+else:
+    result = {"rejected": False}
+Path(os.environ["E2E_OUT_FILE"]).write_text(json.dumps(result), encoding="utf-8")
+"""
+    out = _run_py(code, {"HERMES_HOME": str(home)}, tmp_path)
+    assert out["rejected"] is True
+    assert "test" in out["message"]
+    assert (home / "config.yaml").read_text(encoding="utf-8") == original
+
+
+def test_invalid_codex_model_falls_back_during_load_without_rewriting_file(tmp_path):
+    """A stale/impossible Codex slug must never reach an unattended API call."""
+    home = tmp_path / "hermes_home"
+    home.mkdir()
+    original = "model:\n  provider: openai-codex\n  default: test\n"
+    (home / "config.yaml").write_text(original, encoding="utf-8")
+
+    code = textwrap.dedent(
+        """
+        import json
+        import os
+        from pathlib import Path
+        from hermes_cli.config import load_config
+
+        home = Path(os.environ["HERMES_HOME"])
+        cfg = load_config()
+        Path(os.environ["E2E_OUT_FILE"]).write_text(json.dumps({
+            "effective_model": cfg["model"]["default"],
+            "provider": cfg["model"]["provider"],
+            "saved": (home / "config.yaml").read_text(encoding="utf-8"),
+        }), encoding="utf-8")
+        """
+    )
+    out = _run_py(code, {"HERMES_HOME": str(home)}, tmp_path)
+
+    assert out["effective_model"].startswith("gpt-")
+    assert out["effective_model"] != "test"
+    assert out["provider"] == "openai-codex"
+    assert out["saved"] == original

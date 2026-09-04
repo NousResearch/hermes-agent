@@ -1677,6 +1677,19 @@ def pick_silent_default_model(model_ids: list[str], provider: str = "openrouter"
 # ``partition_nous_models_by_tier`` — which can hit the Portal.
 _SILENT_DEFAULT_PROVIDERS: frozenset[str] = frozenset({"nous", "openrouter"})
 
+# Providers in this set expose a closed, Hermes-controlled model namespace.
+# Their model IDs are safe to validate offline against ``_PROVIDER_MODELS``.
+# Do not add aggregators, custom endpoints, deployment-name providers, or any
+# provider whose users can legitimately supply IDs absent from our snapshot.
+_STRICT_MODEL_CATALOG_PROVIDERS: frozenset[str] = frozenset({"openai-codex"})
+
+# Sentinel values are never meaningful built-in model IDs. Catch them even when
+# a legacy scalar config omits the provider; this is the exact shape that once
+# took every unpinned cron job offline.
+_OBVIOUSLY_INVALID_MODEL_IDS: frozenset[str] = frozenset(
+    {"test", "placeholder", "dummy", "example", "todo", "none", "null"}
+)
+
 
 def get_default_model_for_provider(provider: str) -> str:
     """Return a cost-safe default model for a provider, or "" if unknown.
@@ -1702,6 +1715,46 @@ def get_default_model_for_provider(provider: str) -> str:
         if preferred and (preferred in models or not models):
             return preferred
     return models[0] if models else ""
+
+
+def validate_strict_provider_model(
+    provider: str,
+    model: str,
+) -> tuple[Optional[bool], str]:
+    """Validate a model only when its provider has a closed local catalog.
+
+    Returns ``(True, model)`` for a known model, ``(False, fallback)`` for an
+    impossible model, and ``(None, model)`` when local validation would be
+    unsafe (open/dynamic/custom providers). The fallback is deliberately the
+    provider's normal non-interactive default, so callers never invent a model
+    or silently route the stale ID through a different provider.
+    """
+    provider_id = str(provider or "").strip().lower()
+    model_id = str(model or "").strip()
+    if not model_id or provider_id.startswith("custom:"):
+        return None, model_id
+    provider_prefix = f"{provider_id}/"
+    if provider_id in _STRICT_MODEL_CATALOG_PROVIDERS and model_id.lower().startswith(
+        provider_prefix
+    ):
+        model_id = model_id[len(provider_prefix):]
+    if model_id.lower() in _OBVIOUSLY_INVALID_MODEL_IDS:
+        fallback = (
+            get_default_model_for_provider(provider_id)
+            if provider_id in _STRICT_MODEL_CATALOG_PROVIDERS
+            else ""
+        )
+        return False, fallback
+    if provider_id not in _STRICT_MODEL_CATALOG_PROVIDERS:
+        return None, model_id
+
+    known = _PROVIDER_MODELS.get(provider_id, [])
+    for candidate in known:
+        if model_id.lower() == candidate.lower():
+            # Return the catalog spelling. Provider model IDs can be
+            # case-sensitive even though user-facing config matching is not.
+            return True, candidate
+    return False, get_default_model_for_provider(provider_id)
 
 
 def _openrouter_model_is_free(pricing: Any) -> bool:

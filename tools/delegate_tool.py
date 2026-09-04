@@ -3293,8 +3293,30 @@ def _run_single_child(
         # it instead of silently accepting zero-content "success".
         _empty_sentinel = summary.strip() == "(empty)"
 
+        _guardrail_meta = result.get("guardrail")
+        if not isinstance(_guardrail_meta, dict):
+            _child_guardrail = getattr(child, "_tool_guardrail_halt_decision", None)
+            if _child_guardrail is not None and hasattr(_child_guardrail, "to_metadata"):
+                try:
+                    _meta = _child_guardrail.to_metadata()
+                    _guardrail_meta = _meta if isinstance(_meta, dict) else None
+                except Exception:
+                    _guardrail_meta = None
+            else:
+                _guardrail_meta = None
+
+        _is_guardrail_halt = (
+            result.get("turn_exit_reason") == "guardrail_halt"
+            or (
+                isinstance(_guardrail_meta, dict)
+                and _guardrail_meta.get("action") in {"block", "halt"}
+            )
+        )
+
         if interrupted:
             status = "interrupted"
+        elif _is_guardrail_halt:
+            status = "failed"
         elif result.get("failed") or result.get("error"):
             # A structured failure (provider rejection / terminal exception)
             # must WIN over the summary-presence heuristic below. The child's
@@ -3364,6 +3386,8 @@ def _run_single_child(
         # Determine exit reason
         if interrupted:
             exit_reason = "interrupted"
+        elif _is_guardrail_halt:
+            exit_reason = "guardrail_halt"
         elif result.get("failed") or result.get("error"):
             # Provider rejection / terminal failure. Do NOT report this as
             # iteration-budget exhaustion — "max_iterations" is only truthful
@@ -3426,6 +3450,8 @@ def _run_single_child(
                 else 0.0
             ),
         }
+        if isinstance(_guardrail_meta, dict):
+            entry["guardrail"] = _guardrail_meta
         # Per-delegation spend, serialized back to the model alongside
         # tokens/api_calls so the parent can see what each delegation cost.
         # Mirrors _child_cost_usd (which is stripped pre-serialization and
@@ -3438,7 +3464,17 @@ def _run_single_child(
             else "unknown"
         )
         if status == "failed":
-            if _schema_valid is False and summary and not _empty_sentinel:
+            if _is_guardrail_halt:
+                _gr_code = (
+                    _guardrail_meta.get("code")
+                    if isinstance(_guardrail_meta, dict) and _guardrail_meta.get("code")
+                    else "guardrail_halt"
+                )
+                entry["error"] = (
+                    result.get("error")
+                    or f"Delegated subagent halted by tool guardrail: {_gr_code}"
+                )
+            elif _schema_valid is False and summary and not _empty_sentinel:
                 # The child DID respond — the response just violates the
                 # declared contract. Name that instead of the generic
                 # "no response" error; schema_errors (below) hold the

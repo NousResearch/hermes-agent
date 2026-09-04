@@ -339,17 +339,30 @@ class MemoryProvider(ABC):
         child_session_id: the subagent's session_id
         """
 
-    def learning_cards(self, limit: int = 200) -> List[Dict[str, Any]]:
-        """Return what this provider has learned, as journey cards (oldest first).
+    def journey_cards(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Return durable memory entries for the learning-journey graph.
 
-        Consumed by ``agent.learning_graph`` so the desktop Star Map, the TUI
-        ``/journey`` overlay and ``hermes journey`` can show provider memory
-        next to MEMORY.md/USER.md chunks and learned skills. Each card is a dict
-        with ``source`` (the provider name), ``timestamp`` (unix seconds or
-        None), ``title`` (short, about 80 chars) and ``body`` (about 1200 chars
-        at most); extra keys pass through to the graph payload. Providers with
-        nothing to show return []. Provider cards are read-only in the journey
-        editors; the provider's own tools manage them.
+        The journey surfaces (``hermes journey``, the TUI ``/journey`` overlay
+        and the desktop Star Map) render what the agent has learned over time.
+        By default that graph only sees built-in memory (``MEMORY.md`` /
+        ``USER.md``); implementing this hook lets an external provider's
+        durable facts appear alongside them as first-class memory nodes.
+
+        Each card is a dict with:
+
+        - ``body`` (str, required): the fact/entry text.
+        - ``title`` (str, optional): short label; defaults to the body's
+          first line.
+        - ``timestamp`` (optional): unix seconds, ISO-8601 string, or a
+          ``datetime`` — when the entry was learned. ``None`` is allowed.
+        - ``session_id`` (str, optional): the provider-side session this
+          entry was derived from, when known.
+
+        Contract: MUST be callable without ``initialize()`` (journey views run
+        outside any chat session); MUST be best-effort and never raise (any
+        failure → ``[]``); SHOULD be fast and cap work at ``limit``. Provider
+        cards are read-only in the journey editors; the provider's own tools
+        manage them. Default returns an empty list.
         """
         return []
 

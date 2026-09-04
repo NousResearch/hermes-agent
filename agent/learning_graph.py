@@ -234,33 +234,54 @@ def _load_active_provider() -> tuple[str, Any] | None:
         if not name:
             return None
         provider = load_memory_provider(name)
-        if provider is None or not hasattr(provider, "learning_cards"):
+        if provider is None or not hasattr(provider, "journey_cards"):
             return None
         return name, provider
     except Exception:
         return None
 
 
-def _provider_cards() -> list[dict[str, Any]]:
-    """Cards from the active external memory provider (``MemoryProvider.learning_cards``)."""
+def _card_timestamp(value: Any) -> Optional[int]:
+    """Unix seconds from an int/float, an ISO-8601 string or a datetime; None otherwise."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, datetime):
+        return int(value.timestamp())
+    if isinstance(value, str) and value.strip():
+        try:
+            return int(datetime.fromisoformat(value.strip().replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            return None
+    return None
+
+
+def _provider_cards(limit: int = 10000) -> list[dict[str, Any]]:
+    """Cards from the active external memory provider (``MemoryProvider.journey_cards``)."""
     loaded = _load_active_provider()
     if loaded is None:
         return []
     name, provider = loaded
     try:
-        cards = provider.learning_cards()
+        cards = provider.journey_cards(limit=limit)
     except Exception:
         return []
     out: list[dict[str, Any]] = []
     for card in cards or []:
-        if not isinstance(card, dict) or not str(card.get("title") or "").strip():
+        if not isinstance(card, dict):
             continue
+        body = str(card.get("body") or "").strip()
+        if not body:
+            continue
+        title = str(card.get("title") or "").strip() or body.splitlines()[0].strip()
         entry = dict(card)
-        entry["source"] = str(card.get("source") or name)
-        entry["title"] = str(card["title"])[:120]
-        entry["body"] = str(card.get("body") or "")[:1200]
-        ts = card.get("timestamp")
-        entry["timestamp"] = int(ts) if isinstance(ts, (int, float)) else None
+        entry["source"] = name
+        entry["title"] = (title[:80] + "…") if len(title) > 80 else title
+        entry["body"] = body[:1200]
+        entry["timestamp"] = _card_timestamp(card.get("timestamp"))
+        if card.get("session_id"):
+            entry["session_id"] = str(card["session_id"])
         out.append(entry)
     return out
 

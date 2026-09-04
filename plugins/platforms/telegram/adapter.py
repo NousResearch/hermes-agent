@@ -6077,7 +6077,26 @@ class TelegramAdapter(BasePlatformAdapter):
         """Re-read dm_topics from config.yaml so externally created topics work without restart."""
         try:
             from hermes_cli.config import load_config_readonly  # canonical loader: managed overlay + ${VAR}
-            dm_topics = load_config_readonly().get("platforms", {}).get("telegram", {}).get("extra", {}).get("dm_topics", [])
+            config = load_config_readonly()
+            # Resolve dm_topics with the same precedence as startup: the
+            # top-level ``telegram:`` block is primary (it reaches
+            # PlatformConfig.extra via _apply_yaml_config's telegram-extra
+            # passthrough), ``platforms.telegram`` is the nested fallback.
+            # Reading only the nested path silently cleared topic config on
+            # top-level-layout configs — one message into a non-configured
+            # topic was enough to drop skill bindings everywhere.
+            dm_topics: list = []
+            _tl = config.get("telegram")
+            if isinstance(_tl, dict):
+                _tl_extra = _tl.get("extra")
+                if isinstance(_tl_extra, dict):
+                    _tl_dm = _tl_extra.get("dm_topics")
+                    if isinstance(_tl_dm, list):
+                        dm_topics = _tl_dm
+            if not dm_topics:
+                _nested_dm = config.get("platforms", {}).get("telegram", {}).get("extra", {}).get("dm_topics", [])
+                if isinstance(_nested_dm, list):
+                    dm_topics = _nested_dm
             if not dm_topics:
                 self._dm_topics_config = []
                 self._dm_topic_chat_ids = set()

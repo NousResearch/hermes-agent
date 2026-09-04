@@ -88,9 +88,16 @@ def _add_context_variants(model_ids: List[str]) -> List[str]:
     return out
 
 
-def _finalize_codex_models(model_ids: List[str]) -> List[str]:
-    """Forward-compat synthesis + large-context variant synthesis."""
-    return _add_context_variants(_add_forward_compat_models(model_ids))
+def _finalize_codex_models(model_ids: List[str], *, allow_astra: bool = False) -> List[str]:
+    """Forward-compat/context synthesis with an entitlement gate for Astra.
+
+    Cached/configured model names are useful compatibility hints, but only the
+    account-scoped Codex endpoint is authoritative for current Astra access.
+    """
+    finalized = _add_forward_compat_models(model_ids)
+    if not allow_astra:
+        finalized = [model for model in finalized if model.lower() != "gpt-6-astra"]
+    return _add_context_variants(finalized)
 
 
 def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
@@ -159,7 +166,7 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
         logger.debug("Failed to fetch Codex models from API: %s", exc)
         return []
 
-    return _finalize_codex_models(_ranked_slugs(entries))
+    return _finalize_codex_models(_ranked_slugs(entries), allow_astra=True)
 
 
 def _read_default_model(codex_home: Path) -> Optional[str]:
@@ -194,7 +201,7 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
     if access_token:
         api_models = _fetch_models_from_api(access_token)
         if api_models:
-            return _finalize_codex_models(api_models)
+            return _finalize_codex_models(api_models, allow_astra=True)
     default_model = _read_default_model(codex_home)
     return _finalize_codex_models(_dedupe([
         *([default_model] if default_model else []), *_read_cache_models(codex_home),

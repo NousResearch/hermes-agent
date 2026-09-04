@@ -11,7 +11,7 @@ import re
 from typing import Any, Callable, Optional
 
 from agent.reasoning_effort import (
-    ACTUAL_RELAY_EFFORTS, XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort,
+    ACTUAL_RELAY_EFFORTS, CODEX_ASTRA_EFFORTS, XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort,
     # Same declared vocabulary + shared clamp as the main Codex transport (agent.reasoning_effort):
     # per-model — "max" is gpt-5.6-only, "minimal"/"ultra" always rejected (live-verified, #68365).
     codex_supported_efforts,
@@ -211,6 +211,15 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
         elif reasoning_config.get("effort"):
             reasoning_effort = reasoning_config["effort"]
 
+    # Astra has no wire-level disable/minimal setting.  Preserve Hermes' user-facing
+    # controls by sending the documented lowest enabled level instead; this also keeps
+    # an explicit ``enabled: false`` request valid on the Responses API.
+    if model.strip().lower().rsplit("/", 1)[-1] == "gpt-6-astra":
+        requested = str(reasoning_effort or "").strip().lower()
+        if not reasoning_enabled or requested in {"", "none", "minimal", "disabled", "off"}:
+            return "low", True
+        return clamp_effort(reasoning_effort, CODEX_ASTRA_EFFORTS), True
+
     # Wire vocabularies are declared in agent.reasoning_effort; the shared clamp policy (nearest weaker
     # supported level, never escalate, never invert the ladder) replaces the per-backend hand maps that
     # repeatedly leaked internal levels like "ultra" to the wire (#89503 class) or clamped one rung below a
@@ -260,6 +269,37 @@ def _default_prompt_cache_retention_for_request(model: str, base_url: Any) -> Op
         return None
     normalized = str(model or "").strip().lower().replace("_", "-")
     return "24h" if _EXTENDED_PROMPT_CACHE_MODEL_RE.search(normalized) else None
+
+
+def _is_astra_model(model: Any) -> bool:
+    return str(model or "").strip().lower().rsplit("/", 1)[-1] == "gpt-6-astra"
+
+
+def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:
+    """Astra cache semantics apply only to the official OpenAI API host."""
+    if not _is_astra_model(model):
+        return False
+    from utils import base_url_host_matches
+
+    return base_url_host_matches(str(base_url or ""), "api.openai.com")
+
+
+def _sanitize_astra_request_kwargs(kwargs: dict[str, Any], model: Any, base_url: Any) -> None:
+    """Apply Astra's model-specific restrictions after all request overrides are merged."""
+    if not _is_astra_model(model):
+        return
+    for key in ("temperature", "top_p", "top_logprobs", "logprobs"):
+        kwargs.pop(key, None)
+    include = kwargs.get("include")
+    if isinstance(include, list):
+        kwargs["include"] = [item for item in include if "logprob" not in str(item).lower()]
+    if _is_official_openai_responses_route(model, base_url):
+        kwargs["prompt_cache_options"] = {"ttl": "30m"}
+        kwargs.pop("prompt_cache_retention", None)
+    else:
+        # A caller override must not accidentally send official-only cache syntax to a
+        # proxy or another provider that happens to accept the Astra model name.
+        kwargs.pop("prompt_cache_options", None)
 
 
 def _content_cache_key(instructions: str, tools: Optional[list[dict[str, Any]]], scope_id: str = "") -> Optional[str]:
@@ -543,6 +583,8 @@ class ResponsesApiTransport(ProviderTransport):
         ))
         if params.get("request_overrides"):
             kwargs.update(params["request_overrides"])
+
+        _sanitize_astra_request_kwargs(kwargs, model, params.get("base_url"))
 
         _bound_prompt_cache_key_field(kwargs)
 

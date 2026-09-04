@@ -825,6 +825,18 @@ class TestGetModelCapabilities:
         assert caps is not None
         assert caps.supports_vision is False
 
+    def test_astra_builtin_metadata_fills_catalog_lag_without_listing_it(self):
+        """An explicitly discovered Astra remains fully described before models.dev catches up."""
+        with patch("agent.models_dev.fetch_models_dev", return_value={}):
+            caps = get_model_capabilities("openai", "gpt-6-astra")
+
+        assert caps is not None
+        assert caps.context_window == 1_050_000
+        assert caps.max_output_tokens == 128_000
+        assert caps.supports_tools is True
+        assert caps.supports_vision is True
+        assert caps.supports_reasoning is True
+
 
 # ---------------------------------------------------------------------------
 # Per-model metadata overrides (model_overrides config)

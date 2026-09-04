@@ -112,6 +112,28 @@ def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
     assert "gpt-5-internal" not in models
 
 
+def test_astra_requires_live_codex_account_discovery(monkeypatch, tmp_path):
+    """Cached/configured Astra names must not manufacture current OAuth entitlement."""
+    from hermes_cli import codex_models
+
+    (tmp_path / "config.toml").write_text('model = "gpt-6-astra"\n', encoding="utf-8")
+    (tmp_path / "models_cache.json").write_text(
+        json.dumps({"models": [{"slug": "gpt-6-astra", "priority": 0}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(codex_models, "_fetch_models_from_api", lambda _token: [])
+
+    assert "gpt-6-astra" not in get_codex_model_ids(access_token="stale-token")
+
+    monkeypatch.setattr(
+        codex_models,
+        "_fetch_models_from_api",
+        lambda _token: codex_models._finalize_codex_models(["gpt-6-astra"], allow_astra=True),
+    )
+    assert "gpt-6-astra" in get_codex_model_ids(access_token="entitled-token")
+
+
 
 
 
@@ -238,4 +260,3 @@ class TestNormalizeModelForProvider:
         assert changed is True
         # Uses first from available list
         assert cli.model == "gpt-5.3-codex"
-

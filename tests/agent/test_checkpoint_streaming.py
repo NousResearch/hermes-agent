@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from agent.checkpoint_strategy import CheckpointManager, CheckpointStrategy
@@ -60,6 +62,14 @@ class TestCheckpointStrategySmart:
 
     def test_does_not_checkpoint_after_successful_read(self):
         assert self.mgr.should_checkpoint("web_search", [{"title": "T"}]) is False
+
+    def test_terminal_does_not_checkpoint_via_strategy(self):
+        # "terminal" is excluded from _DESTRUCTIVE_TOOLS; the command-level
+        # _is_destructive_command gate lives at the call site, not here.
+        # should_checkpoint("terminal", ...) must return False so that
+        # read-only commands (ls, cat, grep) never trigger a snapshot.
+        assert self.mgr.should_checkpoint("terminal", "file listing output") is False
+        assert self.mgr.should_checkpoint("terminal", "total 0") is False
 
 
 class TestCheckpointStrategyRisky:
@@ -168,12 +178,10 @@ class TestStreamedToolResultAsync:
     """stream_text_async must yield exactly the same chunks as stream_text."""
 
     def _collect_async(self, streamed: StreamedToolResult) -> list:
-        import asyncio
-
         async def _run():
             return [chunk async for chunk in streamed.stream_text_async()]
 
-        return asyncio.get_event_loop().run_until_complete(_run())
+        return asyncio.run(_run())
 
     def test_async_matches_sync_large_text(self):
         content = "abc " * 400

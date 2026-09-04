@@ -53,6 +53,7 @@ from tools.tool_result_storage import (
     extract_persisted_path,
 )
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from agent.checkpoint_strategy import should_checkpoint, get_checkpoint_label, CheckpointStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -1208,15 +1209,62 @@ class _ConcurrentBatch:
         # the *when* logic lives in one declarative place, not scattered in the loop.
         # We only act when the existing checkpoint infrastructure is enabled and
         # the strategy says this tool result warrants a snapshot.
+        #
+        # Special cases handled here (matching the pre-execution _ensure_file_checkpoint
+        # logic above):
+        #
+        #   - File tools (write_file, patch): resolve the cwd through
+        #     _resolve_path_for_task → get_working_dir_for_path, exactly as the
+        #     pre-checkpoint does.  "workdir" is a terminal argument; file tools
+        #     carry "path", so falling back to os.getcwd() would land in the wrong
+        #     directory in Docker / isolated task contexts.
+        #
+        #   - terminal: only checkpoint when the command is destructive.  "terminal"
+        #     is excluded from _DESTRUCTIVE_TOOLS in checkpoint_strategy.py precisely
+        #     because the decision is command-level, not tool-level.  We consult
+        #     _is_destructive_command here instead of treating every `ls` as a
+        #     state-changing operation.
         if not blocked and agent._checkpoint_mgr.enabled:
             try:
-                from agent.checkpoint_strategy import should_checkpoint, get_checkpoint_label, CheckpointStrategy
-                if should_checkpoint(ref.name, result, CheckpointStrategy.SMART):
-                    cwd = ref.args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
-                    label = get_checkpoint_label(ref.name)
-                    agent._checkpoint_mgr.ensure_checkpoint(cwd, label)
+                label = get_checkpoint_label(ref.name)
+                _do_post_checkpoint = False
+                _post_cwd: Optional[str] = None
+
+                if ref.name == "terminal":
+                    command = ref.args.get("command", "")
+                    if _is_destructive_command(command):
+                        _do_post_checkpoint = True
+                        _post_cwd = ref.args.get("workdir") or os.getenv(
+                            "TERMINAL_CWD", os.getcwd()
+                        )
+                elif should_checkpoint(ref.name, result, getattr(agent, "_checkpoint_post_strategy", CheckpointStrategy.SMART)):
+                    _do_post_checkpoint = True
+                    if ref.name in {"write_file", "patch"}:
+                        # Route through the same path-resolution pipeline as the
+                        # pre-execution checkpoint so Docker / task-isolated cwds
+                        # are handled correctly.
+                        file_path = ref.args.get("path", "")
+                        if file_path:
+                            from tools.file_tools_paths import _resolve_path_for_task
+                            resolved = _resolve_path_for_task(
+                                file_path, self.effective_task_id or "default"
+                            )
+                            _post_cwd = agent._checkpoint_mgr.get_working_dir_for_path(
+                                str(resolved)
+                            )
+                    if _post_cwd is None:
+                        _post_cwd = ref.args.get("workdir") or os.getenv(
+                            "TERMINAL_CWD", os.getcwd()
+                        )
+
+                if _do_post_checkpoint and _post_cwd:
+                    agent._checkpoint_mgr.ensure_checkpoint(_post_cwd, label)
             except Exception as _cp_err:
-                logger.debug("checkpoint strategy hook raised for %s: %s", ref.name, _cp_err)
+                logger.warning(
+                    "post-execution checkpoint hook raised for %s: %s",
+                    ref.name,
+                    _cp_err,
+                )
 
         return _ToolOutcome(ref, result, duration, is_error, blocked)
 
@@ -1434,6 +1482,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     batch = _ConcurrentBatch(agent, messages, effective_task_id, parsed_calls, timeout_s)
     agent._current_tool = tool_names_str
     agent._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")
+
 
     spinner = _start_quiet_tool_spinner(agent, "", {}, label=f"⚡ running {num_tools} tools concurrently")
     try:

@@ -334,6 +334,7 @@ def _refuse_checkpoint_required_on_codex_app_server(
         )
 
 
+
 def _parse_config_int(raw: Any, default: int) -> int:
     """Strict int coercion: rejects bool (YAML ``true`` → 1) and fractional floats."""
     if isinstance(raw, bool):
@@ -1142,13 +1143,36 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
 
     # Filesystem checkpoint manager (transparent — not a tool)
     from tools.checkpoint_manager import CheckpointManager
+    from agent.checkpoint_strategy import CheckpointStrategy
     agent._checkpoint_mgr = CheckpointManager(
         enabled=checkpoints_enabled, max_snapshots=checkpoint_max_snapshots,
         max_total_size_mb=checkpoint_max_total_size_mb,
         max_file_size_mb=checkpoint_max_file_size_mb,
     )
 
-    agent._session_db = session_db  # optional SQLite store (CLI/gateway-provided)
+    # Strategy used by the post-execution checkpoint hook in tool_executor.
+    # Defaults to SMART (checkpoint after mutations or error results).
+    # Can be overridden via the checkpoint_post_strategy init param.
+    try:
+        agent._checkpoint_post_strategy = CheckpointStrategy(checkpoint_post_strategy)
+    except ValueError:
+        logger.warning(
+            "Unknown checkpoint_post_strategy %r; falling back to SMART",
+            checkpoint_post_strategy,
+        )
+        agent._checkpoint_post_strategy = CheckpointStrategy.SMART
+    
+    # SQLite session store (optional -- provided by CLI or gateway)
+    agent._session_db = session_db
+    # Whether close() must also close that handle. Default False: a
+    # caller-supplied session_db is almost always the SHARED launch handle,
+    # which outlives every agent and must never be closed here. Callers that
+    # hand over a DEDICATED handle (the gateway's per-profile state.db opens)
+    # set this True at the point ownership transfers, so teardown releases the
+    # sqlite fds and the token-writer thread instead of leaking them for the
+    # life of the process. Also set True on the lazy self-open in
+    # _get_session_db_for_recall, where nothing else holds a reference.
+    agent._owns_session_db = False
     agent._parent_session_id = parent_session_id
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,

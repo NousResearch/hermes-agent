@@ -2843,6 +2843,39 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     return False
 
 
+def _aux_is_oauth(api_key: Any, base_url: str) -> bool:
+    """Decide the ``is_oauth`` flag for an ``AnthropicAuxiliaryClient``.
+
+    Two conditions must BOTH hold before the Claude Code identity
+    transforms in ``build_anthropic_kwargs`` may fire:
+
+    1. ``api_key`` is an Anthropic OAuth token (``_is_oauth_token``), and
+    2. ``base_url`` is native ``api.anthropic.com``.
+
+    Condition (2) preserves the invariant established in #12846: an OAuth
+    flag must never leak onto a third-party Anthropic-compatible gateway
+    (MiniMax, Zhipu GLM, DashScope, Kimi, LiteLLM proxies), because those
+    endpoints reject the Claude Code identity headers with 401/403.
+    Condition (1) is what the three hardcoded ``is_oauth=False`` call
+    sites were missing: on native Anthropic with a subscription token the
+    aux client was built as if it were an API-key client, so the identity
+    block was never prepended and Anthropic answered 429
+    ``{"type":"rate_limit_error","message":"Error"}`` on Opus-class models.
+
+    ``api_key`` may be a callable (Entra ID token provider) — those are
+    never Anthropic OAuth tokens, so they resolve to False.
+    """
+    if not isinstance(api_key, str) or not api_key:
+        return False
+    if not _is_anthropic_compatible_host(base_url):
+        return False
+    try:
+        from agent.anthropic_adapter import _is_oauth_token
+    except ImportError:
+        return False
+    return bool(_is_oauth_token(api_key))
+
+
 def _maybe_wrap_anthropic(
     client_obj: Any,
     model: str,
@@ -2924,7 +2957,8 @@ def _maybe_wrap_anthropic(
         model, base_url[:60] if base_url else "", api_mode or "auto-detected",
     )
     return AnthropicAuxiliaryClient(
-        real_client, model, api_key, base_url, is_oauth=False,
+        real_client, model, api_key, base_url,
+        is_oauth=_aux_is_oauth(api_key, base_url),
     )
 
 
@@ -4177,7 +4211,10 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
             )
             return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra), model
         return (
-            AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base, is_oauth=False),
+            AnthropicAuxiliaryClient(
+                real_client, model, custom_key, custom_base,
+                is_oauth=_aux_is_oauth(custom_key, custom_base),
+            ),
             model,
         )
     # URL-based anthropic detection for custom endpoints that didn't set
@@ -7318,7 +7355,8 @@ def resolve_provider_client(
                         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                                 else (client, final_model))
                     sync_anthropic = AnthropicAuxiliaryClient(
-                        real_client, final_model, custom_key, custom_base, is_oauth=False,
+                        real_client, final_model, custom_key, custom_base,
+                        is_oauth=_aux_is_oauth(custom_key, custom_base),
                     )
                     if async_mode:
                         return AsyncAnthropicAuxiliaryClient(sync_anthropic), final_model

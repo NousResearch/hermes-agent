@@ -745,3 +745,48 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+def test_notifier_skips_unchanged_board_after_initial_open(tmp_path, monkeypatch):
+    """Unchanged poll ticks must not reopen the board database."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "unchanged.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="unchanged board", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    real_sleep = asyncio.sleep
+    poll_sleeps = 0
+
+    async def fake_sleep(delay):
+        nonlocal poll_sleeps
+        if delay == 5:
+            return None
+        poll_sleeps += 1
+        if poll_sleeps >= 3:
+            runner._running = False
+        await real_sleep(0)
+
+    open_count = 0
+    real_sqlite_connect = kb.sqlite3.connect
+
+    def counted_sqlite_connect(*args, **kwargs):
+        nonlocal open_count
+        open_count += 1
+        return real_sqlite_connect(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(kb.sqlite3, "connect", counted_sqlite_connect)
+    asyncio.run(runner._kanban_notifier_watcher(interval=1))
+
+    assert poll_sleeps == 3
+    assert open_count == 2, (
+        "only the initial read-only subscription probe and board load should "
+        "open the database across three unchanged polls; "
+        f"observed {open_count}"
+    )

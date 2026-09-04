@@ -118,6 +118,50 @@ async def _to_thread_process_service(func: Callable[..., Any], /, *args: Any) ->
     return await asyncio.to_thread(_run_in_fresh_context, func, *args)
 
 
+def _kanban_db_file_signature(
+    db_path: Path,
+) -> Optional[tuple[tuple[Any, ...], ...]]:
+    """Return a cheap, fail-open signature for a board's SQLite files.
+
+    The notifier only needs to know whether it is safe to reuse the result of
+    the previous poll.  Stat the database and both SQLite sidecars instead of
+    opening SQLite just to discover that nothing changed.  Device/inode,
+    size, and both timestamp forms cover replacement, truncation, and
+    in-place writes on the filesystems supported by Python.  A missing file
+    is a real state (for example, a board that has not been created yet), but
+    any other stat failure is uncertainty and therefore returns ``None`` so
+    the caller queries rather than suppressing a notification.
+
+    This deliberately relies only on the documented filesystem metadata API;
+    it does not infer anything from SQLite's WAL internals.  The database,
+    ``-wal``, and ``-shm`` entries are kept separate so creation/deletion of a
+    sidecar also invalidates a cached poll.
+    """
+    signature: list[tuple[Any, ...]] = []
+    for suffix in ("", "-wal", "-shm"):
+        path = db_path if not suffix else Path(f"{db_path}{suffix}")
+        try:
+            stat_result = os.stat(path)
+        except FileNotFoundError:
+            signature.append(("missing",))
+            continue
+        except OSError:
+            # Permission errors, transient sharing violations, and any other
+            # probe failure must fail open to the database query.
+            return None
+        signature.append(
+            (
+                "present",
+                getattr(stat_result, "st_dev", 0),
+                getattr(stat_result, "st_ino", 0),
+                getattr(stat_result, "st_size", 0),
+                getattr(stat_result, "st_mtime_ns", 0),
+                getattr(stat_result, "st_ctime_ns", 0),
+            )
+        )
+    return tuple(signature)
+
+
 def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
     """Take an exclusive, non-blocking advisory lock for the sole dispatcher.
 
@@ -238,7 +282,10 @@ class GatewayKanbanWatchersMixin:
 
         Runs in the gateway event loop; all SQLite work is pushed to a
         thread via ``asyncio.to_thread`` so the loop never blocks on the
-        WAL lock. Failures in one tick don't stop subsequent ticks.
+        WAL lock. Unchanged board database/WAL/SHM signatures are skipped
+        after a stable successful poll; an uncertain signature or query
+        failure always falls back to querying on the next tick. Failures in
+        one tick don't stop subsequent ticks.
 
         **Multi-board:** iterates every board discovered on disk per
         tick. Each gateway polls only subscriptions owned by profiles whose
@@ -297,6 +344,33 @@ class GatewayKanbanWatchersMixin:
         if not notifier_profile:
             notifier_profile = self._active_profile_name()
             self._kanban_notifier_profile = notifier_profile
+
+        # A notifier tick only needs to reopen a board when its SQLite files
+        # or the set of subscriptions this gateway can serve changed.  Keep
+        # this cache local to the watcher lifetime: a restart performs a fresh
+        # load, while a long-lived gateway avoids the per-tick DB/WAL/SHM
+        # opens.  Entries are installed only after a stable query (the file
+        # signature must match before and after it), so a concurrent writer
+        # causes the next tick to fail open and query again.
+        poll_cache: dict[str, tuple[Any, Any]] = {}
+
+        def _remember_if_stable(
+            db_key: str,
+            db_path: Path,
+            before_signature: Optional[tuple[tuple[Any, ...], ...]],
+            poll_context: tuple[Any, ...],
+        ) -> None:
+            if before_signature is None:
+                return
+            try:
+                after_signature = _kanban_db_file_signature(db_path)
+            except Exception:
+                # The signature helper is deliberately fail-open; keep the
+                # guard here as well so a future platform-specific probe
+                # failure cannot turn into a missed notification.
+                return
+            if after_signature == before_signature:
+                poll_cache[db_key] = (before_signature, poll_context)
 
         # Initial delay so the gateway can finish wiring adapters.
         await asyncio.sleep(5)
@@ -361,6 +435,11 @@ class GatewayKanbanWatchersMixin:
                             getattr(platform, "value", str(platform)).lower()
                             for platform in _profile_adapter_map.keys()
                         )
+                    poll_context = (
+                        tuple(sorted(notifier_profiles)),
+                        bool(include_unowned),
+                        tuple(sorted(active_platforms)),
+                    )
                     if not active_platforms:
                         logger.debug("kanban notifier: no connected adapters; skipping tick")
                         return deliveries
@@ -379,8 +458,14 @@ class GatewayKanbanWatchersMixin:
                         slug = board_meta.get("slug") or _kb.DEFAULT_BOARD
                         db_path = board_meta.get("db_path")
                         try:
-                            resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(_kb.kanban_db_path(slug).resolve())
+                            db_path_obj = (
+                                Path(db_path).expanduser()
+                                if db_path
+                                else _kb.kanban_db_path(slug)
+                            )
+                            resolved_db_path = str(db_path_obj.resolve())
                         except Exception:
+                            db_path_obj = Path(str(db_path or slug))
                             resolved_db_path = f"slug:{slug}"
                         if resolved_db_path in seen_db_paths:
                             logger.debug(
@@ -389,6 +474,20 @@ class GatewayKanbanWatchersMixin:
                             )
                             continue
                         seen_db_paths.add(resolved_db_path)
+                        try:
+                            before_signature = _kanban_db_file_signature(db_path_obj)
+                        except Exception:
+                            # Probe failures are uncertainty, not a reason to
+                            # suppress a board query.
+                            before_signature = None
+                        if before_signature is not None and poll_cache.get(
+                            resolved_db_path
+                        ) == (before_signature, poll_context):
+                            logger.debug(
+                                "kanban notifier: board %s unchanged; skipping database query",
+                                slug,
+                            )
+                            continue
                         # Zero-subscription early exit: probe the board with a
                         # cheap read-only connection BEFORE the writable
                         # `connect()`. A board with no subscriptions has
@@ -406,6 +505,12 @@ class GatewayKanbanWatchersMixin:
                                     "kanban notifier: board %s has no subscriptions owned by %s; skipping open",
                                     slug, sorted(notifier_profiles),
                                 )
+                                _remember_if_stable(
+                                    resolved_db_path,
+                                    db_path_obj,
+                                    before_signature,
+                                    poll_context,
+                                )
                                 continue
                         except Exception as exc:
                             logger.debug(
@@ -418,6 +523,7 @@ class GatewayKanbanWatchersMixin:
                         except Exception as exc:
                             logger.debug("kanban notifier: cannot open board %s: %s", slug, exc)
                             continue
+                        board_query_ok = True
                         try:
                             if _gc_due:
                                 # Hourly (plus once at startup) stale-sub GC:
@@ -437,6 +543,7 @@ class GatewayKanbanWatchersMixin:
                                             _purged, slug, _gc_retention_days,
                                         )
                                 except Exception as _gc_exc:
+                                    board_query_ok = False
                                     logger.debug(
                                         "kanban notifier: stale-sub GC failed for board %s: %s",
                                         slug, _gc_exc,
@@ -453,11 +560,20 @@ class GatewayKanbanWatchersMixin:
                             # a legacy DB. `_add_column_if_missing` now
                             # tolerates that race, but we still skip the
                             # redundant call to avoid the wasted work.
-                            subs = _kb.list_notify_subs(
-                                conn,
-                                notifier_profiles=notifier_profiles,
-                                include_unowned=include_unowned,
-                            )
+                            try:
+                                subs = _kb.list_notify_subs(
+                                    conn,
+                                    notifier_profiles=notifier_profiles,
+                                    include_unowned=include_unowned,
+                                )
+                            except Exception as query_exc:
+                                board_query_ok = False
+                                logger.warning(
+                                    "kanban notifier: subscription query for board %s failed: %s",
+                                    slug,
+                                    query_exc,
+                                )
+                                continue
                             if not subs:
                                 logger.debug("kanban notifier: board %s has no subscriptions", slug)
                             for sub in subs:
@@ -505,12 +621,20 @@ class GatewayKanbanWatchersMixin:
                                     # Isolate per-subscription failures so one
                                     # bad subscription cannot block delivery for
                                     # all other subscriptions in this tick.
+                                    board_query_ok = False
                                     logger.warning(
                                         "kanban notifier: subscription for %s on board %s failed: %s",
                                         sub.get("task_id"), slug, sub_exc,
                                     )
                         finally:
                             conn.close()
+                        if board_query_ok:
+                            _remember_if_stable(
+                                resolved_db_path,
+                                db_path_obj,
+                                before_signature,
+                                poll_context,
+                            )
                     return deliveries
 
                 deliveries = await asyncio.to_thread(_collect)

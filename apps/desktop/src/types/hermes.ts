@@ -883,6 +883,9 @@ export interface CronJob {
   name?: null | string
   next_run_at?: null | string
   no_agent?: boolean
+  // Owning profile, stamped by the backend on every job (web_server
+  // _annotate_cron_job). Present on single-profile fetches too ('default').
+  profile?: null | string
   prompt?: null | string
   provider?: null | string
   schedule?: CronJobSchedule

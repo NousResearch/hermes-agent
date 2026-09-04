@@ -2,6 +2,7 @@ import { createCronTriggerController, type CronTriggerController } from '@hermes
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { ProfileTag } from '@/app/chat/profile-tag'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
@@ -366,6 +367,9 @@ function CronJobSidebarRow({
                 />
               </SidebarRowLead>
               <SidebarRowLabel className="group-hover/cron:text-foreground">{label}</SidebarRowLabel>
+              {/* Owning-profile chip — same tag the session rows wear, so a
+                  cross-profile list reads as many owners at a glance. */}
+              {job.profile ? <ProfileTag profile={job.profile} /> : null}
               <DisclosureCaret
                 className={cn(
                   'shrink-0 text-(--ui-text-tertiary) transition',

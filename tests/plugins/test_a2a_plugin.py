@@ -618,7 +618,7 @@ class TestReplyCapture:
 
     def test_on_processing_complete_resolves_failure(self):
         """A failed run must resolve the future promptly (no reply timeout wait)."""
-        from gateway.platforms.base import ProcessingOutcome
+        from gateway.platforms.event import ProcessingOutcome
 
         adapter = _bare_adapter()
         fut = adapter._add_pending("task-fail", "ctx-fail")
@@ -635,7 +635,7 @@ class TestReplyCapture:
             adapter._pop_pending("task-fail")
 
     def test_on_processing_complete_does_not_clobber_reply(self):
-        from gateway.platforms.base import ProcessingOutcome
+        from gateway.platforms.event import ProcessingOutcome
 
         adapter = _bare_adapter()
         fut = adapter._add_pending("task-ok", "ctx-ok")

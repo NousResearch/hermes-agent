@@ -135,7 +135,7 @@ def check_<platform>_requirements() -> bool:
 
 - Use `self.build_source(...)` to construct `SessionSource` objects
 - Call `self.handle_message(event)` to dispatch inbound messages to the gateway
-- Use `MessageEvent`, `MessageType`, `SendResult` from base
+- Use `MessageEvent`, `MessageType` from `gateway.platforms.event` and `SendResult` from base
 - Use `cache_image_from_bytes`, `cache_audio_from_bytes`, `cache_document_from_bytes` for attachments
 - Filter self-messages (prevent reply loops)
 - Filter sync/echo messages if the platform has them

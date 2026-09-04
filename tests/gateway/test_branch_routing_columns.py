@@ -28,7 +28,7 @@ from __future__ import annotations
 import pytest
 
 from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource, SessionStore, build_session_key
 from hermes_state import AsyncSessionDB, SessionDB
 

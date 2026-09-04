@@ -22,7 +22,7 @@ from gateway.config import (
     PlatformConfig,
     SessionResetPolicy,
 )
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, SessionStore
 

@@ -25,13 +25,12 @@ import agent.secret_scope as secret_scope
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.platforms.base import (
-    MessageEvent,
-    MessageType,
     SendResult,
     SUPPORTED_VIDEO_TYPES,
     SendResult,
     is_host_excluded_by_no_proxy,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -2903,7 +2902,8 @@ class TestReactions:
         assert "1234567890.000001" in adapter._reacting_message_ids
 
         # Simulate the base class calling on_processing_start
-        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        from gateway.platforms.base import SessionSource
+        from gateway.platforms.event import MessageEvent, MessageType
         from gateway.config import Platform
 
         source = SessionSource(
@@ -2925,7 +2925,7 @@ class TestReactions:
         assert add_calls[0].kwargs["name"] == "eyes"
 
         # Simulate the base class calling on_processing_complete
-        from gateway.platforms.base import ProcessingOutcome
+        from gateway.platforms.event import ProcessingOutcome
 
         await adapter.on_processing_complete(msg_event, ProcessingOutcome.SUCCESS)
 

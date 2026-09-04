@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import gateway.run as gateway_run
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.restart import EXTERNAL_GATEWAY_SUPERVISOR_ENV
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 

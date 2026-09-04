@@ -64,7 +64,7 @@ class SessionContextMixin:
         self, session_key: str, fn: Callable[[Any], Any], default: Any, level: int, msg: str, *args: Any,
     ) -> Any:
         """``_guarded`` over ``fn(session)`` for the cached session; ``default`` when no session is cached."""
-        session = self._cache.get(session_key)
+        session = self._cached_session(session_key)
         return self._guarded(lambda: fn(session), default, level, msg, *args) if session else default
 
     @staticmethod
@@ -126,7 +126,7 @@ class SessionContextMixin:
         """Pre-fetch user + AI peer context (representation, card) plus the session summary.
         ``user_message`` is passed as search_query so Honcho returns topic-relevant conclusions.
         Stops early (returning what it has) once auth is dead."""
-        session = self._cache.get(session_key)
+        session = self._cached_session(session_key)
         if not session:
             return {}
         result: dict[str, str] = {}
@@ -180,7 +180,7 @@ class SessionContextMixin:
     def get_session_context(self, session_key: str, peer: str = "user") -> dict[str, Any]:
         """Fetch session-level context (summary, representation, card, recent messages).
         Raises HonchoAuthError so callers can tell rejected credentials from no context."""
-        session = self._cache.get(session_key)
+        session = self._cached_session(session_key)
         if not session:
             return {}
         if session.honcho_session_id not in self._sessions_cache:
@@ -225,7 +225,7 @@ class SessionContextMixin:
         """Hybrid search over raw messages visible from ``peer``'s perspective, all sessions. Snippets
         accumulate until ``max_tokens`` (~4 chars/token) is exhausted. Returns "" when nothing matches;
         raises HonchoAuthError on rejected credentials."""
-        session = self._cache.get(session_key)
+        session = self._cached_session(session_key)
         q = (query or "").strip()[:4000]  # Honcho caps query length for the embedding model.
         if not session or not q:
             return ""
@@ -277,7 +277,7 @@ class SessionContextMixin:
         """Write a conclusion (durable fact) about ``peer`` back to Honcho."""
         if not content or not content.strip():
             return False
-        session = self._cache.get(session_key)
+        session = self._cached_session(session_key)
         if not session:
             logger.warning("No session cached for '%s', skipping conclusion", session_key)
             return False
@@ -341,7 +341,7 @@ class SessionContextMixin:
         operations, auth failures are logged and swallowed here too."""
         if not content or not content.strip():
             return False
-        session = self._cache.get(session_key)
+        session = self._cached_session(session_key)
         if not session:
             logger.warning("No session cached for '%s', skipping AI seed", session_key)
             return False
@@ -390,7 +390,7 @@ class SessionContextMixin:
         server error surfaces as an error, not as "no result" (#36098 issue 4: collapsing failures to ""
         made auth errors, timeouts, and genuinely-empty answers indistinguishable).
         """
-        session = self._cache.get(session_key)
+        session = self._cached_session(session_key)
         target_peer_id = self._resolve_peer_id(session, peer) if session else None
         if target_peer_id is None:
             return ""

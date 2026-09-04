@@ -25,7 +25,7 @@ class SessionMigrationMixin:
         if not memory_path.exists():
             return False
 
-        session = self._cache.get(session_key)
+        session = self._cached_session(session_key)
         if not session:
             logger.warning("No local session cached for '%s', skipping memory migration", session_key)
             return False

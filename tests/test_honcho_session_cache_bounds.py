@@ -155,3 +155,138 @@ def test_get_or_create_triggers_sweep_without_blocking_on_lock_reentrancy():
     t.join(timeout=5)
     assert done.is_set(), "sweep did not complete — possible deadlock"
     assert "stale" not in mgr._cache
+
+
+# ---------------------------------------------------------------------------
+# hard caps, unsynced buffers, peers, and read activity (follows #71463)
+# ---------------------------------------------------------------------------
+
+from plugins.memory.honcho.session import (  # noqa: E402
+    _PEERS_CACHE_MAX_SIZE,
+    _SESSION_CACHE_MAX_SIZE,
+)
+
+
+def _fill_sessions(mgr, count, unsynced_keys=()):
+    for i in range(count):
+        key = f"k{i}"
+        session = _session(key=key)
+        if key in unsynced_keys:
+            session.add_message("user", "pending", _synced=False)
+        mgr._cache[key] = session
+        mgr._sessions_cache[session.honcho_session_id] = object()
+        mgr._session_observation[session.honcho_session_id] = {"ai_observe_others": False}
+        mgr._context_cache[key] = {"representation": "r"}
+
+
+def test_size_cap_evicts_least_recently_used_sessions_with_their_entries():
+    mgr = _manager()
+    _fill_sessions(mgr, _SESSION_CACHE_MAX_SIZE + 2)
+
+    with mgr._cache_lock:
+        mgr._enforce_cache_caps_locked()
+
+    assert len(mgr._cache) == _SESSION_CACHE_MAX_SIZE
+    assert "k0" not in mgr._cache and "k1" not in mgr._cache
+    assert "k2" in mgr._cache
+    for gone in ("k0", "k1"):
+        assert f"hs-{gone}" not in mgr._sessions_cache
+        assert f"hs-{gone}" not in mgr._session_observation
+        assert gone not in mgr._context_cache
+    assert "hs-k2" in mgr._sessions_cache and "hs-k2" in mgr._session_observation
+
+
+def test_size_cap_never_evicts_a_session_with_unsynced_messages():
+    mgr = _manager()
+    _fill_sessions(mgr, _SESSION_CACHE_MAX_SIZE + 1, unsynced_keys={"k0"})
+
+    with mgr._cache_lock:
+        mgr._enforce_cache_caps_locked()
+
+    assert "k0" in mgr._cache  # the only copy until its flush lands
+    assert "k1" not in mgr._cache
+    assert len(mgr._cache) == _SESSION_CACHE_MAX_SIZE
+
+
+def test_idle_sweep_keeps_sessions_with_unsynced_messages():
+    mgr = _manager()
+    stale = _session(key="stale")
+    stale.add_message("user", "pending", _synced=False)
+    stale.updated_at = datetime.now() - timedelta(seconds=_SESSION_IDLE_TTL_SECONDS + 1)
+    mgr._cache = {"stale": stale}
+
+    with mgr._cache_lock:
+        evicted = mgr._sweep_idle_sessions_locked()
+
+    assert evicted == 0
+    assert "stale" in mgr._cache
+
+
+def test_peers_cap_evicts_unreferenced_peers_oldest_first():
+    mgr = _manager()
+    live = _session(key="live")
+    mgr._cache = {"live": live}
+    mgr._peers_cache[live.user_peer_id] = object()
+    mgr._peers_cache[live.assistant_peer_id] = object()
+    for i in range(_PEERS_CACHE_MAX_SIZE):
+        mgr._peers_cache[f"guest{i}"] = object()
+
+    with mgr._cache_lock:
+        mgr._enforce_cache_caps_locked()
+
+    assert len(mgr._peers_cache) == _PEERS_CACHE_MAX_SIZE
+    assert live.user_peer_id in mgr._peers_cache and live.assistant_peer_id in mgr._peers_cache
+    assert "guest0" not in mgr._peers_cache and "guest1" not in mgr._peers_cache
+    assert f"guest{_PEERS_CACHE_MAX_SIZE - 1}" in mgr._peers_cache
+
+
+def test_recall_read_counts_as_activity_for_the_idle_sweep():
+    mgr = _manager()
+    session = _session(key="read-only")
+    session.updated_at = datetime.now() - timedelta(seconds=_SESSION_IDLE_TTL_SECONDS + 1)
+    mgr._cache = {"read-only": session}
+
+    assert mgr._cached_session("read-only") is session
+    with mgr._cache_lock:
+        evicted = mgr._sweep_idle_sessions_locked()
+
+    assert evicted == 0
+    assert "read-only" in mgr._cache
+
+
+def test_sdk_object_hit_moves_the_key_to_the_recent_end():
+    mgr = _manager()
+    mgr._peers_cache = {"a": object(), "b": object()}
+
+    mgr._cached_sdk_object(mgr._peers_cache, "a", lambda: None)
+
+    assert list(mgr._peers_cache) == ["b", "a"]
+
+
+def test_get_or_create_stores_observation_flags_with_the_entry_and_eviction_drops_them():
+    mgr = _manager()
+    mgr._config.ai_peer = "hermes"
+    flags = {"user_observe_me": True, "user_observe_others": True, "ai_observe_me": True, "ai_observe_others": False}
+    mgr._get_or_create_peer = lambda peer_id: object()
+    mgr._get_or_create_honcho_session = lambda sid, user, assistant: (object(), [], dict(flags))
+
+    session = mgr.get_or_create("cli:one")
+
+    assert mgr._session_observation[session.honcho_session_id] == flags
+    assert mgr._ai_observes_others(session) is False
+    with mgr._cache_lock:
+        mgr._evict_session_locked("cli:one", session)
+    assert session.honcho_session_id not in mgr._session_observation
+
+
+def test_flush_does_not_resurrect_an_evicted_session():
+    mgr = _manager()
+    session = _session(key="gone")
+    session.add_message("user", "late", _synced=False)
+    peer = SimpleNamespace(message=lambda content: content)
+    mgr._get_or_create_peer = lambda peer_id: peer
+    mgr._sessions_cache[session.honcho_session_id] = SimpleNamespace(add_messages=lambda messages: None)
+
+    assert mgr._flush_session(session) is True
+    assert "gone" not in mgr._cache
+    assert all(m["_synced"] for m in session.messages)

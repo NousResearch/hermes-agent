@@ -80,7 +80,10 @@ META_AI_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 
 def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     """Supported effort set for an OpenAI/Codex Responses model."""
-    return CODEX_GPT56_EFFORTS if "gpt-5.6" in (model or "").lower() else CODEX_LEGACY_EFFORTS
+    lowered = (model or "").lower()
+    # gpt-6-astra matches 5.6 (live 2026-09-04: max OK; minimal/ultra rejected — "ultra" is a
+    # Codex-CLI client mode, not a wire value).
+    return CODEX_GPT56_EFFORTS if ("gpt-5.6" in lowered or "gpt-6-astra" in lowered) else CODEX_LEGACY_EFFORTS
 
 
 def kimi_supported_efforts(model: Optional[str]) -> tuple[str, ...]:

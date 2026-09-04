@@ -171,6 +171,12 @@ def scan_source(src: str, rel: str, manifest: Dict[str, Dict[str, str]]) -> List
     except SyntaxError:
         return []
     hits: List[Hit] = []
+
+    def _hit(fac: Optional[str], name, lineno: int, old: Optional[str] = None) -> None:
+        new = manifest.get(fac or "", {}).get(name) if isinstance(name, str) else None
+        if new:
+            hits.append(Hit(rel, lineno, old or f"{fac}.{name}", new))
+
     guarded = _guarded_imports(tree)
     aliases: Dict[str, str] = {}                      # local alias -> facade module
     star_facades: List[str] = []                      # ``from F import *``: bare names may be F's
@@ -186,12 +192,12 @@ def scan_source(src: str, rel: str, manifest: Dict[str, Dict[str, str]]) -> List
             for a in node.names:
                 if a.name == "*":
                     star_facades.append(node.module)
-                elif a.name in manifest[node.module]:
-                    hits.append(Hit(rel, node.lineno, f"{node.module}.{a.name}", manifest[node.module][a.name]))
+                else:
+                    _hit(node.module, a.name, node.lineno)
         elif isinstance(node, ast.Import):
             for a in node.names:
-                if a.name in manifest:
-                    aliases[a.asname or a.name] = a.name
+                if a.name in manifest and (a.asname or "." not in a.name):
+                    aliases[a.asname or a.name] = a.name              # dotted ``import a.b`` is resolved by chain
         elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) \
                 and (fac := _module_string(node.value)) in manifest:
             aliases[node.targets[0].id] = fac                           # m = import_module("F")
@@ -204,8 +210,7 @@ def scan_source(src: str, rel: str, manifest: Dict[str, Dict[str, str]]) -> List
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute) and (fac := _facade_of(node.value)):
-            if node.attr in manifest[fac]:                              # F.n / a.n / import_module("F").n
-                hits.append(Hit(rel, node.lineno, f"{fac}.{node.attr}", manifest[fac][node.attr]))
+            _hit(fac, node.attr, node.lineno)                           # F.n / a.n / import_module("F").n
         elif isinstance(node, ast.Attribute):
             # dotted: pkg.sub.name  ->  resolve the full module chain
             parts: List[str] = []
@@ -217,24 +222,17 @@ def scan_source(src: str, rel: str, manifest: Dict[str, Dict[str, str]]) -> List
                 parts.append(cur.id)
                 parts.reverse()
                 for i in range(1, len(parts)):
-                    mod, name = ".".join(parts[:i]), parts[i]
-                    if mod in manifest and name in manifest[mod]:
-                        hits.append(Hit(rel, node.lineno, f"{mod}.{name}", manifest[mod][name]))
+                    _hit(".".join(parts[:i]), parts[i], node.lineno)
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "getattr" \
-                and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant) \
-                and (fac := _facade_of(node.args[0])):
-            name = node.args[1].value                                   # getattr(m, "n")
-            if isinstance(name, str) and name in manifest[fac]:
-                hits.append(Hit(rel, node.lineno, f"{fac}.{name}", manifest[fac][name]))
+                and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+            _hit(_facade_of(node.args[0]), node.args[1].value, node.lineno)   # getattr(m, "n")
         elif isinstance(node, ast.Constant) and isinstance(node.value, str) and "." in node.value:
             mod, _, name = node.value.rpartition(".")
-            if mod in manifest and name in manifest[mod]:
-                hits.append(Hit(rel, node.lineno, node.value, manifest[mod][name]))
+            _hit(mod, name, node.lineno, old=node.value)
         elif star_facades and isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) \
                 and node.id not in local_names:
             for fac in star_facades:                                    # from F import *; n
-                if node.id in manifest[fac]:
-                    hits.append(Hit(rel, node.lineno, f"{fac}.{node.id}", manifest[fac][node.id]))
+                _hit(fac, node.id, node.lineno)
     # dedupe (the two walks can see the same Attribute)
     return sorted(set(hits), key=lambda h: (h.file, h.line, h.old))
 

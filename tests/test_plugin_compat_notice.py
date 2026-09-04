@@ -50,7 +50,7 @@ MANIFEST = {"tools.web_tools": {"prefers_gateway": "tools.tool_backend_helpers.p
      ["tools.web_tools.prefers_gateway"]),
     ("import importlib\nm = importlib.import_module('tools.web_tools')\ngetattr(m, 'prefers_gateway')\n",
      ["tools.web_tools.prefers_gateway"]),
-    ("m = __import__('hermes_cli.kanban_db')\nm.connect()\n", ["hermes_cli.kanban_db.connect"]),
+    ("m = __import__('hermes_cli.kanban_db', fromlist=['connect'])\nm.connect()\n", ["hermes_cli.kanban_db.connect"]),
 ])
 def test_scan_source_finds_every_import_form(src, expect):
     hits = pc.scan_source(src, "p.py", MANIFEST)

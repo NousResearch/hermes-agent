@@ -2805,6 +2805,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             ],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
+            "skipped_review_skill_disabled": [
+                {"task_id": tid, "assignee": who}
+                for (tid, who) in res.skipped_review_skill_disabled
+            ],
             "skipped_per_profile_capped": [
                 {"task_id": tid, "assignee": who, "current": current}
                 for (tid, who, current) in res.skipped_per_profile_capped
@@ -2847,6 +2851,12 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
+    if res.skipped_review_skill_disabled:
+        for tid, who in res.skipped_review_skill_disabled:
+            print(
+                f"Skipped (review skill disabled for {who}; "
+                f"card stays in review for a human): {tid}"
+            )
     return 0
 
 

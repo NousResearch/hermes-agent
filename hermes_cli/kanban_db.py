@@ -344,6 +344,7 @@ def _fire_dispatch_tick_hook(
             result.skipped_per_profile_capped,
             result.skipped_unassigned,
             result.skipped_nonspawnable,
+            result.skipped_review_skill_disabled,
         )):
             outcome = "idle"
         invoke_hook(
@@ -8052,6 +8053,12 @@ class DispatchResult:
     operator-actionable failure. Tracked separately so health telemetry
     can distinguish "real stuck" (nothing spawned but spawnable work
     available) from "correctly idle" (nothing spawnable in the queue)."""
+    skipped_review_skill_disabled: list[tuple[str, str]] = field(default_factory=list)
+    """Review-lane task ids left unclaimed because the assignee profile has
+    ``sdlc-review`` in ``skills.disabled`` (#99251). Each entry is
+    ``(task_id, assignee)``. Operator-actionable: auto-review cannot run
+    without the review skill, so the card stays in ``review`` for a human
+    (same visible outcome as ``kanban.review_dispatch: false``)."""
     skipped_per_profile_capped: list[tuple[str, str, int]] = field(default_factory=list)
     """Tasks deferred this tick because their assignee is already at
     ``kanban.max_in_progress_per_profile`` (#21582). Each entry is
@@ -9621,6 +9628,49 @@ def review_dispatch_enabled() -> bool:
         return True
 
 
+REVIEW_SKILL_NAME = "sdlc-review"
+
+
+def _sdlc_review_disabled_for_assignee(assignee: str) -> bool:
+    """Return True when the assignee profile has ``sdlc-review`` disabled.
+
+    Reads that profile's ``config.yaml`` directly (not the dispatcher's
+    ``HERMES_HOME``). A missing or unreadable config is treated as *not*
+    disabled so a healthy default profile still auto-reviews.
+
+    This is the #99251 gate: the review dispatcher must not force-inject a
+    skill the operator turned off. ``skills.disabled`` stays a load-time
+    deny; we honor it here instead of spawning a reviewer that crashes or
+    reviews with no review skill.
+    """
+    if not assignee:
+        return False
+    try:
+        from hermes_cli.profiles import get_profile_dir
+        from agent.skill_utils import parse_config_string_list
+        import yaml
+    except Exception:
+        return False
+    try:
+        cfg_path = get_profile_dir(assignee) / "config.yaml"
+        if not cfg_path.is_file():
+            return False
+        parsed = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        if not isinstance(parsed, dict):
+            return False
+        skills_cfg = parsed.get("skills")
+        if not isinstance(skills_cfg, dict):
+            return False
+        disabled = {
+            name.strip()
+            for name in parse_config_string_list(skills_cfg.get("disabled"))
+            if isinstance(name, str) and name.strip()
+        }
+        return REVIEW_SKILL_NAME in disabled
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Memory-aware dispatch guard (OOF-30 / OOF-77)
 #
@@ -10340,6 +10390,22 @@ def _dispatch_once_locked(
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
             continue
+        if _sdlc_review_disabled_for_assignee(row["assignee"]):
+            result.skipped_review_skill_disabled.append(
+                (row["id"], row["assignee"])
+            )
+            if not dry_run:
+                with write_txn(conn):
+                    _append_event(
+                        conn,
+                        row["id"],
+                        "review_skill_disabled",
+                        {
+                            "assignee": row["assignee"],
+                            "skill": REVIEW_SKILL_NAME,
+                        },
+                    )
+            continue
         if _per_profile_cap is not None:
             current = _per_profile_running.get(row["assignee"], 0)
             if current >= _per_profile_cap:
@@ -10393,7 +10459,7 @@ def _dispatch_once_locked(
         # prompt via KANBAN_GUIDANCE, so this is the only extra skill the
         # review agent needs.
         claimed.skills = list(
-            dict.fromkeys([*(claimed.skills or []), "sdlc-review"])
+            dict.fromkeys([*(claimed.skills or []), REVIEW_SKILL_NAME])
         )
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:

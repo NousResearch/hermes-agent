@@ -708,3 +708,93 @@ def test_reviewer_reassigns_for_autonomous_dispatch(kanban_home: Path) -> None:
         ev = _events(conn, tid, kind="review_requested")[0][1]
         assert ev["reviewer"] == "lead-reviewer"
         assert ev["implementer"] == "worker"
+
+
+def test_review_dispatch_skips_when_sdlc_review_disabled(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#99251: disabled review skill must not spawn a reviewer.
+
+    The card stays in ``review`` (human lane). Spawn is not called, so a
+    card that also pins another skill cannot silently review without
+    ``sdlc-review``.
+    """
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+    monkeypatch.setattr(kb, "_sdlc_review_disabled_for_assignee", lambda _n: True)
+    captured: list[list[str]] = []
+
+    def spawn(task, workspace):
+        captured.append(list(task.skills or []))
+        return None
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="needs review",
+            assignee="reviewer",
+            skills=["domain-specific-review"],
+        )
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert kb.request_review(
+            conn, tid, summary="ready",
+            expected_run_id=claimed.current_run_id,
+        )
+        dry = kb.dispatch_once(conn, dry_run=True)
+        assert dry.spawned == []
+        assert dry.skipped_review_skill_disabled == [(tid, "reviewer")]
+        assert kb.get_task(conn, tid).status == "review"
+
+        live = kb.dispatch_once(conn, spawn_fn=spawn)
+        assert live.spawned == []
+        assert live.skipped_review_skill_disabled == [(tid, "reviewer")]
+        assert captured == []
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "review"
+        assert task.claim_lock is None
+        evs = _events(conn, tid, kind="review_skill_disabled")
+        assert len(evs) == 1
+        assert evs[0][1]["skill"] == "sdlc-review"
+        assert evs[0][1]["assignee"] == "reviewer"
+
+
+def test_sdlc_review_disabled_reads_assignee_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate reads the *assignee* profile file, not the dispatcher home."""
+    disabled_home = tmp_path / "disabled-profile"
+    disabled_home.mkdir()
+    (disabled_home / "config.yaml").write_text(
+        "skills:\n  disabled:\n    - sdlc-review\n",
+        encoding="utf-8",
+    )
+    empty_home = tmp_path / "empty-profile"
+    empty_home.mkdir()
+    json_home = tmp_path / "json-disabled"
+    json_home.mkdir()
+    (json_home / "config.yaml").write_text(
+        'skills:\n  disabled: \'["sdlc-review"]\'\n',
+        encoding="utf-8",
+    )
+
+    def fake_dir(name: str):
+        return {
+            "disabled": disabled_home,
+            "empty": empty_home,
+            "json": json_home,
+        }.get(name, tmp_path / "missing")
+
+    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", fake_dir)
+    assert kb._sdlc_review_disabled_for_assignee("disabled") is True
+    assert kb._sdlc_review_disabled_for_assignee("empty") is False
+    assert kb._sdlc_review_disabled_for_assignee("json") is True
+    assert kb._sdlc_review_disabled_for_assignee("missing") is False
+    assert kb._sdlc_review_disabled_for_assignee("") is False

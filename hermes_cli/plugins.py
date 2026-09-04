@@ -349,7 +349,7 @@ VALID_HOOKS: Set[str] = {
     #     promoted, reconciled_orphans, crashed, stale, timed_out,
     #     auto_blocked, rate_limited, auto_assigned_default,
     #     respawn_guarded, skipped_per_profile_capped, skipped_unassigned,
-    #     skipped_nonspawnable, skipped_locked).
+    #     skipped_nonspawnable, skipped_review_skill_disabled, skipped_locked).
     #   Privacy: result carries task ids, assignees, and workspace paths.
     "on_kanban_dispatch_tick",
     # Gateway platform-boundary observer hooks (#64176). Observer-only; each

@@ -670,7 +670,11 @@ def init_agent(
     agent.max_iterations = max_iterations
     # Shared iteration budget — parent creates, children inherit.
     # Consumed by every LLM turn across parent + all subagents.
-    agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)
+    # 98886 100x: single source of truth — max_iterations is the cap, not
+    # ignored vs IterationBudget 500. Respect user cap (e.g., 10) and default
+    # 500 when unlimited (was sys.maxsize which was silently ignored).
+    _effective_max = max_iterations if max_iterations != sys.maxsize else 500
+    agent.iteration_budget = iteration_budget or IterationBudget(_effective_max)
     agent.save_trajectories = save_trajectories
     agent.verbose_logging = verbose_logging
     agent.quiet_mode = quiet_mode

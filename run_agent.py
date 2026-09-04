@@ -498,7 +498,7 @@ class AIAgent:
         command: str = None,
         args: list[str] | None = None,
         model: str = "",
-        max_iterations: int = sys.maxsize,  # Default: unlimited tool-calling iterations (shared with subagents)
+        max_iterations: int = 500,  # Default: capped at IterationBudget 500 (was sys.maxsize — ignored, see #98886)
         tool_delay: float = None,  # Deprecated: accepted for compatibility, ignored
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,

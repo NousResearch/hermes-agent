@@ -420,7 +420,7 @@ _CONNECT_RETRY_BASE_BACKOFF_SEC, _CONNECT_RETRY_MAX_BACKOFF_SEC = 30.0, 600.0
 
 # Per-server circuit breaker: closed -> open (calls short-circuit until the cooldown) ->
 # half-open (next call probes). Mutate only via _bump_server_error / _reset_server_error.
-# After _CIRCUIT_BREAKER_THRESHOLD consecutive failures, the handler returns a "server unreachable" message
+# After the configured threshold of consecutive failures, the handler returns a "server unreachable" message
 # that tells the model to stop retrying, preventing the 90-iteration burn loop described in #10447. State
 # machine: closed    — error count below threshold; all calls go through. open      — threshold reached;
 # calls short-circuit until the cooldown elapses. half-open — cooldown elapsed; the next call is a probe
@@ -437,11 +437,6 @@ _server_breaker_opened_at: Dict[str, float] = {}
 _CIRCUIT_BREAKER_DEFAULT_ENABLED = True
 _CIRCUIT_BREAKER_DEFAULT_THRESHOLD = 3
 _CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC = 60.0
-
-# Backward-compat aliases for the historical hardcoded constants (read by tests and plugins
-# that predate the config-driven settings). They mirror the default values.
-_CIRCUIT_BREAKER_THRESHOLD = _CIRCUIT_BREAKER_DEFAULT_THRESHOLD
-_CIRCUIT_BREAKER_COOLDOWN_SEC = _CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC
 
 
 def _get_circuit_breaker_config() -> Tuple[bool, int, float]:

@@ -273,8 +273,9 @@ def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
     # against time.monotonic() (tools/mcp_tool.py), whose origin is arbitrary and
     # small on a freshly-booted CI container — a hardcoded literal like 123.0
     # only looked "elapsed" on a long-uptime dev box and flaked under CI.
+    _, _, breaker_cooldown = mcp_tool._get_circuit_breaker_config()
     mcp_tool._server_breaker_opened_at["hindsight"] = (
-        time.monotonic() - mcp_tool._CIRCUIT_BREAKER_COOLDOWN_SEC - 1.0
+        time.monotonic() - breaker_cooldown - 1.0
     )
 
     try:

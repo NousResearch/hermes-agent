@@ -90,3 +90,33 @@ def test_module_level_schedule_uses_shared_default():
     assert threading.active_count() == before
     for handle in handles:
         handle.cancel()
+
+
+def test_blocked_callback_does_not_stall_due_sibling():
+    """A blocked periodic callback must not prevent unrelated callbacks
+    from running within their own deadlines."""
+    scheduler = PeriodicScheduler()
+    blocker_entered = threading.Event()
+    release_blocker = threading.Event()
+    sibling_ran = threading.Event()
+
+    def blocker():
+        blocker_entered.set()
+        release_blocker.wait(2.0)
+        return True
+
+    def sibling():
+        sibling_ran.set()
+        return False
+
+    blocker_handle = scheduler.schedule(blocker, 0.01)
+    assert blocker_entered.wait(1.0), "blocker never entered"
+    sibling_handle = scheduler.schedule(sibling, 0.01)
+    try:
+        assert sibling_ran.wait(0.30), (
+            "a blocked periodic callback stalled an unrelated due callback"
+        )
+    finally:
+        release_blocker.set()
+        blocker_handle.cancel(wait=1.0)
+        sibling_handle.cancel(wait=1.0)

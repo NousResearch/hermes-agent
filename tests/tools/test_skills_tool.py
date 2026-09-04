@@ -400,6 +400,51 @@ class TestSkillView:
         assert "references/api.md" in result["available_files"]["references"]
 
     def test_disabled_skill_blocked_enabled_allowed(self, tmp_path):
+        pass
+
+    def test_view_discovers_custom_subdirectory(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "multi-phase")
+            steps_dir = skill_dir / "steps"
+            steps_dir.mkdir()
+            (steps_dir / "step-1.md").write_text("# Phase 1")
+            (steps_dir / "step-2.md").write_text("# Phase 2")
+            raw = skill_view("multi-phase")
+        result = json.loads(raw)
+        assert result["linked_files"] is not None
+        assert "steps" in result["linked_files"]
+        assert "steps/step-1.md" in result["linked_files"]["steps"]
+        assert "steps/step-2.md" in result["linked_files"]["steps"]
+
+    def test_view_hides_empty_subdirectory(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "empty-steps")
+            (skill_dir / "steps").mkdir()
+            raw = skill_view("empty-steps")
+        result = json.loads(raw)
+        linked = result.get("linked_files")
+        assert linked is None or "steps" not in linked
+
+    def test_view_tags_from_metadata(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "tagged",
+                frontmatter_extra="metadata:\n  hermes:\n    tags: [fine-tuning, llm]\n",
+            )
+            raw = skill_view("tagged")
+        result = json.loads(raw)
+        assert "fine-tuning" in result["tags"]
+        assert "llm" in result["tags"]
+
+    def test_view_nonexistent_skills_dir(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "nope"):
+            raw = skill_view("anything")
+        result = json.loads(raw)
+        assert result["success"] is False
+
+    def test_view_disabled_skill_blocked(self, tmp_path):
+        """Disabled skills should not be viewable via skill_view."""
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
             patch("tools.skills_tool._is_skill_disabled", return_value=True),

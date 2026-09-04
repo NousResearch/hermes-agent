@@ -506,7 +506,7 @@ def _event_content(row: sqlite3.Row) -> tuple[Any, Any, Any, Any]:
 
 
 def _gateway_event_bytes(conn: sqlite3.Connection) -> int:
-    return int(conn.execute(_SUM_EVENT_BYTES).fetchone()[0]) + room_safety._replica_event_bytes_locked(conn)
+    return int(conn.execute(_SUM_EVENT_BYTES).fetchone()[0])
 
 
 def _insert_event(
@@ -529,13 +529,19 @@ def _prepare_event(
         raise HostedRoomError("This Group Chat reached its history limit. Start a new Group Chat to continue.")
     if int(room["event_bytes"]) + additional_bytes > MAX_ROOM_EVENT_BYTES + byte_reserve:
         raise HostedRoomError("This Group Chat reached its storage limit. Start a new Group Chat to continue.")
-    gateway_bytes = _gateway_event_bytes(conn)
+    replica_bytes = room_safety._replica_event_bytes_locked(conn)
+    gateway_bytes = replica_bytes + _gateway_event_bytes(conn)
     if gateway_bytes + additional_bytes > gateway_byte_limit:
         _prune_disbanded_rooms_locked(
-            conn, now=None, max_gateway_event_bytes=max(0, gateway_byte_limit - additional_bytes))
+            conn, now=None,
+            max_gateway_event_bytes=max(0, gateway_byte_limit - additional_bytes - replica_bytes))
+        gateway_bytes = replica_bytes + _gateway_event_bytes(conn)
+    if gateway_bytes + additional_bytes > gateway_byte_limit:
+        hosted_bytes = _gateway_event_bytes(conn)
         room_safety._prune_disbanded_replicas_locked(
-            conn, now=None, max_replica_event_bytes=max(0, gateway_byte_limit - additional_bytes - int(conn.execute(_SUM_EVENT_BYTES).fetchone()[0])))
-        gateway_bytes = _gateway_event_bytes(conn)
+            conn, now=None,
+            max_replica_event_bytes=max(0, gateway_byte_limit - additional_bytes - hosted_bytes))
+        gateway_bytes = room_safety._replica_event_bytes_locked(conn) + hosted_bytes
     if gateway_bytes + additional_bytes > gateway_byte_limit:
         raise HostedRoomError("Group Chat storage is full on this host. Delete an old Group Chat and try again.")
     return additional_bytes

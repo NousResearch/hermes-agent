@@ -71,12 +71,15 @@ CONFIG_KEY = "write_approval"
 # Config resolution
 # ---------------------------------------------------------------------------
 
-def write_approval_enabled(subsystem: str) -> bool:
+def write_approval_enabled(subsystem: str, *, raise_on_error: bool = False) -> bool:
     """Return whether the approval gate is enabled for ``subsystem``.
 
     Reads ``<subsystem>.write_approval`` from config.yaml. Defaults to
     ``False`` (gate off — writes flow freely) for any unset / invalid value so
     existing installs keep their current behaviour until the user opts in.
+    Security boundaries may pass ``raise_on_error=True`` to distinguish a
+    config-loading failure from an explicitly disabled gate while preserving
+    the default for existing callers.
     """
     if subsystem not in _SUBSYSTEMS:
         return False
@@ -85,6 +88,8 @@ def write_approval_enabled(subsystem: str) -> bool:
         cfg = load_config()
         raw = cfg_get(cfg, subsystem, CONFIG_KEY, default=False)
     except Exception:
+        if raise_on_error:
+            raise
         return False
     return _normalize_enabled(raw)
 

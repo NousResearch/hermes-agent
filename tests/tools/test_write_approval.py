@@ -48,6 +48,19 @@ def test_invalid_subsystem_is_off(hermes_home):
     assert wa.write_approval_enabled("bogus") is False
 
 
+def test_config_error_can_fail_closed(hermes_home, monkeypatch):
+    from tools import write_approval as wa
+
+    def _raise():
+        raise RuntimeError("config unavailable")
+
+    monkeypatch.setattr("hermes_cli.config.load_config", _raise)
+
+    assert wa.write_approval_enabled("skills") is False
+    with pytest.raises(RuntimeError, match="config unavailable"):
+        wa.write_approval_enabled("skills", raise_on_error=True)
+
+
 def test_normalize_enabled_coerces_values():
     from tools import write_approval as wa
     # Real bools pass through.

@@ -685,6 +685,21 @@ def _get_hermes_config_resolved() -> str | None:
     return _hermes_config_resolved
 
 
+def _path_is_same_or_within(path: str, root: str) -> bool:
+    """Return whether path is root or a descendant under platform path rules."""
+    normalized_path = os.path.normcase(os.path.normpath(path))
+    normalized_root = os.path.normcase(os.path.normpath(root))
+    if sys.platform == "darwin":
+        # normcase preserves case on macOS even though default APFS/HFS+
+        # volumes are case-insensitive. Conservatively protect case variants.
+        normalized_path = normalized_path.casefold()
+        normalized_root = normalized_root.casefold()
+    return (
+        normalized_path == normalized_root
+        or normalized_path.startswith(normalized_root + os.sep)
+    )
+
+
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
@@ -712,32 +727,44 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             "Agent cannot modify security-sensitive configuration. "
             "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead."
         )
-    # When skills.write_approval is enabled, block write_file/patch from directly
-    # writing to ~/.hermes/skills/ so the approval gate cannot be bypassed.
-    # The agent must use skill_manage() instead, which correctly stages writes
-    # and returns a pending_id for user approval.
+    # Block direct write_file/patch mutations under the active profile's skills
+    # directory whenever the skill write-approval gate is enabled. Resolve the
+    # profile live on each call because context-local overrides may differ
+    # between concurrent tasks in the same process.
     try:
-        from tools import write_approval as _wa
-        if _wa.write_approval_enabled(_wa.SKILLS):
-            _skills_prefix = os.path.join(
-                os.path.normpath(_expand_tilde("~/.hermes")),
-                "skills",
-            )
-            _skills_prefix_resolved = os.path.realpath(_skills_prefix)
-            if (
-                resolved.startswith(_skills_prefix_resolved + os.sep)
-                or resolved == _skills_prefix_resolved
-                or normalized.startswith(_skills_prefix + os.sep)
-                or normalized == _skills_prefix
-            ):
-                return (
-                    f"Refusing to write to skills directory: {filepath}\n"
-                    "skills.write_approval is enabled. "
-                    "Use skill_manage(action=...) to create, edit, patch, or "
-                    "delete skills instead of write_file or patch."
-                )
+        from hermes_constants import get_hermes_home
+        _skills_prefix = os.path.normpath(str(get_hermes_home() / "skills"))
     except Exception:
-        pass  # Fail open on import error — let the write proceed
+        return (
+            f"Refusing to write while the active Hermes home cannot be resolved: {filepath}\n"
+            "Cannot safely determine whether this path is protected by "
+            "skills.write_approval."
+        )
+
+    _skills_prefix_resolved = os.path.realpath(_skills_prefix)
+    targets_skills = (
+        _path_is_same_or_within(resolved, _skills_prefix_resolved)
+        or _path_is_same_or_within(normalized, _skills_prefix)
+    )
+    if targets_skills:
+        try:
+            from tools import write_approval as _wa
+            approval_enabled = _wa.write_approval_enabled(
+                _wa.SKILLS,
+                raise_on_error=True,
+            )
+        except Exception:
+            return (
+                f"Refusing to write to skills directory: {filepath}\n"
+                "Cannot verify skills.write_approval state; failing closed."
+            )
+        if approval_enabled:
+            return (
+                f"Refusing to write to skills directory: {filepath}\n"
+                "skills.write_approval is enabled. "
+                "Use skill_manage(action=...) to create, edit, patch, or "
+                "delete skills instead of write_file or patch."
+            )
     return None
 
 

@@ -314,7 +314,7 @@ export const en: Translations = {
       'view.toggleTabStrip': 'Toggle tabs',
       'view.showFiles': 'Show file browser',
       'view.showBrowser': 'Open browser',
-      'view.toggleHud': 'Toggle HUD mode',
+      'view.toggleHud': 'Toggle HUD mode (global — works from any app)',
       'hud.snapToPointer': 'Move HUD to pointer (global, while HUD is open)',
       'view.showTerminal': 'Toggle terminal',
       'view.newTerminal': 'New terminal',

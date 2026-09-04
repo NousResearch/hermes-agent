@@ -229,6 +229,7 @@ import { registerHudIpc } from './hud-ipc'
 import { applyHudElectronOverlay, promoteHudOverlay } from './hud-overlay'
 import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
+import { createHudSummonShortcut, resolveHudSummon } from './hud-summon-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
@@ -13866,6 +13867,40 @@ function registerHudSnapShortcut() {
 }
 
 /**
+ * Global HUD summon (⌘⇧H from ANY app). Registered for the app's whole life —
+ * unlike snap, which lives only while the HUD is up — so the HUD can be called
+ * up from Figma or a terminal without visiting Hermes first. Which flavour of
+ * open it does is decided by where focus is at the press (see
+ * `resolveHudSummon`): from inside Hermes it behaves exactly like the titlebar
+ * toggle; from another app it appears as a companion — no focus steal, and the
+ * main window is left alone.
+ */
+function onHudSummon() {
+  const focused = BrowserWindow.getFocusedWindow()
+  const hermesFocused = focused !== null && !focused.isDestroyed()
+  const hudOpen = Boolean(hudWindow && !hudWindow.isDestroyed())
+  const mode = resolveHudSummon({ hermesFocused, hudOpen })
+
+  if (mode === 'close') {
+    closeHudWindow()
+
+    return
+  }
+
+  openHudWindow(hudSessionId, hudProfile, mode === 'open-external' ? { summon: 'external' } : {})
+}
+
+const hudSummonShortcut = createHudSummonShortcut(globalShortcut, onHudSummon)
+
+function registerHudSummonShortcut() {
+  if (!hudSummonShortcut.register()) {
+    rememberLog(
+      '[hud] summon shortcut unavailable — CommandOrControl+Shift+H may be owned by another app; the in-app keybind still works'
+    )
+  }
+}
+
+/**
  * Feed the HUD renderer the cursor position on Linux.
  *
  * Everywhere else the renderer learns this from mousemove, which keeps arriving
@@ -14036,7 +14071,9 @@ function broadcastHudState(open) {
   }
 }
 
-function spawnHudWindow(sessionId, profile) {
+function spawnHudWindow(sessionId, profile, summon = 'in-app') {
+  const external = summon === 'external'
+
   const win = new BrowserWindow({
     ...hudBounds(),
     minWidth: 380,
@@ -14107,12 +14144,23 @@ function spawnHudWindow(sessionId, profile) {
 
   wireWindowReveal(win, {
     show: () => {
+      if (external) {
+        // Summoned from another app: appear WITHOUT taking focus, so the user
+        // stays in the app they were working in. showInactive keeps
+        // always-on-top; the composer takes focus only when clicked.
+        win.showInactive()
+
+        return
+      }
+
       win.show()
       win.focus()
     },
     onRevealed: () => {
-      // Step the app aside: the HUD IS the surface now.
-      if (hudRestoreMainWindow && mainWindow && !mainWindow.isDestroyed()) {
+      // Step the app aside: the HUD IS the surface now. Not for an external
+      // summon — the user asked for a companion over their current app, and
+      // hiding Hermes' main window behind it is neither wanted nor visible.
+      if (!external && hudRestoreMainWindow && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.hide()
       }
 
@@ -14161,8 +14209,11 @@ function restoreMainWindowFromHud() {
   }
 }
 
-function openHudWindow(sessionId, profile) {
+function openHudWindow(sessionId, profile, options: { summon?: 'external' | 'in-app' } = {}) {
   const profileKey = typeof profile === 'string' && profile.trim() ? profile.trim() : null
+  // 'external' = summoned by the global chord while another app had focus.
+  // Everything else (titlebar, in-app keybind, pet launcher, IPC) is 'in-app'.
+  const summon = options.summon === 'external' ? 'external' : 'in-app'
 
   if (hudWindow && !hudWindow.isDestroyed()) {
     // Pointed at another PROFILE: the live renderer is bound to the old
@@ -14177,7 +14228,7 @@ function openHudWindow(sessionId, profile) {
 
       hudSessionId = sessionId || null
       hudProfile = profileKey
-      hudWindow = spawnHudWindow(sessionId, profileKey)
+      hudWindow = spawnHudWindow(sessionId, profileKey, summon)
       broadcastHudState(true)
       registerHudSnapShortcut()
 
@@ -14195,15 +14246,29 @@ function openHudWindow(sessionId, profile) {
       broadcastHudState(true)
     }
 
-    focusWindow(hudWindow)
+    if (summon === 'external') {
+      // Companion summon onto an already-open HUD: raise it without stealing
+      // focus from the app the user is in.
+      if (!hudWindow.isVisible()) {
+        hudWindow.showInactive()
+      }
+
+      hudWindow.moveTop?.()
+    } else {
+      focusWindow(hudWindow)
+    }
 
     return hudWindow
   }
 
-  hudRestoreMainWindow = Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible())
+  // An external summon never hides the main window (there is nothing to
+  // "step aside" from — the user is in another app), so there is nothing to
+  // restore when the HUD closes either.
+  hudRestoreMainWindow =
+    summon !== 'external' && Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible())
   hudSessionId = sessionId || null
   hudProfile = profileKey
-  hudWindow = spawnHudWindow(sessionId, profileKey)
+  hudWindow = spawnHudWindow(sessionId, profileKey, summon)
   broadcastHudState(true)
   registerHudSnapShortcut()
 
@@ -17966,6 +18031,9 @@ app.whenReady().then(() => {
   // it without the renderer visiting Settings. A failed registration is logged
   // here and surfaced in Settings via the IPC state (never silent).
   applyQuickEntrySettings(readQuickEntrySettings())
+  // HUD summon chord — same lifetime as Quick Entry's: the whole app run, so
+  // the HUD is reachable from any app without visiting Hermes first.
+  registerHudSummonShortcut()
 
   if (IS_MAC) {
     const reposition = () => wakeIndicatorController.reposition()
@@ -18178,6 +18246,7 @@ app.on('before-quit', event => {
   // closeHudWindow(): that also re-shows the main window, which is wrong on the
   // way out (and `hudRestoreMainWindow` may still be armed from entering HUD).
   hudSnapShortcut.dispose()
+  hudSummonShortcut.dispose()
 
   if (hudWindow && !hudWindow.isDestroyed()) {
     hudWindow.removeAllListeners('closed')

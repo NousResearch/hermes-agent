@@ -1,7 +1,7 @@
 """Tests for the WS-upgrade ticket store (Phase 5 task 5.1).
 
-The store is process-local and threading-safe. Tests run with xdist so
-each worker has its own module instance — no cross-worker bleed — but we
+The store is process-local and threading-safe. Under the per-file
+isolation runner each file has its own process — no cross-file bleed — but we
 call ``_reset_for_tests`` between tests to keep things deterministic.
 """
 

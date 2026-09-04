@@ -36,7 +36,7 @@ os.environ["TERMINAL_ENV"] = "local"
 
 @pytest.fixture(autouse=True)
 def _force_local_terminal(monkeypatch):
-    """Mirror test_code_execution.py — guarantee local backend under xdist."""
+    """Mirror test_code_execution.py — guarantee local backend."""
     monkeypatch.setenv("TERMINAL_ENV", "local")
 
 

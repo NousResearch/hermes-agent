@@ -99,20 +99,23 @@ jobs:
         run: uv cache prune --ci
 
       - name: Run ${{ matrix.marker }} tests
-        # Two-step selection:
+        # scripts/run_tests.sh — the canonical runner, same as every other
+        # lane: per-file subprocess isolation (run_tests_parallel.py). It
+        # natively tolerates per-file empty collections (a platform-gated
+        # file collects nothing after -m filtering, exit 5, treated as a
+        # pass for that file) and fails the run itself when NOTHING was
+        # collected across all files (exit 2) — the zero-tests guard the
+        # bare-pytest variant implemented by hand with an exit-5 branch.
         #
-        #   1. scripts/ci/list_os_marked_tests.py narrows WHICH FILES are
-        #      imported. ``-m`` filters after collection, and collection
-        #      imports every module under tests/ — on this host that would
-        #      drag ~900 unrelated test modules through import, where a
-        #      single unrelated ImportError would fail a job whose own
-        #      subject is fine. The helper exits non-zero if the marker
-        #      matches no file at all.
-        #   2. ``-m`` decides WHICH TESTS run, and stays authoritative.
-        #      Passing it on the command line REPLACES pyproject's
-        #      ``-m 'not integration'`` addopts (same option, last wins) —
-        #      hence repeating ``not integration``, or the integration
-        #      suite would return through the side door.
+        # Selection still narrows WHICH FILES run:
+        # scripts/ci/list_os_marked_tests.py emits the file list (it exits
+        # non-zero when the marker matches no file at all); the list rides
+        # to the runner via ``--files`` so an unrelated ImportError fails
+        # only ITS file, red and visible, without poisoning the lane's
+        # other files. ``-m`` stays authoritative for which TESTS run —
+        # passed after ``--`` so the runner routes it to every per-file
+        # pytest invocation (the flag REPLACES pyproject's addopts, hence
+        # repeating ``not integration``).
         #
         # ``--timeout-method`` needs no override: tests/conftest.py's
         # pytest_configure already downgrades the signal-based timer on
@@ -135,23 +138,9 @@ jobs:
             exit 1
           fi
 
-          # Deliberately NOT `mapfile`: that is a bash 4 builtin and the macOS
-          # runner's /bin/bash is 3.2. Word-splitting is safe here because the
-          # helper emits repo-relative test paths, which contain no spaces.
-          # `tr -d '\r'`: on Windows, the helper's stdout is redirected and
-          # Python emits CRLF line endings — a bare `$(cat "$LIST")` would
-          # leave the `\r` attached to every path ("file or directory not
-          # found: tests/.../test_foo.py\r").
-          # shellcheck disable=SC2046
-          set -- $(tr -d '\r' < "$LIST")
-          echo "selected $# file(s) for ${{ matrix.marker }}:"
+          echo "selected file(s) for ${{ matrix.marker }}:"
           cat "$LIST"
 
-          # ``shell: bash`` runs this script with ``-e`` injected, which
-          # ``set -uo pipefail`` above does not clear. A bare pytest call
-          # would therefore abort the script on any non-zero exit and the
-          # exit-5 branch below would be unreachable dead code — the job
-          # would still fail red, but the diagnostic would never print.
           # Desktop-update hand-off integration tests spawn the real
           # windows.ps1; deselect them unless the PR touched that surface
           # (see the workflow_call input). ``--ignore-glob`` keeps the file
@@ -165,19 +154,19 @@ jobs:
             EXTRA_ARGS+=(--ignore-glob='*test_desktop_update_windows_*.py')
           fi
 
-          status=0
-          uv run --no-sync python -m pytest \
-            "$@" \
+          # ``tr -d '\r'``: on Windows the helper's redirected stdout gains
+          # CRLF line endings; a stray \r would corrupt the path. The list
+          # is ';'-joined for the runner's --files flag (its separator on
+          # every host — explicit file lists bypass discovery).
+          #
+          # Any non-zero exit propagates red: real test failures, or the
+          # runner's own zero-run guard (every file filtered to empty by
+          # ``-m`` — "must never pass without running its OS's tests").
+          FILES="$(tr -d '\r' < "$LIST" | paste -sd ';' -)"
+          scripts/run_tests.sh --files "$FILES" -- \
             ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
             -m "platforms and not integration" \
-            -v --tb=short || status=$?
-          if [ "$status" -eq 5 ]; then
-            echo "::error::No tests matched -m ${{ matrix.marker }}. Either the" \
-                 "marker was renamed/dropped or selection is broken — this job" \
-                 "must never pass without running its OS's tests."
-            exit 1
-          fi
-          exit "$status"
+            -v --tb=short
         env:
           # Belt-and-suspenders with tests/conftest.py's env blanking: no
           # test may reach a real provider API.

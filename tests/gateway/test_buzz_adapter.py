@@ -16,7 +16,7 @@ from gateway.platforms.base import MessageType
 
 # Load plugins/platforms/buzz/adapter.py under a unique module name
 # (plugin_adapter_buzz) so it cannot collide with other plugin adapters
-# loaded by sibling tests in the same xdist worker.
+# loaded by sibling tests in the same process.
 _buzz_mod = load_plugin_adapter("buzz")
 
 BuzzAdapter = _buzz_mod.BuzzAdapter

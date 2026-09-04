@@ -120,14 +120,14 @@ class TestIsWsl:
     def setup_method(self):
         # _is_wsl is hermes_constants.is_wsl; reset the function's own module
         # globals so this stays stable even if hermes_constants was imported
-        # through a different module object earlier in a large xdist run.
+        # through a different module object earlier in a large test run.
         import hermes_constants
         hermes_constants._wsl_detected = None
         _is_wsl.__globals__["_wsl_detected"] = None
 
     def teardown_method(self):
         # Reset again after the test so we don't leak a cached value
-        # (True/False) into whichever test the xdist worker runs next.
+        # (True/False) into whichever test runs next.
         import hermes_constants
         hermes_constants._wsl_detected = None
         _is_wsl.__globals__["_wsl_detected"] = None

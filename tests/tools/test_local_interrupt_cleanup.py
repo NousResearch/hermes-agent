@@ -50,10 +50,10 @@ def _process_group_snapshot(pgid: int) -> str:
 
 
 def _wait_for_pgid_exit(pgid: int, timeout: float = 60.0) -> bool:
-    """Wait for a process group to disappear under loaded xdist hosts.
+    """Wait for a process group to disappear under loaded CI hosts.
 
     The cleanup chain is: SIGTERM → 3s TimeoutStopSec → SIGKILL → reap.
-    Under heavy xdist load (40 parallel workers, 6-shard CI), the full
+    Under heavy parallel-test load (40 workers, 6-shard CI), the full
     sequence can exceed 10s. Default timeout is generous to avoid CI
     flakes; in practice the wait returns in <1s on quiet hosts.
     """
@@ -175,13 +175,13 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
 
         # Give the worker a moment to: hit the exception at the next poll,
         # run the except-block cleanup (_kill_process), and exit.  Under
-        # xdist load the SIGTERM → 3s wait → SIGKILL chain can take longer
+        # heavy load the SIGTERM → 3s wait → SIGKILL chain can take longer
         # than 5s before the worker's join() returns; bumped to 15s.
         t.join(timeout=30.0)
         assert not t.is_alive(), "worker didn't exit within 30 s of the interrupt"
 
         # The critical assertion: the subprocess GROUP must be dead.  Not
-        # just the bash wrapper — the 'sleep 30' child too. Under xdist load,
+        # just the bash wrapper — the 'sleep 30' child too. Under heavy load,
         # process-group disappearance can lag briefly after the worker exits,
         # especially if the process is already dying or waiting to be reaped.
         assert _wait_for_pgid_exit(pgid), (

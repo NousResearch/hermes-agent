@@ -25,14 +25,14 @@ def _reset_logging_state():
     """Reset the module-level sentinel and clean up root logger handlers
     added by setup_logging() so tests don't leak state.
 
-    Under xdist (-n auto) other test modules may have called setup_logging()
-    in the same worker process, leaving RotatingFileHandlers on the root
-    logger.  We strip ALL RotatingFileHandlers before each test so the count
-    assertions are stable regardless of test ordering.
+    Under a shared-process run, other test modules may have called
+    setup_logging() in the same process, leaving RotatingFileHandlers on the
+    root logger.  We strip ALL RotatingFileHandlers before each test so the
+    count assertions are stable regardless of test ordering.
     """
     hermes_logging._logging_initialized = False
     # File handlers now live behind the async QueueListener, not on the root
-    # logger; tear down any leaked from other xdist tests in this worker.
+    # logger; tear down any leaked from other tests in this process.
     hermes_logging._reset_queued_handlers()
     root = logging.getLogger()
     prev_root_level = root.level

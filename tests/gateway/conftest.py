@@ -4,7 +4,7 @@ The ``_ensure_telegram_mock`` helper guarantees that a minimal mock of
 the ``telegram`` package is registered in :data:`sys.modules` **before**
 any test file triggers ``from plugins.platforms.telegram.adapter import ...``.
 
-Without this, ``pytest-xdist`` workers that happen to collect
+Without this, pytest sessions that happen to collect
 ``test_telegram_caption_merge.py`` (bare top-level import, no per-file
 mock) first will cache ``ChatType = None`` from the production
 ImportError fallback, causing 30+ downstream test failures wherever
@@ -25,7 +25,7 @@ pointer to the helper if the anti-pattern is detected.
 
 Rationale: every plugin ships its own ``adapter.py``, and two tests each
 inserting their plugin dir on ``sys.path[0]`` race for
-``sys.modules["adapter"]`` in the same xdist worker. Whichever collects
+``sys.modules["adapter"]`` in the same pytest session. Whichever collects
 first wins; the other fails with ``ImportError``, and the polluted
 ``sys.path`` cascades into unrelated tests. See PR #17764 for the
 incident.
@@ -471,13 +471,13 @@ def _run_adapter_antipattern_scan() -> list[str]:
 def pytest_configure(config):
     """Reject plugin-adapter tests that use the sys.path anti-pattern.
 
-    Runs once per pytest session on the controller, BEFORE any xdist
-    worker is spawned. If any file under ``tests/gateway/`` matches the
-    anti-pattern, we fail the whole session with a clear message —
-    before a polluted ``sys.path`` can cascade across workers.
+    Runs once per pytest session, before any test is collected. If any
+    file under ``tests/gateway/`` matches the anti-pattern, we fail the
+    whole session with a clear message — before a polluted ``sys.path``
+    can cascade.
 
-    **Performance**: in the per-file subprocess isolation model (no xdist),
-    every subprocess is a "controller" — so the naive scan would run 257
+    **Performance**: in the per-file subprocess isolation model, every
+    subprocess runs this hook — so the naive scan would run 257
     times, each costing ~1s of AST walking.  We avoid this with two
     strategies:
 
@@ -491,11 +491,6 @@ def pytest_configure(config):
        subprocesses acquire a lock; only the first performs the scan;
        the rest wait and read the cached result.
     """
-    # Only run on the xdist controller (or in non-xdist runs). Skip on
-    # worker subprocesses so we don't scan the filesystem N times.
-    if hasattr(config, "workerinput"):
-        return
-
     fp = _fingerprint_gateway_tests()
     cache_dir = Path.cwd() / ".pytest-cache"
     cache_file = cache_dir / f"gw-adapter-guard-{fp}"

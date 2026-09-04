@@ -15,7 +15,7 @@ Hermetic-test invariants enforced here (see AGENTS.md for rationale):
    session must not leak into tests.
 
 These invariants make the local test run match CI closely. Gaps that
-remain (CPU count, xdist worker count) are addressed by the canonical
+remain (CPU count, worker count) are addressed by the canonical
 test runner at ``scripts/run_tests.sh``.
 """
 
@@ -129,16 +129,13 @@ HERMES_HOME_AT_CONFTEST_IMPORT = os.environ.get("HERMES_HOME", "")
 
 
 # ── File-level scheduling isolation ──────────────────────────────────────────
-# Tests run via ``scripts/run_tests.sh``, which dispatches on host. POSIX:
-# every file in its own freshly-spawned ``python -m pytest <file>`` subprocess
-# (``scripts/run_tests_parallel.py``) — cross-file state leakage is
-# impossible. Windows: pytest-xdist with ``--dist loadfile``, which pins every
-# test of a FILE to ONE worker — leakage is bounded to co-scheduled files, and
-# any such leak is a stateful-test bug to fix at the tests. Intra-file
-# ordering is the test author's responsibility on every host — if test A in
-# foo.py mutates state that test B in foo.py reads, that's a real bug to fix
-# in the file (it would also bite anyone running ``pytest tests/foo.py``
-# directly).
+# Tests run via ``scripts/run_tests.sh``, which runs the per-file runner
+# (``scripts/run_tests_parallel.py``) on every host: every file in its own
+# freshly-spawned ``python -m pytest <file>`` subprocess — cross-file state
+# leakage is impossible. Intra-file ordering is the test author's
+# responsibility on every host — if test A in foo.py mutates state that
+# test B in foo.py reads, that's a real bug to fix in the file (it would
+# also bite anyone running ``pytest tests/foo.py`` directly).
 #
 # See ``scripts/run_tests.sh`` for the runner.
 
@@ -792,14 +789,14 @@ def _state_db_write_guard(request, monkeypatch):
     yield
 
 
-# ── Module-level state reset — replaced by file-pinned xdist workers ────────
+# ── Module-level state reset — replaced by per-file process isolation ───────
 #
-# ``--dist loadfile`` pins each test FILE to ONE worker, so heavy
-# co-scheduling pollution (module-level dicts / sets / ContextVars shared
-# by many files) is bounded to files that land on the same worker. Within
-# a single file, ordering is the author's responsibility. If your tests
-# in the same file share mutable state, either reset it explicitly in a
-# fixture or split them across files.
+# ``scripts/run_tests_parallel.py`` runs each test FILE in its own freshly
+# spawned pytest subprocess, so heavy co-scheduling pollution (module-level
+# dicts / sets / ContextVars shared by many files) cannot cross file
+# boundaries at all. Within a single file, ordering is the author's
+# responsibility. If your tests in the same file share mutable state, either
+# reset it explicitly in a fixture or split them across files.
 #
 # The skill ``test-suite-cascade-diagnosis`` documents the cascade patterns
 # this replaces; the running example was ``test_command_guards`` failing

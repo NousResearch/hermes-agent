@@ -42,7 +42,7 @@ def _suppress_concurrent_hermes_gate(request, monkeypatch):
     except Exception:
         return
     # raising=False: under pytest's per-test spawn isolation, a concurrent
-    # xdist worker importing a module that transitively touches hermes_cli.main
+    # process importing a module that transitively touches hermes_cli.main
     # can briefly expose a partially-initialized module object here — one where
     # _detect_concurrent_hermes_instances isn't defined yet. A bare setattr
     # would raise AttributeError and error the (unrelated) test. The attribute

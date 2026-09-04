@@ -417,7 +417,7 @@ def _scan_profile_flag(argv: list) -> tuple:
     Historically the flag worked even after the subcommand (`hermes chat -p
     coder`), so scan broadly; stop at ``--`` and at the `mcp add --args`
     passthrough region. Values that can't be profile names (pytest's
-    ``-p no:xdist``) are rejected so resolve_profile_env never sys.exits on them.
+    ``-p no:cacheprovider``) are rejected so resolve_profile_env never sys.exits on them.
     """
     from hermes_cli._parser import top_level_value_flag_sets
 

@@ -27,8 +27,8 @@ os.environ["TERMINAL_ENV"] = "local"
 def _force_local_terminal(monkeypatch):
     """Re-set TERMINAL_ENV=local before every test.
 
-    The module-level assignment above covers import time, but under xdist
-    another worker can overwrite os.environ between tests.  monkeypatch
+    The module-level assignment above covers import time, but another
+    test can overwrite os.environ between tests.  monkeypatch
     ensures each test starts (and ends) with the correct value.
     """
     monkeypatch.setenv("TERMINAL_ENV", "local")

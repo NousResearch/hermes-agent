@@ -2,23 +2,17 @@
 # Canonical test runner for hermes-agent. Run this instead of calling
 # `pytest` directly to guarantee your local run matches CI behavior.
 #
-# The runner dispatches on host, because the two cost profiles are opposites:
-#
-#   * POSIX — per-file subprocess isolation (scripts/run_tests_parallel.py):
-#     each test FILE runs in its own freshly-spawned `python -m pytest <file>`
-#     process. The spawn floor is ~15ms there, so process isolation is nearly
-#     free; in exchange there is no cross-file state pollution and each file
-#     is collected exactly once (pytest's per-item fixture-closure machinery —
-#     tens of millions of dict walks over ~42k items against the conftest's
-#     autouse fixtures — is paid once, not once per xdist worker; measured
-#     37-65s of pure collection that a persistent-worker model multiplies by
-#     the worker count).
-#   * Windows — pytest-xdist with --dist loadfile. The per-file model pays a
-#     0.5-1.5s spawn+import wall per file (~3400 files ≈ a 6-minute floor that
-#     dominated the lane); persistent workers pay the interpreter+import wall
-#     once per worker. loadfile pins each file's tests to ONE worker, so the
-#     remaining hazard is state shared by files co-scheduled on a worker —
-#     which is a stateful-test bug to fix, not a runner bug.
+# One runner on every host: per-file subprocess isolation via
+# scripts/run_tests_parallel.py — each test FILE runs in its own
+# freshly-spawned `python -m pytest <file>` process. The spawn floor is
+# ~15ms on POSIX; on Windows it is ~0.5-1.5s per file (a real cost,
+# ~a 6-minute floor over the full suite, paid for the state isolation
+# below). There is no cross-file state pollution and each file is
+# collected exactly once (pytest's per-item fixture-closure machinery —
+# tens of millions of dict walks over ~42k items against the conftest's
+# autouse fixtures — is paid once, not once per worker; measured 37-65s
+# of pure collection that a persistent-worker model multiplies by the
+# worker count).
 #
 # Both paths enforce the same hermetic environment: TZ=UTC, LANG=C.UTF-8,
 # PYTHONHASHSEED=0, `env -i` scrubbing (credential vars can't leak), and
@@ -37,14 +31,6 @@ set -euo pipefail
 # ── Locate repo root ────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-# ── Host model ───────────────────────────────────────────────────────────────
-# Git-bash / MSYS on Windows reports uname -s like MINGW64_NT-10.0-... or
-# MSYS_NT-...; POSIX hosts report Linux / Darwin.
-case "$(uname -s)" in
-  Linux|Darwin) IS_WINDOWS=0 ;;
-  *)            IS_WINDOWS=1 ;;
-esac
 
 # ── Locate python ───────────────────────────────────────────────────────────
 # Probe local venvs first; fall back to the Nix devShell's editable venv
@@ -115,8 +101,7 @@ if [ -f "$HOME/.hermes/pytest_live_guard.py" ]; then
 fi
 
 # ── Our -j/--jobs flag: consumed here, forwarded via HERMES_TEST_WORKERS ────
-# (both backends read that env knob: run_tests_parallel.py as its worker cap,
-# the xdist path as -n).
+# (run_tests_parallel.py reads that env knob as its worker cap).
 JOBS="${HERMES_TEST_WORKERS:-}"
 PASS_THROUGH=()
 while [ $# -gt 0 ]; do
@@ -203,15 +188,5 @@ HERMETIC_ENV=(
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"}
 )
 
-if [ "$IS_WINDOWS" -eq 1 ]; then
-  echo "▶ windows: pytest-xdist (-n ${HERMES_TEST_WORKERS:-auto} --dist loadfile)"
-  exec env -i "${HERMETIC_ENV[@]}" \
-    "$PYTHON" -m pytest -n "${HERMES_TEST_WORKERS:-auto}" --dist loadfile \
-    -p no:cacheprovider -m "not integration" -q --tb=line "$@"
-fi
-
-echo "▶ posix: per-file parallel suite via run_tests_parallel.py"
-echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)"
 exec env -i "${HERMETIC_ENV[@]}" \
-
   "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"

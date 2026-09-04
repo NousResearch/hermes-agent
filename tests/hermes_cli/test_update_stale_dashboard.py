@@ -37,7 +37,7 @@ def _refresh_bindings_against_live_module():
     """Rebind module-level names to the *current* defining modules.
 
     Other tests in the suite reload modules from ``sys.modules``; when that
-    happens on the same xdist worker before we run, our top-of-file bindings
+    happens in the same process before we run, our top-of-file bindings
     end up pointing at the *old* module object and ``patch("<module>.X")``
     patches the *new* one, so every patch becomes a no-op and the kill path
     silently returns early. Refreshing the bindings keeps them consistent.

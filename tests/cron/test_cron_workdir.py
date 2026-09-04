@@ -257,7 +257,7 @@ class TestRunJobTerminalCwd:
         whatever value was present before the call should be present after.
 
         We don't assert on the *content* of TERMINAL_CWD (other tests in the
-        same xdist worker may leave it set to something like '.'); we just
+        same process may leave it set to something like '.'); we just
         check it's unchanged by run_job.
         """
         import os

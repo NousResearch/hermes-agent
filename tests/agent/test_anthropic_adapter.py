@@ -559,8 +559,8 @@ class TestRunOauthSetupToken:
 
         assert token == "from-cred-file"
         # Don't assert exact call count — the contract is "credentials flow
-        # through", not "exactly one subprocess call". xdist cross-test
-        # pollution (other tests shimming subprocess via plugins) has flaked
+        # through", not "exactly one subprocess call". Cross-test pollution
+        # (other tests shimming subprocess via plugins) has flaked
         # assert_called_once() in CI.
         assert mock_run.called
 

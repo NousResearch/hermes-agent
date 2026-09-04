@@ -131,7 +131,7 @@ class TestUpdateYesConfigMigration:
 
         # Patch ``sys.stdin.isatty`` and ``sys.stdout.isatty`` directly on the
         # real ``sys`` module instead of replacing ``hermes_cli.main.sys`` with
-        # a MagicMock. The MagicMock approach was flaky under ``pytest-xdist``
+        # a MagicMock. The MagicMock approach was flaky under parallel test runs
         # — a sibling test that imported ``hermes_cli.main`` first could leave
         # a different ``sys`` reference resolved inside the function and the
         # mock would never be consulted, with CI then taking the

@@ -175,8 +175,8 @@ jobs:
           NOUS_API_KEY: ""
         run: |
           # Each of these tests drives a container, so the docker daemon sets
-          # the limit and not the processor. This pins the xdist worker count
-          # to the core count.
+          # the limit and not the processor. This pins the runner's worker
+          # count to the core count.
           HERMES_TEST_WORKERS=$(nproc) scripts/run_tests.sh tests/docker/
 
   # ---------------------------------------------------------------------------

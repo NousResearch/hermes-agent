@@ -1,7 +1,8 @@
 """E2E tests: verify _build_kwargs_from_profile produces correct output.
 
 These tests call _build_kwargs_from_profile on the transport directly,
-without importing run_agent (which would cause xdist worker contamination).
+without importing run_agent (which would contaminate other tests' imports
+via shared module state).
 """
 
 import pytest

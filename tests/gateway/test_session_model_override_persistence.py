@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
+from agent.model_metadata import get_model_context_length
 from gateway.config import GatewayConfig, Platform
 from gateway.session import (
     SessionEntry,
@@ -139,6 +140,55 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     assert runtime["max_tokens"] == 32_768
     route = runner._resolve_turn_agent_config("", model, runtime)
     assert route["runtime"]["capabilities"] == {"openai_native_compaction": True}
+
+
+def test_cleared_global_override_restart_uses_900k_default(store_factory):
+    """A successful global switch restores the selected 900K context after restart."""
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+    store.set_model_override(
+        session_key,
+        {
+            "model": "gpt-5.6-sol",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        },
+    )
+    # The global model-switch commit clears the redundant session authority.
+    store.set_model_override(session_key, None)
+
+    runner = _make_runner(store_factory())
+    user_config = {
+        "model": {
+            "default": "gpt-5.6-sol-900k",
+            "provider": "openai-codex",
+        }
+    }
+    runtime = {
+        "provider": "openai-codex",
+        "requested_provider": "openai-codex",
+        "api_key": "oauth-token",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "api_mode": "codex_responses",
+    }
+    with patch("gateway.run._resolve_runtime_agent_kwargs", return_value=runtime):
+        model, resolved = runner._resolve_session_agent_runtime(
+            session_key=session_key,
+            user_config=user_config,
+        )
+
+    assert model == "gpt-5.6-sol-900k"
+    assert resolved["provider"] == "openai-codex"
+    assert session_key not in runner._session_model_overrides
+    assert get_model_context_length(
+        model,
+        provider=resolved["provider"],
+    ) == 900_000
+    assert get_model_context_length(
+        "gpt-5.6-sol",
+        provider=resolved["provider"],
+    ) == 272_000
 
 
 def test_sanitize_model_override():

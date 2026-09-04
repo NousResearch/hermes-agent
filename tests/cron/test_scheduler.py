@@ -5,6 +5,7 @@ import itertools
 import json
 import logging
 import os
+import time
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -863,7 +864,14 @@ class TestRunJobSessionPersistence:
                 return {"final_response": "ok"}
 
         class FakeFuture:
+            def __init__(self):
+                self._done = False
+
+            def done(self) -> bool:
+                return self._done
+
             def result(self):
+                self._done = True
                 return {"final_response": "ok"}
 
         fake_future = FakeFuture()
@@ -897,6 +905,90 @@ class TestRunJobSessionPersistence:
         assert final_response == "ok"
         heartbeat.assert_called_once_with(
             "heartbeat-job", expected_owner="owner-token"
+        )
+
+    def test_run_job_watchdog_survives_future_without_done(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """#100046: a cron future lacking done() must not crash the watchdog.
+
+        The inactivity watchdog binds the future's ``done`` attribute on its
+        thread. A double (or duck-typed future) without ``done`` used to crash
+        that thread with AttributeError — surfacing only as a pytest warning
+        while silently disarming the inactivity guard. run_job must instead
+        log the degraded binding and keep the watchdog polling until the
+        run completes normally.
+        """
+        job = {
+            "id": "watchdog-job",
+            "name": "watchdog",
+            "prompt": "hello",
+            "schedule": {"kind": "once", "run_at": "2026-07-10T12:00:00Z"},
+            "run_claim": {"at": "2026-07-10T12:00:00Z", "by": "owner-token"},
+        }
+        fake_db = MagicMock()
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run_conversation(self, *args, **kwargs):
+                return {"final_response": "ok"}
+
+        class ResultOnlyFuture:
+            """Deliberately violates the interface: no done() (#100046)."""
+
+            def result(self):
+                return {"final_response": "ok"}
+
+        fake_future = ResultOnlyFuture()
+        fake_pool = MagicMock()
+        fake_pool.submit.return_value = fake_future
+        wait_results = [(set(), set()), ({fake_future}, set())]
+        monotonic_ticks = itertools.count(step=61.0)
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "600")
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._preflight_job_config", return_value=None), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent", FakeAgent), \
+             patch("cron.scheduler.concurrent.futures.ThreadPoolExecutor", return_value=fake_pool), \
+             patch("cron.scheduler.concurrent.futures.wait", side_effect=wait_results), \
+             patch("cron.scheduler.time.monotonic", side_effect=monotonic_ticks.__next__), \
+             patch("cron.scheduler.heartbeat_run_claim", return_value=True):
+            with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+                success, _output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        # The watchdog thread must have engaged its degraded binding rather
+        # than dying on the missing attribute. It runs concurrently with the
+        # (mocked) wait loop, so poll briefly for the log record instead of
+        # assuming thread scheduling.
+        deadline = time.monotonic() + 5.0
+        degraded = any(
+            "lacks done()" in record.message
+            for record in caplog.records
+        )
+        while not degraded and time.monotonic() < deadline:
+            degraded = any(
+                "lacks done()" in record.message
+                for record in caplog.records
+            )
+            time.sleep(0.05)
+        assert degraded, (
+            "watchdog did not log its degraded done() binding — "
+            "it likely crashed on the missing attribute (#100046)"
         )
 
     def test_run_job_resets_secret_source_cache_before_reload(self, tmp_path, monkeypatch):

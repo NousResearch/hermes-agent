@@ -6881,12 +6881,27 @@ def run_job(
             nonlocal _inactivity_timeout
             if _cron_inactivity_limit is None:
                 return
+            # Bind defensively (#100046): a crashing watchdog thread would
+            # silently strip this run of its inactivity guard — pytest only
+            # records a thread exception as a warning, so production would
+            # degrade quietly too. Duck-type the future: real
+            # concurrent.futures futures always expose ``done``; fall back
+            # to polling without it (at worst the guard stays armed until
+            # the run_job loop sets ``_watch_stop``) and log once.
+            _future_done = getattr(_cron_future, "done", None)
+            if _future_done is None:
+                logger.warning(
+                    "Job '%s': cron future lacks done(); watchdog will poll "
+                    "without completion detection",
+                    job_name,
+                )
+                _future_done = lambda: False
             if _inactivity_watchdog_loop(
                 get_idle_seconds=_idle_seconds,
                 limit_s=_cron_inactivity_limit,
                 poll_s=_POLL_INTERVAL,
                 stop=_watch_stop,
-                future_done=_cron_future.done,
+                future_done=_future_done,
             ):
                 _inactivity_timeout = True
 

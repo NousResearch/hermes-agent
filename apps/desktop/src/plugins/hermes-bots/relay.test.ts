@@ -555,59 +555,6 @@ describe('the drain loop wires drain → deliver → reply', () => {
     stopBotRelay()
   })
 
-  it('keeps draining while a delivered turn waits for a nested agent reply', async () => {
-    hostMock.profileRoutes = vi.fn(async () => [route('a')])
-
-    let releaseDelivery!: () => void
-
-    const heldDelivery = new Promise<{ reply: string }>(resolve => {
-      releaseDelivery = () => resolve({ reply: 'outer turn finished' })
-    })
-
-    let drains = 0
-
-    const calls = respondWith(call => {
-      if (call.method === 'bot_relay.outbox.drain') {
-        drains += 1
-
-        return {
-          envelopes: drains === 1 ? [{ ...envelope, target_connection: 'a', target_profile: 'alien-child' }] : []
-        }
-      }
-
-      if (call.method === 'bot_relay.deliver') {
-        return heldDelivery
-      }
-
-      return {}
-    })
-
-    const { startBotRelay, stopBotRelay } = await loadRelay()
-
-    startBotRelay()
-    await vi.advanceTimersByTimeAsync(0)
-    calls.length = 0
-    drains = 0
-
-    await pushAndSettle()
-    expect(calls.some(call => call.method === 'bot_relay.deliver')).toBe(true)
-
-    // This push represents the nested message_agent call from the target
-    // turn. It must claim immediately, before that outer delivery resolves.
-    await pushAndSettle()
-    expect(drains).toBeGreaterThan(1)
-    expect(calls.some(call => call.method === 'bot_relay.reply')).toBe(false)
-
-    releaseDelivery()
-    await vi.advanceTimersByTimeAsync(0)
-    expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toMatchObject({
-      id: 'env-1',
-      reply: 'outer turn finished'
-    })
-
-    stopBotRelay()
-  })
-
   it('still posts a reply when the target connection is gone — the waiter must never dangle', async () => {
     const calls = respondWith(call =>
       call.method === 'bot_relay.outbox.drain'

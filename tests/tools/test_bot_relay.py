@@ -82,6 +82,18 @@ def test_roster_rejects_invalid_local_desktop_connection(root):
     assert bot_relay.read_local_connection_id(root) == ""
 
 
+def test_wait_for_reply_prints_relay_result(root, monkeypatch, capsys):
+    envelope = {
+        "id": "a" * 32,
+        "target_handle": "researcher",
+        "target_connection": "local-1",
+    }
+    bot_relay.write_reply(root, envelope["id"], reply="done")
+
+    assert bot_relay.wait_for_reply(root, envelope) == 0
+    assert capsys.readouterr().out == "Reply from @researcher on local-1:\ndone\n"
+
+
 def test_roster_read_missing_and_corrupt(root):
     assert bot_relay.read_remote_roster(root) == []
     base = bot_relay.relay_root(root)

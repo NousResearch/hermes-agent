@@ -214,7 +214,25 @@ def _capture_spawn(monkeypatch):
 def _runner_parts(command):
     parts = shlex.split(command)
     marker = parts.index("--run-delivery")
-    return parts[marker + 1], parts[marker + 2], parts[marker + 3 :]
+    runner_args = parts[marker + 3 :]
+    if runner_args and runner_args[0] == "--relay-fallback":
+        runner_args = runner_args[6:]
+    return parts[marker + 1], parts[marker + 2], runner_args
+
+
+def _runner_relay_fallback(command):
+    parts = shlex.split(command)
+    marker = parts.index("--run-delivery")
+    runner_args = parts[marker + 3 :]
+    if not runner_args or runner_args[0] != "--relay-fallback":
+        return None
+    assert runner_args[5] == "--"
+    return {
+        "root": runner_args[1],
+        "target_profile": runner_args[2],
+        "sender_profile": runner_args[3],
+        "sender_handle": runner_args[4],
+    }
 
 
 def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
@@ -268,7 +286,9 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     assert '$(and this is not shell)' in content
 
 
-def test_local_delivery_uses_fresh_desktop_relay(tmp_path, monkeypatch):
+def test_local_delivery_carries_desktop_fallback_without_preempting_cli(
+    tmp_path, monkeypatch
+):
     calls = _capture_spawn(monkeypatch)
     home = _managed_home(tmp_path, teammates=("researcher",))
     from tools import bot_relay
@@ -282,12 +302,18 @@ def test_local_delivery_uses_fresh_desktop_relay(tmp_path, monkeypatch):
 
     assert result["status"] == "sent"
     command = calls[0]["command"]
-    assert "--run-delivery" not in command
-    assert "local-1" in command
-    envelopes = bot_relay.claim_pending_envelopes(home)
-    assert len(envelopes) == 1
-    assert envelopes[0]["target_connection"] == "local-1"
-    assert envelopes[0]["target_profile"] == "researcher"
+    mode, _dm_file, argv = _runner_parts(command)
+    assert mode == "query-file"
+    assert argv[1:3] == ["-p", "researcher"]
+    relay_fallback = _runner_relay_fallback(command)
+    assert relay_fallback is not None
+    assert Path(relay_fallback.pop("root")) == home
+    assert relay_fallback == {
+        "target_profile": "researcher",
+        "sender_profile": "default",
+        "sender_handle": "hermes",
+    }
+    assert bot_relay.claim_pending_envelopes(home) == []
 
 
 def test_local_delivery_keeps_subprocess_fallback_without_desktop(tmp_path, monkeypatch):
@@ -480,6 +506,59 @@ def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["reason"] == "target_busy"
     assert "NOT delivered" in payload["error"]
+
+
+def test_delivery_runner_relays_only_after_live_owner_refusal(
+    tmp_path, monkeypatch, capsys
+):
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("Message from bot: hi", encoding="utf-8")
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    from tools import bot_relay
+
+    bot_relay.write_remote_roster(home, [], local_connection_id="local-1")
+    runs = []
+
+    def owned(argv, **kwargs):
+        runs.append((argv, kwargs))
+        return subprocess.CompletedProcess(
+            argv,
+            1,
+            stdout="",
+            stderr="Session abc already has a live owner (desktop, pid 1).",
+        )
+
+    waited = []
+
+    def immediate_reply(root, envelope):
+        waited.append((Path(root), envelope))
+        print("relayed")
+        return 0
+
+    monkeypatch.setattr(subprocess, "run", owned)
+    monkeypatch.setattr(bot_relay, "wait_for_reply", immediate_reply)
+
+    returncode = bot_mode_dm._run_delivery(
+        ["hermes", "-p", "researcher"],
+        str(dm_file),
+        stdin_file=False,
+        relay_fallback={
+            "root": str(home),
+            "target_profile": "researcher",
+            "sender_profile": "default",
+            "sender_handle": "hermes",
+        },
+    )
+
+    assert returncode == 0
+    assert len(runs) == 1
+    assert len(waited) == 1
+    assert waited[0][0] == home
+    assert waited[0][1]["target_connection"] == "local-1"
+    assert waited[0][1]["target_profile"] == "researcher"
+    assert waited[0][1]["message"] == "Message from bot: hi"
+    assert capsys.readouterr().out == "relayed\n"
+    assert not dm_file.exists()
 
 
 def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(

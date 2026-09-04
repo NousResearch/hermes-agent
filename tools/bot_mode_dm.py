@@ -28,9 +28,11 @@ Containment contract (MUST hold — reviewers check all three):
 - Everything here is additive. The legacy protocol transports
   (``hermes -p`` / ``hermes peer dm``) keep working for older prompts.
 
-The transports themselves are unchanged and proven:
+Delivery starts with the proven transports:
 - local teammate  → ``hermes -p <name> chat --in ~ -c "Bot Chat"
-  --create-if-missing -Q --query-file <tmp>`` (one turn, reply on stdout)
+  --create-if-missing -Q --query-file <tmp>`` (one turn, reply on stdout). If
+  Desktop already owns that Bot Chat, the runner moves the refused turn onto
+  Desktop's live relay instead of dropping it.
 - peer teammate   → ``hermes peer dm <peer>[/<name>] < <tmp>``
 
 Both run through ``terminal_tool(background=True, notify_on_complete=True)``
@@ -359,24 +361,6 @@ def message_agent_tool(
             return relayed
         return _err("You can't message yourself. Pick a teammate from the roster.")
 
-    # A Desktop-owned Bot Chat cannot be opened by the CLI subprocess below:
-    # the single-owner lease correctly fences it out. When Desktop has
-    # recently advertised this gateway's connection id, ride the existing
-    # relay instead; bot_relay.deliver queues the DM through prompt.submit on
-    # the live session. No fresh Desktop heartbeat means headless/CLI-only
-    # installs keep the direct subprocess path unchanged.
-    desktop_delivery = _try_local_desktop_delivery(
-        root,
-        resolved,
-        body,
-        me,
-        sender_handle,
-        task_id=task_id,
-        agent=agent,
-    )
-    if desktop_delivery is not None:
-        return desktop_delivery
-
     return _start_delivery(
         [
             "hermes",
@@ -393,32 +377,34 @@ def message_agent_tool(
         prefix + body,
         f"@{_handle(resolved)}",
         stdin_file=False,
+        relay_fallback={
+            "root": str(root),
+            "target_profile": resolved,
+            "sender_profile": me,
+            "sender_handle": sender_handle,
+        },
         task_id=task_id,
         agent=agent,
     )
 
 
-def _try_local_desktop_delivery(
-    root: Path,
-    profile: str,
-    body: str,
-    me: str,
-    sender_handle: str,
-    *,
-    task_id: Optional[str],
-    agent: Any,
-) -> Optional[str]:
-    """Queue a same-install DM through a live Desktop relay when available."""
+def _relay_after_live_owner(
+    dm_file: str,
+    relay_fallback: dict[str, str],
+) -> Optional[int]:
+    """Move a refused local turn onto Desktop's live connection, if present."""
     try:
         from tools.bot_relay import (
             enqueue_envelope,
             read_local_connection_id,
-            waiter_command,
+            wait_for_reply,
         )
 
+        root = Path(relay_fallback["root"])
         connection_id = read_local_connection_id(root)
         if not connection_id:
             return None
+        profile = relay_fallback["target_profile"]
         handle = _handle(profile)
         target = {
             "profile": profile,
@@ -429,20 +415,13 @@ def _try_local_desktop_delivery(
         envelope = enqueue_envelope(
             root,
             target=target,
-            message=f"Message from 🤖 {sender_handle} (@{sender_handle}): {body}",
-            sender_profile=me,
-            sender_handle=sender_handle,
+            message=Path(dm_file).read_text(encoding="utf-8"),
+            sender_profile=relay_fallback["sender_profile"],
+            sender_handle=relay_fallback["sender_handle"],
         )
-        return _spawn_delivery(
-            waiter_command(root, envelope),
-            f"@{handle}",
-            task_id=task_id,
-            agent=agent,
-        )
+        return wait_for_reply(root, envelope)
     except Exception:
-        # A disappearing/stale Desktop route is not a delivery failure yet:
-        # preserve the proven local subprocess as the next resolver rung.
-        logger.debug("local Desktop relay delivery unavailable", exc_info=True)
+        logger.debug("live-owner Desktop relay fallback unavailable", exc_info=True)
         return None
 
 
@@ -628,7 +607,13 @@ def _delivery_lock(argv: list[str], *, stdin_file: bool):
     return acquire_turn_lock(_hermes_root(home), argv[2])
 
 
-def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
+def _run_delivery(
+    argv: list[str],
+    dm_file: str,
+    *,
+    stdin_file: bool,
+    relay_fallback: Optional[dict[str, str]] = None,
+) -> int:
     """Run one DM transport and remove its plaintext file after consumption.
 
     The turn execution window (not the enqueue) holds the target profile's
@@ -642,6 +627,11 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
     compression lever; no fresh session is ever minted. Auth/quota/config
     failures never retry. Peer transports (stdin mode) retry on their own
     gateway's deliver path, not here.
+
+    A local live-owner refusal is different from a busy delivery lock: the
+    subprocess did not consume the message. When Desktop has advertised the
+    gateway's current connection id, release the turn lock and hand that same
+    message to the existing live-session relay.
     """
     try:
         with _delivery_lock(argv, stdin_file=stdin_file):
@@ -673,31 +663,43 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
                         capture_output=True,
                         text=True,
                     )
-            # Re-emit the transport's streams: stdout is the reply text the
-            # completion notification carries back to the sending agent.
-            if proc.returncode != 0 and "already has a live owner" in (proc.stderr or ""):
-                # #100523: the target's Bot Chat is held live by another
-                # surface (Desktop). The turn never ran, so tell the sender
-                # plainly instead of leaking a raw lease error + exit code.
-                who = argv[argv.index("-p") + 1] if "-p" in argv[:-1] else "the teammate"
-                print(json.dumps({
-                    "error": f"Delivery failed: @{who}'s Bot Chat is open on another "
-                             "surface right now, so your message was NOT delivered. Try again later.",
-                    "reason": "target_busy",
-                }))
-                return 1
-            if proc.stdout:
-                sys.stdout.write(proc.stdout)
-                sys.stdout.flush()
-            if proc.stderr:
-                sys.stderr.write(proc.stderr)
-                sys.stderr.flush()
-            return proc.returncode
+        # Re-emit the transport's streams: stdout is the reply text the
+        # completion notification carries back to the sending agent.
+        live_owner = proc.returncode != 0 and "already has a live owner" in (
+            (proc.stderr or "") + (proc.stdout or "")
+        )
+        if live_owner and relay_fallback:
+            relayed = _relay_after_live_owner(dm_file, relay_fallback)
+            if relayed is not None:
+                return relayed
+        if live_owner:
+            # #100523: the target's Bot Chat is held live by another surface,
+            # but no usable Desktop relay was available. The turn never ran.
+            who = argv[argv.index("-p") + 1] if "-p" in argv[:-1] else "the teammate"
+            print(json.dumps({
+                "error": f"Delivery failed: @{who}'s Bot Chat is open on another "
+                         "surface right now, so your message was NOT delivered. Try again later.",
+                "reason": "target_busy",
+            }))
+            return 1
+        if proc.stdout:
+            sys.stdout.write(proc.stdout)
+            sys.stdout.flush()
+        if proc.stderr:
+            sys.stderr.write(proc.stderr)
+            sys.stderr.flush()
+        return proc.returncode
     finally:
         _unlink_dm_file(dm_file)
 
 
-def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool) -> str:
+def _delivery_command(
+    argv: list[str],
+    dm_file: str,
+    *,
+    stdin_file: bool,
+    relay_fallback: Optional[dict[str, str]] = None,
+) -> str:
     """Build an argv-safe command for the cleanup-owning background runner."""
     runner_argv = [
         sys.executable,
@@ -705,8 +707,19 @@ def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool) -> str
         "--run-delivery",
         "stdin" if stdin_file else "query-file",
         dm_file,
-        *argv,
     ]
+    if relay_fallback:
+        runner_argv.extend(
+            [
+                "--relay-fallback",
+                relay_fallback["root"],
+                relay_fallback["target_profile"],
+                relay_fallback["sender_profile"],
+                relay_fallback["sender_handle"],
+                "--",
+            ]
+        )
+    runner_argv.extend(argv)
     if sys.platform == "win32":
         # The tracked local backend uses Git Bash on native Windows. Forward
         # slashes preserve native drive paths while remaining executable by
@@ -722,13 +735,19 @@ def _start_delivery(
     label: str,
     *,
     stdin_file: bool,
+    relay_fallback: Optional[dict[str, str]] = None,
     task_id: Optional[str],
     agent: Any,
 ) -> str:
     """Create a DM file and transfer its cleanup ownership to the runner."""
     dm_file = _write_dm_file(content)
     try:
-        command = _delivery_command(argv, dm_file, stdin_file=stdin_file)
+        command = _delivery_command(
+            argv,
+            dm_file,
+            stdin_file=stdin_file,
+            relay_fallback=relay_fallback,
+        )
     except BaseException:
         _unlink_dm_file(dm_file)
         raise
@@ -808,8 +827,25 @@ def _delivery_main(args: list[str]) -> int:
     if not stdin_file and args[1] != "query-file":
         return 2
     dm_file = args[2]
+    transport_argv = args[3:]
+    relay_fallback = None
+    if transport_argv and transport_argv[0] == "--relay-fallback":
+        if len(transport_argv) < 7 or transport_argv[5] != "--":
+            return 2
+        relay_fallback = {
+            "root": transport_argv[1],
+            "target_profile": transport_argv[2],
+            "sender_profile": transport_argv[3],
+            "sender_handle": transport_argv[4],
+        }
+        transport_argv = transport_argv[6:]
     try:
-        return _run_delivery(args[3:], dm_file, stdin_file=stdin_file)
+        return _run_delivery(
+            transport_argv,
+            dm_file,
+            stdin_file=stdin_file,
+            relay_fallback=relay_fallback,
+        )
     except Exception as exc:
         # 'target_busy' extends the #93091 item-1 structured refusal enum:
         # the queued delivery gave up after its bounded wait — surface the

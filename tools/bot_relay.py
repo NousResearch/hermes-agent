@@ -576,6 +576,43 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
     return f"{shlex.quote(sys.executable or 'python3')} -c {shlex.quote(code)}"
 
 
+def wait_for_reply(root: Path | str, envelope: dict) -> int:
+    """Wait for one relay reply and print the standard completion payload.
+
+    This is the in-process equivalent of :func:`waiter_command`, used when a
+    local delivery runner discovers that Desktop already owns the target Bot
+    Chat and must move the same delivery onto Desktop's live relay.
+    """
+    envelope_id = str(envelope.get("id") or "")
+    reply_path = relay_root(root) / REPLIES_DIR / f"{envelope_id}.json"
+    label = (
+        f"@{envelope.get('target_handle', '')} "
+        f"on {envelope.get('target_connection', '')}"
+    )
+    deadline = time.time() + REPLY_WAIT_SECONDS
+    while time.time() < deadline:
+        if reply_path.exists():
+            try:
+                data = json.loads(reply_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                time.sleep(0.25)
+                continue
+            if data.get("error"):
+                code = str(data.get("reason") or "").strip()
+                tag = f" [reason: {code}]" if code else ""
+                print(f"Delivery to {label} failed{tag}: {data['error']}")
+                return 1
+            print(f"Reply from {label}:")
+            print(data.get("reply") or "(empty reply)")
+            return 0
+        time.sleep(0.25)
+    print(
+        f"No reply from {label} within {REPLY_WAIT_SECONDS}s. The message may "
+        "still be delivered when the Desktop reconnects; do not resend blindly."
+    )
+    return 1
+
+
 # ── delivery command (used by the deliver RPC on the TARGET gateway) ────────
 
 

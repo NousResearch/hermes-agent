@@ -313,85 +313,9 @@ async function syncRelayRosters() {
   }
 }
 
-/** Deliver one already-claimed envelope without occupying the outbox drain.
- *
- * A delivered Bot Chat turn may itself call `message_agent`. Keeping
- * `drainBusy` held while awaiting that turn creates a relay-level deadlock:
- * the nested reply is queued, but its push cannot drain until the outer turn
- * returns, while the outer turn is waiting for that reply. Backend turn locks
- * and queued `prompt.submit` remain the per-target ordering boundary. */
-async function deliverRelayEnvelope(
-  sender: RelayConnection,
-  target: RelayConnection | undefined,
-  envelope: RelayEnvelope
-) {
-  const envelopeId = String(envelope?.id || '')
-
-  if (!envelopeId) {
-    return
-  }
-
-  const postReply = async (payload: { error?: string; reason?: string; reply?: string }) => {
-    try {
-      await host.requestProfile(sender.route, 'bot_relay.reply', {
-        id: envelopeId,
-        ...payload
-      })
-    } catch {
-      // Sender gateway unreachable — its waiter times out with guidance.
-    }
-  }
-
-  if (!target) {
-    await postReply({
-      error: `connection '${envelope?.target_connection}' is not connected to this Desktop right now`
-    })
-
-    return
-  }
-
-  // Needs-attention hook (#93091 item 3): a delivered background DM is
-  // this bot's "good turn"; a classified delivery failure badges it.
-  const attentionKey = `${target.id}::${String(envelope?.target_profile || '')}`
-
-  try {
-    const res = await host.requestProfile<{ reply?: string }>(
-      target.route,
-      'bot_relay.deliver',
-      {
-        profile: String(envelope?.target_profile || ''),
-        message: String(envelope?.message || '')
-      },
-      RELAY_DELIVER_TIMEOUT_MS
-    )
-
-    clearBotAttention(attentionKey)
-    await postReply({
-      reply: String(res?.reply || '')
-    })
-  } catch (error: any) {
-    // #93091: bot_relay.deliver classifies the failed turn and ships the
-    // typed code in the JSON-RPC error's `data.reason`; forward it into
-    // the sender-side reply file so the waiter (and the sending agent)
-    // get the machine-readable cause, and prefer it for the badge —
-    // classified codes beat free-text re-parsing.
-    const reason = String(error?.data?.reason || '').trim()
-    noteBotAttention(attentionKey, reason || error?.message || error)
-    await postReply({
-      error: String(error?.message || error || 'delivery failed'),
-      ...(reason
-        ? {
-            reason
-          }
-        : {})
-    })
-  }
-}
-
-/** Claim every gateway's pending outbox envelopes, then start their target
- * deliveries independently. The claim pass stays short and responsive so a
- * nested agent reply can be claimed while the originating turn is still in
- * flight. */
+/** Drain every gateway's outbox and deliver each envelope on the target
+ *  connection's own socket; the reply (or error) is posted back to the
+ *  sender gateway for its waiter. */
 async function drainRelayOutboxes() {
   if (relay.disposed) {
     return
@@ -441,11 +365,68 @@ async function drainRelayOutboxes() {
           return
         }
 
+        const envelopeId = String(envelope?.id || '')
         const target = byId.get(String(envelope?.target_connection || ''))
 
-        // Do not await the target turn here. A nested message_agent reply must
-        // be able to trigger another outbox claim before this delivery ends.
-        void deliverRelayEnvelope(sender, target, envelope)
+        const postReply = async (payload: { error?: string; reason?: string; reply?: string }) => {
+          try {
+            await host.requestProfile(sender.route, 'bot_relay.reply', {
+              id: envelopeId,
+              ...payload
+            })
+          } catch {
+            // Sender gateway unreachable — its waiter times out with guidance.
+          }
+        }
+
+        if (!envelopeId) {
+          continue
+        }
+
+        if (!target) {
+          await postReply({
+            error: `connection '${envelope?.target_connection}' is not connected to this Desktop right now`
+          })
+
+          continue
+        }
+
+        // Needs-attention hook (#93091 item 3): a delivered background DM is
+        // this bot's "good turn"; a classified delivery failure badges it.
+        const attentionKey = `${target.id}::${String(envelope?.target_profile || '')}`
+
+        try {
+          const res = await host.requestProfile<{ reply?: string }>(
+            target.route,
+            'bot_relay.deliver',
+            {
+              profile: String(envelope?.target_profile || ''),
+              message: String(envelope?.message || '')
+            },
+            RELAY_DELIVER_TIMEOUT_MS
+          )
+
+          clearBotAttention(attentionKey)
+          await postReply({
+            reply: String(res?.reply || '')
+          })
+        } catch (error: any) {
+          // #93091: bot_relay.deliver classifies the failed turn and ships the
+          // typed code in the JSON-RPC error's `data.reason`; forward it into
+          // the sender-side reply file so the waiter (and the sending agent)
+          // get the machine-readable cause, and prefer it for the badge —
+          // classified codes beat free-text re-parsing.
+          const reason = String(error?.data?.reason || '').trim()
+          noteBotAttention(attentionKey, reason || error?.message || error)
+          await postReply({
+            error: String(error?.message || error || 'delivery failed'),
+            ...(reason
+              ? {
+                  reason
+                }
+              : {})
+          })
+        }
       }
     }
   } finally {

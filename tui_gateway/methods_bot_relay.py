@@ -7,9 +7,9 @@ owns every socket — and these four methods are the door it uses on EACH
 connected gateway:
 
 - ``bot_relay.roster.sync``  — Desktop pushes the union roster of agents on
-  the OTHER connections into this gateway's ``bot_relay/roster.json``, so
-  ``message_agent`` can resolve cross-connection targets and Bot Chat
-  prompts list them (capability-epoch refresh picks up changes).
+  the OTHER connections plus this gateway's Desktop connection id into
+  ``bot_relay/roster.json``, so ``message_agent`` can resolve both remote
+  targets and a live same-install Bot Chat.
 - ``bot_relay.outbox.drain`` — Desktop collects envelopes queued here by
   ``message_agent`` for targets on other connections.
 - ``bot_relay.deliver``      — Desktop hands an envelope to the TARGET
@@ -35,8 +35,9 @@ def _(rid, params: dict) -> dict:
     """Replace this gateway's view of agents on OTHER connections.
 
     Params: ``agents`` — list of rows ``{profile, handle, connection_id,
-    connection_label?, title?, description?}``. Rows failing validation are
-    dropped, not fatal. Result: ``{count}`` (accepted rows).
+    connection_label?, title?, description?}``; ``local_connection_id`` —
+    optional Desktop route for this gateway. Invalid values are dropped, not
+    fatal. Result: ``{count}`` (accepted agent rows).
     """
     try:
         import os

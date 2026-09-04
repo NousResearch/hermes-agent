@@ -841,6 +841,14 @@ def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any
                 # surviving (prev) dict so _manage_thinking_signatures still sees it.
                 if m.get("_thinking_signature_invalidated"):
                     fixed[-1]["_thinking_signature_invalidated"] = True
+                # If the surviving message carried a thinking block, merging new
+                # content into it mutates the turn payload and invalidates the
+                # cryptographic signature computed for the original turn boundary.
+                if isinstance(fixed[-1].get("content"), list) and any(
+                    isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
+                    for b in fixed[-1]["content"]
+                ):
+                    fixed[-1]["_thinking_signature_invalidated"] = True
                 # Drop thinking blocks from the *second* message: their
                 # signature was computed against a different turn boundary
                 # and becomes invalid once merged.

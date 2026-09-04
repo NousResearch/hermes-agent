@@ -35,7 +35,7 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth", "openrouter"}
 
 
 def _get_custom_provider_entries() -> list[dict]:
@@ -515,6 +515,35 @@ def auth_add_command(args) -> None:
             base_url=creds.get("inference_base_url"),
         )
         pool.add_entry(entry)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
+    if provider == "openrouter":
+        api_key = auth_mod._openrouter_pkce_login(
+            open_browser=not getattr(args, "no_browser", False),
+            timeout_seconds=float(getattr(args, "timeout", None) or 300.0),
+        )
+        default_label = _api_key_default_label(len(pool.entries()) + 1)
+        label = (getattr(args, "label", None) or "").strip()
+        if not label:
+            if sys.stdin.isatty():
+                label = line_input(f"Label (optional, default: {default_label}): ").strip() or default_label
+            else:
+                label = default_label
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_API_KEY,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:openrouter_pkce",
+            access_token=api_key,
+            base_url=OPENROUTER_BASE_URL,
+        )
+        first_credential = not pool.entries()
+        pool.add_entry(entry)
+        if first_credential:
+            auth_mod.mark_provider_active_if_unset(provider)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 

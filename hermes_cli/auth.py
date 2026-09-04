@@ -4230,6 +4230,234 @@ def login_spotify_command(args) -> None:
     print(f"  Docs: {SPOTIFY_DOCS_URL}")
 
 # =============================================================================
+# OpenRouter OAuth PKCE
+# =============================================================================
+
+OPENROUTER_AUTH_URL = "https://openrouter.ai/auth"
+OPENROUTER_TOKEN_EXCHANGE_URL = "https://openrouter.ai/api/v1/auth/keys"
+OPENROUTER_CALLBACK_TIMEOUT_SECONDS = 300.0
+
+
+def _make_openrouter_callback_handler(
+    expected_path: str,
+) -> tuple[type[BaseHTTPRequestHandler], dict[str, Any]]:
+    """Create a callback handler class for the OpenRouter OAuth redirect.
+
+    Returns (handler_class, result_dict) where result_dict is populated
+    with ``code`` or ``error`` when the callback is received.
+    """
+    result: dict[str, Any] = {"code": None, "error": None}
+
+    class _OpenRouterCallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            nonlocal result
+            parsed_path = urlparse(self.path)
+            if parsed_path.path != expected_path:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"Not found.")
+                return
+
+            params = parse_qs(parsed_path.query)
+            result["code"] = params.get("code", [None])[0]
+            result["error"] = params.get("error", [None])[0]
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            if result["error"]:
+                body = "<html><body><h1>OpenRouter authorization failed.</h1><p>You can close this tab.</p></body></html>"
+            else:
+                body = "<html><body><h1>OpenRouter authorization received.</h1><p>You can close this tab.</p></body></html>"
+            self.wfile.write(body.encode("utf-8"))
+
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
+            return
+
+    return _OpenRouterCallbackHandler, result
+
+
+def _openrouter_wait_for_callback(
+    server: HTTPServer,
+    result: dict[str, Any],
+    *,
+    timeout_seconds: float = OPENROUTER_CALLBACK_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Wait for the OpenRouter OAuth callback on a pre-bound server.
+
+    Starts the server thread, waits for the redirect, then shuts down.
+    Returns the result dict (``code`` or ``error`` key).
+    """
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True
+    )
+    thread.start()
+    deadline = time.monotonic() + max(5.0, timeout_seconds)
+    try:
+        while time.monotonic() < deadline:
+            if result["code"] or result["error"]:
+                return result
+            time.sleep(0.1)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)
+    raise AuthError(
+        "OpenRouter authorization timed out waiting for the local callback.",
+        provider="openrouter",
+        code="openrouter_callback_timeout",
+    )
+
+
+def _openrouter_exchange_code(
+    *,
+    code: str,
+    code_verifier: str,
+    code_challenge_method: str = "S256",
+    timeout_seconds: float = 20.0,
+) -> str:
+    """Exchange an authorization code for an OpenRouter API key.
+
+    Returns the API key string.
+    """
+    payload = {
+        "code": code,
+        "code_verifier": code_verifier,
+        "code_challenge_method": code_challenge_method,
+    }
+    try:
+        response = httpx.post(
+            OPENROUTER_TOKEN_EXCHANGE_URL,
+            headers={"Content-Type": "application/json"},
+            json=payload,
+            timeout=timeout_seconds,
+        )
+    except Exception as exc:
+        raise AuthError(
+            f"OpenRouter token exchange failed: {exc}",
+            provider="openrouter",
+            code="openrouter_token_exchange_failed",
+        ) from exc
+
+    if response.status_code == 400:
+        raise AuthError(
+            "OpenRouter token exchange failed: invalid code_challenge_method. "
+            "Make sure you're using the same method in both steps.",
+            provider="openrouter",
+            code="openrouter_token_exchange_invalid",
+        )
+    if response.status_code == 403:
+        detail = response.text.strip()
+        raise AuthError(
+            "OpenRouter authorization failed: the code or code_verifier is invalid, "
+            "or the authorization code has expired (codes expire after 10 minutes)."
+            + (f" Response: {detail}" if detail else ""),
+            provider="openrouter",
+            code="openrouter_token_exchange_denied",
+        )
+    if response.status_code >= 400:
+        detail = response.text.strip()
+        raise AuthError(
+            "OpenRouter token exchange failed."
+            + (f" Response: {detail}" if detail else ""),
+            provider="openrouter",
+            code="openrouter_token_exchange_failed",
+        )
+
+    data = response.json()
+    if not isinstance(data, dict):
+        raise AuthError(
+            "OpenRouter token exchange response was not a JSON object.",
+            provider="openrouter",
+            code="openrouter_token_exchange_invalid",
+        )
+    key = str(data.get("key") or "").strip()
+    if not key:
+        raise AuthError(
+            "OpenRouter token exchange response did not include a 'key' field.",
+            provider="openrouter",
+            code="openrouter_token_exchange_invalid",
+        )
+    return key
+
+
+def _openrouter_pkce_login(
+    *,
+    open_browser: bool = True,
+    timeout_seconds: float = OPENROUTER_CALLBACK_TIMEOUT_SECONDS,
+) -> str:
+    """Run the full OpenRouter OAuth PKCE login flow.
+
+    Returns the API key string.
+    """
+    # 1. Generate PKCE code verifier and challenge.
+    code_verifier = _oauth_pkce_code_verifier()
+    code_challenge = _oauth_pkce_code_challenge(code_verifier)
+
+    # 2. Build the callback handler and bind the server to a free port.
+    handler_cls, result = _make_openrouter_callback_handler("/callback")
+
+    class _ReuseHTTPServer(HTTPServer):
+        allow_reuse_address = True
+
+    try:
+        server = _ReuseHTTPServer(("127.0.0.1", 0), handler_cls)
+    except OSError as exc:
+        raise AuthError(
+            f"Could not bind OpenRouter callback server: {exc}",
+            provider="openrouter",
+            code="openrouter_callback_bind_failed",
+        ) from exc
+
+    actual_port = server.server_address[1]
+    redirect_uri = f"http://127.0.0.1:{actual_port}/callback"
+    auth_url = (
+        f"{OPENROUTER_AUTH_URL}"
+        f"?callback_url={redirect_uri}"
+        f"&code_challenge={code_challenge}"
+        "&code_challenge_method=S256"
+    )
+
+    # 3. Open browser and wait for the redirect.
+    if open_browser:
+        print(f"Opening browser to:\n  {auth_url}")
+        webbrowser.open(auth_url)
+    else:
+        print(f"Open this URL in your browser:\n  {auth_url}")
+
+    print("\nWaiting for authorization...")
+    result = _openrouter_wait_for_callback(
+        server, result, timeout_seconds=timeout_seconds
+    )
+
+    error = result.get("error")
+    if error:
+        raise AuthError(
+            f"OpenRouter authorization failed: {error}",
+            provider="openrouter",
+            code="openrouter_auth_denied",
+        )
+    code = str(result.get("code") or "").strip()
+    if not code:
+        raise AuthError(
+            "OpenRouter authorization did not return a code.",
+            provider="openrouter",
+            code="openrouter_auth_no_code",
+        )
+
+    # 4. Exchange the code for an API key (separate, shorter timeout).
+    print("Exchanging authorization code for API key...")
+    api_key = _openrouter_exchange_code(
+        code=code,
+        code_verifier=code_verifier,
+        code_challenge_method="S256",
+        timeout_seconds=20.0,
+    )
+    print("API key obtained successfully!\n")
+    return api_key
+
+
+# =============================================================================
 # SSH / remote session detection
 # =============================================================================
 

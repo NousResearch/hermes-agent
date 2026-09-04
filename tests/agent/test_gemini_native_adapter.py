@@ -675,3 +675,76 @@ def test_text_only_tool_result_has_no_parts():
     )
     fr = request["contents"][1]["parts"][0]["functionResponse"]
     assert "parts" not in fr
+
+
+def test_thinking_tokens_are_counted_as_output_and_surfaced_as_reasoning():
+    """Gemini bills hidden thinking under its own ``thoughtsTokenCount``;
+    ``candidatesTokenCount`` covers visible output only while ``totalTokenCount``
+    includes thoughts. Dropping thoughts made the emitted usage internally
+    inconsistent (prompt + completion != total) and billed a thinking turn at a
+    fraction of its real output."""
+    from agent.gemini_native_adapter import translate_gemini_response
+    from agent.usage_pricing import normalize_usage
+
+    prompt, visible, thoughts = 10, 200, 5000
+    payload = {
+        "candidates": [{"content": {"parts": [{"text": "done"}]}, "finishReason": "STOP"}],
+        "usageMetadata": {
+            "promptTokenCount": prompt,
+            "candidatesTokenCount": visible,
+            "thoughtsTokenCount": thoughts,
+            "totalTokenCount": prompt + visible + thoughts,
+        },
+    }
+
+    usage = translate_gemini_response(payload, model="gemini-2.5-flash").usage
+    assert usage.prompt_tokens + usage.completion_tokens == usage.total_tokens
+    assert usage.completion_tokens_details.reasoning_tokens == thoughts
+
+    canonical = normalize_usage(usage, provider="google")
+    assert canonical.output_tokens == visible + thoughts
+    assert canonical.reasoning_tokens == thoughts
+
+
+def test_streaming_usage_counts_thinking_tokens_like_the_non_streaming_path():
+    """Usage rides on the stream's finish chunk; it must agree with the
+    non-streaming assembly rather than under-reporting thinking."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    prompt, visible, thoughts = 7, 3, 900
+    event = {
+        "candidates": [{"content": {"parts": [{"text": "done"}]}, "finishReason": "STOP"}],
+        "usageMetadata": {
+            "promptTokenCount": prompt,
+            "candidatesTokenCount": visible,
+            "thoughtsTokenCount": thoughts,
+            "totalTokenCount": prompt + visible + thoughts,
+        },
+    }
+
+    chunks = translate_stream_event(event, model="gemini-2.5-flash", tool_call_indices={})
+    usage = chunks[-1].usage
+    assert usage.prompt_tokens + usage.completion_tokens == usage.total_tokens
+    assert usage.completion_tokens_details.reasoning_tokens == thoughts
+
+
+def test_response_without_thinking_tokens_keeps_its_output_count():
+    """Non-thinking / older responses omit ``thoughtsTokenCount``; their numbers
+    must not move, and reasoning stays zero."""
+    from agent.gemini_native_adapter import translate_gemini_response
+    from agent.usage_pricing import normalize_usage
+
+    prompt, visible = 10, 5
+    payload = {
+        "candidates": [{"content": {"parts": [{"text": "hi"}]}, "finishReason": "STOP"}],
+        "usageMetadata": {
+            "promptTokenCount": prompt,
+            "candidatesTokenCount": visible,
+            "totalTokenCount": prompt + visible,
+        },
+    }
+
+    usage = translate_gemini_response(payload, model="gemini-2.5-flash").usage
+    assert usage.completion_tokens == visible
+    assert usage.prompt_tokens + usage.completion_tokens == usage.total_tokens
+    assert normalize_usage(usage, provider="google").reasoning_tokens == 0

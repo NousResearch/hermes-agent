@@ -796,12 +796,15 @@ class Comment:
     author: str
     body: str
     created_at: int
+    session_id: Optional[str] = None
 
     @classmethod
     def from_row(cls, r: sqlite3.Row) -> "Comment":
+        keys = r.keys() if hasattr(r, "keys") else ()
         return cls(
             id=r["id"], task_id=r["task_id"], author=r["author"],
             body=r["body"], created_at=r["created_at"],
+            session_id=r["session_id"] if "session_id" in keys else None,
         )
 
 
@@ -954,7 +957,8 @@ CREATE TABLE IF NOT EXISTS task_comments (
     task_id    TEXT NOT NULL,
     author     TEXT NOT NULL,
     body       TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    session_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_events (
@@ -1678,7 +1682,16 @@ def task_graph_context(conn: sqlite3.Connection, task_id: str) -> dict:
 
 # --- Comments & events ---
 
-def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str) -> int:
+def add_comment(
+    conn: sqlite3.Connection, task_id: str, author: str, body: str,
+    *, session_id: Optional[str] = None,
+) -> int:
+    """Append a comment row. ``session_id`` records authorship provenance at
+    call time (the calling agent's session, when known): on a claimed task,
+    the ``author`` profile alone cannot distinguish the claimant's writer from
+    a second agent context running under the same profile (the bot-mode
+    self-DM fork incident class). Written once here; no code path ever
+    updates it."""
     if not body or not body.strip():
         raise ValueError("comment body is required")
     if not author or not author.strip():
@@ -1689,8 +1702,10 @@ def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str) 
     with write_txn(conn, allow_nested=True):
         _require_task(conn, task_id)
         cur = conn.execute(
-            "INSERT INTO task_comments (task_id, author, body, created_at) "
-            "VALUES (?, ?, ?, ?)", (task_id, author.strip(), body.strip(), now),
+            "INSERT INTO task_comments (task_id, author, body, created_at, session_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (task_id, author.strip(), body.strip(), now,
+             session_id.strip() if session_id and session_id.strip() else None),
         )
         _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
         return int(cur.lastrowid or 0)

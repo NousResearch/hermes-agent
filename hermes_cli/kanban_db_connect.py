@@ -868,6 +868,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     if "run_id" not in _column_names(conn, "task_events"):
         _add_column_if_missing(conn, "task_events", "run_id", "run_id INTEGER")
 
+    # task_comments.session_id back-fills as NULL for historical comments
+    # (they predate authorship provenance and can't be attributed). Written
+    # once at insert time from the calling session's env; never updated.
+    # Table-guarded: migration must tolerate partial schemas (see the
+    # kanban_notify_subs guard below — same concurrent/partial-migration
+    # tolerance, #21708).
+    if _table_exists(conn, "task_comments") and "session_id" not in _column_names(conn, "task_comments"):
+        _add_column_if_missing(conn, "task_comments", "session_id", "session_id TEXT")
+
     # Same ordering rule as the ``tasks`` indexes above: index after column.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_run ON task_events(run_id, id)")
 

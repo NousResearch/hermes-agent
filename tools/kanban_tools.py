@@ -740,8 +740,16 @@ def _handle_comment(args: dict, **kw) -> str:
     # comment from an authoritative-looking name like ``hermes-system`` and poison the future-worker context
     # with what reads as a system directive. See #19713.
     author = os.environ.get("HERMES_PROFILE") or "worker"
+    # Authorship provenance: the calling SESSION id, recorded once at call
+    # time. Two agent contexts can share one profile (the bot-mode self-DM
+    # fork incident class) — on a claimed card, the author profile alone
+    # cannot tell the claimant's writer from a fork's. The env var is the
+    # runtime session of THIS process, so a fork stamps its own id, not the
+    # claimant's. No caller-supplied override: same forgery rule as author.
+    session_id = os.environ.get("HERMES_SESSION_ID") or None
     with _board(args.get("board")) as (kb, conn):
-        cid = kb.add_comment(conn, tid, author=author, body=str(body))
+        cid = kb.add_comment(conn, tid, author=author, body=str(body),
+                             session_id=session_id)
         return _ok(task_id=tid, comment_id=cid)
 
 

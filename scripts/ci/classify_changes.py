@@ -66,7 +66,11 @@ import os
 import subprocess
 import sys
 
-_FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
+# Every npm workspace the root package.json declares. js-tests.yml discovers
+# its work with ``npm query .workspace``, so a workspace missing here has its
+# vitest/tsc/eslint run skipped — and a skipped job counts as success in the
+# merge gate. tests-js/ was missing: a broken spec there went green.
+_FRONTEND = ("ui-tui/", "web/", "apps/", "tests-js/")  # TS check-matrix packages
 _ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
 _DOCKER_META = ("docker/", ".hadolint.yml", "Dockerfile") # docker setup
 _NIX_PATHS = ("nix/",) # nix files
@@ -101,7 +105,12 @@ _PY_RELEVANT_SITE = (
 _CI_REVIEW_FILES = {
     ".prettierrc",
 }
-_CI_REVIEW_PATHS = (".github/workflows/", ".github/actions/")
+# scripts/ci/ is listed for the same reason the composite actions are: the
+# detect-changes action runs scripts/ci/classify_changes.py out of the PR's
+# own checkout, so that script decides every lane — ci_review included. Gating
+# the action but not the script it executes leaves the gate editable by the
+# diff it is meant to gate.
+_CI_REVIEW_PATHS = (".github/workflows/", ".github/actions/", "scripts/ci/")
 
 # Supply-chain scan: files that can execute code at install/import time.
 _SCAN_EXTS = (".py", ".pth")

@@ -44,6 +44,33 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
 
+from agent.message_sanitization import _sanitize_surrogates
+
+
+def _safe_strftime(dt: datetime, fmt: str) -> str:
+    """strftime wrapper that handles Windows locale surrogate issues.
+
+    On Windows with certain locales (e.g., fr-FR), strftime can produce
+    lone surrogate code points (U+D800–U+DFFF) in locale-dependent
+    format codes like %Z, %z, %A, %B, %a, %b. These surrogates are
+    invalid in UTF-8 and crash json.dumps.
+
+    This wrapper catches UnicodeEncodeError and falls back to a format
+    string with locale-sensitive codes removed, then sanitizes any
+    remaining surrogates.
+    """
+    try:
+        return _sanitize_surrogates(dt.strftime(fmt))
+    except UnicodeEncodeError:
+        fallback = fmt
+        for code in ("%Z", "%z", "%A", "%a", "%B", "%b"):
+            fallback = fallback.replace(code, "")
+        fallback = " ".join(fallback.split())
+        if not fallback.strip():
+            return ""
+        return _sanitize_surrogates(dt.strftime(fallback))
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -1249,7 +1276,7 @@ def judge_goal(
     # truth.
     clean_subgoals = [s.strip() for s in (subgoals or []) if s and s.strip()]
     background_block = _render_background_block(background_processes)
-    current_time = datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    current_time = _safe_strftime(datetime.now(tz=timezone.utc).astimezone(), "%Y-%m-%d %H:%M:%S %Z")
 
     if contract is not None and not contract.is_empty():
         contract_block = contract.render_block()

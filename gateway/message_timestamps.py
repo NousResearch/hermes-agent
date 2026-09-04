@@ -11,6 +11,32 @@ import re
 from datetime import datetime
 from typing import Any, Optional, Tuple
 
+from agent.message_sanitization import _sanitize_surrogates
+
+
+def _safe_strftime(dt: datetime, fmt: str) -> str:
+    """strftime wrapper that handles Windows locale surrogate issues.
+
+    On Windows with certain locales (e.g., fr-FR), strftime can produce
+    lone surrogate code points (U+D800–U+DFFF) in locale-dependent
+    format codes like %Z, %z, %A, %B, %a, %b. These surrogates are
+    invalid in UTF-8 and crash json.dumps.
+
+    This wrapper catches UnicodeEncodeError and falls back to a format
+    string with locale-sensitive codes removed, then sanitizes any
+    remaining surrogates.
+    """
+    try:
+        return _sanitize_surrogates(dt.strftime(fmt))
+    except UnicodeEncodeError:
+        fallback = fmt
+        for code in ("%Z", "%z", "%A", "%a", "%B", "%b"):
+            fallback = fallback.replace(code, "")
+        fallback = " ".join(fallback.split())
+        if not fallback.strip():
+            return ""
+        return _sanitize_surrogates(dt.strftime(fallback))
+
 
 # Current gateway format: [Tue 2026-04-28 13:40:53 CEST]
 _HUMAN_TIMESTAMP_RE = re.compile(
@@ -82,7 +108,7 @@ def format_message_timestamp(ts_value: Any, tz=None) -> str:
         dt = datetime.fromtimestamp(epoch, tz=tz)
     else:
         dt = datetime.fromtimestamp(epoch).astimezone()
-    return "[" + dt.strftime("%a %Y-%m-%d %H:%M:%S %Z") + "]"
+    return "[" + _safe_strftime(dt, "%a %Y-%m-%d %H:%M:%S %Z") + "]"
 
 
 def strip_leading_message_timestamps(content: str, tz=None) -> Tuple[str, Optional[float]]:

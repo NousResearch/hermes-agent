@@ -29,8 +29,10 @@ import json
 import logging
 import os
 import re
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from agent.message_sanitization import _sanitize_surrogates
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
     EXECUTION_GUIDANCE_MODELS,
@@ -63,6 +65,30 @@ _PLUGIN_SECTION_FRAME_RE = re.compile(
     r"<!-- hermes-plugin-section-chars:(?P<chars>[0-9]{1,4}) -->\n\n",
     re.MULTILINE,
 )
+
+
+def _safe_strftime(dt: datetime, fmt: str) -> str:
+    """strftime wrapper that handles Windows locale surrogate issues.
+
+    On Windows with certain locales (e.g., fr-FR), strftime can produce
+    lone surrogate code points (U+D800\u2013U+DFFF) in locale-dependent
+    format codes like %Z, %z, %A, %B, %a, %b. These surrogates are
+    invalid in UTF-8 and crash json.dumps.
+
+    This wrapper catches UnicodeEncodeError and falls back to a format
+    string with locale-sensitive codes removed, then sanitizes any
+    remaining surrogates.
+    """
+    try:
+        return _sanitize_surrogates(dt.strftime(fmt))
+    except UnicodeEncodeError:
+        fallback = fmt
+        for code in ("%Z", "%z", "%A", "%a", "%B", "%b"):
+            fallback = fallback.replace(code, "")
+        fallback = " ".join(fallback.split())
+        if not fallback.strip():
+            return ""
+        return _sanitize_surrogates(dt.strftime(fallback))
 
 
 def _ra():
@@ -983,16 +1009,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _iana = getattr(_tz, "key", None)
     if _iana:
         _zone_bits.append(_iana)
-    _abbrev = now.strftime("%Z")
+    _abbrev = _safe_strftime(now, "%Z")
     if _abbrev and _abbrev != _iana:
         _zone_bits.append(_abbrev)
-    _offset = now.strftime("%z")
+    _offset = _safe_strftime(now, "%z")
     if _offset:  # '-0400' -> 'UTC-04:00'
         _zone_bits.append(f"UTC{_offset[:3]}:{_offset[3:]}")
     _zone_suffix = f" ({', '.join(_zone_bits)})" if _zone_bits else ""
     _start = _session_start_like(agent, now)
     timestamp_line = (
-        f"Conversation started: {_start.strftime('%A, %B %d, %Y')}{_zone_suffix}"
+        f"Conversation started: {_safe_strftime(_start, '%A, %B %d, %Y')}{_zone_suffix}"
     )
     # Second line (maintainer design, salvaging #96224's anchor): long-lived
     # sessions — Bot Mode forever-chats, messenger channels people never
@@ -1004,10 +1030,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # the added line costs no extra cache churn. Same-day sessions skip the
     # second line entirely — nothing to correct, and the single-line shape
     # stays byte-identical for the day (prefix-cache safe).
-    if now.strftime("%Y%m%d") != _start.strftime("%Y%m%d"):
+    if _safe_strftime(now, "%Y%m%d") != _safe_strftime(_start, "%Y%m%d"):
         timestamp_line += (
             f"\nToday's date (as of the last context rebuild): "
-            f"{now.strftime('%A, %B %d, %Y')} — trust this over the start "
+            f"{_safe_strftime(now, '%A, %B %d, %Y')} — trust this over the start "
             f"date for what day it is now; query tools for exact time."
         )
     # Bot Chat sessions are effectively eternal — a birth date frozen in the

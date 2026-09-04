@@ -9,7 +9,10 @@ import sys
 import time
 import importlib.util
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
+from datetime import datetime
 from pathlib import Path
+
+from agent.message_sanitization import _sanitize_surrogates
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
@@ -26,6 +29,29 @@ from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
 from tools.tool_backend_helpers import managed_nous_tools_enabled
+
+def _safe_strftime(dt: datetime, fmt: str) -> str:
+    """strftime wrapper that handles Windows locale surrogate issues.
+
+    On Windows with certain locales (e.g., fr-FR), strftime can produce
+    lone surrogate code points (U+D800–U+DFFF) in locale-dependent
+    format codes like %Z, %z, %A, %B, %a, %b. These surrogates are
+    invalid in UTF-8 and crash json.dumps.
+
+    This wrapper catches UnicodeEncodeError and falls back to a format
+    string with locale-sensitive codes removed, then sanitizes any
+    remaining surrogates.
+    """
+    try:
+        return _sanitize_surrogates(dt.strftime(fmt))
+    except UnicodeEncodeError:
+        fallback = fmt
+        for code in ("%Z", "%z", "%A", "%a", "%B", "%b"):
+            fallback = fallback.replace(code, "")
+        fallback = " ".join(fallback.split())
+        if not fallback.strip():
+            return ""
+        return _sanitize_surrogates(dt.strftime(fallback))
 
 def check_mark(ok: bool) -> str:
     if ok:
@@ -60,7 +86,7 @@ def _format_iso_timestamp(value) -> str:
             parsed = parsed.replace(tzinfo=timezone.utc)
     except Exception:
         return value
-    return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    return _safe_strftime(parsed.astimezone(), "%Y-%m-%d %H:%M:%S %Z")
 
 
 def _format_relative_ts(ts: float) -> str:

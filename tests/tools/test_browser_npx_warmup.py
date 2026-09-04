@@ -94,7 +94,7 @@ def test_uses_credential_scrubbed_environment():
     os.environ with every provider/gateway credential Hermes holds."""
     scrubbed_env = {"PATH": "/scrubbed/bin", "SCRUBBED": "1"}
     with patch("tools.browser_tool._resolve_npx_bin", return_value="/usr/bin/npx"), \
-         patch("tools.browser_tool._build_browser_env", return_value=dict(scrubbed_env)), \
+         patch("tools.environments.local.hermes_subprocess_env", return_value=dict(scrubbed_env)), \
          patch("tools.browser_tool._merge_browser_path", side_effect=lambda p: p), \
          patch("subprocess.Popen", return_value=_mock_proc()) as mock_popen:
         warm_agent_browser_npx_cache()
@@ -110,7 +110,7 @@ def test_merges_extended_path_so_managed_only_npx_can_find_sibling_node():
     npx's #!/usr/bin/env node shebang resolves `node` via the child's PATH
     at exec time, not the resolving process's PATH."""
     with patch("tools.browser_tool._resolve_npx_bin", return_value="/opt/hermes/node/bin/npx"), \
-         patch("tools.browser_tool._build_browser_env", return_value={"PATH": "/usr/bin"}), \
+         patch("tools.environments.local.hermes_subprocess_env", return_value={"PATH": "/usr/bin"}), \
          patch(
              "tools.browser_tool._merge_browser_path",
              return_value="/opt/hermes/node/bin:/usr/bin",
@@ -123,9 +123,9 @@ def test_merges_extended_path_so_managed_only_npx_can_find_sibling_node():
     assert kwargs["env"]["PATH"] == "/opt/hermes/node/bin:/usr/bin"
 
 
-def test_runs_in_its_own_process_group_on_posix(monkeypatch):
-    monkeypatch.setattr("os.name", "posix")
-    with patch("tools.browser_tool._resolve_npx_bin", return_value="/usr/bin/npx"), \
+def test_runs_in_its_own_process_group_on_posix():
+    with patch("tools.browser_tool.os.name", "posix"), \
+         patch("tools.browser_tool._resolve_npx_bin", return_value="/usr/bin/npx"), \
          patch("subprocess.Popen", return_value=_mock_proc()) as mock_popen:
         warm_agent_browser_npx_cache()
 
@@ -137,9 +137,9 @@ def test_uses_new_process_group_creationflag_on_windows_instead_of_start_new_ses
     """start_new_session is a POSIX-only Popen kwarg (raises on Windows).
     The Windows equivalent for _kill_process_tree's taskkill /T to have a
     coherent tree to kill is CREATE_NEW_PROCESS_GROUP via creationflags."""
-    with patch("os.name", "nt"), \
+    with patch("tools.browser_tool.os.name", "nt"), \
          patch("tools.browser_tool._resolve_npx_bin", return_value="C:\\npx.cmd"), \
-         patch("tools.browser_tool._build_browser_env", return_value={"PATH": "C:\\Windows"}), \
+         patch("tools.environments.local.hermes_subprocess_env", return_value={"PATH": "C:\\Windows"}), \
          patch("tools.browser_tool._merge_browser_path", side_effect=lambda p: p), \
          patch("subprocess.Popen", return_value=_mock_proc()) as mock_popen:
         warm_agent_browser_npx_cache()
@@ -226,7 +226,7 @@ class TestLegacyKillProcessTree:
 
         proc = MagicMock()
         proc.pid = 999
-        monkeypatch.setattr("os.name", "posix")
+        monkeypatch.setattr("tools.browser_tool.os.name", "posix")
         monkeypatch.setattr("os.getpgid", lambda pid: 999)
         killpg_calls = []
         monkeypatch.setattr(
@@ -240,7 +240,7 @@ class TestLegacyKillProcessTree:
     def test_posix_missing_process_returns_silently(self, monkeypatch):
         proc = MagicMock()
         proc.pid = 999
-        monkeypatch.setattr("os.name", "posix")
+        monkeypatch.setattr("tools.browser_tool.os.name", "posix")
 
         def _raise(pid):
             raise ProcessLookupError()
@@ -261,7 +261,7 @@ class TestLegacyKillProcessTree:
 
         proc = MagicMock()
         proc.pid = 999
-        monkeypatch.setattr("os.name", "posix")
+        monkeypatch.setattr("tools.browser_tool.os.name", "posix")
         monkeypatch.delattr(os_module, "killpg", raising=False)
 
         _legacy_kill_process_tree(proc)
@@ -274,7 +274,7 @@ class TestLegacyKillProcessTree:
         proc = MagicMock()
         proc.pid = 999
         proc.kill.side_effect = OSError("already reaped")
-        monkeypatch.setattr("os.name", "posix")
+        monkeypatch.setattr("tools.browser_tool.os.name", "posix")
         monkeypatch.delattr(os_module, "killpg", raising=False)
 
         _legacy_kill_process_tree(proc)  # must not raise
@@ -287,7 +287,7 @@ class TestLegacyKillProcessTree:
 
         proc = MagicMock()
         proc.pid = 999
-        monkeypatch.setattr("os.name", "posix")
+        monkeypatch.setattr("tools.browser_tool.os.name", "posix")
         monkeypatch.setattr("os.getpgid", lambda pid: 999)
         killpg_calls = []
 
@@ -304,7 +304,7 @@ class TestLegacyKillProcessTree:
     def test_windows_uses_taskkill_with_tree_and_force_flags(self, monkeypatch):
         proc = MagicMock()
         proc.pid = 4321
-        monkeypatch.setattr("os.name", "nt")
+        monkeypatch.setattr("tools.browser_tool.os.name", "nt")
         with patch("subprocess.run") as mock_run:
             _legacy_kill_process_tree(proc)
 
@@ -315,6 +315,6 @@ class TestLegacyKillProcessTree:
     def test_windows_taskkill_failure_does_not_raise(self, monkeypatch):
         proc = MagicMock()
         proc.pid = 4321
-        monkeypatch.setattr("os.name", "nt")
+        monkeypatch.setattr("tools.browser_tool.os.name", "nt")
         with patch("subprocess.run", side_effect=OSError("taskkill missing")):
             _legacy_kill_process_tree(proc)  # must not raise

@@ -143,6 +143,7 @@ def _build_browser_env() -> dict:
     for _key in _BROWSER_PASSTHROUGH_KEYS:
         if _key in os.environ:
             env[_key] = os.environ[_key]
+    env["PATH"] = _merge_browser_path(env.get("PATH", ""))
     return env
 
 try:
@@ -1370,7 +1371,6 @@ def _run_chrome_fallback_command(
     _write_owner_pid(task_socket_dir, tmp_session)
     browser_env = _build_browser_env()
     browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
-    browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
 
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
         browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
@@ -3539,7 +3539,6 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
         return False
 
     env = _build_browser_env()
-    env["PATH"] = _merge_browser_path(env.get("PATH", ""))
 
     popen_kwargs: dict = {
         "stdout": subprocess.PIPE,
@@ -3918,10 +3917,6 @@ def _run_browser_command(
                      command, task_id, task_socket_dir, len(task_socket_dir))
 
         browser_env = _build_browser_env()
-
-        # Ensure subprocesses inherit the same browser-specific PATH fallbacks
-        # used during CLI discovery.
-        browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
         browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
 
         # Tell the agent-browser daemon to self-terminate after being idle

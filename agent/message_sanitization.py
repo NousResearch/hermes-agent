@@ -90,16 +90,13 @@ def _sanitize_messages_surrogates(messages: list) -> bool:
         if not isinstance(msg, dict):
             continue
         content = msg.get("content")
-        if isinstance(content, str) and _SURROGATE_RE.search(content):
-            msg["content"] = _SURROGATE_RE.sub('\ufffd', content)
-            found = True
-        elif isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict):
-                    text = part.get("text")
-                    if isinstance(text, str) and _SURROGATE_RE.search(text):
-                        part["text"] = _SURROGATE_RE.sub('\ufffd', text)
-                        found = True
+        if isinstance(content, str):
+            if _SURROGATE_RE.search(content):
+                msg["content"] = _SURROGATE_RE.sub('\ufffd', content)
+                found = True
+        elif isinstance(content, (dict, list)):
+            if _sanitize_structure_surrogates(content):
+                found = True
         name = msg.get("name")
         if isinstance(name, str) and _SURROGATE_RE.search(name):
             msg["name"] = _SURROGATE_RE.sub('\ufffd', name)
@@ -107,21 +104,8 @@ def _sanitize_messages_surrogates(messages: list) -> bool:
         tool_calls = msg.get("tool_calls")
         if isinstance(tool_calls, list):
             for tc in tool_calls:
-                if not isinstance(tc, dict):
-                    continue
-                tc_id = tc.get("id")
-                if isinstance(tc_id, str) and _SURROGATE_RE.search(tc_id):
-                    tc["id"] = _SURROGATE_RE.sub('\ufffd', tc_id)
-                    found = True
-                fn = tc.get("function")
-                if isinstance(fn, dict):
-                    fn_name = fn.get("name")
-                    if isinstance(fn_name, str) and _SURROGATE_RE.search(fn_name):
-                        fn["name"] = _SURROGATE_RE.sub('\ufffd', fn_name)
-                        found = True
-                    fn_args = fn.get("arguments")
-                    if isinstance(fn_args, str) and _SURROGATE_RE.search(fn_args):
-                        fn["arguments"] = _SURROGATE_RE.sub('\ufffd', fn_args)
+                if isinstance(tc, dict):
+                    if _sanitize_structure_surrogates(tc):
                         found = True
         # Walk any additional string / nested fields (reasoning,
         # reasoning_content, reasoning_details, etc.) — surrogates from
@@ -347,22 +331,16 @@ def _sanitize_messages_non_ascii(messages: list) -> bool:
     for msg in messages:
         if not isinstance(msg, dict):
             continue
-        # Sanitize content (string)
+        # Sanitize content (string or nested structures)
         content = msg.get("content")
         if isinstance(content, str):
             sanitized = _strip_non_ascii(content)
             if sanitized != content:
                 msg["content"] = sanitized
                 found = True
-        elif isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict):
-                    text = part.get("text")
-                    if isinstance(text, str):
-                        sanitized = _strip_non_ascii(text)
-                        if sanitized != text:
-                            part["text"] = sanitized
-                            found = True
+        elif isinstance(content, (dict, list)):
+            if _sanitize_structure_non_ascii(content):
+                found = True
         # Sanitize name field (can contain non-ASCII in tool results)
         name = msg.get("name")
         if isinstance(name, str):
@@ -375,14 +353,8 @@ def _sanitize_messages_non_ascii(messages: list) -> bool:
         if isinstance(tool_calls, list):
             for tc in tool_calls:
                 if isinstance(tc, dict):
-                    fn = tc.get("function", {})
-                    if isinstance(fn, dict):
-                        fn_args = fn.get("arguments")
-                        if isinstance(fn_args, str):
-                            sanitized = _strip_non_ascii(fn_args)
-                            if sanitized != fn_args:
-                                fn["arguments"] = sanitized
-                                found = True
+                    if _sanitize_structure_non_ascii(tc):
+                        found = True
         # Sanitize any additional top-level string fields (e.g. reasoning_content)
         for key, value in msg.items():
             if key in {"content", "name", "tool_calls", "role"}:
@@ -391,6 +363,9 @@ def _sanitize_messages_non_ascii(messages: list) -> bool:
                 sanitized = _strip_non_ascii(value)
                 if sanitized != value:
                     msg[key] = sanitized
+                    found = True
+            elif isinstance(value, (dict, list)):
+                if _sanitize_structure_non_ascii(value):
                     found = True
     return found
 

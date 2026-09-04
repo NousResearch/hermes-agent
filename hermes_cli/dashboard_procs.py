@@ -13,6 +13,7 @@ patches on ``hermes_cli.main`` resolve unchanged.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -86,12 +87,48 @@ def _scan_dashboard_processes(
             # bare wmic spawn would pop a console window.
             from hermes_cli._subprocess_compat import bounded_probe_run
 
-            result = bounded_probe_run(
-                ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
-                timeout=10,
-                errors="ignore",
-            )
-            if result is None or result.returncode != 0 or result.stdout is None:
+            # Prefer wmic when present (fast, stable output format). It was
+            # removed as part of the WMIC deprecation on modern Windows 11 /
+            # late Win 10 builds, so fall back to PowerShell's
+            # Get-CimInstance, shaped to emit the same LIST-style output the
+            # parser below already reads. A missing binary, a spawn failure
+            # or a timeout (result is None) all trip the fallback.
+            # This mirrors the scan in hermes_cli/gateway.py, which is the
+            # same query against the same table.
+            wmic_path = shutil.which("wmic")
+            result = None
+            if wmic_path is not None:
+                result = bounded_probe_run(
+                    [
+                        wmic_path,
+                        "process",
+                        "get",
+                        "ProcessId,CommandLine",
+                        "/FORMAT:LIST",
+                    ],
+                    timeout=10,
+                    errors="ignore",
+                )
+            if result is None or result.returncode != 0 or not (result.stdout or ""):
+                powershell = shutil.which("powershell") or shutil.which("pwsh")
+                if powershell is None:
+                    return []
+                ps_cmd = (
+                    "Get-CimInstance Win32_Process | "
+                    "ForEach-Object { "
+                    "  'CommandLine=' + ($_.CommandLine -replace \"`r`n\",' ' -replace \"`n\",' '); "
+                    "  'ProcessId=' + $_.ProcessId; "
+                    "  '' "
+                    "}"
+                )
+                result = bounded_probe_run(
+                    [powershell, "-NoProfile", "-Command", ps_cmd],
+                    timeout=15,
+                    errors="ignore",
+                )
+                if result is None:
+                    return []
+            if result.returncode != 0 or result.stdout is None:
                 return []
             current_cmd = ""
             for line in result.stdout.split("\n"):

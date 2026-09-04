@@ -300,11 +300,17 @@ FOOTGUNS: list[Footgun] = [
     ),
     Footgun(
         name="wmic invocation without shutil.which guard",
-        # Match wmic appearing as a subprocess argument — NOT the
-        # shutil.which("wmic") guard pattern itself. Looks for wmic in a
-        # list or as first arg of subprocess.run/Popen.
+        # Match wmic as the head of an argv list, whoever is doing the
+        # spawning. Anchoring on ``subprocess.`` used to mean this rule
+        # matched nothing at all: the Windows process scans were moved onto
+        # ``bounded_probe_run`` (#87134), and every wmic call in the tree
+        # went with them, so the rule stopped seeing the very calls it
+        # exists for. A quoted literal is the whole point — the guarded
+        # form passes the ``shutil.which`` result as a variable
+        # (``[wmic_path, ...]``), which is not a match, and
+        # ``shutil.which("wmic")`` has no bracket in front of it.
         pattern=re.compile(
-            r"""(?:subprocess\.\w+\s*\(\s*\[\s*['"]wmic['"]|['"]wmic\.exe['"])"""
+            r"""(?:\[\s*['"]wmic['"]|['"]wmic\.exe['"])"""
         ),
         message=(
             "wmic was removed in Windows 10 21H1 and later. Always "

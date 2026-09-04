@@ -346,9 +346,13 @@ class TestWindowsWmicEncoding:
 
         Cross-platform: nothing Windows-native executes once the probe is
         mocked, so ``sys.platform`` is patched rather than gating the test
-        to the Windows-only CI job.
+        to the Windows-only CI job. ``shutil.which`` is patched too, because
+        the scan now prefers wmic only where it exists — without that, a
+        Linux runner takes the PowerShell branch and this case never runs.
         """
         with patch("sys.platform", "win32"), \
+             patch("hermes_cli.dashboard_procs.shutil.which",
+                   side_effect=lambda name: "wmic" if name == "wmic" else None), \
              patch("hermes_cli._subprocess_compat.bounded_probe_run") as mock_probe:
             mock_probe.return_value = subprocess.CompletedProcess(
                 args=["wmic"],
@@ -374,6 +378,78 @@ class TestWindowsWmicEncoding:
             "guarantees the post-timeout cleanup is bounded too (#87134)."
         )
         assert pids == [12345]
+
+    def _which(self, *present):
+        return lambda name: name if name in present else None
+
+    def _list_output(self, pid=12345):
+        return subprocess.CompletedProcess(
+            args=[], returncode=0, stderr="",
+            stdout=(
+                "CommandLine=python -m hermes_cli.main dashboard\n"
+                f"ProcessId={pid}\n"
+            ),
+        )
+
+    def test_powershell_fallback_when_wmic_is_absent(self):
+        """wmic was removed as part of the WMIC deprecation on modern
+        Windows 11 / late Win 10 builds. Spawning it unconditionally left the
+        scan empty there, so `hermes update` reaped nothing and the stale
+        backend survived into a version mismatch — the outcome this scan
+        exists to prevent."""
+        with patch("sys.platform", "win32"), \
+             patch("hermes_cli.dashboard_procs.shutil.which",
+                   side_effect=self._which("powershell")), \
+             patch("hermes_cli._subprocess_compat.bounded_probe_run") as mock_probe:
+            mock_probe.return_value = self._list_output()
+            pids = _find_stale_dashboard_pids()
+
+        assert pids == [12345], "the PowerShell fallback did not produce a scan"
+        argv = mock_probe.call_args_list[0].args[0]
+        assert argv[0] == "powershell"
+        assert "Get-CimInstance Win32_Process" in argv[-1]
+        assert "CommandLine=" in argv[-1] and "ProcessId=" in argv[-1], (
+            "the fallback must emit LIST-style output — the parser below it "
+            "is shared with the wmic branch and does not know it changed."
+        )
+        kwargs = mock_probe.call_args_list[0].kwargs
+        assert kwargs.get("errors") == "ignore"
+        assert kwargs.get("timeout")
+
+    def test_pwsh_is_accepted_when_windows_powershell_is_gone(self):
+        """PowerShell 7 installs as `pwsh`; Windows PowerShell can be absent."""
+        with patch("sys.platform", "win32"), \
+             patch("hermes_cli.dashboard_procs.shutil.which",
+                   side_effect=self._which("pwsh")), \
+             patch("hermes_cli._subprocess_compat.bounded_probe_run") as mock_probe:
+            mock_probe.return_value = self._list_output()
+            assert _find_stale_dashboard_pids() == [12345]
+        assert mock_probe.call_args_list[0].args[0][0] == "pwsh"
+
+    def test_a_failing_wmic_still_falls_through_to_powershell(self):
+        """Presence is not success: wmic can be on PATH and still fail, and a
+        non-zero result used to end the scan instead of trying the other
+        query."""
+        results = [
+            subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="err"),
+            self._list_output(),
+        ]
+        with patch("sys.platform", "win32"), \
+             patch("hermes_cli.dashboard_procs.shutil.which",
+                   side_effect=self._which("wmic", "powershell")), \
+             patch("hermes_cli._subprocess_compat.bounded_probe_run",
+                   side_effect=results) as mock_probe:
+            assert _find_stale_dashboard_pids() == [12345]
+        assert [c.args[0][0] for c in mock_probe.call_args_list] == ["wmic", "powershell"]
+
+    def test_neither_binary_present_returns_empty_without_spawning(self):
+        """No query available is an empty scan, not a crash."""
+        with patch("sys.platform", "win32"), \
+             patch("hermes_cli.dashboard_procs.shutil.which",
+                   side_effect=self._which()), \
+             patch("hermes_cli._subprocess_compat.bounded_probe_run") as mock_probe:
+            assert _find_stale_dashboard_pids() == []
+        assert not mock_probe.called
 
     def test_probe_failure_fails_open_to_empty_list(self):
         """A spawn failure or timeout (bounded_probe_run → None) must yield

@@ -64,6 +64,34 @@ class TestGenerateTitle:
             assert "<think>" not in title
             assert "summarize" not in title
 
+    def test_falls_back_to_reasoning_content_when_content_empty(self):
+        """A reasoning model that spends the whole budget on
+        reasoning_content and returns empty `content` (finish_reason:
+        length) must not lose the title candidate its chain of thought
+        already stated."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ""
+        mock_response.choices[0].message.reasoning_content = (
+            "The user is hitting an import error. I'll title it: "
+            '{"title": "Debugging Python Import Errors"}'
+        )
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("help me fix this import")
+            assert title == "Debugging Python Import Errors"
+
+    def test_no_reasoning_content_fallback_when_both_empty(self):
+        """When neither content nor reasoning_content yields a title, the
+        call still resolves without crashing (caller decides what to do)."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ""
+        mock_response.choices[0].message.reasoning_content = None
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("help me fix this import") is None
+
     def test_strips_unterminated_think_block(self):
         """An unterminated <think> block (no close tag) must still be
         stripped so the leaked reasoning doesn't become the title."""

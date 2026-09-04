@@ -510,80 +510,133 @@ def enqueue_command(
     now = float(clock())
     with _transaction(db_path, immediate=True) as conn:
         _expire_stale_state(conn, now=now)
-        existing_authority = conn.execute(
-            """SELECT authority_hash FROM desktop_room_authorities
-               WHERE room_id = ?""",
-            (room_id,),
-        ).fetchone()
-        if existing_authority is None:
-            conn.execute(
-                """INSERT INTO desktop_room_authorities (
-                       room_id, consumer_id, authority_hash, created_at
-                   ) VALUES (?, NULL, ?, ?)""",
-                (room_id, authority_hash, now),
-            )
-        elif str(existing_authority["authority_hash"] or "") != authority_hash:
+        result = _persist_command(
+            conn, command_id=command_id, room_id=room_id, authority_hash=authority_hash,
+            action=action, encoded=encoded, now=now,
+        )
+    _notify_pending(db_path)
+    return result
+
+
+def _persist_command(conn, *, command_id, room_id, authority_hash, action, encoded, now):
+    existing_authority = conn.execute(
+        """SELECT authority_hash FROM desktop_room_authorities
+           WHERE room_id = ?""",
+        (room_id,),
+    ).fetchone()
+    if existing_authority is None:
+        conn.execute(
+            """INSERT INTO desktop_room_authorities (
+                   room_id, consumer_id, authority_hash, created_at
+               ) VALUES (?, NULL, ?, ?)""",
+            (room_id, authority_hash, now),
+        )
+    elif str(existing_authority["authority_hash"] or "") != authority_hash:
+        raise DesktopRoomMailboxError(
+            "room authority commitment does not match its existing owner"
+        )
+    existing = conn.execute(
+        "SELECT * FROM desktop_room_commands WHERE command_id = ?",
+        (command_id,),
+    ).fetchone()
+    if existing is not None:
+        if (
+            str(existing["room_id"]) != room_id
+            or str(existing["action"]) != action
+            or str(existing["payload_json"]) != encoded
+        ):
             raise DesktopRoomMailboxError(
-                "room authority commitment does not match its existing owner"
+                "command_id was already used for different room work"
             )
-        existing = conn.execute(
+        result = _command(existing, idempotent=True)
+    else:
+        if action == "stop":
+            superseded_result = _payload_json({
+                "code": "superseded_by_stop",
+                "message": "Canceled before Desktop started it.",
+            })
+            conn.execute(
+                """UPDATE desktop_room_commands
+                   SET state = 'failed', result_json = ?, lease_owner = NULL,
+                       lease_token = NULL, lease_expires_at = NULL, updated_at = ?
+                   WHERE room_id = ? AND action IN ('send', 'stop')
+                     AND state = 'pending'""",
+                (superseded_result, now, room_id),
+            )
+        else:
+            room_count = conn.execute(
+                """SELECT COUNT(*) FROM desktop_room_commands
+                   WHERE room_id = ? AND state IN ('pending', 'claimed')""",
+                (room_id,),
+            ).fetchone()[0]
+            total_count = conn.execute(
+                """SELECT COUNT(*) FROM desktop_room_commands
+                   WHERE state IN ('pending', 'claimed')"""
+            ).fetchone()[0]
+            if int(room_count) >= MAX_PENDING_COMMANDS_PER_ROOM:
+                raise DesktopRoomMailboxError(
+                    "This Group Chat already has too many commands waiting for Desktop."
+                )
+            if int(total_count) >= MAX_PENDING_COMMANDS_TOTAL:
+                raise DesktopRoomMailboxError(
+                    "Too many Group Chat commands are waiting for Desktop."
+                )
+        conn.execute(
+            """INSERT INTO desktop_room_commands (
+                   command_id, room_id, action, payload_json, state,
+                   created_at, updated_at
+               ) VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
+            (command_id, room_id, action, encoded, now, now),
+        )
+        row = conn.execute(
             "SELECT * FROM desktop_room_commands WHERE command_id = ?",
             (command_id,),
         ).fetchone()
+        result = _command(row)
+    return result
+
+
+def enqueue_stop_command(
+    db_path: Path | str, *, command_id: str, room_id: str, authority_hash: str,
+    target_thread_id: str = "", target_message_id: str = "", clock: Any = time.time,
+) -> dict[str, Any]:
+    """Freeze the first Stop target and replay duplicate deliveries atomically."""
+    command_id = _identifier(command_id, label="command_id")
+    room_id = _room_identifier(room_id)
+    authority_hash = _authority_hash(authority_hash)
+    now = float(clock())
+    with _transaction(db_path, immediate=True) as conn:
+        _expire_stale_state(conn, now=now)
+        existing = conn.execute(
+            "SELECT * FROM desktop_room_commands WHERE command_id=?", (command_id,),
+        ).fetchone()
         if existing is not None:
-            if (
-                str(existing["room_id"]) != room_id
-                or str(existing["action"]) != action
-                or str(existing["payload_json"]) != encoded
-            ):
-                raise DesktopRoomMailboxError(
-                    "command_id was already used for different room work"
-                )
-            result = _command(existing, idempotent=True)
+            encoded = str(existing["payload_json"])
         else:
-            if action == "stop":
-                superseded_result = _payload_json({
-                    "code": "superseded_by_stop",
-                    "message": "Canceled before Desktop started it.",
-                })
-                conn.execute(
-                    """UPDATE desktop_room_commands
-                       SET state = 'failed', result_json = ?, lease_owner = NULL,
-                           lease_token = NULL, lease_expires_at = NULL, updated_at = ?
-                       WHERE room_id = ? AND action IN ('send', 'stop')
-                         AND state = 'pending'""",
-                    (superseded_result, now, room_id),
-                )
-            else:
-                room_count = conn.execute(
-                    """SELECT COUNT(*) FROM desktop_room_commands
-                       WHERE room_id = ? AND state IN ('pending', 'claimed')""",
-                    (room_id,),
-                ).fetchone()[0]
-                total_count = conn.execute(
-                    """SELECT COUNT(*) FROM desktop_room_commands
-                       WHERE state IN ('pending', 'claimed')"""
-                ).fetchone()[0]
-                if int(room_count) >= MAX_PENDING_COMMANDS_PER_ROOM:
-                    raise DesktopRoomMailboxError(
-                        "This Group Chat already has too many commands waiting for Desktop."
-                    )
-                if int(total_count) >= MAX_PENDING_COMMANDS_TOTAL:
-                    raise DesktopRoomMailboxError(
-                        "Too many Group Chat commands are waiting for Desktop."
-                    )
-            conn.execute(
-                """INSERT INTO desktop_room_commands (
-                       command_id, room_id, action, payload_json, state,
-                       created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
-                (command_id, room_id, action, encoded, now, now),
-            )
-            row = conn.execute(
-                "SELECT * FROM desktop_room_commands WHERE command_id = ?",
-                (command_id,),
+            current = conn.execute(
+                """SELECT command_id, action, state FROM desktop_room_commands
+                   WHERE room_id=? ORDER BY created_at DESC, command_id DESC LIMIT 1""",
+                (room_id,),
             ).fetchone()
-            result = _command(row)
+            target_command_id = (
+                str(current["command_id"])
+                if current is not None and current["action"] == "send"
+                and current["state"] in {"claimed", "pending"} else ""
+            )
+            if not target_command_id and not target_message_id:
+                raise DesktopRoomMailboxError(
+                    "Open this Group Chat in Hermes Desktop to Stop it safely."
+                )
+            encoded = _payload_json({
+                **({"target_command_id": target_command_id} if target_command_id else {}),
+                **({"target_thread_id": target_thread_id} if target_thread_id else {}),
+                **({"target_message_id": target_message_id}
+                   if not target_command_id and target_message_id else {}),
+            })
+        result = _persist_command(
+            conn, command_id=command_id, room_id=room_id, authority_hash=authority_hash,
+            action="stop", encoded=encoded, now=now,
+        )
     _notify_pending(db_path)
     return result
 

@@ -218,6 +218,29 @@ def strip_control_wrappers(text: str) -> str:
     return current
 
 
+def _strip_attachment_reference_lines(text: str) -> str:
+    """Drop standalone ``@file:`` lines while preserving surrounding prose."""
+    try:
+        from agent.context_references import parse_context_references
+    except Exception:
+        logger.debug("Context-reference parser unavailable for titling", exc_info=True)
+        return text
+
+    kept_lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        refs = parse_context_references(stripped)
+        if (
+            len(refs) == 1
+            and refs[0].kind == "file"
+            and refs[0].start == 0
+            and refs[0].end == len(stripped)
+        ):
+            continue
+        kept_lines.append(line)
+    return "\n".join(kept_lines).strip()
+
+
 def _summarize_user_message(user_message: str) -> str:
     """Reduce a user turn to the text worth titling.
 
@@ -225,8 +248,9 @@ def _summarize_user_message(user_message: str) -> str:
     body, so feeding it to the titler verbatim titles the session after the
     *skill's* prose — "Kick off a task in a fresh isolated git worktree" — not
     after the user's request. Reuse the canonical scaffolding parser so the
-    model sees ``/work — fix the title leak`` instead, then strip any control
-    wrappers left around it.
+    model sees ``/work — fix the title leak`` instead. Control wrappers and
+    standalone attachment references are metadata, so strip those while
+    retaining the user's surrounding prose.
     """
     if not user_message:
         return ""
@@ -238,7 +262,7 @@ def _summarize_user_message(user_message: str) -> str:
     except Exception:
         logger.debug("Skill-scaffolding summary failed; titling raw", exc_info=True)
     text = described if described is not None else user_message
-    return strip_control_wrappers(text)
+    return _strip_attachment_reference_lines(strip_control_wrappers(text))
 
 
 def is_titleable_user_message(user_message: str) -> bool:

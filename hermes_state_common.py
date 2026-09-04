@@ -38,6 +38,16 @@ def _sql_literal(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
+def _sql_json_extract(expression: str, path: str) -> str:
+    """Build a non-throwing JSON marker lookup for a JSON TEXT column."""
+
+    safe_json = (
+        f"(CASE WHEN json_valid({expression}) "
+        f"THEN {expression} ELSE json_object() END)"
+    )
+    return f"json_extract({safe_json}, {_sql_literal(path)})"
+
+
 def _sql_ltrim_whitespace(expression: str) -> str:
     return f"LTRIM({expression}, {_SQL_WHITESPACE})"
 
@@ -110,7 +120,7 @@ _PREVIEW_RAW_SUBQUERY_SQL = (f"COALESCE((SELECT {_PREVIEW_RAW_SELECT} FROM messa
 # ── Session lineage predicates ({a} = sessions alias) ───────────────────────
 
 # /branch child (kept visible, never cascade-deleted): stable marker OR legacy end_reason heuristic.
-_BRANCH_CHILD_SQL = ("json_extract(COALESCE({a}.model_config, '{{}}'), '$._branched_from') IS NOT NULL"
+_BRANCH_CHILD_SQL = (f"{_sql_json_extract('{a}.model_config', '$._branched_from')} IS NOT NULL"
     " OR EXISTS (SELECT 1 FROM sessions p            WHERE p.id = {a}.parent_session_id"
     "            AND p.end_reason = 'branched'            AND {a}.started_at >= p.ended_at)")
 _COMPRESSION_CHILD_SQL = ("EXISTS (SELECT 1 FROM sessions p        WHERE p.id = {a}.parent_session_id"
@@ -160,7 +170,7 @@ def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
 
 # A reset starts a separate user-visible conversation though rows keep parent_session_id for lineage.
 # Stable marker, or the same-key fallback for pre-marker rows (exact key keeps subagent children out).
-_RESET_CHILD_SQL = ("json_extract(COALESCE({a}.model_config, '{{}}'), '$._reset_from') IS NOT NULL"
+_RESET_CHILD_SQL = (f"{_sql_json_extract('{a}.model_config', '$._reset_from')} IS NOT NULL"
     " OR " + _legacy_reset_child_sql("{a}", _RESET_END_REASONS_SQL))
 
 # Picker-visible rows: roots + branch/reset children (not subagent runs or compression continuations).

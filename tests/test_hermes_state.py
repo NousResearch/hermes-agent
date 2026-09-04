@@ -2350,6 +2350,59 @@ class TestListSessionsRich:
         assert len(sessions) == 1
         assert "Help me refactor the auth module" in sessions[0]["preview"]
 
+    @pytest.mark.parametrize(
+        "unsafe_model_config",
+        ["{not-json", "[]", '"scalar"', "5", "null"],
+    )
+    def test_unsafe_model_config_does_not_break_session_surfaces(
+        self, db, unsafe_model_config
+    ):
+        db.create_session("root", "telegram")
+        db.append_message("root", "user", "root message")
+        db.create_session("compression-parent", "telegram")
+        db.end_session("compression-parent", "compression")
+        db.create_session(
+            "compression-child",
+            "telegram",
+            parent_session_id="compression-parent",
+        )
+        db.append_message("compression-child", "user", "child message")
+        db.create_session("routing-orphan", "telegram")
+        db.append_message("routing-orphan", "user", "orphan message")
+        db._conn.execute(
+            "UPDATE sessions SET model_config = ? "
+            "WHERE id IN (?, ?, ?)",
+            (unsafe_model_config, "root", "compression-child", "routing-orphan"),
+        )
+        db._conn.commit()
+
+        listed = db.list_sessions_rich(source="telegram")
+        ordered = db.list_sessions_rich(
+            source="telegram", order_by_last_active=True
+        )
+
+        assert "root" in {row["id"] for row in listed}
+        assert "root" in {row["id"] for row in ordered}
+        assert db.session_count(source="telegram", exclude_children=True) == 3
+        assert db.session_count_by_source(exclude_children=True)["telegram"] == 3
+        assert db.get_compression_chain("compression-parent") == [
+            "compression-parent",
+            "compression-child",
+        ]
+        db.record_gateway_session_peer(
+            "compression-child",
+            source="telegram",
+            session_key="agent:main:telegram:dm:recovered",
+            include_compression_ancestors=True,
+        )
+        assert db.get_session("compression-parent")["session_key"] == (
+            "agent:main:telegram:dm:recovered"
+        )
+        assert any(
+            row["orphan_id"] == "routing-orphan"
+            for row in db.find_orphaned_gateway_sessions()
+        )
+
 
 
 

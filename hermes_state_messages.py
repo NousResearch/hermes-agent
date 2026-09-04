@@ -13,7 +13,7 @@ from agent.memory_manager import sanitize_context
 from agent.message_sanitization import _sanitize_surrogates
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
-    _legacy_reset_child_sql, _placeholders)
+    _legacy_reset_child_sql, _placeholders, _sql_json_extract)
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -711,9 +711,9 @@ class SessionMessagesMixin:
                         best = current
                     child_row = conn.execute(
                         "SELECT id FROM sessions AS child WHERE child.parent_session_id = ? "
-                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL "
-                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL "
-                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._reset_from') IS NULL "
+                        f"  AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL "
+                        f"  AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL "
+                        f"  AND {_sql_json_extract('child.model_config', '$._reset_from')} IS NULL "
                         f"  AND NOT {_legacy_reset_child_sql('child', _RESET_END_REASONS_SQL)} "
                         "  AND COALESCE(child.source, '') != 'tool' "
                         "ORDER BY child.started_at DESC, child.id DESC LIMIT 1", (current,)).fetchone()

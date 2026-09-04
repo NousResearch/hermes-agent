@@ -380,3 +380,32 @@ def test_file_mutating_tools_set_shape():
     track it.  This test fails loudly on unilateral additions.
     """
     assert _FILE_MUTATING_TOOLS == frozenset({"write_file", "patch"})
+
+
+class TestFooterMediaDirectiveNeutralization:
+    """Untrusted error previews must not carry live delivery directives (#65514)."""
+
+    def _footer(self, preview):
+        from agent.turn_explainers import TurnExplainersMixin
+        return TurnExplainersMixin._format_file_mutation_failure_footer(
+            {"/tmp/a.md": {"tool": "patch", "error_preview": preview}},
+        )
+
+    def test_error_preview_media_directive_is_neutralized(self):
+        out = self._footer("diff mismatch near MEDIA:/home/user/notes.png")
+        assert "MEDIA:" not in out
+        assert "MEDIA\\x3a/home/user/notes.png" in out
+
+    def test_error_preview_media_directive_neutralized_case_insensitive(self):
+        for preview in ("see media:/home/user/notes.png", "see Media:/home/user/notes.png"):
+            out = self._footer(preview)
+            assert "media:" not in out
+            assert "Media:" not in out
+            assert "MEDIA:" not in out
+
+    def test_delivery_toggle_directives_are_neutralized(self):
+        out = self._footer("[[audio_as_voice]] [[as_document]]")
+        assert "[[audio_as_voice]]" not in out
+        assert "[[as_document]]" not in out
+        assert "[[audio\\_as\\_voice]]" in out
+        assert "[[as\\_document]]" in out

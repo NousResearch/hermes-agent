@@ -974,7 +974,7 @@ test('connection-config save and apply IPC handlers route payloads through coerc
     const handlerBody = source.slice(handlerStart, handlerStart + 400)
     assert.match(
       handlerBody,
-      /coerceDesktopConnectionConfig\(payload\)/,
+      /coerceDesktopConnectionConfig\(payload(?:, previousConfig)?\)/,
       `${channel} must coerce its payload (the propagation seam) before persisting`
     )
   }
@@ -1016,4 +1016,32 @@ test('sanitizeDesktopConnectionConfig exposes secureTokenStorage and remoteToken
   const returned = body.slice(returnIndex)
   assert.match(returned, /\bsecureTokenStorage\b/, 'the renderer needs the secure-storage availability signal')
   assert.match(returned, /\bremoteTokenPlainText\b/, 'the renderer needs the plain-text token signal')
+})
+
+// #95393: connections.save succeeded but the switcher menu (renderer
+// $connectionsRegistry snapshot) never refreshed until reload. The registry
+// push (broadcastConnectionsChanged) fired only on the dial-material-edit
+// branch, so a brand-new connection or a label rename never reached other
+// windows — or the switcher's onChanged re-pull. Mirrors the live repro at
+// /tmp/mg-ab/w2_95393.py: save → menu (no reload) must include the new row.
+test('saveRegistryConnection republishes the registry to renderers on EVERY successful save (#95393)', () => {
+  const source = readMain()
+  const fnStart = source.indexOf('async function saveRegistryConnection(')
+  assert.notEqual(fnStart, -1, 'saveRegistryConnection must exist in main.ts')
+  const fnEnd = source.indexOf('\nasync function ', fnStart + 1)
+  const body = source.slice(fnStart, fnEnd === -1 ? undefined : fnEnd)
+
+  // The dial-material edit branch keeps its dispose+redial semantics…
+  assert.match(
+    body,
+    /broadcastConnectionsChanged\(\{ connectionId: entry\.id, reason: 'updated' \}\)/,
+    'a dial-material edit must still push the dispose+redial signal'
+  )
+  // …and every OTHER save (new connection, label rename) must still push a
+  // registry refresh, or the switcher menu paints stale until reload.
+  assert.match(
+    body,
+    /broadcastConnectionsChanged\(\{ connectionId: entry\.id, reason: 'saved' \}\)/,
+    'a non-dial-material save must republish the registry snapshot (#95393)'
+  )
 })

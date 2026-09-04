@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli import auth as auth_mod
+import hermes_cli.auth_spotify as auth_spotify
 from hermes_cli.auth import AuthError, resolve_spotify_runtime_credentials
 
 
@@ -39,6 +40,15 @@ def test_resolve_spotify_runtime_credentials_refreshes_without_changing_active_p
 
     monkeypatch.setattr(
         auth_mod,
+        "_refresh_spotify_oauth_state",
+        lambda state, timeout_seconds=20.0: {
+            **state,
+            "access_token": "fresh-token",
+            "expires_at": "2099-01-01T00:00:00+00:00",
+        },
+    )
+    monkeypatch.setattr(
+        auth_spotify,
         "_refresh_spotify_oauth_state",
         lambda state, timeout_seconds=20.0: {
             **state,
@@ -131,6 +141,7 @@ def test_resolve_credentials_quarantines_dead_tokens_on_terminal_refresh_failure
         )
 
     monkeypatch.setattr(auth_mod, "_refresh_spotify_oauth_state", _terminal_refresh)
+    monkeypatch.setattr(auth_spotify, "_refresh_spotify_oauth_state", _terminal_refresh)
 
     with pytest.raises(AuthError) as exc_info:
         resolve_spotify_runtime_credentials(force_refresh=True)

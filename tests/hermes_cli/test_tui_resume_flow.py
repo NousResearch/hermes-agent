@@ -7,6 +7,7 @@ import textwrap
 import types
 
 import pytest
+from hermes_cli import main_tui_launch
 
 
 def _args(**overrides):
@@ -61,6 +62,34 @@ def test_termux_fast_cli_launch_forwards_oneshot_isolation(
     )
 
     assert main_mod._try_termux_fast_cli_launch() is True
+    assert captured["prompt"] == "hello"
+    assert captured["ignore_rules"] is expected
+
+
+@pytest.mark.parametrize(
+    ("ignore_rules", "safe_mode", "expected"),
+    [(True, False, True), (False, True, True), (False, False, False)],
+)
+def test_unified_oneshot_dispatch_forwards_isolation(
+    monkeypatch, main_mod, ignore_rules, safe_mode, expected
+):
+    captured = {}
+    args = _args(
+        oneshot="hello",
+        ignore_rules=ignore_rules,
+        safe_mode=safe_mode,
+        skills=None,
+        usage_file=None,
+    )
+    monkeypatch.setattr(main_mod, "_confirm_startup_expensive_model_override", lambda _args: None)
+    monkeypatch.setattr(
+        main_mod,
+        "_run_and_exit_oneshot",
+        lambda prompt, **kwargs: captured.update({"prompt": prompt, **kwargs}),
+    )
+
+    main_mod._run_oneshot_from_args(args)
+
     assert captured["prompt"] == "hello"
     assert captured["ignore_rules"] is expected
 
@@ -330,9 +359,7 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     captured = {}
     active_path_during_call = None
 
-    monkeypatch.setattr(
-        main_mod,
-        "_make_tui_argv",
+    monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
         lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
     )
 
@@ -374,8 +401,8 @@ def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path)
     ink_dir.mkdir(parents=True)
     tsx.write_text("#!/usr/bin/env node\n", encoding="utf-8")
 
-    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
-    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _tui_dir: False)
+    monkeypatch.setattr(main_tui_launch, "_ensure_tui_node", lambda: None)
+    monkeypatch.setattr(main_tui_launch, "_tui_need_npm_install", lambda _tui_dir: False)
     monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
     monkeypatch.setattr(main_mod.shutil, "which", lambda bin_name: f"/usr/bin/{bin_name}")
 
@@ -387,7 +414,7 @@ def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path)
 
     monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
 
-    argv, cwd = main_mod._make_tui_argv(tui_dir, tui_dev=True)
+    argv, cwd = main_tui_launch._make_tui_argv(tui_dir, tui_dev=True)
 
     assert argv == [str(tsx), "src/entry.tsx"]
     assert cwd == tui_dir

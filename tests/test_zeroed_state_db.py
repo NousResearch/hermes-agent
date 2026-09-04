@@ -21,6 +21,26 @@ def test_is_zeroed_state_db_and_quarantine(tmp_path):
     assert q.read_bytes() == bytes(1024)
 
 
+@pytest.mark.skipif(not hasattr(__import__("os"), "mkfifo"), reason="POSIX only")
+def test_is_zeroed_never_probes_special_files(tmp_path):
+    """A FIFO at the state.db path must be rejected without any blocking read.
+
+    Opening a FIFO for reading blocks until a writer appears; the zeroed
+    probe must classify on file type alone (#98017 review, P2).
+    """
+    import os
+
+    import hermes_state as hs
+    from hermes_cli.backup import is_zeroed_sqlite_file
+
+    fifo = tmp_path / "state.db"
+    os.mkfifo(fifo)
+    # Would hang forever before the regular-file guard if either probe
+    # attempted open()+read on the FIFO.
+    assert is_zeroed_sqlite_file(fifo) is False
+    assert hs.is_zeroed_state_db(fifo) is False
+
+
 def test_sessiondb_opens_fresh_after_zeroed_quarantine(tmp_path, monkeypatch):
     import hermes_state as hs
 
@@ -39,6 +59,38 @@ def test_sessiondb_opens_fresh_after_zeroed_quarantine(tmp_path, monkeypatch):
         assert backups[0].stat().st_size == 4096
     finally:
         sdb.close()
+
+
+def test_is_zeroed_state_db_zero_byte_quarantine(tmp_path, monkeypatch):
+    """#97568: a 0-byte file must be detected as zeroed and quarantined."""
+    import hermes_state as hs
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = tmp_path / "state.db"
+    db.write_bytes(b"")  # 0-byte truncated file
+    assert hs.is_zeroed_state_db(db) is True
+
+    sdb = hs.SessionDB(db_path=db)
+    try:
+        # Fresh DB should open and accept schema
+        assert db.exists()
+        assert not hs.is_zeroed_state_db(db)
+        # Quarantine retained for the 0-byte file
+        backups = list(tmp_path.glob("state.db.zeroed-*.bak"))
+        assert len(backups) == 1
+        assert backups[0].stat().st_size == 0
+        # Check store provenance was recorded in state_meta
+        row_instance = sdb._conn.execute(
+            "SELECT value FROM state_meta WHERE key = 'store_instance_id'"
+        ).fetchone()
+        row_created = sdb._conn.execute(
+            "SELECT value FROM state_meta WHERE key = 'store_created_at_utc'"
+        ).fetchone()
+        assert row_instance is not None and row_instance[0]
+        assert row_created is not None and row_created[0]
+    finally:
+        sdb.close()
+
 
 
 def test_concurrent_quarantine_no_clobber(tmp_path):
@@ -168,3 +220,82 @@ def test_quarantine_fails_closed_when_lock_held(tmp_path):
     # Release the lock so the background thread can exit cleanly
     release_lock.set()
     holder.join(timeout=5)
+
+
+def test_concurrent_openers_zero_byte_startup_serialization(tmp_path, monkeypatch):
+    """#97580: Verify that two concurrent SessionDB openers on a non-existent
+    database serialize through the startup lock, avoid racing on the initial
+    0-byte creation window, and do not falsely quarantine each other's live file.
+    """
+    import hermes_state as hs
+    import threading
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = tmp_path / "state.db"
+
+    errors = [None, None]
+    results = [None, None]
+
+    def worker(idx):
+        try:
+            sdb = hs.SessionDB(db_path=db)
+            try:
+                # Confirm schema is active
+                row = sdb._conn.execute("SELECT 1").fetchone()
+                assert row[0] == 1
+                results[idx] = "ok"
+            finally:
+                sdb.close()
+        except Exception as exc:
+            errors[idx] = exc
+
+    t1 = threading.Thread(target=worker, args=(0,))
+    t2 = threading.Thread(target=worker, args=(1,))
+    t1.start()
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    assert errors[0] is None, f"Opener 0 failed: {errors[0]}"
+    assert errors[1] is None, f"Opener 1 failed: {errors[1]}"
+    assert results[0] == "ok"
+    assert results[1] == "ok"
+
+    # No spurious quarantine backups should have been created
+    backups = list(tmp_path.glob("state.db.zeroed-*.bak"))
+    assert len(backups) == 0, f"Expected 0 quarantine backups, got: {backups}"
+    assert db.exists()
+    assert not hs.is_zeroed_state_db(db)
+
+
+def test_live_connection_0_byte_not_quarantined_in_process(tmp_path, monkeypatch):
+    """#97580: A live 0-byte connection tracked in this process must not be
+    quarantined by is_zeroed_state_db / SessionDB.
+    """
+    import hermes_state as hs
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = tmp_path / "state.db"
+
+    # Create a live tracked 0-byte connection
+    conn = connect_tracked(str(db))
+    try:
+        assert db.exists() and db.stat().st_size == 0
+        # is_zeroed_state_db must recognize the live connection and refuse to declare it zeroed
+        assert hs.is_zeroed_state_db(db) is False
+
+        # SessionDB open must not quarantine this live file
+        sdb = hs.SessionDB(db_path=db)
+        try:
+            backups = list(tmp_path.glob("state.db.zeroed-*.bak"))
+            assert len(backups) == 0, f"Spurious quarantine occurred: {backups}"
+        finally:
+            sdb.close()
+
+        # The original connection can still write safely
+        conn.execute("CREATE TABLE live_check (id INTEGER)")
+        conn.commit()
+    finally:
+        conn.close()
+

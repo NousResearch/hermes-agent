@@ -15,13 +15,9 @@ These tests drive the REAL functions against a temp HERMES_HOME config
 import pytest
 
 import hermes_cli.config as hc
-from tools.approval import (
-    _get_approval_config,
-    _get_approval_mode,
-    _get_cron_approval_mode,
-    check_all_command_guards,
-    load_permanent_allowlist,
-)
+from tools.approval import check_all_command_guards, load_permanent_allowlist
+from tools.approval_context import _get_approval_config, _get_approval_mode
+from tools.approval_context import _get_cron_approval_mode
 from tools.tirith_security import _load_security_config
 
 

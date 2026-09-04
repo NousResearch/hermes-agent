@@ -12525,6 +12525,15 @@ def cmd_dashboard(args):
         # the missing-provider state if it matters.
         print(f"⚠ Plugin discovery failed: {exc}", file=sys.stderr)
 
+    try:
+        from agent.shell_hooks import register_from_config
+        from hermes_cli.config import load_config
+
+        register_from_config(load_config(), accept_hooks=False)
+    except Exception as exc:
+        print(f"Error: shell-hook registration failed: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
     # Desktop chat uses the dashboard's in-process /api/ws gateway, which builds
     # agents via tui_gateway.server._make_agent.  That path only snapshots the
     # tool registry — it never starts MCP discovery (the stdio TUI does that in

@@ -52,6 +52,11 @@ def _wire_common(main_mod, monkeypatch):
         "hermes_cli.plugins",
         types.SimpleNamespace(discover_plugins=lambda: None),
     )
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(register_from_config=lambda *_a, **_k: None),
+    )
     monkeypatch.setattr(
         "hermes_cli.mcp_startup.start_background_mcp_discovery",
         lambda **_k: None,

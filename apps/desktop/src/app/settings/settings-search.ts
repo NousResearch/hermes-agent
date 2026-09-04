@@ -12,6 +12,7 @@ export type CredentialSettingsView = 'settings' | 'tools'
 
 export const APPEARANCE_SETTING_IDS = {
   backdrop: 'appearance.backdrop',
+  composerPopout: 'appearance.composer-popout',
   embeds: 'appearance.embeds',
   introSplash: 'appearance.intro-splash',
   language: 'appearance.language',

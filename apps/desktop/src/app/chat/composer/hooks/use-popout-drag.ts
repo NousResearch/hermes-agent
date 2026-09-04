@@ -15,7 +15,7 @@ import {
 const LONG_PRESS_MS = 360
 const LONG_PRESS_MOVE_TOLERANCE = 10
 // Upward drag distance from the docked composer that peels it off into a float.
-const PEEL_OUT_PX = 16
+const PEEL_OUT_PX = 48
 const DOCK_ZONE_BOTTOM_PX = 72
 // How close the composer's center must be to the viewport center (px) to count as
 // "over the dock". Kept tight so the bottom-left/right corners stay free.

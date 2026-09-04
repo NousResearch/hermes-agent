@@ -259,28 +259,82 @@ def _systemd_run_user_scope_available() -> bool:
         return available
 
 
-def _is_supervised_gateway_process() -> bool:
-    """Return whether this process is in a supervised Hermes gateway runtime.
+def _is_gateway_process() -> bool:
+    """Return whether this process IS the live Hermes gateway.
 
-    Both supervisor markers and ``_HERMES_GATEWAY`` are inherited by every
-    descendant, and importing ``gateway.run`` also sets the latter. Require
-    this process to own the live gateway PID file as well. That keeps transient
-    systemd scopes limited to the gateway itself instead of terminal children
-    or unrelated interactive CLIs in the same supervised process tree.
+    ``_HERMES_GATEWAY`` is inherited by every descendant, and importing
+    ``gateway.run`` also sets it. Require this process to own the live
+    gateway PID file as well, so terminal children or unrelated interactive
+    CLIs in the same process tree are not mistaken for the gateway.
+
+    Unlike :func:`_is_supervised_gateway_process`, this does NOT require an
+    external supervisor. A direct-spawn gateway (no systemd/launchd/schtasks
+    wrapper -- e.g. a Windows Startup-folder VBS launch) is still the live
+    gateway: it can be killed by its own lifecycle command just as easily as
+    a supervised one, it just has nothing to bring it back afterwards (#98221).
     """
     if os.environ.get("_HERMES_GATEWAY") != "1":
         return False
 
     try:
-        from gateway.restart import is_gateway_supervisor_process
         from gateway.status import get_running_pid
 
-        return (
-            is_gateway_supervisor_process()
-            and get_running_pid(cleanup_stale=False) == os.getpid()
-        )
+        return get_running_pid(cleanup_stale=False) == os.getpid()
     except Exception as exc:
-        logger.debug("Could not verify supervised gateway process identity: %s", exc)
+        logger.debug("Could not verify gateway process identity: %s", exc)
+        return False
+
+
+def _is_gateway_process_or_unknown() -> bool:
+    """Return True if this process is the live gateway, or identity is unproven.
+
+    Destructive lifecycle hard-blocks (terminal_tool / code_execution_tool)
+    must use this instead of :func:`_is_gateway_process`. That function
+    treats any read failure the same as "definitely not the gateway", but an
+    unreadable or malformed PID/lock record is not proof of that -- it is
+    just unproven. Collapsing "unproven" into the allow case would let the
+    destructive command this guard exists to refuse run unguarded on a
+    transient or malformed identity read. Non-destructive callers (systemd-
+    scope isolation, via :func:`_is_supervised_gateway_process`) are
+    unaffected: getting those wrong just skips an optimization, not a safety
+    check.
+    """
+    if os.environ.get("_HERMES_GATEWAY") != "1":
+        return False
+
+    try:
+        from gateway.status import _get_pid_path, get_running_pid_identity_strict
+
+        identity = get_running_pid_identity_strict(_get_pid_path())
+    except Exception as exc:
+        logger.debug(
+            "Could not verify gateway process identity, failing closed: %s", exc
+        )
+        return True
+
+    if identity is None:
+        return False
+    return identity[0] == os.getpid()
+
+
+def _is_supervised_gateway_process() -> bool:
+    """Return whether this process is in a supervised Hermes gateway runtime.
+
+    Builds on :func:`_is_gateway_process` (live PID-file ownership) with the
+    additional requirement of an external supervisor. Systemd-scope cgroup
+    isolation is the one thing here that actually needs supervision -- it
+    relies on the supervisor to keep the gateway's cgroup alive independently
+    of the scoped worker.
+    """
+    if not _is_gateway_process():
+        return False
+
+    try:
+        from gateway.restart import is_gateway_supervisor_process
+
+        return is_gateway_supervisor_process()
+    except Exception as exc:
+        logger.debug("Could not verify gateway supervisor identity: %s", exc)
         return False
 
 

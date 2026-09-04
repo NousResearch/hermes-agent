@@ -518,7 +518,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         monkeypatch.setattr(tt, "_task_env_overrides", {})
         monkeypatch.setattr(tt, "_get_env_config", self._minimal_config)
         monkeypatch.setattr(
-            process_registry, "_is_supervised_gateway_process",
+            process_registry, "_is_gateway_process_or_unknown",
             lambda: inside_gateway,
         )
 
@@ -663,8 +663,8 @@ class TestTerminalToolGatewayLifecycleGuard:
         self, monkeypatch
     ):
         """#92560: CLI/TUI agent sessions inherit _HERMES_GATEWAY=1 from the
-        gateway but are NOT the gateway supervisor.  The env gate must not
-        fire for them — only for the actual gateway process (PID-file owner).
+        gateway but are not the gateway itself.  The env gate must not fire
+        for them — only for the actual gateway process (PID-file owner).
         """
         import tools.terminal_tool as tt
 
@@ -679,8 +679,8 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         # Simulate a CLI agent session: _HERMES_GATEWAY=1 is in the
         # environment (inherited from the gateway), but
-        # _is_supervised_gateway_process() returns False because the
-        # process does not own the gateway PID file.
+        # _is_gateway_process() returns False because the process does not
+        # own the gateway PID file.
         self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=False)
         monkeypatch.setenv("_HERMES_GATEWAY", "1")
         monkeypatch.setattr(
@@ -879,6 +879,128 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 0
         assert calls == ["systemctl status nginx"]
+
+
+class TestTerminalToolBlocksUnsupervisedDirectSpawnGateway:
+    """#98221: a direct-spawn gateway with no external supervisor (no
+    systemd/launchd/schtasks wrapper -- e.g. a Windows Startup-folder VBS
+    launch) must still refuse to run a lifecycle command against itself.
+
+    The guard used to gate on ``_is_supervised_gateway_process()``, which
+    additionally required a supervisor marker (INVOCATION_ID / XPC_SERVICE_NAME
+    / HERMES_S6_SUPERVISED_CHILD / the external-supervisor env override).  A
+    direct-spawn gateway has none of those, so the guard never fired and
+    `hermes gateway restart` ran unblocked: it stopped the live gateway, and
+    the terminal tool's child process was interrupted before the replacement
+    start phase completed, leaving no gateway running at all.  This exercises
+    the real identity primitives (not a patched boolean) to prove the guard
+    now fires purely on live PID-file ownership.
+    """
+
+    def _minimal_config(self):
+        return {"env_type": "local", "cwd": "/tmp", "timeout": 60, "lifetime_seconds": 3600}
+
+    def _patch_env(self, monkeypatch, fake_env):
+        import tools.terminal_tool as tt
+        eid = "default"
+        monkeypatch.setattr(tt, "_active_environments", {eid: fake_env})
+        monkeypatch.setattr(tt, "_last_activity", {eid: 0.0})
+        monkeypatch.setattr(tt, "_task_env_overrides", {})
+        monkeypatch.setattr(tt, "_get_env_config", self._minimal_config)
+
+    def _make_fake_env(self):
+        class _FakeEnv:
+            env = {}
+            def execute(self, command, **kwargs):  # pragma: no cover
+                raise AssertionError("execute must not be reached")
+        return _FakeEnv()
+
+    def test_blocks_restart_with_no_supervisor_present(self, monkeypatch):
+        import tools.terminal_tool as tt
+
+        self._patch_env(monkeypatch, self._make_fake_env())
+
+        # Live gateway identity: _HERMES_GATEWAY=1 and this process owns the
+        # gateway PID file -- but no supervisor of any kind.
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
+        monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_EXTERNAL_SUPERVISOR", raising=False)
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid_identity_strict",
+            lambda pid_path: (os.getpid(), 123.0),
+        )
+
+        result = json.loads(tt.terminal_tool(command="hermes gateway restart"))
+
+        assert result["exit_code"] == 1
+        assert "Blocked" in result["error"]
+
+    def test_blocks_restart_on_unreadable_identity(self, monkeypatch):
+        """P1 (review, 2026-08-30): an unreadable PID/lock record is not
+        proof this process is NOT the gateway -- it is unproven. The hard
+        block must fail closed (still refuse) rather than let a transient
+        identity-read error grant the destructive command safe passage.
+        """
+        import tools.terminal_tool as tt
+
+        self._patch_env(monkeypatch, self._make_fake_env())
+
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+
+        def _raise(pid_path):
+            raise OSError("PID file unreadable")
+
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid_identity_strict", _raise
+        )
+
+        result = json.loads(tt.terminal_tool(command="hermes gateway restart"))
+
+        assert result["exit_code"] == 1
+        assert "Blocked" in result["error"]
+
+    def test_blocks_restart_on_malformed_identity_metadata(self, monkeypatch):
+        """P1 (review, 2026-08-30): an active-but-malformed PID/lock record
+        (the exact case ``get_running_pid_identity_strict`` raises for) must
+        also fail closed, not be read as "not the gateway"."""
+        import tools.terminal_tool as tt
+
+        self._patch_env(monkeypatch, self._make_fake_env())
+
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+
+        def _raise(pid_path):
+            raise RuntimeError("gateway PID or lock metadata is malformed")
+
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid_identity_strict", _raise
+        )
+
+        result = json.loads(tt.terminal_tool(command="hermes gateway restart"))
+
+        assert result["exit_code"] == 1
+        assert "Blocked" in result["error"]
+
+    def test_previously_this_shape_was_not_supervised(self, monkeypatch):
+        """Same identity as above must NOT satisfy the stricter supervised
+        probe -- confirms the fix widens the guard rather than loosening the
+        supervised check other call sites (systemd-scope isolation) rely on.
+        """
+        from tools.process_registry import _is_supervised_gateway_process
+
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
+        monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_EXTERNAL_SUPERVISOR", raising=False)
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid",
+            lambda *, cleanup_stale=False: os.getpid(),
+        )
+
+        assert _is_supervised_gateway_process() is False
 
 
 # ---------------------------------------------------------------------------
@@ -1864,7 +1986,7 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
         monkeypatch.setattr(tt, "_task_env_overrides", {})
         monkeypatch.setattr(tt, "_get_env_config", lambda: {"env_type": "local", "cwd": "/tmp", "timeout": 60, "lifetime_seconds": 3600})
         monkeypatch.setattr(
-            process_registry, "_is_supervised_gateway_process",
+            process_registry, "_is_gateway_process_or_unknown",
             lambda: inside_gateway,
         )
 

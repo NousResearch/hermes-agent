@@ -1579,10 +1579,12 @@ def execute_code(
     # guard (#68289): without this, execute_code is a straight bypass — the
     # terminal() path refuses `launchctl bootout ai.hermes.gateway`, but the
     # identical command inside `os.system(...)` / `subprocess.run([...])`
-    # here sailed through and SIGTERM'd the gateway mid-task. Gated on
-    # PID-file ownership, not the inherited env marker (#92560).
-    from tools.process_registry import _is_supervised_gateway_process
-    if _is_supervised_gateway_process():
+    # here sailed through and SIGTERM'd the gateway mid-task. Gated on live
+    # PID-file ownership, not the inherited env marker (#92560) and not on
+    # external supervision (#98221) — a direct-spawn gateway with no
+    # supervisor is just as interruptible by its own lifecycle command.
+    from tools.process_registry import _is_gateway_process_or_unknown
+    if _is_gateway_process_or_unknown():
         from cron.lifecycle_guard import contains_gateway_lifecycle_command
         if contains_gateway_lifecycle_command(code):
             return tool_error(

@@ -101,6 +101,19 @@ class TestSkillManageBatch(unittest.TestCase):
         self.assertFalse(r["success"])
         self.assertIn("capped", r["error"])
 
+    def test_nested_delete_forwards_absorbed_into(self):
+        """A schema-shaped delete must preserve its consolidation target."""
+        self._call("umbrella", [{"action": "create", "content": SK.format(n="umbrella")}])
+        self._call("narrow", [{"action": "create", "content": SK.format(n="narrow")}])
+
+        r = self._call("narrow", [{
+            "action": "delete",
+            "absorbed_into": "umbrella",
+        }])
+
+        self.assertTrue(r["success"], r)
+        self.assertFalse(os.path.exists(os.path.join(self.home, "skills", "narrow")))
+
     def test_intra_batch_conflict_guard(self):
         """Same-file double writes and post-edit full rewrites are always
         a confused plan under last-wins sequencing — rejected BEFORE any

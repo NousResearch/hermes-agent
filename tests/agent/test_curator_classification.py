@@ -61,6 +61,30 @@ def test_classify_consolidated_via_write_file_evidence(curator_env):
     assert result["pruned"] == []
 
 
+def test_classify_consolidated_via_nested_write_file_evidence(curator_env):
+    """The advertised operations[] shape is audited per operation."""
+    result = curator_env._classify_removed_skills(
+        removed=["axolotl-training"],
+        added=[],
+        after_names={"training-platforms"},
+        tool_calls=[
+            {
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "operations": [{
+                        "action": "write_file",
+                        "name": "training-platforms",
+                        "file_path": "references/axolotl-training.md",
+                        "file_content": "# Axolotl\n...",
+                    }],
+                }),
+            },
+        ],
+    )
+    assert result["consolidated"][0]["into"] == "training-platforms"
+    assert result["pruned"] == []
+
+
 
 
 
@@ -297,8 +321,70 @@ def test_extract_absorbed_into_picks_up_consolidation(curator_env):
     }
 
 
+def test_extract_absorbed_into_from_nested_operation(curator_env):
+    """The delete declaration is nested in the schema's operations[] item."""
+    declarations = curator_env._extract_absorbed_into_declarations([
+        {
+            "name": "skill_manage",
+            "arguments": json.dumps({
+                "operations": [{
+                    "action": "delete",
+                    "name": "narrow-skill",
+                    "absorbed_into": "umbrella",
+                }],
+            }),
+        },
+    ])
+    assert declarations == {
+        "narrow-skill": {"into": "umbrella", "declared": True},
+    }
 
 
+
+
+
+
+def test_nested_delete_is_consolidated_in_run_report(curator_env):
+    """Nested delete intent survives the full report classification path."""
+    curator = curator_env
+    run_dir = curator._write_run_report(
+        started_at=datetime.now(timezone.utc),
+        elapsed_seconds=1.0,
+        auto_counts={"checked": 2, "marked_stale": 0, "archived": 0, "reactivated": 0},
+        auto_summary="none",
+        before_report=[
+            {"name": "narrow-skill", "state": "active", "pinned": False},
+            {"name": "umbrella", "state": "active", "pinned": False},
+        ],
+        before_names={"narrow-skill", "umbrella"},
+        after_report=[{"name": "umbrella", "state": "active", "pinned": False}],
+        llm_meta={
+            "final": "",
+            "summary": "consolidated one skill",
+            "model": "m",
+            "provider": "p",
+            "error": None,
+            "tool_calls": [{
+                "name": "skill_manage",
+                "arguments": json.dumps({
+                    "operations": [{
+                        "action": "delete",
+                        "name": "narrow-skill",
+                        "absorbed_into": "umbrella",
+                    }],
+                }),
+            }],
+        },
+    )
+
+    payload = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert payload["consolidated"] == [{
+        "name": "narrow-skill",
+        "into": "umbrella",
+        "source": "absorbed_into (model-declared at delete)",
+        "reason": "",
+    }]
+    assert payload["pruned"] == []
 
 
 def test_extract_absorbed_into_ignores_non_delete_actions(curator_env):
@@ -514,8 +600,6 @@ def test_rename_summary_mixed_consolidation_and_pruning(curator_env):
 # just landed against their library). The hint is gated on having at least
 # one umbrella destination — pruned-only runs skip it.
 # ---------------------------------------------------------------------------
-
-
 
 
 

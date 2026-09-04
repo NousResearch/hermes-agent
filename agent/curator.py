@@ -639,6 +639,50 @@ def _needle_in_path_component(needle: str, path: str) -> bool:
     return False
 
 
+def _iter_skill_manage_operations(
+    tool_calls: List[Dict[str, Any]],
+):
+    """Yield flat operation dicts from legacy and ``operations[]`` calls.
+
+    ``skill_manage`` now advertises the batch shape, while older curator
+    transcripts still contain the legacy top-level action/name fields. Keep
+    the reporting code independent of that wire-format difference so every
+    downstream audit sees the same per-operation records.
+    """
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict) or tc.get("name") != "skill_manage":
+            continue
+        raw = tc.get("arguments") or ""
+        args: Dict[str, Any] = {}
+        if isinstance(raw, dict):
+            args = raw
+        elif isinstance(raw, str):
+            try:
+                args = json.loads(raw)
+            except Exception:
+                # Preserve the existing best-effort heuristic for truncated
+                # arguments; authoritative delete declarations require valid
+                # JSON and are deliberately not inferred from raw text.
+                yield {"_raw": raw}
+                continue
+        if not isinstance(args, dict):
+            continue
+
+        operations = args.get("operations")
+        if isinstance(operations, list):
+            for operation in operations:
+                if not isinstance(operation, dict):
+                    continue
+                normalized = dict(operation)
+                # The handler supports a legacy top-level name fallback even
+                # though the public schema requires each operation to name it.
+                if "name" not in normalized and isinstance(args.get("name"), str):
+                    normalized["name"] = args["name"]
+                yield normalized
+        else:
+            yield args
+
+
 def _classify_removed_skills(
     removed: List[str],
     added: List[str],
@@ -666,28 +710,9 @@ def _classify_removed_skills(
     consolidated: List[Dict[str, Any]] = []
     pruned: List[Dict[str, Any]] = []
 
-    # Pre-parse tool calls: we only care about skill_manage.
-    parsed_calls: List[Dict[str, Any]] = []
-    for tc in tool_calls or []:
-        if not isinstance(tc, dict):
-            continue
-        if tc.get("name") != "skill_manage":
-            continue
-        raw = tc.get("arguments") or ""
-        # Arguments can be a JSON string (standard) or a dict (defensive).
-        args: Dict[str, Any] = {}
-        if isinstance(raw, dict):
-            args = raw
-        elif isinstance(raw, str):
-            try:
-                args = json.loads(raw)
-            except Exception:
-                # Truncated or malformed — fall back to substring match on
-                # the raw string so we still catch the common case.
-                args = {"_raw": raw}
-        if not isinstance(args, dict):
-            continue
-        parsed_calls.append(args)
+    # Pre-parse tool calls: flatten the public operations[] shape while
+    # retaining legacy top-level calls and the malformed-JSON fallback.
+    parsed_calls = list(_iter_skill_manage_operations(tool_calls))
 
     # Build a set of "destination" skill names: anything still present after
     # the run plus anything newly added this run. A removed skill being
@@ -862,22 +887,7 @@ def _extract_absorbed_into_declarations(
     curator runs and any callers that don't populate the arg).
     """
     out: Dict[str, Dict[str, Any]] = {}
-    for tc in tool_calls or []:
-        if not isinstance(tc, dict):
-            continue
-        if tc.get("name") != "skill_manage":
-            continue
-        raw = tc.get("arguments") or ""
-        args: Dict[str, Any] = {}
-        if isinstance(raw, dict):
-            args = raw
-        elif isinstance(raw, str):
-            try:
-                args = json.loads(raw)
-            except Exception:
-                continue
-        if not isinstance(args, dict):
-            continue
+    for args in _iter_skill_manage_operations(tool_calls):
         if args.get("action") != "delete":
             continue
         name = args.get("name")

@@ -266,6 +266,7 @@ def test_sdk_object_hit_moves_the_key_to_the_recent_end():
 def test_get_or_create_stores_observation_flags_with_the_entry_and_eviction_drops_them():
     mgr = _manager()
     mgr._config.ai_peer = "hermes"
+    mgr._config.peer_name = "operator"  # unnamed peers now fail closed instead of minting a fallback
     flags = {"user_observe_me": True, "user_observe_others": True, "ai_observe_me": True, "ai_observe_others": False}
     mgr._get_or_create_peer = lambda peer_id: object()
     mgr._get_or_create_honcho_session = lambda sid, user, assistant: (object(), [], dict(flags))

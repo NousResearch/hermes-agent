@@ -46,6 +46,26 @@ def test_effective_map_merges_legacy_and_directory():
         assert release.AUTHOR_MAP[email] == login
 
 
+def test_contributor_mapping_paths_are_casefold_unique():
+    proc = subprocess.run(
+        ["git", "ls-files", "contributors/emails"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    by_casefold: dict[str, list[str]] = {}
+    for path in proc.stdout.splitlines():
+        by_casefold.setdefault(path.casefold(), []).append(path)
+    collisions = [sorted(paths) for paths in by_casefold.values() if len(paths) > 1]
+    assert collisions == [], f"case-colliding contributor mappings: {collisions}"
+
+
+def test_case_distinct_agent_identities_keep_exact_attribution():
+    assert release.AUTHOR_MAP["agent@Agents-Mac-mini.local"] == "skip-agent"
+    assert release.AUTHOR_MAP["agent@agents-Mac-mini.local"] == "momomojo"
+
+
 
 
 # ── add_contributor.py CLI behavior ───────────────────────────────────

@@ -7389,17 +7389,38 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
         return True
 
     def _heartbeat_loop() -> None:
-        last_confirmed = time.monotonic()
+        backend_error_since = None
         while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
             try:
                 # Tri-state (c-027): only an explicit False is an
                 # authoritative ownership loss. None means the fire fence
-                # was busy (e.g. our own delivery holds it) — ownership was
-                # not inspected, so the renewal is merely unconfirmed and
-                # falls under the grace window like any other exception.
+                # was busy (e.g. our own delivery holds it). Every takeover
+                # also needs that fence, so contention itself excludes a
+                # replacement owner and must not consume store-error grace.
                 renewed = heartbeat_fire_claim(job_id, expected_owner=owner)
             except Exception:
-                renewed = None
+                # Genuine store/I/O uncertainty is different from a returned
+                # None (known fence contention). Bound consecutive backend
+                # failures by their own grace clock; a prior owned side effect
+                # must not pre-spend that budget.
+                now = time.monotonic()
+                if backend_error_since is None:
+                    backend_error_since = now
+                logger.debug(
+                    "Job '%s': fire_claim heartbeat failed",
+                    job_id,
+                    exc_info=True,
+                )
+                if now - backend_error_since >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS:
+                    lost_ownership.set()
+                    logger.warning(
+                        "Job '%s': fire_claim could not be renewed within %.1fs; "
+                        "interrupting uncertain run",
+                        job_id,
+                        _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS,
+                    )
+                    return
+                continue
             if renewed is False:
                 lost_ownership.set()
                 logger.warning(
@@ -7408,22 +7429,16 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
                 )
                 return
             if renewed is True:
-                last_confirmed = time.monotonic()
+                backend_error_since = None
                 continue
+            # A returned None specifically means an acquired lock could not be
+            # obtained because another holder owns the fence. That holder also
+            # excludes takeover, so it resets (rather than spends) I/O grace.
+            backend_error_since = None
             logger.debug(
-                "Job '%s': fire_claim heartbeat unconfirmed (fence contended "
-                "or store error)",
+                "Job '%s': fire_claim heartbeat skipped; fire fence busy",
                 job_id,
             )
-            if time.monotonic() - last_confirmed >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS:
-                lost_ownership.set()
-                logger.warning(
-                    "Job '%s': fire_claim could not be renewed within %.1fs; "
-                    "interrupting uncertain run",
-                    job_id,
-                    _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS,
-                )
-                return
 
     heartbeat_thread = threading.Thread(
         target=heartbeat_context.run,

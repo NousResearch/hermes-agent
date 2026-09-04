@@ -830,8 +830,8 @@ def test_post_delivery_ownership_probe_treats_none_as_not_lost(tmp_path, monkeyp
     ) == ("completed", None, "ok")
 
 
-def test_interrupted_path_none_probe_does_not_claim_confirmed_loss(monkeypatch):
-    """Grace-exhausted stop + contended probe must not claim a confirmed loss (c-027)."""
+def test_sustained_fence_contention_does_not_consume_store_error_grace(monkeypatch):
+    """Known fence contention cannot manufacture cancellation by duration."""
     import cron.scheduler as scheduler
 
     calls = []
@@ -840,41 +840,24 @@ def test_interrupted_path_none_probe_does_not_claim_confirmed_loss(monkeypatch):
         calls.append(1)
         return True if len(calls) == 1 else None
 
-    def _run_job(job, *, defer_agent_teardown=None, extra_prompt=None,
-                 cancel_event=None, execution_id=None):
-        # Sustained None heartbeats exhaust the grace window -> lost_ownership
-        # set as "uncertain, stop". Never an explicit False.
-        assert cancel_event is not None
-        assert cancel_event.wait(timeout=1.0)
-        return True, "output", "response", None
+    def run_body(_job, **kwargs):
+        # Stay contended well beyond the shortened grace window. Because every
+        # takeover also needs this fence, returned None is safe to defer until
+        # the side effect releases it; only exceptions consume error grace.
+        assert not kwargs["fire_claim_lost"].wait(timeout=0.12)
+        return True
 
-    finish = MagicMock()
-    mark = MagicMock(return_value=True)
     job = {
         "id": "grace-none",
-        "execution_id": "grace-none-exec",
         "fire_claim": {"at": "2026-07-12T12:00:00+00:00", "by": "owner"},
     }
     monkeypatch.setattr(scheduler, "heartbeat_fire_claim", heartbeat)
-    monkeypatch.setattr(scheduler, "run_job", _run_job)
+    monkeypatch.setattr(scheduler, "_run_one_job_body", run_body)
     monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.01)
     monkeypatch.setattr(scheduler, "_FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS", 0.03)
-    monkeypatch.setattr(scheduler, "claim_dispatch", lambda *_a: True)
-    monkeypatch.setattr(scheduler, "mark_execution_running", lambda *_a: {})
-    monkeypatch.setattr(scheduler, "mark_job_run", mark)
-    monkeypatch.setattr(scheduler, "finish_execution", finish)
 
-    with patch("agent.secret_scope.set_secret_scope", return_value=None), \
-         patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
-         patch("agent.secret_scope.reset_secret_scope"):
-        assert scheduler.run_one_job(job) is True
-
-    errors = [call.kwargs.get("error") for call in finish.call_args_list]
-    assert errors, "execution ledger never closed"
-    for err in errors:
-        assert "ownership lost" not in err.lower(), (
-            f"None probe adjudicated as confirmed ownership loss: {err!r}"
-        )
+    assert scheduler.run_one_job(job) is True
+    assert len(calls) >= 4
 
 
 def test_terminal_write_none_does_not_mark_ownership_lost(monkeypatch):
@@ -912,10 +895,14 @@ def test_terminal_write_none_does_not_mark_ownership_lost(monkeypatch):
          patch("agent.secret_scope.reset_secret_scope"):
         assert scheduler.run_one_job(job) is True
 
-    for call in finish.call_args_list:
-        assert call.kwargs.get("error") != (
-            "Fire claim ownership lost before terminal completion."
-        ), "unconfirmed terminal write adjudicated as ownership loss"
+    finish.assert_called_once_with(
+        "terminal-none-exec",
+        success=False,
+        error=(
+            "Fire claim fence unavailable before terminal completion; "
+            "outcome uncertain."
+        ),
+    )
 
 
 def test_recovery_execution_fails_closed_while_original_delivery_settles(

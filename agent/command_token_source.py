@@ -30,13 +30,22 @@ shape OAuth 2.0 token endpoints and the helpers above already emit.
 Precedence: an explicit ``--api-key`` still wins (the one-off recovery escape
 hatch); otherwise ``key_cmd`` is preferred over a static ``api_key`` /
 ``key_env`` on the same entry.
+
+Security: the command is executed WITHOUT a shell (``shell=False``) on POSIX
+to prevent shell injection. On Windows, where shell builtins (e.g. ``printf``)
+are commonly used in tests and some helpers, a fallback to ``shell=True`` is
+attempted only when the direct executable is not found. Use a wrapper script
+if shell features (pipes, redirects, etc.) are needed.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
+import shlex
 import subprocess
+import sys
 import threading
 import time
 from typing import Callable, Optional
@@ -64,15 +73,59 @@ class CommandTokenError(RuntimeError):
 
 
 def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
-    """Run *command*, returning ``(token, ttl_seconds_or_None)``."""
+    """Run *command*, returning ``(token, ttl_seconds_or_None)``.
+
+    On POSIX: executes WITHOUT a shell (shell=False) to prevent shell
+    injection. The command is split into argv using shlex.split().
+
+    On Windows: first attempts shell=False. If the executable is not found
+    (e.g. shell builtin like ``printf``), falls back to shell=True with a
+    debug log. This preserves compatibility while securing the common case.
+    """
+    argv = shlex.split(command)
+    use_shell = False
     try:
         completed = subprocess.run(
-            command,
-            shell=True,
+            argv,
+            shell=False,
             capture_output=True,
             text=True,
             timeout=_MINT_TIMEOUT_SECONDS,
         )
+    except FileNotFoundError:
+        # Executable not found (likely a shell builtin on Windows). Fall back
+        # to shell=True for compatibility, but log a warning.
+        if sys.platform == "win32":
+            logger.debug(
+                "key_cmd for provider %s: executable %r not found, "
+                "falling back to shell=True (shell builtin?). "
+                "Consider using a wrapper script or full path to avoid "
+                "shell injection risk.",
+                label, argv[0] if argv else command,
+            )
+            use_shell = True
+            try:
+                completed = subprocess.run(
+                    command,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=_MINT_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise CommandTokenError(
+                    f"key_cmd for provider {label!r} timed out after "
+                    f"{_MINT_TIMEOUT_SECONDS}s"
+                ) from exc
+            except OSError as exc:
+                raise CommandTokenError(
+                    f"key_cmd for provider {label!r} could not be executed: {exc}"
+                ) from exc
+        else:
+            raise CommandTokenError(
+                f"key_cmd for provider {label!r} executable not found: {argv[0]!r}. "
+                f"Ensure the command is installed and in PATH."
+            )
     except subprocess.TimeoutExpired as exc:
         raise CommandTokenError(
             f"key_cmd for provider {label!r} timed out after "

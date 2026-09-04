@@ -13,6 +13,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
 beforeEach(() => {
   vi.resetModules()
   runTimersInline()
+
   for (const key of Object.keys(host)) {
     delete host[key]
   }
@@ -21,8 +22,15 @@ beforeEach(() => {
 it.each(['stable-room-id', undefined])('keeps an in-flight reply on one room with identity %s', async roomId => {
   let release: (value: string) => void = () => undefined
   let entered: () => void = () => undefined
-  const started = new Promise<void>(resolve => { entered = resolve })
-  const reply = new Promise<string>(resolve => { release = resolve })
+
+  const started = new Promise<void>(resolve => {
+    entered = resolve
+  })
+
+  const reply = new Promise<string>(resolve => {
+    release = resolve
+  })
+
   const gateway = createGroupGateway({
     turn: ({ n }) => {
       if (n === 1) {
@@ -34,6 +42,7 @@ it.each(['stable-room-id', undefined])('keeps an in-flight reply on one room wit
       return '(pass)'
     }
   })
+
   Object.assign(host, gateway.host)
   const chat = await import('./group-chat')
   const rounds = await import('./group-rounds')
@@ -50,19 +59,31 @@ it.each(['stable-room-id', undefined])('keeps an in-flight reply on one room wit
   const drive = rounds.runGroupChatRounds('Old', [{ name: 'research', title: 'Research' }], 'thread-1')
   await started
   let renamed: null | string = null
+
   try {
     renamed = await view.renameGroupChat('Old', 'New', [])
   } finally {
     release('Completed reply')
     await drive
   }
+
   const current = chat.$groupChats.get()
-  console.info('RENAME_RECEIPT', { roomId, renamed, names: Object.keys(current), replies: Object.fromEntries(
-    Object.entries(current).map(([name, room]) => [name, room.log.filter(entry => entry.from.kind === 'member').map(entry => entry.text)])
-  ) })
+  console.info('RENAME_RECEIPT', {
+    roomId,
+    renamed,
+    names: Object.keys(current),
+    replies: Object.fromEntries(
+      Object.entries(current).map(([name, room]) => [
+        name,
+        room.log.filter(entry => entry.from.kind === 'member').map(entry => entry.text)
+      ])
+    )
+  })
   expect(renamed).toBeNull()
   expect(Object.keys(current)).toEqual(['Old'])
-  expect(current.Old.log.filter(entry => entry.from.kind === 'member').map(entry => entry.text)).toEqual(['Completed reply'])
+  expect(current.Old.log.filter(entry => entry.from.kind === 'member').map(entry => entry.text)).toEqual([
+    'Completed reply'
+  ])
   expect(current.Old.running).toBe(false)
   expect(await view.renameGroupChat('Old', 'New', [])).toBe('New')
   expect(Object.keys(chat.$groupChats.get())).toEqual(['New'])

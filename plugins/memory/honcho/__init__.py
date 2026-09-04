@@ -601,9 +601,13 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
         return chunks
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(
+        self, user_content: str, assistant_content: str, *, session_id: str = "",
+        turn_author: Optional[Dict[str, Any]] = None, scope: Optional[str] = None,
+    ) -> None:
         """Record the conversation turn in Honcho (non-blocking), chunking messages that
-        exceed the Honcho API limit. Honors saveMessages: false."""
+        exceed the Honcho API limit. Honors saveMessages: false. ``turn_author`` names who wrote
+        the user side; the ``on_turn_start`` stash is the fallback for callers that never pass it."""
         if not self._writes_enabled():
             return
         if _is_internal_gateway_turn(user_content):
@@ -620,9 +624,9 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         if not clean_user_content and not clean_assistant_content:
             return
 
+        author = turn_author if isinstance(turn_author, dict) else self._turn_author
         # Resolved before the thread starts so a following turn cannot retag a queued write.
-        author_peer_id = self._manager.resolve_author_peer_id(
-            self._session_key, self._turn_author.get("id"), self._turn_author.get("name"))
+        author_peer_id = self._manager.resolve_author_peer_id(self._session_key, author.get("id"), author.get("name"))
 
         def _sync():
             session = self._manager.get_or_create(self._session_key)

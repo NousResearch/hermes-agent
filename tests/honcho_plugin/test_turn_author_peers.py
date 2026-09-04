@@ -28,11 +28,12 @@ def _config(**overrides) -> HonchoClientConfig:
     return HonchoClientConfig(**base)
 
 
-def _manager(config: HonchoClientConfig, runtime_id: str | None = None) -> HonchoSessionManager:
+def _manager(config: HonchoClientConfig, runtime_id: str | None = None, runtime_id_alt: str | None = None) -> HonchoSessionManager:
     mgr = HonchoSessionManager(
         honcho=MagicMock(),
         config=config,
         runtime_user_peer_name=runtime_id,
+        runtime_user_peer_name_alt=runtime_id_alt,
     )
     mgr._get_or_create_peer = MagicMock(side_effect=lambda pid: MagicMock(name=f"peer:{pid}"))
     mgr._get_or_create_honcho_session = MagicMock(return_value=(MagicMock(), []))
@@ -50,6 +51,11 @@ class TestResolveAuthorPeerId:
         """The session's own participant needs no second peer."""
         mgr = _manager(_config(), runtime_id="7654321")
         assert mgr.resolve_author_peer_id("telegram:group1", "7654321") is None
+
+    def test_alt_runtime_id_is_the_session_peer(self):
+        """A transport may name the participant by either id (Telegram UID or username)."""
+        mgr = _manager(_config(), runtime_id="7654321", runtime_id_alt="eri_tg")
+        assert mgr.resolve_author_peer_id("telegram:group1", "eri_tg") is None
 
     def test_other_participant_gets_its_own_peer(self):
         mgr = _manager(_config(), runtime_id="7654321")
@@ -214,6 +220,33 @@ class TestProviderReadsTheAuthor:
         ]
         assert user_calls, "the user turn was never written"
         assert all(c[1]["author_peer_id"] == "alice" for c in user_calls)
+
+    def test_sync_turn_prefers_the_turn_author_keyword(self):
+        """The manager passes the author with the turn; the stash is only a fallback."""
+        provider = self._provider()
+        provider._session_initialized = True
+        provider._manager.get_or_create.return_value = MagicMock()
+        provider._manager.resolve_author_peer_id.return_value = "alice"
+
+        provider.on_turn_start(1, "hi", author_id="999")
+        provider.sync_turn("hi", "hello back", turn_author={"id": "111222", "name": "Alice", "is_bot": False})
+        if provider._sync_thread:
+            provider._sync_thread.join(timeout=5)
+
+        provider._manager.resolve_author_peer_id.assert_called_once_with("telegram:group1", "111222", "Alice")
+
+    def test_sync_turn_falls_back_to_the_stash(self):
+        provider = self._provider()
+        provider._session_initialized = True
+        provider._manager.get_or_create.return_value = MagicMock()
+        provider._manager.resolve_author_peer_id.return_value = None
+
+        provider.on_turn_start(1, "hi", author_id="999", author_name="Nine")
+        provider.sync_turn("hi", "hello back")
+        if provider._sync_thread:
+            provider._sync_thread.join(timeout=5)
+
+        provider._manager.resolve_author_peer_id.assert_called_once_with("telegram:group1", "999", "Nine")
 
     def test_sync_turn_resolves_before_the_write_thread_starts(self):
         """A following turn must not retag a write that is already queued."""

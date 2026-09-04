@@ -49,14 +49,7 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
 
 
 def _room_dispatch_error(exc: Exception, *, _openai_error) -> "web.Response":
-    message, code = str(exc), "invalid_room_dispatch"
-    lowered = message.lower()
-    if "execution policy" in lowered or "remote room execution requires" in lowered:
-        message = "Room execution policy changed; reauthorization is required."
-        code = "room_execution_policy_changed"
-    elif "capability catalog changed" in lowered:
-        message = "Room capability catalog changed; reauthorization is required."
-        code = "room_capability_catalog_changed"
+    message, code = _public_dispatch_error(exc)
     return _json_error(_openai_error, message, code=code, status=403)
 
 
@@ -94,11 +87,30 @@ async def _normalize_room_dispatch(
         if request.headers.get("Idempotency-Key", "").strip() != expected_key:
             raise ValueError("room dispatch idempotency key is invalid")
         session_id = await self._ensure_hosted_member_session(dispatch)
-        return {
+        normalized = {
             "input": dispatch.prompt,
             "session_id": session_id,
             "hosted_room_dispatch": dispatch.as_mapping(),
             "_room_execution_policy": policy.as_mapping(),
-        }, None
+        }
+        from gateway.platforms.api_server_room_attachments import _validate_dispatch_attachments
+        return await _validate_dispatch_attachments(normalized, _openai_error=_openai_error)
     except Exception as exc:
         return body, _room_dispatch_error(exc, _openai_error=_openai_error)
+
+
+def _public_dispatch_error(exc: Exception) -> tuple[str, str]:
+    """Map untrusted dispatch failures to a bounded public contract."""
+
+    lowered = str(exc).lower()
+    if "execution policy" in lowered or "remote room execution requires" in lowered:
+        return (
+            "Room execution policy changed; reauthorization is required.",
+            "room_execution_policy_changed",
+        )
+    if "capability catalog changed" in lowered:
+        return (
+            "Room capability catalog changed; reauthorization is required.",
+            "room_capability_catalog_changed",
+        )
+    return "Room dispatch was rejected.", "invalid_room_dispatch"

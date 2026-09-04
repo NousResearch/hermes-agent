@@ -114,8 +114,9 @@ _THREAD_BINDINGS_MAX = 500
 
 
 def _bindings_path() -> Path:
-    # Machine root (profile-independent), beside state.db.
-    return hosted_rooms.default_db_path().parent / "group_relay" / _THREAD_BINDINGS_FILE
+    from tools.group_relay import gateway_root, relay_root
+
+    return relay_root(gateway_root()) / _THREAD_BINDINGS_FILE
 
 
 def _read_bindings(path: Path) -> dict[str, dict[str, Any]]:
@@ -470,6 +471,13 @@ class HostedTransport:
 
 register_transport(HostedTransport())
 
+# Optional transports register themselves on import. Each is self-contained;
+# removing its module (and this import) removes the transport.
+try:
+    from . import group_desktop as _group_desktop  # noqa: F401
+except ImportError:  # pragma: no cover — transport module absent
+    pass
+
 
 # ── commands ─────────────────────────────────────────────────────────────────
 
@@ -651,6 +659,10 @@ def build_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(["group", *argv])
 
 
+def _kinds() -> list[str]:
+    return [transport.kind for transport in _TRANSPORTS]
+
+
 def build_group_parser(subparsers) -> None:
     """Attach the ``group`` subcommand to ``subparsers``."""
     parser = subparsers.add_parser(
@@ -669,8 +681,12 @@ def build_group_parser(subparsers) -> None:
             "($HERMES_SESSION_ID, or --session) continue it; a different session "
             "gets its own thread. --new-thread starts over; --thread <id|label> "
             "overrides for that send only (it does not change the session's "
-            "thread). Without any session id the shared 'cli' thread is used. "
-            "A room keeps only the LATEST pending user message per thread.\n"
+            "thread). Without any session id the shared 'cli' thread is used "
+            "(hosted) or a fresh thread is minted per send (desktop). Desktop "
+            "rooms mint the thread on delivery, so continuity there requires "
+            "--wait on the first send; a fire-and-forget first send is followed "
+            "by a new thread. A hosted room keeps only the LATEST pending user "
+            "message per thread.\n"
             "\n"
             "Exit codes: 0 settled/bounded, 1 error, 2 usage, 3 timeout "
             "(partial replies already printed), 4 superseded by a room stop. A "
@@ -730,10 +746,12 @@ def build_group_parser(subparsers) -> None:
     send.add_argument("--timeout", type=float, default=DEFAULT_WAIT_TIMEOUT_SECONDS, metavar="SECONDS")
     send.add_argument("--poll", type=float, default=1.0, help=argparse.SUPPRESS)
     send.add_argument("--json", action="store_true", default=False)
+    send.add_argument("--kind", choices=_kinds(), default=None, help="Disambiguate same-named groups")
 
     log = actions.add_parser("log", help="Print the group's committed transcript")
     log.add_argument("group", help="Group name or room_id")
     log.add_argument("--since", type=int, default=0, metavar="SEQ")
     log.add_argument("--json", action="store_true", default=False)
+    log.add_argument("--kind", choices=_kinds(), default=None, help="Disambiguate same-named groups")
 
     parser.set_defaults(func=cmd_group)

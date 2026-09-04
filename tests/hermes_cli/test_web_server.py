@@ -5110,6 +5110,25 @@ class TestHeadlessServeTokenPage:
         assert _json.loads(match.group(1)) == ws._SESSION_TOKEN
         assert "window.__HERMES_AUTH_REQUIRED__=false" in resp.text
 
+    def test_root_uses_ssh_token_applied_after_spa_mount(self, monkeypatch):
+        import json
+        import re
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "_SESSION_TOKEN", "before-mount")
+        client, ws = self._headless_client(monkeypatch, gated=False)
+
+        ws._apply_ssh_session_token("after-mount")
+        resp = client.get("/")
+        match = re.search(
+            r'window\.__HERMES_SESSION_TOKEN__\s*=\s*("(?:\\.|[^"\\])*")',
+            resp.text,
+        )
+
+        assert match, resp.text
+        assert json.loads(match.group(1)) == "after-mount"
+
     def test_root_stays_404_json_when_auth_gated(self, monkeypatch):
         client, ws = self._headless_client(monkeypatch, gated=True)
         resp = client.get("/")

@@ -8547,6 +8547,17 @@ def _get_cached_client(
         is_vision=is_vision,
         task=task,
     )
+    if isinstance(client, _AuxProbeClientStub):
+        # Probe stubs must never enter the cache. _store_cached_client has the
+        # same guard, but this function writes to _client_cache directly and so
+        # bypassed it: an availability probe (check_vision_requirements ->
+        # resolve_vision_provider_client inside aux_probe_mode) populated the
+        # entry, and the next RUNTIME caller got the stub back on a cache hit
+        # and blew up with "_AuxProbeClientStub used as a real client
+        # (attribute 'chat')". Return the stub to the probe (that is its
+        # contract) but leave the cache untouched, so the following real call
+        # misses and builds a working client.
+        return client, model or default_model
     if client is not None:
         # For async clients, remember which loop they were created on so we
         # can detect stale entries later.

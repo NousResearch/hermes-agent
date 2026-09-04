@@ -1038,6 +1038,19 @@ class GatewayNotificationsMixin:
         if evt_type == "async_delegation":
             claim.delegation_id = str(evt.get("delegation_id") or "")
             if claim.delegation_id:
+                # Pre-flight route check: only claim if this gateway has a route
+                # capable of accepting the event. If no route exists (e.g. raw CLI
+                # session with no api_server adapter), leave the row pending for
+                # a CLI/TUI/api_server consumer. See issue #82703.
+                source = await asyncio.to_thread(self._build_process_event_source, evt)
+                if not source:
+                    logger.debug(
+                        "Completion %s has no gateway route in this process; "
+                        "leaving pending for a capable consumer.",
+                        claim.delegation_id,
+                    )
+                    claim.proceed = False
+                    return claim
                 try:
                     from tools.async_delegation import claim_completion_delivery
                     claim.claim_id = f"gateway:{id(self)}:{__import__('uuid').uuid4().hex}"
@@ -1050,6 +1063,21 @@ class GatewayNotificationsMixin:
                     return claim
         elif evt_type != "completion":
             return claim
+
+        # Pre-flight route check for completion events: only proceed if this
+        # gateway has a route capable of accepting the completion. If no route
+        # exists (e.g. raw CLI session with no api_server adapter), leave the
+        # row pending for a CLI/TUI/api_server consumer. See issue #82703.
+        source = await asyncio.to_thread(self._build_process_event_source, evt)
+        if not source:
+            logger.debug(
+                "Completion %s has no gateway route in this process; "
+                "leaving pending for a capable consumer.",
+                evt.get("session_id") or evt.get("delegation_id") or "?",
+            )
+            claim.proceed = False
+            return claim
+
         # Background completions carry only session_key, so after /new the OLD session's notification
         # would land in the NEW one. Stamped events get the async-delegation pre-flight; unstamped deliver.
         parent_session_id = str(evt.get("parent_session_id") or "").strip()

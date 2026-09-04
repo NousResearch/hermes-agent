@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 from agent.turn_api_call import stop_thinking_spinner
 from agent.turn_truncation import handle_content_policy_refusal, recover_from_truncation
 from agent.turn_usage import record_response_usage
+from utils import env_var_enabled
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -251,6 +252,19 @@ def retry_invalid_response(
         status_code=getattr(getattr(response, "error", None), "code", None),
         retry_count=retry_count, max_retries=max_retries, retryable=True, reason="invalid_response",
     )
+    # Capture the provider's response on the invalid-response path so
+    # paired request+response dumps are available when requested.
+    if env_var_enabled("HERMES_DUMP_REQUESTS"):
+        agent._dump_api_response_debug(
+            response=response,
+            # No genuine HTTP status on a validation-failure path;
+            # record None rather than stuffing the SDK error *code*
+            # (a string) into an Optional[int] field.
+            status=getattr(response, "status_code", None),
+            headers=getattr(response, "headers", None),
+            reason="invalid_response",
+            error=Exception(", ".join(error_details)) if error_details else None,
+        )
     # Retry status is buffered and only surfaced if every retry+fallback exhausts.
     thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)
     retry_count += 1

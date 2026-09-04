@@ -27,7 +27,7 @@ from agent.message_sanitization import (
 )
 from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_thinking_timeout
 from agent.turn_retry_state import TurnRetryState
-from utils import base_url_host_matches
+from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -658,6 +658,14 @@ def nonretryable_client_error_result(
 
     if api_kwargs is not None:
         agent._dump_api_request_debug(api_kwargs, reason="non_retryable_client_error", error=api_error)
+    # Mirror the request dump with a response-side capture so the
+    # provider's actual failure body/status is on disk for triage.
+    if env_var_enabled("HERMES_DUMP_REQUESTS"):
+        agent._dump_api_response_debug(
+            reason="non_retryable_client_error",
+            error=api_error,
+            status=getattr(api_error, "status_code", None),
+        )
     # Terminal — flush buffered context so the user sees what was tried before the abort.
     agent._flush_status_buffer()
     # Summarize once: Cloudflare/proxy HTML pages and raw provider bodies must be
@@ -815,6 +823,12 @@ def max_retries_exhausted_result(
     )
     if api_kwargs is not None:
         agent._dump_api_request_debug(api_kwargs, reason="max_retries_exhausted", error=api_error)
+    if env_var_enabled("HERMES_DUMP_REQUESTS"):
+        agent._dump_api_response_debug(
+            reason="max_retries_exhausted",
+            error=api_error,
+            status=getattr(api_error, "status_code", None),
+        )
     agent._persist_session(messages, conversation_history)
     _billing_block = None
     _billing_unverified = False

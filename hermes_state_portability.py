@@ -130,6 +130,102 @@ class SessionPortabilityMixin:
             runs.append(s)
         return runs
 
+    def prune_cron_job_runs(self, job_id: str, keep: int = 50) -> int:
+        """Delete a cron job's oldest run sessions, keeping the newest ``keep``.
+
+        Cron runs are flat per-tick sessions keyed ``cron_{job_id}_{timestamp}``
+        (see ``cron/scheduler.run_job``). A busy job appends one row per fire,
+        which grows ``state.db`` unbounded and floods the BOTS/SESSIONS view
+        with duplicates (#88268). The run-history contract (desktop cron
+        detail, ``list_cron_job_runs``) only needs the recent window, so the
+        scheduler prunes beyond it after each run. Returns the number of rows
+        deleted; never touches other jobs' runs or non-cron sessions.
+
+        Bounded by the same ``[prefix, prefix_hi)`` id-range scan as
+        ``list_cron_job_runs`` so the DELETE scales with the excess, not the
+        whole cron pile.
+        """
+        if keep < 0:
+            return 0
+        prefix = f"cron_{job_id}_"
+        prefix_hi = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+        # _execute_write owns self._lock (BEGIN IMMEDIATE + jitter retry);
+        # wrapping it here would double-acquire a non-reentrant lock.
+        #
+        # The bare range leaks runs across jobs when one job id is an
+        # underscore-extension of another (backup vs backup_weekly —
+        # #92133): constrain the remainder to this run's timestamp shape
+        # (%Y%m%d_%H%M%S), which free-form job ids cannot satisfy.
+        ts_glob = "[0-9]" * 8 + "_" + "[0-9]" * 6
+        keep_clause = ""
+        params: tuple = (prefix, prefix_hi, len(prefix), ts_glob)
+        if keep > 0:
+            keep_clause = (
+                "AND id NOT IN ("
+                "SELECT id FROM sessions "
+                "WHERE source = 'cron' AND id >= ? AND id < ? "
+                "AND substr(id, ? + 1) GLOB ? "
+                "ORDER BY started_at DESC, id DESC LIMIT ?)"
+            )
+            params = (
+                prefix,
+                prefix_hi,
+                len(prefix),
+                ts_glob,
+                prefix,
+                prefix_hi,
+                len(prefix),
+                ts_glob,
+                keep,
+            )
+        select_query = (
+            "SELECT id FROM sessions WHERE source = 'cron' "
+            "AND id >= ? AND id < ? AND substr(id, ? + 1) GLOB ? " + keep_clause
+        )
+
+        # Avoid acquiring SQLite's global WAL write lock on the common path
+        # where the job is still within its retention window. The write
+        # transaction repeats this query because another process may prune or
+        # append runs between this advisory read and BEGIN IMMEDIATE.
+        with self._lock:
+            has_victim = self._conn.execute(
+                f"{select_query} LIMIT 1", params
+            ).fetchone()
+        if has_victim is None:
+            return 0
+
+        def _do(conn):
+            # Local import: this mixin must not import hermes_state at module
+            # level (cycle); delete_session resolves the same helper lazily.
+            from hermes_state import _delete_delegate_children
+
+            victim_ids = [
+                row[0] for row in conn.execute(select_query, params).fetchall()
+            ]
+            if not victim_ids:
+                # A concurrent pruner may have removed the advisory read's
+                # victims before this transaction acquired the write lock.
+                return 0
+            for victim_id in victim_ids:
+                # Same cascade shape as delete_session: delegate children die
+                # with the parent, branches are orphaned, messages removed,
+                # then the row itself.
+                _delete_delegate_children(conn, [victim_id])
+                conn.execute(
+                    "UPDATE sessions SET parent_session_id = NULL "
+                    "WHERE parent_session_id = ?",
+                    (victim_id,),
+                )
+                conn.execute(
+                    "DELETE FROM messages WHERE session_id = ?", (victim_id,)
+                )
+                conn.execute("DELETE FROM sessions WHERE id = ?", (victim_id,))
+            if victim_ids:
+                self._delete_unreferenced_system_prompts(conn)
+            return len(victim_ids)
+
+        return self._execute_write(_do)
+
     def _get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[Dict[str, Any]]:
         """Fetch a single session with the same enriched columns as
         ``list_sessions_rich`` (preview + last_active). Returns None if the

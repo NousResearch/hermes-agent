@@ -1237,20 +1237,12 @@ class DiscordAdapter(BasePlatformAdapter):
                 await adapter_self._dispatch_discord_message(message)
 
             @self._client.event
-            async def on_message_edit(before: DiscordMessage, after: DiscordMessage):
-                await adapter_self._on_platform_message_edit(before, after)
+            async def on_raw_reaction_add(payload):
+                await adapter_self._on_platform_reaction(payload, action="add")
 
             @self._client.event
-            async def on_message_delete(message: DiscordMessage):
-                await adapter_self._on_platform_message_delete(message)
-
-            @self._client.event
-            async def on_thread_create(thread):
-                await adapter_self._on_platform_thread_create(thread)
-
-            @self._client.event
-            async def on_thread_update(before, after):
-                await adapter_self._on_platform_thread_update(before, after)
+            async def on_raw_reaction_remove(payload):
+                await adapter_self._on_platform_reaction(payload, action="remove")
 
             @self._client.event
             async def on_voice_state_update(member, before, after):
@@ -1571,6 +1563,91 @@ class DiscordAdapter(BasePlatformAdapter):
                 "new_name": new_name[:256],
             })
         await self._emit_platform_event("thread_renamed", _build)
+
+    async def _on_platform_reaction(self, payload, *, action: str) -> None:
+        """Normalize a reaction to this bot's own message without content."""
+        if not self._platform_events_subscribed() or action not in {"add", "remove"}:
+            return
+        try:
+            actor_id = getattr(payload, "user_id", None)
+            channel_id = getattr(payload, "channel_id", None)
+            message_id = getattr(payload, "message_id", None)
+            emoji = getattr(payload, "emoji", None)
+            bot_user = getattr(getattr(self, "_client", None), "user", None)
+            bot_id = getattr(bot_user, "id", None)
+            snowflakes = (actor_id, channel_id, message_id, bot_id)
+            if any(
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value <= 0
+                for value in snowflakes
+            ):
+                return
+            emoji_text = str(emoji).strip() if emoji is not None else ""
+            if not emoji_text:
+                return
+            if str(actor_id) == str(bot_id):
+                return
+
+            actor = getattr(payload, "member", None)
+            if actor is None:
+                actor = self._client.get_user(actor_id)
+            if actor is None:
+                actor = await self._client.fetch_user(actor_id)
+            if (
+                actor is None
+                or getattr(actor, "bot", False)
+                or getattr(actor, "id", None) != actor_id
+            ):
+                return
+
+            channel = self._client.get_channel(channel_id)
+            if channel is None:
+                channel = await self._client.fetch_channel(channel_id)
+            if channel is None or not callable(getattr(channel, "fetch_message", None)):
+                return
+            target = await channel.fetch_message(message_id)
+            target_author = getattr(target, "author", None)
+            if (
+                getattr(target, "id", None) != message_id
+                or target_author is None
+                or not getattr(target_author, "bot", False)
+                or str(getattr(target_author, "id", "")) != str(bot_id)
+            ):
+                return
+
+            thread_id, chat_id = self._thread_id_and_chat_for_channel(channel)
+            if not chat_id:
+                return
+            guild_id = getattr(payload, "guild_id", None)
+            event = {
+                "platform": "discord",
+                "event_type": "reaction",
+                "payload": {
+                    "target_chat_id": str(chat_id)[:128],
+                    "target_thread_id": thread_id[:128] if thread_id else None,
+                    "target_message_id": str(message_id)[:128],
+                    "actor_id": str(actor_id)[:128],
+                    "emoji": emoji_text[:128],
+                    "action": action,
+                    "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+                    "bot_authored_target": True,
+                },
+            }
+            source = self._source_for_platform_event(
+                chat_id=str(chat_id),
+                user_id=str(actor_id),
+                user_name=None,
+                thread_id=thread_id,
+                guild_id=str(guild_id) if guild_id is not None else None,
+                message_id=str(message_id),
+            )
+        except Exception:
+            logger.debug(
+                "[%s] reaction normalize error", self.name, exc_info=True,
+            )
+            return
+        await self._fire_platform_event(event, source)
 
     async def _cancel_bot_task(self) -> None:
         """Cancel and await the background client.start() task, if running."""

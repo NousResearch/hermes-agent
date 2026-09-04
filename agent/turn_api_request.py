@@ -9,6 +9,8 @@ the ``pre_api_request`` hook and the debug dump. Nothing here imports
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 import logging
 from typing import Any
 
@@ -57,6 +59,25 @@ def _fire_pre_api_request_hook(
                 request_messages = api_kwargs.get("input")
             if not isinstance(request_messages, list):
                 request_messages = api_messages
+            tool_schema_bytes = None
+            tool_policy_fingerprint = None
+            wire_tools = api_kwargs.get("tools")
+            enabled_tool_count = len(wire_tools) if isinstance(wire_tools, list) else None
+            if isinstance(wire_tools, list):
+                try:
+                    encoded_tools = json.dumps(
+                        wire_tools,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                        default=str,
+                    ).encode("utf-8")
+                    tool_schema_bytes = len(encoded_tools)
+                    tool_policy_fingerprint = "sha256:" + hashlib.sha256(encoded_tools).hexdigest()
+                except Exception:
+                    # Omit unavailable measurements rather than estimating from
+                    # the sanitized hook payload.
+                    pass
             # Shallow copies: plugins may retain the lists; deepcopy is costly.
             # ``request_messages``/``conversation_history`` are raw langfuse passthroughs.
             # Anthropic (``system``) and Responses/Codex (``instructions``) move the system
@@ -80,6 +101,9 @@ def _fire_pre_api_request_hook(
                 system_prompt=_system_prompt_for_hooks(api_kwargs, request_messages),
                 message_count=len(api_messages),
                 tool_count=len(agent.tools or []),
+                enabled_tool_count=enabled_tool_count,
+                tool_schema_bytes=tool_schema_bytes,
+                tool_policy_fingerprint=tool_policy_fingerprint,
                 approx_input_tokens=approx_tokens,
                 request_char_count=total_chars,
                 max_tokens=agent.max_tokens,

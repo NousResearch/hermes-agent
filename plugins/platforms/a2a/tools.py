@@ -268,8 +268,7 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
             "peer's allowed_rpc_origins — using configured origin %s instead",
             agent_label, rpc_url, base_url)
         rpc_url = base_url.rstrip("/")
-    resp = _http_post_json(rpc_url, rpc_body, headers, timeout,
-                           retry_524=idempotency, allowed_origins=allowed)
+    resp = _http_post_json(rpc_url, rpc_body, headers, timeout, retry_524=idempotency)
     if "error" in resp:
         raise ValueError(f"Peer '{agent_label}' returned an error: {resp['error'].get('message', resp['error'])}")
     payload = protocol.unwrap_send_message_response(resp.get("result", {}))

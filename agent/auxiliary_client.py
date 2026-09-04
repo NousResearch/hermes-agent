@@ -8673,7 +8673,7 @@ def _get_cached_client(
                 # This concurrently built loser was never exposed to a caller,
                 # so it is safe to close immediately.
                 _close_cached_client(built_client, close_async=async_mode)
-    return client, model or default_model
+    return client, _compat_model(client, model, default_model)
 
 
 # Aliases that target direct REST APIs not modeled as first-class providers

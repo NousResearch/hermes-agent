@@ -1153,9 +1153,6 @@ def _get_provider(stt_config: dict) -> str:
         return "local"
     if _has_local_command():
         return "local_command"
-    # Try lazy-install before falling through to cloud providers
-    if _try_lazy_install_stt():
-        return "local"
     if _HAS_OPENAI and _resolve_provider_key("GROQ_API_KEY", "groq"):
         logger.info("No local STT available, using Groq Whisper API")
         return "groq"
@@ -1182,6 +1179,13 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_OPENAI and _resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra"):
         logger.info("No local STT available, using DeepInfra Whisper API")
         return "deepinfra"
+    # Last resort: lazy-install only when no cloud key is configured.
+    # A keyed box must never pay a multi-GB torch install (#102068),
+    # even if the matching SDK is not imported yet.
+    if _resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra"):
+        return "none"
+    if _try_lazy_install_stt():
+        return "local"
     return "none"
 
 

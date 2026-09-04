@@ -253,12 +253,35 @@ describe('the mention middleware', () => {
     expect(hostMock.requestProfile).not.toHaveBeenCalled()
   })
 
-  it('hands the agent the connection-qualified message_agent target', async () => {
+  it('hands the agent a relay-resolvable canonical target', async () => {
     const { handler } = await contributions()
     const result = await handler({ text: 'ping @default-vera' })
 
-    expect(result.text).toMatch(/message_agent target: "default-vera@vera"/)
+    // The UI alias ('default-vera') is not a relay identity: resolve_remote_target()
+    // accepts only a roster row's handle/profile, optionally @connection-qualified.
+    // The annotation must carry the canonical profile@connection form (#97678).
+    expect(result.text).toMatch(/message_agent target: "default@vera"/)
+    expect(result.text).not.toMatch(/message_agent target: "default-vera/)
     expect(result.text).toMatch(/on Vera/)
+  })
+
+  it('annotates the resolvable handle for a local row whose UI alias differs', async () => {
+    // The reporter's shape (#97678 / Discord video): the LOCAL twin carries
+    // the 'default-this-device' alias when the remote gateway is active.
+    // The local resolver only knows bare profile names / 'hermes'.
+    const { handler } = await contributions({
+      focused: 'ops',
+      profiles: [
+        { connectionId: 'local', connectionKind: 'local', handle: 'default-this-device', name: 'default' },
+        { name: 'ops' }
+      ]
+    })
+
+    const result = await handler({ text: 'ping @default-this-device' })
+
+    expect(result.text).toMatch(/@default-this-device = agent profile "default"/)
+    expect(result.text).toMatch(/message_agent target: "hermes"/)
+    expect(result.text).not.toMatch(/message_agent target: "default-this-device/)
   })
 
   it('passes a draft with no mention straight through', async () => {

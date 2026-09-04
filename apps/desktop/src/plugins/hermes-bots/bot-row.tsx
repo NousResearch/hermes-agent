@@ -14,6 +14,9 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
   haptic,
   host,
@@ -62,6 +65,7 @@ import { openRosterBot } from './roster-actions'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { A2A_PREFIX_RE, botCanonicalSessionId, botRowOwnsWorkspace, previewKind, workerActiveAt } from './row-helpers'
 import type { GroupMember, RosterRow, SidebarRowLabels } from './types'
+import { $botSections, $draggingBot, BOT_DRAG_MIME, botSectionId, moveBotsToSection } from './user-sections'
 
 // ── bot row ──────────────────────────────────────────────────────────────────
 
@@ -81,10 +85,12 @@ interface BotRowProps {
   onDelete: (bot: RosterRow) => void
   onEdit: (bot: RosterRow) => void
   onGroup: (bot: RosterRow) => void
+  /** Opens the New section dialog; the bot is filed into it on create. */
+  onNewSection: (bot: RosterRow) => void
   showHandle?: boolean
 }
 
-export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowProps) {
+export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandle }: BotRowProps) {
   const { t } = useI18n()
   const b = useBots()
   const activeProfile = useValue(host.state.profile)
@@ -207,15 +213,35 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowPro
   // activate a source and resolve the canonical Bot Chat.
   const open = () => void openRosterBot(bot)
 
+  // DRAG lives on the row button itself: it already takes pointer events, so
+  // the click that opens the bot and the drag that files it are one element's
+  // gestures. The drag carries the roster key under a private MIME type, so
+  // only a section block can accept it.
+  const rosterKey = botRosterKey(bot)
+  const sections = useValue($botSections)
+  const dragging = useValue($draggingBot) === rosterKey
+  const currentSectionId = botSectionId(bot, allMeta)
+
   const row = (
     <RowButton
       aria-label={rowTooltip}
       className={cn(
         'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
         'hover:bg-(--chrome-action-hover)',
-        isActive && 'bg-(--ui-row-active-background)'
+        isActive && 'bg-(--ui-row-active-background)',
+        // The row being dragged fades in place; the browser's drag image is
+        // the row itself, so the ghost under the pointer is the full row.
+        dragging && 'opacity-40'
       )}
+      data-roster-key={rosterKey}
+      draggable
       onClick={open}
+      onDragEnd={() => $draggingBot.set(null)}
+      onDragStart={event => {
+        event.dataTransfer.setData(BOT_DRAG_MIME, rosterKey)
+        event.dataTransfer.effectAllowed = 'move'
+        $draggingBot.set(rosterKey)
+      }}
       onPointerEnter={warm}
     >
       <div className={cn('shrink-0', !sourceStatus.available && 'grayscale opacity-60')}>
@@ -284,9 +310,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowPro
     <ContextMenu>
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onSelect={() => void openRosterBot(bot, { canonical: true })}>
-          {b.bot.openBotChat}
-        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => void openRosterBot(bot)}>{b.bot.openBotChat}</ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
           onSelect={() => {
@@ -381,6 +405,36 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowPro
         >
           {b.bot.newChatWith}
         </ContextMenuItem>
+        <ContextMenuSeparator />
+        {/* Filing. Membership is one field on the bot's meta (`sectionId`), so
+            this is a one-field write and no list anywhere has to be kept in
+            sync with it. */}
+        <ContextMenuSub>
+          <ContextMenuSubTrigger>{b.sections.moveTo}</ContextMenuSubTrigger>
+          <ContextMenuSubContent>
+            {sections.map(section => (
+              <ContextMenuItem
+                disabled={section.id === currentSectionId}
+                key={section.id}
+                onSelect={() => void moveBotsToSection([bot], section.id)}
+              >
+                <Codicon className="mr-1.5" name="folder" />
+                {section.name}
+              </ContextMenuItem>
+            ))}
+            {sections.length ? <ContextMenuSeparator /> : null}
+            <ContextMenuItem onSelect={() => onNewSection(bot)}>
+              <Codicon className="mr-1.5" name="new-folder" />
+              {b.sections.newSectionEllipsis}
+            </ContextMenuItem>
+            {currentSectionId ? (
+              <ContextMenuItem onSelect={() => void moveBotsToSection([bot], null)}>
+                <Codicon className="mr-1.5" name="inbox" />
+                {b.sections.removeFromSection}
+              </ContextMenuItem>
+            ) : null}
+          </ContextMenuSubContent>
+        </ContextMenuSub>
         {isDefaultBot(bot) ? null : <ContextMenuSeparator />}
         {isDefaultBot(bot) ? null : (
           <ContextMenuItem onSelect={() => onDelete(bot)} variant="destructive">

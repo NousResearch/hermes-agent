@@ -149,6 +149,281 @@ def test_same_card_review_supports_changes_and_approval_without_block_loop(conn)
     assert completed.block_recurrences == 0
 
 
+def test_changes_requested_dispatches_rework_despite_retained_pr_comment(
+    conn,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reviewed PR is history after the reviewer deliberately requests rework."""
+    import hermes_cli.profiles as profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda _name: True)
+    task_id = kb.create_task(conn, title="Fix reviewed defect", assignee="builder")
+    implementation = kb.claim_task(conn, task_id, claimer="builder:1")
+    assert implementation is not None
+    pr_url = "https://github.com/example/project/pull/123"
+    kb.add_comment(conn, task_id, author="builder", body=f"Opened {pr_url}")
+    assert kb.request_review(
+        conn,
+        task_id,
+        reviewer="reviewer",
+        summary="PR ready.",
+        expected_run_id=implementation.current_run_id,
+    )
+    review = kb.claim_review_task(conn, task_id, claimer="reviewer:1")
+    assert review is not None
+    assert kb.request_changes(
+        conn,
+        task_id,
+        reason="Add the missing regression.",
+        expected_run_id=review.current_run_id,
+    ) == (True, "builder")
+
+    assert kb.check_respawn_guard(conn, task_id, lane="ready") is None
+    result = kb.dispatch_once(conn, dry_run=True)
+    assert (task_id, "builder", "") in result.spawned
+    assert (task_id, "active_pr") not in result.respawn_guarded
+    assert any(
+        comment.body == f"Opened {pr_url}"
+        for comment in kb.list_comments(conn, task_id)
+    )
+
+
+def test_repeated_changes_requested_cycles_rearm_only_for_newer_pr(conn) -> None:
+    task_id = kb.create_task(conn, title="Iterate reviewed fix", assignee="builder")
+
+    for cycle in range(2):
+        implementation = kb.claim_task(conn, task_id, claimer=f"builder:{cycle}")
+        assert implementation is not None
+        kb.add_comment(
+            conn,
+            task_id,
+            author="builder",
+            body=f"PR https://github.com/example/project/pull/{cycle + 10}",
+        )
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+        assert kb.request_review(
+            conn,
+            task_id,
+            reviewer="reviewer" if cycle == 0 else None,
+            summary=f"cycle {cycle}",
+            expected_run_id=implementation.current_run_id,
+        )
+        review = kb.claim_review_task(conn, task_id, claimer=f"reviewer:{cycle}")
+        assert review is not None
+        assert kb.request_changes(
+            conn,
+            task_id,
+            reason=f"revise cycle {cycle}",
+            expected_run_id=review.current_run_id,
+        ) == (True, "builder")
+        assert kb.check_respawn_guard(conn, task_id) is None
+
+
+@pytest.mark.parametrize("historical_state", ["Closed", "Merged"])
+def test_same_second_rework_uses_comment_order_and_new_pr_rearms(
+    conn,
+    monkeypatch: pytest.MonkeyPatch,
+    historical_state: str,
+) -> None:
+    now = 5_000_000
+    monkeypatch.setattr(kb.time, "time", lambda: now)
+    task_id, review = _claimed_review(conn, "Same-second review ordering")
+    old_pr = "https://github.com/example/project/pull/20"
+    kb.add_comment(
+        conn, task_id, author="builder", body=f"{historical_state} {old_pr}"
+    )
+    assert kb.request_changes(
+        conn,
+        task_id,
+        reason="Rework the closed candidate.",
+        expected_run_id=review.current_run_id,
+    ) == (True, "builder")
+    assert kb.check_respawn_guard(conn, task_id) is None
+
+    new_pr = "https://github.com/example/project/pull/21"
+    kb.add_comment(conn, task_id, author="builder", body=f"Opened {new_pr}")
+    assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+
+def test_review_reopened_supersedes_retained_pr_but_not_new_evidence(
+    conn,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 5_000_000
+    monkeypatch.setattr(kb.time, "time", lambda: now)
+    task_id = kb.create_task(conn, title="Manual review follow-up", assignee="builder")
+    implementation = kb.claim_task(conn, task_id)
+    assert implementation is not None
+    kb.add_comment(
+        conn,
+        task_id,
+        author="builder",
+        body="Merged https://github.com/example/project/pull/40",
+    )
+    assert kb.request_review(
+        conn,
+        task_id,
+        reviewer="reviewer",
+        expected_run_id=implementation.current_run_id,
+    )
+
+    assert kb.reopen_review_task(conn, task_id)
+    assert kb.check_respawn_guard(conn, task_id) is None
+    kb.add_comment(
+        conn,
+        task_id,
+        author="builder",
+        body="Opened https://github.com/example/project/pull/41",
+    )
+    assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        "{not-json",
+        "[]",
+        '{"reviewed_through_comment_id": true}',
+        '{"reviewed_through_comment_id": 0}',
+        '{"reviewed_through_comment_id": 999999}',
+        '{"reviewed_through_comment_id": 9223372036854775808}',
+    ],
+)
+def test_malformed_rework_watermark_keeps_same_second_pr_guarded(
+    conn,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: str | None,
+) -> None:
+    now = 5_000_000
+    monkeypatch.setattr(kb.time, "time", lambda: now)
+    task_id = kb.create_task(conn, title="Malformed rework watermark", assignee="builder")
+    kb.add_comment(
+        conn,
+        task_id,
+        author="builder",
+        body="PR https://github.com/example/project/pull/50",
+    )
+    with kb.write_txn(conn):
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'changes_requested', ?, ?)",
+            (task_id, payload, now),
+        )
+
+    assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+
+@pytest.mark.parametrize("kind", ["changes_requested", "review_reopened"])
+def test_legacy_rework_event_supersedes_only_strictly_older_pr_comments(
+    conn,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    task_id = kb.create_task(conn, title=f"Legacy {kind}", assignee="builder")
+    with kb.write_txn(conn):
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'builder', ?, 100)",
+            (task_id, "Merged https://github.com/example/project/pull/30"),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, ?, NULL, 101)",
+            (task_id, kind),
+        )
+    monkeypatch.setattr(kb.time, "time", lambda: 200)
+    assert kb.check_respawn_guard(conn, task_id) is None
+
+    with kb.write_txn(conn):
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'builder', ?, 101)",
+            (task_id, "Opened https://github.com/example/project/pull/31"),
+        )
+    assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+
+@pytest.mark.parametrize("created_at", ["not-an-integer", -1, 201])
+def test_malformed_legacy_rework_timestamp_keeps_recent_pr_guarded(
+    conn,
+    monkeypatch: pytest.MonkeyPatch,
+    created_at: object,
+) -> None:
+    task_id = kb.create_task(conn, title="Malformed legacy timestamp", assignee="builder")
+    kb.add_comment(
+        conn,
+        task_id,
+        author="builder",
+        body="PR https://github.com/example/project/pull/32",
+    )
+    with kb.write_txn(conn):
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'changes_requested', NULL, ?)",
+            (task_id, created_at),
+        )
+    monkeypatch.setattr(kb.time, "time", lambda: 200)
+
+    assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+
+def test_null_legacy_rework_timestamp_keeps_recent_pr_guarded(
+    conn,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_id = kb.create_task(conn, title="Null legacy timestamp", assignee="builder")
+    kb.add_comment(
+        conn,
+        task_id,
+        author="builder",
+        body="PR https://github.com/example/project/pull/32",
+    )
+    monkeypatch.setattr(kb.time, "time", lambda: 200)
+    execute = conn.execute
+
+    def execute_with_null_rework(sql, parameters=()):
+        if sql.startswith("SELECT id, payload, created_at FROM task_events"):
+            return _Rows([{"id": 1, "payload": None, "created_at": None}])
+        return execute(sql, parameters)
+
+    class _Rows:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def fetchone(self):
+            return self.rows[0] if self.rows else None
+
+    monkeypatch.setattr(conn, "execute", execute_with_null_rework)
+    assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+
+def test_zero_watermark_guards_later_comment_despite_clock_regression(
+    conn,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 5_000_000
+    monkeypatch.setattr(kb.time, "time", lambda: now)
+    task_id, review = _claimed_review(conn, "Zero watermark ordering")
+    assert kb.request_changes(
+        conn,
+        task_id,
+        reason="Rework before any PR exists.",
+        expected_run_id=review.current_run_id,
+    ) == (True, "builder")
+
+    monkeypatch.setattr(kb.time, "time", lambda: now - 1)
+    kb.add_comment(
+        conn,
+        task_id,
+        author="builder",
+        body="Opened https://github.com/example/project/pull/33",
+    )
+    monkeypatch.setattr(kb.time, "time", lambda: now)
+
+    assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+
 @pytest.mark.parametrize("bad_payload", [None, "{not-json", "{}"])
 def test_rereview_requires_explicit_reviewer_when_provenance_is_invalid(
     conn,

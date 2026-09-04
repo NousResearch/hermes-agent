@@ -4014,6 +4014,13 @@ def add_comment(
         return int(cur.lastrowid or 0)
 
 
+def _latest_comment_id(conn: sqlite3.Connection, task_id: str) -> int:
+    return int(conn.execute(
+        "SELECT COALESCE(MAX(id), 0) FROM task_comments WHERE task_id = ?",
+        (task_id,),
+    ).fetchone()[0])
+
+
 def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
     rows = conn.execute(
         "SELECT * FROM task_comments WHERE task_id = ? ORDER BY created_at ASC",
@@ -6773,6 +6780,7 @@ def request_changes(
                 "implementer": implementer,
                 "reviewer": reviewer,
                 "status": new_status,
+                "reviewed_through_comment_id": _latest_comment_id(conn, task_id),
             },
             run_id=run_id,
         )
@@ -7018,6 +7026,7 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
         payload: dict[str, Any] = {"status": new_status}
         if implementer:
             payload["implementer"] = implementer
+        payload["reviewed_through_comment_id"] = _latest_comment_id(conn, task_id)
         _append_event(
             conn,
             task_id,
@@ -9537,10 +9546,77 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    A deliberate review->rework transition supersedes comments the
+    #    reviewer had already seen. Modern events carry a monotonic comment-id
+    #    watermark so same-second writes remain causal; legacy events fall back
+    #    to timestamps and keep same-second evidence guarded as ambiguous.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    rework = conn.execute(
+        "SELECT id, payload, created_at FROM task_events "
+        "WHERE task_id = ? AND kind IN ('changes_requested', 'review_reopened') "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    reviewed_through: Optional[int] = None
+    legacy_rework_at: Optional[int] = None
+    if rework is not None:
+        try:
+            rework_payload = json.loads(rework["payload"]) if rework["payload"] else {}
+        except (json.JSONDecodeError, TypeError):
+            rework_payload = {}
+        marker = (
+            rework_payload.get("reviewed_through_comment_id")
+            if isinstance(rework_payload, dict)
+            else None
+        )
+        marker_is_sqlite_int = (
+            isinstance(marker, int)
+            and not isinstance(marker, bool)
+            and 0 <= marker <= 2**63 - 1
+        )
+        marker_is_comment = (
+            marker_is_sqlite_int
+            and (
+                (
+                    marker == 0
+                    and conn.execute(
+                        "SELECT 1 FROM task_events "
+                        "WHERE task_id = ? AND kind = 'commented' AND id < ? LIMIT 1",
+                        (task_id, rework["id"]),
+                    ).fetchone()
+                    is None
+                )
+                or conn.execute(
+                    "SELECT 1 FROM task_comments WHERE task_id = ? AND id = ?",
+                    (task_id, marker),
+                ).fetchone()
+                is not None
+            )
+        )
+        if marker_is_comment:
+            reviewed_through = marker
+        elif marker is None:
+            created_at = rework["created_at"]
+            if (
+                isinstance(created_at, int)
+                and not isinstance(created_at, bool)
+                and 0 <= created_at <= now
+            ):
+                legacy_rework_at = created_at
+
+    comment_sql = (
+        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?"
+    )
+    comment_params: tuple[Any, ...] = (task_id, pr_cutoff)
+    if reviewed_through is not None:
+        comment_sql += " AND id > ?"
+        comment_params += (reviewed_through,)
+    elif legacy_rework_at is not None:
+        comment_sql += " AND created_at >= ?"
+        comment_params += (legacy_rework_at,)
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
+        comment_sql,
+        comment_params,
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
             return "active_pr"

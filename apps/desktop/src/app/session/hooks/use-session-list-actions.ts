@@ -105,21 +105,24 @@ function sessionsToKeep(scope?: string): Set<string> {
 }
 
 interface UseSessionListActionsArgs {
+  allConnections?: boolean
   profileScope: string
 }
 
 /** Owns the sidebar's session-list fetching + paging: recents, cron runs/jobs,
  *  and the per-platform messaging slices. Returns the callbacks the controller
  *  wires into the sidebar and refresh effects. */
-export function useSessionListActions({ profileScope }: UseSessionListActionsArgs) {
+export function useSessionListActions({ allConnections = false, profileScope }: UseSessionListActionsArgs) {
   const profileScopeRef = useRef(profileScope)
+  const allConnectionsRef = useRef(allConnections)
   const loadMoreMessagingRequestRef = useRef<Record<string, number>>({})
   const refreshMessagingSessionsRequestRef = useRef(0)
   const refreshSessionsRequestRef = useRef(0)
 
   useLayoutEffect(() => {
     profileScopeRef.current = profileScope
-  }, [profileScope])
+    allConnectionsRef.current = allConnections
+  }, [allConnections, profileScope])
 
   /** Refresh the active profile's messaging-platform sidebar slice. */
   const refreshMessagingSessions = useCallback(async () => {
@@ -128,7 +131,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
     // A callback captured before a profile switch may still be queued by an
     // event subscription. Do not let it start a request against the old scope.
-    if (sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
+    if (
+      sidebarProfileForScope(profileScopeRef.current) !== sessionProfile ||
+      allConnectionsRef.current !== allConnections
+    ) {
       return
     }
 
@@ -136,13 +142,20 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     refreshMessagingSessionsRequestRef.current = requestId
 
     try {
-      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', sessionProfile, {
-        excludeSources: MESSAGING_EXCLUDED_SOURCES
-      })
+      const result = await listAllProfileSessions(
+        MESSAGING_SECTION_LIMIT,
+        1,
+        'exclude',
+        'recent',
+        sessionProfile,
+        { excludeSources: MESSAGING_EXCLUDED_SOURCES },
+        allConnections
+      )
 
       if (
         refreshMessagingSessionsRequestRef.current !== requestId ||
         sidebarProfileForScope(profileScopeRef.current) !== sessionProfile ||
+        allConnectionsRef.current !== allConnections ||
         gatewayActivationEpoch() !== activationEpoch
       ) {
         return
@@ -159,7 +172,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     } catch {
       // Non-fatal: the messaging sections just stay empty/stale.
     }
-  }, [profileScope])
+  }, [allConnections, profileScope])
 
   /** Page one messaging platform without replacing another platform's rows. */
   const loadMoreMessagingForPlatform = useCallback(
@@ -190,7 +203,8 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           'exclude',
           'recent',
           sessionProfile,
-          { source: platform }
+          { source: platform },
+          allConnections
         )
       } catch {
         // Non-fatal: leave the platform's loaded rows and total unchanged.
@@ -200,6 +214,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       if (
         loadMoreMessagingRequestRef.current[requestKey] !== requestId ||
         sidebarProfileForScope(profileScopeRef.current) !== sessionProfile ||
+        allConnectionsRef.current !== allConnections ||
         gatewayActivationEpoch() !== activationEpoch
       ) {
         return
@@ -220,14 +235,17 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
       setMessagingPlatformTotals(prev => ({ ...prev, [requestKey]: Math.max(total, incoming.length) }))
     },
-    [profileScope]
+    [allConnections, profileScope]
   )
 
   /** Refresh cron jobs only while the profile that requested them remains active. */
   const refreshCronJobs = useCallback(async () => {
     const sessionProfile = sidebarProfileForScope(profileScope)
 
-    if (sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
+    if (
+      sidebarProfileForScope(profileScopeRef.current) !== sessionProfile ||
+      allConnectionsRef.current !== allConnections
+    ) {
       return
     }
 
@@ -236,7 +254,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     } catch {
       // Non-fatal: the cron section just keeps its last-known jobs.
     }
-  }, [profileScope])
+  }, [allConnections, profileScope])
 
   /** Refresh every sidebar session slice without committing an obsolete profile response. */
   const refreshSessions = useCallback(
@@ -244,7 +262,11 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       const sessionProfile = sidebarProfileForScope(profileScope)
       const activationEpoch = gatewayActivationEpoch()
 
-      if (!shouldPublish() || sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
+      if (
+        !shouldPublish() ||
+        sidebarProfileForScope(profileScopeRef.current) !== sessionProfile ||
+        allConnectionsRef.current !== allConnections
+      ) {
         return
       }
 
@@ -277,6 +299,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         // source-scoped slices, instead of three separate listAllProfileSessions
         // calls that each reopened + re-counted every profile DB per refresh.
         const result = await listSidebarSessions({
+          allConnections,
           recentsProfile: sessionProfile,
           recentsLimit: limit,
           recentsExclude: SIDEBAR_EXCLUDED_SOURCES,
@@ -289,6 +312,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           shouldPublish() &&
           refreshSessionsRequestRef.current === requestId &&
           sidebarProfileForScope(profileScopeRef.current) === sessionProfile &&
+          allConnectionsRef.current === allConnections &&
           gatewayActivationEpoch() === activationEpoch
         ) {
           const recents = result.recents
@@ -380,11 +404,15 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       }
 
       // Cron *jobs* are a distinct API (getCronJobs), not a session slice.
-      if (shouldPublish() && sidebarProfileForScope(profileScopeRef.current) === sessionProfile) {
+      if (
+        shouldPublish() &&
+        sidebarProfileForScope(profileScopeRef.current) === sessionProfile &&
+        allConnectionsRef.current === allConnections
+      ) {
         void refreshCronJobs()
       }
     },
-    [profileScope, refreshCronJobs]
+    [allConnections, profileScope, refreshCronJobs]
   )
 
   const loadMoreSessions = useCallback(async () => {

@@ -308,7 +308,11 @@ import {
   resolveRouteProfile
 } from './profile-delete-routing'
 import { migrateActiveProfileIfMissing as migrateActiveProfileIfMissingPure } from './profile-migration'
-import { prepareProfileRenameLifecycle, profileRenameFromRequest } from './profile-rename-routing'
+import {
+  dispatchConnectionScopedProfileRename,
+  prepareProfileRenameLifecycle,
+  profileRenameFromRequest
+} from './profile-rename-routing'
 import {
   buildSidebarSessionSliceParams,
   fetchPrimaryProfileSessions,
@@ -11407,6 +11411,7 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
   }
 
   const profileKey = String(profile ?? '').trim() || 'default'
+  profileDeletionGate.assertCanStart(profileKey)
   let resolvedRegistrySshConfig
   let registryEffectiveFingerprintPromise: null | Promise<string> = null
 
@@ -16517,6 +16522,18 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   const deletingProfile = profileNameFromDeleteRequest(request)
   const mutatingProfile = deletingProfile || profileRenameFromRequest(request)?.oldName || null
   const registryConnectionId = apiRequestRegistryConnectionId(request)
+
+  if (mutatingProfile && !deletingProfile && registryConnectionId) {
+    return dispatchConnectionScopedProfileRename(request, {
+      acquire: profile => profileDeletionGate.acquire(profile),
+      connectionKind: connectionId => registryConnectionKind(connectionId),
+      dispatch: routeProfile =>
+        dispatchRegistryApiRequest(request, registryConnectionId, routeProfile, mutatingProfile),
+      isValidProfileName: profile => PROFILE_NAME_RE.test(profile),
+      prepareLocal: localRequest => prepareProfileRenameRequest(localRequest),
+      teardownConnection: (connectionId, profile) => teardownConnectionScopedProfileBackend(connectionId, profile)
+    })
+  }
 
   if (deletingProfile && registryConnectionId) {
     return dispatchConnectionScopedProfileDelete(request, {

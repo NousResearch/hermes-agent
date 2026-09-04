@@ -1617,6 +1617,7 @@ export const zhHant = defineLocale({
     switchToConnection: name => `切換至 ${name}`,
     switchConnectionFailed: name => `無法連線至 ${name}`,
     manageProfiles: '管理設定檔…',
+    fleet: { allOnAllGateways: '所有閘道上的所有設定檔' },
     remoteOverride: {
       menuItem: '連線至遠端主機…',
       badge: (host: string) => `執行於 ${host}`,

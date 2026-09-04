@@ -1686,6 +1686,7 @@ export const ja = defineLocale({
     switchToConnection: name => `${name} に切り替え`,
     switchConnectionFailed: name => `${name} に接続できませんでした`,
     manageProfiles: 'プロファイルを管理…',
+    fleet: { allOnAllGateways: '全ゲートウェイのすべてのプロファイル' },
     remoteOverride: {
       menuItem: 'リモートホストに接続…',
       badge: (host: string) => `${host} で実行中`,

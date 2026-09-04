@@ -52,6 +52,7 @@ import {
   $activeGatewayProfile,
   $freshSessionRequest,
   $profileScope,
+  $showAllGateways,
   ALL_PROFILES,
   ensureGatewayProfile,
   newSessionInProfile,
@@ -231,6 +232,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const activeConnectionId = useStore($activeConnectionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const profileScope = useStore($profileScope)
+  const showAllGateways = useStore($showAllGateways)
   const boot = useStore($desktopBoot)
 
   const routedSessionId = routeSessionId(location.pathname)
@@ -314,7 +316,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   )
 
   const { loadMoreMessagingForPlatform, loadMoreSessions, refreshCronJobs, refreshMessagingSessions, refreshSessions } =
-    useSessionListActions({ profileScope })
+    useSessionListActions({ allConnections: profileScope === ALL_PROFILES && showAllGateways, profileScope })
 
   const updateActiveSessionRuntimeInfo = useCallback(
     (info: { branch?: string; cwd?: string }) => {

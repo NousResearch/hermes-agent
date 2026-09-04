@@ -1795,6 +1795,35 @@ export function retireLocalProfileGateways(profile: string): void {
   }
 }
 
+/** Retire one profile's retained socket without touching a same-named profile
+ * on another registered gateway. */
+export function retireAgentGateways(connectionId: null | string, profile: string): void {
+  const id = String(connectionId ?? '').trim()
+  const key = normKey(profile)
+
+  if (!id || id === 'local') {
+    retireLocalProfileGateways(key)
+
+    return
+  }
+
+  const scope = registryBackendScopeKey(id, key)
+  const entry = g.secondaries.get(scope)
+
+  if (!entry) {
+    return
+  }
+
+  const activeInvalidated = scope === g.activeKey
+  disposeSecondary(entry)
+  g.secondaries.delete(scope)
+  restoreActiveToPrimaryIfEvicted()
+
+  if (activeInvalidated) {
+    g.config?.onActiveConnectionInvalidated?.(g.primaryProfile, gatewayActivationEpoch())
+  }
+}
+
 // Registry lifecycle: a connection was removed or materially edited. Removal
 // disposes every scoped secondary immediately (a removed remote/cloud source
 // has no local process to die, so otherwise its WebSocket streams ghost

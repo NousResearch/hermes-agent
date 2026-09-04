@@ -1418,6 +1418,7 @@ export const ar = defineLocale({
     switchToConnection: name => `التبديل إلى ${name}`,
     switchConnectionFailed: name => `تعذّر الاتصال بـ ${name}`,
     manageProfiles: 'إدارة الملفات الشخصية',
+    fleet: { allOnAllGateways: 'جميع الملفات الشخصية على جميع البوابات' },
     remoteOverride: {
       menuItem: 'الاتصال بمضيف بعيد…',
       badge: (host: string) => `يعمل على ${host}`,

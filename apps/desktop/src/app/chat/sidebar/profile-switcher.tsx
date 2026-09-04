@@ -72,6 +72,7 @@ import {
   $profileOrder,
   $profiles,
   $profileScope,
+  $showAllGateways,
   ALL_PROFILES,
   normalizeProfileKey,
   profileLabel,
@@ -150,6 +151,7 @@ export function ProfileRail() {
   const p = t.profiles
   const profiles = useStore($profiles)
   const scope = useStore($profileScope)
+  const showAllGateways = useStore($showAllGateways)
   const gatewayProfile = useStore($activeGatewayProfile)
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
@@ -404,11 +406,19 @@ export function ProfileRail() {
       data-tour="profile-rail"
       role="group"
     >
-      {/* Fleet: every gateway carries its own home square inside its group, so
-          the pinned pill is purely the "all profiles on this gateway" toggle. */}
+      {/* Fleet: the global scope leads, immediately before the existing
+          "all profiles on this gateway" scope. */}
       {fleet && (
         <ProfilePill
-          active={isAll}
+          active={isAll && showAllGateways}
+          glyph="globe"
+          label={p.fleet.allOnAllGateways}
+          onSelect={() => setShowAllProfiles(true, 'fleet')}
+        />
+      )}
+      {fleet && (
+        <ProfilePill
+          active={isAll && !showAllGateways}
           glyph="layers"
           label={p.fleet.allOnGateway}
           onSelect={() => setShowAllProfiles(true)}

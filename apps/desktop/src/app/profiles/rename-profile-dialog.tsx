@@ -17,7 +17,7 @@ import { renameProfile } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
-import { retireLocalProfileGateways } from '@/store/gateway'
+import { retireAgentGateways, retireLocalProfileGateways } from '@/store/gateway'
 
 import { isValidProfileName } from './create-profile-dialog'
 
@@ -90,8 +90,12 @@ export function RenameProfileDialog({
       // backend teardown as a transient drop and redial, resurrecting the
       // old-name backend whose ensure_hermes_home() recreates the directory
       // the rename just moved (same class as the delete path, #88638).
-      if (!isDefault && scope == null) {
-        retireLocalProfileGateways(currentName)
+      if (!isDefault) {
+        if (scope == null) {
+          retireLocalProfileGateways(currentName)
+        } else if (typeof scope === 'object') {
+          retireAgentGateways(scope.connectionId ?? null, currentName)
+        }
       }
 
       await (scope == null ? renameProfile(currentName, trimmed) : renameProfile(currentName, trimmed, scope))

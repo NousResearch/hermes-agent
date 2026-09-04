@@ -1,17 +1,21 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import type { ProfileScope } from '@/api/client'
 import { CodeEditor } from '@/components/chat/code-editor'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
-import { getProfileSoul, type ProfileInfo, updateProfileSoul } from '@/hermes'
+import type { DesktopRegistryConnection } from '@/global'
+import { getProfilesForScope, getProfileSoul, type ProfileInfo, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { sortConnectionsForDisplay } from '@/lib/connection-display'
 import { displayPath } from '@/lib/display-path'
 import { AlertTriangle, Save } from '@/lib/icons'
 import { resolveProfileColor } from '@/lib/profile-color'
 import { normalize } from '@/lib/text'
+import { $activeConnectionId, $connectionsRegistry, $hasMultipleConnections } from '@/store/connections'
 import { notify, notifyError } from '@/store/notifications'
 import { $profileColors, profileLabel, refreshProfiles } from '@/store/profile'
 
@@ -39,31 +43,107 @@ interface ProfilesViewProps {
   onClose: () => void
 }
 
+interface ProfileEntry {
+  connectionId: string
+  connectionLabel: string
+  profile: ProfileInfo
+}
+
+const entryKey = (entry: ProfileEntry) => `${entry.connectionId || 'ambient'}::${entry.profile.name}`
+
 export function ProfilesView({ onClose }: ProfilesViewProps) {
   const { t } = useI18n()
   const p = t.profiles
-  const [profiles, setProfiles] = useState<null | ProfileInfo[]>(null)
-  const [selectedName, setSelectedName] = useState<null | string>(null)
+  const registry = useStore($connectionsRegistry)
+  const multipleConnections = useStore($hasMultipleConnections)
+  const activeConnectionId = useStore($activeConnectionId)
+
+  const sources = useMemo(
+    () => (multipleConnections ? sortConnectionsForDisplay(registry?.connections ?? []) : []),
+    [multipleConnections, registry]
+  )
+
+  const [entries, setEntries] = useState<null | ProfileEntry[]>(null)
+  const [failedConnections, setFailedConnections] = useState<Set<string>>(new Set())
+  const [selectedKey, setSelectedKey] = useState<null | string>(null)
   const [query, setQuery] = useState('')
-  const [createOpen, setCreateOpen] = useState(false)
-  const [pendingRename, setPendingRename] = useState<null | ProfileInfo>(null)
-  const [pendingDelete, setPendingDelete] = useState<null | ProfileInfo>(null)
+  const [createOn, setCreateOn] = useState<null | string>(null)
+  const [pendingRename, setPendingRename] = useState<null | ProfileEntry>(null)
+  const [pendingDelete, setPendingDelete] = useState<null | ProfileEntry>(null)
+  const refreshGeneration = useRef(0)
 
   const refresh = useCallback(async () => {
-    try {
-      const list = await refreshProfiles()
-      setProfiles(list)
-      setSelectedName(current => {
-        if (current && list.some(p => p.name === current)) {
-          return current
+    const generation = ++refreshGeneration.current
+
+    if (!multipleConnections) {
+      try {
+        const profiles = await refreshProfiles()
+
+        if (generation !== refreshGeneration.current) {
+          return
         }
 
-        return list.find(p => p.is_default)?.name ?? list[0]?.name ?? null
-      })
-    } catch (err) {
-      notifyError(err, p.failedLoad)
+        const next = profiles.map(profile => ({ connectionId: '', connectionLabel: '', profile }))
+        setEntries(next)
+        setFailedConnections(new Set())
+        setSelectedKey(current =>
+          current && next.some(entry => entryKey(entry) === current)
+            ? current
+            : next[0]
+              ? entryKey(next.find(entry => entry.profile.is_default) ?? next[0])
+              : null
+        )
+      } catch (error) {
+        if (generation === refreshGeneration.current) {
+          notifyError(error, p.failedLoad)
+        }
+      }
+
+      return
     }
-  }, [p])
+
+    const results = await Promise.all(
+      sources.map(async source => {
+        try {
+          const profiles = (await getProfilesForScope({ connectionId: source.id })).profiles
+
+          return {
+            entries: profiles.map(profile => ({
+              connectionId: source.id,
+              connectionLabel: source.label,
+              profile
+            })),
+            failed: false,
+            source
+          }
+        } catch {
+          return { entries: [] as ProfileEntry[], failed: true, source }
+        }
+      })
+    )
+
+    const next = results.flatMap(result => result.entries)
+    const failed = new Set(results.filter(result => result.failed).map(result => result.source.id))
+
+    if (generation !== refreshGeneration.current) {
+      return
+    }
+
+    setEntries(next)
+    setFailedConnections(failed)
+    setSelectedKey(current => {
+      if (current && next.some(entry => entryKey(entry) === current)) {
+        return current
+      }
+
+      const preferred =
+        next.find(entry => entry.connectionId === activeConnectionId && entry.profile.is_default) ??
+        next.find(entry => entry.profile.is_default) ??
+        next[0]
+
+      return preferred ? entryKey(preferred) : null
+    })
+  }, [activeConnectionId, multipleConnections, p.failedLoad, sources])
 
   useRefreshHotkey(refresh)
 
@@ -71,45 +151,78 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
     void refresh()
   }, [refresh])
 
-  const selected = useMemo(() => {
-    if (!profiles) {
-      return null
-    }
+  const selected = useMemo(
+    () => entries?.find(entry => entryKey(entry) === selectedKey) ?? entries?.[0] ?? null,
+    [entries, selectedKey]
+  )
 
-    return profiles.find(p => p.name === selectedName) ?? profiles[0] ?? null
-  }, [profiles, selectedName])
-
-  const visibleProfiles = useMemo(() => {
+  const visibleEntries = useMemo(() => {
     const q = normalize(query)
 
-    if (!profiles || !q) {
-      return profiles ?? []
+    if (!entries || !q) {
+      return entries ?? []
     }
 
-    return profiles.filter(
-      profile => profile.name.toLowerCase().includes(q) || (profile.model ?? '').toLowerCase().includes(q)
+    return entries.filter(
+      entry =>
+        entry.profile.name.toLowerCase().includes(q) ||
+        (entry.profile.model ?? '').toLowerCase().includes(q) ||
+        entry.connectionLabel.toLowerCase().includes(q)
     )
-  }, [profiles, query])
+  }, [entries, query])
 
-  // The shared Create/Rename dialogs own the createProfile / renameProfile /
-  // updateProfileSoul calls; the panel just selects the resulting profile and
-  // re-pulls the list.
+  const scopeFor = (connectionId: string, profile?: string): ProfileScope =>
+    multipleConnections ? { connectionId, profile } : undefined
+
   const selectAndRefresh = useCallback(
-    async (name: string) => {
-      setSelectedName(name)
+    async (connectionId: string, name: string) => {
+      setSelectedKey(`${connectionId || 'ambient'}::${name}`)
       await refresh()
     },
     [refresh]
   )
 
+  const menuFor = (entry: ProfileEntry): PanelMenuItem[] =>
+    entry.profile.is_default
+      ? [{ icon: 'edit', label: p.renameMenu, onSelect: () => setPendingRename(entry) }]
+      : [
+          { icon: 'edit', label: p.renameMenu, onSelect: () => setPendingRename(entry) },
+          { icon: 'trash', label: t.common.delete, onSelect: () => setPendingDelete(entry), tone: 'danger' }
+        ]
+
+  const renderRows = (source: null | DesktopRegistryConnection) => {
+    const connectionId = source?.id ?? ''
+    const rows = visibleEntries.filter(entry => entry.connectionId === connectionId)
+
+    return (
+      <Fragment key={connectionId || 'ambient'}>
+        {source ? <PanelSectionLabel>{source.label}</PanelSectionLabel> : null}
+        {rows.map(entry => (
+          <ProfileRow
+            active={selected ? entryKey(selected) === entryKey(entry) : false}
+            key={entryKey(entry)}
+            menuItems={menuFor(entry)}
+            onSelect={() => setSelectedKey(entryKey(entry))}
+            profile={entry.profile}
+          />
+        ))}
+        {source && failedConnections.has(source.id) ? (
+          <p className="px-3 py-2 text-xs text-muted-foreground">{p.fleet.gatewayUnreachable(source.label)}</p>
+        ) : (
+          <PanelAddButton label={p.newProfile} onClick={() => setCreateOn(connectionId)} />
+        )}
+      </Fragment>
+    )
+  }
+
   return (
     <Panel closeLabel={p.close} onClose={onClose}>
-      {!profiles ? (
+      {!entries ? (
         <PageLoader label={p.loading} />
-      ) : profiles.length === 0 ? (
+      ) : entries.length === 0 && !multipleConnections ? (
         <PanelEmpty
           action={
-            <Button onClick={() => setCreateOpen(true)} size="sm">
+            <Button onClick={() => setCreateOn('')} size="sm">
               {p.newProfile}
             </Button>
           }
@@ -119,7 +232,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
         />
       ) : (
         <>
-          <PanelHeader subtitle={p.count(profiles.length)} title={p.title} />
+          <PanelHeader subtitle={p.count(entries.length)} title={p.title} />
           <PanelBody>
             <PanelList
               onSearchChange={setQuery}
@@ -127,34 +240,16 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
               searchPlaceholder={p.search}
               searchValue={query}
             >
-              {visibleProfiles.map(profile => (
-                <ProfileRow
-                  active={selected?.name === profile.name}
-                  key={profile.name}
-                  menuItems={
-                    profile.is_default
-                      ? // Renaming the default profile sets a presentation-only
-                        // display name (the canonical id stays "default").
-                        [{ icon: 'edit', label: p.renameMenu, onSelect: () => setPendingRename(profile) }]
-                      : [
-                          { icon: 'edit', label: p.renameMenu, onSelect: () => setPendingRename(profile) },
-                          {
-                            icon: 'trash',
-                            label: t.common.delete,
-                            onSelect: () => setPendingDelete(profile),
-                            tone: 'danger'
-                          }
-                        ]
-                  }
-                  onSelect={() => setSelectedName(profile.name)}
-                  profile={profile}
-                />
-              ))}
-              <PanelAddButton label={p.newProfile} onClick={() => setCreateOpen(true)} />
+              {multipleConnections ? sources.map(source => renderRows(source)) : renderRows(null)}
             </PanelList>
 
             {selected ? (
-              <ProfileDetail key={selected.name} profile={selected} />
+              <ProfileDetail
+                connectionId={multipleConnections ? selected.connectionId : null}
+                connectionLabel={multipleConnections ? selected.connectionLabel : ''}
+                key={entryKey(selected)}
+                profile={selected.profile}
+              />
             ) : (
               <PanelEmpty description={p.selectPrompt} icon="account" />
             )}
@@ -163,28 +258,32 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
       )}
 
       <RenameProfileDialog
-        currentName={pendingRename?.name ?? ''}
-        isDefault={pendingRename?.is_default ?? false}
+        currentName={pendingRename?.profile.name ?? ''}
+        isDefault={pendingRename?.profile.is_default ?? false}
         onClose={() => setPendingRename(null)}
-        onRenamed={selectAndRefresh}
+        onRenamed={name => selectAndRefresh(pendingRename?.connectionId ?? '', name)}
         open={pendingRename !== null}
+        scope={pendingRename ? scopeFor(pendingRename.connectionId, pendingRename.profile.name) : undefined}
       />
 
       <CreateProfileDialog
-        onClose={() => setCreateOpen(false)}
-        onCreated={selectAndRefresh}
-        open={createOpen}
-        profiles={profiles ?? []}
+        onClose={() => setCreateOn(null)}
+        onCreated={name => selectAndRefresh(createOn ?? '', name)}
+        open={createOn !== null}
+        profiles={(entries ?? []).filter(entry => entry.connectionId === (createOn ?? '')).map(entry => entry.profile)}
+        scope={createOn !== null ? scopeFor(createOn) : undefined}
       />
 
       <DeleteProfileDialog
+        gatewayLabel={multipleConnections ? pendingDelete?.connectionLabel : undefined}
         onClose={() => setPendingDelete(null)}
         onDeleted={async () => {
-          setSelectedName(null)
+          setSelectedKey(null)
           await refresh()
         }}
         open={pendingDelete !== null}
-        profile={pendingDelete}
+        profile={pendingDelete?.profile ?? null}
+        scope={pendingDelete ? scopeFor(pendingDelete.connectionId, pendingDelete.profile.name) : undefined}
       />
     </Panel>
   )
@@ -223,7 +322,15 @@ function ProfileRow({
   )
 }
 
-function ProfileDetail({ profile }: { profile: ProfileInfo }) {
+function ProfileDetail({
+  connectionId,
+  connectionLabel,
+  profile
+}: {
+  connectionId: null | string
+  connectionLabel: string
+  profile: ProfileInfo
+}) {
   const { t } = useI18n()
   const p = t.profiles
 
@@ -235,6 +342,7 @@ function ProfileDetail({ profile }: { profile: ProfileInfo }) {
             <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{profileLabel(profile)}</h3>
             {profile.is_default && <PanelPill tone="good">{p.defaultBadge}</PanelPill>}
             {profile.has_env && <PanelPill tone="muted">.env</PanelPill>}
+            {connectionLabel ? <PanelPill tone="muted">{connectionLabel}</PanelPill> : null}
           </div>
           <p
             className="mt-1 truncate font-mono text-[0.66rem] text-muted-foreground/55"
@@ -262,12 +370,12 @@ function ProfileDetail({ profile }: { profile: ProfileInfo }) {
         />
       </header>
 
-      <SoulEditor profileName={profile.name} />
+      <SoulEditor connectionId={connectionId} profileName={profile.name} />
     </PanelDetail>
   )
 }
 
-function SoulEditor({ profileName }: { profileName: string }) {
+function SoulEditor({ connectionId, profileName }: { connectionId: null | string; profileName: string }) {
   const { t } = useI18n()
   const p = t.profiles
   const [content, setContent] = useState('')
@@ -275,11 +383,12 @@ function SoulEditor({ profileName }: { profileName: string }) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
-  const requestRef = useRef<string>(profileName)
+  const requestRef = useRef(`${connectionId ?? 'ambient'}::${profileName}`)
+  const requestKey = `${connectionId ?? 'ambient'}::${profileName}`
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
-    requestRef.current = profileName
+    requestRef.current = requestKey
     setLoading(true)
     setError(null)
     setContent('')
@@ -287,23 +396,25 @@ function SoulEditor({ profileName }: { profileName: string }) {
 
     void (async () => {
       try {
-        const soul = await getProfileSoul(profileName)
+        const soul = connectionId
+          ? await getProfileSoul(profileName, { connectionId, profile: profileName })
+          : await getProfileSoul(profileName)
 
-        if (requestRef.current === profileName) {
+        if (requestRef.current === requestKey) {
           setContent(soul.content)
           setOriginal(soul.content)
         }
       } catch (err) {
-        if (requestRef.current === profileName) {
+        if (requestRef.current === requestKey) {
           setError(err instanceof Error ? err.message : p.failedLoadSoul)
         }
       } finally {
-        if (requestRef.current === profileName) {
+        if (requestRef.current === requestKey) {
           setLoading(false)
         }
       }
     })()
-  }, [p, profileName])
+  }, [connectionId, p.failedLoadSoul, profileName, requestKey])
 
   const dirty = content !== original
 
@@ -312,7 +423,12 @@ function SoulEditor({ profileName }: { profileName: string }) {
     setError(null)
 
     try {
-      await updateProfileSoul(profileName, content)
+      if (connectionId) {
+        await updateProfileSoul(profileName, content, { connectionId, profile: profileName })
+      } else {
+        await updateProfileSoul(profileName, content)
+      }
+
       setOriginal(content)
       notify({ kind: 'success', title: p.soulSaved, message: profileName })
     } catch (err) {
@@ -340,7 +456,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
             filePath="SOUL.md"
             framed
             initialValue={content}
-            key={profileName}
+            key={requestKey}
             onChange={setContent}
             onSave={() => void handleSave()}
           />

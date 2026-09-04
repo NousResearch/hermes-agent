@@ -465,6 +465,19 @@ describe('refreshSessions batches slices into one request', () => {
     expect($messagingSessions.get().map(s => s.id)).toEqual(['m1'])
   })
 
+  it('requests the Electron fleet aggregator for the all-gateways scope', async () => {
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
+    const { result } = renderHook(() => useSessionListActions({ allConnections: true, profileScope: '__all__' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect(listSidebarSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ allConnections: true, recentsProfile: 'all' })
+    )
+  })
+
   it('forwards the active profile scope + section limits to the batched call', async () => {
     listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'work' }))
@@ -675,7 +688,8 @@ describe('messaging profile scope', () => {
       'exclude',
       'recent',
       'work',
-      expect.objectContaining({ excludeSources: expect.any(Array) })
+      expect.objectContaining({ excludeSources: expect.any(Array) }),
+      false
     )
     expect($messagingSessions.get().map(s => s.id)).toEqual(['m1'])
   })

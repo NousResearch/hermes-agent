@@ -2004,6 +2004,7 @@ export const en: Translations = {
     manageProfiles: 'Manage profiles…',
     connectGateway: 'Manage gateways…',
     fleet: {
+      allOnAllGateways: 'All profiles on all gateways',
       allOnGateway: 'All profiles on this gateway',
       gateway: gateway => `Profiles on ${gateway}`,
       gatewayUnreachable: gateway => `${gateway} · unreachable`,

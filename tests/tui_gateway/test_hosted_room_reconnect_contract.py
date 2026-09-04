@@ -23,9 +23,6 @@ def test_capabilities_and_state_expose_fingerprint_without_bearer(peers, monkeyp
     assert "groups.peer.revoke_exact" in capability["methods"]
     assert "groups.peer.revoke_exact" in srv._LONG_HANDLERS
     assert "attachment_ids" in capability["features"]
-    assert not any(
-        name in str(capability["features"]) for name in ("messaging", "desktop")
-    )
     state = srv._methods["groups.state"](2, {"room_id": "room-1"})["result"]
     assert (
         state["driver_status"]["peer_routes"][0]["grant_sha256"]

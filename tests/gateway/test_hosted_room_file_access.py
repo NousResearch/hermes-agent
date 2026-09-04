@@ -192,7 +192,7 @@ def test_local_stale_access_never_returns_bytes(file_state, failure):
         else:
             with sqlite3.connect(state.db) as conn:
                 conn.execute(
-                    """CREATE TABLE hosted_room_disband_fences (
+                    """CREATE TABLE IF NOT EXISTS hosted_room_disband_fences (
                         room_id TEXT PRIMARY KEY,
                         authority_gateway_id TEXT NOT NULL,
                         authority_epoch INTEGER NOT NULL CHECK (authority_epoch >= 1),

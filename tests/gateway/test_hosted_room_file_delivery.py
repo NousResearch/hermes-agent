@@ -12,6 +12,7 @@ import pytest
 from gateway import hosted_room_file_delivery as delivery
 from gateway.native_document_guard import (
     NativeDocumentFallback,
+    mark_native_document_guard,
     require_native_document,
 )
 from gateway.platforms.base import BasePlatformAdapter
@@ -180,6 +181,7 @@ async def test_delivery_success_is_not_relabelled_failure_when_menu_expires(
     menu = callback.__self__
     original = adapter.send_document
 
+    @mark_native_document_guard
     async def expires(**kwargs):
         result = await original(**kwargs)
         menu.deadline = time.monotonic() - 1

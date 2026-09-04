@@ -22,7 +22,11 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli import main as hermes_main
+import hermes_cli.main_web_build as main_web_build
+import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
+import hermes_cli.update_cmd_fleet as update_cmd_fleet
+import hermes_cli.update_cmd_deps as update_cmd_deps
 from hermes_constants import get_hermes_home
 
 
@@ -77,18 +81,22 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(hermes_main, "_resolve_update_branch", lambda args: "main")
     monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: False)
     monkeypatch.setattr(
         hermes_main,
         "_get_origin_url",
         lambda *a, **k: "https://github.com/NousResearch/hermes-agent.git",
     )
-    monkeypatch.setattr(hermes_main, "_is_fork", lambda *a, **k: False)
+    monkeypatch.setattr(update_cmd, "_is_fork", lambda *a, **k: False)
     monkeypatch.setattr(
         hermes_main, "_stash_local_changes_if_needed", lambda *a, **k: None
     )
     monkeypatch.setattr(hermes_main, "_clear_bytecode_cache", lambda *a, **k: 0)
     monkeypatch.setattr(
         hermes_main, "_record_bytecode_fingerprint", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        main_web_build, "_record_bytecode_fingerprint", lambda *a, **k: None
     )
     monkeypatch.setattr(hermes_main, "_run_pre_update_backup", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -99,17 +107,19 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     )
     monkeypatch.setattr(hermes_main, "_write_update_incomplete_marker", lambda: None)
     monkeypatch.setattr(hermes_main, "_clear_update_incomplete_marker", lambda: None)
-    monkeypatch.setattr(
-        hermes_main, "_finish_dashboard_update_cleanup", lambda *a, **k: None
+    monkeypatch.setattr(main_install_repair, "_clear_update_incomplete_marker", lambda: None)
+    monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None
     )
     monkeypatch.setattr(
         update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None
     )
     monkeypatch.setattr(hermes_main, "_build_web_ui", lambda *a, **k: None)
+    monkeypatch.setattr(main_web_build, "_build_web_ui", lambda *a, **k: None)
     monkeypatch.setattr(
         update_cmd, "_venv_core_imports_healthy", lambda: (True, "")
     )
     monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: [])
+    monkeypatch.setattr(update_cmd_deps, "_update_node_dependencies", lambda: [])
     monkeypatch.setattr(update_cmd, "_purge_stale_hermes_modules", lambda: None)
     monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
 
@@ -169,6 +179,7 @@ def test_pending_needed_when_unfinished_receipt_runtime_sha_skews(monkeypatch):
     disk_sha = "e" * 40
     old_sha = "7" * 40
     monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
 
     receipt_dir = get_hermes_home() / "logs" / "update_receipts"
     receipt_dir.mkdir(parents=True)
@@ -206,6 +217,7 @@ def test_successful_receipt_with_pre_update_plan_shas_does_not_retrigger(
     disk_sha = "n" * 40
     old_sha = "o" * 40
     monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
 
     receipt_dir = get_hermes_home() / "logs" / "update_receipts"
     receipt_dir.mkdir(parents=True)
@@ -245,6 +257,7 @@ def test_successful_receipt_with_pre_update_plan_shas_does_not_retrigger(
 def test_stale_fleet_matrix_on_latest_receipt_is_pending(monkeypatch):
     disk_sha = "n" * 40
     monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
 
     receipt_dir = get_hermes_home() / "logs" / "update_receipts"
     receipt_dir.mkdir(parents=True)
@@ -431,6 +444,7 @@ def test_already_up_to_date_runs_pending_restart_when_marker_present(
         return True
 
     monkeypatch.setattr(update_cmd, "_run_pending_fleet_restart", _restart)
+    monkeypatch.setattr(update_cmd_fleet, "_run_pending_fleet_restart", _restart)
 
     hermes_main.cmd_update(args)
 
@@ -448,6 +462,7 @@ def test_already_up_to_date_runs_pending_restart_when_receipt_skewed(
 
     disk_sha = "e" * 40
     monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
     receipt_dir = get_hermes_home() / "logs" / "update_receipts"
     receipt_dir.mkdir(parents=True)
     (receipt_dir / "latest.json").write_text(
@@ -478,6 +493,11 @@ def test_already_up_to_date_runs_pending_restart_when_receipt_skewed(
         "_run_pending_fleet_restart",
         lambda: seen.__setitem__("ran", True) or True,
     )
+    monkeypatch.setattr(
+        update_cmd_fleet,
+        "_run_pending_fleet_restart",
+        lambda: seen.__setitem__("ran", True) or True,
+    )
 
     hermes_main.cmd_update(args)
 
@@ -495,6 +515,11 @@ def test_already_up_to_date_skips_restart_when_nothing_pending(
     seen = {"ran": False}
     monkeypatch.setattr(
         update_cmd,
+        "_run_pending_fleet_restart",
+        lambda: seen.__setitem__("ran", True) or True,
+    )
+    monkeypatch.setattr(
+        update_cmd_fleet,
         "_run_pending_fleet_restart",
         lambda: seen.__setitem__("ran", True) or True,
     )

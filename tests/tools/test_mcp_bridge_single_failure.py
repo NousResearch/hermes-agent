@@ -17,6 +17,8 @@ from unittest.mock import patch
 import pytest
 
 import tools.mcp_tool as mcp_mod
+from tools import mcp_tool_discovery as _mcp_discovery
+from tools import mcp_tool_lifecycle as _mcp_lifecycle
 
 
 @pytest.fixture(autouse=True)
@@ -49,9 +51,9 @@ class TestConnectCooldownHelpers:
     def test_failure_arms_exponential_backoff(self):
         now = 1000.0
         with patch("tools.mcp_tool.time.monotonic", return_value=now):
-            mcp_mod._record_connect_failure("bad")
+            _mcp_discovery._record_connect_failure("bad")
             d1 = mcp_mod._server_connect_retry_after["bad"]
-            mcp_mod._record_connect_failure("bad")
+            _mcp_discovery._record_connect_failure("bad")
             d2 = mcp_mod._server_connect_retry_after["bad"]
         assert d1 == now + mcp_mod._CONNECT_RETRY_BASE_BACKOFF_SEC
         assert d2 == now + mcp_mod._CONNECT_RETRY_BASE_BACKOFF_SEC * 2
@@ -59,7 +61,7 @@ class TestConnectCooldownHelpers:
 
 
     def test_unknown_server_not_in_cooldown(self):
-        assert mcp_mod._connect_cooldown_active("never-seen") is False
+        assert _mcp_discovery._connect_cooldown_active("never-seen") is False
 
 
 @pytest.mark.skipif(not mcp_mod._MCP_AVAILABLE, reason="mcp SDK not installed")
@@ -76,7 +78,7 @@ class TestRegisterMcpServersIsolation:
             server._tools = []
             return server
 
-        return patch("tools.mcp_tool._connect_server", side_effect=fake_connect)
+        return patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect)
 
     def test_failing_server_skipped_on_second_pass(self):
         attempts = []
@@ -85,16 +87,16 @@ class TestRegisterMcpServersIsolation:
             "bad": {"command": "bad-cmd"},
         }
         with self._run_with_mocked_connect(attempts), \
-                patch("tools.mcp_tool._register_server_tools", return_value=[]), \
-                patch("tools.mcp_tool._filter_suspicious_mcp_servers", side_effect=lambda x: x):
-            mcp_mod.register_mcp_servers(cfg)
+                patch("tools.mcp_tool_registration._register_server_tools", return_value=[]), \
+                patch("tools.mcp_tool_config._filter_suspicious_mcp_servers", side_effect=lambda x: x):
+            _mcp_discovery.register_mcp_servers(cfg)
             assert "good" in mcp_mod._servers
             assert "bad" not in mcp_mod._servers
-            assert mcp_mod._connect_cooldown_active("bad") is True
+            assert _mcp_discovery._connect_cooldown_active("bad") is True
             assert "bad" in attempts
 
             attempts.clear()
-            mcp_mod.register_mcp_servers(cfg)
+            _mcp_discovery.register_mcp_servers(cfg)
             assert "bad" not in attempts, (
                 "failing server was re-spawned despite active cooldown -- "
                 "restart storm not isolated (#50394)"
@@ -104,14 +106,14 @@ class TestRegisterMcpServersIsolation:
         attempts = []
         cfg = {"bad": {"command": "bad-cmd"}}
         with self._run_with_mocked_connect(attempts), \
-                patch("tools.mcp_tool._register_server_tools", return_value=[]), \
-                patch("tools.mcp_tool._filter_suspicious_mcp_servers", side_effect=lambda x: x):
-            mcp_mod.register_mcp_servers(cfg)
-            assert mcp_mod._connect_cooldown_active("bad") is True
+                patch("tools.mcp_tool_registration._register_server_tools", return_value=[]), \
+                patch("tools.mcp_tool_config._filter_suspicious_mcp_servers", side_effect=lambda x: x):
+            _mcp_discovery.register_mcp_servers(cfg)
+            assert _mcp_discovery._connect_cooldown_active("bad") is True
 
             mcp_mod._server_connect_retry_after["bad"] = mcp_mod.time.monotonic() - 1
             attempts.clear()
-            mcp_mod.register_mcp_servers(cfg)
+            _mcp_discovery.register_mcp_servers(cfg)
             assert "bad" in attempts, "elapsed cooldown should permit a retry"
 
 
@@ -126,18 +128,18 @@ class TestShutdownClearsCooldownState:
     """
 
     def test_fast_path_clears_cooldown_state(self):
-        mcp_mod._record_connect_failure("bad")
+        _mcp_discovery._record_connect_failure("bad")
         assert mcp_mod._server_connect_retry_after
         assert not mcp_mod._servers  # precondition: fast path taken
 
-        with patch("tools.mcp_tool._stop_mcp_loop"):
-            mcp_mod.shutdown_mcp_servers()
+        with patch("tools.mcp_tool_loop._stop_mcp_loop"):
+            _mcp_lifecycle.shutdown_mcp_servers()
 
         assert mcp_mod._server_connect_retry_after == {}
         assert mcp_mod._server_connect_failures == {}
 
     def test_loop_not_running_path_clears_cooldown_state(self):
-        mcp_mod._record_connect_failure("bad")
+        _mcp_discovery._record_connect_failure("bad")
 
         class _DeadServer:
             name = "dead"
@@ -148,8 +150,8 @@ class TestShutdownClearsCooldownState:
         mcp_mod._servers["dead"] = _DeadServer()  # type: ignore[assignment]
         # _mcp_loop is None in this test process, so the async _shutdown
         # coroutine is never scheduled; only the final sweep can clear.
-        with patch("tools.mcp_tool._stop_mcp_loop"):
-            mcp_mod.shutdown_mcp_servers()
+        with patch("tools.mcp_tool_loop._stop_mcp_loop"):
+            _mcp_lifecycle.shutdown_mcp_servers()
 
         assert mcp_mod._server_connect_retry_after == {}
         assert mcp_mod._server_connect_failures == {}

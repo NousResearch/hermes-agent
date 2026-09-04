@@ -18,8 +18,8 @@ from plugins.memory.honcho.session import (
     HonchoAuthError,
     HonchoSession,
     HonchoSessionManager,
-    _is_auth_error,
 )
+from plugins.memory.honcho.session_auth import _is_auth_error
 
 
 def _host_block(refresh="hch-rt-old", expires_at=100):
@@ -154,7 +154,7 @@ class TestExchangeRetry:
         assert "grant revoked" in caplog.text
 
     def test_redaction_strips_token_values(self):
-        redacted = oauth._redact_tokens(
+        redacted = oauth.redact_tokens(
             "exchange failed for hch-rt-supersecret123 got hch-at-alsosecret456"
         )
         assert "supersecret123" not in redacted

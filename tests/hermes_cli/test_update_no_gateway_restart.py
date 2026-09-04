@@ -108,18 +108,50 @@ def test_catchup_noop_when_nothing_pending():
     mock_run.assert_not_called()
 
 
-# ── defer helper ──────────────────────────────────────────────────────
+# ── defer helper: outcome contract ────────────────────────────────────
 
 
-def test_defer_records_skip_and_finalizes_success():
+def test_defer_success_when_update_complete_and_resume_clean():
+    """Successful update + deliberate defer => success, exit 0, marker kept."""
     with (
         patch("hermes_cli.update_receipt.record_skip") as mock_skip,
         patch("hermes_cli.update_receipt.finalize_update_receipt") as mock_final,
+        patch.object(fleet, "_clear_fleet_restart_pending_marker") as mock_clear,
     ):
-        fleet._defer_fleet_restart_after_update()
+        fleet._defer_fleet_restart_after_update(update_complete=True)
     mock_skip.assert_called_once()
     assert mock_skip.call_args[0][0] == "gateway_restart"
     mock_final.assert_called_once_with("success")
+    mock_clear.assert_not_called()
+
+
+def test_defer_partial_when_update_incomplete():
+    """update_complete=False + defer => partial + exit 1, marker kept."""
+    with (
+        patch("hermes_cli.update_receipt.record_skip"),
+        patch("hermes_cli.update_receipt.finalize_update_receipt") as mock_final,
+        patch.object(fleet, "_clear_fleet_restart_pending_marker") as mock_clear,
+    ):
+        with pytest.raises(SystemExit) as exc:
+            fleet._defer_fleet_restart_after_update(update_complete=False)
+    assert exc.value.code == 1
+    mock_final.assert_called_once_with("partial")
+    mock_clear.assert_not_called()
+
+
+def test_defer_partial_when_resume_incomplete():
+    """Clean update but failed Windows resume + defer => partial + exit 1."""
+    with (
+        patch("hermes_cli.update_receipt.record_skip"),
+        patch("hermes_cli.update_receipt.finalize_update_receipt") as mock_final,
+        patch.object(fleet, "_clear_fleet_restart_pending_marker") as mock_clear,
+    ):
+        with pytest.raises(SystemExit) as exc:
+            fleet._defer_fleet_restart_after_update(
+                update_complete=True, resume_incomplete=True)
+    assert exc.value.code == 1
+    mock_final.assert_called_once_with("partial")
+    mock_clear.assert_not_called()
 
 
 # ── pulled-update orchestration ───────────────────────────────────────
@@ -130,6 +162,7 @@ def test_pulled_update_skips_restart_phase_under_flag():
         patch.object(uc, "_invalidate_update_cache"),
         patch.object(uc, "_verify_head_after_pull", return_value="newsha"),
         patch.object(uc, "_write_fleet_restart_pending_marker") as mock_marker,
+        patch.object(uc, "_clear_fleet_restart_pending_marker") as mock_clear,
         patch.object(uc, "_sweep_bytecode_after_update"),
         patch.object(uc, "_sync_python_dependencies_after_pull"),
         patch.object(uc, "_update_node_dependencies", return_value=[]),
@@ -151,9 +184,76 @@ def test_pulled_update_skips_restart_phase_under_flag():
         )
     mock_restart.assert_not_called()
     mock_verify.assert_not_called()
-    mock_defer.assert_called_once()
+    mock_defer.assert_called_once_with(update_complete=True, resume_incomplete=False)
     mock_resume.assert_called_once()  # Windows pause/resume still runs
     mock_marker.assert_called_once()  # pending marker kept for catch-up
+    mock_clear.assert_not_called()  # deferred stale fleet alone is not partial
+
+
+def test_pulled_update_defer_reports_incomplete_maintenance():
+    """update_complete=False flows into the deferral (=> partial downstream)."""
+    with (
+        patch.object(uc, "_invalidate_update_cache"),
+        patch.object(uc, "_verify_head_after_pull", return_value="newsha"),
+        patch.object(uc, "_write_fleet_restart_pending_marker"),
+        patch.object(uc, "_sweep_bytecode_after_update"),
+        patch.object(uc, "_sync_python_dependencies_after_pull"),
+        patch.object(uc, "_update_node_dependencies", return_value=[]),
+        patch.object(uc, "_rebuild_desktop_after_update", return_value=True),
+        patch.object(uc, "_run_post_update_maintenance", return_value=False),
+        patch.object(uc, "_branch_head_suffix", return_value=""),
+        patch.object(uc, "_m", return_value=MagicMock()),
+        patch.object(uc, "_restart_gateway_fleet_after_update") as mock_restart,
+        patch.object(uc, "_resume_windows_gateways_and_merge_outcome"),
+        patch.object(uc, "_verify_fleet_after_update") as mock_verify,
+        patch.object(uc, "_defer_fleet_restart_after_update") as mock_defer,
+    ):
+        uc._apply_pulled_update(
+            "git", "main", "oldsha", SimpleNamespace(in_place_update=False),
+            _opts(no_gateway_restart=True), gateway_mode=False,
+            is_fork=False, desktop_dir="/tmp", had_desktop_app_before_update=False,
+            pre_update_snapshot_id=None, _pre_update_plan=None,
+            _windows_gateway_resume=None,
+        )
+    mock_restart.assert_not_called()
+    mock_verify.assert_not_called()
+    mock_defer.assert_called_once_with(update_complete=False, resume_incomplete=False)
+
+
+def test_pulled_update_defer_retains_failed_resume_outcome():
+    """A resume phase that marks its outcome incomplete reaches the deferral."""
+    def _fail_resume(outcome, token, gw_mode):
+        outcome.incomplete = True
+
+    with (
+        patch.object(uc, "_invalidate_update_cache"),
+        patch.object(uc, "_verify_head_after_pull", return_value="newsha"),
+        patch.object(uc, "_write_fleet_restart_pending_marker"),
+        patch.object(uc, "_sweep_bytecode_after_update"),
+        patch.object(uc, "_sync_python_dependencies_after_pull"),
+        patch.object(uc, "_update_node_dependencies", return_value=[]),
+        patch.object(uc, "_rebuild_desktop_after_update", return_value=True),
+        patch.object(uc, "_run_post_update_maintenance", return_value=True),
+        patch.object(uc, "_branch_head_suffix", return_value=""),
+        patch.object(uc, "_m", return_value=MagicMock()),
+        patch.object(uc, "_restart_gateway_fleet_after_update") as mock_restart,
+        patch.object(
+            uc, "_resume_windows_gateways_and_merge_outcome",
+            side_effect=_fail_resume,
+        ),
+        patch.object(uc, "_verify_fleet_after_update") as mock_verify,
+        patch.object(uc, "_defer_fleet_restart_after_update") as mock_defer,
+    ):
+        uc._apply_pulled_update(
+            "git", "main", "oldsha", SimpleNamespace(in_place_update=False),
+            _opts(no_gateway_restart=True), gateway_mode=False,
+            is_fork=False, desktop_dir="/tmp", had_desktop_app_before_update=False,
+            pre_update_snapshot_id=None, _pre_update_plan=None,
+            _windows_gateway_resume=None,
+        )
+    mock_restart.assert_not_called()
+    mock_verify.assert_not_called()
+    mock_defer.assert_called_once_with(update_complete=True, resume_incomplete=True)
 
 
 def test_pulled_update_default_path_unchanged():

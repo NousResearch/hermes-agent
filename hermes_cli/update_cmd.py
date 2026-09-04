@@ -1232,14 +1232,17 @@ def _apply_pulled_update(
         # code and must not have its sys.modules graph mutated mid-flight.
         # Windows pause/resume still runs (paused gateways must be resumed onto
         # pre-update code); only the fleet restart + verification are deferred.
+        # The resume outcome is RETAINED (not discarded): a failed resume must
+        # still make this update partial, exactly as on the normal path.
+        resume_outcome = _GatewayRestartOutcome(
+            incomplete=False, phase_errors=[], pre_restart_gateway_pids=[],
+            restarted_services=[], failed_or_stale_units=[], relaunched_profiles=[],
+            externally_supervised_profiles=[], killed_pids=set(),
+        )
         _resume_windows_gateways_and_merge_outcome(
-            _GatewayRestartOutcome(
-                incomplete=False, phase_errors=[], pre_restart_gateway_pids=[],
-                restarted_services=[], failed_or_stale_units=[], relaunched_profiles=[],
-                externally_supervised_profiles=[], killed_pids=set(),
-            ),
-            _windows_gateway_resume, gateway_mode)
-        _defer_fleet_restart_after_update()
+            resume_outcome, _windows_gateway_resume, gateway_mode)
+        _defer_fleet_restart_after_update(
+            update_complete=update_complete, resume_incomplete=resume_outcome.incomplete)
         return
 
     _restart = _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode)

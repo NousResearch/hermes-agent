@@ -483,3 +483,235 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         pump.cancel()
         with contextlib.suppress(Exception):
             await ws.close()
+
+
+def _converse_stt_model(profile: Optional[str]) -> Optional[str]:
+    """STT model override for the converse loop, mirroring cli_voice_mixin._voice_stt_model.
+
+    Local provider prefers ``stt.local.model`` (default ``base``); every other
+    provider uses ``stt.model`` (or the provider default when unset). Resolved
+    under the requesting profile's config scope.
+    """
+    with _config_profile_scope(profile):
+        from hermes_cli.config import load_config
+
+        stt = (load_config().get("stt") or {})
+        if str(stt.get("provider") or "").strip().lower() == "local":
+            local = stt.get("local") if isinstance(stt.get("local"), dict) else {}
+            return (local or {}).get("model") or "base"
+        return stt.get("model")
+
+
+@router.websocket("/api/audio/converse")
+async def converse_ws(ws: "WebSocket") -> None:
+    """Off-device realtime voice loop: mic PCM in, agent speech out, over one WS.
+
+    The client streams PCM16 @16 kHz mono as binary frames; the server does VAD →
+    STT → a REAL agent turn (``prompt.submit`` in-process, so the spoken
+    conversation persists) → streaming TTS, sending PCM16 back as binary frames.
+    JSON text frames carry control. Barge-in is supported: speech during playback
+    cuts the reply.
+
+    Protocol:
+      client → binary PCM16 @16 kHz mono frames (30 ms blocks preferred),
+               ``{"stop": true}`` to end, ``{"commit": true}`` to force endpoint
+      server → ``{"type": "ready", "input": {...}, "output": {...}}``,
+               ``{"type": "transcript", "text": ...}``,
+               ``{"type": "speaking"}`` then binary PCM frames,
+               ``{"type": "interrupted"}`` on barge-in,
+               ``{"type": "turn_done"}`` after each reply,
+               ``{"type": "error", "error": ...}`` on failure.
+
+    The heavy lifting lives in :mod:`hermes_cli.web_routers._converse_loop`; this
+    handler only gates auth, wires queues/threads and mirrors ``speak_stream_ws``.
+    """
+    if not _ws_auth_ok(ws):
+        await ws.close(code=4401)
+        return
+    if not _ws_request_is_allowed(ws):
+        await ws.close(code=4403)
+        return
+    await ws.accept()
+
+    # Profile via query param, like /api/pty and speak-stream: STT/TTS providers
+    # + API keys resolve from the requesting profile's config, not the dashboard's.
+    profile = (ws.query_params.get("profile") or "").strip() or None
+    loop = asyncio.get_running_loop()
+
+    def _resolve():
+        import numpy as np
+        from tools.tts_streaming import resolve_streaming_provider
+        from tools.tts_tool import _get_provider, _load_tts_config, _resolve_max_text_length
+        from hermes_cli.web_routers._converse_loop import ConverseSession, create_voice_session
+
+        stt_model = _converse_stt_model(profile)
+        with _config_profile_scope(profile):
+            cfg = _load_tts_config()
+            streamer = resolve_streaming_provider(cfg)
+            cap = _resolve_max_text_length(_get_provider(cfg), cfg) if streamer else 0
+        if streamer is None:
+            return None, 0, None, None
+        session = ConverseSession(np, stt_model=stt_model)
+        sid = create_voice_session()
+        return streamer, cap, session, sid
+
+    try:
+        streamer, cap, session, sid = await loop.run_in_executor(None, _resolve)
+    except Exception:
+        _log.exception("converse setup failed")
+        streamer, cap, session, sid = None, 0, None, None
+
+    if streamer is None or session is None:
+        with contextlib.suppress(Exception):
+            await ws.send_json({"type": "error", "error": "no streaming TTS provider"})
+            await ws.close()
+        return
+
+    await ws.send_json({
+        "type": "ready",
+        "input": {"sample_rate": 16000, "format": "pcm16", "block_ms": 30},
+        "output": {"sample_rate": streamer.sample_rate, "format": "pcm16"},
+    })
+
+    session.start()
+
+    async def _pump_client():
+        # Binary frames feed the mic shim; {"stop"}/disconnect ends; {"commit"}
+        # forces the current utterance to endpoint.
+        try:
+            while True:
+                frame = await ws.receive()
+                if frame.get("bytes") is not None:
+                    session.stream.feed(frame["bytes"])
+                    continue
+                text = frame.get("text")
+                if text is None:
+                    break  # websocket.disconnect
+                try:
+                    msg = json.loads(text)
+                except (ValueError, TypeError):
+                    continue
+                if msg.get("stop"):
+                    break
+                if msg.get("commit"):
+                    session.commit()
+        except Exception:
+            pass
+        session.stop()
+
+    async def _drive_turns():
+        # One turn per transcript: announce it, then run the agent and speak its
+        # reply INCREMENTALLY — each sentence is synthesized and streamed the moment
+        # it is ready, so the user hears sentence 1 while sentence 2 is still being
+        # generated. Deltas from the live turn feed a SentenceChunker exactly like
+        # /api/audio/speak-stream, rather than buffering the whole reply first.
+        from tools.tts_streaming import SentenceChunker
+        from tools.tts_text_normalize import _strip_markdown_for_tts
+        from hermes_cli.web_routers._converse_loop import run_voice_turn
+
+        while not session.stopped:
+            transcript = await loop.run_in_executor(None, session.transcripts.get)
+            if transcript is None:  # shutdown sentinel
+                break
+            if not transcript:
+                continue
+            await ws.send_json({"type": "transcript", "text": transcript})
+
+            interrupted_in = session.take_interrupted()
+            text_q: "queue.Queue[Optional[str]]" = queue.Queue()  # deltas; None = turn done
+            pcm_q: asyncio.Queue = asyncio.Queue()  # PCM out; None = synthesis done
+            tts_stop = threading.Event()
+            turn_err: dict = {}
+
+            def _on_delta(delta: str) -> None:
+                text_q.put(delta)
+
+            def _run_turn(t=transcript, note=interrupted_in):
+                # The real agent turn; deltas stream out via _on_delta as they land.
+                # The None sentinel closes the synthesis pipeline when the turn ends.
+                try:
+                    turn_err["err"] = run_voice_turn(sid, t, _on_delta, interrupted=note)
+                except Exception as exc:  # noqa: BLE001 - surface, don't wedge the loop
+                    turn_err["err"] = f"voice turn failed: {exc}"
+                finally:
+                    text_q.put(None)
+
+            def _produce():
+                # Cut streaming deltas into sentences and synthesize each as it lands
+                # (mirrors speak_stream_ws._produce, but the text source is the live turn).
+                chunker = SentenceChunker()
+                idle_poll_seconds = 0.5
+                idle_polls_before_force_flush = 4  # ~2s of silence -> speak the tail
+
+                def _sentences():
+                    idle_polls = 0
+                    while not (tts_stop.is_set() or session.stopped):
+                        try:
+                            delta = text_q.get(timeout=idle_poll_seconds)
+                        except queue.Empty:
+                            idle_polls += 1
+                            buffered = chunker.buf.strip()
+                            if not buffered or ("<think" in chunker.buf and "</think>" not in chunker.buf):
+                                continue
+                            if buffered.endswith((".", "!", "?", "…", ":")) or idle_polls >= idle_polls_before_force_flush:
+                                yield from chunker.flush()
+                            continue
+                        idle_polls = 0
+                        if delta is None:
+                            yield from chunker.flush()
+                            return
+                        yield from chunker.feed(delta)
+
+                try:
+                    for sentence in _sentences():
+                        cleaned = _strip_markdown_for_tts(sentence)
+                        if not cleaned:
+                            continue
+                        for piece in _split_text_for_speak_stream(cleaned, cap):
+                            for chunk in streamer.stream(piece):
+                                if tts_stop.is_set() or session.stopped:
+                                    return
+                                loop.call_soon_threadsafe(pcm_q.put_nowait, chunk)
+                except Exception as exc:
+                    _log.warning("converse synthesis failed: %s", exc)
+                finally:
+                    loop.call_soon_threadsafe(pcm_q.put_nowait, None)
+
+            threading.Thread(target=_run_turn, name="converse-turn", daemon=True).start()
+            threading.Thread(target=_produce, name="converse-tts", daemon=True).start()
+
+            # Consumer: stream PCM out; flip `playing` on only when real audio starts
+            # (kept off during generation so a mid-thought interjection stays VAD-sensitive).
+            speaking = False
+            while True:
+                chunk = await pcm_q.get()
+                if chunk is None:
+                    break
+                if not speaking:
+                    session.set_playing(True, tts_stop=tts_stop)
+                    await ws.send_json({"type": "speaking"})
+                    speaking = True
+                await ws.send_bytes(chunk)
+            if speaking:
+                session.set_playing(False)
+
+            if session.take_interrupted() or tts_stop.is_set():
+                await ws.send_json({"type": "interrupted"})
+            elif turn_err.get("err"):
+                await ws.send_json({"type": "error", "error": turn_err["err"]})
+            await ws.send_json({"type": "turn_done"})
+
+    pump = asyncio.ensure_future(_pump_client())
+    driver = asyncio.ensure_future(_drive_turns())
+    try:
+        await driver
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    except Exception:
+        _log.exception("converse loop crashed")
+    finally:
+        session.stop()
+        pump.cancel()
+        driver.cancel()
+        with contextlib.suppress(Exception):
+            await ws.close()

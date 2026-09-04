@@ -10,6 +10,7 @@ cap pathological lengths.
 from __future__ import annotations
 
 import json
+import inspect
 
 import pytest
 
@@ -284,6 +285,404 @@ class TestMandatorySecretRedaction:
 
         assert secret not in out
         assert TOOL_SECRET_PLACEHOLDER in out
+
+    @pytest.mark.parametrize(
+        "separator",
+        [
+            " ",
+            "\t",
+            "\n",
+            "\r\n",
+            "\v",
+            "\f",
+            "\N{NO-BREAK SPACE}",
+            "\N{NEXT LINE}",
+            "\N{EN SPACE}",
+            "\N{EM SPACE}",
+            "\N{LINE SEPARATOR}",
+            "\N{PARAGRAPH SEPARATOR}",
+        ],
+    )
+    @pytest.mark.parametrize("prefix", ["Bearer", "BEARER", "bearer", "bEaReR"])
+    def test_bearer_gate_covers_every_regex_whitespace(
+        self, separator, prefix
+    ):
+        import agent.redact as redact_module
+
+        secret = "Q7mP" * 12
+        raw = "before " + prefix + separator + secret + ", after"
+
+        assert redact_module._TOOL_BEARER_RE.search(raw)
+        assert redact_module._has_tool_bearer_hint(raw.casefold())
+
+        out = redact_tool_boundary_text(raw, _secret_snapshot=())
+
+        assert secret not in out
+        assert TOOL_SECRET_PLACEHOLDER in out
+        assert out.startswith("before ")
+        assert out.endswith(", after")
+
+    @pytest.mark.parametrize("scheme", ["", "https:", "HtTpS:", "custom+v1:"])
+    @pytest.mark.parametrize("userinfo_shape", ["bare", "user-password", "punctuated"])
+    @pytest.mark.parametrize(
+        "authority_tail",
+        [
+            "host.invalid/",
+            "host.invalid:8443/path",
+            "host.invalid/path?ordinary=value",
+        ],
+    )
+    @pytest.mark.parametrize("atom_length", [8, 24, 64])
+    def test_url_userinfo_gate_covers_authoritative_matcher_domain(
+        self, scheme, userinfo_shape, authority_tail, atom_length
+    ):
+        import agent.redact as redact_module
+
+        atom = ("Q7mP" * 20)[:atom_length]
+        if userinfo_shape == "bare":
+            userinfo = atom
+        elif userinfo_shape == "user-password":
+            userinfo = "operator:" + atom
+        else:
+            userinfo = "operator+tag:" + atom + ".-_~"
+        raw = "before " + scheme + "//" + userinfo + "@" + authority_tail + " after"
+
+        assert redact_module._STRICT_URL_USERINFO_RE.search(raw)
+        assert redact_module._has_tool_url_userinfo_hint(raw)
+
+        out = redact_tool_boundary_text(raw, _secret_snapshot=())
+
+        assert userinfo not in out
+        assert atom not in out
+        assert TOOL_SECRET_PLACEHOLDER in out
+        assert authority_tail in out
+        assert out.startswith("before " + scheme + "//")
+        assert out.endswith(" after")
+
+    @pytest.mark.parametrize("delimiter", ["?", "#", "&", ";"])
+    @pytest.mark.parametrize(
+        "key",
+        ["access_token", "api_key", "client%5Fsecret", "refresh%5Ftoken"],
+    )
+    def test_url_parameter_gate_covers_authoritative_matcher_domain(
+        self, delimiter, key
+    ):
+        import agent.redact as redact_module
+
+        secret = "Q7mP" * 12
+        raw = "https://host.invalid/path" + delimiter + key + "=" + secret
+
+        assert redact_module._STRICT_URL_PARAM_RE.search(raw)
+        assert redact_module._has_tool_url_param_hint(raw)
+
+        out = redact_tool_boundary_text(raw, _secret_snapshot=())
+
+        assert secret not in out
+        assert TOOL_SECRET_PLACEHOLDER in out
+        assert "https://host.invalid/path" in out
+
+    def test_matcher_inventory_has_no_excluding_dispatch_gate(self):
+        import agent.redact as redact_module
+
+        secret = "Q7mP" * 12
+        cases = [
+            (
+                "vendor-prefix",
+                redact_module._PREFIX_RE,
+                lambda raw: redact_module._has_known_prefix_substring(raw),
+                "s" + "k-" + secret,
+            ),
+            (
+                "discord-webhook",
+                redact_module._TOOL_DISCORD_WEBHOOK_RE,
+                lambda raw: "discord" in raw.casefold() and "/webhooks/" in raw.casefold(),
+                "https://discord.com/api/" + "webhooks/1234567890/" + secret,
+            ),
+            (
+                "bearer",
+                redact_module._TOOL_BEARER_RE,
+                lambda raw: redact_module._has_tool_bearer_hint(raw.casefold()),
+                "Bear" + "er\u2003" + secret,
+            ),
+            (
+                "authorization",
+                redact_module._AUTH_HEADER_RE,
+                lambda raw: "authorization" in raw.casefold(),
+                "Author" + "ization: Basic " + secret,
+            ),
+            (
+                "secret-header",
+                redact_module._SECRET_HEADER_RE,
+                lambda raw: ":" in raw,
+                "x-api" + "-key: " + secret,
+            ),
+            (
+                "uppercase-env",
+                redact_module._ENV_ASSIGN_RE,
+                lambda raw: "=" in raw and redact_module._has_tool_config_hint(raw.casefold()),
+                "OPENAI_API_KEY=" + secret,
+            ),
+            (
+                "lowercase-env",
+                redact_module._ENV_ASSIGN_LOWER_RE,
+                lambda raw: "=" in raw and redact_module._has_tool_config_hint(raw.casefold()),
+                "openai_key=" + secret,
+            ),
+            (
+                "dotted-config",
+                redact_module._CFG_DOTTED_RE,
+                lambda raw: (
+                    "=" in raw
+                    and redact_module._has_tool_config_hint(raw.casefold())
+                    and bool(redact_module._CFG_SECRET_WORD_RE.search(raw))
+                ),
+                "service.auth.token=" + secret,
+            ),
+            (
+                "anchored-config",
+                redact_module._CFG_ANCHORED_RE,
+                lambda raw: (
+                    "=" in raw
+                    and redact_module._has_tool_config_hint(raw.casefold())
+                    and bool(redact_module._CFG_SECRET_WORD_RE.search(raw))
+                ),
+                "password=" + secret,
+            ),
+            (
+                "json-field",
+                redact_module._JSON_FIELD_RE,
+                lambda raw: (
+                    ":" in raw
+                    and '"' in raw
+                    and redact_module._has_tool_config_hint(raw.casefold())
+                ),
+                '{"secret_value": "' + secret + '"}',
+            ),
+            (
+                "yaml-field",
+                redact_module._YAML_ASSIGN_RE,
+                lambda raw: (
+                    ":" in raw
+                    and redact_module._has_tool_config_hint(raw.casefold())
+                ),
+                "client_secret: " + secret,
+            ),
+            (
+                "private-key",
+                redact_module._PRIVATE_KEY_RE,
+                lambda raw: "BEGIN" in raw and "PRIVATE KEY" in raw,
+                "-----BEGIN PRIVATE KEY-----\n" + secret + "\n-----END PRIVATE KEY-----",
+            ),
+            (
+                "telegram",
+                redact_module._TELEGRAM_RE,
+                lambda raw: ":" in raw and redact_module._has_tool_telegram_hint(raw),
+                "12345678:" + secret,
+            ),
+            (
+                "database-url",
+                redact_module._DB_CONNSTR_RE,
+                lambda raw: "://" in raw,
+                "postgresql://operator:" + secret + "@host.invalid/db",
+            ),
+            (
+                "bare-userinfo",
+                redact_module._URL_BARE_TOKEN_RE,
+                lambda raw: "://" in raw,
+                "https://" + secret + "@host.invalid/path",
+            ),
+            (
+                "jwt",
+                redact_module._JWT_RE,
+                lambda raw: "eyJ" in raw,
+                "eyJ" + secret + ".abcd.efgh",
+            ),
+            (
+                "strict-url-param",
+                redact_module._STRICT_URL_PARAM_RE,
+                redact_module._has_tool_url_param_hint,
+                "https://host.invalid/?access_token=" + secret,
+            ),
+            (
+                "strict-url-userinfo",
+                redact_module._STRICT_URL_USERINFO_RE,
+                redact_module._has_tool_url_userinfo_hint,
+                "//operator:" + secret + "@host.invalid/path",
+            ),
+        ]
+
+        for family, matcher, gate, raw in cases:
+            assert matcher.search(raw), family
+            assert gate(raw), family
+            out = redact_tool_boundary_text(raw, _secret_snapshot=())
+            assert secret not in out, family
+            assert TOOL_SECRET_PLACEHOLDER in out, family
+
+    def test_positive_prefilters_cover_deterministic_generated_match_corpus(self):
+        import agent.redact as redact_module
+
+        secret = "Q7mP" * 12
+        config_cases = []
+        for key in (
+            "OPENAI_API_KEY",
+            "SERVICE_TOKEN",
+            "CLIENT_SECRET",
+            "DATABASE_PASSWORD",
+            "MYSQL_PASS",
+            "DB_PW",
+            "AUTH_CREDENTIAL",
+            "openai_key",
+            "service_token",
+            "client_secret",
+            "database_password",
+            "mysql_pass",
+            "db_pw",
+            "auth_credential",
+            "service.api.key",
+            "service.auth.token",
+        ):
+            config_cases.extend((key + "=" + secret, key + ": " + secret))
+        for key in (
+            "apiKey",
+            "token",
+            "secret",
+            "password",
+            "access_token",
+            "refresh_token",
+            "auth_token",
+            "bearer",
+            "secret_value",
+            "raw_secret",
+            "secret_input",
+            "key_material",
+        ):
+            config_cases.append('{"' + key + '": "' + secret + '"}')
+
+        config_matchers = (
+            redact_module._ENV_ASSIGN_RE,
+            redact_module._ENV_ASSIGN_LOWER_RE,
+            redact_module._CFG_DOTTED_RE,
+            redact_module._CFG_ANCHORED_RE,
+            redact_module._JSON_FIELD_RE,
+            redact_module._YAML_ASSIGN_RE,
+        )
+        matched_config_cases = 0
+        for raw in config_cases:
+            if any(matcher.search(raw) for matcher in config_matchers):
+                matched_config_cases += 1
+                assert redact_module._has_tool_config_hint(raw.casefold()), raw
+        assert matched_config_cases == 39
+
+        telegram_cases = [
+            prefix + str(10 ** (digits - 1)) + ":" + secret
+            for prefix in ("", "bot")
+            for digits in range(8, 16)
+        ]
+        for raw in telegram_cases:
+            assert redact_module._TELEGRAM_RE.search(raw)
+            assert redact_module._has_tool_telegram_hint(raw)
+
+    def test_dispatch_source_has_no_whole_text_url_negative_gate(self):
+        import agent.redact as redact_module
+
+        source = inspect.getsource(redact_module.redact_tool_boundary_text)
+
+        assert 'if "://" not in text' not in source
+        assert 'and "://" not in text' not in source
+
+    @pytest.mark.parametrize(
+        "ordinary",
+        [
+            'IDENTITY_TOKEN="bailu"',
+            'runtime.token="local"',
+            "token: CPU",
+            "tensor token dimensions and tokenizer cache",
+            "ordinary technical token/key/cache/session text",
+        ],
+    )
+    def test_ambiguous_technical_values_remain_visible(self, ordinary):
+        assert redact_tool_boundary_text(ordinary, _secret_snapshot=()) == ordinary
+
+    @staticmethod
+    def _mixed_content_cases(secret):
+        docs = "https://docs.example.invalid/reference?mode=public"
+        return [
+            ("lowercase-assignment", "openai_key=" + secret, docs),
+            ("dotted-config", "service.auth.token=" + secret, docs),
+            ("anchored-config", "\npassword=" + secret, docs),
+            ("yaml-config", "\nclient_secret: " + secret, docs),
+            (
+                "bearer-json",
+                "Bear" + "er\n" + secret,
+                '{"mode": "public"} ' + docs,
+            ),
+            (
+                "url-userinfo-env",
+                "https://operator:" + secret + "@private.invalid/path",
+                "RUNTIME_MODE=local " + docs,
+            ),
+            (
+                "url-param-ordinary-config",
+                "https://private.invalid/?access_token=" + secret,
+                'runtime.token="local" ' + docs,
+            ),
+            (
+                "multiple-credential-families",
+                "Author" + "ization: Basic " + secret,
+                "x-api" + "-key: " + secret + " " + docs,
+            ),
+            (
+                "stdout-stack-url",
+                "stdout: x-api" + "-key: " + secret,
+                "stack=" + docs,
+            ),
+            (
+                "stderr-documentation-url",
+                "stderr: Author" + "ization: Token " + secret,
+                "documentation=" + docs,
+            ),
+        ]
+
+    @pytest.mark.parametrize("order", ["credential-first", "credential-last"])
+    @pytest.mark.parametrize("separator", [" ", "\n", "\ntrace line\n"])
+    def test_mixed_content_never_suppresses_an_independent_matcher(
+        self, order, separator
+    ):
+        secret = "Q7mP" * 12
+
+        for family, credential, ordinary in self._mixed_content_cases(secret):
+            parts = (credential, ordinary)
+            if order == "credential-last":
+                parts = tuple(reversed(parts))
+            raw = separator.join(parts)
+
+            out = redact_tool_boundary_text(raw, _secret_snapshot=())
+
+            assert secret not in out, family
+            assert TOOL_SECRET_PLACEHOLDER in out, family
+            assert "docs.example.invalid" in out, family
+
+    def test_mixed_content_nested_mapping_and_list_are_independent(self):
+        secret = "Q7mP" * 12
+        raw = {
+            "stdout": [
+                credential
+                for _family, credential, _ordinary in self._mixed_content_cases(secret)
+            ],
+            "diagnostic": {
+                "urls": [
+                    ordinary
+                    for _family, _credential, ordinary in self._mixed_content_cases(secret)
+                ]
+            },
+        }
+
+        out = redact_tool_boundary_value(raw, _secret_snapshot=())
+        serialized = repr(out)
+
+        assert secret not in serialized
+        assert serialized.count(TOOL_SECRET_PLACEHOLDER) >= 10
+        assert serialized.count("docs.example.invalid") == 10
 
     def test_exception_message_is_redacted(self, synthetic_secret_scope):
         exc = RuntimeError(synthetic_secret_scope["arbitrary"])

@@ -1181,8 +1181,41 @@ def _redact_tool_url_credentials(text: str) -> str:
     return _STRICT_URL_USERINFO_RE.sub(_redact_userinfo, text)
 
 
+def _has_tool_bearer_hint(folded_text: str) -> bool:
+    """Return a false-negative-free literal gate for the Bearer matcher.
+
+    This gate is deliberately not an exact matcher. The authoritative regex
+    owns whitespace and token validation; the regex is skipped only when its
+    required case-insensitive ``Bearer`` literal is absent altogether.
+    """
+    return "bearer" in folded_text
+
+
+def _has_tool_config_hint(folded_text: str) -> bool:
+    """Return the literal superset required by config field matchers.
+
+    Every key language accepted by the lowercase ENV, dotted, anchored,
+    JSON, or YAML matcher contains at least one of these literals.  The
+    authoritative matcher and its match-local validators remain responsible
+    for syntax and false-positive rejection.
+    """
+    return any(
+        marker in folded_text
+        for marker in (
+            "key",
+            "token",
+            "secret",
+            "pass",
+            "pw",
+            "credential",
+            "auth",
+            "bearer",
+        )
+    )
+
+
 def _has_tool_telegram_hint(text: str) -> bool:
-    """Return whether a colon is immediately preceded by at least 8 digits."""
+    """Return whether a colon has the matcher's required digit prefix."""
     offset = 0
     while True:
         colon = text.find(":", offset)
@@ -1196,6 +1229,21 @@ def _has_tool_telegram_hint(text: str) -> bool:
                 return True
             cursor -= 1
         offset = colon + 1
+
+
+def _has_tool_url_param_hint(text: str) -> bool:
+    """Return the required literal gate for strict URL parameters."""
+    return "=" in text
+
+
+def _has_tool_url_userinfo_hint(text: str) -> bool:
+    """Return a false-negative-free literal gate for URL userinfo.
+
+    The authoritative matcher requires a literal ``//`` before its literal
+    ``@``. A scheme and its colon are outside that match, so requiring
+    ``://`` would incorrectly exclude network-path references.
+    """
+    return "//" in text and "@" in text
 
 
 def _tool_boundary_secret_snapshot() -> tuple[str, ...]:
@@ -1240,7 +1288,7 @@ def redact_tool_boundary_text(
     folded_text = text.casefold()
     if "discord" in folded_text and "/webhooks/" in folded_text:
         text = _TOOL_DISCORD_WEBHOOK_RE.sub(TOOL_SECRET_PLACEHOLDER, text)
-    if "bearer " in folded_text:
+    if _has_tool_bearer_hint(folded_text):
         text = _TOOL_BEARER_RE.sub(
             lambda match: match.group(1) + TOOL_SECRET_PLACEHOLDER,
             text,
@@ -1272,55 +1320,47 @@ def redact_tool_boundary_text(
             text,
         )
 
-    if "=" in text:
+    if "=" in text and _has_tool_config_hint(folded_text):
         def _redact_assignment(match: re.Match) -> str:
+            name, quote, value = match.group(1), match.group(2), match.group(3)
+            if _ENV_LOOKUP_VALUE_RE.match(value):
+                return match.group(0)
+            if not _key_has_secret_keyword(name):
+                return match.group(0)
+            if not _assignment_value_requires_redaction(name, value):
+                return match.group(0)
             return (
-                f"{match.group(1)}={match.group(2)}"
-                f"{TOOL_SECRET_PLACEHOLDER}{match.group(2)}"
+                f"{name}={quote}{TOOL_SECRET_PLACEHOLDER}{quote}"
             )
 
         text = _ENV_ASSIGN_RE.sub(_redact_assignment, text)
-        if "://" not in text:
-            text = _ENV_ASSIGN_LOWER_RE.sub(_redact_assignment, text)
-            if _CFG_SECRET_WORD_RE.search(text):
-                text = _CFG_DOTTED_RE.sub(_redact_assignment, text)
-                text = _CFG_ANCHORED_RE.sub(_redact_assignment, text)
+        text = _ENV_ASSIGN_LOWER_RE.sub(_redact_assignment, text)
+        if _CFG_SECRET_WORD_RE.search(text):
+            text = _CFG_DOTTED_RE.sub(_redact_assignment, text)
+            text = _CFG_ANCHORED_RE.sub(_redact_assignment, text)
 
-    if (
-        ":" in text
-        and '"' in text
-        and any(
-            marker in folded_text
-            for marker in ("key", "token", "secret", "password", "bearer")
-        )
-    ):
-        text = _JSON_FIELD_RE.sub(
-            lambda match: (
-                f'{match.group(1)}: "{TOOL_SECRET_PLACEHOLDER}"'
-            ),
-            text,
-        )
-    if (
-        ":" in text
-        and "://" not in text
-        and any(
-            marker in folded_text
-            for marker in (
-                "key",
-                "token",
-                "secret",
-                "passwd",
-                "password",
-                "credential",
-            )
-        )
-    ):
-        text = _YAML_ASSIGN_RE.sub(
-            lambda match: (
-                f"{match.group(1)}{match.group(2)}{TOOL_SECRET_PLACEHOLDER}"
-            ),
-            text,
-        )
+    if ":" in text and '"' in text and _has_tool_config_hint(folded_text):
+        def _redact_json_assignment(match: re.Match) -> str:
+            key, value = match.group(1), match.group(2)
+            if _ENV_LOOKUP_VALUE_RE.match(value):
+                return match.group(0)
+            if not _assignment_value_requires_redaction(key, value):
+                return match.group(0)
+            return f'{key}: "{TOOL_SECRET_PLACEHOLDER}"'
+
+        text = _JSON_FIELD_RE.sub(_redact_json_assignment, text)
+    if ":" in text and _has_tool_config_hint(folded_text):
+        def _redact_yaml_assignment(match: re.Match) -> str:
+            key, separator, value = match.group(1), match.group(2), match.group(3)
+            if _ENV_LOOKUP_VALUE_RE.match(value):
+                return match.group(0)
+            if not _key_has_secret_keyword(key):
+                return match.group(0)
+            if not _assignment_value_requires_redaction(key, value):
+                return match.group(0)
+            return f"{key}{separator}{TOOL_SECRET_PLACEHOLDER}"
+
+        text = _YAML_ASSIGN_RE.sub(_redact_yaml_assignment, text)
 
     if "BEGIN" in text and "PRIVATE KEY" in text:
         text = _PRIVATE_KEY_RE.sub(TOOL_SECRET_PLACEHOLDER, text)
@@ -1348,7 +1388,7 @@ def redact_tool_boundary_text(
     if "eyJ" in text:
         text = _JWT_RE.sub(TOOL_SECRET_PLACEHOLDER, text)
 
-    if "=" in text or ("://" in text and "@" in text):
+    if _has_tool_url_param_hint(text) or _has_tool_url_userinfo_hint(text):
         text = _redact_tool_url_credentials(text)
     return text
 

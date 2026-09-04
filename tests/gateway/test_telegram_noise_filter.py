@@ -34,6 +34,11 @@ NOISY_STATUS_MESSAGES = [
     "💤 Resumed after 3600s idle — compacting ~120,000 tokens before continuing.",
     "⚠️  Session compressed 12 times — accuracy may degrade. Consider /new to start fresh.",
     "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",
+    (
+        "⚠️ Compression refused: the generated summary would have GROWN the "
+        "conversation instead of shrinking it. No messages were dropped — "
+        "conversation continues unchanged."
+    ),
     "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",
     "⏳ Retrying in 4.2s (attempt 1/3)...",
     # Buffered overflow/attempt-cap retry chatter (replayed on retry exhaustion).
@@ -68,6 +73,10 @@ VISIBLE_COMPRESSION_MESSAGES = [
     "Compression aborted: 30 messages preserved",
     "Compressed with fallback: 30 → 12 messages",
     "No changes from compression: 30 messages",
+    (
+        "Compression refused (summary would grow the conversation): "
+        "30 messages preserved"
+    ),
     (
         "⚠ Compression aborted: auth failure. No messages were dropped — "
         "conversation continues unchanged. Run /compress to retry, or /new "

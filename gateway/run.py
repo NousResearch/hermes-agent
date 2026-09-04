@@ -137,6 +137,14 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|resumed\s+after\s+\d+s\s+idle\s+[—-]\s+compacting"
     r"|preflight\s+compression"
     r"|pre[- ]api\s+compression"
+    # Anti-growth refusal warning emitted via _emit_warning by the in-place
+    # compaction commit guard (agent/conversation_compression.py): a no-op
+    # diagnostic (nothing dropped, conversation unchanged, no user action
+    # needed) that leaks compression internals to chat surfaces. Matches
+    # only the warning wording, NOT manual /compress feedback, which reports
+    # the same refusal with "(summary would grow the conversation): N
+    # messages preserved" and must stay visible (#100171).
+    r"|compression\s+refused\s*:\s*the\s+generated\s+summary"
     # Buffered attempt/overflow retry chatter replayed through _emit_status
     # when a turn exhausts retries. The ", retrying"/"— compressing" anchors
     # keep manual /compress feedback ("Compressed: 30 → 12 messages") and

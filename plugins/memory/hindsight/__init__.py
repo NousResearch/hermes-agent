@@ -1095,6 +1095,19 @@ class HindsightMemoryProvider(MemoryProvider):
             return tool_error(f"Missing required parameter: {required}")
         try:
             return json.dumps({"result": handler(self, args)})
+        except (TimeoutError, asyncio.TimeoutError) as e:
+            # Python's builtin TimeoutError stringifies to "" (asyncio raises
+            # TimeoutError() with no message), so without this the agent sees
+            # a blank error like "Failed to store memory: " with no diagnosis.
+            logger.warning("%s timed out after %ss: %s", tool_name, self._timeout, e, exc_info=True)
+            return tool_error(
+                f"{failure}: {e or 'timed out'} "
+                f"({tool_name} timed out after {self._timeout}s; the Hindsight server may "
+                "be slow or unreachable (for retain, the LLM fact-extraction chain is the "
+                "usual culprit; the memory may still have been stored asynchronously — "
+                "verify with hindsight_recall before retrying). If this recurs, check "
+                "server health or raise the hindsight timeout.)"
+            )
         except Exception as e:
             logger.warning("%s failed: %s", tool_name, e, exc_info=True)
             return tool_error(f"{failure}: {e}")

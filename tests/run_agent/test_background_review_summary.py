@@ -7,6 +7,7 @@ history before the review started (e.g. an earlier "Cron job '...' created.").
 
 import json
 
+from agent.background_review import summarize_background_review_actions
 from run_agent import AIAgent
 
 
@@ -92,6 +93,62 @@ def test_empty_inputs():
     assert _summarize(None, None) == []
 
 
+
+
+def _skill_batch_review():
+    """Batch skill_manage call: operations list, no top-level action."""
+    return [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_skill_batch",
+                    "function": {
+                        "name": "skill_manage",
+                        "arguments": json.dumps(
+                            {
+                                "operations": [
+                                    {"action": "create", "name": "alpha", "content": "A new skill body"},
+                                    {
+                                        "action": "patch",
+                                        "name": "beta",
+                                        "old_string": "old text",
+                                        "new_string": "new text",
+                                    },
+                                    {"action": "write_file", "name": "alpha", "file_path": "references/x.md", "file_content": "data"},
+                                ]
+                            }
+                        ),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_skill_batch",
+            "content": json.dumps(
+                {
+                    "success": True,
+                    "message": "batch(3 ops: create, patch, write_file) on alpha, beta",
+                }
+            ),
+        },
+    ]
+
+
+def test_skill_batch_renders_per_op_lines():
+    """Issue #102853: a batch skill_manage call must render per-op previews,
+    never the empty-action "Skill " line."""
+    verbose = summarize_background_review_actions(
+        _skill_batch_review(), [], notification_mode="verbose"
+    )
+    assert verbose, "expected at least one rendered line"
+    joined = "\n".join(verbose)
+    assert "Skill 'alpha' created" in joined
+    assert "Skill 'beta' patched" in joined
+    assert "Skill 'alpha' wrote file" in joined
+    assert not any(line == "Skill " or line.rstrip() == "Skill" for line in verbose), verbose
+    assert not any("Skill ?" in line for line in verbose), verbose
 
 
 def test_removed_or_replaced_relabels_by_target():

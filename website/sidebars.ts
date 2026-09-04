@@ -597,6 +597,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/optional/software-development/software-development-ast-grep',
                     'user-guide/skills/optional/software-development/software-development-code-wiki',
+                    'user-guide/skills/optional/software-development/software-development-context7',
                     'user-guide/skills/optional/software-development/software-development-grill-me',
                     'user-guide/skills/optional/software-development/software-development-rest-graphql-debug',
                     'user-guide/skills/optional/software-development/software-development-subagent-driven-development',

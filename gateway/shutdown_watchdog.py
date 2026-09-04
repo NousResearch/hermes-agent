@@ -358,11 +358,42 @@ async def loop_heartbeat_forever(
                        "loop-scheduling witness and will not escalate on a stale heartbeat",
                        exc_info=True)
     extra = {"loop_tick_socket": tick_server is not None, "loop_tick_tcp_port": tick_tcp_port}
+    def _write_heartbeat_and_runtime_status() -> None:
+        """Refresh the heartbeat file, and re-stamp ``gateway_state.json`` behind it.
+
+        The second write is here because nothing else moves that file on a cadence: ``run.py`` writes it
+        on lifecycle transitions (running / draining / stopped) and at in-process turn boundaries, so an
+        idle gateway -- or one whose only work is spawning kanban WORKERS, which are separate processes
+        rather than turns -- stops touching it, and its ``updated_at`` ages without bound while the
+        gateway is perfectly alive. Every consumer that reads recency off that field then concludes the
+        opposite: measured against hermes-webui, whose cross-container liveness check treats
+        ``updated_at`` as a heartbeat with a 120s window, ``gateway_stale_running_state`` was reported
+        ("health metadata has gone stale", with the Scheduled Jobs panel warning that cron would not
+        tick) against a gateway with ``updated_at`` 2h16m old, ``active_agents: 0`` and pid 1 =
+        ``hermes gateway run``.
+
+        This loop is the right owner: it already ticks at ``DEFAULT_HEARTBEAT_INTERVAL_S``, well inside
+        that window, and it is already the signal that ages when the loop freezes -- so both files keep
+        the same liveness meaning and a wedged loop still ages both. ``write_runtime_status()`` with no
+        arguments is read-merge-write, so the lifecycle state cannot be clobbered.
+
+        Skipped when ``home`` is overridden (only tests do): the runtime-status path comes from the
+        ambient HERMES_HOME and takes no ``home`` argument, so honouring the override is impossible and
+        ignoring it would write into the developer's real home.
+        """
+        write_loop_heartbeat(start_time=start_time, home=home, extra=extra)
+        if home is not None:
+            return
+        try:
+            from gateway.status import write_runtime_status
+            write_runtime_status()
+        except Exception:
+            logger.debug("gateway_state.json re-stamp failed", exc_info=True)
+
     try:
         while True:  # first write is immediate so monitors see a fresh file at once
             try:
-                await asyncio.to_thread(write_loop_heartbeat, start_time=start_time, home=home,
-                                        extra=extra)
+                await asyncio.to_thread(_write_heartbeat_and_runtime_status)
             except Exception:  # write_loop_heartbeat never raises: executor problem, keep the task
                 logger.debug("Loop heartbeat write failed off-loop", exc_info=True)
             if should_continue is not None and not should_continue():

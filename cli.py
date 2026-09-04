@@ -22165,6 +22165,24 @@ def main(
             cli._seeded_first_message = _SeededQueryMessage(seeded_query, seeded_images)
             cli.run()
             return
+        # Non-interactive one-shot: register in the process-identity ledger so
+        # machine-wide scans (`hermes update`, Desktop sweeps) can classify
+        # this process instead of guessing from cmdline archaeology. "worker"
+        # is deliberately NOT in REAPABLE_PURPOSES, so reapers leave it alone —
+        # registration is identification only. Windows: self-attach to a
+        # KILL_ON_JOB_CLOSE job so tool child trees die with this process
+        # (mirrors gateway/run.py). Best-effort + fail-safe by design.
+        try:
+            from hermes_cli.process_identity import (
+                attach_self_to_kill_on_close_job,
+                register_self,
+            )
+
+            register_self("worker")
+            if sys.platform == "win32":
+                attach_self_to_kill_on_close_job()
+        except Exception:
+            pass  # identity must never break a one-shot run
         # One-shot mode: no between-turns MCP late-binding refresh, so the
         # agent must wait the full MCP cold-start bound before its first
         # (and only) tool snapshot. See #51316.

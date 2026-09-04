@@ -239,8 +239,10 @@ def register_self(
 ) -> bool:
     """Record this process in the machine spawn ledger. Best-effort.
 
-    Called at the top of every long-lived entry point (serve/dashboard
-    backend, gateway run loop). Dead entries — ``(pid, create_time)`` no
+    Called at the top of every entry point the update/sweep pipeline needs
+    to classify — long-lived (serve/dashboard backend, gateway run loop)
+    and one-shot (non-interactive ``-q``/``--query`` runs that back cron
+    jobs and kanban workers). Dead entries — ``(pid, create_time)`` no
     longer live — are pruned on every write so the ledger tracks reality
     instead of growing forever.
 

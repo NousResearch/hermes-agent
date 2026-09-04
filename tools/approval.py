@@ -2533,6 +2533,22 @@ def _is_safe_launchctl_metadata_filter(command: str) -> bool:
     )
 
 
+def _without_shell_redirections(tokens: list[str]) -> list[str]:
+    """Remove file-redirection operators and their targets."""
+    args = []
+    skip_target = False
+    for token in tokens:
+        if skip_target:
+            skip_target = False
+            continue
+        if token and set(token) <= {"<", ">"}:
+            if args and args[-1].isdigit():
+                args.pop()
+            skip_target = True
+            continue
+        args.append(token)
+    return args
+
 def _is_broad_environment_dump(command: str) -> bool:
     """Return whether an executable command emits an unfiltered env dump."""
     if _is_safe_launchctl_metadata_filter(command):
@@ -2550,7 +2566,7 @@ def _is_broad_environment_dump(command: str) -> bool:
             tokens = _shell_segment_tokens(segment, start)
             if not tokens:
                 continue
-            args = tokens[1:]
+            args = _without_shell_redirections(tokens[1:])
 
             if name == "launchctl":
                 if args and args[0].lower() == "print":
@@ -2561,8 +2577,43 @@ def _is_broad_environment_dump(command: str) -> bool:
                 # Options and NAME=value prefixes configure ``env``. A later
                 # operand is a command, while no operand means stdout is the
                 # complete environment.
-                operands = [arg for arg in args if not arg.startswith("-")]
-                if not any(_ENV_ASSIGNMENT_RE.fullmatch(arg) is None for arg in operands):
+                index = 0
+                split_expansions = 0
+                while index < len(args):
+                    arg = args[index]
+                    if _ENV_ASSIGNMENT_RE.fullmatch(arg):
+                        index += 1
+                        continue
+                    if arg == "--":
+                        index += 1
+                        break
+                    option = arg.split("=", 1)[0]
+                    if option in {"-S", "--split-string"}:
+                        split_expansions += 1
+                        if split_expansions > 8:
+                            return True
+                        has_inline_value = "=" in arg
+                        if not has_inline_value and index + 1 >= len(args):
+                            break
+                        value = (
+                            arg.split("=", 1)[1]
+                            if has_inline_value
+                            else args[index + 1]
+                        )
+                        consumed = 1 if has_inline_value else 2
+                        args[index:index + consumed] = shlex.split(value)
+                        continue
+                    if option in {
+                        "-u", "--unset", "-C", "--chdir",
+                        "-S", "--split-string", "--argv0",
+                    }:
+                        index += 1 if "=" in arg else 2
+                        continue
+                    if arg.startswith("-"):
+                        index += 1
+                        continue
+                    break
+                if index >= len(args):
                     return True
                 continue
 
@@ -2579,7 +2630,11 @@ def _is_broad_environment_dump(command: str) -> bool:
             # ``export``/``declare``/``typeset`` with no named operand print
             # shell variables. ``-p`` and ``-x`` are their common dump forms.
             named = [arg for arg in args if not arg.startswith("-")]
-            if not named and (not args or any("p" in arg or "x" in arg for arg in args)):
+            if not named and (
+                not args
+                or args == ["--"]
+                or any("p" in arg or "x" in arg for arg in args)
+            ):
                 return True
     return False
 

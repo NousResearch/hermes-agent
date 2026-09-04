@@ -174,7 +174,7 @@ _ENV_ASSIGN_LOWER_RE = re.compile(
 # assignment pass below, this remains active in ``code_file`` mode: terminal
 # and persistence boundaries cannot safely infer that arrow output is code.
 _ENV_ARROW_RE = re.compile(
-    r"(^[ \t]*)([A-Za-z_][A-Za-z0-9_]{0,100})([ \t]*=>[ \t]*)(['\"]?)(\S+)\4",
+    r"(^[ \t]*)([A-Za-z_][A-Za-z0-9_]{0,100})([ \t]*=>[ \t]*)(?:(['\"])([^\r\n]*?)\4|(\S+))",
     re.MULTILINE,
 )
 
@@ -859,9 +859,12 @@ def redact_sensitive_text(
         def _redact_env_arrow(m):
             if not _key_has_secret_keyword(m.group(2)):
                 return m.group(0)
+            quote = m.group(4) or ""
+            value = m.group(5) if quote else m.group(6)
+            masked = "***" if quote else _mask_token(value)
             return (
                 f"{m.group(1)}{m.group(2)}{m.group(3)}"
-                f"{m.group(4)}{_mask_token(m.group(5))}{m.group(4)}"
+                f"{quote}{masked}{quote}"
             )
 
         text = _ENV_ARROW_RE.sub(_redact_env_arrow, text)
@@ -1166,6 +1169,32 @@ def redact_terminal_output(
     return redact_sensitive_text(output, force=force, code_file=code_file)
 
 
+def _redact_media_value(content, *, allow_data_url=False):
+    """Redact a media subtree without scanning opaque data URLs."""
+    if isinstance(content, str):
+        if allow_data_url and content.startswith("data:"):
+            return content
+        return redact_tool_result_content(content)
+    if isinstance(content, list):
+        return [
+            _redact_media_value(item, allow_data_url=allow_data_url)
+            for item in content
+        ]
+    if isinstance(content, tuple):
+        return tuple(
+            _redact_media_value(item, allow_data_url=allow_data_url)
+            for item in content
+        )
+    if isinstance(content, dict):
+        return {
+            key: _redact_media_value(
+                value,
+                allow_data_url=allow_data_url or key in {"url", "data"},
+            )
+            for key, value in content.items()
+        }
+    return content
+
 def redact_tool_result_content(content):
     """Redact text at the persistence/provider tool-result boundary.
 
@@ -1194,18 +1223,7 @@ def redact_tool_result_content(content):
         if content.get("type") in {
             "image", "image_url", "input_image", "audio", "input_audio",
         }:
-            media = {**content}
-            for key in ("url", "image_url"):
-                value = media.get(key)
-                if isinstance(value, str) and not value.startswith("data:"):
-                    media[key] = redact_tool_result_content(value)
-                elif isinstance(value, dict):
-                    nested = {**value}
-                    url = nested.get("url")
-                    if isinstance(url, str) and not url.startswith("data:"):
-                        nested["url"] = redact_tool_result_content(url)
-                    media[key] = nested
-            return media
+            return _redact_media_value(content)
         return {
             key: redact_tool_result_content(value)
             for key, value in content.items()

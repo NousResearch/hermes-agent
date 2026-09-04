@@ -1099,6 +1099,15 @@ class TestLaunchctlArrowAssignments:
         assert secret not in result
         assert "THIRD_PARTY_TOKEN =>" in result
 
+    def test_quoted_sensitive_value_with_whitespace_is_fully_redacted(self):
+        secret = "syntheticOpaqueCredentialValue123456"
+        text = f'THIRD_PARTY_TOKEN => "prefix {secret}"'
+
+        result = redact_sensitive_text(text, force=True, code_file=True)
+
+        assert secret not in result
+        assert result == 'THIRD_PARTY_TOKEN => "***"'
+
     def test_structural_launchd_output_is_preserved(self):
         text = (
             "service = {\n"
@@ -1160,3 +1169,31 @@ def test_tool_result_boundary_redacts_credentials_in_remote_image_url():
     result = redact_tool_result_content(content)
 
     assert secret not in result[0]["image_url"]["url"]
+
+def test_media_metadata_is_redacted_without_touching_opaque_data():
+    secret = "syntheticOpaqueCredentialValue123456"
+    image_url = "data:image/png;base64,AAAA_TOKENIZER_BBBB"
+    image_bytes = b"synthetic-media-bytes"
+    content = {
+        "type": "image_url",
+        "image_url": {"url": image_url},
+        "caption": f"THIRD_PARTY_TOKEN={secret}",
+        "metadata": {
+            "note": f"THIRD_PARTY_TOKEN => {secret}",
+            "nested": [
+                {"description": f"access_token={secret}"},
+                (f"PASSWORD={secret}",),
+            ],
+            "bytes": image_bytes,
+        },
+    }
+
+    result = redact_tool_result_content(content)
+
+    assert secret not in result["caption"]
+    assert secret not in result["metadata"]["note"]
+    assert secret not in result["metadata"]["nested"][0]["description"]
+    assert secret not in result["metadata"]["nested"][1][0]
+    assert result["image_url"]["url"] == image_url
+    assert result["metadata"]["bytes"] is image_bytes
+    assert content["caption"].endswith(secret)

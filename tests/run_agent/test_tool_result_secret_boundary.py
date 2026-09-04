@@ -82,3 +82,78 @@ def test_synthetic_secret_is_absent_from_provider_request_payload(tmp_path):
         assert "view=summary" in serialized
     finally:
         db.close()
+def _media_tool_exchange(secret):
+    image_url = "data:image/png;base64,AAAA_TOKENIZER_BBBB"
+    return [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_prd279_media",
+                    "type": "function",
+                    "function": {"name": "computer", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_prd279_media",
+            "tool_name": "computer",
+            "content": {
+                "type": "image_url",
+                "image_url": {"url": image_url},
+                "caption": f"THIRD_PARTY_TOKEN={secret}",
+                "metadata": {"note": f"THIRD_PARTY_TOKEN => {secret}"},
+            },
+        },
+    ]
+
+
+def test_media_metadata_secret_is_absent_from_stored_tool_session_record(tmp_path):
+    from hermes_state import SessionDB
+
+    secret = "syntheticOpaqueCredentialValue123456"
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        agent = _make_agent(db)
+        assert agent._flush_messages_to_session_db(_media_tool_exchange(secret), []) is True
+
+        rows = db.get_messages("prd-279-test")
+        stored_tool = next(row for row in rows if row["role"] == "tool")
+        serialized = json.dumps(stored_tool, default=str)
+        assert stored_tool["content"]["caption"] == "THIRD_PARTY_TOKEN=***"
+        assert stored_tool["content"]["metadata"]["note"].startswith(
+            "THIRD_PARTY_TOKEN=***"
+        )
+        assert secret not in serialized
+        assert "AAAA_TOKENIZER_BBBB" in serialized
+    finally:
+        db.close()
+
+
+def test_media_metadata_secret_is_absent_from_provider_request_payload(tmp_path):
+    from hermes_state import SessionDB
+
+    secret = "syntheticOpaqueCredentialValue123456"
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        agent = _make_agent(db)
+        api_messages = agent._sanitize_api_messages(
+            copy.deepcopy(_media_tool_exchange(secret))
+        )
+        payload = agent._build_api_kwargs(api_messages, tools_for_api=[])
+
+        provider_tool = next(
+            message for message in payload["messages"] if message["role"] == "tool"
+        )
+        assert provider_tool["content"]["caption"] == "THIRD_PARTY_TOKEN=***"
+        assert provider_tool["content"]["metadata"]["note"].startswith(
+            "THIRD_PARTY_TOKEN=***"
+        )
+        assert provider_tool["content"]["image_url"]["url"].startswith("data:image/")
+        serialized = json.dumps(payload, default=str)
+        assert secret not in serialized
+        assert "AAAA_TOKENIZER_BBBB" in serialized
+    finally:
+        db.close()

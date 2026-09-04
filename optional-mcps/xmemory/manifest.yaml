@@ -1,0 +1,24 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: xmemory
+description: Persistent structured memory — save, recall, and update facts, decisions, people, and projects across sessions.
+source: https://xmemory.ai
+
+# xmemory ships a remote MCP server over Streamable HTTP at the bare host root,
+# with native MCP OAuth 2.1 (discovery + dynamic client registration + PKCE).
+# Hermes's MCP client + mcp_oauth_manager handle the browser flow and refresh on
+# first connect — nothing to install locally.
+transport:
+  type: http
+  url: https://mcp.xmemory.ai
+
+auth:
+  type: oauth
+  # No `provider:` — native MCP OAuth (case 1). Browser flow on first connect.
+
+post_install: |
+  On first connection, Hermes opens a browser to authenticate with xmemory and
+  lets you choose the memory instance to use. After auth, restart your Hermes
+  session so the memory tools (read / write / write_async) are loaded.

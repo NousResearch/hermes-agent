@@ -4197,6 +4197,19 @@ class SlackAdapter(BasePlatformAdapter):
             return False
         return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
+    @property
+    def FINALIZE_APPLIES_EXTRA_CONTENT(self) -> bool:  # noqa: N802
+        """Whether the finalize edit carries Block Kit payload (#77805).
+
+        When either ``rich_blocks`` or ``markdown_blocks`` is enabled the
+        finalize ``edit_message`` call renders Block Kit content that is
+        invisible to the stream consumer's text-based no-op skip.  Returning
+        True ensures that edit always fires so blocks are attached even on
+        single-chunk streamed messages where the last progressive edit
+        already delivered the full text.
+        """
+        return self._rich_blocks_enabled() or self._markdown_blocks_enabled()
+
     def _markdown_blocks_enabled(self) -> bool:
         """Whether to render outbound messages via Slack's ``markdown`` block.
 

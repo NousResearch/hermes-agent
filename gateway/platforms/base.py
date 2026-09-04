@@ -4345,6 +4345,17 @@ class BasePlatformAdapter(ABC):
     # property) so the stream consumer knows not to short-circuit.
     REQUIRES_EDIT_FINALIZE: bool = False
 
+    #: When True, the adapter attaches extra content during the finalize
+    #: edit (e.g. Slack Block Kit blocks) that is NOT captured by the text
+    #: string used for the stream consumer's no-op skip.  When set, the
+    #: consumer must not short-circuit a finalize edit even when the text is
+    #: identical to the last streamed frame — the extra content (blocks)
+    #: would be silently dropped (#77805).  Unlike ``REQUIRES_EDIT_FINALIZE``
+    #: (a lifecycle need), this flags a *content* need, so it is typically a
+    #: property that returns True only when a block / formatting mode is
+    #: actually enabled at runtime.
+    FINALIZE_APPLIES_EXTRA_CONTENT: bool = False
+
     async def create_handoff_thread(
         self,
         parent_chat_id: str,

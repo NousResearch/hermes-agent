@@ -121,6 +121,55 @@ class TestFinalizeCapabilityGate:
         assert picky.edit_message.call_args[1]["finalize"] is True
 
 
+class TestFinalizeExtraContentGate:
+    """Verify FINALIZE_APPLIES_EXTRA_CONTENT gates the no-op skip (#77805).
+
+    Adapters that attach extra payload (e.g. Slack Block Kit blocks) during
+    the finalize edit — content that is NOT captured by the text string —
+    must still receive the finalize edit even when text is identical to the
+    last streamed frame.  Without this, single-chunk messages silently drop
+    their rich_blocks payload.
+    """
+
+    @pytest.mark.asyncio
+    async def test_extras_adapter_not_skipped_on_finalize(self):
+        """An adapter with FINALIZE_APPLIES_EXTRA_CONTENT=True must always
+        receive the finalize edit, even on identical text."""
+        extras = MagicMock()
+        extras.REQUIRES_EDIT_FINALIZE = False
+        extras.FINALIZE_APPLIES_EXTRA_CONTENT = True
+        extras.send = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="m1",
+        ))
+        extras.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="m1",
+        ))
+        extras.MAX_MESSAGE_LENGTH = 4096
+        c = GatewayStreamConsumer(extras, "chat_1")
+        await c._send_or_edit("hello")  # first send (creates message)
+        await c._send_or_edit("hello", finalize=True)  # identical text, finalize
+        # The finalize edit MUST fire so the adapter can attach blocks.
+        extras.edit_message.assert_called_once()
+        assert extras.edit_message.call_args[1]["finalize"] is True
+
+    @pytest.mark.asyncio
+    async def test_extras_disabled_adapter_still_skips(self):
+        """An adapter WITHOUT extras must still skip redundant finalize
+        edits (regression guard — no unnecessary API calls)."""
+        plain = MagicMock()
+        plain.REQUIRES_EDIT_FINALIZE = False
+        plain.FINALIZE_APPLIES_EXTRA_CONTENT = False
+        plain.send = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="m1",
+        ))
+        plain.edit_message = AsyncMock()
+        plain.MAX_MESSAGE_LENGTH = 4096
+        c = GatewayStreamConsumer(plain, "chat_1")
+        await c._send_or_edit("hello")
+        await c._send_or_edit("hello", finalize=True)  # identical → skip
+        plain.edit_message.assert_not_called()
+
+
 class TestEditMessageFinalizeSignature:
     """Every concrete platform adapter must accept the ``finalize`` kwarg.
 

@@ -355,6 +355,17 @@ class GatewayStreamConsumer:
             getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
         )
 
+        # Cache whether the adapter attaches extra content (e.g. Block Kit
+        # blocks) on the finalize edit that is NOT captured by the text
+        # string.  When True, the no-op skip must not fire on a finalize
+        # edit even when text is unchanged — the extra content would be
+        # silently dropped (#77805).  Use ``is True`` for the same MagicMock
+        # safety as ``_adapter_requires_finalize`` above; concrete adapters
+        # that need dynamic behaviour expose it as a property.
+        self._finalize_carries_extras: bool = (
+            getattr(adapter, "FINALIZE_APPLIES_EXTRA_CONTENT", False) is True
+        )
+
         # Session staleness guard — when set to False (e.g. after /new or
         # /stop), the run() loop will abandon the stream early instead of
         # continuing to edit and deliver stale deltas.
@@ -3349,9 +3360,18 @@ class GatewayStreamConsumer:
                     # call (REQUIRES_EDIT_FINALIZE) must still receive the
                     # finalize=True edit even when content is unchanged, so
                     # their streaming UI can transition out of the in-
-                    # progress state.  Everyone else short-circuits.
+                    # progress state.  The same exception applies to adapters
+                    # that attach extra content on finalize
+                    # (FINALIZE_APPLIES_EXTRA_CONTENT, e.g. Slack Block Kit
+                    # blocks) — the extra payload is invisible to the text
+                    # comparison and would be silently dropped (#77805).
+                    # Everyone else short-circuits.
                     if text == self._last_sent_text and not (
-                        finalize and self._adapter_requires_finalize
+                        finalize
+                        and (
+                            self._adapter_requires_finalize
+                            or self._finalize_carries_extras
+                        )
                     ):
                         return True
                     # Fresh-final for long-lived previews: when finalizing

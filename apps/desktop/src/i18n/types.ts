@@ -954,6 +954,7 @@ export interface Translations {
       defaultsLabel: string
       reasoning: string
       reasoningOff: string
+      localReasoningOff: string
       defaultsFailed: string
       loadFailed: string
       restartRequired: string

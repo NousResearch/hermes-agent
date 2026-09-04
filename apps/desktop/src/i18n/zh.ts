@@ -1290,6 +1290,7 @@ export const zh: Translations = {
       defaultsLabel: '默认值',
       reasoning: '推理',
       reasoningOff: '关闭',
+      localReasoningOff: '本地模型关闭推理',
       defaultsFailed: '保存模型默认值失败',
       loadFailed: '无法加载模型',
       restartRequired: '更新后此后端仍在运行旧代码。请重启以加载新代码。',

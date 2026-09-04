@@ -413,6 +413,7 @@ class CronJobCreate(BaseModel):
     enabled_toolsets: Optional[List[str]] = None
     workdir: Optional[str] = None
     no_agent: bool = False
+    attach_to_session: Optional[bool] = None
 
 
 class CronJobUpdate(BaseModel):

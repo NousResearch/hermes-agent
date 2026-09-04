@@ -204,3 +204,26 @@ class TestProfileKeyIsolationWarning:
                 host='hermes', config_path=config_path,
             )
         assert not any('NOT inherited' in r.message for r in caplog.records)
+
+
+def test_save_config_refuses_to_replace_a_file_that_does_not_parse(tmp_path, monkeypatch):
+    """A corrupt honcho.json must not be rewritten from the new values alone."""
+    import pytest
+    from plugins.memory.honcho import HonchoMemoryProvider
+
+    config_path = tmp_path / "honcho.json"
+    config_path.write_text("{ not json")
+    provider = HonchoMemoryProvider()
+    with pytest.raises(ValueError):
+        provider.save_config({"api_key": "hc-test-key"}, str(tmp_path))
+    assert config_path.read_text() == "{ not json"
+
+
+def test_save_config_merges_into_a_parseable_file(tmp_path):
+    from plugins.memory.honcho import HonchoMemoryProvider
+
+    config_path = tmp_path / "honcho.json"
+    config_path.write_text(json.dumps({"hosts": {"other": {"apiKey": "keep-me"}}}))
+    HonchoMemoryProvider().save_config({"api_key": "hc-test-key"}, str(tmp_path))
+    data = json.loads(config_path.read_text())
+    assert data["hosts"]["other"]["apiKey"] == "keep-me" and data["api_key"] == "hc-test-key"

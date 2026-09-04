@@ -3777,6 +3777,65 @@ _LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset(
     {"opencode-zen", "opencode-go", "meta-ai"}
 )
 
+# Providers whose curated _PROVIDER_MODELS entry is a hand-picked MEMBERSHIP
+# filter (which agentic models to allow) rather than a deliberate ORDER.
+# Contrast with zai/kimi-coding/minimax/vertex/bedrock, whose curated lists
+# are visibly version-descending (newest first) -- reordering those would
+# destroy real signal. HuggingFace's curated list has no such structure (it
+# reads as models added over time, not ranked), so unlike the general
+# curated-first rule above, sort its ENTIRE merged result -- curated head
+# included -- rather than just the live-only tail appended after it.
+_FULLY_ALPHABETIZE_PICKER_PROVIDERS: frozenset[str] = frozenset({"huggingface"})
+
+
+def _merge_and_sort_picker_models(
+    normalized: str,
+    live: list[str],
+    curated: list[str],
+) -> list[str]:
+    """Merge a provider's curated and live-fetched model lists for the picker,
+    applying the shared ordering rules (_LIVE_FIRST_PICKER_PROVIDERS /
+    _FULLY_ALPHABETIZE_PICKER_PROVIDERS).
+
+    Extracted from the generic profile-based fetch block (ISSUE-136) so that
+    providers with their own early-return live-fetch branch — ollama-cloud,
+    bare "ollama" — go through the same ordering rules instead of returning
+    the provider's raw API order verbatim. Without this, a provider only had
+    to bypass the one call site that contained the sort logic to silently
+    skip it; centralizing the logic here means any future early-return
+    branch has to opt OUT of sorting rather than opt in.
+    """
+    if not live:
+        return list(curated)
+    if not curated:
+        # No curated list at all — the live catalog IS the whole picker, so
+        # there's no hand-picked order to preserve; alphabetize it rather
+        # than show the raw API order.
+        return sorted(live, key=str.lower)
+    if normalized in _LIVE_FIRST_PICKER_PROVIDERS:
+        primary, secondary = live, curated
+    else:
+        primary, secondary = curated, live
+    merged = list(primary)
+    merged_lower = {_model_dedup_key(m) for m in primary}
+    extra = [m for m in secondary if _model_dedup_key(m) not in merged_lower]
+    if normalized not in _LIVE_FIRST_PICKER_PROVIDERS:
+        # `extra` here is whatever the live /v1/models endpoint returned
+        # beyond the curated list — no hand-picked order to preserve (unlike
+        # `curated`, which keeps its deliberate order above), so alphabetize
+        # it instead of leaving it in the provider's raw API order (e.g.
+        # HuggingFace's ~130-model tail looked shuffled to users).
+        extra.sort(key=str.lower)
+    for m in extra:
+        merged.append(m)
+        merged_lower.add(_model_dedup_key(m))
+    if normalized in _FULLY_ALPHABETIZE_PICKER_PROVIDERS:
+        # Unlike the general case, this provider's curated head isn't a
+        # deliberate ranking either -- sort everything, not just the
+        # appended tail.
+        merged.sort(key=str.lower)
+    return merged
+
 
 def _resolve_static_model_alias(
     name_lower: str,
@@ -4469,7 +4528,12 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 _root_for_ollama_native_api(base_url), headers or None
             )
             if native_models or _OLLAMA_LOCAL_PROBE_REACHABLE.get(native_key) is True:
-                return native_models or []
+                # Local Ollama's native /api/tags catalog has no curated
+                # ranking either — same "raw API order looked shuffled"
+                # problem HuggingFace had (ISSUE-136), so route it through
+                # the shared helper instead of handing back native_models
+                # verbatim.
+                return _merge_and_sort_picker_models("ollama", native_models or [], [])
         else:
             # Non-native Ollama-compatible endpoints (including Ollama Cloud)
             # retain the generic OpenAI-compatible catalog path.
@@ -4491,7 +4555,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             fallback_base,
             headers=fallback_headers or None,
         )
-        return fallback_models or []
+        # Same no-curated-ranking reasoning as the native-catalog return
+        # above — sort rather than hand back the OpenAI-compatible
+        # endpoint's raw order.
+        return _merge_and_sort_picker_models("ollama", fallback_models or [], [])
 
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
@@ -4593,7 +4660,14 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if normalized == "ollama-cloud":
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:
-            return live
+            # Ollama Cloud has no curated _PROVIDER_MODELS entry — route
+            # through the shared helper anyway (ISSUE-136) so it gets the
+            # same alphabetize-when-no-hand-picked-order treatment as every
+            # other live-only provider, instead of the raw API order this
+            # early return used to hand back unsorted.
+            return _merge_and_sort_picker_models(
+                normalized, live, list(_PROVIDER_MODELS.get(normalized, []))
+            )
     if normalized in ("openai", "openai-api"):
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if api_key:
@@ -4721,19 +4795,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(
                         _p.fallback_models or ()
                     )
-                    if curated:
-                        if normalized in _LIVE_FIRST_PICKER_PROVIDERS:
-                            primary, secondary = live, curated
-                        else:
-                            primary, secondary = curated, live
-                        merged = list(primary)
-                        merged_lower = {_model_dedup_key(m) for m in primary}
-                        for m in secondary:
-                            if _model_dedup_key(m) not in merged_lower:
-                                merged.append(m)
-                                merged_lower.add(_model_dedup_key(m))
-                        return merged
-                    return live
+                    return _merge_and_sort_picker_models(normalized, live, curated)
             # Use profile's fallback_models if defined
             if _p.fallback_models:
                 return list(_p.fallback_models)

@@ -695,7 +695,10 @@ class PeerRunsHTTPClient:
 
     def revoke_grant(self, *, grant: str) -> Mapping[str, Any]:
         """Revoke this grant's exact room/home/target/profile scope."""
-        return self._scoped_post("/v1/room-members/grants/revoke", grant, body={})
+        result = self._scoped_post("/v1/room-members/grants/revoke", grant, body={})
+        if result.get("revoked") is not True:
+            raise PeerRunsHTTPError("peer did not acknowledge grant revocation", retryable=True)
+        return result
 
     def probe(self, *, grant: str) -> Mapping[str, Any]:
         """Verify gateway reachability and the live scoped capability catalog."""
@@ -717,12 +720,15 @@ class PeerRunsHTTPClient:
     def revoke_grant_exact(self, *, grant: str) -> Mapping[str, Any]:
         """Retire a single bearer, never the concurrent room grant replacing it."""
         self._require_room_grant(grant)
-        return self._request(
+        result = self._request(
             "/v1/room-members/grants/revoke-exact",
             method="POST",
             body={},
             room_grant=grant,
         )
+        if result.get("revoked") is not True:
+            raise PeerRunsHTTPError("peer did not acknowledge exact grant revocation", retryable=True)
+        return result
 
     def _check_auth_probe_cooldown(self, key: tuple[str, str, str]) -> None:
         with self._auth_probe_lock:

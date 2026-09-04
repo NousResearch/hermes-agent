@@ -244,6 +244,10 @@ SEND_MESSAGE_SCHEMA = {
             "message_id": {
                 "type": "string",
                 "description": "For action='react'/'unreact': id of the message to react to. Omit to target the most recent message received in that chat (usually the one being replied to)."
+            },
+            "subject": {
+                "type": "string",
+                "description": "Optional email subject. Only meaningful when target is email (e.g. 'email:user@example.com'). When omitted, a threaded 'Re: <original subject>' is used if replying to a prior email; otherwise 'Hermes Agent'. When set, it is used verbatim as the Subject header without an added 'Re:' prefix."
             }
         },
         "required": []
@@ -494,6 +498,10 @@ def _handle_send(args):
             "media_files": media_files,
             "force_document": force_document_attachments,
         }
+        # Thread optional email subject through to the email adapter via metadata.
+        _subject_val = (args.get("subject") or "").strip() if isinstance(args.get("subject"), str) else ""
+        if _subject_val:
+            send_kwargs["subject"] = _subject_val
         # Preserve the exact built-in call contract; only custom handlers need
         # the complete typed request.
         if entry is not None and entry.send_message_handler is not None:
@@ -952,6 +960,8 @@ async def _send_via_adapter(
     thread_id=None,
     media_files=None,
     force_document=False,
+    subject=None,
+    args=None,
 ):
     """Send a message via a live gateway adapter, with a standalone fallback
     for out-of-process callers (e.g. cron running separately from the gateway).
@@ -984,6 +994,14 @@ async def _send_via_adapter(
                     metadata["thread_id"] = thread_id
                 if platform_name == "ntfy" and chat_id:
                     metadata["publish_topic"] = chat_id
+                # Subject override for email (SMTP-only profiles have no thread context).
+                _eff_subject = subject
+                if not _eff_subject and isinstance(args, dict):
+                    _maybe = args.get("subject")
+                    if isinstance(_maybe, str) and _maybe.strip():
+                        _eff_subject = _maybe.strip()
+                if _eff_subject:
+                    metadata["subject"] = _eff_subject
                 if not metadata:
                     metadata = None
                 # The adapter's send() uses asyncio.Queue + worker tasks bound
@@ -1073,13 +1091,24 @@ async def _send_via_adapter(
 
     if entry is not None and entry.standalone_sender_fn is not None:
         try:
+            _cs_subject = subject
+            if not _cs_subject and isinstance(args, dict):
+                _maybe2 = args.get("subject")
+                if isinstance(_maybe2, str) and _maybe2.strip():
+                    _cs_subject = _maybe2.strip()
+            _standalone_kwargs = dict(
+                thread_id=thread_id,
+                media_files=media_files,
+                force_document=force_document,
+            )
+            if _cs_subject:
+                _standalone_kwargs["subject"] = _cs_subject
+                # Also expose via args copy for forward-compat standalone senders that read it
             result = await entry.standalone_sender_fn(
                 pconfig,
                 chat_id,
                 chunk,
-                thread_id=thread_id,
-                media_files=media_files,
-                force_document=force_document,
+                **_standalone_kwargs,
             )
         except asyncio.CancelledError:
             raise
@@ -1109,7 +1138,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None, subject=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -1119,6 +1148,13 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.config import Platform
 
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
+
+    # Effective email subject (thread override): args["subject"] beats explicit subject param.
+    _eff_subject = subject
+    if not _eff_subject and isinstance(args, dict):
+        _maybe_subj = args.get("subject")
+        if isinstance(_maybe_subj, str) and _maybe_subj.strip():
+            _eff_subject = _maybe_subj.strip()
 
     media_files = media_files or []
 
@@ -1489,7 +1525,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)
         elif platform == Platform.EMAIL:
-            result = await _registry_standalone_send("email", pconfig, chat_id, chunk, thread_id)
+            result = await _registry_standalone_send("email", pconfig, chat_id, chunk, thread_id, subject=_eff_subject)
         elif platform == Platform.SMS:
             result = await _registry_standalone_send("sms", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.DINGTALK:
@@ -1529,6 +1565,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 media_files=media_files if i == len(chunks) - 1 else [],
                 force_document=force_document,
+                subject=_eff_subject,
+                args=args,
             )
 
         if isinstance(result, dict) and result.get("error"):
@@ -1880,7 +1918,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 # (plugins/platforms/slack/adapter.py), wired via standalone_sender_fn. #41112.
 
 
-async def _registry_standalone_send(platform_name, pconfig, chat_id, message, thread_id=None):
+async def _registry_standalone_send(platform_name, pconfig, chat_id, message, thread_id=None, subject=None):
     """Dispatch a one-shot send through a migrated platform plugin's
     standalone_sender_fn (registry hook).  Used for platforms whose adapter
     moved out of gateway/platforms/ into plugins/platforms/<name>/ (#41112):
@@ -1893,7 +1931,10 @@ async def _registry_standalone_send(platform_name, pconfig, chat_id, message, th
     entry = platform_registry.get(platform_name)
     if entry is None or entry.standalone_sender_fn is None:
         return {"error": f"{platform_name} plugin not registered or missing standalone_sender_fn"}
-    return await entry.standalone_sender_fn(pconfig, chat_id, message, thread_id=thread_id)
+    _kw = dict(thread_id=thread_id)
+    if subject:
+        _kw["subject"] = subject
+    return await entry.standalone_sender_fn(pconfig, chat_id, message, **_kw)
 
 
 # _send_whatsapp moved to plugins/platforms/whatsapp/adapter.py::_standalone_send,

@@ -1212,8 +1212,13 @@ class EmailAdapter(BasePlatformAdapter):
         """Send an email reply to the given address."""
         try:
             loop = asyncio.get_running_loop()
+            subject_override = None
+            if isinstance(metadata, dict):
+                _s = metadata.get("subject")
+                if isinstance(_s, str) and _s.strip():
+                    subject_override = _s.strip()
             message_id = await loop.run_in_executor(
-                None, self._send_email, chat_id, content, reply_to
+                None, lambda: self._send_email(chat_id, content, reply_to, subject_override)
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -1235,20 +1240,27 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         reply_to_msg_id: Optional[str] = None,
+        subject_override: Optional[str] = None,
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
 
-        # Thread context for reply
-        ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
-            subject = f"Re: {subject}"
+        # Subject: explicit override (SMTP-only profiles) wins verbatim;
+        # otherwise fall back to thread context with Re: prefix.
+        if isinstance(subject_override, str) and subject_override.strip():
+            subject = subject_override.strip()
+        else:
+            ctx = self._thread_context.get(to_addr, {})
+            subject = ctx.get("subject", "Hermes Agent")
+            if not subject.startswith("Re:"):
+                subject = f"Re: {subject}"
         msg["Subject"] = subject
 
-        # Threading headers
+        # Threading headers — only when replying in-thread; explicit subject
+        # override without prior context should not fake threading headers.
+        ctx = self._thread_context.get(to_addr, {})
         original_msg_id = reply_to_msg_id or ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
@@ -1334,12 +1346,14 @@ class EmailAdapter(BasePlatformAdapter):
 
         try:
             loop = asyncio.get_running_loop()
+            _subj = None
+            if isinstance(metadata, dict):
+                _s = metadata.get("subject")
+                if isinstance(_s, str) and _s.strip():
+                    _subj = _s.strip()
             await loop.run_in_executor(
                 None,
-                self._send_email_with_attachments,
-                chat_id,
-                body,
-                local_paths,
+                lambda: self._send_email_with_attachments(chat_id, body, local_paths, _subj),
             )
         except Exception as e:
             logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
@@ -1350,18 +1364,23 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         file_paths: List[str],
+        subject_override: Optional[str] = None,
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
 
-        ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
-            subject = f"Re: {subject}"
+        if isinstance(subject_override, str) and subject_override.strip():
+            subject = subject_override.strip()
+        else:
+            ctx = self._thread_context.get(to_addr, {})
+            subject = ctx.get("subject", "Hermes Agent")
+            if not subject.startswith("Re:"):
+                subject = f"Re: {subject}"
         msg["Subject"] = subject
 
+        ctx = self._thread_context.get(to_addr, {})
         original_msg_id = ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
@@ -1411,13 +1430,20 @@ class EmailAdapter(BasePlatformAdapter):
         """Send a file as an email attachment."""
         try:
             loop = asyncio.get_running_loop()
+            _subj_doc = None
+            # Subject may arrive as metadata["subject"] or top-level kwargs["subject"]
+            _meta = kwargs.get("metadata")
+            if isinstance(_meta, dict):
+                _s = _meta.get("subject")
+                if isinstance(_s, str) and _s.strip():
+                    _subj_doc = _s.strip()
+            if not _subj_doc:
+                _v = kwargs.get("subject")
+                if isinstance(_v, str) and _v.strip():
+                    _subj_doc = _v.strip()
             message_id = await loop.run_in_executor(
                 None,
-                self._send_email_with_attachment,
-                chat_id,
-                caption or "",
-                file_path,
-                file_name,
+                lambda: self._send_email_with_attachment(chat_id, caption or "", file_path, file_name, _subj_doc),
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -1430,18 +1456,23 @@ class EmailAdapter(BasePlatformAdapter):
         body: str,
         file_path: str,
         file_name: Optional[str] = None,
+        subject_override: Optional[str] = None,
     ) -> str:
         """Send an email with a file attachment via SMTP."""
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
 
-        ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
-            subject = f"Re: {subject}"
+        if isinstance(subject_override, str) and subject_override.strip():
+            subject = subject_override.strip()
+        else:
+            ctx = self._thread_context.get(to_addr, {})
+            subject = ctx.get("subject", "Hermes Agent")
+            if not subject.startswith("Re:"):
+                subject = f"Re: {subject}"
         msg["Subject"] = subject
 
+        ctx = self._thread_context.get(to_addr, {})
         original_msg_id = ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
@@ -1507,6 +1538,7 @@ async def _standalone_send(
     thread_id=None,
     media_files=None,
     force_document=False,
+    subject=None,
 ):
     """Out-of-process Email delivery via SMTP (one-shot). Implements the
     standalone_sender_fn contract; replaces the legacy _send_email helper."""
@@ -1538,7 +1570,11 @@ async def _standalone_send(
         msg = MIMEText(message, "plain", "utf-8")
         msg["From"] = address
         msg["To"] = chat_id
-        msg["Subject"] = "Hermes Agent"
+        # Explicit subject (from send_message tool) wins verbatim; otherwise default.
+        if isinstance(subject, str) and subject.strip():
+            msg["Subject"] = subject.strip()
+        else:
+            msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
 
         ctx = _tls_context(smtp_tls_verify, smtp_host)

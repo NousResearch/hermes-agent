@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+import tui_gateway.change_watcher as cw
 import tui_gateway.server as srv
 from tools import group_relay as gr
 
@@ -52,7 +53,7 @@ def test_reply_appends_lines_and_rejects_bad_input(home):
 
 
 def test_change_watch_registered():
-    assert "group_relay.outbox.pending" in srv._CHANGE_WATCHES
+    assert "group_relay.outbox.pending" in cw._CHANGE_WATCHES
     assert "group_relay.outbox.drain" in srv._methods and "group_relay.reply" in srv._methods
 
 

@@ -102,7 +102,7 @@ def _coerce_usage_int(value: Any) -> int:
     return 0
 
 
-def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
+def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]:
     """Translate Codex app-server token usage into Hermes accounting.
 
     Codex app-server reports usage via thread/tokenUsage/updated as:
@@ -115,6 +115,12 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
 
     Even when Codex omits usage for a turn, Hermes should still count that turn
     as one API call for session/status accounting.
+
+    ``messages`` is the local transcript mirror for the turn. When real usage
+    is reported, it is snapshotted into ``agent._usage_anchor`` exactly like
+    the main loop's post-response capture (conversation_loop) — this runtime
+    bypasses that loop, so without this the anchor stays None forever and
+    every preflight estimate falls back to the rough mirror heuristic.
     """
     agent.session_api_calls += 1
 
@@ -190,6 +196,26 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
                 compressor.context_length = context_window
         except Exception:
             logger.debug("codex app-server usage update failed", exc_info=True)
+
+    # Usage-anchored context accounting, mirroring the main loop's capture.
+    # The mirror transcript is deliberately never compacted on this runtime
+    # (native compaction preserves it — see _record_codex_app_server_compaction),
+    # so the heuristic estimate grows monotonically while the real thread may
+    # be tiny or freshly compacted. Without an anchor, hermes-mode preflight
+    # trusts that estimate alone and fires thread compaction on nearly every
+    # turn of a long-lived session (#100381). A usage-less turn keeps whatever
+    # anchor the last real reading produced.
+    if isinstance(messages, list):
+        from agent.model_metadata import capture_usage_anchor
+
+        try:
+            _new_anchor = capture_usage_anchor(
+                prompt_tokens, completion_tokens, messages
+            )
+        except Exception:
+            _new_anchor = None
+        if _new_anchor is not None:
+            agent._usage_anchor = _new_anchor
 
     agent.session_prompt_tokens += prompt_tokens
     agent.session_completion_tokens += completion_tokens
@@ -897,7 +923,7 @@ def run_codex_app_server_turn(
         getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
     )
     _record_codex_app_server_compaction(agent, turn)
-    usage_result = _record_codex_app_server_usage(agent, turn)
+    usage_result = _record_codex_app_server_usage(agent, turn, messages=messages)
     api_calls = 1
 
     # Now check the skill nudge AFTER iters were incremented — same

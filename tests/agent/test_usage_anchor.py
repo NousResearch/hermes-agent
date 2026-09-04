@@ -208,5 +208,116 @@ class TestCompressionTriggerUsesAnchor:
         assert anchored is not None and anchored < threshold
 
 
+class TestCodexAppServerAnchor:
+    """The codex_app_server runtime bypasses the conversation loop, so its
+    usage recording is the only site that can maintain agent._usage_anchor.
+    Without it, hermes-mode preflight falls back to the rough mirror-transcript
+    heuristic, which grows monotonically (native compaction preserves the
+    mirror) and fires thread compaction on tiny real threads (#100381)."""
+
+    def _agent(self, anchor=None):
+        return SimpleNamespace(
+            _usage_anchor=anchor,
+            session_api_calls=0,
+            session_prompt_tokens=0,
+            session_completion_tokens=0,
+            session_total_tokens=0,
+            session_input_tokens=0,
+            session_output_tokens=0,
+            session_cache_read_tokens=0,
+            session_cache_write_tokens=0,
+            session_reasoning_tokens=0,
+            context_compressor=None,
+            event_callback=None,
+            _session_db=None,
+            model="codex-test-model",
+            provider="openai",
+            base_url=None,
+        )
+
+    def _turn(self, usage):
+        return SimpleNamespace(token_usage_last=usage, model_context_window=None)
+
+    def _usage(self, input_tokens=12_000, output_tokens=100):
+        return {
+            "inputTokens": input_tokens,
+            "cachedInputTokens": 0,
+            "outputTokens": output_tokens,
+            "reasoningOutputTokens": 0,
+            "totalTokens": input_tokens + output_tokens,
+        }
+
+    def test_turn_usage_sets_anchor(self):
+        from agent.codex_runtime import _record_codex_app_server_usage
+
+        messages = _history_with_images(10)
+        agent = self._agent()
+
+        _record_codex_app_server_usage(
+            agent, self._turn(self._usage()), messages=messages
+        )
+
+        anchor = agent._usage_anchor
+        assert anchor is not None
+        assert anchor["prompt_tokens"] == 12_000
+        assert anchor["base_count"] == len(messages)
+
+        # The next turn's preflight estimate anchors on provider truth plus
+        # only the appended delta — not the flat-1500-per-image heuristic.
+        messages.append(_msg("user", "follow-up"))
+        got = _preflight_request_tokens(agent, messages, "")
+        assert 12_000 < got < 12_200
+
+    def test_usage_less_turn_keeps_previous_anchor(self):
+        from agent.codex_runtime import _record_codex_app_server_usage
+
+        messages = _history_with_images(2)
+        prior = capture_usage_anchor(9_000, 50, messages)
+        agent = self._agent(anchor=prior)
+
+        _record_codex_app_server_usage(agent, self._turn(None), messages=messages)
+
+        assert agent._usage_anchor is prior
+
+    def test_hermes_mode_preflight_no_longer_trips_on_mirror_estimate(self):
+        """Issue scenario: the local mirror is huge (heuristic well over a
+        15K threshold) while the provider-reported thread is small. With the
+        anchor captured from codex usage, preflight stays below the threshold
+        and thread compaction is not fired on a tiny thread."""
+        from agent.codex_runtime import _record_codex_app_server_usage
+
+        threshold = 15_000
+        messages = _history_with_images(10)
+        assert estimate_messages_tokens_rough(messages) >= threshold
+
+        agent = self._agent()
+        _record_codex_app_server_usage(
+            agent, self._turn(self._usage(input_tokens=2_000)), messages=messages
+        )
+
+        messages.append(_msg("user", "next turn"))
+        anchored = _preflight_request_tokens(agent, messages, "")
+        assert anchored is not None
+        assert anchored < threshold
+
+        # Control: without the anchor (pre-fix behavior) the same mirror
+        # estimate is over the threshold and would trigger compaction.
+        unanchored = _preflight_request_tokens(self._agent(), messages, "")
+        assert unanchored >= threshold
+
+    def test_missing_messages_argument_leaves_anchor_untouched(self):
+        """Legacy callers that pass no mirror (e.g. external engines hitting
+        the compaction bookkeeping) must not crash or clobber the anchor."""
+        from agent.codex_runtime import _record_codex_app_server_usage
+
+        messages = _history_with_images(2)
+        prior = capture_usage_anchor(9_000, 50, messages)
+        agent = self._agent(anchor=prior)
+
+        _record_codex_app_server_usage(agent, self._turn(self._usage()))
+
+        assert agent._usage_anchor is prior
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

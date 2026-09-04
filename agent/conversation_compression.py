@@ -5853,7 +5853,7 @@ def _compress_context_via_codex_app_server(
         # Codex turn supplies usage. Minimal external test engines may not expose
         # the ContextEngine update hook; preserve their existing bookkeeping.
         if hasattr(agent.context_compressor, "update_from_response"):
-            _record_codex_app_server_usage(agent, result)
+            _record_codex_app_server_usage(agent, result, messages=messages)
     except Exception:
         logger.debug("codex compaction bookkeeping failed", exc_info=True)
 

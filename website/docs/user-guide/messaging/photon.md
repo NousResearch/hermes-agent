@@ -78,6 +78,14 @@ existing DM or group from its chat GUID. That means cold cron delivery works
 with `PHOTON_HOME_CHANNEL=+1555...` for DMs. Creating a new group from a list
 of recipients still requires managed Photon mode.
 
+With the pinned Spectrum 12.7 local provider, text/markdown, inbound and
+outbound attachments, DMs, incoming reply context, and existing groups work.
+Local mode does not provide visible typing indicators, native outbound
+replies, editing/unsending, tapbacks, native polls or effects, read receipts,
+new-group creation, or group member/metadata changes. Hermes avoids the
+unsupported presence/status calls and falls back to numbered text for
+multiple-choice clarify prompts.
+
 Then install the sidecar dependencies and start the gateway:
 
 ```bash
@@ -252,16 +260,18 @@ Common issues:
   `voice()` content builders via the sidecar's `/send-attachment`
   endpoint. Captions arrive as a separate iMessage bubble after the
   media.
-- **Native polls are supported.** Hermes sends poll content through
-  spectrum-ts' `poll()` builder via the sidecar's `/send-poll` endpoint.
-- **Read receipts are supported.** The sidecar marks an inbound iMessage
-  read after forwarding it to Hermes, so the sender sees `Read` without
-  waiting for a model/tool turn. Inbound receipts for Hermes-sent messages
-  are consumed as presence telemetry and never create an agent turn. Set
-  `PHOTON_READ_RECEIPTS=false` to keep messages at `Delivered`.
-- **Message effects are supported.** Hermes sends text with native iMessage
-  bubble/screen effects through spectrum-ts' iMessage `effect()` builder
-  via the sidecar's `/send-effect` endpoint.
+- **Native polls are supported in managed cloud mode.** Hermes sends poll
+  content through spectrum-ts' `poll()` builder via the sidecar's `/send-poll`
+  endpoint. Local mode falls back to a numbered-text clarify prompt.
+- **Read receipts are supported in managed cloud mode.** The sidecar marks an
+  inbound iMessage read after forwarding it to Hermes, so the sender sees
+  `Read` without waiting for a model/tool turn. Inbound receipts for Hermes-sent
+  messages are consumed as presence telemetry and never create an agent turn. Set
+  `PHOTON_READ_RECEIPTS=false` to keep messages at `Delivered`. The Spectrum
+  12.7 local provider does not implement this operation, so Hermes skips it.
+- **Message effects are supported in managed cloud mode.** Hermes sends text
+  with native iMessage bubble/screen effects through spectrum-ts' iMessage
+  `effect()` builder via the sidecar's `/send-effect` endpoint.
 - **Photon's free quotas:** 5,000 messages per server per day,
   50 new-conversation initiations per shared line per day. Increases
   available — email `help@photon.codes`.

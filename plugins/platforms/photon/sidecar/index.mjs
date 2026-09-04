@@ -71,6 +71,7 @@ import { once } from "node:events";
 import { normalizeReplyContent } from "./reply-content.mjs";
 import { createSpectrumRuntime } from "./spectrum-runtime.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
+import { supportsProviderCapability } from "./provider-capabilities.mjs";
 import {
   classifyProbeRejection,
   shouldProbe,
@@ -605,7 +606,13 @@ const readReceiptsEnabled =
   "false";
 
 async function acknowledgeInboundRead(message) {
-  if (!readReceiptsEnabled) return;
+  // @spectrum-ts/imessage-local 12.7 exposes Message.read() through the
+  // shared type but rejects it at runtime. Do not turn every local inbound
+  // message into a warning for a capability the provider does not implement.
+  if (
+    !supportsProviderCapability(localMode, "read") ||
+    !readReceiptsEnabled
+  ) return;
   if (message?.content?.type === "read") return;
   if (typeof message?.read !== "function") return;
   try {
@@ -1116,6 +1123,9 @@ const server = http.createServer(async (req, res) => {
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/react") {
+      if (!supportsProviderCapability(localMode, "reaction")) {
+        return badRequest(res, "reactions are not supported by local iMessage");
+      }
       const { spaceId, messageId, emoji } = body || {};
       if (!spaceId || !messageId || typeof emoji !== "string" || !emoji) {
         return badRequest(res, "spaceId, messageId and emoji are required");
@@ -1139,6 +1149,9 @@ const server = http.createServer(async (req, res) => {
       return ok(res, { reactionId: handle.id ?? null });
     }
     if (req.url === "/unreact") {
+      if (!supportsProviderCapability(localMode, "reaction")) {
+        return badRequest(res, "reactions are not supported by local iMessage");
+      }
       const { spaceId, messageId, reactionId } = body || {};
       if (!spaceId || !messageId) {
         return badRequest(res, "spaceId and messageId are required");
@@ -1174,6 +1187,9 @@ const server = http.createServer(async (req, res) => {
       return badRequest(res, "no tracked reaction for message");
     }
     if (req.url === "/send-poll") {
+      if (!supportsProviderCapability(localMode, "poll")) {
+        return badRequest(res, "polls are not supported by local iMessage");
+      }
       const { spaceId, title, options } = body || {};
       const choices = Array.isArray(options)
         ? options.map((option) => String(option || "").trim()).filter(Boolean)
@@ -1189,6 +1205,9 @@ const server = http.createServer(async (req, res) => {
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/send-effect") {
+      if (!supportsProviderCapability(localMode, "effect")) {
+        return badRequest(res, "message effects are not supported by local iMessage");
+      }
       const { spaceId, text, effect } = body || {};
       const effectName = String(effect || "").trim();
       const effectId = MESSAGE_EFFECTS[effectName];

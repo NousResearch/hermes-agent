@@ -170,21 +170,31 @@ and the process that starts Hermes may need Full Disk Access to read
   as a synthetic `reaction:added:<emoji>` event. Removal after a sidecar
   restart is best-effort — the live reaction handle is lost, so a stale
   tapback heals when the next reaction replaces it. Group spaces stay
-  reachable across restarts via spectrum-ts' `space.get(id)`. Local iMessage
-  currently reports `react` as unsupported.
+  reachable across restarts via spectrum-ts' `space.get(id)`. Hermes disables
+  reactions in local mode because Spectrum 12.7 does not implement them there.
 - **Local cold sends support DMs and existing groups.** Use a bare E.164 number
   to start a DM, or an existing chat GUID to rehydrate a group. Local mode
   cannot create a new group from a list of recipients.
-- **Read receipts are supported.** The sidecar marks an inbound iMessage read
-  after forwarding it to Hermes, so the sender sees `Read` without waiting for
-  a model/tool turn. Inbound receipts for Hermes-sent messages are consumed as
-  presence telemetry and never create an agent turn. Set
-  `PHOTON_READ_RECEIPTS=false` to keep messages at `Delivered`.
-- **Native polls are supported.** Hermes posts poll content through
-  `spectrum-ts`' `poll(...)` builder via the sidecar's `/send-poll` endpoint.
-- **Message effects are supported.** Text can be sent with native iMessage
-  bubble/screen effects through `spectrum-ts`' iMessage `effect(...)` builder
-  via the sidecar's `/send-effect` endpoint.
+- **Read receipts are supported in managed cloud mode.** The sidecar marks an
+  inbound iMessage read after forwarding it to Hermes, so the sender sees
+  `Read` without waiting for a model/tool turn. Inbound receipts for Hermes-sent
+  messages are consumed as presence telemetry and never create an agent turn. Set
+  `PHOTON_READ_RECEIPTS=false` to keep messages at `Delivered`. Spectrum 12.7
+  does not implement marking messages read in local mode, so Hermes skips it.
+- **Native polls are supported in managed cloud mode.** Hermes posts poll
+  content through `spectrum-ts`' `poll(...)` builder via the sidecar's
+  `/send-poll` endpoint. Local mode sends the normal numbered-choice clarify
+  prompt instead.
+- **Message effects are supported in managed cloud mode.** Text can be sent
+  with native iMessage bubble/screen effects through `spectrum-ts`' iMessage
+  `effect(...)` builder via the sidecar's `/send-effect` endpoint.
+- **Local-mode capability limits (Spectrum 12.7).** Text/markdown, inbound and
+  outbound attachments, DMs, incoming reply context, and existing groups work.
+  Visible typing indicators, native outbound replies, editing/unsending,
+  tapbacks, polls, effects, read receipts, new-group creation, and group member/
+  metadata changes are not implemented by the local provider. Hermes avoids
+  calling the unsupported presence/status operations and degrades clarify
+  polls to numbered text.
 - **Cron/standalone sends require a running gateway.** Processes outside
   the gateway (cron subprocesses, `hermes send`) cannot spawn the sidecar;
   they authenticate to the gateway's live sidecar via the runtime record at

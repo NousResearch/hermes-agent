@@ -299,49 +299,6 @@ def is_connected(cfg: PlatformConfig) -> bool:
 
 
 def _imessage_mode(extra: Optional[dict] = None) -> str:
-    """Return the configured iMessage connection mode.
-
-    ``cloud`` is the managed Photon/Spectrum default. ``local`` uses
-    spectrum-ts' open-source macOS Messages path, so the Apple ID signed in
-    on this Mac owns delivery.
-    """
-    raw = (extra or {}).get("imessage_mode") or os.getenv("PHOTON_IMESSAGE_MODE")
-    mode = str(raw or "cloud").strip().lower()
-    if mode == "local":
-        return "local"
-    return "cloud"
-
-
-def _apply_yaml_config(_yaml_cfg: dict, photon_cfg: dict) -> Optional[dict]:
-    """Bridge Photon behavior settings from config.yaml into PlatformConfig.extra.
-
-    Runtime credentials still live in .env/auth.json, but the iMessage delivery
-    mode is behavioral configuration.  Support the concise top-level form:
-
-        photon:
-          imessage_mode: local
-
-    and the standard platform-extra form:
-
-        platforms:
-          photon:
-            extra:
-              imessage_mode: local
-    """
-    if not isinstance(photon_cfg, dict):
-        return None
-
-    raw_mode = photon_cfg.get("imessage_mode")
-    if raw_mode is None and isinstance(photon_cfg.get("extra"), dict):
-        raw_mode = photon_cfg["extra"].get("imessage_mode")
-    if raw_mode is None:
-        return None
-
-    mode = _imessage_mode({"imessage_mode": raw_mode})
-    return {"imessage_mode": mode}
-
-
-def _imessage_mode(extra: Optional[dict] = None) -> str:
     """Return ``local`` for the on-device macOS Messages transport."""
     raw = (extra or {}).get("imessage_mode") or os.getenv("PHOTON_IMESSAGE_MODE")
     return "local" if str(raw or "cloud").strip().lower() == "local" else "cloud"
@@ -1302,10 +1259,12 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
                            session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Multiple-choice renders as a native poll; the vote comes back as a `poll_option`
-        event that _dispatch_inbound turns into plain text, so the clarify is flipped into
-        text-capture mode like the base fallback."""
+        """Use a native cloud poll, or the numbered-text fallback in local mode."""
         if not choices:  # open-ended: base plain-text behaviour is right
+            return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
+        # Spectrum 12.7 exports the generic poll builder in both runtimes, but
+        # @spectrum-ts/imessage-local rejects poll content when it is sent.
+        if self._imessage_mode == "local":
             return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
         from tools.clarify_gateway import mark_awaiting_text
         mark_awaiting_text(clarify_id)
@@ -1361,6 +1320,9 @@ class PhotonAdapter(BasePlatformAdapter):
             return False
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
+        # The 12.7 local provider accepts typing content only as a no-op.
+        if self._imessage_mode == "local":
+            return
         now = time.time()
         if now - self._typing_last_sent.get(chat_id, 0.0) < _TYPING_COOLDOWN_SECONDS:
             return
@@ -1369,6 +1331,8 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def stop_typing(self, chat_id: str) -> None:
         self._typing_last_sent.pop(chat_id, None)
+        if self._imessage_mode == "local":
+            return
         await self._sidecar_try("/typing", {"spaceId": chat_id, "state": "stop"}, "stop_typing")
 
     # -- Reactions (tapbacks). Lifecycle hooks (👀 while processing, 👍/👎 on completion)
@@ -1415,7 +1379,9 @@ class PhotonAdapter(BasePlatformAdapter):
         return True
 
     def _reactions_enabled(self) -> bool:
-        return _get_scoped_secret("PHOTON_REACTIONS", "false").strip().lower() in {"true", "1", "yes", "on"}
+        return self._imessage_mode != "local" and (
+            _get_scoped_secret("PHOTON_REACTIONS", "false").strip().lower() in {"true", "1", "yes", "on"}
+        )
 
     async def _add_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Tapback ``emoji`` onto a message. Soft-fails (False), never raises."""
@@ -1433,6 +1399,8 @@ class PhotonAdapter(BasePlatformAdapter):
     async def add_reaction(self, chat_id: str, emoji: str, message_id: Optional[str] = None) -> Dict[str, Any]:
         """Tapback ``emoji`` onto a message (default: the chat's latest inbound). iMessage
         maps ❤️👍👎😂‼️❓ to native tapbacks; anything else is a custom-emoji reaction."""
+        if self._imessage_mode == "local":
+            return {"success": False, "error": "reactions are not supported by local iMessage"}
         target = message_id or self._last_inbound_by_chat.get(self._normalize_chat_key(chat_id))
         if not target:
             return {"success": False, "error": "no message to react to — pass message_id (no "
@@ -1443,6 +1411,8 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def remove_reaction(self, chat_id: str, message_id: Optional[str] = None) -> Dict[str, Any]:
         """Retract our tapback from a message (best-effort)."""
+        if self._imessage_mode == "local":
+            return {"success": False, "error": "reactions are not supported by local iMessage"}
         target = message_id or self._last_inbound_by_chat.get(self._normalize_chat_key(chat_id))
         if not target:
             return {"success": False, "error": "no message to unreact — pass message_id"}

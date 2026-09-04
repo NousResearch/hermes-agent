@@ -94,14 +94,14 @@ def _pick_slot(
     return slot
 
 
-def _format_slot(slot: dict[str, Any]) -> str:
+def _format_slot(slot: dict[str, Any], *, include_max_tokens: bool = True) -> str:
     label = f"{slot['provider']}:{slot['model']}"
     details: list[str] = []
     effort = str(slot.get("reasoning_effort") or "").strip()
     if effort:
         details.append(f"reasoning={effort}")
     max_tokens = slot.get("max_tokens")
-    if max_tokens is not None:
+    if include_max_tokens and max_tokens is not None:
         details.append(f"max_tokens={max_tokens}")
     return f"{label} [{', '.join(details)}]" if details else label
 
@@ -119,7 +119,7 @@ def _print_config(config: dict[str, Any]) -> None:
         for idx, slot in enumerate(preset["reference_models"], start=1):
             print(f"    {idx}. {_format_slot(slot)}")
         agg = preset["aggregator"]
-        print(f"  Aggregator: {_format_slot(agg)}")
+        print(f"  Aggregator: {_format_slot(agg, include_max_tokens=False)}")
 
 
 def cmd_moa(args) -> None:

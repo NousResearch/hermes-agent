@@ -5,6 +5,7 @@ from unittest.mock import patch
 from hermes_cli.moa_cmd import (
     _format_slot,
     _pick_slot,
+    _print_config,
     _prompt_max_tokens_override,
 )
 
@@ -62,6 +63,38 @@ def test_aggregator_slot_does_not_offer_reference_override():
         "model": "deepseek/deepseek-v4-pro",
     }
     prompt.assert_not_called()
+
+
+def test_print_config_hides_reference_only_override_on_aggregator(capsys):
+    _print_config(
+        {
+            "moa": {
+                "presets": {
+                    "custom": {
+                        "reference_models": [
+                            {
+                                "provider": "openrouter",
+                                "model": "reference",
+                                "max_tokens": 600,
+                            }
+                        ],
+                        "aggregator": {
+                            "provider": "openrouter",
+                            "model": "aggregator",
+                            "reasoning_effort": "high",
+                            "max_tokens": 777,
+                        },
+                    }
+                },
+                "default_preset": "custom",
+            }
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert "openrouter:reference [max_tokens=600]" in output
+    assert "Aggregator: openrouter:aggregator [reasoning=high]" in output
+    assert "max_tokens=777" not in output
 
 
 def test_format_slot_shows_reasoning_and_max_tokens_overrides():

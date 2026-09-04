@@ -27,7 +27,12 @@ except ImportError:  # pragma: no cover - dev env without ptyprocess
     _PTY_AVAILABLE = False
 
 
-__all__ = ["PtyBridge", "PtyUnavailableError"]
+__all__ = ["PTY_HOST_DASHBOARD", "PTY_HOST_ENV", "PtyBridge", "PtyUnavailableError"]
+
+# Set on the spawned TUI so Ink knows which emulator is hosting it. Mirrored in
+# ui-tui/packages/hermes-ink/src/ink/termio/host.ts — keep the two in sync.
+PTY_HOST_ENV = "HERMES_PTY_HOST"
+PTY_HOST_DASHBOARD = "dashboard"
 
 
 # ``struct winsize`` packs rows/cols as unsigned short; we clamp well below that ceiling because a
@@ -88,6 +93,11 @@ class PtyBridge:
         spawn_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False) if env is None else env.copy()
         if not spawn_env.get("TERM"):
             spawn_env["TERM"] = "xterm-256color"
+        # Tell the child TUI it is hosted by the dashboard's xterm.js. Ink uses this to skip the
+        # focus-in erase+repaint it does for native emulators that coalesce hidden-tab output
+        # (xterm.js never drops frames, so under the dashboard that repaint was a visible flash on
+        # every OS app-switch).
+        spawn_env[PTY_HOST_ENV] = PTY_HOST_DASHBOARD
         proc = ptyprocess.PtyProcess.spawn(list(argv), cwd=cwd, env=spawn_env, dimensions=(rows, cols))  # type: ignore[union-attr]
         return cls(proc)
 

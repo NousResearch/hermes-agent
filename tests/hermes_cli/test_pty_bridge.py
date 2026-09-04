@@ -54,6 +54,18 @@ class TestPtyBridgeSpawn:
         with pytest.raises((FileNotFoundError, OSError)):
             PtyBridge.spawn([str(tmp_path / "definitely-not-a-real-binary")])
 
+    def test_spawn_marks_child_as_dashboard_hosted(self):
+        # Ink reads this to skip its focus-in erase+repaint, which under
+        # xterm.js was a visible reload on every OS app-switch (#94337).
+        from hermes_cli.pty_bridge import PTY_HOST_DASHBOARD, PTY_HOST_ENV
+
+        bridge = PtyBridge.spawn([shutil.which("sh") or "sh", "-c", f'printf "%s" "${PTY_HOST_ENV}"'])
+        try:
+            output = _read_until(bridge, PTY_HOST_DASHBOARD.encode())
+            assert PTY_HOST_DASHBOARD.encode() in output
+        finally:
+            bridge.close()
+
 
 @skip_on_windows
 class TestPtyBridgeIO:

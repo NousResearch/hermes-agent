@@ -4128,7 +4128,10 @@ class BasePlatformAdapter(ABC):
             _cp_limit = (
                 _custom_unit_to_cp(remaining, headroom, _len) if _len is not len else headroom)
             region = remaining[:_cp_limit]
-            split_at = region.rfind("\n")
+            # Prefer paragraph break first (\n\n), then single newline, then space
+            split_at = region.rfind("\n\n")
+            if split_at < _cp_limit // 3:
+                split_at = region.rfind("\n")
             if split_at < _cp_limit // 2:
                 split_at = region.rfind(" ")
             if split_at < 1:

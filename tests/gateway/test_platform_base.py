@@ -1094,6 +1094,18 @@ class TestTruncateMessage:
                 "No continuation chunk reopened with language tag"
             )
 
+    def test_prefers_paragraph_split_over_single_newline(self):
+        """Verify that chunking prefers natural paragraph boundaries (\n\n) over mid-paragraph line breaks."""
+        p1 = "Paragraph 1 line 1\nParagraph 1 line 2\nParagraph 1 line 3"
+        p2 = "Paragraph 2 line 1\nParagraph 2 line 2\nParagraph 2 line 3"
+        content = f"{p1}\n\n{p2}"
+        # Set max_length so that both paragraphs together exceed the limit, but p1 fits comfortably
+        chunks = BasePlatformAdapter.truncate_message(content, max_length=len(p1) + 20)
+        assert len(chunks) == 2
+        # First chunk should contain exactly p1 (clean split at paragraph break)
+        assert chunks[0].startswith(p1)
+        assert p2 in chunks[1]
+
 
 # ---------------------------------------------------------------------------
 # _get_human_delay

@@ -187,3 +187,18 @@ def test_resolve_no_override_keeps_global() -> None:
     assert notice is None
 
 
+
+
+def test_compression_threshold_codex_gpt55_custom_codex_responses() -> None:
+    # Custom provider speaking codex_responses gets 272K autoraise.
+    assert _compression_threshold_for_model("gpt-5.6-sol", "custom", api_mode="codex_responses") == 0.85
+    assert _compression_threshold_for_model("gpt-5.6-sol-pro", "custom", api_mode="codex_responses") == 0.85
+    assert _compression_threshold_for_model("gpt-5.6-luna", "custom", api_mode="codex_responses") == 0.85
+    # openai-codex still matches without explicit api_mode
+    assert _compression_threshold_for_model("gpt-5.6-sol", "openai-codex") == 0.85
+
+
+def test_compression_threshold_codex_gpt55_non_codex_api_mode_is_not_raised() -> None:
+    # Same slug, different route/api_mode → keep the user's configured value.
+    assert _compression_threshold_for_model("gpt-5.6-sol", "custom", api_mode="chat_completions") is None
+    assert _compression_threshold_for_model("gpt-5.6-sol", "openai", api_mode="chat_completions") is None

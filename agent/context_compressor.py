@@ -2146,6 +2146,33 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         # Re-resolve from the raw config value so a switch away from an overridden model falls back correctly.
         _config_pct = getattr(self, "_config_threshold_percent", self.threshold_percent)
         self._base_threshold_percent = resolve_model_threshold(model, self.model_thresholds, _config_pct)
+        # Re-derive any per-model/route threshold auto-raise for the new model
+        # (gpt-5.4/5.5/5.6 family on the codex_responses wire — OAuth backend
+        # OR custom providers — Arcee Trinity, codex-spark) and apply it on top
+        # of the user-override resolution, so a switch TO an autoraise-eligible
+        # model raises mid-session and a switch AWAY drops back to the user's
+        # global threshold instead of keeping a stale auto-raised value (#63009).
+        # Autoraises only ever RAISE; never lower a user's higher configured value.
+        _autoraise_pct: float | None = None
+        try:
+            from agent.auxiliary_client import _compression_threshold_for_model
+            # Respect the compression.codex_gpt55_autoraise opt-out on re-derive
+            # (same read as init's _compression_threshold, evaluated per switch).
+            _autoraise_enabled = True
+            try:
+                from hermes_cli.config import load_config_readonly as _lcfg
+                _comp_cfg = ((_lcfg() or {}).get("compression") or {})
+                _autoraise_enabled = bool(_comp_cfg.get("codex_gpt55_autoraise", True))
+            except Exception:
+                pass
+            _autoraise_pct = _compression_threshold_for_model(
+                model, provider=provider, api_mode=api_mode,
+                allow_codex_gpt55_autoraise=_autoraise_enabled,
+            )
+        except Exception:
+            _autoraise_pct = None
+        if _autoraise_pct is not None and _autoraise_pct > self._base_threshold_percent:
+            self._base_threshold_percent = _autoraise_pct
         self.threshold_percent = self._effective_threshold_percent(context_length, self._base_threshold_percent)
         # max_tokens=None means "unspecified": keep the existing output reservation.
         # A switch that genuinely changes the output budget passes the new value explicitly. (#43547)

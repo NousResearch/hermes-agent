@@ -634,11 +634,12 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
     def sync_turn(
         self, user_content: str, assistant_content: str, *, session_id: str = "",
-        turn_author: Optional[Dict[str, Any]] = None, scope: Optional[str] = None,
+        turn_author: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Record the conversation turn in Honcho (non-blocking), chunking messages that
         exceed the Honcho API limit. Honors saveMessages: false. ``turn_author`` names who wrote
-        the user side; the ``on_turn_start`` stash is the fallback for callers that never pass it."""
+        the user side; the ``on_turn_start`` stash is the fallback for callers that never pass it.
+        A bot author's turn is written into that bot's own a2a session, never the human's."""
         if not self._writes_enabled():
             return
         if _is_internal_gateway_turn(user_content):
@@ -656,11 +657,29 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             return
 
         author = turn_author if isinstance(turn_author, dict) else self._turn_author
-        # Resolved before the thread starts so a following turn cannot retag a queued write.
-        author_peer_id = self._manager.resolve_author_peer_id(self._session_key, author.get("id"), author.get("name"))
+        session_kwargs: dict[str, str] = {}
+        if author.get("is_bot"):
+            # A bot's turn never lands in the human's session: its own a2a session or nothing.
+            if not getattr(self._config, "a2a_sessions", True):
+                logger.debug("Honcho sync skipped a bot-authored turn because a2aSessions is off")
+                return
+            author_id = str(author.get("id") or "").strip()
+            if not author_id:
+                logger.debug("Honcho sync skipped a bot-authored turn that named no author id")
+                return
+            bot_peer_id = self._manager.resolve_author_peer_id(self._session_key, author_id, author.get("name"))
+            session_key = self._a2a_session_key(author_id)
+            # The bot is the a2a session's own user peer, so its messages need no per-message author.
+            if bot_peer_id:
+                session_kwargs["user_peer_id"] = bot_peer_id
+            author_peer_id = None
+        else:
+            session_key = self._session_key
+            # Resolved before the thread starts so a following turn cannot retag a queued write.
+            author_peer_id = self._manager.resolve_author_peer_id(session_key, author.get("id"), author.get("name"))
 
         def _sync():
-            session = self._manager.get_or_create(self._session_key)
+            session = self._manager.get_or_create(session_key, **session_kwargs)
             for chunk in self._chunk_message(clean_user_content, msg_limit) if clean_user_content else ():
                 session.add_message("user", chunk, author_peer_id=author_peer_id)
             for chunk in self._chunk_message(clean_assistant_content, msg_limit) if clean_assistant_content else ():
@@ -671,6 +690,12 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=5.0)
         self._sync_thread = self._spawn_write(_sync, "honcho-sync", "Honcho sync_turn failed: %s")
+
+    def _a2a_session_key(self, author_id: str) -> str:
+        """Honcho session for one sender bot's DMs into this agent, stable across turns. Rooms already
+        get their own session by title, so only DMs reroute."""
+        key = f"{self._session_key}:a2a:{re.sub(r'[^a-zA-Z0-9_-]', '-', author_id)}"
+        return HonchoClientConfig._enforce_session_id_limit(key, key)
 
     @staticmethod
     def _spawn_write(fn: Callable[[], None], name: str, fail_msg: str) -> threading.Thread:

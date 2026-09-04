@@ -213,8 +213,10 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             honcho_session = self._authed_call("session setup", lambda: self._sdk_session(session_id))
         return honcho_session, existing_messages
 
-    def get_or_create(self, key: str) -> HonchoSession:
-        """Get an existing session or create a new one for ``key`` (usually channel:chat_id)."""
+    def get_or_create(self, key: str, *, user_peer_id: str | None = None) -> HonchoSession:
+        """Get an existing session or create a new one for ``key`` (usually channel:chat_id).
+        ``user_peer_id`` replaces the resolved user peer when the session's participant is not the
+        runtime user, e.g. the sender bot of an a2a session."""
         with self._cache_lock:
             if key in self._cache:
                 logger.debug("Local session cache hit: %s", key)
@@ -224,7 +226,7 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         # bots scope memory per user; config can alias/prefix it, or pinPeerName pins all
         # identities to peerName for single-user deployments (see _resolve_user_peer_id).
         # Determine peer IDs — no lock needed (read-only, no shared state mutation). See #14984.
-        user_peer_id = self._resolve_user_peer_id(key)
+        user_peer_id = user_peer_id or self._resolve_user_peer_id(key)
         assistant_peer_id = self._sanitize_id(self._config.ai_peer if self._config else "hermes-assistant")
 
         # All expensive I/O outside the lock — Honcho's persistence is source of truth.

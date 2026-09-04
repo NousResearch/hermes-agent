@@ -176,15 +176,17 @@ export function useStatusbarItems({
 
   const turnStartedAt = primaryFocused ? primaryTurnStartedAt : focusedTurnStartedAt
 
-  // A tile's session-start + cold cwd come from its stored row (the cache only
-  // knows runtime state). Only these scalars are read off `$sessions`, so
-  // select them — a whole-list `useStore` re-ran the hook on every session-list
-  // write (title updates, poll refreshes, archives).
-  const focusedRowStartedAt = useStoreSelector($sessions, sessions =>
-    focusedStoredSessionId
-      ? (sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.started_at ?? null)
-      : null
-  )
+  // The focused surface's session-start + a tile's cold cwd come from the
+  // stored row (the cache only knows runtime state). Primary focus resolves its
+  // row by the selection, tile focus by the focused tile's stored id — both
+  // read the same durable `started_at`. Only these scalars are read off
+  // `$sessions`, so select them — a whole-list `useStore` re-ran the hook on
+  // every session-list write (title updates, poll refreshes, archives).
+  const focusedRowStartedAt = useStoreSelector($sessions, sessions => {
+    const id = primaryFocused ? selectedStoredSessionId : focusedStoredSessionId
+
+    return id ? (sessions.find(s => sessionMatchesStoredId(s, id))?.started_at ?? null) : null
+  })
 
   const focusedRowCwd = useStoreSelector($sessions, sessions => {
     if (!focusedStoredSessionId) {
@@ -235,10 +237,17 @@ export function useStatusbarItems({
   const projectTree = useStore($projectTree)
   const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
 
-  const sessionStartedAt = primaryFocused
-    ? primarySessionStartedAt
-    : focusedRowStartedAt
-      ? focusedRowStartedAt * 1000
+  // The session timer reads ONE clock: the durable `started_at` of the focused
+  // session's row, so switching focus between the primary pane and a tile never
+  // changes what "Session" means (a per-switch `Date.now()` stamp made the
+  // primary read "focused since" while tiles read row age — #103123). The
+  // per-switch stamp survives only as a transient fallback for a brand-new
+  // session whose optimistic row hasn't landed in the list yet (or a draft
+  // runtime with no row at all).
+  const sessionStartedAt = focusedRowStartedAt
+    ? focusedRowStartedAt * 1000
+    : primaryFocused
+      ? primarySessionStartedAt
       : null
 
   // The backend only knows a session's MEASURED occupancy once a turn has run

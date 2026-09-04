@@ -79,23 +79,119 @@ def test_deliver_wake_non_push_self_posts_raw_session_id(monkeypatch):
         seen["session_id"] = request.headers.get("X-Hermes-Session-Id")
         seen["auth"] = request.headers.get("Authorization")
         seen["body"] = await request.json()
-        return web.json_response({"choices": [{"message": {"content": "ok"}}]})
+        return web.json_response(
+            {"choices": [{"message": {"content": "ok"}}]},
+            headers={"X-Hermes-Session-Id": "rotated-sid-43"},
+        )
 
     async def run():
         runner, port = await _serve(handler)
         try:
             adapter = ApiServerLikeAdapter(host="0.0.0.0", port=port, key="sekrit")
-            await deliver_wake(adapter, text="task done — wake", session_id="raw-sid-42")
+            return await deliver_wake(
+                adapter, text="task done — wake", session_id="raw-sid-42"
+            )
         finally:
             await runner.cleanup()
 
-    asyncio.run(run())
+    result = asyncio.run(run())
     assert seen["session_id"] == "raw-sid-42"
     assert seen["auth"] == "Bearer sekrit"
     assert seen["body"]["stream"] is False
     assert seen["body"]["messages"] == [
         {"role": "user", "content": "task done — wake"}
     ]
+    assert result == {
+        "requested_session_id": "raw-sid-42",
+        "effective_session_id": "rotated-sid-43",
+        "completion": {"choices": [{"message": {"content": "ok"}}]},
+    }
+
+
+def test_deliver_wake_push_result_remains_none():
+    result = asyncio.run(deliver_wake(PushAdapter(), text="wake", source=_source()))
+    assert result is None
+
+
+def test_deliver_wake_propagates_non_transient_http_error():
+    from aiohttp import web
+
+    async def handler(request):
+        return web.json_response({"error": "denied"}, status=403)
+
+    async def run():
+        runner, port = await _serve(handler)
+        try:
+            adapter = ApiServerLikeAdapter(port=port)
+            with pytest.raises(RuntimeError, match="HTTP 403"):
+                await deliver_wake(adapter, text="x", session_id="sid")
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_filesystem_plugin_consumes_wake_completion(tmp_path, monkeypatch):
+    """A user-installed plugin can consume both the completion and rotated session id."""
+    from aiohttp import web
+    import yaml
+
+    from hermes_cli.plugins import PluginManager
+
+    home = tmp_path / "hermes-home"
+    plugin_dir = home / "plugins" / "wake-consumer"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text(
+        yaml.safe_dump({
+            "name": "wake-consumer",
+            "version": "0.1.0",
+            "description": "Consumes the generic wake completion result",
+        }),
+        encoding="utf-8",
+    )
+    (plugin_dir / "__init__.py").write_text(
+        "from gateway.wake import deliver_wake\n\n"
+        "async def consume(adapter, *, text, session_id):\n"
+        "    result = await deliver_wake(adapter, text=text, session_id=session_id)\n"
+        "    return {\n"
+        "        'session_id': result['effective_session_id'],\n"
+        "        'answer': result['completion']['choices'][0]['message']['content'],\n"
+        "    }\n\n"
+        "def register(ctx):\n"
+        "    ctx.register_hook('post_api_request', lambda **kwargs: None)\n",
+        encoding="utf-8",
+    )
+    (home / "config.yaml").write_text(
+        yaml.safe_dump({"plugins": {"enabled": ["wake-consumer"]}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    manager = PluginManager()
+    manager.discover_and_load()
+    loaded = manager._plugins["wake-consumer"]
+    assert loaded.enabled is True
+    assert loaded.module is not None
+
+    async def handler(request):
+        return web.json_response(
+            {"choices": [{"message": {"content": "validated"}}]},
+            headers={"X-Hermes-Session-Id": "session-after-compression"},
+        )
+
+    async def run():
+        runner, port = await _serve(handler)
+        try:
+            return await loaded.module.consume(
+                ApiServerLikeAdapter(port=port), text="wake", session_id="session-before"
+            )
+        finally:
+            await runner.cleanup()
+
+    assert asyncio.run(run()) == {
+        "session_id": "session-after-compression",
+        "answer": "validated",
+    }
 
 
 def test_deliver_wake_retries_429_then_succeeds(monkeypatch):
@@ -180,5 +276,3 @@ def test_persist_delegation_delivery_raises_without_db():
         asyncio.run(persist_delegation_delivery(
             NoDbAdapter(), text="x", session_id="sid",
         ))
-
-

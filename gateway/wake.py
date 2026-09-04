@@ -35,11 +35,14 @@ def adapter_supports_push(adapter: Any) -> bool:
     return bool(getattr(adapter, "supports_async_delivery", True))
 
 
-async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None) -> None:
+async def deliver_wake(
+    adapter: Any, *, text: str, session_id: str = "", source: Any = None
+) -> Optional[dict[str, Any]]:
     """Deliver a wake turn to the session behind ``adapter``. ``session_id`` is the RAW session id
     (``X-Hermes-Session-Id`` / state.db key) — required for non-push adapters. ``source`` is the
     ``SessionSource`` for the synthetic event — required for push-capable adapters. Raises on
-    failure so the caller can rewind/retry."""
+    failure so the caller can rewind/retry. Non-push delivery returns the parsed completion plus
+    requested/effective session ids; push delivery retains its historical ``None`` result."""
     if adapter_supports_push(adapter):
         if source is None:
             raise ValueError("deliver_wake: push-capable adapter requires a SessionSource")
@@ -50,7 +53,7 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
     if not session_id:
         raise ValueError("deliver_wake: non-push adapter (supports_async_delivery=False) "
                          "requires the raw session id to self-post the wake turn")
-    await _self_post_chat_completion(adapter, text=text, session_id=session_id)
+    return await _self_post_chat_completion(adapter, text=text, session_id=session_id)
 
 
 def _delegation_display_metadata(evt: dict) -> dict:
@@ -101,7 +104,9 @@ async def persist_delegation_delivery(adapter: Any, *, text: str, session_id: st
     )
 
 
-async def _self_post_chat_completion(adapter: Any, *, text: str, session_id: str) -> None:
+async def _self_post_chat_completion(
+    adapter: Any, *, text: str, session_id: str
+) -> dict[str, Any]:
     """POST the wake text to the in-pod API server as a normal session turn, using the adapter's
     own bind host/port/key. Session continuation via ``X-Hermes-Session-Id`` is 403-gated on
     ``API_SERVER_KEY``, so a missing key is a hard error rather than a wake in a fresh session
@@ -142,9 +147,20 @@ async def _self_post_chat_completion(adapter: Any, *, text: str, session_id: str
                         raise RuntimeError(
                             f"wake self-post failed for session {session_id}: HTTP {resp.status}: {body}"
                         )
-                    await resp.read()
+                    completion = await resp.json(content_type=None)
+                    if not isinstance(completion, dict):
+                        raise RuntimeError(
+                            f"wake self-post returned a non-object completion for session {session_id}"
+                        )
+                    effective_session_id = str(
+                        resp.headers.get("X-Hermes-Session-Id") or session_id
+                    )
                     logger.info("wake self-post delivered for session %s (attempt %d)", session_id, attempt + 1)
-                    return
+                    return {
+                        "requested_session_id": session_id,
+                        "effective_session_id": effective_session_id,
+                        "completion": completion,
+                    }
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
             last_err = exc
             logger.warning("wake self-post transient failure for session %s (attempt %d/%d): %s",

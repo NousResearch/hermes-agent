@@ -3785,10 +3785,33 @@ def _sweep_completed_oneshots(
     return removed
 
 
-def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
+def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> Optional[bool]:
+    """Refresh an active ``fire_claim`` without extending another owner's lease.
+
+    A cron execution can legitimately outlive the fire-claim TTL.  The shared
+    run wrapper calls this periodically so another scheduler process cannot
+    treat a live execution as abandoned and dispatch it again.  Comparing the
+    owner copied at dispatch prevents a stale runner from refreshing a claim
+    that has since been recovered by another process.
+
+    Tri-state result (#95307) — callers MUST distinguish the three outcomes:
+
+    * ``True``  — the claim exists, belongs to ``expected_owner``, and was
+      refreshed (lease extended).
+    * ``False`` — definitive ownership loss: the job record or its claim is
+      gone, or the claim now belongs to a different owner. Safe to treat as a
+      takeover.
+    * ``None``  — the per-job fire fence could not be acquired within the lock
+      budget, so ownership could not be verified. This is NOT evidence of a
+      takeover: the fence that blocks this refresh is the very lock that
+      excludes replacement owners while the legitimate runner performs a long
+      fenced side effect (e.g. a Bot Chat delivery runs a full agent turn
+      holding it). Classifying contention as loss made the runner discard its
+      own successful result (#95307).
+    """
     with _fire_job_lock(job_id) as acquired:
         if not acquired:
-            return False
+            return None
         return _heartbeat_fire_claim_locked(
             job_id,
             expected_owner=expected_owner,

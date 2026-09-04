@@ -7333,6 +7333,19 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
         )
         return True
 
+    if owns_fire_claim is None:
+        # Fence busy pre-run: ownership unverifiable right now (#95307). Not
+        # proof of a takeover, but we don't start a run we cannot fence.
+        logger.warning(
+            "Job '%s': fire claim ownership could not be verified before "
+            "execution (fire fence busy)",
+            job_id,
+        )
+        _finish_unstarted(
+            "Fire claim ownership could not be validated before execution started."
+        )
+        return True
+
     if owns_fire_claim is False:
         logger.warning(
             "Job '%s': fire claim ownership was already lost before execution",
@@ -7345,13 +7358,27 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
         last_confirmed = time.monotonic()
         while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
             try:
-                if not heartbeat_fire_claim(job_id, expected_owner=owner):
+                status = heartbeat_fire_claim(job_id, expected_owner=owner)
+                if status is False:
                     lost_ownership.set()
                     logger.warning(
                         "Job '%s': fire claim ownership lost; interrupting stale run",
                         job_id,
                     )
                     return
+                if status is None:
+                    # Fire fence busy — usually OUR OWN side-effect fence held
+                    # around a long delivery (a Bot Chat target runs a full
+                    # agent turn under it, #95307). The fence excludes
+                    # replacement owners while the legitimate runner works,
+                    # so contention is not evidence of a takeover. Skip this
+                    # beat without burning the exception grace budget; claim
+                    # refreshes resume once the fence frees up.
+                    logger.debug(
+                        "Job '%s': fire_claim heartbeat skipped; fire fence busy",
+                        job_id,
+                    )
+                    continue
                 last_confirmed = time.monotonic()
             except Exception:
                 logger.debug(
@@ -7525,7 +7552,14 @@ def _run_one_job_body(
         if fire_owner is None:
             return False
         try:
-            if heartbeat_fire_claim(job["id"], expected_owner=fire_owner):
+            status = heartbeat_fire_claim(job["id"], expected_owner=fire_owner)
+            if status is True:
+                return False
+            if status is None:
+                # Fence busy: ownership unverifiable right now (#95307) —
+                # usually our own fenced delivery. Not proof of a takeover;
+                # proceed and let the owner-fenced terminal write be the
+                # authoritative guard against completing on a stolen claim.
                 return False
         except Exception:
             logger.debug(
@@ -7660,7 +7694,7 @@ def _run_one_job_body(
             # interruption through the owner-fenced terminal write.
             if fire_owner is not None and heartbeat_fire_claim(
                 job["id"], expected_owner=fire_owner,
-            ):
+            ) is True:
                 mark_job_run(
                     job["id"],
                     False,
@@ -7851,7 +7885,7 @@ def _run_one_job_body(
             # discarding silently (lingering claim + stale last_status).
             if fire_owner is not None and heartbeat_fire_claim(
                 job["id"], expected_owner=fire_owner,
-            ):
+            ) is True:
                 mark_job_run(
                     job["id"],
                     False,

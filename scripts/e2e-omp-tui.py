@@ -8,6 +8,7 @@ import os
 import pty
 import re
 import select
+import shutil
 import signal
 import subprocess
 import sys
@@ -15,11 +16,19 @@ import time
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+UI_TUI = _PROJECT_ROOT / "ui-tui"
+UI_DIST = UI_TUI / "dist" / "entry.js"
 MONITOR_PID = Path("/tmp/hermes-omp-monitor.pid")
 MONITOR_LOG = Path("/tmp/hermes-omp-monitor.log")
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 COMPOSER_BORDER_RE = re.compile(r"[╭╮╯╰┌┐└┘│─]")
 READY_HINTS = ("❯", "ready", "/help", "tools ·")
+# hermes_cli.main._suppress_mouse_residue_early() — often the only PTY bytes
+# while npm install/build runs with captured stdout before Ink starts.
+MOUSE_CSI = (
+    b"\x1b[?1003l\x1b[?1002l\x1b[?1001l\x1b[?1000l\x1b[?9l"
+    b"\x1b[?1006l\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?2029l"
+)
 
 
 def strip_ansi(text: str) -> str:
@@ -122,9 +131,62 @@ def launch_pty(argv: list[str], env: dict[str, str], cols: int, rows: int) -> tu
 
 
 def run_component_acceptance() -> int:
-    ui_tui = _PROJECT_ROOT / "ui-tui"
-    script = ui_tui / "scripts" / "omp-acceptance.mjs"
-    return subprocess.run(["node", str(script)], cwd=str(ui_tui)).returncode
+    script = UI_TUI / "scripts" / "omp-acceptance.mjs"
+    return subprocess.run(["node", str(script)], cwd=str(UI_TUI)).returncode
+
+
+def bootstrap_tui_workspace(*, quiet: bool = False) -> int:
+    """Install ui-tui deps and build dist/ so ``hermes --tui`` can reach Ink.
+
+    ``hermes --tui`` runs npm install + ``npm run build`` with captured stdout
+    before exec'ing Node. On a cold checkout that phase is silent on the PTY
+    (only the early mouse-mode CSI bytes appear) and can take minutes if npm is
+    slow or wedged — this preflight avoids that for E2E and local dev.
+    """
+    npm = shutil.which("npm") or "npm"
+    env = os.environ.copy()
+    env["CI"] = "1"
+
+    if not quiet:
+        print("bootstrap: npm install --workspace ui-tui …", flush=True)
+    rc = subprocess.run(
+        [
+            npm,
+            "install",
+            "--workspace",
+            "ui-tui",
+            "--include=dev",
+            "--no-fund",
+            "--no-audit",
+            "--progress=false",
+        ],
+        cwd=str(_PROJECT_ROOT),
+        env=env,
+    ).returncode
+    if rc != 0:
+        print("bootstrap: npm install failed", file=sys.stderr)
+        return rc
+
+    for step in ("build:ink", "build"):
+        if not quiet:
+            print(f"bootstrap: npm run {step} …", flush=True)
+        rc = subprocess.run([npm, "run", step], cwd=str(UI_TUI), env=env).returncode
+        if rc != 0:
+            print(f"bootstrap: npm run {step} failed", file=sys.stderr)
+            return rc
+
+    if not UI_DIST.is_file():
+        print("bootstrap: dist/entry.js still missing after build", file=sys.stderr)
+        return 1
+
+    if not quiet:
+        kb = UI_DIST.stat().st_size // 1024
+        print(f"bootstrap: ready ({kb}K ui-tui/dist/entry.js)", flush=True)
+    return 0
+
+
+def cmd_bootstrap(_: argparse.Namespace) -> int:
+    return bootstrap_tui_workspace()
 
 
 def assert_live_acceptance(text: str) -> list[str]:
@@ -143,6 +205,22 @@ def assert_live_acceptance(text: str) -> list[str]:
     return failures
 
 
+def _print_launch_hint(captured: bytes, text: str) -> None:
+    if len(captured) <= len(MOUSE_CSI) + 20 or captured.startswith(MOUSE_CSI[:20]):
+        print(
+            "\nHINT: PTY only saw Hermes mouse-mode CSI — Ink never started.\n"
+            "      hermes --tui blocks on silent npm install/build first.\n"
+            "      Run:  python3 scripts/e2e-omp-tui.py bootstrap\n"
+            "      Then: hermes --tui   (in kitty/foot, not the IDE panel)\n"
+            "      Kill stuck npm:  pkill -f 'npm install'",
+            file=sys.stderr,
+        )
+    elif strip_ansi(text):
+        print(strip_ansi(text)[-2000:], file=sys.stderr)
+    else:
+        print(repr(captured[:500]), file=sys.stderr)
+
+
 def cmd_test(args: argparse.Namespace) -> int:
     component_rc = run_component_acceptance()
     if component_rc != 0:
@@ -153,9 +231,13 @@ def cmd_test(args: argparse.Namespace) -> int:
         print("OMP component acceptance passed (live PTY skipped; pass --live)")
         return 0
 
+    if not args.no_bootstrap:
+        boot_rc = bootstrap_tui_workspace(quiet=args.quiet_bootstrap)
+        if boot_rc != 0:
+            return boot_rc
+
     hermes = find_hermes()
-    ui_dist = _PROJECT_ROOT / "ui-tui" / "dist" / "entry.js"
-    use_dev = args.dev or not ui_dist.exists()
+    use_dev = args.dev or not UI_DIST.exists()
     argv = tui_argv(hermes, dev=use_dev)
     env = build_env(args.cols, args.rows)
     print(f"live PTY: {' '.join(argv)}")
@@ -189,7 +271,7 @@ def cmd_test(args: argparse.Namespace) -> int:
     if failures:
         for item in failures:
             print(f"FAIL: {item}", file=sys.stderr)
-        print(strip_ansi(text)[-2000:], file=sys.stderr)
+        _print_launch_hint(captured, text)
         return 1
 
     print("component + live PTY OMP acceptance passed")
@@ -234,8 +316,14 @@ def cmd_monitor(args: argparse.Namespace) -> int:
         except OSError:
             MONITOR_PID.unlink(missing_ok=True)
 
+    if not UI_DIST.is_file():
+        print("dist/ missing — running bootstrap first …", flush=True)
+        if bootstrap_tui_workspace() != 0:
+            return 1
+
     hermes = find_hermes()
-    argv = tui_argv(hermes, dev=args.dev)
+    use_dev = args.dev or not UI_DIST.exists()
+    argv = tui_argv(hermes, dev=use_dev)
     env = build_env(args.cols, args.rows)
 
     MONITOR_LOG.write_bytes(b"")
@@ -271,12 +359,20 @@ def main() -> int:
     p = argparse.ArgumentParser(description="OMP TUI E2E harness")
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    sub.add_parser("bootstrap", help="npm install + build ui-tui (run once before hermes --tui)")
+
     t = sub.add_parser("test", help="run component + live PTY acceptance")
     t.add_argument("--cols", type=int, default=100)
     t.add_argument("--rows", type=int, default=32)
-    t.add_argument("--timeout", type=float, default=120.0)
+    t.add_argument("--timeout", type=float, default=180.0)
     t.add_argument("--live", action="store_true", help="also spawn hermes --tui in a PTY smoke test")
     t.add_argument("--dev", action="store_true", help="force tsx dev mode for --live (default when dist/ is missing)")
+    t.add_argument(
+        "--no-bootstrap",
+        action="store_true",
+        help="skip npm install/build preflight before --live (not recommended)",
+    )
+    t.add_argument("--quiet-bootstrap", action="store_true", help="less bootstrap logging")
 
     m = sub.add_parser("monitor", help="launch detached TUI for external monitoring")
     m.add_argument("--cols", type=int, default=100)
@@ -286,6 +382,8 @@ def main() -> int:
     sub.add_parser("stop", help="stop detached monitor")
 
     args = p.parse_args()
+    if args.cmd == "bootstrap":
+        return cmd_bootstrap(args)
     if args.cmd == "test":
         return cmd_test(args)
     if args.cmd == "monitor":

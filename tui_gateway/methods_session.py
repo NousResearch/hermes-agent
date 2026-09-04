@@ -331,8 +331,7 @@ def _create_overrides(params: dict) -> tuple:
     return model_override, reasoning_override, service_tier_override
 
 
-@method("session.create")
-def _(rid, params: dict) -> dict:
+def _create_session(rid, params: dict) -> dict:
     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
     profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
     # Reject an incoherent model×provider pair BEFORE any state exists: minting it only defers the
@@ -427,6 +426,25 @@ def _(rid, params: dict) -> dict:
                  "tools": {}, "skills": {}, "cwd": cwd, "branch": git_probe.branch(cwd),
                  "project": _project_info_for_cwd(cwd), "lazy": True, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                  "profile_name": _response_profile_name(profile)}})
+
+
+@method("session.create")
+def _(rid, params: dict) -> dict:
+    return _create_session(rid, params)
+
+
+@method("session.branch_stored")
+def _(rid, params: dict) -> dict:
+    """Create a whole-session branch from a stored parent without routing its transcript through the client.
+
+    This is a distinct method, rather than an overloaded ``session.create`` flag, so older Desktop clients can
+    safely detect the capability and older gateways cannot silently create an empty branch when they ignore an
+    unknown parameter.
+    """
+    branch_params = dict(params)
+    branch_params["copy_parent_history"] = True
+    branch_params["omit_messages"] = True
+    return _create_session(rid, branch_params)
 
 
 def _unarchive_recoverable(db, session_id: str) -> bool:
@@ -2063,8 +2081,7 @@ def _branch_source_history(db, session: dict, old_key: str) -> list:
     return history or _visible_branch_history(in_memory_history)
 
 
-@_session_method("session.branch", live=True)
-def _(rid, params: dict, session: dict) -> dict:
+def _branch_live(rid, params: dict, session: dict) -> dict:
     # Write into the parent's profile-scoped state.db; the launch handle would orphan rows.
     with _session_db(session) as db:
         if db is None:
@@ -2097,6 +2114,20 @@ def _(rid, params: dict, session: dict) -> dict:
     else:
         response["messages"] = _history_to_messages(history, profile_home=session.get("profile_home"))
     return _ok(rid, response)
+
+
+@_session_method("session.branch", live=True)
+def _(rid, params: dict, session: dict) -> dict:
+    return _branch_live(rid, params, session)
+
+
+@_session_method("session.branch_whole", live=True)
+def _(rid, params: dict, session: dict) -> dict:
+    """Whole-session branch response seam for Desktop clients that do not need the copied transcript echoed back."""
+    branch_params = dict(params)
+    branch_params.pop("count", None)
+    branch_params["omit_messages"] = True
+    return _branch_live(rid, branch_params, session)
 
 
 # ── interrupt / steer / redirect ─────────────────────────────────────

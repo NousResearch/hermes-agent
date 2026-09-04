@@ -232,10 +232,6 @@ class PeerRunsHTTPClient:
             f"/p/{urllib.parse.quote(profile, safe='')}" if profile else ""
         )
         self.base_url, self.api_key, self.clock = base_url, api_key, clock
-        profile = str(target_profile or "").strip()
-        if profile and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", profile) is None:
-            raise ValueError("peer target profile is invalid")
-        self._profile_prefix = f"/p/{urllib.parse.quote(profile, safe='')}" if profile else ""
         self.timeout_seconds = float(timeout_seconds)
         self.receipt_db_path = Path(receipt_db_path) if receipt_db_path else None
         if poll_min_seconds <= 0 or poll_max_seconds < poll_min_seconds:

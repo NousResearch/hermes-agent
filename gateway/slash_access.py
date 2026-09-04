@@ -53,6 +53,30 @@ _ALWAYS_ALLOWED_FOR_USERS: FrozenSet[str] = frozenset({
 })
 
 
+def _fold_command_name(name: str) -> str:
+    """Canonicalize a slash command name for allowlist comparison.
+
+    ``_`` and ``-`` are interchangeable in slash dispatch, so they must be
+    interchangeable here too. Two independent reasons, both generic:
+
+      - Plugin dispatch normalizes the typed name to hyphens before it looks
+        a handler up (``gateway/run.py``), because Telegram's command menu
+        renders a hyphenated plugin command as ``/my_cmd`` and sends that
+        underscored form back. The gate therefore sees ``my-cmd`` while the
+        operator, copying what the menu showed them, wrote ``my_cmd``.
+      - Several built-ins register both spellings as aliases of one command
+        (``reload-mcp``/``reload_mcp``, ``reload-skills``/``reload_skills``,
+        ``codex-runtime``/``codex_runtime``), but the gate only ever sees the
+        canonical name — so listing the alias would silently fail to grant the
+        command it names.
+
+    Folding is applied to both sides of the comparison, so the allowlist
+    grants exactly the commands it names and no others: only spellings that
+    differ solely in these two separators are treated as one name.
+    """
+    return name.replace("_", "-")
+
+
 @dataclass(frozen=True)
 class SlashAccessPolicy:
     """Resolved access policy for a single (platform, scope) pair.
@@ -83,9 +107,12 @@ class SlashAccessPolicy:
             return True
         if not canonical_cmd:
             return False
-        if canonical_cmd in _ALWAYS_ALLOWED_FOR_USERS:
+        folded = _fold_command_name(canonical_cmd)
+        if folded in _ALWAYS_ALLOWED_FOR_USERS:
             return True
-        return canonical_cmd in self.user_allowed_commands
+        # ``user_allowed_commands`` is already folded on ingest, so this
+        # compares like for like — see _fold_command_name.
+        return folded in self.user_allowed_commands
 
 
 _DM_CHAT_TYPES = frozenset({"dm", "direct", "private", ""})
@@ -119,7 +146,10 @@ def _coerce_command_list(raw: Any) -> FrozenSet[str]:
 
     Strips leading slashes so YAML can read either ``["help", "status"]``
     or ``["/help", "/status"]``. Lowercase canonicalization matches how
-    ``resolve_command()`` stores names.
+    ``resolve_command()`` stores names, and ``_`` folds to ``-`` so an
+    operator can list whichever spelling their platform showed them (see
+    :func:`_fold_command_name`). The folded form is what gets stored, so
+    ``/whoami`` and the denial message quote the canonical name.
     """
     if raw is None:
         return frozenset()
@@ -131,7 +161,7 @@ def _coerce_command_list(raw: Any) -> FrozenSet[str]:
         items = (raw,)
     out: list[str] = []
     for it in items:
-        s = str(it).strip().lstrip("/").lower()
+        s = _fold_command_name(str(it).strip().lstrip("/").lower())
         if s:
             out.append(s)
     return frozenset(out)

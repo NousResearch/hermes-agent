@@ -14309,6 +14309,35 @@ def main():
         action="store_true",
         help="Emit the raw structured payload as JSON (same shape as `tools/call`).",
     )
+    computer_use_autostart = computer_use_sub.add_parser(
+        "autostart",
+        help="Manage the Windows cua-driver logon task (opt-in autostart)",
+        description=(
+            "Inspect or change whether cua-driver starts at Windows login.\n"
+            "Since #95372/#97389 Hermes defaults to on-demand (no logon\n"
+            "task): the driver is spawned per session over stdio, so the\n"
+            "`cua-driver-serve` Scheduled Task is unnecessary for normal\n"
+            "Computer Use — and removing it also removes the brief login\n"
+            "console flash (trycua/cua#1645).\n\n"
+            "`status` is read-only; `enable` registers the task (UAC\n"
+            "prompt); `disable` disables it (reversible, deletes nothing)."
+        ),
+    )
+    computer_use_autostart_sub = computer_use_autostart.add_subparsers(
+        dest="computer_use_autostart_action"
+    )
+    computer_use_autostart_sub.add_parser(
+        "status",
+        help="Report whether the logon task is registered (read-only)",
+    )
+    computer_use_autostart_sub.add_parser(
+        "enable",
+        help="Register the logon task (explicit opt-in, UAC prompt)",
+    )
+    computer_use_autostart_sub.add_parser(
+        "disable",
+        help="Disable the logon task (reversible, deletes nothing)",
+    )
     computer_use_perms = computer_use_sub.add_parser(
         "permissions",
         help="Check or grant macOS Accessibility + Screen Recording (macOS)",
@@ -14395,6 +14424,16 @@ def main():
                         print("    Run: hermes computer-use install")
                     return 1
                 try:
+                    from hermes_cli.tools_config import _cua_driver_autostart_state_windows
+                    _auto = _cua_driver_autostart_state_windows()
+                    if _auto["supported"]:
+                        if _auto["registered"]:
+                            print(f"  Autostart: logon task present ({_auto['task_state']}) — disable with: hermes computer-use autostart disable")
+                        else:
+                            print("  Autostart: off (starts on demand)")
+                except Exception:
+                    pass
+                try:
                     st = cua_driver_update_check()
                     if st and st.get("update_available"):
                         latest = st.get("latest_version") or "?"
@@ -14419,6 +14458,29 @@ def main():
                 json_output=bool(getattr(args, "json", False)),
             )
             sys.exit(code)
+        if action == "autostart":
+            from hermes_cli import tools_config as _tools_config
+            sub = getattr(args, "computer_use_autostart_action", None) or "status"
+            if sub == "enable":
+                ok = _tools_config._repair_cua_driver_autostart_windows(
+                    _tools_config._cua_driver_cmd(), verbose=True
+                )
+                return 0 if ok else 1
+            if sub == "disable":
+                ok = _tools_config._disable_cua_driver_autostart_windows()
+                return 0 if ok else 1
+            state = _tools_config._cua_driver_autostart_state_windows()
+            if not state["supported"]:
+                print("Autostart logon task: Windows-only concept.")
+                print("  macOS: ~/Library/LaunchAgents/com.trycua.cua-driver.plist")
+                print("  Linux: systemctl --user cua-driver.service")
+                return 0
+            if not state["registered"]:
+                print("Autostart: off (cua-driver starts on demand).")
+            else:
+                print(f"Autostart: logon task registered ({state['task_state']}).")
+                print("  Disable with: hermes computer-use autostart disable")
+            return 0
         if action == "permissions":
             perms_action = getattr(args, "computer_use_perms_action", None)
             if perms_action == "grant":

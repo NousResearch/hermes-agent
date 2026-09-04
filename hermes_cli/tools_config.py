@@ -840,12 +840,16 @@ def _cua_driver_contract_status(binary: Optional[str] = None) -> dict:
 
 
 def _cua_driver_install_ready() -> bool:
-    """Return whether an existing driver needs no install-time repair."""
-    if not _cua_driver_contract_status().get("ready"):
-        return False
-    if sys.platform == "win32":
-        return _cua_driver_autostart_registered_windows()
-    return True
+    """Return whether an existing driver needs no install-time repair.
+
+    Readiness is the runtime contract only. The Windows logon-task
+    autostart is an explicit opt-in (``hermes computer-use autostart
+    enable``) since #95372/#97389 — Hermes spawns its own per-session
+    stdio bridge (``cua-driver mcp``; see
+    tools/computer_use/cua_backend.py::_resolve_mcp_invocation), so a
+    missing ``cua-driver-serve`` task must not count as "not ready".
+    """
+    return bool(_cua_driver_contract_status().get("ready"))
 
 
 def _pip_install(
@@ -1101,11 +1105,15 @@ def install_cua_driver(
         except Exception:
             _print_success(f"    {driver_cmd} already installed.")
         if is_windows:
-            if not _repair_cua_driver_autostart_windows(binary, verbose=False):
-                _print_warning(
-                    "    cua-driver is compatible, but Windows autostart repair failed."
-                )
-                return False
+            # Autostart is opt-in (#95372, #97389): never (re-)register the
+            # logon task here. A missing task is the expected on-demand
+            # default; a present one is a legacy of older installers.
+            if not _cua_driver_autostart_registered_windows():
+                _print_info("    cua-driver starts on demand (no logon task registered).")
+                _print_info("    To start it at Windows login instead, run: hermes computer-use autostart enable")
+            else:
+                _print_info("    A legacy cua-driver-serve logon task is still registered;")
+                _print_info("    remove it with: hermes computer-use autostart disable")
             _print_info("    cua-driver may spawn a UIAccess worker (cua-driver-uia.exe);")
             _print_info("    Windows/SmartScreen may prompt the first time it runs.")
         elif is_linux:
@@ -1560,6 +1568,11 @@ def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> b
     launching the resolved binary through Start-Process's structured
     ``-FilePath`` / ``-ArgumentList`` parameters instead of interpolating a
     path into a command string.
+
+    Since #95372/#97389 this is ONLY the engine behind the explicit
+    opt-in (``hermes computer-use autostart enable``). Hermes' own
+    install/refresh paths must not call it unprompted: autostart is
+    opt-in and the driver starts on demand.
     """
     if sys.platform != "win32":
         return True
@@ -1614,6 +1627,82 @@ def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> b
     return False
 
 
+def _cua_driver_autostart_state_windows() -> Dict[str, object]:
+    """Read-only probe of the ``cua-driver-serve`` logon task.
+
+    Never mutates, never prompts, and never flashes a console of its own
+    (no-window creation flags — it would be ironic otherwise). Returns
+    ``{"supported", "registered", "task_state"}`` where ``task_state`` is
+    the scheduler state (``Ready``/``Disabled``/``Running``/...) or ``""``
+    when no task is registered.
+    """
+    state: Dict[str, object] = {
+        "supported": sys.platform == "win32",
+        "registered": False,
+        "task_state": "",
+    }
+    if sys.platform != "win32":
+        return state
+    ps = shutil.which("powershell") or shutil.which("powershell.exe") or "powershell"
+    try:
+        result = subprocess.run(
+            [
+                ps, "-NoProfile", "-NonInteractive", "-Command",
+                "try { (Get-ScheduledTask -TaskName 'cua-driver-serve' "
+                "-ErrorAction Stop).State.ToString() } catch { 'missing' }",
+            ],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=20, stdin=subprocess.DEVNULL, env=_cua_driver_env(),
+            creationflags=_post_setup_no_window_flags(),
+        )
+    except Exception:
+        return state
+    task_state = (result.stdout or "").strip()
+    if result.returncode == 0 and task_state and task_state != "missing":
+        state["registered"] = True
+        state["task_state"] = task_state
+    return state
+
+
+def _disable_cua_driver_autostart_windows() -> bool:
+    """Best-effort disable of the legacy ``cua-driver-serve`` logon task.
+
+    Disable (not delete) is deliberate: it stops the per-login launch and
+    the console flash, stays reversible via
+    ``hermes computer-use autostart enable``, and never destroys anything
+    the user might have configured by hand. Returns True when no task
+    remains active.
+    """
+    if sys.platform != "win32":
+        _print_info("    Logon-task management here is Windows-only.")
+        _print_info("    macOS: remove ~/Library/LaunchAgents/com.trycua.cua-driver.plist")
+        _print_info("    Linux: systemctl --user disable --now cua-driver.service")
+        return False
+    if not _cua_driver_autostart_registered_windows():
+        _print_success("    No cua-driver-serve logon task registered — already on-demand.")
+        return True
+    try:
+        result = subprocess.run(
+            ["schtasks.exe", "/Change", "/TN", "cua-driver-serve", "/Disable"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=30, stdin=subprocess.DEVNULL,
+            creationflags=_post_setup_no_window_flags(),
+        )
+    except Exception as exc:
+        _print_warning(f"    Could not disable the logon task: {exc}")
+        return False
+    if result.returncode == 0:
+        _print_success("    Disabled the cua-driver-serve logon task.")
+        _print_info("    No more per-login launch or console flash; Computer Use still works on demand.")
+        return True
+    tail = (result.stderr or result.stdout or "").strip().splitlines()[-2:]
+    _print_warning("    Could not disable the cua-driver-serve logon task.")
+    for line in tail:
+        _print_info(f"      {line[:200]}")
+    _print_info("    Try from an elevated shell, or disable it in Task Scheduler > Task Scheduler Library.")
+    return False
+
+
 def _run_cua_driver_installer(
     label: str = "Installing",
     verbose: bool = True,
@@ -1649,18 +1738,29 @@ def _run_cua_driver_installer(
     is_linux = system == "Linux"
 
     if is_windows:
-        # Mirror the one-liner printed by cua_driver_install_hint().
-        ps_oneliner = (
-            "irm https://raw.githubusercontent.com/trycua/cua/main/"
-            "libs/cua-driver/scripts/install.ps1 | iex"
+        # Always use the scriptblock form with -NoAutoStart so the upstream
+        # install.ps1 skips Register-CuaDriverAutostart (the only branch that
+        # self-elevates via UAC and creates the logon-triggered
+        # cua-driver-serve task). Fresh installs must not opt the user into
+        # a per-boot daemon (#95372, #97389); Hermes spawns its own
+        # per-session stdio bridge, so the task is unnecessary for normal
+        # Computer Use. The plain `irm … | iex` one-liner cannot receive
+        # parameters, which is why scriptblock invocation is required.
+        # (Fresh-install half first proposed in #98505 by salch-cred.)
+        # The manual hint uses the same form so a copy-pasted retry does
+        # not silently recreate the task either.
+        ps_scriptblock = (
+            "$sc = irm https://raw.githubusercontent.com/trycua/cua/main/"
+            "libs/cua-driver/scripts/install.ps1; "
+            "& ([scriptblock]::Create($sc)) -NoAutoStart"
         )
         install_cmd = [
             "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-            "-Command", ps_oneliner,
+            "-Command", ps_scriptblock,
         ]
         manual_hint = (
             'powershell -NoProfile -ExecutionPolicy Bypass -Command '
-            f'"{ps_oneliner}"'
+            f'"{ps_scriptblock}"'
         )
         script_path = None
     else:
@@ -1936,12 +2036,16 @@ def _run_cua_driver_installer(
                     logger.debug("cua-driver installer output:\n%s", result.stdout)
         installed_binary = _resolved_cua_driver_cmd()
         if result.returncode == 0 and installed_binary:
-            if is_windows and not _repair_cua_driver_autostart_windows(
-                installed_binary, verbose=verbose
-            ):
+            # The installer above always runs with -NoAutoStart, so a
+            # missing task is the expected outcome — do NOT re-register it
+            # here (that was the post-install repair path huklaa flagged on
+            # #95372). A present task is a legacy of an older installer;
+            # surface the opt-out instead of touching it.
+            if is_windows and _cua_driver_autostart_registered_windows():
                 _print_warning(
-                    "    cua-driver installed, but auto-start was not registered."
+                    "    A pre-existing cua-driver-serve logon task is still registered."
                 )
+                _print_info("    Remove it with: hermes computer-use autostart disable")
             if verbose:
                 _print_success(f"    {driver_cmd} installed.")
                 if is_windows:

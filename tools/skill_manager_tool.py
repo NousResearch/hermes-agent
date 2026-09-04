@@ -1580,10 +1580,29 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
         old_string=payload_kwargs.get("old_string") or "",
         new_string=payload_kwargs.get("new_string") or "",
     )
-    record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
+    # Pre-validate creates at staging time so a record that can never be
+    # applied (frontmatter description over SKILL_PROMPT_DESC_LIMIT, missing
+    # name, missing frontmatter, etc.) is flagged immediately instead of
+    # failing later at /skills approve — the exact trap that left 26 blocked
+    # creates in the backlog. The record is STILL staged (nothing is lost);
+    # the blocker is recorded, shown in /skills pending, and echoed in the
+    # response so the agent can fix the description before approving.
+    validation = "ok"
+    if action == "create":
+        try:
+            err = _validate_frontmatter(payload.get("content") or "", new_skill=True)
+            if err:
+                validation = "blocked: " + err.splitlines()[0]
+        except Exception:
+            validation = "ok"  # fail open: never block staging on validator bugs
+    record = wa.stage_write(
+        wa.SKILLS, payload, summary=gist, origin=wa.current_origin(),
+        validation=validation,
+    )
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],
-         "gist": gist, "message": decision.message},
+         "gist": gist, "message": decision.message,
+         "validation": validation},
         ensure_ascii=False,
     )
 

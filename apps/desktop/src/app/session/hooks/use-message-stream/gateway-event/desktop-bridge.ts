@@ -8,6 +8,7 @@ import { $gateway } from '@/store/gateway'
 import { applyDesktopLayoutPreset, revealDesktopPane } from '@/store/pane-focus'
 import { recordAgentReaction } from '@/store/reactions-local'
 import { setMessages } from '@/store/session'
+import { requestForOwnedSession } from '@/store/session-states'
 import { $tipsEnabled, type ActiveTip, showTip } from '@/store/tips'
 import { $toursEnabled } from '@/store/tours'
 
@@ -45,7 +46,27 @@ const loadPreviewEngine = () => {
  *  (terminal/preview/window), agent terminal streaming, pane reveal, and
  *  message reactions. */
 export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
-  const { event, payload, isActiveEvent } = ctx
+  const { event, payload, isActiveEvent, sessionId } = ctx
+
+  // A desktop window can hold sessions from several gateway connections. The
+  // bridge request came from the backend that owns this session, so its reply
+  // must return on that same socket. The ambient gateway follows foreground
+  // activation and can point at another connection with the same profile name;
+  // replying there leaves the real request blocked until its timeout.
+  const respond = (method: string, params: Record<string, unknown>) => {
+    const gateway = $gateway.get()
+
+    if (!gateway) {
+      return undefined
+    }
+
+    return requestForOwnedSession(
+      sessionId,
+      gateway.request.bind(gateway) as typeof gateway.request,
+      method,
+      params
+    )
+  }
 
   if (event.type === 'terminal.read.request') {
     // read_terminal tool: serialize the renderer's xterm buffer and answer
@@ -57,7 +78,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
       const count = typeof payload?.count === 'number' ? payload.count : undefined
       const result = readActiveTerminal({ start, count })
 
-      void $gateway.get()?.request('terminal.read.respond', {
+      void respond('terminal.read.respond', {
         request_id: requestId,
         text: result ? JSON.stringify(result) : ''
       })
@@ -76,7 +97,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
       const count = typeof payload?.count === 'number' ? payload.count : undefined
 
       void readActivePreview({ count, start }).then(result => {
-        void $gateway.get()?.request('preview.read.respond', {
+        void respond('preview.read.respond', {
           request_id: requestId,
           text: result ? JSON.stringify(result) : ''
         })
@@ -96,7 +117,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
 
     if (requestId) {
       const answer = (result: unknown) =>
-        $gateway.get()?.request('preview.act.respond', {
+        respond('preview.act.respond', {
           request_id: requestId,
           text: result ? JSON.stringify(result) : ''
         })
@@ -140,7 +161,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
       const read = window.hermesDesktop?.readWindowBelow
 
       const answer = (result: unknown) =>
-        $gateway.get()?.request('window.read.respond', {
+        respond('window.read.respond', {
           request_id: requestId,
           text: result ? JSON.stringify(result) : ''
         })
@@ -180,7 +201,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
 
     if (requestId) {
       const answer = (result: unknown) =>
-        $gateway.get()?.request('tour.respond', {
+        respond('tour.respond', {
           request_id: requestId,
           text: result ? JSON.stringify(result) : ''
         })

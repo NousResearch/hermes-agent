@@ -123,11 +123,15 @@ class SessionPeersMixin:
 
     def resolve_author_peer_id(self, key: str, author_id: str | None, author_name: str | None = None) -> str | None:
         """Peer ID for the turn's author, or None to keep the session's peer: no author named, the
-        author IS the session's peer, or ``pinPeerName`` collapsing identities by operator request.
+        author IS the session's peer, or ``pinPeerName`` collapsing the operator's accounts. Bot authors
+        are never collapsed: pinned or not, a bot's words go under the bot's peer.
         ``author_name`` is a display name (attacker-influenceable), so it never becomes a peer ID."""
         runtime_id = str(author_id).strip() if author_id else ""
         if not runtime_id:
             return None
+        # The pin collapses the operator's own accounts onto one peer; a bot is never one of those.
+        if runtime_id.startswith(BOT_AUTHOR_PREFIX):
+            return self._peer_id_for_runtime_id(runtime_id)
         if self._config is not None and bool(getattr(self._config, "peer_name", None)) \
                 and getattr(self._config, "pin_peer_name", False) is True:
             return None

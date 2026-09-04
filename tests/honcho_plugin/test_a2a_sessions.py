@@ -85,8 +85,8 @@ class TestA2aRouting:
 
         provider._manager.get_or_create.assert_not_called()
 
-    def test_collapsed_bot_peer_keeps_the_default_user_peer(self):
-        """pinUserPeer returns no author peer; the a2a session then falls back to the resolved peer."""
+    def test_unresolvable_bot_peer_keeps_the_default_user_peer(self):
+        """When no author peer resolves, the a2a session still opens under the resolved peer."""
         provider = _provider()
         provider._manager.resolve_author_peer_id.return_value = None
 

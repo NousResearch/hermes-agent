@@ -59,6 +59,19 @@ def _select(description: str, *options: str, **extra: Any) -> Dict[str, Any]:
 
 # Manual overrides for fields that need select options or custom types.
 _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    "desktop.quota_resume.enabled": {
+        "type": "boolean",
+        "description": (
+            "Continue automatically when a provider usage limit resets "
+            "(only when the provider reports a reset time)"
+        ),
+        "category": "desktop",
+    },
+    "desktop.quota_resume.max_attempts": {
+        "type": "number",
+        "description": "Max automatic resumes of one turn after a usage limit",
+        "category": "desktop",
+    },
     "timezone": _select(
         "IANA timezone (e.g. America/New_York). Blank uses the system timezone.",
         *_timezone_options(), searchable=True, clearable=True,

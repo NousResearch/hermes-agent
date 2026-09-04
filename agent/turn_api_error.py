@@ -205,7 +205,7 @@ def handle_api_error(
         api_messages=api_messages, api_kwargs=api_kwargs, active_system_prompt=active_system_prompt,
         conversation_history=conversation_history, approx_tokens=approx_tokens,
         retry_count=retry_count, max_retries=max_retries, compression_attempts=compression_attempts,
-        api_call_count=api_call_count,
+        api_call_count=api_call_count, error_context=error_context,
     )
     active_system_prompt = _ue.active_system_prompt
     retry_count = _ue.retry_count
@@ -252,7 +252,7 @@ def settle_unrecovered_error(
     is_context_length_error: Any, is_rate_limited: Any, _is_zai_coding_overload: Any,
     _provider: Any, _base: Any, _model: Any, messages: Any, api_messages: Any, api_kwargs: Any,
     active_system_prompt: Any, conversation_history: Any, approx_tokens: Any, retry_count: Any,
-    max_retries: Any, compression_attempts: Any, api_call_count: Any,
+    max_retries: Any, compression_attempts: Any, api_call_count: Any, error_context: Any = None,
 ) -> UnrecoveredErrorVerdict:
     """Decide the fate of an API error that every recovery chain declined: local validation /
     non-retryable client errors (Copilot stale-credential self-heal first, then fallback, then a
@@ -345,7 +345,7 @@ def settle_unrecovered_error(
             error_msg=error_msg, api_kwargs=api_kwargs, api_messages=api_messages,
             messages=messages, conversation_history=conversation_history,
             api_call_count=api_call_count, approx_tokens=approx_tokens, provider=_provider,
-            base_url=_base, model=_model,
+            base_url=_base, model=_model, error_context=error_context,
         ))
 
     wait_time = compute_error_backoff(

@@ -478,6 +478,97 @@ class TestSensitivePathCheck:
         # /etc (and its macOS /private/etc mirror) stay blocked.
         assert _check_sensitive_path("/private/etc/hosts") is not None
 
+    def test_write_file_blocks_skills_in_custom_hermes_home(self, tmp_path, monkeypatch):
+        profile_home = tmp_path / "custom-profile"
+        target = profile_home / "skills" / "demo" / "SKILL.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("original", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setattr(
+            "tools.write_approval.write_approval_enabled",
+            lambda category, **kwargs: True,
+        )
+
+        from tools.file_tools import write_file_tool
+
+        result = json.loads(write_file_tool(str(target), "poisoned"))
+
+        assert "error" in result
+        assert "skills.write_approval is enabled" in result["error"]
+        assert target.read_text(encoding="utf-8") == "original"
+
+    def test_skill_write_guard_fails_closed_when_config_load_errors(
+        self, tmp_path, monkeypatch
+    ):
+        profile_home = tmp_path / "profile"
+        target = profile_home / "skills" / "demo" / "SKILL.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("original", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        def _raise():
+            raise RuntimeError("config unavailable")
+
+        monkeypatch.setattr("hermes_cli.config.load_config", _raise)
+
+        from tools.file_tools import write_file_tool
+
+        result = json.loads(write_file_tool(str(target), "poisoned"))
+
+        assert "error" in result
+        assert "cannot verify skills.write_approval" in result["error"].lower()
+        assert target.read_text(encoding="utf-8") == "original"
+
+    def test_skill_write_guard_normalizes_case(self, tmp_path, monkeypatch):
+        profile_home = tmp_path / "profile"
+        target = profile_home / "skills" / "demo" / "SKILL.md"
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setattr(
+            "tools.write_approval.write_approval_enabled",
+            lambda category, **kwargs: True,
+        )
+        monkeypatch.setattr("tools.file_tools.sys.platform", "darwin")
+        monkeypatch.setattr(
+            "tools.file_tools._resolve_path_for_task",
+            lambda filepath, task_id: str(target).upper(),
+        )
+
+        from tools.file_tools import _check_sensitive_path
+
+        result = _check_sensitive_path(str(target).upper())
+
+        assert result is not None
+        assert "skills.write_approval is enabled" in result
+
+    def test_patch_blocks_skills_in_context_scoped_profile(self, tmp_path, monkeypatch):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from tools.file_tools import patch_tool
+
+        profile_home = tmp_path / "context-profile"
+        target = profile_home / "skills" / "demo" / "SKILL.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("original", encoding="utf-8")
+        monkeypatch.setattr(
+            "tools.write_approval.write_approval_enabled",
+            lambda category, **kwargs: True,
+        )
+        token = set_hermes_home_override(profile_home)
+        try:
+            result = json.loads(
+                patch_tool(
+                    mode="replace",
+                    path=str(target),
+                    old_string="original",
+                    new_string="poisoned",
+                )
+            )
+        finally:
+            reset_hermes_home_override(token)
+
+        assert "error" in result
+        assert "skills.write_approval is enabled" in result["error"]
+        assert target.read_text(encoding="utf-8") == "original"
+
     @patch("tools.file_tools._get_file_ops")
     def test_normal_file_not_blocked(self, mock_get, monkeypatch):
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/home/user/.hermes/config.yaml")

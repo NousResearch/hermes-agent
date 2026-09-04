@@ -344,6 +344,13 @@ _LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, int, int, Dict[str, Any], Dict[str
 # _LOAD_CONFIG_CACHE but for read_raw_config() — used when callers want
 # the user's on-disk values without defaults merged in.
 _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
+# (path, (st_dev, st_ino, st_size, st_mtime_ns)) -> parsed raw dict, memo for
+# read_user_config_raw() — same fingerprint pattern as _RAW_CONFIG_CACHE but
+# with (dev, ino) too because callers pass per-profile paths that can be
+# re-created between reads. Guarded by _CONFIG_LOCK like the caches above;
+# hits return a deepcopy so write-back mutation never corrupts the cache.
+_USER_CONFIG_RAW_CACHE: Dict[str, Tuple[Tuple[int, int, int, int], Dict[str, Any]]] = {}
+_USER_CONFIG_RAW_CACHE_MAX_ENTRIES = 128
 # Serializes all config read/write paths. libyaml's C extension is not
 # thread-safe for concurrent safe_load() on the same file, and multiple
 # tool threads (approval.py, browser_tool.py, setup flows) hit
@@ -3679,7 +3686,9 @@ def read_user_config_raw(config_path: Optional[Path] = None) -> Dict[str, Any]:
     """Read a user ``config.yaml`` EXACTLY as written on disk.
 
     No DEFAULT_CONFIG merge, no managed-scope overlay, no ``${ENV_VAR}``
-    expansion, no migration, no root-model normalization, no caching.
+    expansion, no migration, no root-model normalization. The parsed result is
+    memoized in-process on a file fingerprint, never a TTL — a legal write-back
+    round-trip always sees the on-disk state as of the last call.
 
     ONLY legal for write-back round-trips and raw-file diagnostics —
     behavioral reads must use load_config()/load_config_readonly().
@@ -3716,12 +3725,37 @@ def read_user_config_raw(config_path: Optional[Path] = None) -> Dict[str, Any]:
     """
     if config_path is None:
         config_path = get_config_path()
-    try:
-        with open(config_path, encoding="utf-8") as f:
-            data = fast_safe_load(f) or {}
-    except FileNotFoundError:
-        return {}
-    return data if isinstance(data, dict) else {}
+    # Parse memo keyed by file fingerprint (dev/ino/size/mtime_ns), same
+    # freshness strategy as read_raw_config(). Semantics are unchanged for
+    # every legal call site: each caller still receives a FRESH dict
+    # (deepcopy on hit), so write-back mutation never leaks into the cache;
+    # an on-disk edit (or an atomic re-write onto a fresh inode) changes the
+    # fingerprint and reparses on the next call. Failure semantics
+    # preserved: unparseable YAML still raises every time — errors are never
+    # cached. This memo exists because sidebar fan-outs (list_profiles over
+    # 50+ profiles) re-parse the same config.yaml files dozens of times per
+    # refresh and saturated both cores of a 2-vCore VPS.
+    with _CONFIG_LOCK:
+        try:
+            _st = os.stat(config_path)
+            _fp = (_st.st_dev, _st.st_ino, _st.st_size, _st.st_mtime_ns)
+        except OSError:
+            _fp = None
+        if _fp is not None:
+            _cached = _USER_CONFIG_RAW_CACHE.get(str(config_path))
+            if _cached is not None and _cached[0] == _fp:
+                return copy.deepcopy(_cached[1])
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                data = fast_safe_load(f) or {}
+        except FileNotFoundError:
+            return {}
+        result = data if isinstance(data, dict) else {}
+        if _fp is not None:
+            if len(_USER_CONFIG_RAW_CACHE) > _USER_CONFIG_RAW_CACHE_MAX_ENTRIES:
+                _USER_CONFIG_RAW_CACHE.clear()
+            _USER_CONFIG_RAW_CACHE[str(config_path)] = (_fp, copy.deepcopy(result))
+        return result
 
 
 def read_raw_config_readonly() -> Dict[str, Any]:

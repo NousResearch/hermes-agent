@@ -172,6 +172,21 @@ class SidebarCacheTests(unittest.TestCase):
 
         self.assertEqual(inspect.signature(wrapped), inspect.signature(scan))
 
+    def test_heavy_sidebar_endpoints_are_all_single_flight_wrapped(self):
+        # HostHighCPU on a 2-vCore box: /api/profiles/projects/tree was the
+        # one heavy sidebar endpoint left uncoalesced, so every Desktop poll
+        # re-ran the full 50-profile fan-out. Any new heavy sidebar endpoint
+        # must carry the wrapper too — this pins the existing two.
+        for endpoint in (
+            profiles.get_profiles_sessions_sidebar,
+            profiles.get_profiles_projects_tree,
+        ):
+            self.assertTrue(
+                callable(getattr(endpoint, "cache_clear", None)),
+                f"{endpoint.__name__} lost its @_sidebar_singleflight_cache "
+                "wrapper — concurrent Desktop polls will re-scan every profile",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

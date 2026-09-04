@@ -992,6 +992,14 @@ def _no_auth_provider_message(host: str) -> str:
     except Exception:
         pass
 
+    try:
+        from plugins.dashboard_auth import ldap as _ldap_plugin
+
+        if _ldap_plugin.LAST_SKIP_REASON:
+            skip_reasons.append(f"  • ldap: {_ldap_plugin.LAST_SKIP_REASON}")
+    except Exception:
+        pass
+
     if host in _LOOPBACK_HOST_VALUES:
         public_url = ""
         try:

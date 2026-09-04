@@ -271,6 +271,45 @@ class TestCompletionConsumed:
             assert registry.is_completion_consumed(sid)
         assert registry.drain_notifications() == []
 
+    def test_prefix_actions_dedupe_canonical_cli_completions(self, registry):
+        """A short process ID must consume/observe the canonical completion."""
+        cases = (
+            ("proc_a1b2c3d4", "a1b2", "poll"),
+            ("proc_b2c3d4e5", "b2c3", "wait"),
+            ("proc_c3d4e5f6", "c3d4", "log"),
+            ("proc_d4e5f6a7", "d4e5", "kill_exited"),
+            ("proc_e5f6a7b8", "e5f6", "kill_running"),
+        )
+        actions = {
+            "poll": registry.poll,
+            "wait": lambda prefix: registry.wait(prefix, timeout=1),
+            "log": registry.read_log,
+            "kill_exited": registry.kill_process,
+            "kill_running": registry.kill_process,
+        }
+        with patch.object(registry, "_write_checkpoint"):
+            for sid, prefix, action in cases:
+                running = action == "kill_running"
+                session = _make_session(
+                    sid=sid, notify_on_complete=True, output="done",
+                    exited=not running, exit_code=None if running else 0,
+                )
+                if running:
+                    session._pty = MagicMock()
+                registry._running[sid] = session
+                if not running:
+                    registry._move_to_finished(session)
+                result = actions[action](prefix)
+                assert result["status"] in {"exited", "already_exited", "killed"}
+
+        assert cases[0][0] in registry._poll_observed
+        assert all(sid in registry._completion_consumed for sid, _prefix, _action in cases[1:])
+        assert all(
+            prefix not in registry._poll_observed | registry._completion_consumed
+            for _sid, prefix, _action in cases
+        )
+        assert registry.drain_notifications() == []
+
 
 # ---------------------------------------------------------------------------
 # Silent-background-process hint

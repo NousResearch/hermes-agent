@@ -510,6 +510,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         metavar="VALUE",
         help="With --state-type: keep runs whose column equals this value",
     )
+    p_show.add_argument(
+        "--all",
+        action="store_true",
+        help="Show every event, not just the most recent 20",
+    )
 
     # --- assign ---
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
@@ -1935,11 +1940,17 @@ def _cmd_show(args: argparse.Namespace) -> int:
             print(f"  [{_fmt_ts(c.created_at)}] {c.author}: {c.body}")
     if events:
         print()
+        shown = events if getattr(args, "all", False) else events[-20:]
         print(f"Events ({len(events)}):")
-        for e in events[-20:]:
+        for e in shown:
             pl = f" {e.payload}" if e.payload else ""
             run_tag = f" [run {e.run_id}]" if e.run_id else ""
             print(f"  [{_fmt_ts(e.created_at)}]{run_tag} {e.kind}{pl}")
+        if len(events) > len(shown):
+            print(
+                f"  … {len(events) - len(shown)} earlier event(s) not shown "
+                f"(re-run with --all to see them)"
+            )
     if runs:
         print()
         print(f"Runs ({len(runs)}):")

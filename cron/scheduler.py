@@ -4520,6 +4520,79 @@ def _windows_cron_bootstrap_argv(
     return [python_exe, "-c", bootstrap, script_path]
 
 
+def _resolve_script_path(
+    script_path: str,
+) -> tuple[bool, str, Optional[Path]]:
+    """Resolve and validate a cron ``script``/``monitor_script`` value.
+
+    Shared by the fire-time runner (``_run_job_script``) and the CLI's
+    creation-time check (``hermes_cli.cron.cron_create``) so a job whose
+    script cannot be found fails *today at creation*, not at 07:00 tomorrow
+    (#99583).
+
+    Resolution contract (identical for both callers):
+
+    * relative paths resolve against ``HERMES_HOME/scripts/`` (profile-scoped
+      — ``_get_hermes_home()``, so the owning profile's scripts dir);
+    * absolute and ``~``-prefixed paths are resolved and must stay inside
+      the scripts dir (path-traversal / symlink-escape guard);
+    * the target must exist and be a regular file.
+
+    Returns ``(True, '', path)`` on success; on failure
+    ``(False, message, None)`` — the message is safe to show to a user or
+    report back to an LLM.
+    """
+    scripts_dir = _get_hermes_home() / "scripts"
+    from cron.jobs import _ensure_cron_dir
+
+    _ensure_cron_dir(scripts_dir)
+    scripts_dir_resolved = scripts_dir.resolve()
+
+    # Same ingestion contract as cron.lifecycle_guard._expand_candidate_path:
+    # a NUL-bearing value can never name a real script, and on Windows the
+    # Path operations raise ValueError *after* expanduser (expanduser never
+    # expands "~user" there, so the try below never fires) — reject eagerly
+    # so both platforms fail cleanly instead of crashing the scheduler.
+    # str() first so the guard itself can never raise TypeError on a
+    # non-str script_path (e.g. a Path passed by a future caller) — the
+    # guard must be crash-proof even though every current call site
+    # passes a plain str (#86832 review).
+    if "\x00" in str(script_path):
+        return False, f"Blocked: script path contains a NUL byte: {script_path!r}", None
+
+    try:
+        raw = Path(script_path).expanduser()
+    except (ValueError, RuntimeError, OSError):
+        # Same ingestion contract as cron.lifecycle_guard: a NUL-bearing
+        # value (ValueError) or an unexpandable ``~`` (RuntimeError with no
+        # resolvable HOME) can never name a real script. The creation-time
+        # guard tolerates such values as "nothing to scan", so they can
+        # reach fire time — fail the run with a report instead of crashing
+        # the scheduler with an unhandled exception.
+        return False, f"Blocked: script path is not a valid filesystem path: {script_path!r}", None
+    if raw.is_absolute():
+        path = raw.resolve()
+    else:
+        path = (scripts_dir / raw).resolve()
+
+    # Guard against path traversal, absolute path injection, and symlink
+    # escape — scripts MUST reside within HERMES_HOME/scripts/.
+    try:
+        path.relative_to(scripts_dir_resolved)
+    except ValueError:
+        return False, (
+            f"Blocked: script path resolves outside the scripts directory "
+            f"({scripts_dir_resolved}): {script_path!r}"
+        ), None
+
+    if not path.exists():
+        return False, f"Script not found: {path}", None
+    if not path.is_file():
+        return False, f"Script path is not a file: {path}", None
+
+    return True, "", path
+
+
 def _run_job_script(
     script_path: str,
     workdir: Optional[str] = None,
@@ -4561,51 +4634,9 @@ def _run_job_script(
         (success, output) — on failure *output* contains the error message so the
         LLM can report the problem to the user.
     """
-    scripts_dir = _get_hermes_home() / "scripts"
-    _ensure_cron_dir(scripts_dir)
-    scripts_dir_resolved = scripts_dir.resolve()
-
-    # Same ingestion contract as cron.lifecycle_guard._expand_candidate_path:
-    # a NUL-bearing value can never name a real script, and on Windows the
-    # Path operations raise ValueError *after* expanduser (expanduser never
-    # expands "~user" there, so the try below never fires) — reject eagerly
-    # so both platforms fail cleanly instead of crashing the scheduler.
-    # str() first so the guard itself can never raise TypeError on a
-    # non-str script_path (e.g. a Path passed by a future caller) — the
-    # guard must be crash-proof even though every current call site
-    # passes a plain str (#86832 review).
-    if "\x00" in str(script_path):
-        return False, f"Blocked: script path contains a NUL byte: {script_path!r}"
-
-    try:
-        raw = Path(script_path).expanduser()
-    except (ValueError, RuntimeError, OSError):
-        # Same ingestion contract as cron.lifecycle_guard: a NUL-bearing
-        # value (ValueError) or an unexpandable ``~`` (RuntimeError with no
-        # resolvable HOME) can never name a real script. The creation-time
-        # guard tolerates such values as "nothing to scan", so they can
-        # reach fire time — fail the run with a report instead of crashing
-        # the scheduler with an unhandled exception.
-        return False, f"Blocked: script path is not a valid filesystem path: {script_path!r}"
-    if raw.is_absolute():
-        path = raw.resolve()
-    else:
-        path = (scripts_dir / raw).resolve()
-
-    # Guard against path traversal, absolute path injection, and symlink
-    # escape — scripts MUST reside within HERMES_HOME/scripts/.
-    try:
-        path.relative_to(scripts_dir_resolved)
-    except ValueError:
-        return False, (
-            f"Blocked: script path resolves outside the scripts directory "
-            f"({scripts_dir_resolved}): {script_path!r}"
-        )
-
-    if not path.exists():
-        return False, f"Script not found: {path}"
-    if not path.is_file():
-        return False, f"Script path is not a file: {path}"
+    ok, message, path = _resolve_script_path(script_path)
+    if not ok:
+        return False, message
 
     script_timeout = _get_script_timeout()
 

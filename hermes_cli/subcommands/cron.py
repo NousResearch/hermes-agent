@@ -62,7 +62,10 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_create.add_argument(
         "--script",
         help=(
-            "Path to a script under ~/.hermes/scripts/. Default mode: "
+            "Path to a script under the ACTIVE profile's scripts dir "
+            "(~/.hermes/scripts/ for the default profile; "
+            "~/.hermes/profiles/<name>/scripts/ when --profile is set). "
+            "Must already exist — creation fails otherwise. Default mode: "
             "script stdout is injected into the agent's prompt each run. "
             "With --no-agent: the script IS the job and its stdout is "
             "delivered verbatim. .sh/.bash files run via bash, everything "
@@ -84,8 +87,10 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "--monitor-script",
         dest="monitor_script",
         help=(
-            "Monitor mode: path to a cheap source script under "
-            "~/.hermes/scripts/ that runs each tick BEFORE the agent. "
+            "Monitor mode: path to a cheap source script under the ACTIVE "
+            "profile's scripts dir (~/.hermes/scripts/ for the default "
+            "profile; ~/.hermes/profiles/<name>/scripts/ when --profile is "
+            "set) that runs each tick BEFORE the agent. "
             "Unchanged output (exact-bytes hash) suppresses the agent run "
             "entirely; changed output injects a MONITOR CHANGE DETECTED "
             "diff into the prompt. Script output must be stable (no "
@@ -187,7 +192,10 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument(
         "--script",
         help=(
-            "Path to a script under ~/.hermes/scripts/. Pass empty string to clear. "
+            "Path to a script under the ACTIVE profile's scripts dir "
+            "(~/.hermes/scripts/ for the default profile; "
+            "~/.hermes/profiles/<name>/scripts/ when --profile is set). "
+            "Pass empty string to clear. "
             "With --no-agent the script IS the job; otherwise its stdout is "
             "injected into the agent's prompt each run."
         ),

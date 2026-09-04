@@ -107,6 +107,23 @@ def _builtin_gateway_liveness() -> Optional[bool]:
         return None
 
 
+def _active_profile_label() -> str:
+    """Human label for the profile being inspected, e.g. ``"default"``.
+
+    CLI commands that read profile-scoped state (cron jobs, gateway pid) must
+    name the profile in their output — otherwise a user inspecting profile B
+    while the gateway runs under profile A sees "Gateway is not running" as a
+    confusing false negative (#99579).
+    """
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        name = get_active_profile_name() or "default"
+    except Exception:
+        name = "default"
+    return name
+
+
 def _warn_if_gateway_not_running() -> None:
     """Warn that scheduled jobs won't fire unless the gateway is running.
 
@@ -127,7 +144,11 @@ def _warn_if_gateway_not_running() -> None:
     if _builtin_gateway_liveness() is not False:
         return
 
-    print(color("  ⚠  Gateway is not running — jobs won't fire automatically.", Colors.YELLOW))
+    print(color(
+        f"  ⚠  Gateway is not running for profile '{_active_profile_label()}' "
+        "— jobs won't fire automatically.",
+        Colors.YELLOW,
+    ))
     print(color("     Start it with: hermes gateway install", Colors.DIM))
     print(color("                    sudo hermes gateway install --system  # Linux servers", Colors.DIM))
     print(color("     Check status:  hermes cron status", Colors.DIM))
@@ -187,13 +208,17 @@ def cron_list(show_all: bool = False):
     jobs = list_jobs(include_disabled=show_all)
 
     if not jobs:
-        print(color("No scheduled jobs.", Colors.DIM))
+        print(color(
+            f"No scheduled jobs in profile '{_active_profile_label()}'.",
+            Colors.DIM,
+        ))
         print(color("Create one with 'hermes cron create ...' or the /cron command in chat.", Colors.DIM))
         return
 
+    profile = _active_profile_label()
     print()
     print(color("┌─────────────────────────────────────────────────────────────────────────┐", Colors.CYAN))
-    print(color("│                         Scheduled Jobs                                  │", Colors.CYAN))
+    print(color(f"│              Scheduled Jobs  (profile: {profile})          │".ljust(75) + "│", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────────────────────┘", Colors.CYAN))
     print()
 
@@ -588,13 +613,24 @@ def cron_status():
                     ))
             print("  Check the gateway log for 'Cron tick error'.")
         else:
-            print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
+            print(color(
+                f"✓ Gateway is running for profile '{_active_profile_label()}' — "
+                "cron jobs will fire automatically",
+                Colors.GREEN,
+            ))
             if pids:
                 print(f"  PID: {', '.join(map(str, pids))}")
             if hb_age is not None:
                 print(f"  Ticker heartbeat: {int(hb_age)}s ago")
     else:
-        print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
+        print(color(
+            f"✗ Gateway is not running for profile '{_active_profile_label()}' "
+            "— cron jobs will NOT fire",
+            Colors.RED,
+        ))
+        print()
+        print("  If the gateway runs under a different profile, check that profile:")
+        print("    hermes --profile <name> cron status")
         print()
         print("  To enable automatic execution:")
         print("    hermes gateway install    # Install as a user service")
@@ -785,6 +821,30 @@ def cron_create(args):
     # raises GatewayLifecycleBlocked, the `cronjob` tool wrapper catches it and
     # returns it as result["error"], and the `if not result.get("success")`
     # branch below prints it in red and exits 1 — same UX as before.
+    resolved_script_path = None
+    script_value = getattr(args, "script", None)
+    monitor_value = getattr(args, "monitor_script", None)
+    for label, raw in (("script", script_value), ("monitor-script", monitor_value)):
+        if not raw:
+            continue
+        try:
+            from cron.scheduler import _resolve_script_path
+
+            ok, message, path = _resolve_script_path(raw)
+        except Exception as exc:  # pragma: no cover - defensive
+            ok, message, path = False, f"could not validate {label}: {exc}", None
+        if not ok:
+            print(color(f"Failed to create job: {label} {raw!r} is not usable.", Colors.RED))
+            print(color(f"  {message}", Colors.RED))
+            print(color(
+                "  Place the script in the ACTIVE profile's scripts directory "
+                f"(resolved via HERMES_HOME, which is profile-scoped). "
+                f"Found it? Run the create again.",
+                Colors.YELLOW,
+            ))
+            return 1
+        if label == "script":
+            resolved_script_path = path
     result = _cron_api(
         action="create",
         schedule=args.schedule,
@@ -795,12 +855,12 @@ def cron_create(args):
         repeat=getattr(args, "repeat", None),
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
-        script=getattr(args, "script", None),
+        script=script_value,
         workdir=getattr(args, "workdir", None),
         model=getattr(args, "model", None),
         provider=getattr(args, "model_provider", None),
         no_agent=getattr(args, "no_agent", False) or None,
-        monitor_script=getattr(args, "monitor_script", None),
+        monitor_script=monitor_value,
         monitor_url=getattr(args, "monitor_url", None),
         continuity=getattr(args, "continuity", None),
         reasoning_effort=getattr(args, "reasoning_effort", None),
@@ -811,10 +871,13 @@ def cron_create(args):
     print(color(f"Created job: {result['job_id']}", Colors.GREEN))
     print(f"  Name: {result['name']}")
     print(f"  Schedule: {result['schedule']}")
-    if result.get("skills"):
+    if resolved_script_path is not None:
+        print(f"  Script: {script_value}")
+        print(color(f"  Resolved: {resolved_script_path} (HERMES_HOME is profile-scoped)", Colors.DIM))
+    elif result.get("skills"):
         print(f"  Skills: {', '.join(result['skills'])}")
     job_data = result.get("job", {})
-    if job_data.get("script"):
+    if job_data.get("script") and resolved_script_path is None:
         print(f"  Script: {job_data['script']}")
     if job_data.get("monitor_script"):
         print(f"  Monitor: {job_data['monitor_script']} (agent runs only on output change)")

@@ -137,15 +137,22 @@ class TestReapOrphanedBrowserSessions:
         assert terminate_calls == []
 
 
-    def test_corrupt_pid_file_is_cleaned(self, fake_tmpdir):
-        """PID file with non-integer content is cleaned up."""
+    def test_corrupt_pid_file_is_retained_for_later_sweep(self, fake_tmpdir):
+        """A malformed PID file is ambiguous, so retain all runtime evidence.
+
+        Browser Harness may expose a truncate-then-write window while creating
+        ``bu.pid``. Deleting the directory on a parse error can therefore hide
+        a live daemon and race its ``bu.sock`` creation. A later periodic sweep
+        can retry after the file becomes readable.
+        """
         from tools.browser_tool import _reap_orphaned_browser_sessions
 
         d = _make_socket_dir(fake_tmpdir, "h_corrupt1234")
         (d / "h_corrupt1234.pid").write_text("not-a-number")
 
         _reap_orphaned_browser_sessions()
-        assert not d.exists()
+        assert d.exists()
+        assert (d / "h_corrupt1234.pid").read_text() == "not-a-number"
 
     def test_browser_harness_dead_owner_reaps_bu_pid(self, fake_tmpdir):
         from tools.browser_tool import _reap_orphaned_browser_sessions

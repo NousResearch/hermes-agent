@@ -2183,10 +2183,9 @@ describe('branchStoredSession desktop source tagging', () => {
 
     expect(requestGateway).toHaveBeenCalledWith('session.branch', {
       session_id: 'live-parent',
-      count: 2,
-      omit_messages: true
+      count: 2
     })
-    expect(branchParams).toEqual({ session_id: 'live-parent', count: 2, omit_messages: true })
+    expect(branchParams).toEqual({ session_id: 'live-parent', count: 2 })
   })
 
   it('branches a compacted live chat without hydrating its transcript in the renderer', async () => {

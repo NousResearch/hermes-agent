@@ -2099,7 +2099,6 @@ export function useSessionActions({
         if (!createFlight) {
           const branchParams = {
             session_id: sourceSessionId,
-            omit_messages: true,
             ...(branchCount !== undefined ? { count: branchCount } : {})
           }
 
@@ -2117,7 +2116,7 @@ export function useSessionActions({
             sourceSessionId
               ? requestBranchGateway<SessionCreateResponse>(
                   branchCount === undefined ? 'session.branch_whole' : 'session.branch',
-                  branchParams
+                  branchCount === undefined ? { ...branchParams, omit_messages: true } : branchParams
                 ).catch(err => {
                   if (!isMissingRpcMethod(err)) {
                     throw err

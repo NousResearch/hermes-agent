@@ -1234,6 +1234,26 @@ describe('profile-aware plugin session opens', () => {
     expect($gatewaySwapTarget.get()).toBeNull()
   })
 
+  it('surfaces a direct pool-slot activation failure with the same Retry path', async () => {
+    vi.mocked(ensureGatewayProfile).mockRejectedValueOnce(
+      new Error('Local backend start for "research" timed out while waiting for a free slot.')
+    )
+
+    await expect(
+      host.openSession('queued-chat', {
+        profile: 'research',
+        intent: 'main',
+        awaitHydration: true,
+        expectHistory: true,
+        keepAllProfilesScope: false,
+        hydrationTimeoutMs: 100
+      })
+    ).rejects.toThrow('timed out while waiting for a free slot')
+
+    expect(setResumeExhaustedSessionId).toHaveBeenCalledWith('queued-chat')
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
   it('names the phase in the wake log so a stuck dial is not read as a slow transcript', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
 

@@ -3821,11 +3821,25 @@ class MatrixAdapter(BasePlatformAdapter):
         if not allow_all and not (
             self._allowed_user_ids and inviter in self._allowed_user_ids
         ):
+            # Reject = actually decline. Logging-only leaves the invite
+            # pending forever, so every restart re-lists it and re-warns
+            # (observed for 2 months with stale self-invites and spam
+            # invites). Declining persists the rejection and keeps the
+            # allow-list gate intact: unauthorized users simply cannot
+            # hold the bot's presence in a pending state.
             logger.warning(
-                "Matrix: rejecting invite to %s from unauthorized user %s",
+                "Matrix: declining invite to %s from unauthorized user %s",
                 room_id,
                 inviter,
             )
+            try:
+                await self._client.leave_room(RoomID(room_id))
+            except Exception as exc:
+                logger.warning(
+                    "Matrix: failed to decline invite to %s: %s",
+                    room_id,
+                    exc,
+                )
             return
 
         logger.info(

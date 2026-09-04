@@ -2369,6 +2369,7 @@ export const en: Translations = {
       noColor: 'No color',
       menuAddFolder: 'Add folder',
       menuSetActive: 'Set active',
+      menuArchive: 'Archive',
       menuDelete: 'Delete',
       moveToProject: 'Move to project',
       movedTo: name => `Moved to ${name}`,

@@ -1744,6 +1744,7 @@ export const ar = defineLocale({
       noColor: 'بلا لون',
       menuAddFolder: 'إضافة مجلد',
       menuSetActive: 'تعيين كنشط',
+      menuArchive: 'أرشفة',
       menuDelete: 'حذف',
       reveal: 'إظهار في المجلد',
       copyPath: 'نسخ المسار',

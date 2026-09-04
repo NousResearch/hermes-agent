@@ -2536,6 +2536,7 @@ export const zh: Translations = {
       noColor: '无颜色',
       menuAddFolder: '添加文件夹',
       menuSetActive: '设为活动',
+      menuArchive: '归档',
       menuDelete: '删除',
       moveToProject: '移动到项目',
       movedTo: name => `已移动到 ${name}`,

@@ -5203,11 +5203,17 @@ def _fetch_anthropic_models(
     else:
         headers["x-api-key"] = token
 
-    def _do_request(h: dict[str, str]):
-        req = urllib.request.Request(
-            _anthropic_models_url(resolved_base_url),
-            headers=h,
-        )
+    def _do_request(h: dict[str, str], after_id: Optional[str] = None):
+        url = _anthropic_models_url(resolved_base_url)
+        # Anthropic's /v1/models is cursor-paginated with a default page size
+        # of 20 — smaller than the live catalog — so an unpaginated read
+        # silently drops models (#16758-class bug ported from OpenHands).
+        # Ask for the max page size and still follow has_more/last_id below.
+        params = {"limit": "1000"}
+        if after_id:
+            params["after_id"] = after_id
+        url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url, headers=h)
         with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
 
@@ -5238,6 +5244,20 @@ def _fetch_anthropic_models(
             else:
                 raise
         models = [m["id"] for m in data.get("data", []) if m.get("id")]
+        # Follow the cursor. Bounded, and guarded against a server that
+        # repeats a cursor (would otherwise loop forever).
+        seen_cursors: set = set()
+        for _page in range(20):
+            if data.get("has_more") is not True:
+                break
+            last_id = data.get("last_id")
+            if not isinstance(last_id, str) or not last_id or last_id in seen_cursors:
+                break
+            seen_cursors.add(last_id)
+            data = _do_request(headers, after_id=last_id)
+            models.extend(m["id"] for m in data.get("data", []) if m.get("id"))
+        # De-dupe across pages, preserving order.
+        models = list(dict.fromkeys(models))
         # Sort: latest/largest first (opus > sonnet > haiku, higher version first)
         return sorted(models, key=lambda m: (
             "opus" not in m,      # opus first

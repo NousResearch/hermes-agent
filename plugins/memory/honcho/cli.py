@@ -277,6 +277,30 @@ def _write_config(cfg: dict, path: Path | None = None) -> None:
     atomic_json_write(path, cfg, mode=0o600)
 
 
+def _apply_api_key_to_host(cfg: dict, host: str, api_key: str) -> None:
+    """Make ``api_key`` the effective credential for ``host``.
+
+    Choosing API-key auth has to retire the OAuth grant, not sit beside it
+    (#97990).  The OAuth path persists *two* things into the host block —
+    ``apiKey`` (the access token) and ``oauth`` — while readers prefer the
+    host block over the top level: ``_resolve_api_key`` reads
+    ``hosts.<host>.apiKey`` first, and ``client._credential_fingerprint``
+    keys on ``oauth.refreshToken`` whenever that block exists.  Writing only
+    the top-level ``apiKey`` therefore leaves a revoked grant winning both
+    lookups, and ``hermes honcho status`` keeps reporting ``Auth: OAuth``
+    across repeated, fully completed setup runs.
+
+    So write the key where the resolver actually reads it, keep the
+    top-level copy for the legacy/global readers, and drop the superseded
+    ``oauth`` block.  Identity/workspace settings and other hosts are left
+    untouched — only the credential for this host is replaced.
+    """
+    cfg["apiKey"] = api_key
+    block = cfg.setdefault("hosts", {}).setdefault(host, {})
+    block["apiKey"] = api_key
+    block.pop("oauth", None)
+
+
 def _resolve_api_key(cfg: dict) -> str:
     """Resolve API key with host -> root -> env fallback.
 
@@ -746,13 +770,19 @@ def cmd_setup(args) -> None:
             masked = f"...{current_key[-8:]}" if len(current_key) > 8 else ("set" if current_key else "not set")
             print(f"\n  Current API key: {masked}")
             new_key = _prompt("Honcho API key (leave blank to keep current)", secret=True)
-            if new_key:
-                cfg["apiKey"] = new_key
 
-            if not cfg.get("apiKey"):
+            effective_key = new_key or current_key
+            if not effective_key:
                 print("\n  No API key configured. Get yours at https://app.honcho.dev")
                 print("  Run 'hermes honcho setup' again once you have a key.\n")
                 return
+
+            # Choosing API-key auth retires any OAuth grant on this host: the
+            # host block outranks the top level in every reader, so a
+            # top-level-only write leaves a revoked grant deciding auth
+            # (#97990).  Done for a kept key too — the shadowing survives
+            # config rewrites, so re-running setup has to be able to clear it.
+            _apply_api_key_to_host(cfg, _host_key(), effective_key)
 
     # --- 3. Identity ---
     current_peer = hermes_host.get("peerName") or cfg.get("peerName", "")

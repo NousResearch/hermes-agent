@@ -17,6 +17,7 @@ import pytest
 
 import cron.scheduler as s
 from cron.scheduler import _resolve_delivery_targets
+from gateway.platforms.base import TransportReceipt, TransportTarget
 
 
 @pytest.fixture
@@ -58,7 +59,21 @@ def run_env(monkeypatch, tmp_path):
     async def fake_sender(pconfig, chat_id, message, *, thread_id=None,
                           media_files=None, force_document=False, caption=None):
         send_calls.append({"chat_id": chat_id, "message": message})
-        return {"success": True, "chat_id": chat_id, "message_id": "1.2"}
+        target = TransportTarget(
+            "slack", str(chat_id), str(thread_id) if thread_id is not None else None,
+        )
+        receipt = TransportReceipt(
+            outcome="delivered",
+            requested_target=target,
+            actual_target=target,
+            provider_message_id="1.2",
+        )
+        return {
+            "success": True,
+            "chat_id": chat_id,
+            "message_id": "1.2",
+            "receipts": (receipt,),
+        }
 
     import gateway.platform_registry as reg
     import hermes_cli.plugins as hp
@@ -77,6 +92,22 @@ def run_env(monkeypatch, tmp_path):
     monkeypatch.setattr(s, "create_execution", lambda *_a, **_kw: {"id": "exec-t"})
     monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
     monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
+    monkeypatch.setattr(
+        s,
+        "preregister_receipt_plan",
+        lambda _execution_id, *, fire_identity, components: [
+            {
+                "id": f"attempt-{index}",
+                "platform": component["target"]["platform"],
+                "chat_id": component["target"]["chat_id"],
+                "thread_id": component["target"]["thread_id"],
+                "component": component["component"],
+                "ordinal": component["ordinal"],
+            }
+            for index, component in enumerate(components)
+        ],
+    )
+    monkeypatch.setattr(s, "record_transport_receipt", lambda *_a, **_kw: True)
     monkeypatch.setattr(
         s, "save_job_output",
         lambda jid, out: state["saved"].append(jid) or f"/tmp/{jid}.txt",

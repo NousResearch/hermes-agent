@@ -246,6 +246,29 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_create_response_redacts_delivery_target_and_execution_config(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Private execution prompt",
+                schedule="every 1h",
+                name="Bounded label",
+                deliver="telegram:-1001234567890:98765",
+                skills=["private-skill"],
+            )
+        )
+
+        assert created["success"] is True
+        assert created["delivery_kind"] == "external"
+        assert "deliver" not in created
+        assert "skill" not in created
+        assert "skills" not in created
+        assert created["job"]["delivery_kind"] == "external"
+        serialized = json.dumps(created, sort_keys=True)
+        assert "-1001234567890" not in serialized
+        assert "private-skill" not in serialized
+        assert "Private execution prompt" not in serialized
+
     def test_create_with_natural_weekday_schedule(self):
         # The documented "every monday 9am" form must create a real cron job
         # through the tool path, not error out (issue: parser rejected it).
@@ -303,7 +326,7 @@ class TestUnifiedCronjobTool:
 
         assert listing["success"] is True
         assert listing["jobs"][0]["name"] == "abc123deadbe"
-        assert listing["jobs"][0]["prompt_preview"] == ""
+        assert "prompt_preview" not in listing["jobs"][0]
         assert listing["jobs"][0]["schedule"] == "every 60m"
 
     def test_pause_and_resume(self):
@@ -372,6 +395,8 @@ class TestUnifiedCronjobTool:
     def test_legacy_unsafe_job_remediated_by_matching_host(self, monkeypatch):
         """Repointing base_url at the named provider's own configured host also
         remediates the job (no off-host exfil)."""
+        from cron.jobs import get_job
+
         self._patch_named_legit(monkeypatch)
         job_id = self._save_legacy_unsafe_job()
 
@@ -380,7 +405,8 @@ class TestUnifiedCronjobTool:
                     base_url="https://legit.example/v1")
         )
         assert result["success"] is True
-        assert result["job"]["base_url"] == "https://legit.example/v1"
+        assert "base_url" not in result["job"]
+        assert get_job(job_id)["base_url"] == "https://legit.example/v1"
 
 
     def test_create_normalizes_list_form_deliver(self):
@@ -573,6 +599,57 @@ class TestRegisteredHandlerForwardsAttachToSession:
         listed = next(j for j in listing["jobs"] if j["job_id"] == created["job_id"])
         assert listed.get("attach_to_session") is False
 
+    @pytest.mark.parametrize("invalid", ["false", 0, 1, [], {}])
+    def test_create_rejects_non_boolean_attach_to_session(self, invalid):
+        from cron.jobs import list_jobs
+        from tools.registry import registry
+
+        result = json.loads(
+            registry.dispatch(
+                "cronjob_manage",
+                {
+                    "action": "create",
+                    "schedule": "1h",
+                    "prompt": "fire and forget",
+                    "attach_to_session": invalid,
+                },
+            )
+        )
+
+        assert result["success"] is False
+        assert "boolean" in result["error"].lower()
+        assert list_jobs(include_disabled=True) == []
+
+    @pytest.mark.parametrize("invalid", ["false", 0, 1, [], {}])
+    def test_update_rejects_non_boolean_attach_to_session(self, invalid):
+        from cron.jobs import get_job
+        from tools.registry import registry
+
+        created = json.loads(
+            registry.dispatch(
+                "cronjob_manage",
+                {
+                    "action": "create",
+                    "schedule": "1h",
+                    "prompt": "fire and forget",
+                },
+            )
+        )
+        result = json.loads(
+            registry.dispatch(
+                "cronjob_manage",
+                {
+                    "action": "update",
+                    "job_id": created["job_id"],
+                    "attach_to_session": invalid,
+                },
+            )
+        )
+
+        assert result["success"] is False
+        assert "boolean" in result["error"].lower()
+        assert "attach_to_session" not in (get_job(created["job_id"]) or {})
+
     def test_omitted_create_leaves_field_absent(self):
         from cron.jobs import get_job
         from tools.registry import registry
@@ -628,7 +705,7 @@ class TestLocalDeliveryNotice:
         )
         assert created["success"] is True
         # Omitted deliver from a session with no origin downgrades to local.
-        assert created["deliver"] == "local"
+        assert created["delivery_kind"] == "local"
         assert "local-only cron job" in created["message"]
         assert "deliver='telegram'" in created["message"]
 
@@ -642,7 +719,7 @@ class TestLocalDeliveryNotice:
         created = json.loads(
             cronjob(action="create", prompt="x", schedule="every 2m")
         )
-        assert created["deliver"] == "origin"
+        assert created["delivery_kind"] == "origin"
         assert "local-only cron job" not in created["message"]
 
 

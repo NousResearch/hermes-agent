@@ -43,7 +43,15 @@ def test_execution_projection_is_opaque_bounded_and_content_free():
     assert "top-secret-token" not in str(event)
 
 
+def test_execution_projection_preserves_conservative_unknown_delivery_outcome():
+    from agent.monitoring.cron_health import project_execution_event
 
+    event = project_execution_event(
+        {"job_id": "opaque", "source": "direct", "status": "completed"},
+        delivery_outcome="unknown",
+    ).to_dict()
+
+    assert event["delivery_outcome"] == "unknown"
 
 
 

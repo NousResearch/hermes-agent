@@ -89,6 +89,14 @@ class DeliveryTransport:
         return await self.adapter.send(chat_id, content, metadata=metadata)
 
 
+class DeliverySendError(RuntimeError):
+    """Delivery failure that preserves content-free typed receipt evidence."""
+
+    def __init__(self, message: str, send_result: Any):
+        super().__init__(message)
+        self.send_result = send_result
+
+
 def resolve_delivery_transport(
     platform: Platform,
     config: GatewayConfig,
@@ -649,7 +657,10 @@ class DeliveryRouter:
                     metadata=send_metadata or None,
                 )
             if _send_result_failed(result):
-                raise RuntimeError(_send_result_error(result) or f"{target.platform.value} delivery failed")
+                raise DeliverySendError(
+                    _send_result_error(result) or f"{target.platform.value} delivery failed",
+                    result,
+                )
         return result
 
 

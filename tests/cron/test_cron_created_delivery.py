@@ -72,6 +72,13 @@ def _create(deliver=None):
     )
 
 
+def _stored_deliver(result):
+    from cron.jobs import get_job
+
+    assert "deliver" not in result
+    return get_job(result["job_id"])["deliver"]
+
+
 class TestCronContextDeliveryResolution:
     def test_omitted_deliver_resolves_to_creator_target(self, temp_cron_home):
         tokens, extra = _enter_cron_context("telegram", "-100123456", "17")
@@ -80,7 +87,7 @@ class TestCronContextDeliveryResolution:
         finally:
             _exit_cron_context(tokens, extra)
         assert result["success"] is True
-        assert result["deliver"] == "telegram:-100123456:17"
+        assert _stored_deliver(result) == "telegram:-100123456:17"
 
     def test_literal_origin_resolves_to_creator_target(self, temp_cron_home):
         tokens, extra = _enter_cron_context("telegram", "-100123456", "17")
@@ -88,7 +95,7 @@ class TestCronContextDeliveryResolution:
             result = _create(deliver="origin")
         finally:
             _exit_cron_context(tokens, extra)
-        assert result["deliver"] == "telegram:-100123456:17"
+        assert _stored_deliver(result) == "telegram:-100123456:17"
 
     def test_no_thread_id_omits_thread_segment(self, temp_cron_home):
         tokens, extra = _enter_cron_context("slack", "C0ABC")
@@ -96,7 +103,7 @@ class TestCronContextDeliveryResolution:
             result = _create(deliver="origin")
         finally:
             _exit_cron_context(tokens, extra)
-        assert result["deliver"] == "slack:C0ABC"
+        assert _stored_deliver(result) == "slack:C0ABC"
 
     def test_creator_without_delivery_target_falls_back_to_local(self, temp_cron_home):
         # Creator job delivers nowhere concrete (deliver='local' run):
@@ -106,7 +113,7 @@ class TestCronContextDeliveryResolution:
             result = _create(deliver="origin")
         finally:
             _exit_cron_context(tokens, extra)
-        assert result["deliver"] == "local"
+        assert _stored_deliver(result) == "local"
 
     def test_comma_list_resolves_only_origin_element(self, temp_cron_home):
         tokens, extra = _enter_cron_context("telegram", "-100123456", "17")
@@ -114,7 +121,7 @@ class TestCronContextDeliveryResolution:
             result = _create(deliver="origin,all")
         finally:
             _exit_cron_context(tokens, extra)
-        assert result["deliver"] == "telegram:-100123456:17,all"
+        assert _stored_deliver(result) == "telegram:-100123456:17,all"
 
     def test_explicit_target_passes_through_verbatim(self, temp_cron_home):
         tokens, extra = _enter_cron_context("telegram", "-100999", "3")
@@ -122,7 +129,7 @@ class TestCronContextDeliveryResolution:
             result = _create(deliver="discord:#engineering")
         finally:
             _exit_cron_context(tokens, extra)
-        assert result["deliver"] == "discord:#engineering"
+        assert _stored_deliver(result) == "discord:#engineering"
 
     def test_local_passes_through(self, temp_cron_home):
         tokens, extra = _enter_cron_context("telegram", "-100999")
@@ -130,7 +137,7 @@ class TestCronContextDeliveryResolution:
             result = _create(deliver="local")
         finally:
             _exit_cron_context(tokens, extra)
-        assert result["deliver"] == "local"
+        assert _stored_deliver(result) == "local"
 
     def test_stored_deliver_never_literal_origin_in_cron_context(self, temp_cron_home):
         from cron.jobs import get_job
@@ -184,7 +191,7 @@ class TestNonCronContextUnchanged:
         # No cron_session var — ordinary chat/CLI create. Existing semantics:
         # 'origin' stays literal and resolves at fire time.
         result = _create(deliver="origin")
-        assert result["deliver"] == "origin"
+        assert _stored_deliver(result) == "origin"
 
     def test_chat_session_omitted_deliver_unchanged(self, temp_cron_home):
         # Outside cron context the resolution helper must be a no-op so the

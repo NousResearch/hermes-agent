@@ -1990,7 +1990,11 @@ class CLICommandsMixin:
                     # delivery_failed: the agent ran fine but the output never
                     # reached the target — name the delivery reason, which
                     # lives in last_delivery_error (last_error is None).
-                    if status == "delivery_failed" and job.get("last_delivery_error"):
+                    if (
+                        status == "delivery_failed"
+                        and job.get("last_delivery_error")
+                        and job["last_delivery_error"] != "delivery_failed"
+                    ):
                         status = f"delivery_failed: {job['last_delivery_error']}"
                     print(f"  Last run: {job['last_run_at']} ({status})")
                 print()

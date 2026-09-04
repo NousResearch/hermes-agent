@@ -17,6 +17,7 @@ import threading
 from unittest.mock import patch
 
 from tools.cronjob_tools import (
+    _format_job,
     _try_dispatch_background_run,
     cronjob,
 )
@@ -150,7 +151,8 @@ class TestBackgroundDispatch:
                     time.sleep(0.05)
         assert found is not None
         assert found["status"] == "error"
-        assert "provider exploded" in (found.get("error") or "")
+        assert found.get("error") == "run_failed"
+        assert "provider exploded" not in json.dumps(found, sort_keys=True)
 
     def test_claim_lost_reports_immediately_without_dispatch(self):
         """Paused/already-firing jobs report in the tool response, not as a
@@ -182,8 +184,18 @@ class TestSyncFallbacks:
 
     def test_pool_at_capacity_runs_inline(self):
         """A rejected dispatch must not strand the already-taken claim."""
+        claimed = {
+            **_job("job-bg-07"),
+            "fire_claim": {
+                "by": "bg-owner",
+                "at": "2026-08-22T22:00:00+00:00",
+                "fire_at": "2026-08-22T21:59:00+00:00",
+            },
+            "execution_id": "exec-bg-07",
+            "fire_identity": "fire-bg-07",
+        }
         with _bound_session_key():
-            with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
+            with patch("tools.cronjob_tools.claim_job_for_fire", return_value=claimed), \
                  patch("tools.async_delegation.dispatch_async_delegation",
                        return_value={"status": "rejected", "error": "capacity"}), \
                  patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
@@ -192,7 +204,9 @@ class TestSyncFallbacks:
                 res = _try_dispatch_background_run(_job('job-bg-07'))
         assert res["dispatched"] is False
         assert res["success"] is True
-        m_run.assert_called_once()   # ran inline on this thread
+        m_run.assert_called_once()
+        assert m_run.call_args.args[0] is claimed
+        assert m_run.call_args.args[0]["fire_claim"]["by"] == "bg-owner"
 
 
 class TestInFlightDedupe:
@@ -237,6 +251,136 @@ class TestInFlightDedupe:
         assert seen_during_run["registered"] is True
         assert "job-bg-09" not in sched.get_running_job_ids()   # released after
 
+    def test_run_claimed_job_redacts_persisted_failure_detail(self):
+        from tools.cronjob_tools import _run_claimed_job
+
+        sentinel = "RAW_PERSISTED_RUN_SENTINEL user@example.org /private/report.pdf"
+        with patch("cron.scheduler.run_one_job", return_value=False), \
+             patch("tools.cronjob_tools.get_job", return_value={
+                 "last_status": "error", "last_error": sentinel,
+             }):
+            result = _run_claimed_job(_job("job-redacted-persisted"))
+
+        assert result["success"] is False
+        assert result["error"] == "run_failed"
+        assert result["error_kind"] == "run_failed"
+        assert sentinel not in json.dumps(result, sort_keys=True)
+
+    def test_run_claimed_job_redacts_exception_detail(self):
+        from tools.cronjob_tools import _run_claimed_job
+
+        sentinel = "RAW_RUN_EXCEPTION_SENTINEL user@example.org /private/report.pdf"
+        with patch("cron.scheduler.run_one_job", side_effect=RuntimeError(sentinel)), \
+             patch("tools.cronjob_tools.mark_job_run"):
+            result = _run_claimed_job(_job("job-redacted-exception"))
+
+        assert result["success"] is False
+        assert result["error"] == "run_failed"
+        assert result["error_kind"] == "run_failed"
+        assert sentinel not in json.dumps(result, sort_keys=True)
+
+    def test_execute_job_now_redacts_claim_exception_detail(self):
+        from tools.cronjob_tools import _execute_job_now
+
+        sentinel = "RAW_CLAIM_EXCEPTION_SENTINEL user@example.org /private/report.pdf"
+        with patch(
+            "tools.cronjob_tools.claim_job_for_fire",
+            side_effect=RuntimeError(sentinel),
+        ), patch("tools.cronjob_tools.mark_job_run"):
+            result = _execute_job_now(_job("job-redacted-claim"))
+
+        assert result["success"] is False
+        assert result["error"] == "run_failed"
+        assert result["error_kind"] == "run_failed"
+        assert sentinel not in json.dumps(result, sort_keys=True)
+
+    def test_background_dispatch_redacts_claim_exception_detail(self):
+        from tools.cronjob_tools import _try_dispatch_background_run
+
+        sentinel = "RAW_BACKGROUND_CLAIM_SENTINEL user@example.org /private/report.pdf"
+        with _bound_session_key(), patch(
+            "tools.cronjob_tools.claim_job_for_fire",
+            side_effect=RuntimeError(sentinel),
+        ), patch("tools.cronjob_tools.mark_job_run"):
+            result = _try_dispatch_background_run(_job("job-redacted-background"))
+
+        assert result["success"] is False
+        assert result["error"] == "run_failed"
+        assert result["error_kind"] == "run_failed"
+        assert sentinel not in json.dumps(result, sort_keys=True)
+
+    def test_cronjob_list_projection_is_summary_only(self):
+        private = {
+            "id": "bounded-tool-job",
+            "name": "bounded tool job",
+            "prompt": "PRIVATE_PROMPT user@example.org",
+            "script": "private/script.py",
+            "monitor_script": "private/monitor.py",
+            "monitor_url": "https://private.example.org/feed",
+            "workdir": "/private/worktree",
+            "model": "private-model",
+            "provider": "private-provider",
+            "base_url": "https://private-provider.example.org/v1",
+            "profile": "private-profile",
+            "context_from": ["private-upstream"],
+            "enabled_toolsets": ["private-toolset"],
+            "skills": ["private-skill"],
+            "reasoning_effort": "private-effort",
+            "monitor_state": {"private": "PRIVATE_MONITOR_STATE"},
+            "schedule": {"kind": "cron", "expr": "0 9 * * *"},
+        }
+
+        public = _format_job(private)
+        serialized = json.dumps(public, sort_keys=True)
+
+        assert public["job_id"] == "bounded-tool-job"
+        assert public["name"] == "bounded tool job"
+        for field in (
+            "prompt_preview", "script", "monitor_script", "monitor_url",
+            "workdir", "model", "provider", "base_url", "profile",
+            "context_from", "enabled_toolsets", "skill", "skills",
+            "reasoning_effort", "monitor_state",
+        ):
+            assert field not in public
+        assert "PRIVATE_" not in serialized
+        assert "user@example.org" not in serialized
+        assert "/private/" not in serialized
+
+        unnamed = _format_job({**private, "name": None})
+        assert unnamed["name"] == "bounded-tool-job"
+        assert "PRIVATE_" not in json.dumps(unnamed, sort_keys=True)
+
+    def test_cronjob_summary_projection_rejects_malformed_private_objects(self):
+        malformed = {
+            "id": "malformed-tool-job",
+            "name": {"private": "PRIVATE_NAME_SENTINEL"},
+            "schedule_display": ["PRIVATE_SCHEDULE_SENTINEL"],
+            "repeat": ["PRIVATE_REPEAT_SENTINEL"],
+            "deliver": {"private": "PRIVATE_TARGET_SENTINEL"},
+            "enabled": "PRIVATE_ENABLED_SENTINEL",
+        }
+
+        public = _format_job(malformed)
+        serialized = json.dumps(public, sort_keys=True)
+
+        assert public["job_id"] == "malformed-tool-job"
+        assert public["name"] == "malformed-tool-job"
+        assert public["schedule"] == "?"
+        assert public["repeat"] == "forever"
+        assert public["delivery_kind"] == "local"
+        assert public["enabled"] is True
+        assert "PRIVATE_" not in serialized
+
+    def test_cronjob_outer_runtime_error_is_categorical(self):
+        sentinel = "RAW_OUTER_TOOL_SENTINEL user@example.org /private/report.pdf"
+        with patch("tools.cronjob_tools.list_jobs", side_effect=RuntimeError(sentinel)):
+            result = json.loads(cronjob(action="list"))
+
+        assert result["success"] is False
+        assert result["error"] == "cron_operation_failed"
+        assert result["error_kind"] == "cron_operation_failed"
+        assert sentinel not in json.dumps(result, sort_keys=True)
+
     def test_run_claimed_job_reports_exact_unknown_execution_not_stale_success(self):
         from tools.cronjob_tools import _run_claimed_job
 
@@ -257,7 +401,9 @@ class TestInFlightDedupe:
             res = _run_claimed_job(_job("job-bg-unknown"))
 
         assert res["success"] is False
-        assert res["error"] == "worker owner exited"
+        assert res["error"] == "run_failed"
+        assert res["error_kind"] == "run_failed"
+        assert "worker owner exited" not in str(res)
 
     def test_background_dispatch_reports_running_job_immediately(self):
         """The dispatch path pre-checks the running set so a mid-run job
@@ -310,7 +456,7 @@ class TestCronjobRunToolIntegration:
         assert out["success"] is True
         assert out["job"]["executed"] is True
         assert out["job"]["execution_mode"] == "background"
-        assert out["job"]["delegation_id"]
+        assert "delegation_id" not in out["job"]
         assert "background" in out["note"]
 
     def test_run_action_sync_path_unchanged_without_session(self):

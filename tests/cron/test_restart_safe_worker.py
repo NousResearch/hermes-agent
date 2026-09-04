@@ -74,7 +74,8 @@ def test_genuine_external_worker_crash_is_recovered_unknown(
     assert execution_ledger.recover_interrupted_executions() == 1
     recovered = execution_ledger.latest_execution("job-crash")
     assert recovered["status"] == "unknown"
-    assert "whether side effects ran is unknown" in recovered["error"]
+    assert recovered["error"] is None
+    assert recovered["error_kind"] == "interrupted"
 
 
 @pytest.mark.linux_only

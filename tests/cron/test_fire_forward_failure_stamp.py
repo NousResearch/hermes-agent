@@ -86,4 +86,7 @@ class TestFormatJobSurfacesFireError:
         job = create_job(prompt="Daily invoice triage", schedule="every 1h")
         note_fire_forward_failure(job["id"], "gateway unreachable")
         formatted = _format_job(get_job(job["id"]))
-        assert formatted["last_fire_error"]["detail"] == "gateway unreachable"
+        assert formatted["last_fire_error"] == {
+            "at": get_job(job["id"])["last_fire_error"]["at"],
+            "error_kind": "fire_forward_failed",
+        }

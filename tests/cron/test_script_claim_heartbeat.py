@@ -386,12 +386,26 @@ def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
         "name": "reclaimed agent",
         "prompt": "work",
         "execution_id": "stale-execution",
-        "fire_claim": {"at": "2026-07-12T12:00:00+00:00", "by": "stale-owner"},
+        "fire_identity": scheduler.scheduled_fire_identity(
+            "reclaimed-agent", "2026-07-12T12:00:00+00:00",
+        ),
+        "fire_claim": {
+            "at": "2026-07-12T12:00:00+00:00",
+            "fire_at": "2026-07-12T12:00:00+00:00",
+            "by": "stale-owner",
+        },
     }
     monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.01)
     monkeypatch.setattr(scheduler, "heartbeat_fire_claim", _heartbeat)
     monkeypatch.setattr(scheduler, "run_job", _run_job)
     monkeypatch.setattr(scheduler, "claim_dispatch", lambda job_id: True)
+    monkeypatch.setattr(
+        scheduler,
+        "bind_execution_fire_identity",
+        lambda execution_id, fire_identity: {
+            "id": execution_id, "fire_identity": fire_identity,
+        },
+    )
     monkeypatch.setattr(scheduler, "mark_execution_running", lambda execution_id: {})
     monkeypatch.setattr(scheduler, "finish_execution", lambda *args, **kwargs: None)
     save_output = MagicMock()
@@ -558,12 +572,26 @@ def test_terminal_owner_cas_failure_marks_ledger_ownership_lost(monkeypatch):
     job = {
         "id": "terminal-cas",
         "execution_id": "execution-cas",
+        "fire_identity": scheduler.scheduled_fire_identity(
+            "terminal-cas", "2026-07-12T12:00:00+00:00",
+        ),
         "name": "terminal-cas",
-        "fire_claim": {"at": "2026-07-12T12:00:00+00:00", "by": "owner"},
+        "fire_claim": {
+            "at": "2026-07-12T12:00:00+00:00",
+            "fire_at": "2026-07-12T12:00:00+00:00",
+            "by": "owner",
+        },
     }
     finish = MagicMock()
     monkeypatch.setattr(scheduler, "heartbeat_fire_claim", lambda *args, **kwargs: True)
     monkeypatch.setattr(scheduler, "claim_dispatch", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        scheduler,
+        "bind_execution_fire_identity",
+        lambda execution_id, fire_identity: {
+            "id": execution_id, "fire_identity": fire_identity,
+        },
+    )
     monkeypatch.setattr(scheduler, "mark_execution_running", lambda *_args: {})
     monkeypatch.setattr(
         scheduler,

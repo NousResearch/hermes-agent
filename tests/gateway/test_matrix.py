@@ -320,6 +320,119 @@ def _make_adapter():
     return adapter
 
 
+@pytest.mark.asyncio
+async def test_matrix_send_ack_emits_exact_transport_receipt():
+    """A Matrix event id is provider evidence, not just legacy message_id."""
+    adapter = _make_adapter()
+    adapter._client = MagicMock()
+    adapter._client.send_message_event = AsyncMock(return_value="$event-123")
+
+    result = await adapter.send("!room:example.org", "hello")
+
+    assert result.success is True
+    assert result.receipt is not None
+    assert result.receipt.outcome == "delivered"
+    assert result.receipt.provider_message_id == "$event-123"
+    assert result.receipt.requested_target.chat_id == "!room:example.org"
+    assert result.receipt.actual_target.chat_id == "!room:example.org"
+
+
+@pytest.mark.asyncio
+async def test_matrix_threaded_ack_preserves_requested_and_actual_transport_targets():
+    adapter = _make_adapter()
+    adapter._client = MagicMock()
+    adapter._client.send_message_event = AsyncMock(return_value="$thread-event")
+
+    result = await adapter.send(
+        "!room:example.org",
+        "threaded",
+        metadata={
+            "thread_id": "$actual-root",
+            "_transport_receipt_requested_target": {
+                "platform": "matrix",
+                "chat_id": "!room:example.org",
+                "thread_id": "$requested-root",
+            },
+        },
+    )
+
+    receipt = result.receipt
+    assert receipt is not None
+    assert receipt.requested_target.thread_id == "$requested-root"
+    assert receipt.actual_target is not None
+    assert receipt.actual_target.thread_id == "$actual-root"
+    sent_call = adapter._client.send_message_event.await_args
+    assert sent_call is not None
+    sent = sent_call.args[2]
+    assert sent["m.relates_to"]["event_id"] == "$actual-root"
+
+
+@pytest.mark.asyncio
+async def test_matrix_threaded_ack_persists_against_preregistered_target(
+    monkeypatch, tmp_path,
+):
+    import cron.executions as executions
+
+    monkeypatch.setattr(
+        executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db",
+    )
+    execution = executions.create_execution("matrix-thread", source="direct")
+    attempts = executions.preregister_receipt_plan(
+        execution["id"],
+        fire_identity="matrix-thread-fire",
+        components=[{
+            "target": {
+                "platform": "matrix",
+                "chat_id": "!room:example.org",
+                "thread_id": "$requested-root",
+            },
+            "component": "text",
+            "ordinal": 0,
+            "content": "threaded",
+        }],
+    )
+    adapter = _make_adapter()
+    adapter._client = MagicMock()
+    adapter._client.send_message_event = AsyncMock(return_value="$thread-event")
+
+    result = await adapter.send(
+        "!room:example.org",
+        "threaded",
+        metadata={
+            "thread_id": "$actual-root",
+            "_transport_receipt_requested_target": {
+                "platform": "matrix",
+                "chat_id": "!room:example.org",
+                "thread_id": "$requested-root",
+            },
+        },
+    )
+
+    assert result.receipt is not None
+    assert executions.record_transport_receipt(attempts[0]["id"], result.receipt)
+    assert executions.receipt_summary(execution["id"]) == {
+        "delivered": 1,
+        "failed": 0,
+        "unknown": 0,
+        "targets_delivered": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_matrix_multi_chunk_send_emits_one_ordered_receipt_per_ack():
+    adapter = _make_adapter()
+    adapter._client = MagicMock()
+    adapter._client.send_message_event = AsyncMock(side_effect=["$one", "$two"])
+    adapter.truncate_message = MagicMock(return_value=["first", "second"])
+
+    result = await adapter.send("!room:example.org", "long message")
+
+    assert [receipt.provider_message_id for receipt in result.receipts] == ["$one", "$two"]
+    assert [(receipt.component, receipt.ordinal) for receipt in result.receipts] == [
+        ("text", 0), ("text", 1),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Typing indicator
 # ---------------------------------------------------------------------------
@@ -1468,15 +1581,71 @@ class TestMatrixUploadAndSend:
             "image/png",
             "m.image",
             caption="Chart caption",
-            metadata={"thread_id": "$root"},
+            metadata={
+                "thread_id": "$actual-root",
+                "_transport_receipt_component": "media",
+                "_transport_receipt_ordinal": 7,
+                "_transport_receipt_requested_target": {
+                    "platform": "matrix",
+                    "chat_id": "!room:example.org",
+                    "thread_id": "$requested-root",
+                },
+            },
         )
 
         assert result.success is True
         sent = mock_client.send_message_event.await_args.args[2]
         assert sent["body"] == "Chart caption"
         assert sent["m.relates_to"]["rel_type"] == "m.thread"
-        assert sent["m.relates_to"]["event_id"] == "$root"
-        assert sent["m.relates_to"]["m.in_reply_to"] == {"event_id": "$root"}
+        assert sent["m.relates_to"]["event_id"] == "$actual-root"
+        assert sent["m.relates_to"]["m.in_reply_to"] == {"event_id": "$actual-root"}
+        receipt = result.receipt
+        assert receipt is not None
+        assert receipt.provider_message_id == "$event"
+        assert receipt.component == "media"
+        assert receipt.ordinal == 7
+        assert receipt.requested_target.thread_id == "$requested-root"
+        assert receipt.actual_target is not None
+        assert receipt.actual_target.thread_id == "$actual-root"
+
+    @pytest.mark.asyncio
+    async def test_media_timeout_after_send_is_typed_unknown(self):
+        adapter = _make_adapter()
+        mock_client = MagicMock()
+        mock_client.upload_media = AsyncMock(return_value="mxc://example.org/plain")
+        mock_client.send_message_event = AsyncMock(side_effect=asyncio.TimeoutError())
+        adapter._client = mock_client
+
+        result = await adapter._upload_and_send(
+            "!room:example.org",
+            b"image",
+            "chart.png",
+            "image/png",
+            "m.image",
+            metadata={
+                "_transport_receipt_component": "media",
+                "_transport_receipt_ordinal": 7,
+                "_transport_receipt_requested_target": {
+                    "platform": "matrix",
+                    "chat_id": "!room:example.org",
+                    "thread_id": "$requested-root",
+                },
+            },
+        )
+
+        assert result.success is False
+        assert result.retryable is False
+        assert result.error_kind == "unknown"
+        assert result.receipt is not None
+        assert result.receipt.outcome == "unknown"
+        assert result.receipt.component == "media"
+        assert result.receipt.ordinal == 7
+        assert result.receipt.provider_message_id is None
+        assert result.receipt.actual_target is None
+        assert result.receipt.requested_target.thread_id == "$requested-root"
+        assert result.receipts == (result.receipt,)
+        assert mock_client.upload_media.await_count == 1
+        assert mock_client.send_message_event.await_count == 1
 
 
 class TestMatrixDiagnostics:
@@ -1593,16 +1762,13 @@ class TestMatrixDiagnostics:
 
 class TestMatrixEncryptedSendFallback:
     @pytest.mark.asyncio
-    async def test_send_retries_after_e2ee_error(self):
-        """send() should retry with crypto.share_keys() on E2EE errors."""
+    async def test_send_timeout_is_unknown_without_e2ee_retry(self):
+        """An ambiguous Matrix timeout must never send the same chunk twice."""
         adapter = _make_adapter()
         adapter._encryption = True
 
         fake_client = MagicMock()
-        fake_client.send_message_event = AsyncMock(side_effect=[
-            Exception("encryption error"),
-            "$event123",  # mautrix returns EventID string directly
-        ])
+        fake_client.send_message_event = AsyncMock(side_effect=asyncio.TimeoutError())
         mock_crypto = MagicMock()
         mock_crypto.share_keys = AsyncMock()
         fake_client.crypto = mock_crypto
@@ -1610,10 +1776,15 @@ class TestMatrixEncryptedSendFallback:
 
         result = await adapter.send("!room:example.org", "hello")
 
-        assert result.success is True
-        assert result.message_id == "$event123"
-        mock_crypto.share_keys.assert_awaited_once()
-        assert fake_client.send_message_event.await_count == 2
+        assert result.success is False
+        assert result.retryable is False
+        assert result.error_kind == "unknown"
+        assert result.receipt is not None
+        assert result.receipt.outcome == "unknown"
+        assert result.receipt.provider_message_id is None
+        assert result.receipt.actual_target is None
+        mock_crypto.share_keys.assert_not_awaited()
+        assert fake_client.send_message_event.await_count == 1
 
 
 # ---------------------------------------------------------------------------

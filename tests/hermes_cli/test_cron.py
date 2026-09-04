@@ -12,6 +12,14 @@ from hermes_cli.cron import cron_command
 from hermes_cli.subcommands.cron import build_cron_parser
 
 
+def test_cli_public_timestamp_rejects_string_subclass_without_length():
+    class HostileText(str):
+        def __len__(self):
+            raise AssertionError("hostile timestamp length was evaluated")
+
+    assert cron_cli._public_timestamp(HostileText("2026-08-23T20:00:00+00:00")) is None
+
+
 @pytest.fixture()
 def tmp_cron_dir(tmp_path, monkeypatch):
     monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
@@ -149,7 +157,7 @@ class TestUnverifiedDeliveryVisibility:
         out = capsys.readouterr().out
         assert job["id"] in out
         assert "Delivery UNVERIFIED" in out
-        assert "slack:C0123456" in out
+        assert "slack:C0123456" not in out
         assert "without message_id/raw_response" in out
 
     def test_list_is_quiet_when_delivery_was_verified(self, tmp_cron_dir, capsys):
@@ -273,9 +281,7 @@ class TestCronListStatusRendering:
         out = capsys.readouterr().out
         last_run_line = next(l for l in out.splitlines() if "Last run:" in l)
         assert "delivery_failed" in last_run_line
-        assert "telegram timeout" in last_run_line, (
-            "the delivery detail lives in last_delivery_error, not last_error"
-        )
+        assert "telegram timeout" not in out
         assert cron_cli.Colors.GREEN not in last_run_line
 
     def test_ok_run_still_green(self, tmp_cron_dir, capsys, monkeypatch):
@@ -395,6 +401,114 @@ def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):
     assert "Nightly docs" in out
 
 
+def test_cron_list_redacts_legacy_error_details(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "cron.jobs.list_jobs",
+        lambda include_disabled=False: [{
+            "id": "redacted-job",
+            "name": "Redacted job",
+            "schedule_display": "every day",
+            "state": "scheduled",
+            "enabled": True,
+            "next_run_at": "2026-08-23T00:00:00Z",
+            "deliver": ["local"],
+            "last_status": "error",
+            "last_run_at": "2026-08-22T20:00:00Z",
+            "last_error": "RAW_LAST_ERROR_SENTINEL user@example.org",
+            "last_delivery_error": "RAW_DELIVERY_SENTINEL /private/report.pdf",
+            "last_fire_error": {
+                "at": "2026-08-22T19:00:00Z",
+                "detail": "RAW_FIRE_SENTINEL provider payload",
+            },
+        }],
+    )
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1])
+    monkeypatch.setattr(cron_cli, "_active_cron_provider_name", lambda: "builtin")
+
+    cron_cli.cron_list()
+
+    out = capsys.readouterr().out
+    assert "Last run:" in out and "error" in out
+    assert "Delivery failed" in out
+    assert "Missed scheduled fire" in out
+    assert "RAW_LAST_ERROR_SENTINEL" not in out
+    assert "RAW_DELIVERY_SENTINEL" not in out
+    assert "RAW_FIRE_SENTINEL" not in out
+    assert "user@example.org" not in out
+    assert "/private/report.pdf" not in out
+
+
+def test_cron_list_projects_private_job_config_to_bounded_summary(monkeypatch, capsys):
+    sentinels = {
+        "deliver": "telegram:RAW_TARGET_SENTINEL",
+        "skills": ["PRIVATE_SKILL_SENTINEL"],
+        "prompt": "PRIVATE_PROMPT_SENTINEL",
+        "script": "PRIVATE_SCRIPT_SENTINEL",
+        "monitor_url": "https://PRIVATE_MONITOR_SENTINEL.invalid",
+        "workdir": "/PRIVATE_WORKDIR_SENTINEL",
+        "model": "PRIVATE_MODEL_SENTINEL",
+        "provider": "PRIVATE_PROVIDER_SENTINEL",
+        "base_url": "https://PRIVATE_BASE_URL_SENTINEL.invalid",
+        "profile": "PRIVATE_PROFILE_SENTINEL",
+    }
+    monkeypatch.setattr(
+        "cron.jobs.list_jobs",
+        lambda include_disabled=False: [{
+            "id": "bounded-job",
+            "name": "Bounded job",
+            "schedule_display": "every day",
+            "state": "scheduled",
+            "enabled": True,
+            "next_run_at": "2026-08-23T00:00:00Z",
+            "latest_execution": {
+                "id": "PRIVATE_EXECUTION_ID_SENTINEL",
+                "status": "delivered",
+            },
+            **sentinels,
+        }],
+    )
+    monkeypatch.setattr("cron.executions.latest_execution", lambda job_id: None)
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1])
+    monkeypatch.setattr(cron_cli, "_active_cron_provider_name", lambda: "builtin")
+
+    cron_cli.cron_list()
+
+    out = capsys.readouterr().out
+    assert "Bounded job" in out
+    assert "Delivery:  external" in out
+    assert "Mode:      monitor" in out
+    for value in (*sentinels.values(), "PRIVATE_EXECUTION_ID_SENTINEL"):
+        if isinstance(value, list):
+            value = value[0]
+        assert value not in out
+
+
+def test_cron_list_drops_malformed_fire_timestamp(monkeypatch, capsys):
+    sentinel = "RAW_CLI_FIRE_AT_SENTINEL user@example.org /private/report.pdf"
+    monkeypatch.setattr(
+        "cron.jobs.list_jobs",
+        lambda include_disabled=False: [{
+            "id": "malformed-fire-at",
+            "name": "Malformed fire",
+            "schedule_display": "every day",
+            "state": "scheduled",
+            "enabled": True,
+            "deliver": ["local"],
+            "last_fire_error": {"at": sentinel, "detail": "raw detail"},
+        }],
+    )
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1])
+    monkeypatch.setattr(cron_cli, "_active_cron_provider_name", lambda: "builtin")
+
+    cron_cli.cron_list()
+
+    out = capsys.readouterr().out
+    assert "Missed scheduled fire" in out
+    assert sentinel not in out
+    assert "user@example.org" not in out
+    assert "/private/report.pdf" not in out
+
+
 def test_cron_tick_invokes_scheduler_tick_with_verbose(monkeypatch):
     calls = []
     monkeypatch.setattr("cron.scheduler.tick", lambda verbose=False: calls.append(verbose))
@@ -402,6 +516,25 @@ def test_cron_tick_invokes_scheduler_tick_with_verbose(monkeypatch):
     cron_cli.cron_tick()
 
     assert calls == [True]
+
+
+def test_cron_tick_redacts_oserror_detail(monkeypatch, capsys):
+    sentinel = "RAW_TICK_OSERROR_SENTINEL /private/jobs.json user@example.org"
+
+    def fail_tick(verbose=False):
+        assert verbose is True
+        raise OSError(sentinel)
+
+    monkeypatch.setattr("cron.scheduler.tick", fail_tick)
+
+    result = cron_cli.cron_tick()
+
+    out = capsys.readouterr().out
+    assert result == 1
+    assert "Cron tick failed: tick_failed" in out
+    assert sentinel not in out
+    assert "/private/jobs.json" not in out
+    assert "user@example.org" not in out
 
 
 def test_cron_create_failure_returns_nonzero(monkeypatch, capsys):
@@ -465,7 +598,8 @@ class TestCronRunBackgroundDispatch:
         rc, out = self._run_cmd(capsys)
 
         assert rc == 0
-        assert "Running in background (delegation del-abc123)." in out
+        assert "Running in background." in out
+        assert "del-abc123" not in out
         assert "failed" not in out.lower()
         assert "Ran now" not in out
 
@@ -546,7 +680,8 @@ class TestCronRunBackgroundDispatch:
         rc, out = self._run_cmd(capsys)
 
         assert rc == 0
-        assert "Running in background (delegation del-xyz)." in out
+        assert "Running in background." in out
+        assert "del-xyz" not in out
         assert "failed" not in out.lower()
 
 
@@ -575,7 +710,8 @@ class TestSlashCronListLastStatus:
         save_jobs(jobs)
 
         out = self._run_list(tmp_cron_dir, capsys)
-        assert "Last run: 2026-09-01T07:00:00+00:00 (delivery_failed: telegram: 502 Bad Gateway)" in out
+        assert "Last run: 2026-09-01T07:00:00+00:00 (delivery_failed)" in out
+        assert "telegram: 502 Bad Gateway" not in out
 
     def test_ok_stays_plain(self, tmp_cron_dir, capsys):
         create_job(prompt="Nightly brief", schedule="every 1h")

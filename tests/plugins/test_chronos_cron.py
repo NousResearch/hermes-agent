@@ -139,7 +139,10 @@ def test_fire_due_rearms_next_oneshot(chronos, monkeypatch):
 def test_fire_due_rearms_after_claimed_job_failure(chronos, monkeypatch):
     """A claimed attempt is consumed even when the job pipeline reports failure."""
     prov, fake = chronos
-    claimed = {"id": "j1", "fire_claim": {"by": "owner-1"}}
+    claimed = {
+        "id": "j1",
+        "fire_claim": {"by": "owner-1", "fire_at": "2026-06-18T12:00:00+00:00"},
+    }
     persisted = {
         "id": "j1",
         "enabled": True,
@@ -150,6 +153,10 @@ def test_fire_due_rearms_after_claimed_job_failure(chronos, monkeypatch):
     monkeypatch.setattr(
         "cron.executions.create_execution",
         lambda jid, source: {"id": "exec-1"},
+    )
+    monkeypatch.setattr(
+        "cron.executions.bind_execution_fire_identity",
+        lambda eid, fire: {"id": eid, "fire_identity": fire},
     )
     monkeypatch.setattr("cron.scheduler.run_one_job", lambda *args, **kwargs: False)
     monkeypatch.setattr("cron.jobs.get_job", lambda jid: persisted)

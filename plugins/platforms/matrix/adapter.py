@@ -134,6 +134,9 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
+    TransportReceipt,
+    TransportTarget,
+    normalize_transport_provider_message_id,
     resolve_proxy_url,
     proxy_kwargs_for_aiohttp,
     _ssrf_redirect_guard,
@@ -2210,6 +2213,68 @@ class MatrixAdapter(BasePlatformAdapter):
 
         logger.info("Matrix: disconnected")
 
+    def plan_transport_text(self, content: str) -> list[str]:
+        """Expose Matrix's exact deterministic text chunks before dispatch."""
+        formatted = self.format_message(content)
+        return list(self.truncate_message(formatted, self.max_message_length))
+
+    @staticmethod
+    def _transport_receipt_targets(
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> tuple[TransportTarget, TransportTarget]:
+        """Return the planned target and the exact routed Matrix target."""
+        if metadata is None:
+            metadata = {}
+        elif type(metadata) is not dict:
+            raise TypeError("Matrix receipt metadata must be an object")
+        if type(chat_id) is not str:
+            raise TypeError("Matrix receipt chat_id must be a string")
+        route_thread_raw = metadata.get("thread_id")
+        if route_thread_raw is not None and type(route_thread_raw) not in {str, int}:
+            raise TypeError("Matrix receipt thread_id must be a string or integer")
+        route_thread = (
+            str(route_thread_raw) if route_thread_raw is not None else None
+        )
+        requested_identity = metadata.get(
+            "_transport_receipt_requested_target"
+        )
+        if requested_identity is not None and type(requested_identity) is not dict:
+            raise TypeError("Matrix receipt requested target must be a mapping")
+        if requested_identity is not None:
+            requested_thread_raw = requested_identity.get("thread_id")
+            if (
+                requested_thread_raw is not None
+                and type(requested_thread_raw) not in {str, int}
+            ):
+                raise TypeError(
+                    "Matrix receipt requested thread_id must be a string or integer"
+                )
+            requested_platform = requested_identity.get("platform", "matrix")
+            requested_chat_id = requested_identity.get("chat_id", chat_id)
+            if type(requested_platform) is not str or type(requested_chat_id) is not str:
+                raise TypeError("Matrix receipt requested target fields must be strings")
+            requested = TransportTarget(
+                platform=requested_platform,
+                chat_id=requested_chat_id,
+                thread_id=(
+                    str(requested_thread_raw)
+                    if requested_thread_raw is not None else None
+                ),
+            )
+        else:
+            requested = TransportTarget(
+                platform="matrix",
+                chat_id=chat_id,
+                thread_id=route_thread,
+            )
+        actual = TransportTarget(
+            platform="matrix",
+            chat_id=chat_id,
+            thread_id=route_thread,
+        )
+        return requested, actual
+
     async def send(
         self,
         chat_id: str,
@@ -2218,14 +2283,30 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a message to a Matrix room."""
-
+        try:
+            requested_target, actual_target = self._transport_receipt_targets(
+                chat_id, metadata
+            )
+        except (TypeError, ValueError):
+            return SendResult(
+                success=False,
+                error="Invalid transport receipt metadata",
+                error_kind="invalid_transport_receipt",
+                retryable=False,
+            )
+        if type(content) is not str:
+            return SendResult(
+                success=False,
+                error="Invalid transport receipt metadata",
+                error_kind="invalid_transport_receipt",
+                retryable=False,
+            )
         if not content:
             return SendResult(success=True)
 
-        formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.max_message_length)
-
+        chunks = self.plan_transport_text(content)
         last_event_id = None
+        receipts = []
         for i, chunk in enumerate(chunks):
             msg_content = self._build_text_message_content(chunk)
 
@@ -2240,39 +2321,42 @@ class MatrixAdapter(BasePlatformAdapter):
                     ),
                     timeout=45,
                 )
-                last_event_id = str(event_id)
+                last_event_id = normalize_transport_provider_message_id(event_id)
+                if last_event_id is None:
+                    raise ValueError("Matrix provider acknowledgement id is invalid")
+                receipts.append(TransportReceipt(
+                    outcome="delivered", provider_message_id=last_event_id,
+                    requested_target=requested_target, actual_target=actual_target,
+                    component="text", ordinal=i,
+                ))
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
-            except Exception as exc:
-                # On E2EE errors, retry after sharing keys.
-                if self._encryption and getattr(self._client, "crypto", None):
-                    try:
-                        await self._client.crypto.share_keys()
-                        event_id = await asyncio.wait_for(
-                            self._client.send_message_event(
-                                RoomID(chat_id),
-                                EventType.ROOM_MESSAGE,
-                                msg_content,
-                            ),
-                            timeout=45,
-                        )
-                        last_event_id = str(event_id)
-                        logger.info(
-                            "Matrix: sent event %s to %s (after key share)",
-                            last_event_id,
-                            chat_id,
-                        )
-                        continue
-                    except Exception as retry_exc:
-                        logger.error(
-                            "Matrix: failed to send to %s after retry: %s",
-                            chat_id,
-                            retry_exc,
-                        )
-                        return SendResult(success=False, error=str(retry_exc))
-                logger.error("Matrix: failed to send to %s: %s", chat_id, exc)
-                return SendResult(success=False, error=str(exc))
+            except Exception:
+                receipts.append(TransportReceipt(
+                    outcome="unknown",
+                    requested_target=requested_target,
+                    component="text",
+                    ordinal=i,
+                ))
+                logger.warning(
+                    "Matrix: delivery outcome is unknown for %s; suppressing retry",
+                    chat_id,
+                )
+                return SendResult(
+                    success=False,
+                    error="Matrix delivery outcome is unknown",
+                    error_kind="unknown",
+                    receipts=tuple(receipts),
+                    retryable=False,
+                )
 
-        return SendResult(success=True, message_id=last_event_id)
+        # ``send_message_event`` returning an event id is Matrix's explicit
+        # acknowledgement.  Preserve the legacy message_id separately while
+        # making the exact room target available to conservative cron callers.
+        return SendResult(
+            success=True,
+            message_id=last_event_id,
+            receipts=tuple(receipts),
+        )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return room name and type (dm/group)."""
@@ -2904,6 +2988,59 @@ class MatrixAdapter(BasePlatformAdapter):
         voice_metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Upload bytes to Matrix and send as a media message."""
+        if (
+            type(room_id) is not str
+            or type(data) is not bytes
+            or type(filename) is not str
+            or type(content_type) is not str
+            or type(msgtype) is not str
+            or (caption is not None and type(caption) is not str)
+            or (metadata is not None and type(metadata) is not dict)
+        ):
+            return SendResult(
+                success=False,
+                error="Invalid transport receipt metadata",
+                error_kind="invalid_transport_receipt",
+                retryable=False,
+            )
+        receipt_binding = None
+        receipt_metadata = metadata if metadata is not None else {}
+        if (
+            "_transport_receipt_component" in receipt_metadata
+            or "_transport_receipt_ordinal" in receipt_metadata
+        ):
+            receipt_component = receipt_metadata.get("_transport_receipt_component")
+            if type(receipt_component) is not str or receipt_component != "media":
+                return SendResult(
+                    success=False,
+                    error="Invalid transport receipt metadata",
+                    error_kind="invalid_transport_receipt",
+                    retryable=False,
+                )
+            receipt_ordinal = receipt_metadata.get("_transport_receipt_ordinal")
+            if type(receipt_ordinal) is not int or receipt_ordinal < 0:
+                return SendResult(
+                    success=False,
+                    error="Invalid transport receipt metadata",
+                    error_kind="invalid_transport_receipt",
+                    retryable=False,
+                )
+            try:
+                requested_target, actual_target = self._transport_receipt_targets(
+                    room_id, metadata
+                )
+            except (TypeError, ValueError):
+                return SendResult(
+                    success=False,
+                    error="Invalid transport receipt metadata",
+                    error_kind="invalid_transport_receipt",
+                    retryable=False,
+                )
+            receipt_binding = (
+                requested_target,
+                actual_target,
+                receipt_ordinal,
+            )
         if len(data) > self._max_media_bytes:
             return SendResult(
                 success=False,
@@ -2978,9 +3115,49 @@ class MatrixAdapter(BasePlatformAdapter):
                 EventType.ROOM_MESSAGE,
                 msg_content,
             )
-            return SendResult(success=True, message_id=str(event_id))
-        except Exception as exc:
-            return SendResult(success=False, error=str(exc))
+            provider_message_id = normalize_transport_provider_message_id(event_id)
+            if provider_message_id is None:
+                raise ValueError("Matrix provider acknowledgement id is invalid")
+            if receipt_binding is not None:
+                requested_target, actual_target, receipt_ordinal = receipt_binding
+                receipt = TransportReceipt(
+                    outcome="delivered",
+                    provider_message_id=provider_message_id,
+                    requested_target=requested_target,
+                    actual_target=actual_target,
+                    component="media",
+                    ordinal=receipt_ordinal,
+                )
+                return SendResult(
+                    success=True,
+                    message_id=provider_message_id,
+                    receipt=receipt,
+                    receipts=(receipt,),
+                )
+            return SendResult(success=True, message_id=provider_message_id)
+        except Exception:
+            if receipt_binding is not None:
+                requested_target, _actual_target, receipt_ordinal = receipt_binding
+                receipt = TransportReceipt(
+                    outcome="unknown",
+                    requested_target=requested_target,
+                    component="media",
+                    ordinal=receipt_ordinal,
+                )
+                return SendResult(
+                    success=False,
+                    error="Matrix media delivery outcome is unknown",
+                    error_kind="unknown",
+                    receipt=receipt,
+                    receipts=(receipt,),
+                    retryable=False,
+                )
+            return SendResult(
+                success=False,
+                error="Matrix media delivery outcome is unknown",
+                error_kind="unknown",
+                retryable=False,
+            )
 
     async def _send_local_file(
         self,

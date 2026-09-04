@@ -7,6 +7,7 @@ import threading
 
 import pytest
 from fastapi import HTTPException
+from starlette.testclient import TestClient
 
 
 @pytest.fixture()
@@ -158,13 +159,42 @@ def test_dashboard_create_reports_saved_but_unregistered(
 
     assert exc_info.value.status_code == 424
     assert exc_info.value.detail == {
-        "error": str(failure),
+        "error": "scheduler_registration_failed",
         "job_id": "saved-job",
         "job_saved": True,
         "scheduler_registered": False,
         "retry_create": False,
     }
-    assert "private callback URL and token" not in str(exc_info.value.detail)
+    serialized = str(exc_info.value.detail)
+    assert "private callback URL and token" not in serialized
+    assert "RuntimeError" not in serialized
+
+
+def test_dashboard_create_redacts_unexpected_runtime_error(
+    isolated_profiles,
+    monkeypatch,
+):
+    from hermes_cli import web_server
+
+    sentinel = "RAW_CREATE_RUNTIME_SENTINEL user@example.org /private/store.json"
+
+    def fail_create(*args, **kwargs):
+        raise OSError(sentinel)
+
+    monkeypatch.setattr(web_server, "_call_cron_for_profile", fail_create)
+
+    with pytest.raises(HTTPException) as exc_info:
+        web_server._create_cron_job_sync(
+            web_server.CronJobCreate(
+                prompt="managed by named profile",
+                schedule="every 1h",
+            ),
+            profile="worker_alpha",
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "cron_create_failed"
+    assert sentinel not in str(exc_info.value.detail)
 
 
 def test_notify_cron_provider_scopes_store_and_runtime_home_together(
@@ -425,29 +455,649 @@ def test_profile_call_cannot_retarget_ticker_store_mid_write(
 
 
 
-@pytest.mark.asyncio
-async def test_cron_mutation_without_profile_finds_named_profile_job(isolated_profiles):
+def test_cron_mutations_require_concrete_profile(monkeypatch):
+    from fastapi.testclient import TestClient
     from hermes_cli import web_server
 
-    worker_job = web_server._call_cron_for_profile(
-        "worker_alpha",
-        "create_job",
-        prompt="managed by named profile",
-        schedule="every 1h",
-        name="named-profile-job",
+    calls = []
+
+    def forbidden(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("mutation boundary reached without a concrete profile")
+
+    monkeypatch.setattr(web_server, "_has_valid_session_token", lambda _request: True)
+    monkeypatch.setattr(web_server, "_find_cron_job_profile", forbidden)
+    monkeypatch.setattr(web_server, "_mutate_cron_for_profile", forbidden)
+    monkeypatch.setattr(web_server, "_call_cron_for_profile", forbidden)
+    monkeypatch.setattr(web_server, "_fire_cron_job_for_profile", forbidden)
+
+    requests = (
+        ("post", "/api/cron/jobs", {"json": {"prompt": "x", "schedule": "every 1h"}}),
+        ("put", "/api/cron/jobs/job-1", {"json": {"updates": {"name": "x"}}}),
+        ("post", "/api/cron/jobs/job-1/pause", {}),
+        ("post", "/api/cron/jobs/job-1/resume", {}),
+        ("post", "/api/cron/jobs/job-1/trigger", {}),
+        ("delete", "/api/cron/jobs/job-1", {}),
     )
 
-    paused = await web_server.pause_cron_job(worker_job["id"])
-    assert paused["profile"] == "worker_alpha"
-    assert paused["enabled"] is False
+    with TestClient(web_server.app) as client:
+        for method, path, kwargs in requests:
+            missing = getattr(client, method)(path, **kwargs)
+            aggregate = getattr(client, method)(f"{path}?profile=all", **kwargs)
+            assert missing.status_code == 422
+            assert aggregate.status_code == 400
 
-    default_jobs = await web_server.list_cron_jobs(profile="default")
-    worker_jobs = await web_server.list_cron_jobs(profile="worker_alpha")
+    assert calls == []
 
-    assert default_jobs == []
-    assert len(worker_jobs) == 1
-    assert worker_jobs[0]["id"] == worker_job["id"]
-    assert worker_jobs[0]["enabled"] is False
+
+def test_public_cron_profile_metadata_is_canonical_and_route_derived():
+    from hermes_cli import web_server
+
+    public = web_server._public_cron_job_for_profile(
+        {
+            "id": "same-id",
+            "profile": "poisoned-profile",
+            "profile_name": "Poisoned Profile",
+            "hermes_home": "/private/home",
+        },
+        "Worker_Alpha",
+    )
+
+    assert public["profile"] == "worker_alpha"
+    assert public["profile_name"] == "worker_alpha"
+    assert public["is_default_profile"] is False
+    assert "hermes_home" not in public
+    assert "poisoned" not in json.dumps(public, sort_keys=True).lower()
+
+
+def test_dashboard_cron_summary_and_detail_have_separate_trust_boundaries(monkeypatch):
+    from hermes_cli import web_server
+
+    raw_job = {
+        "id": "redacted-job",
+        "name": "bounded summary name",
+        "prompt": "PRIVATE_PROMPT_SENTINEL user@example.org\nsecond line",
+        "script": "private/script.py",
+        "workdir": "/private/worktree",
+        "model": "private-model",
+        "provider": "private-provider",
+        "provider_snapshot": "private-provider-snapshot",
+        "model_snapshot": "private-model-snapshot",
+        "base_url": "https://private-provider.example.org/v1",
+        "profile": "worker-private",
+        "profile_name": "Worker Private",
+        "skills": ["private-skill"],
+        "context_from": ["private-upstream-job"],
+        "enabled_toolsets": ["private-toolset"],
+        "deliver": "matrix:private-room-id",
+        "no_agent": True,
+        "monitor_url": "https://private-monitor.example.org/feed",
+        "last_status": "error",
+        "last_error": "RAW_LAST_ERROR_SENTINEL user@example.org",
+        "last_delivery_error": "RAW_DELIVERY_SENTINEL /private/report.pdf",
+        "last_fire_error": {
+            "at": "2026-08-22T19:00:00Z",
+            "detail": "RAW_FIRE_SENTINEL provider payload",
+        },
+        "fire_claim": {
+            "by": "RAW_CLAIM_OWNER_SENTINEL user@example.org /private/owner",
+            "at": "2026-08-22T19:01:00Z",
+            "fire_at": "2026-08-22T19:00:00Z",
+        },
+        "execution_id": "RAW_EXECUTION_SENTINEL",
+        "fire_identity": "RAW_FIRE_IDENTITY_SENTINEL",
+        "last_output": "RAW_OUTPUT_SENTINEL private result body",
+        "hermes_home": "/private/hermes/home",
+        "future_runtime_field": "RAW_FUTURE_RUNTIME_SENTINEL",
+    }
+
+    def call(_profile, func_name, *_args):
+        if func_name == "list_jobs":
+            return [raw_job]
+        if func_name == "get_job":
+            return raw_job
+        raise AssertionError(func_name)
+
+    monkeypatch.setattr(web_server, "_call_cron_for_profile", call)
+
+    listed = web_server._list_cron_jobs_sync("default")[0]
+    fetched = web_server._get_cron_job_sync("redacted-job", profile="default")
+    sensitive_summary_fields = {
+        "prompt", "script", "workdir", "model", "provider", "base_url",
+        "provider_snapshot", "model_snapshot",
+        "skills", "context_from", "enabled_toolsets", "deliver", "no_agent",
+        "monitor_url",
+    }
+    for public in (listed, fetched):
+        serialized = json.dumps(public, sort_keys=True)
+        assert public["name"] == "bounded summary name"
+        assert public["profile"] == "default"
+        assert public["profile_name"] == "default"
+        assert public["is_default_profile"] is True
+        assert public["delivery_kind"] == "external"
+        assert public["mode"] == "monitor"
+        assert public["skill_count"] == 1
+        assert public["toolset_count"] == 1
+        assert public["model_configured"] is True
+        assert sensitive_summary_fields.isdisjoint(public)
+        assert public["last_error"] == "run_failed"
+        assert public["last_delivery_error"] == "delivery_failed"
+        assert public["last_fire_error"] == {
+            "at": "2026-08-22T19:00:00Z",
+            "error_kind": "fire_forward_failed",
+        }
+        assert "RAW_" not in serialized
+        assert "PRIVATE_" not in serialized
+        assert "worker-private" not in serialized
+        assert "Worker Private" not in serialized
+        assert "user@example.org" not in serialized
+        assert "/private/" not in serialized
+
+    detail = web_server._get_cron_job_detail_sync(
+        "redacted-job", profile="default",
+    )
+    assert detail["prompt"] == raw_job["prompt"]
+    assert detail["script"] == raw_job["script"]
+    assert detail["workdir"] == raw_job["workdir"]
+    assert detail["model"] == raw_job["model"]
+    assert detail["provider"] == raw_job["provider"]
+    assert detail["base_url"] == raw_job["base_url"]
+    assert detail["deliver"] == raw_job["deliver"]
+    assert detail["no_agent"] is True
+    assert detail["monitor_url"] == raw_job["monitor_url"]
+    assert "profile" not in detail
+    assert "profile_name" not in detail
+    assert "provider_snapshot" not in detail
+    assert "model_snapshot" not in detail
+    assert "fire_claim" not in detail
+    assert "last_output" not in detail
+    assert "future_runtime_field" not in detail
+
+    assert raw_job["last_error"].startswith("RAW_LAST_ERROR_SENTINEL")
+    assert "detail" in raw_job["last_fire_error"]
+
+
+def test_dashboard_cron_detail_endpoint_requires_explicit_profile(monkeypatch):
+    from hermes_cli import web_server
+
+    raw_job = {
+        "id": "detail-job",
+        "name": "detail job",
+        "prompt": "PRIVATE_DETAIL_PROMPT",
+        "script": "private/detail.py",
+        "workdir": "/private/detail-worktree",
+        "enabled": True,
+        "state": "scheduled",
+    }
+
+    calls = []
+
+    def call(profile, func_name, *args):
+        calls.append((profile, func_name, args))
+        return raw_job
+
+    monkeypatch.setattr(web_server, "_has_valid_session_token", lambda _request: True)
+    monkeypatch.setattr(web_server, "_call_cron_for_profile", call)
+
+    with TestClient(web_server.app) as client:
+        missing = client.get("/api/cron/jobs/detail-job/detail")
+        aggregate = client.get("/api/cron/jobs/detail-job/detail?profile=all")
+        detail = client.get(
+            "/api/cron/jobs/detail-job/detail?profile=worker_alpha",
+        )
+
+    assert missing.status_code == 422
+    assert aggregate.status_code == 400
+    assert detail.status_code == 200
+    assert calls == [("worker_alpha", "get_job", ("detail-job",))]
+    assert detail.json()["prompt"] == "PRIVATE_DETAIL_PROMPT"
+    assert detail.json()["workdir"] == "/private/detail-worktree"
+    assert "profile" not in detail.json()
+
+
+def test_dashboard_cron_job_surface_drops_malformed_fire_error(monkeypatch):
+    from hermes_cli import web_server
+
+    sentinel = "RAW_MALFORMED_FIRE_SENTINEL user@example.org /private/report.pdf"
+    raw_job = {"id": "malformed-fire", "last_fire_error": sentinel}
+    monkeypatch.setattr(
+        web_server,
+        "_call_cron_for_profile",
+        lambda _profile, _func_name, *_args: [raw_job],
+    )
+
+    public = web_server._list_cron_jobs_sync("default")[0]
+    assert public["last_fire_error"] is None
+    assert sentinel not in json.dumps(public, sort_keys=True)
+    assert raw_job["last_fire_error"] == sentinel
+
+
+@pytest.mark.parametrize(
+    "malformed_deliver",
+    [
+        ["PRIVATE_DELIVERY_LIST_SENTINEL"],
+        {"private": "PRIVATE_DELIVERY_DICT_SENTINEL"},
+    ],
+)
+def test_dashboard_cron_job_surface_rejects_unhashable_delivery(malformed_deliver):
+    from hermes_cli import web_server
+
+    public = web_server._public_cron_job({
+        "id": "malformed-delivery",
+        "deliver": malformed_deliver,
+    })
+
+    assert public["delivery_kind"] == "local"
+    assert "PRIVATE_DELIVERY" not in json.dumps(public, sort_keys=True)
+
+
+def test_dashboard_cron_projection_rejects_builtin_subclasses_before_magic_methods():
+    from hermes_cli import web_server
+
+    class HostileDict(dict):
+        def get(self, *_args, **_kwargs):
+            raise AssertionError("hostile mapping get was called")
+
+        def __contains__(self, _key):
+            raise AssertionError("hostile mapping membership was evaluated")
+
+        def __getitem__(self, _key):
+            raise AssertionError("hostile mapping item access was called")
+
+    class HostileList(list):
+        def __iter__(self):
+            raise AssertionError("hostile list was iterated")
+
+        def __len__(self):
+            raise AssertionError("hostile list length was evaluated")
+
+    class HostileText(str):
+        def __bool__(self):
+            raise AssertionError("hostile text truthiness was evaluated")
+
+        def __len__(self):
+            raise AssertionError("hostile text length was evaluated")
+
+    with pytest.raises(TypeError, match="requires an object"):
+        web_server._public_cron_job(HostileDict({"id": "hostile"}))
+
+    public = web_server._public_cron_job({
+        "id": "bounded",
+        "schedule": HostileDict({"kind": "once"}),
+        "repeat": HostileDict({"times": 1}),
+        "last_fire_error": HostileDict({"at": "2026-08-23T20:00:00+00:00"}),
+        "skills": HostileList(["private"]),
+        "enabled_toolsets": HostileList(["private"]),
+        "deliver": HostileText("external:private"),
+        "model": HostileText("private-model"),
+    })
+
+    assert public["schedule"] is None
+    assert public["repeat"] is None
+    assert public["last_fire_error"] is None
+    assert public["skill_count"] == 0
+    assert public["toolset_count"] == 0
+    assert public["delivery_kind"] == "local"
+    assert public["model_configured"] is False
+
+
+def test_dashboard_cron_projection_rejects_bool_class_spoof_without_descriptor_call():
+    from hermes_cli import web_server
+
+    class_property_calls = []
+
+    class HostileBoolSpoof:
+        @property
+        def __class__(self):
+            class_property_calls.append("called")
+            return bool
+
+    summary = web_server._public_cron_job({
+        "id": "bounded",
+        "enabled": HostileBoolSpoof(),
+    })
+    detail = web_server._public_cron_job_detail({
+        "id": "bounded",
+        "enabled": HostileBoolSpoof(),
+        "no_agent": HostileBoolSpoof(),
+        "continuity": HostileBoolSpoof(),
+    })
+
+    assert summary["enabled"] is False
+    assert detail["enabled"] is False
+    assert detail["no_agent"] is False
+    assert detail["continuity"] is False
+    assert class_property_calls == []
+
+
+def test_cron_run_and_gateway_fire_projections_reject_dict_subclasses_without_get():
+    from hermes_cli import web_server
+    from hermes_cli.web_routers.cron import _public_gateway_fire_body
+
+    class HostileDict(dict):
+        def get(self, *_args, **_kwargs):
+            raise AssertionError("hostile projection get was called")
+
+    assert web_server._public_cron_run(HostileDict({"id": "run"}), now=1.0) is None
+    assert _public_gateway_fire_body(200, HostileDict({"status": "accepted"}), "job") == {
+        "error": "gateway_fire_failed",
+        "error_kind": "gateway_fire_failed",
+        "job_id": "job",
+    }
+
+
+def test_dashboard_cron_job_surface_drops_malformed_timestamps(monkeypatch):
+    from hermes_cli import web_server
+
+    sentinel = "RAW_TIMESTAMP_SENTINEL user@example.org /private/runtime"
+    raw_job = {
+        "id": "malformed-timestamps",
+        "last_run_at": {"raw": sentinel},
+        "next_run_at": sentinel,
+        "schedule": {
+            "kind": "once",
+            "run_at": sentinel,
+            "future_nested_runtime": sentinel,
+        },
+    }
+    monkeypatch.setattr(
+        web_server,
+        "_call_cron_for_profile",
+        lambda _profile, _func_name, *_args: [raw_job],
+    )
+
+    public = web_server._list_cron_jobs_sync("default")[0]
+
+    assert public["last_run_at"] is None
+    assert public["next_run_at"] is None
+    assert public["schedule"]["run_at"] is None
+    assert "future_nested_runtime" not in public["schedule"]
+    assert sentinel not in json.dumps(public, sort_keys=True)
+
+    aware = "2026-08-23T08:00:00+00:00"
+    valid = web_server._public_cron_job({
+        "id": "valid-timestamps",
+        "last_run_at": aware,
+        "next_run_at": aware,
+        "schedule": {"kind": "once", "run_at": aware},
+    })
+    assert valid["last_run_at"] == aware
+    assert valid["next_run_at"] == aware
+    assert valid["schedule"]["run_at"] == aware
+
+
+def test_dashboard_cron_mutation_surfaces_redact_raw_error_details(monkeypatch, tmp_path):
+    from hermes_cli import web_server
+
+    raw_job = {
+        "id": "mutation-redaction-job",
+        "name": "mutation redaction",
+        "prompt": "safe mutation prompt",
+        "enabled": True,
+        "state": "scheduled",
+        "last_run_at": "2026-08-22T22:00:00+00:00",
+        "last_status": "error",
+        "last_error": "RAW_MUTATION_RUNTIME_SENTINEL provider says secret",
+        "last_delivery_error": "RAW_MUTATION_DELIVERY_SENTINEL /private/media.pdf",
+        "last_fire_error": {
+            "at": "2026-08-22T22:01:00+00:00",
+            "detail": "RAW_MUTATION_FIRE_SENTINEL user@example.org",
+        },
+        "fire_claim": {
+            "by": "RAW_MUTATION_CLAIM_SENTINEL user@example.org /private/owner",
+            "at": "2026-08-22T22:01:00+00:00",
+            "fire_at": "2026-08-22T22:00:00+00:00",
+        },
+        "execution_id": "RAW_MUTATION_EXECUTION_SENTINEL",
+        "fire_identity": "RAW_MUTATION_IDENTITY_SENTINEL",
+        "last_output": "RAW_MUTATION_OUTPUT_SENTINEL private body",
+        "future_runtime_field": "RAW_MUTATION_FUTURE_SENTINEL",
+    }
+
+    monkeypatch.setattr(
+        web_server,
+        "_cron_profile_home",
+        lambda profile: (profile, tmp_path),
+    )
+    monkeypatch.setattr(
+        web_server,
+        "_call_cron_for_profile",
+        lambda _profile, _func_name, *_args: raw_job,
+    )
+    monkeypatch.setattr(
+        web_server,
+        "_mutate_cron_for_profile",
+        lambda _profile, _func_name, *_args, **_kwargs: raw_job,
+    )
+    monkeypatch.setattr(web_server, "_fire_cron_job_for_profile", lambda *_args, **_kwargs: True)
+
+    responses = [
+        web_server._create_cron_job_sync(
+            web_server.CronJobCreate(
+                prompt="safe mutation prompt",
+                schedule="every 1h",
+                name="mutation redaction",
+            ),
+            profile="default",
+        ),
+        web_server._update_cron_job_sync(
+            raw_job["id"],
+            web_server.CronJobUpdate(updates={"name": "updated"}),
+            profile="default",
+        ),
+        web_server._pause_cron_job_sync(raw_job["id"], profile="default"),
+        web_server._resume_cron_job_sync(raw_job["id"], profile="default"),
+        web_server._trigger_cron_job_sync(raw_job["id"], profile="default"),
+    ]
+
+    for public in responses:
+        assert "prompt" not in public
+        assert public["last_error"] == "run_failed"
+        assert public["last_delivery_error"] == "delivery_failed"
+        assert public["last_fire_error"] == {
+            "at": "2026-08-22T22:01:00+00:00",
+            "error_kind": "fire_forward_failed",
+        }
+        serialized = json.dumps(public, sort_keys=True)
+        assert "RAW_MUTATION" not in serialized
+        assert "user@example.org" not in serialized
+        assert "/private/media.pdf" not in serialized
+        for private_field in (
+            "fire_claim", "execution_id", "fire_identity", "last_output",
+            "future_runtime_field",
+        ):
+            assert private_field not in public
+
+    assert raw_job["last_error"].startswith("RAW_MUTATION_RUNTIME_SENTINEL")
+    assert "detail" in raw_job["last_fire_error"]
+
+
+def test_dashboard_update_delete_redact_unexpected_value_errors(monkeypatch, tmp_path):
+    from hermes_cli import web_server
+
+    sentinel = "RAW_UPDATE_DELETE user@example.org /private/cron/jobs.json"
+    existing = {
+        "id": "bounded-mutation-errors",
+        "prompt": "safe prompt",
+        "schedule": {"kind": "cron", "expr": "0 9 * * *"},
+    }
+
+    monkeypatch.setattr(web_server, "_has_valid_session_token", lambda _request: True)
+    monkeypatch.setattr(
+        web_server,
+        "_cron_profile_home",
+        lambda profile: (profile, tmp_path),
+    )
+    monkeypatch.setattr(
+        web_server,
+        "_call_cron_for_profile",
+        lambda _profile, function, *_args: existing
+        if function == "get_job"
+        else None,
+    )
+
+    def explode(*_args, **_kwargs):
+        raise ValueError(sentinel)
+
+    monkeypatch.setattr(web_server, "_mutate_cron_for_profile", explode)
+
+    with TestClient(web_server.app) as client:
+        updated = client.put(
+            f"/api/cron/jobs/{existing['id']}?profile=default",
+            json={"updates": {"name": "updated"}},
+        )
+        deleted = client.delete(
+            f"/api/cron/jobs/{existing['id']}?profile=default",
+        )
+
+    assert updated.status_code == 400
+    assert updated.json() == {"detail": "cron_update_failed"}
+    assert deleted.status_code == 400
+    assert deleted.json() == {"detail": "cron_delete_failed"}
+    assert sentinel not in updated.text
+    assert sentinel not in deleted.text
+
+
+def test_dashboard_cron_run_history_uses_bounded_projection(monkeypatch):
+    from hermes_cli import web_server
+
+    sentinels = {
+        "system_prompt": "RAW_SYSTEM_PROMPT user@example.org",
+        "preview": "RAW_USER_MESSAGE /private/transcript.txt",
+        "cwd": "/private/worktree",
+        "model": "private-provider/private-model",
+        "profile": "private-profile",
+        "future_runtime": object(),
+    }
+    raw_run = {
+        "id": "cron_bounded-history_20260823_100000",
+        "source": "cron",
+        "started_at": 1_700_000_000.0,
+        "ended_at": None,
+        "last_active": 1_700_000_001.0,
+        "end_reason": None,
+        "archived": 0,
+        **sentinels,
+    }
+    malformed_run = {
+        "id": "cron_bounded-history_20260823_100001",
+        "started_at": True,
+        "ended_at": "RAW_END_TIME /private/time",
+        "last_active": float("nan"),
+        "end_reason": {"private": "RAW_END_REASON user@example.org"},
+        "archived": "1",
+    }
+    unsafe_id_run = {
+        "id": "cron_user@example.org/private",
+        "started_at": 1_700_000_002.0,
+        "ended_at": None,
+        "last_active": 1_700_000_002.0,
+    }
+
+    class FakeSessionDB:
+        def list_cron_job_runs(self, job_id, *, limit, offset):
+            assert job_id == "bounded-history"
+            assert (limit, offset) == (20, 0)
+            return [dict(raw_run), malformed_run, unsafe_id_run]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(web_server, "_has_valid_session_token", lambda _request: True)
+    monkeypatch.setattr(
+        web_server,
+        "_call_cron_for_profile",
+        lambda _profile, function, *_args: {"id": "bounded-history"}
+        if function == "get_job"
+        else None,
+    )
+    monkeypatch.setattr(
+        web_server,
+        "_open_session_db_for_profile",
+        lambda _profile, read_only: FakeSessionDB(),
+    )
+    monkeypatch.setattr(web_server.time, "time", lambda: 1_700_000_100.0)
+
+    with TestClient(web_server.app) as client:
+        response = client.get(
+            "/api/cron/jobs/bounded-history/runs?profile=default",
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "runs": [
+            {
+                "id": raw_run["id"],
+                "status": "running",
+                "started_at": 1_700_000_000.0,
+                "ended_at": None,
+                "last_active": 1_700_000_001.0,
+                "is_active": True,
+                "archived": False,
+            },
+            {
+                "id": malformed_run["id"],
+                "status": "ended",
+                "started_at": None,
+                "ended_at": None,
+                "last_active": None,
+                "is_active": False,
+                "archived": False,
+            },
+        ],
+        "limit": 20,
+    }
+    serialized = response.text
+    for sentinel in sentinels.values():
+        if isinstance(sentinel, str):
+            assert sentinel not in serialized
+    assert "RAW_END_TIME" not in serialized
+    assert "RAW_END_REASON" not in serialized
+    assert "user@example.org/private" not in serialized
+
+
+def test_dashboard_trigger_completed_fallback_redacts_raw_error_details(monkeypatch):
+    from hermes_cli import web_server
+
+    raw_job = {
+        "id": "completed-trigger-redaction-job",
+        "name": "completed trigger redaction",
+        "enabled": True,
+        "state": "scheduled",
+        "last_run_at": None,
+        "last_status": "error",
+        "last_error": "RAW_COMPLETED_RUNTIME_SENTINEL provider says secret",
+        "last_delivery_error": "RAW_COMPLETED_DELIVERY_SENTINEL /private/media.pdf",
+        "last_fire_error": {
+            "at": "2026-08-22T22:02:00+00:00",
+            "detail": "RAW_COMPLETED_FIRE_SENTINEL user@example.org",
+        },
+    }
+
+    def read_job(_profile, function, *_args):
+        if function == "resolve_job_ref":
+            return raw_job
+        if function == "get_job":
+            return None
+        raise AssertionError(function)
+
+    monkeypatch.setattr(web_server, "_call_cron_for_profile", read_job)
+    monkeypatch.setattr(web_server, "_fire_cron_job_for_profile", lambda *_args, **_kwargs: True)
+
+    public = web_server._trigger_cron_job_sync(raw_job["id"], profile="default")
+
+    assert public["enabled"] is False
+    assert public["state"] == "completed"
+    assert public["last_error"] == "run_failed"
+    assert public["last_delivery_error"] == "delivery_failed"
+    assert public["last_fire_error"] == {
+        "at": "2026-08-22T22:02:00+00:00",
+        "error_kind": "fire_forward_failed",
+    }
+    serialized = json.dumps(public, sort_keys=True)
+    assert "RAW_COMPLETED" not in serialized
+    assert "user@example.org" not in serialized
+    assert "/private/media.pdf" not in serialized
 
 
 @pytest.mark.asyncio
@@ -506,7 +1156,11 @@ async def test_blueprint_instantiation_notifies_selected_profile_provider(
         profile="worker_alpha",
     )
 
-    assert created["profile"] == "worker_alpha"
+    assert "profile" not in created
+    persisted = web_server._call_cron_for_profile(
+        "worker_alpha", "get_job", created["id"],
+    )
+    assert persisted["profile"] == "worker_alpha"
     assert notified_profiles == ["worker_alpha"]
 
 
@@ -727,7 +1381,8 @@ async def test_trigger_cron_job_returns_refreshed_execution_failure(
     )
 
     assert triggered["last_status"] == "error"
-    assert triggered["last_error"] == "expected failure"
+    assert triggered["last_error"] == "run_failed"
+    assert "expected failure" not in json.dumps(triggered, sort_keys=True)
 
 
 @pytest.mark.asyncio
@@ -793,24 +1448,30 @@ async def test_cron_profile_scan_runs_off_event_loop(isolated_profiles, monkeypa
     profile_scan_threads = SimpleQueue()
     worker_threads = SimpleQueue()
     original_profile_dicts = web_server._cron_profile_dicts
-    original_find = web_server._find_cron_job_profile
+    original_mutate = web_server._mutate_cron_for_profile
 
     def tracking_profile_dicts():
         profile_scan_threads.put(threading.get_ident())
         return original_profile_dicts()
 
-    def tracking_find(job_id):
+    def tracking_mutate(profile, func_name, *args, **kwargs):
         worker_threads.put(threading.get_ident())
-        return original_find(job_id)
+        return original_mutate(profile, func_name, *args, **kwargs)
 
     monkeypatch.setattr(web_server, "_cron_profile_dicts", tracking_profile_dicts)
-    monkeypatch.setattr(web_server, "_find_cron_job_profile", tracking_find)
+    monkeypatch.setattr(web_server, "_mutate_cron_for_profile", tracking_mutate)
 
     jobs = await web_server.list_cron_jobs(profile="all")
-    paused = await web_server.pause_cron_job(worker_job["id"])
+    paused = await web_server.pause_cron_job(
+        worker_job["id"], profile="worker_alpha",
+    )
 
-    assert any(job["id"] == worker_job["id"] for job in jobs)
-    assert paused["profile"] == "worker_alpha"
+    listed_worker = next(job for job in jobs if job["id"] == worker_job["id"])
+    assert listed_worker["profile"] == "worker_alpha"
+    assert listed_worker["profile_name"] == "worker_alpha"
+    assert listed_worker["is_default_profile"] is False
+    assert "hermes_home" not in listed_worker
+    assert "profile" not in paused
     profile_scan_thread_ids = _drain_queue(profile_scan_threads)
     worker_thread_ids = _drain_queue(worker_threads)
     assert profile_scan_thread_ids
@@ -859,10 +1520,16 @@ async def test_update_cron_job_normalizes_dashboard_core_fields(isolated_profile
         profile="worker_alpha",
     )
 
-    assert updated["base_url"] == "https://example.invalid/v1"
-    assert updated["script"] == "collect.py"
-    assert updated["context_from"] is None
-    assert updated["no_agent"] is True
+    assert updated["mode"] == "script"
+    for field in ("base_url", "script", "context_from", "no_agent"):
+        assert field not in updated
+    detail = web_server._get_cron_job_detail_sync(
+        job["id"], profile="worker_alpha",
+    )
+    assert detail["base_url"] == "https://example.invalid/v1"
+    assert detail["script"] == "collect.py"
+    assert detail["context_from"] == []
+    assert detail["no_agent"] is True
 
 
 @pytest.mark.asyncio
@@ -924,8 +1591,14 @@ async def test_update_cron_job_no_agent_reuses_existing_script(isolated_profiles
         profile="worker_alpha",
     )
 
-    assert updated["no_agent"] is True
-    assert updated["script"] == "collect.py"
+    assert updated["mode"] == "script"
+    assert "no_agent" not in updated
+    assert "script" not in updated
+    detail = web_server._get_cron_job_detail_sync(
+        job["id"], profile="worker_alpha",
+    )
+    assert detail["no_agent"] is True
+    assert detail["script"] == "collect.py"
 
 
 @pytest.mark.asyncio
@@ -1018,8 +1691,13 @@ async def test_dashboard_cron_noop_inference_fields_keep_existing_snapshots(
     )
 
     assert updated["name"] == "dashboard-edit-job-renamed"
-    assert updated["provider_snapshot"] == "initial-provider"
-    assert updated["model_snapshot"] == "test-model"
+    assert "provider_snapshot" not in updated
+    assert "model_snapshot" not in updated
+    persisted = web_server._call_cron_for_profile(
+        "worker_alpha", "get_job", job["id"],
+    )
+    assert persisted["provider_snapshot"] == "initial-provider"
+    assert persisted["model_snapshot"] == "test-model"
 
 
 @pytest.mark.asyncio
@@ -1060,8 +1738,13 @@ async def test_update_cron_job_clears_snapshots_for_no_agent(
         profile="worker_alpha",
     )
 
-    assert updated["provider_snapshot"] is None
-    assert updated["model_snapshot"] is None
+    assert "provider_snapshot" not in updated
+    assert "model_snapshot" not in updated
+    persisted = web_server._call_cron_for_profile(
+        "worker_alpha", "get_job", job["id"],
+    )
+    assert persisted["provider_snapshot"] is None
+    assert persisted["model_snapshot"] is None
 
 
 @pytest.mark.asyncio
@@ -1140,12 +1823,10 @@ async def test_cron_profile_validation_errors(isolated_profiles):
 
 
 @pytest.mark.asyncio
-async def test_create_cron_job_without_profile_uses_backend_own_profile(
+async def test_create_cron_job_with_explicit_worker_profile_uses_worker_store(
     isolated_profiles, monkeypatch
 ):
-    """A pool backend scoped to a named profile must not default creates to
-    ``~/.hermes`` when the request carries no explicit ``profile`` (the
-    Desktop app's pre-profileScoped clients sent none)."""
+    """An explicit named profile must write only that profile's store."""
     from hermes_cli import web_server
 
     monkeypatch.setenv(
@@ -1158,20 +1839,23 @@ async def test_create_cron_job_without_profile_uses_backend_own_profile(
             schedule="every 1h",
             name="own-profile-job",
         ),
-        profile=None,
+        profile="worker_alpha",
     )
 
-    assert job["profile"] == "worker_alpha"
+    assert "profile" not in job
+    persisted = web_server._call_cron_for_profile(
+        "worker_alpha", "get_job", job["id"],
+    )
+    assert persisted["profile"] == "worker_alpha"
     assert (isolated_profiles["worker_alpha"] / "cron" / "jobs.json").exists()
     assert not (isolated_profiles["default"] / "cron" / "jobs.json").exists()
 
 
 @pytest.mark.asyncio
-async def test_create_cron_job_without_profile_defaults_when_unscoped(
+async def test_create_cron_job_with_explicit_default_uses_default_store(
     isolated_profiles, monkeypatch
 ):
-    """HERMES_HOME at the default home (or unrecognized) keeps the legacy
-    ``default`` fallback."""
+    """An explicit default profile writes the default store."""
     from hermes_cli import web_server
 
     monkeypatch.setenv("HERMES_HOME", str(isolated_profiles["default"]))
@@ -1182,8 +1866,12 @@ async def test_create_cron_job_without_profile_defaults_when_unscoped(
             schedule="every 1h",
             name="default-job",
         ),
-        profile=None,
+        profile="default",
     )
 
-    assert job["profile"] == "default"
+    assert "profile" not in job
+    persisted = web_server._call_cron_for_profile(
+        "default", "get_job", job["id"],
+    )
+    assert persisted["profile"] == "default"
     assert (isolated_profiles["default"] / "cron" / "jobs.json").exists()

@@ -43,6 +43,7 @@ import sysconfig
 import tempfile
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import zipfile
@@ -13241,10 +13242,276 @@ def _find_cron_job_profile(job_id: str) -> Optional[str]:
     return None
 
 
+_PUBLIC_CRON_JOB_FIELDS = frozenset({
+    "id",
+    "name",
+    "schedule",
+    "schedule_display",
+    "repeat",
+    "enabled",
+    "state",
+    "last_run_at",
+    "next_run_at",
+    "last_status",
+    "last_error",
+    "last_delivery_error",
+    "last_fire_error",
+})
+
+_PUBLIC_CRON_JOB_DETAIL_STRING_LIMITS = {
+    "prompt": 1_000_000,
+    "script": 4096,
+    "deliver": 1024,
+    "model": 512,
+    "provider": 256,
+    "base_url": 4096,
+    "workdir": 4096,
+    "monitor_script": 4096,
+    "monitor_url": 4096,
+    "reasoning_effort": 64,
+}
+
+
+def _public_cron_timestamp(value: Any) -> Optional[str]:
+    """Return one bounded timezone-aware ISO timestamp, otherwise ``None``."""
+    if type(value) is not str or len(value) > 64:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return value
+
+
+_PUBLIC_CRON_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+
+
+def _public_cron_run_time(value: Any) -> Optional[float]:
+    """Return one finite non-negative epoch value, otherwise ``None``."""
+    if type(value) not in {int, float}:
+        return None
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 0:
+        return None
+    return parsed
+
+
+def _public_cron_run(run: Any, *, now: float) -> Optional[Dict[str, Any]]:
+    """Project a session-backed cron run onto its bounded public shape."""
+    if type(run) is not dict:
+        return None
+    run_id = run.get("id")
+    if type(run_id) is not str or not _PUBLIC_CRON_RUN_ID_RE.fullmatch(run_id):
+        return None
+
+    started_at = _public_cron_run_time(run.get("started_at"))
+    ended_raw = run.get("ended_at")
+    ended_at = _public_cron_run_time(ended_raw)
+    last_active = _public_cron_run_time(run.get("last_active"))
+
+    if ended_raw is None:
+        status = "running"
+    else:
+        reason = run.get("end_reason")
+        if type(reason) is not str:
+            reason = None
+        if reason in {"completed", "success", "agent_close"}:
+            status = "completed"
+        elif reason in {"failed", "error"}:
+            status = "failed"
+        elif reason in {"cancelled", "interrupted"}:
+            status = "cancelled"
+        elif reason == "timeout":
+            status = "timeout"
+        else:
+            status = "ended"
+
+    is_active = (
+        ended_raw is None
+        and last_active is not None
+        and math.isfinite(now)
+        and 0 <= now - last_active < 300
+    )
+    archived_raw = run.get("archived")
+    archived = archived_raw is True or (
+        type(archived_raw) is int and archived_raw == 1
+    )
+    return {
+        "id": run_id,
+        "status": status,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "last_active": last_active,
+        "is_active": is_active,
+        "archived": archived,
+    }
+
+
+def _public_cron_text(value: Any, *, limit: int) -> Optional[str]:
+    if type(value) is not str or not value or len(value) > limit:
+        return None
+    if any(unicodedata.category(char).startswith("C") for char in value):
+        return None
+    return value
+
+
+def _public_cron_string_list(value: Any, *, item_limit: int = 256) -> List[str]:
+    if type(value) not in {list, tuple} or len(value) > 256:
+        return []
+    return [
+        item
+        for item in value
+        if _public_cron_text(item, limit=item_limit) is not None
+    ]
+
+
+def _public_cron_job(job: Any) -> Dict[str, Any]:
+    """Return the bounded summary contract used by lists and mutations."""
+    if type(job) is not dict:
+        raise TypeError("cron job projection requires an object")
+    public = {
+        key: job[key]
+        for key in _PUBLIC_CRON_JOB_FIELDS
+        if key in job
+    }
+    for text_field, limit in (
+        ("id", 128),
+        ("name", 256),
+        ("schedule_display", 256),
+    ):
+        if text_field in public:
+            public[text_field] = _public_cron_text(public[text_field], limit=limit)
+    if "schedule" in public:
+        schedule = public["schedule"]
+        if type(schedule) is dict:
+            public["schedule"] = {
+                "kind": _public_cron_text(schedule.get("kind"), limit=32),
+                "expr": _public_cron_text(schedule.get("expr"), limit=256),
+                "run_at": _public_cron_timestamp(schedule.get("run_at")),
+                "display": _public_cron_text(schedule.get("display"), limit=256),
+            }
+        else:
+            public["schedule"] = None
+    if "repeat" in public:
+        repeat = public["repeat"]
+        if type(repeat) is dict:
+            public["repeat"] = {
+                key: value if type(value) is int and value >= 0 else None
+                for key in ("times", "completed")
+                if (value := repeat.get(key)) is not None
+            }
+        else:
+            public["repeat"] = None
+    if "enabled" in public and type(public["enabled"]) is not bool:
+        public["enabled"] = False
+    for category_field in ("state", "last_status"):
+        if category_field in public:
+            value = public[category_field]
+            public[category_field] = (
+                value
+                if type(value) is str
+                and re.fullmatch(r"[a-z][a-z0-9_]{0,31}", value)
+                else None
+            )
+    if public.get("last_error") is not None:
+        public["last_error"] = "run_failed"
+    if public.get("last_delivery_error") is not None:
+        public["last_delivery_error"] = "delivery_failed"
+    for timestamp_field in ("last_run_at", "next_run_at"):
+        if timestamp_field in public:
+            public[timestamp_field] = _public_cron_timestamp(public[timestamp_field])
+    fire_error = public.get("last_fire_error")
+    if type(fire_error) is dict:
+        public["last_fire_error"] = {
+            "at": _public_cron_timestamp(fire_error.get("at")),
+            "error_kind": "fire_forward_failed",
+        }
+    elif fire_error is not None:
+        public["last_fire_error"] = None
+
+    deliver = job.get("deliver")
+    if type(deliver) is str and deliver in {"local", "origin", "all"}:
+        public["delivery_kind"] = deliver
+    elif type(deliver) is str and deliver:
+        public["delivery_kind"] = "external"
+    else:
+        public["delivery_kind"] = "local"
+    if any(
+        type(job.get(key)) is str and bool(job.get(key))
+        for key in ("monitor_script", "monitor_url")
+    ):
+        public["mode"] = "monitor"
+    elif job.get("no_agent") is True:
+        public["mode"] = "script"
+    else:
+        public["mode"] = "agent"
+    public["skill_count"] = min(
+        len(_public_cron_string_list(job.get("skills"))), 9999,
+    )
+    public["toolset_count"] = min(
+        len(_public_cron_string_list(job.get("enabled_toolsets"))), 9999,
+    )
+    public["model_configured"] = any(
+        type(job.get(key)) is str and bool(job.get(key))
+        for key in ("model", "provider", "base_url")
+    )
+    return public
+
+
+def _public_cron_job_for_profile(job: Any, profile: str) -> Dict[str, Any]:
+    """Add only the validated route identity to a bounded job summary."""
+    from hermes_cli import profiles as profiles_mod
+
+    profile_name = profiles_mod.normalize_profile_name(profile)
+    profiles_mod.validate_profile_name(profile_name)
+    public = _public_cron_job(job)
+    public["profile"] = profile_name
+    public["profile_name"] = profile_name
+    public["is_default_profile"] = profile_name == "default"
+    return public
+
+
+def _public_cron_detail_prompt(value: Any, *, limit: int) -> Optional[str]:
+    if type(value) is not str or not value or len(value) > limit:
+        return None
+    for char in value:
+        if unicodedata.category(char).startswith("C") and char not in {"\n", "\r", "\t"}:
+            return None
+    return value
+
+
+def _public_cron_job_detail(job: Any) -> Dict[str, Any]:
+    """Return explicit editable config without profile/runtime internals."""
+    if type(job) is not dict:
+        raise TypeError("cron job detail projection requires an object")
+    detail = _public_cron_job(job)
+    for key, limit in _PUBLIC_CRON_JOB_DETAIL_STRING_LIMITS.items():
+        if key in job:
+            projector = _public_cron_detail_prompt if key == "prompt" else _public_cron_text
+            detail[key] = (
+                projector(job[key], limit=limit)
+                if job[key] is not None
+                else None
+            )
+    for key in ("skills", "context_from", "enabled_toolsets"):
+        if key in job:
+            detail[key] = _public_cron_string_list(job[key])
+    if "no_agent" in job:
+        detail["no_agent"] = job["no_agent"] if type(job["no_agent"]) is bool else False
+    if "continuity" in job:
+        detail["continuity"] = job["continuity"] if type(job["continuity"]) is bool else False
+    return detail
+
+
 def _list_cron_jobs_sync(profile: str = "all"):
     requested = (profile or "all").strip()
     if requested.lower() != "all":
-        return _call_cron_for_profile(requested, "list_jobs", True)
+        return [
+            _public_cron_job_for_profile(job, requested)
+            for job in _call_cron_for_profile(requested, "list_jobs", True)
+        ]
 
     jobs: List[Dict[str, Any]] = []
     for item in _cron_profile_dicts():
@@ -13252,7 +13519,10 @@ def _list_cron_jobs_sync(profile: str = "all"):
         if not name:
             continue
         try:
-            jobs.extend(_call_cron_for_profile(name, "list_jobs", True))
+            jobs.extend(
+                _public_cron_job_for_profile(job, name)
+                for job in _call_cron_for_profile(name, "list_jobs", True)
+            )
         except Exception:
             _log.exception("Failed to list cron jobs for profile %s", name)
     return jobs
@@ -13287,6 +13557,7 @@ app.include_router(_cron_routes.router)
 from hermes_cli.web_routers.cron import (  # noqa: E402,F401 — legacy re-exports; tests call these via web_server.<name>
     list_cron_jobs,
     get_cron_job,
+    get_cron_job_detail,
     list_cron_job_runs,
     create_cron_job,
     get_cron_delivery_targets,
@@ -13308,7 +13579,17 @@ def _get_cron_job_sync(job_id: str, profile: Optional[str] = None):
     job = _call_cron_for_profile(selected, "get_job", job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    return _public_cron_job_for_profile(job, selected)
+
+
+def _get_cron_job_detail_sync(job_id: str, profile: str):
+    selected = (profile or "").strip()
+    if not selected or selected.lower() == "all":
+        raise HTTPException(status_code=400, detail="cron_detail_profile_required")
+    job = _call_cron_for_profile(selected, "get_job", job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return _public_cron_job_detail(job)
 
 
 
@@ -13320,8 +13601,9 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
     ``cron_{job_id}_{timestamp}`` (see cron/scheduler.run_job). A job's history
     is therefore every session whose id carries that prefix; ``source='cron'``
     narrows it and the id prefix binds it to this job. Powers the run-history
-    list under each job in the desktop cron detail. Same row shape as
-    ``/api/sessions`` so the frontend can reuse SessionInfo.
+    list under each job in the desktop cron detail. Session rows are projected
+    onto a dedicated bounded shape; prompts, previews, paths, provider/runtime
+    details, and unknown future fields never cross this public boundary.
 
     Backed by ``SessionDB.list_cron_job_runs`` — a bounded ``[prefix, hi)``
     id-range scan, not the compression-chain CTE used for the recents list,
@@ -13343,16 +13625,13 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
 
     db = _open_session_db_for_profile(selected, read_only=True)
     try:
-        runs = db.list_cron_job_runs(canonical, limit=limit_n, offset=0)
+        rows = db.list_cron_job_runs(canonical, limit=limit_n, offset=0)
         now = time.time()
-        for s in runs:
-            s["is_active"] = (
-                s.get("ended_at") is None
-                and (now - s.get("last_active", s.get("started_at", 0))) < 300
-            )
-            s["archived"] = bool(s.get("archived"))
-            if selected:
-                s["profile"] = selected
+        runs = [
+            public
+            for row in rows
+            if (public := _public_cron_run(row, now=now)) is not None
+        ]
         return {"runs": runs, "limit": limit_n}
     finally:
         db.close()
@@ -13360,9 +13639,18 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
 
 
 
+def _require_concrete_cron_profile(profile: Optional[str]) -> str:
+    selected = (profile or "").strip()
+    if not selected or selected.lower() == "all":
+        raise HTTPException(status_code=400, detail="cron_mutation_profile_required")
+    profile_name, _profile_home = _cron_profile_home(selected)
+    return profile_name
+
+
 def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
     try:
-        profile_name, profile_home = _cron_profile_home(profile)
+        profile_name = _require_concrete_cron_profile(profile)
+        _profile_name, profile_home = _cron_profile_home(profile_name)
         script = _normalize_dashboard_cron_script(body.script, profile_home)
         skills = _cron_string_list(body.skills)
         context_from = _cron_string_list(body.context_from)
@@ -13374,7 +13662,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             "script": script,
             "no_agent": no_agent,
         })
-        return _mutate_cron_for_profile(
+        job = _mutate_cron_for_profile(
             profile_name,
             "create_job",
             prompt=body.prompt or "",
@@ -13391,12 +13679,13 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             workdir=_cron_optional_text(body.workdir),
             no_agent=no_agent,
         )
+        return _public_cron_job(job)
     except HTTPException:
         raise
     except Exception as e:
         _raise_if_cron_registration_error(e)
         _log.exception("POST /api/cron/jobs failed")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail="cron_create_failed") from e
 
 
 
@@ -13404,9 +13693,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
 
 
 def _update_cron_job_sync(job_id: str, body: CronJobUpdate, profile: Optional[str] = None):
-    selected = profile or _find_cron_job_profile(job_id)
-    if not selected:
-        raise HTTPException(status_code=404, detail="Job not found")
+    selected = _require_concrete_cron_profile(profile)
     try:
         profile_name, profile_home = _cron_profile_home(selected)
         existing = _call_cron_for_profile(profile_name, "get_job", job_id)
@@ -13431,42 +13718,37 @@ def _update_cron_job_sync(job_id: str, body: CronJobUpdate, profile: Optional[st
     except HTTPException:
         raise
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        detail = "cron_update_invalid_id" if "id" in body.updates else "cron_update_failed"
+        raise HTTPException(status_code=400, detail=detail) from exc
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    return _public_cron_job(job)
 
 
 
 
 def _pause_cron_job_sync(job_id: str, profile: Optional[str] = None):
-    selected = profile or _find_cron_job_profile(job_id)
-    if not selected:
-        raise HTTPException(status_code=404, detail="Job not found")
+    selected = _require_concrete_cron_profile(profile)
     job = _mutate_cron_for_profile(selected, "pause_job", job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    return _public_cron_job(job)
 
 
 
 
 def _resume_cron_job_sync(job_id: str, profile: Optional[str] = None):
-    selected = profile or _find_cron_job_profile(job_id)
-    if not selected:
-        raise HTTPException(status_code=404, detail="Job not found")
+    selected = _require_concrete_cron_profile(profile)
     job = _mutate_cron_for_profile(selected, "resume_job", job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    return _public_cron_job(job)
 
 
 
 
 def _trigger_cron_job_sync(job_id: str, profile: Optional[str] = None):
-    selected = profile or _find_cron_job_profile(job_id)
-    if not selected:
-        raise HTTPException(status_code=404, detail="Job not found")
+    selected = _require_concrete_cron_profile(profile)
     job = _call_cron_for_profile(selected, "resolve_job_ref", job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -13479,34 +13761,32 @@ def _trigger_cron_job_sync(job_id: str, profile: Optional[str] = None):
     ran = _fire_cron_job_for_profile(selected, job["id"], force=force)
     refreshed = _call_cron_for_profile(selected, "get_job", job["id"])
     if refreshed and refreshed.get("last_run_at") != job.get("last_run_at"):
-        return refreshed
+        return _public_cron_job(refreshed)
     if not ran:
         raise HTTPException(
             status_code=409,
             detail="Job is already running or was claimed by another scheduler",
         )
     if refreshed:
-        return refreshed
+        return _public_cron_job(refreshed)
     # A one-shot may remove itself after exhausting repeat=1. Keep the response
     # shape compatible without inventing an outcome that is no longer present
     # in the job store; authoritative list refresh removes the completed row.
-    return {
+    return _public_cron_job({
         **job,
         "enabled": False,
         "state": "completed",
-    }
+    })
 
 
 
 
 def _delete_cron_job_sync(job_id: str, profile: Optional[str] = None):
-    selected = profile or _find_cron_job_profile(job_id)
-    if not selected:
-        raise HTTPException(status_code=404, detail="Job not found")
+    selected = _require_concrete_cron_profile(profile)
     try:
         removed = _mutate_cron_for_profile(selected, "remove_job", job_id)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail="cron_delete_failed") from exc
     if not removed:
         raise HTTPException(status_code=404, detail="Job not found")
     return {"ok": True}

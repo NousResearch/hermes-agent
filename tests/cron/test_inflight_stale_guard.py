@@ -342,6 +342,11 @@ class TestWedgedJobRefiresWithoutRestart:
              patch.object(sched, "advance_next_runs"), \
              patch.object(sched, "mark_job_run"), \
              patch.object(sched, "create_execution", return_value={"id": "exec-1"}), \
+             patch.object(
+                 sched,
+                 "bind_execution_fire_identity",
+                 side_effect=lambda eid, fire: {"id": eid, "fire_identity": fire},
+             ), \
              patch.object(sched, "finish_execution"), \
              patch.object(sched, "run_one_job", return_value=True):
             n = sched.tick(verbose=False)

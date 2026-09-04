@@ -323,7 +323,7 @@ export interface ScheduleLike {
   kind?: string;
   expr?: string;
   minutes?: number;
-  run_at?: string;
+  run_at?: string | null;
   display?: string;
 }
 

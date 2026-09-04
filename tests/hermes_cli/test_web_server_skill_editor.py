@@ -167,6 +167,7 @@ class TestCronJobSkills:
     def test_create_job_with_skills(self, client, isolated_profiles):
         resp = client.post(
             "/api/cron/jobs",
+            params={"profile": "default"},
             json={
                 "prompt": "do work",
                 "schedule": "every 1h",
@@ -176,19 +177,22 @@ class TestCronJobSkills:
         )
         assert resp.status_code == 200
         job = resp.json()
-        assert job["skills"] == ["dashboard-skill"]
+        assert "skills" not in job
 
-        # Round-trip: the list endpoint carries the skills field too.
-        listed = client.get("/api/cron/jobs", params={"profile": "default"}).json()
-        match = [j for j in listed if j["id"] == job["id"]]
-        assert match and match[0]["skills"] == ["dashboard-skill"]
+        # Sensitive editable configuration is available only from concrete-profile detail.
+        detail = client.get(
+            f"/api/cron/jobs/{job['id']}/detail",
+            params={"profile": "default"},
+        ).json()
+        assert detail["skills"] == ["dashboard-skill"]
 
     def test_update_job_skills(self, client, isolated_profiles):
         job = client.post(
             "/api/cron/jobs",
+            params={"profile": "default"},
             json={"prompt": "do work", "schedule": "every 1h"},
         ).json()
-        assert job.get("skills") in (None, [])
+        assert "skills" not in job
 
         resp = client.put(
             f"/api/cron/jobs/{job['id']}",
@@ -196,7 +200,12 @@ class TestCronJobSkills:
             params={"profile": "default"},
         )
         assert resp.status_code == 200
-        assert resp.json()["skills"] == ["dashboard-skill", "worker-skill"]
+        assert "skills" not in resp.json()
+        detail = client.get(
+            f"/api/cron/jobs/{job['id']}/detail",
+            params={"profile": "default"},
+        ).json()
+        assert detail["skills"] == ["dashboard-skill", "worker-skill"]
 
         # Clearing works too.
         resp = client.put(
@@ -205,4 +214,9 @@ class TestCronJobSkills:
             params={"profile": "default"},
         )
         assert resp.status_code == 200
-        assert resp.json()["skills"] == []
+        assert "skills" not in resp.json()
+        detail = client.get(
+            f"/api/cron/jobs/{job['id']}/detail",
+            params={"profile": "default"},
+        ).json()
+        assert detail["skills"] == []

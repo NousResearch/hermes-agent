@@ -34,6 +34,7 @@ router = APIRouter()
 _run_cron_dashboard_io = late("_run_cron_dashboard_io")
 _list_cron_jobs_sync = late("_list_cron_jobs_sync")
 _get_cron_job_sync = late("_get_cron_job_sync")
+_get_cron_job_detail_sync = late("_get_cron_job_detail_sync")
 _list_cron_job_runs_sync = late("_list_cron_job_runs_sync")
 _create_cron_job_sync = late("_create_cron_job_sync")
 _update_cron_job_sync = late("_update_cron_job_sync")
@@ -48,6 +49,7 @@ _gateway_intentionally_stopped = late("_gateway_intentionally_stopped")
 _notify_cron_provider_for_profile = late("_notify_cron_provider_for_profile")
 _call_cron_for_profile = late("_call_cron_for_profile")
 _raise_if_cron_registration_error = late("_raise_if_cron_registration_error")
+_public_cron_job = late("_public_cron_job")
 load_config = late("load_config")
 cfg_get = late("cfg_get")
 
@@ -60,6 +62,38 @@ cfg_get = late("cfg_get")
 _CRON_FIRE_RETRY_AFTER_SECONDS = 60
 
 
+def _public_gateway_fire_body(
+    status_code: int,
+    gateway_body: object,
+    job_id: str,
+) -> dict:
+    body = gateway_body if type(gateway_body) is dict else {}
+    status = body.get("status")
+    if (
+        type(status_code) is int
+        and 200 <= status_code < 300
+        and type(status) is str
+        and status in {"accepted", "duplicate"}
+    ):
+        return {"status": status, "job_id": job_id}
+
+    if status_code == 400:
+        error_kind = "invalid_request"
+    elif status_code in {401, 403}:
+        error_kind = "authentication_failed"
+    elif status_code == 409:
+        error_kind = "claim_conflict"
+    elif status_code == 503:
+        error_kind = "gateway_unavailable"
+    else:
+        error_kind = "gateway_fire_failed"
+    return {
+        "error": error_kind,
+        "error_kind": error_kind,
+        "job_id": job_id,
+    }
+
+
 @router.get("/api/cron/jobs")
 async def list_cron_jobs(profile: str = "all"):
     return await _run_cron_dashboard_io(_list_cron_jobs_sync, profile)
@@ -70,13 +104,20 @@ async def get_cron_job(job_id: str, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_get_cron_job_sync, job_id, profile)
 
 
+@router.get("/api/cron/jobs/{job_id}/detail")
+async def get_cron_job_detail(job_id: str, profile: str):
+    return await _run_cron_dashboard_io(
+        _get_cron_job_detail_sync, job_id, profile,
+    )
+
+
 @router.get("/api/cron/jobs/{job_id}/runs")
 async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: int = 20):
     return await _run_cron_dashboard_io(_list_cron_job_runs_sync, job_id, profile, limit)
 
 
 @router.post("/api/cron/jobs")
-async def create_cron_job(body: CronJobCreate, profile: Optional[str] = None):
+async def create_cron_job(body: CronJobCreate, profile: str):
     return await _run_cron_dashboard_io(_create_cron_job_sync, body, profile)
 
 
@@ -109,27 +150,27 @@ async def get_cron_delivery_targets():
 
 
 @router.put("/api/cron/jobs/{job_id}")
-async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[str] = None):
+async def update_cron_job(job_id: str, body: CronJobUpdate, profile: str):
     return await _run_cron_dashboard_io(_update_cron_job_sync, job_id, body, profile)
 
 
 @router.post("/api/cron/jobs/{job_id}/pause")
-async def pause_cron_job(job_id: str, profile: Optional[str] = None):
+async def pause_cron_job(job_id: str, profile: str):
     return await _run_cron_dashboard_io(_pause_cron_job_sync, job_id, profile)
 
 
 @router.post("/api/cron/jobs/{job_id}/resume")
-async def resume_cron_job(job_id: str, profile: Optional[str] = None):
+async def resume_cron_job(job_id: str, profile: str):
     return await _run_cron_dashboard_io(_resume_cron_job_sync, job_id, profile)
 
 
 @router.post("/api/cron/jobs/{job_id}/trigger")
-async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
+async def trigger_cron_job(job_id: str, profile: str):
     return await _run_cron_dashboard_io(_trigger_cron_job_sync, job_id, profile)
 
 
 @router.delete("/api/cron/jobs/{job_id}")
-async def delete_cron_job(job_id: str, profile: Optional[str] = None):
+async def delete_cron_job(job_id: str, profile: str):
     return await _run_cron_dashboard_io(_delete_cron_job_sync, job_id, profile)
 
 
@@ -240,25 +281,21 @@ async def cron_fire_webhook(request: Request):
             return JSONResponse(
                 {
                     "status": "gateway_stopped",
-                    "detail": "gateway deliberately stopped; fire dropped, "
-                              "jobs re-arm on next gateway start",
                     "job_id": job_id,
-                    "profile": profile,
                 },
                 status_code=200,
             )
         return JSONResponse(
             {
-                "error": "gateway unreachable; retry",
+                "error": "gateway_unavailable",
+                "error_kind": "gateway_unavailable",
                 "job_id": job_id,
-                "profile": profile,
             },
             status_code=503,
             headers={"Retry-After": str(_CRON_FIRE_RETRY_AFTER_SECONDS)},
         )
     status_code, gateway_body = forwarded
-    if isinstance(gateway_body, dict):
-        gateway_body.setdefault("job_id", job_id)
+    public_body = _public_gateway_fire_body(status_code, gateway_body, job_id)
     headers = (
         # The gateway's own 503s (draining, admission failure) are equally
         # transient — give the scheduler the same spacing hint.
@@ -266,7 +303,7 @@ async def cron_fire_webhook(request: Request):
         if status_code == 503
         else None
     )
-    return JSONResponse(gateway_body, status_code=status_code, headers=headers)
+    return JSONResponse(public_body, status_code=status_code, headers=headers)
 
 
 @router.get("/api/cron/blueprints")
@@ -298,9 +335,9 @@ async def list_cron_blueprints():
                         f["options"] = deliver_options
             entries.append(entry)
         return {"blueprints": entries}
-    except Exception as e:
+    except Exception:
         _log.exception("GET /api/cron/blueprints failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="cron_blueprint_list_failed")
 
 
 @router.post("/api/cron/blueprints/instantiate")
@@ -330,10 +367,10 @@ async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: s
         # providers on a multi-profile dashboard). Off the event loop —
         # a Chronos reconcile does file I/O plus NAS network calls.
         await _run_cron_dashboard_io(_notify_cron_provider_for_profile, profile)
-        return created
+        return _public_cron_job(created)
     except HTTPException:
         raise
     except Exception as e:
         _raise_if_cron_registration_error(e)
         _log.exception("POST /api/cron/blueprints/instantiate failed")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail="cron_create_failed") from e

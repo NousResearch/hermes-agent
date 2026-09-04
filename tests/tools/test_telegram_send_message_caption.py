@@ -105,3 +105,24 @@ def test_multi_file_keeps_separate_text(monkeypatch: pytest.MonkeyPatch) -> None
     finally:
         os.unlink(img)
         os.unlink(img2)
+
+
+def test_receipt_bound_missing_caption_media_does_not_send_unplanned_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools.send_message_tool import _send_telegram
+
+    _no_proxy(monkeypatch)
+    bot = _make_bot()
+    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
+
+    res = asyncio.run(_send_telegram(
+        "tok", "123", "planned caption",
+        media_files=[("/missing/bounded-image.png", False)],
+        receipt_bound=True,
+    ))
+
+    assert "error" in res
+    assert not res.get("receipts")
+    bot.send_message.assert_not_awaited()
+    bot.send_photo.assert_not_awaited()

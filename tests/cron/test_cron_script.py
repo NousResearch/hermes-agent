@@ -448,6 +448,7 @@ class TestCronjobToolScript:
 
     def test_clear_script(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from cron.jobs import get_job
         from tools.cronjob_tools import cronjob
 
         create_result = json.loads(cronjob(
@@ -465,22 +466,25 @@ class TestCronjobToolScript:
         ))
         assert update_result["success"] is True
         assert "script" not in update_result["job"]
+        assert get_job(job_id)["script"] is None
 
-    def test_list_shows_script(self, cron_env, monkeypatch):
+    def test_list_redacts_script_but_store_preserves_it(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from cron.jobs import get_job
         from tools.cronjob_tools import cronjob
 
-        cronjob(
+        create_result = json.loads(cronjob(
             action="create",
             schedule="every 1h",
             prompt="Monitor things",
             script="data_collector.py",
-        )
+        ))
+        assert get_job(create_result["job_id"])["script"] == "data_collector.py"
 
         list_result = json.loads(cronjob(action="list"))
         assert list_result["success"] is True
         assert len(list_result["jobs"]) == 1
-        assert list_result["jobs"][0]["script"] == "data_collector.py"
+        assert "script" not in list_result["jobs"][0]
 
 
 class TestScriptPathContainment:

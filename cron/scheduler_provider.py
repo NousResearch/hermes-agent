@@ -205,10 +205,29 @@ class CronScheduler(ABC):
         external scheduler, then pass the exact owner-bearing snapshot to
         ``fire_claimed`` in tracked background work.
         """
-        from cron.executions import create_execution, finish_execution
-        from cron.jobs import claim_job_for_fire
+        from cron.executions import (
+            bind_execution_fire_identity,
+            create_execution,
+            finish_execution,
+            scheduled_fire_identity,
+        )
+        from cron.jobs import claim_job_for_fire, get_job
 
-        execution = create_execution(job_id, source=self.name)
+        preclaim_job = get_job(job_id)
+        recovery_fire_identity = None
+        if not force and isinstance(preclaim_job, dict):
+            existing_claim = preclaim_job.get("fire_claim")
+            if isinstance(existing_claim, dict):
+                if not existing_claim.get("fire_at"):
+                    raise ValueError("existing fire claim has no immutable timestamp")
+                recovery_fire_identity = scheduled_fire_identity(
+                    job_id, existing_claim["fire_at"],
+                )
+
+        create_kwargs = {"source": self.name}
+        if recovery_fire_identity is not None:
+            create_kwargs["fire_identity"] = recovery_fire_identity
+        execution = create_execution(job_id, **create_kwargs)
         claim_kwargs = {"return_job": True}
         if force:
             claim_kwargs["force"] = True
@@ -226,9 +245,35 @@ class CronScheduler(ABC):
                 execution["id"],
                 success=False,
                 error="Fire claim was not acquired",
+                error_kind="claim_lost",
             )
             return None
+        bound_execution = execution
+        if recovery_fire_identity is None:
+            try:
+                acquired_claim = claimed_job.get("fire_claim")
+                if (
+                    not isinstance(acquired_claim, dict)
+                    or not acquired_claim.get("fire_at")
+                ):
+                    raise ValueError("acquired fire claim has no immutable timestamp")
+                acquired_fire_identity = scheduled_fire_identity(
+                    job_id, acquired_claim["fire_at"],
+                )
+                bound_execution = bind_execution_fire_identity(
+                    execution["id"], acquired_fire_identity,
+                )
+            except BaseException as exc:
+                finish_execution(
+                    execution["id"],
+                    success=False,
+                    error=f"Fire identity binding failed before dispatch: {type(exc).__name__}: {exc}",
+                )
+                raise
         claimed_job["execution_id"] = execution["id"]
+        claimed_job["fire_identity"] = (
+            bound_execution.get("fire_identity") or execution["id"]
+        )
         return claimed_job
 
     def fire_claimed(

@@ -462,6 +462,77 @@ async def test_send_escapes_chunk_indicator_for_markdownv2(adapter):
     assert re.search(r" \\\([0-9]+/[0-9]+\\\)$", sent_texts[-1])
 
 
+@pytest.mark.asyncio
+async def test_receipt_bound_send_does_not_resend_unplanned_plaintext(adapter):
+    from telegram.error import BadRequest
+
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(
+        side_effect=[
+            BadRequest("Bad Request: can't parse entities"),
+            SimpleNamespace(message_id=2),
+        ]
+    )
+    content = "**planned** content"
+    planned = adapter.plan_transport_text(content)
+
+    result = await adapter.send(
+        "123",
+        content,
+        metadata={
+            "_transport_receipt_requested_target": {
+                "platform": "telegram",
+                "chat_id": "123",
+            },
+        },
+    )
+
+    assert adapter._bot.send_message.await_count == 1
+    assert adapter._bot.send_message.await_args.kwargs["text"] == planned[0]
+    assert result.success is False
+    assert result.retryable is False
+    assert result.error_kind == "provider_rejected"
+    assert result.receipts == ()
+
+
+@pytest.mark.asyncio
+async def test_receipt_bound_parse_reject_preserves_prior_chunk_ack(adapter):
+    from telegram.error import BadRequest
+
+    adapter.MAX_MESSAGE_LENGTH = 80
+    adapter._bot = MagicMock()
+    content = ("**bold** chunk content " * 12).strip()
+    planned = adapter.plan_transport_text(content)
+    assert len(planned) > 1
+    adapter._bot.send_message = AsyncMock(
+        side_effect=[
+            SimpleNamespace(message_id=1),
+            BadRequest("Bad Request: can't parse entities"),
+            SimpleNamespace(message_id=3),
+        ]
+    )
+
+    result = await adapter.send(
+        "123",
+        content,
+        metadata={
+            "_transport_receipt_requested_target": {
+                "platform": "telegram",
+                "chat_id": "123",
+            },
+        },
+    )
+
+    assert adapter._bot.send_message.await_count == 2
+    assert [call.kwargs["text"] for call in adapter._bot.send_message.await_args_list] == planned[:2]
+    assert result.success is False
+    assert result.retryable is False
+    assert result.error_kind == "provider_rejected"
+    assert len(result.receipts) == 1
+    assert result.receipts[0].outcome == "delivered"
+    assert result.receipts[0].provider_message_id == "1"
+
+
 # =========================================================================
 # edit_message — streaming Markdown safety
 # =========================================================================

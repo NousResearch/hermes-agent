@@ -119,7 +119,16 @@ class TestRunningJobGuard:
             sched,
             "claim_job_for_fire",
             lambda job_id, **kwargs: claim_calls.append((job_id, kwargs))
-            or {**job, "fire_claim": {"by": "worker-owner", "at": "now"}},
+            or {**job, "fire_claim": {
+                "by": "worker-owner",
+                "at": "2026-08-22T19:00:00+00:00",
+                "fire_at": "2026-08-22T19:00:00+00:00",
+            }},
+        )
+        monkeypatch.setattr(
+            sched,
+            "bind_execution_fire_identity",
+            lambda eid, fire: {"id": eid, "fire_identity": fire},
         )
         monkeypatch.setattr(sched, "run_one_job", lambda *_a, **_kw: True)
 
@@ -164,7 +173,7 @@ class TestRunningJobGuard:
 
         called = []
 
-        def create_execution_side_effect(job_id, source):
+        def create_execution_side_effect(job_id, source, **_kwargs):
             if job_id == "failing-job":
                 raise RuntimeError("execution ledger unavailable")
             return {"id": f"{job_id}-execution"}
@@ -182,10 +191,20 @@ class TestRunningJobGuard:
             sched,
             "claim_job_for_fire",
             lambda job_id, **_kw: dict(
-                healthy_job, fire_claim={"by": "test-owner", "at": "now"}
+                healthy_job,
+                fire_claim={
+                    "by": "test-owner",
+                    "at": "2026-08-22T19:00:00+00:00",
+                    "fire_at": "2026-08-22T19:00:00+00:00",
+                },
             )
             if job_id == "healthy-job"
             else None,
+        )
+        monkeypatch.setattr(
+            sched,
+            "bind_execution_fire_identity",
+            lambda eid, fire: {"id": eid, "fire_identity": fire},
         )
         monkeypatch.setattr(sched, "mark_execution_running", lambda *_a, **_kw: {})
         monkeypatch.setattr(sched, "heartbeat_fire_claim", lambda *_a, **_kw: True)

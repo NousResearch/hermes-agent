@@ -26,22 +26,21 @@ import pytest
 from cron import scheduler as sched
 from cron.scheduler import _confirm_adapter_delivery, _deliver_result
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import SendResult, TransportReceipt, TransportTarget
+
+
+def _SendResult(success=True, message_id=None, raw_response=None):
+    """Build the real adapter result type while keeping concise test defaults."""
+    return SendResult(
+        success=success,
+        message_id=message_id,
+        raw_response=raw_response,
+    )
 
 
 # ---------------------------------------------------------------------------
 # _confirm_adapter_delivery: the contract in isolation
 # ---------------------------------------------------------------------------
-
-class _SendResult:
-    """Minimal stand-in for an adapter SendResult."""
-
-    def __init__(self, success=True, message_id=None, raw_response=None, **extra):
-        self.success = success
-        self.message_id = message_id
-        self.raw_response = raw_response
-        for key, value in extra.items():
-            setattr(self, key, value)
-
 
 class TestConfirmAdapterDelivery:
     def test_none_is_not_delivered(self):
@@ -60,8 +59,12 @@ class TestConfirmAdapterDelivery:
         filtered = {"success": True, "filtered": "silence_narration", "delivered": False}
         assert _confirm_adapter_delivery(filtered, "j1") is False
 
-    def test_delivered_false_on_an_object_is_not_delivered(self):
-        result = _SendResult(success=True, message_id=42, delivered=False)
+    def test_duck_typed_object_is_not_delivered(self):
+        class DuckResult:
+            success = True
+            message_id = 42
+
+        result = DuckResult()
         assert _confirm_adapter_delivery(result, "j1") is False
 
     def test_positive_evidence_is_delivered_without_warning(self, caplog):
@@ -138,6 +141,26 @@ def _run(job, content, send_result, relay=False, standalone_result=None, cron_cf
     Returns ``(error, router_calls, standalone_calls)``. ``cron_cfg`` extends
     the ``cron:`` section handed to the scheduler (default: unwrapped output).
     """
+    if (
+        type(send_result) is SendResult
+        and send_result.message_id is not None
+        and not send_result.receipts
+    ):
+        origin = job["origin"]
+        target = TransportTarget(
+            origin["platform"],
+            str(origin["chat_id"]),
+            str(origin["thread_id"]) if origin.get("thread_id") is not None else None,
+        )
+        send_result.receipts = (
+            TransportReceipt(
+                outcome="delivered",
+                requested_target=target,
+                actual_target=target,
+                provider_message_id=str(send_result.message_id),
+            ),
+        )
+
     loop = MagicMock()
     loop.is_running.return_value = True
 
@@ -181,11 +204,12 @@ class TestFilteredResultIsNotDelivered:
 
     def test_filtered_dict_does_not_log_a_live_delivery(self, caplog):
         with caplog.at_level(logging.INFO, logger="cron.scheduler"):
-            _, router_calls, standalone_calls = _run(_job(), "...", self.FILTERED)
+            error, router_calls, standalone_calls = _run(_job(), "...", self.FILTERED)
 
         assert len(router_calls) == 1                     # the live send was attempted
         assert "via live adapter" not in caplog.text      # but never claimed as delivered
-        assert len(standalone_calls) == 1                 # fell back instead of lying
+        assert standalone_calls == []                     # no blind retry after dispatch
+        assert error is not None and "unconfirmed result" in error
 
     def test_filtered_dict_fails_closed_on_the_relay_lane(self):
         """Relay owns the destination, so there is no fallback — report it."""
@@ -253,13 +277,13 @@ class TestDeliveredLogNamesTheLane:
         assert error is None
         assert "via live adapter thread=99 message_id=1234" in caplog.text
 
-    def test_log_uses_a_dash_when_the_lane_is_unknown(self, caplog):
-        """No thread and an evidence-free result must still be attributable."""
+    def test_evidence_free_result_is_not_logged_as_delivered(self, caplog):
+        """No receipt means unknown even when the legacy success bit is true."""
         with caplog.at_level(logging.INFO, logger="cron.scheduler"):
             error, _, _ = _run(_job(), "Nightly report.", _SendResult())
 
-        assert error is None
-        assert "via live adapter thread=- message_id=-" in caplog.text
+        assert error is not None and "typed receipt" in error
+        assert "via live adapter" not in caplog.text
         assert "UNVERIFIED" in caplog.text
 
 
@@ -294,8 +318,25 @@ class TestLiveDeliveryIsAFinalNotification:
         media.write_bytes(b"\x89PNG\r\n\x1a\n")
         sent = []
 
-        def fake_send_media(adapter, chat_id, media_files, metadata, loop, job, platform=None):
+        def fake_send_media(
+            adapter, chat_id, media_files, metadata, loop, job,
+            platform=None, receipts_out=None,
+        ):
             sent.append({"media": list(media_files), "metadata": metadata})
+            requested = metadata["_transport_receipt_requested_target"]
+            target = TransportTarget(
+                requested["platform"], requested["chat_id"],
+                requested.get("thread_id") or None,
+            )
+            assert receipts_out is not None
+            receipts_out.append(TransportReceipt(
+                outcome="delivered",
+                requested_target=target,
+                actual_target=target,
+                provider_message_id="media-1",
+                component="media",
+                ordinal=0,
+            ))
             return []
 
         with patch("cron.scheduler._send_media_via_adapter", side_effect=fake_send_media), \
@@ -337,8 +378,25 @@ class TestNotifyIsConfigurable:
         media.write_bytes(b"\x89PNG\r\n\x1a\n")
         sent = []
 
-        def fake_send_media(adapter, chat_id, media_files, metadata, loop, job, platform=None):
+        def fake_send_media(
+            adapter, chat_id, media_files, metadata, loop, job,
+            platform=None, receipts_out=None,
+        ):
             sent.append(metadata)
+            requested = metadata["_transport_receipt_requested_target"]
+            target = TransportTarget(
+                requested["platform"], requested["chat_id"],
+                requested.get("thread_id") or None,
+            )
+            assert receipts_out is not None
+            receipts_out.append(TransportReceipt(
+                outcome="delivered",
+                requested_target=target,
+                actual_target=target,
+                provider_message_id="media-1",
+                component="media",
+                ordinal=0,
+            ))
             return []
 
         with patch("cron.scheduler._send_media_via_adapter", side_effect=fake_send_media), \
@@ -366,13 +424,11 @@ class TestNotifyIsConfigurable:
 
 
 class TestUnverifiedDeliveryIsRecordedOnTheJob:
-    """An evidence-free ack is accepted, but the state must reach the job
-    record (and from there ``hermes cron list`` / ``cron doctor``), not only a
-    WARNING log line."""
+    """An evidence-free operation ack stays unknown and remains visible."""
 
     def test_evidence_free_ack_records_the_target(self):
         error, _, _ = _run(_job(), "Nightly report.", _SendResult())
-        assert error is None
+        assert error is not None and "typed receipt" in error
         assert RECORDED_VERIFICATION == [("92e639af907f", [f"telegram:{CHAT_ID}"])]
 
     def test_positive_evidence_clears_the_marker(self):
@@ -395,8 +451,12 @@ class TestUnverifiedDeliveryIsRecordedOnTheJob:
     def test_tool_listing_exposes_the_field(self):
         from tools.cronjob_tools import _format_job
 
-        assert _format_job({"id": "j1", "name": "n", "prompt": "p",
-                            "last_delivery_unverified": ["slack:C1"]})["last_delivery_unverified"] == ["slack:C1"]
+        formatted = _format_job({
+            "id": "j1", "name": "n", "prompt": "p",
+            "last_delivery_unverified": ["slack:C1"],
+        })
+        assert formatted["last_delivery_unverified"] is True
+        assert "slack:C1" not in str(formatted)
 
 
 def test_scheduler_module_exposes_the_confirmation_helper():

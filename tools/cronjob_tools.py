@@ -7,10 +7,12 @@ Compatibility wrappers remain for direct Python callers and legacy tests.
 
 import json
 import logging
+import math
 import re
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -39,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import (
     AmbiguousJobReference,
+    EMPTY_PAYLOAD_ERROR,
     claim_job_for_fire,
     effective_job_state,
     get_job,
@@ -492,10 +495,17 @@ def _split_monitor_arg(
 
 
 def _repeat_display(job: Dict[str, Any]) -> str:
-    times = (job.get("repeat") or {}).get("times")
-    completed = (job.get("repeat") or {}).get("completed", 0)
+    repeat = job.get("repeat")
+    if type(repeat) is not dict:
+        repeat = {}
+    times = repeat.get("times")
+    completed = repeat.get("completed", 0)
     if times is None:
         return "forever"
+    if type(times) is not int or times < 1:
+        return "forever"
+    if type(completed) is not int or completed < 0:
+        completed = 0
     if times == 1:
         return "once" if completed == 0 else "1/1"
     return f"{completed}/{times}" if completed else f"{times} times"
@@ -749,64 +759,134 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     return None
 
 
+def _public_timestamp(value: Any) -> Optional[str]:
+    if type(value) is not str or len(value) > 64:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return value
+
+
+def _public_tool_text(value: Any, *, limit: int) -> Optional[str]:
+    if type(value) is not str or not value or len(value) > limit:
+        return None
+    return value if all(char.isprintable() for char in value) else None
+
+
+def _public_tool_category(value: Any) -> Optional[str]:
+    if type(value) is not str:
+        return None
+    return value if re.fullmatch(r"[a-z][a-z0-9_]{0,31}", value) else None
+
+
+def _public_last_dispatch(value: Any) -> Optional[Dict[str, Any]]:
+    """Project one bounded, content-free scheduler dispatch stamp."""
+    if type(value) is not dict:
+        return None
+    scheduled_at = _public_timestamp(value.get("scheduled_at"))
+    dispatched_at = _public_timestamp(value.get("dispatched_at"))
+    kind = value.get("kind")
+    lateness = value.get("lateness_seconds")
+    if (
+        scheduled_at is None
+        or dispatched_at is None
+        or kind not in {"on_time", "catch_up", "late"}
+        or type(lateness) not in {int, float}
+    ):
+        return None
+    assert isinstance(lateness, (int, float))
+    lateness_value = float(lateness)
+    if not math.isfinite(lateness_value) or lateness_value < 0:
+        return None
+    return {
+        "scheduled_at": scheduled_at,
+        "dispatched_at": dispatched_at,
+        "lateness_seconds": lateness_value,
+        "kind": kind,
+    }
+
+
 def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
-    prompt = str(job.get("prompt") or "")
-    skills = _canonical_skills(job.get("skill"), job.get("skills"))
-    job_id = str(job.get("id") or "unknown")
-    name = str(job.get("name") or prompt[:50] or (skills[0] if skills else "") or job_id or "cron job")
+    if type(job) is not dict:
+        raise TypeError("cron job projection requires an object")
+    raw_id = job.get("id")
+    job_id = (
+        raw_id
+        if type(raw_id) is str
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", raw_id)
+        else "unknown"
+    )
+    name = _public_tool_text(job.get("name"), limit=256) or job_id
+    schedule = _public_tool_text(job.get("schedule_display"), limit=256) or "?"
+    deliver = job.get("deliver")
+    if type(deliver) is str and deliver in {"local", "origin", "all"}:
+        delivery_kind = deliver
+    elif type(deliver) is str and deliver:
+        delivery_kind = "external"
+    else:
+        delivery_kind = "local"
+    if any(
+        type(job.get(key)) is str and bool(job.get(key))
+        for key in ("monitor_script", "monitor_url")
+    ):
+        mode = "monitor"
+    elif job.get("no_agent") is True:
+        mode = "script"
+    else:
+        mode = "agent"
     result = {
         "job_id": job_id,
         "name": name,
-        "skill": skills[0] if skills else None,
-        "skills": skills,
-        "prompt_preview": prompt[:100] + "..." if len(prompt) > 100 else prompt,
-        "model": job.get("model"),
-        "provider": job.get("provider"),
-        "base_url": job.get("base_url"),
-        "schedule": job.get("schedule_display") or "?",
+        "schedule": schedule,
         "repeat": _repeat_display(job),
-        "deliver": job.get("deliver", "local"),
-        "next_run_at": job.get("next_run_at"),
-        "last_run_at": job.get("last_run_at"),
-        "last_status": job.get("last_status"),
-        "last_delivery_error": job.get("last_delivery_error"),
-        "last_delivery_unverified": job.get("last_delivery_unverified"),
-        "last_fire_error": job.get("last_fire_error"),
-        "enabled": job.get("enabled", True),
-        # Derive from enabled so half-paused records never render as paused.
-        "state": effective_job_state(job),
-        "paused_at": job.get("paused_at"),
-        "paused_reason": job.get("paused_reason"),
+        "delivery_kind": delivery_kind,
+        "mode": mode,
+        "next_run_at": _public_timestamp(job.get("next_run_at")),
+        "last_run_at": _public_timestamp(job.get("last_run_at")),
+        "last_dispatch": _public_last_dispatch(job.get("last_dispatch")),
+        "last_status": _public_tool_category(job.get("last_status")),
+        "last_delivery_error": (
+            "delivery_failed" if job.get("last_delivery_error") is not None else None
+        ),
+        "last_delivery_unverified": (
+            True
+            if type(job.get("last_delivery_unverified")) is list
+            and len(job["last_delivery_unverified"]) > 0
+            else None
+        ),
+        "last_fire_error": (
+            {
+                "at": _public_timestamp(job["last_fire_error"].get("at")),
+                "error_kind": "fire_forward_failed",
+            }
+            if type(job.get("last_fire_error")) is dict
+            else None
+        ),
+        "enabled": job.get("enabled") if type(job.get("enabled")) is bool else True,
+        "state": _public_tool_category(effective_job_state(job)),
     }
-    if job.get("script"):
-        result["script"] = job["script"]
-    if job.get("reasoning_effort"):
-        result["reasoning_effort"] = job["reasoning_effort"]
-    if job.get("monitor_script"):
-        result["monitor_script"] = job["monitor_script"]
-    if job.get("monitor_url"):
-        result["monitor_url"] = job["monitor_url"]
-    if job.get("monitor_state"):
-        result["monitor_state"] = job["monitor_state"]
-    if job.get("no_agent"):
-        result["no_agent"] = True
-    if job.get("enabled_toolsets"):
-        result["enabled_toolsets"] = job["enabled_toolsets"]
-    if job.get("workdir"):
-        result["workdir"] = job["workdir"]
-    stored_refs = job.get("context_from") or []
-    if isinstance(stored_refs, str):
-        stored_refs = [stored_refs]
-    if any(str(r).strip().lower() == "self" or r == job.get("id") for r in stored_refs):
-        result["continuity"] = True
-    external_refs = [
-        r for r in stored_refs
-        if str(r).strip().lower() != "self" and r != job.get("id")
-    ]
-    if external_refs:
-        result["context_from"] = external_refs
     if isinstance(job.get("attach_to_session"), bool):
+        # Boolean conversation-continuity intent is safe to project; keep
+        # target IDs, prompts, scripts, skills, workdirs and provider config
+        # bounded out of the public tool result.
         result["attach_to_session"] = job["attach_to_session"]
+    try:
+        from cron.executions import latest_execution, receipt_summary
+
+        execution = latest_execution(job_id)
+        if execution is not None:
+            result["last_execution"] = {
+                "status": _public_tool_category(execution.get("status")),
+                "receipt": receipt_summary(execution["id"]),
+            }
+    except Exception:
+        # Listing cron jobs must stay available if the optional audit DB is
+        # unavailable; do not surface raw SQLite/provider details to the tool.
+        pass
     return result
 
 
@@ -961,7 +1041,7 @@ def _execute_job_now(
     failure delivery, ``[SILENT]`` handling, and live-adapter delivery stay
     identical across paths and can't drift.
 
-    Returns {"claimed": bool, "success": bool, "error": str|None}.
+    Returns a bounded public result; raw execution details remain internal.
     """
     job_id = job["id"]
     claimed_job = None
@@ -987,7 +1067,12 @@ def _execute_job_now(
             mark_job_run(job_id, False, str(e))
         except Exception:
             pass
-        return {"claimed": True, "success": False, "error": str(e)}
+        return {
+            "claimed": True,
+            "success": False,
+            "error": "run_failed",
+            "error_kind": "run_failed",
+        }
 
     return _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
 
@@ -1002,7 +1087,7 @@ def _run_claimed_job(
     the tool response can report "paused"/"already firing" immediately — and
     hand the actual run to a daemon worker.
 
-    Returns {"claimed": True, "success": bool, "error": str|None}.
+    Returns a bounded public result; raw execution details remain internal.
     """
     job_id = job["id"]
     _registered = False
@@ -1151,7 +1236,8 @@ def _run_claimed_job(
         return {
             "claimed": True,
             "success": bool(processed and ok),
-            "error": run_error,
+            "error": None if processed and ok else "run_failed",
+            "error_kind": None if processed and ok else "run_failed",
         }
 
     except Exception as e:
@@ -1179,7 +1265,8 @@ def _run_claimed_job(
         return {
             "claimed": True,
             "success": False,
-            "error": str(e),
+            "error": "run_failed",
+            "error_kind": "run_failed",
         }
 
 
@@ -1347,7 +1434,13 @@ def _try_dispatch_background_run(
             mark_job_run(job_id, False, str(e))
         except Exception:
             pass
-        return {"claimed": True, "dispatched": False, "success": False, "error": str(e)}
+        return {
+            "claimed": True,
+            "dispatched": False,
+            "success": False,
+            "error": "run_failed",
+            "error_kind": "run_failed",
+        }
 
     origin_ui_session_id = ""
     try:
@@ -1445,7 +1538,7 @@ def _try_dispatch_background_run(
         "cronjob run: background pool unavailable (%s); running job '%s' inline.",
         dispatch.get("error", "rejected"), job_name,
     )
-    result = _run_claimed_job(job, extra_prompt=extra_prompt)
+    result = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
     result["dispatched"] = False
     return result
 
@@ -1541,6 +1634,12 @@ def cronjob(
 
     try:
         normalized = (action or "").strip().lower()
+        if attach_to_session is not None and type(attach_to_session) is not bool:
+            return tool_error(
+                "attach_to_session must be a boolean.",
+                success=False,
+                error_kind="invalid_argument",
+            )
 
         if normalized == "create":
             if not schedule:
@@ -1662,26 +1761,22 @@ def cronjob(
             except CronSchedulerRegistrationError as exc:
                 _partial = exc.to_dict()
                 return tool_error(_partial.pop("error"), success=False, **_partial)
-            _create_message = f"Cron job '{job['name']}' created."
+            public_job = _format_job(job)
+            _create_message = f"Cron job '{public_job['name']}' created."
             _local_notice = _local_delivery_notice(job, _normalize_deliver_param(deliver))
             if _local_notice:
                 _create_message = f"{_create_message} {_local_notice}"
-            # Gateway liveness surfacing (#87033): the builtin scheduler's
-            # ticker lives in the gateway process, so a job created with no
-            # gateway running is stored but will never fire. Tell the model
-            # here — the CLI already warns, but the agent path saw only a
-            # clean success and confidently told the user it was scheduled.
+            # Keep the PR's bounded public projection while preserving the
+            # upstream gateway-liveness warning for newly created jobs.
             _result = {
                 "success": True,
-                "job_id": job["id"],
-                "name": job["name"],
-                "skill": job.get("skill"),
-                "skills": job.get("skills", []),
-                "schedule": job["schedule_display"],
-                "repeat": _repeat_display(job),
-                "deliver": job.get("deliver", "local"),
-                "next_run_at": job["next_run_at"],
-                "job": _format_job(job),
+                "job_id": public_job["job_id"],
+                "name": public_job["name"],
+                "schedule": public_job["schedule"],
+                "repeat": public_job["repeat"],
+                "delivery_kind": public_job["delivery_kind"],
+                "next_run_at": public_job["next_run_at"],
+                "job": public_job,
                 "message": _create_message,
                 **_gateway_liveness_notice(),
             }
@@ -1795,7 +1890,6 @@ def cronjob(
                 result = _format_job(get_job(job_id) or {"id": job_id})
                 result["executed"] = True
                 result["execution_mode"] = "background"
-                result["delegation_id"] = bg.get("delegation_id")
                 return json.dumps(
                     {
                         "success": True,
@@ -1970,7 +2064,7 @@ def cronjob(
             if enabled_toolsets is not None:
                 updates["enabled_toolsets"] = enabled_toolsets or None
             if attach_to_session is not None:
-                updates["attach_to_session"] = bool(attach_to_session)
+                updates["attach_to_session"] = attach_to_session
             if workdir is not None:
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
@@ -2021,7 +2115,23 @@ def cronjob(
         return tool_error(f"Unknown cron action '{action}'", success=False)
 
     except Exception as e:
-        return tool_error(str(e), success=False)
+        if isinstance(e, ValueError) and str(e) == EMPTY_PAYLOAD_ERROR:
+            return tool_error(
+                EMPTY_PAYLOAD_ERROR,
+                success=False,
+                error_kind="invalid_job_payload",
+            )
+        if isinstance(e, ValueError) and "past and cannot be scheduled" in str(e):
+            return tool_error(
+                "One-shot schedule is in the past and cannot be scheduled.",
+                success=False,
+                error_kind="invalid_schedule",
+            )
+        return tool_error(
+            "cron_operation_failed",
+            success=False,
+            error_kind="cron_operation_failed",
+        )
 
 
 

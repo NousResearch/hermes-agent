@@ -26,6 +26,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -727,12 +728,18 @@ from cron.jobs import (
 )
 from cron.executions import (
     _TERMINAL_STATES,
+    bind_execution_fire_identity,
     create_execution,
     finish_execution,
     get_execution,
     mark_execution_handoff_pending,
     mark_execution_running,
+    observe_transport_unknown,
+    preregister_receipt_plan,
     recover_interrupted_executions,
+    record_transport_receipt,
+    receipt_summary,
+    scheduled_fire_identity,
 )
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
@@ -1668,11 +1675,18 @@ def _resolve_origin(job: dict) -> Optional[dict]:
     crashed identically until the field was patched manually (#18722).
     """
     origin = job.get("origin")
-    if not isinstance(origin, dict):
+    if type(origin) is not dict:
         return None
     platform = origin.get("platform")
     chat_id = origin.get("chat_id")
-    if platform and chat_id:
+    if platform is None or chat_id is None:
+        return None
+    if type(platform) is not str or type(chat_id) not in {str, int}:
+        raise ValueError("origin target identity is invalid")
+    thread_id = origin.get("thread_id")
+    if thread_id is not None and type(thread_id) not in {str, int}:
+        raise ValueError("origin target identity is invalid")
+    if platform and chat_id not in {"", 0}:
         return origin
     return None
 
@@ -2642,6 +2656,16 @@ def _get_bot_chat_delivery_timeout() -> int:
         return 600
 
 
+def _bot_chat_query_message(job: dict, content: str) -> str:
+    """Compose the exact child query bytes for planning and dispatch."""
+    job_name = job.get("name", job.get("id", "?"))
+    return (
+        f'[Cronjob "{job_name}" output — scheduled job, not the user. '
+        f"Review it, act on anything that needs action, and summarize "
+        f"for the chat.]\n\n{content}"
+    )
+
+
 def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]:
     """Deliver job output into a profile's canonical Bot Chat as an inbound turn.
 
@@ -2660,7 +2684,6 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
     import tempfile
 
     job_id = job.get("id", "?")
-    job_name = job.get("name", job_id)
 
     hermes_bin = _shutil.which("hermes")
     if hermes_bin:
@@ -2672,9 +2695,9 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
             if _ilu.find_spec("hermes_cli") is not None:
                 argv = [sys.executable, "-m", "hermes_cli.main"]
             else:
-                return "bot-chat delivery failed: hermes CLI not resolvable"
+                return "bot-chat delivery failed"
         except Exception:
-            return "bot-chat delivery failed: hermes CLI not resolvable"
+            return "bot-chat delivery failed"
 
     env = os.environ.copy()
     if profile:
@@ -2684,12 +2707,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
         env.pop("HERMES_HOME", None)
 
     # The prefix tells the receiving bot this is scheduled output, not the
-    # human typing — mirrors the Bot Mode sender-attribution convention.
-    message = (
-        f'[Cronjob "{job_name}" output — scheduled job, not the user. '
-        f"Review it, act on anything that needs action, and summarize "
-        f"for the chat.]\n\n{content}"
-    )
+    # human typing. Planning calls the same helper before any side effect.
+    message = _bot_chat_query_message(job, content)
 
     query_file = None
     try:
@@ -2714,32 +2733,18 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
             creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
-            tail = (result.stderr or result.stdout or "").strip()[-500:]
-            msg = (
-                f"bot-chat delivery to profile "
-                f"'{profile or '(own)'}' failed (exit {result.returncode})"
-                + (f": {tail}" if tail else "")
-            )
-            logger.warning("Job '%s': %s", job_id, msg)
-            return msg
+            logger.warning("Job '%s': bot-chat delivery confirmation unavailable", job_id)
+            return "bot-chat delivery confirmation unavailable"
         logger.info(
-            "Job '%s': delivered to Bot Chat of profile '%s'",
-            job_id, profile or "(own)",
+            "Job '%s': bot-chat child completed without provider receipt", job_id
         )
         return None
     except subprocess.TimeoutExpired:
-        msg = (
-            f"bot-chat delivery to profile '{profile or '(own)'}' timed out "
-            f"after {_get_bot_chat_delivery_timeout()}s (the bot's turn may "
-            "still complete; raise cron.bot_chat_delivery_timeout_seconds if "
-            "this recurs)"
-        )
-        logger.warning("Job '%s': %s", job_id, msg)
-        return msg
-    except Exception as e:
-        msg = f"bot-chat delivery failed: {str(e) or type(e).__name__}"
-        logger.warning("Job '%s': %s", job_id, msg, exc_info=True)
-        return msg
+        logger.warning("Job '%s': bot-chat delivery confirmation unavailable", job_id)
+        return "bot-chat delivery confirmation unavailable"
+    except Exception:
+        logger.warning("Job '%s': bot-chat delivery confirmation unavailable", job_id)
+        return "bot-chat delivery confirmation unavailable"
     finally:
         if query_file:
             try:
@@ -2760,12 +2765,44 @@ def _normalize_deliver_value(deliver) -> str:
     resolution silently.  Flatten lists/tuples into a comma-separated string
     so both forms work.  Returns ``"local"`` for anything falsy.
     """
-    if deliver is None or deliver == "":
+    if deliver is None:
         return "local"
-    if isinstance(deliver, (list, tuple)):
-        parts = [str(p).strip() for p in deliver if str(p).strip()]
+    if type(deliver) is str:
+        return deliver or "local"
+    if type(deliver) in {list, tuple}:
+        parts = [p.strip() for p in deliver if type(p) is str and p.strip()]
         return ",".join(parts) if parts else "local"
-    return str(deliver)
+    return "local"
+
+
+def _normalize_delivery_target_identity(target: Any) -> dict:
+    """Return a content-free target using only inert built-in scalar values."""
+    if type(target) is not dict:
+        raise ValueError("delivery target must be an object")
+    platform = target.get("platform")
+    chat_id = target.get("chat_id")
+    thread_id = target.get("thread_id")
+    if type(platform) is not str or not platform:
+        raise ValueError("delivery target platform is invalid")
+    if type(chat_id) not in {str, int} or chat_id in {"", 0}:
+        raise ValueError("delivery target chat_id is invalid")
+    if thread_id is not None and (
+        type(thread_id) not in {str, int} or thread_id in {"", 0}
+    ):
+        raise ValueError("delivery target thread_id is invalid")
+    normalized = {
+        "platform": platform,
+        "chat_id": str(chat_id),
+        "thread_id": str(thread_id) if thread_id is not None else None,
+    }
+    resolved_from = target.get("_resolved_from")
+    if resolved_from is not None:
+        if type(resolved_from) is not str or resolved_from not in {
+            "origin", "origin_fallback", "explicit",
+        }:
+            raise ValueError("delivery target provenance is invalid")
+        normalized["_resolved_from"] = resolved_from
+    return normalized
 
 
 # Routing intent tokens — resolved at fire time, not create time, so a
@@ -2782,6 +2819,7 @@ _ROUTING_TOKENS = frozenset({"all"})
 # ``all`` routing token: ``all`` fans out to messaging home channels, and a
 # bot-chat delivery costs a full agent turn.
 BOT_CHAT_PLATFORM = "bot-chat"
+BOT_CHAT_SELF_TARGET = "_self"
 
 
 def parse_bot_chat_deliver_token(part: str) -> Optional[str]:
@@ -2814,8 +2852,13 @@ def _resolve_bot_chat_target(job: dict, profile_arg: str) -> Optional[dict]:
     can never be targeted by accident.
     """
     if not profile_arg:
-        # Own profile: chat subprocess inherits HERMES_HOME, no name needed.
-        return {"platform": BOT_CHAT_PLATFORM, "chat_id": "", "thread_id": None}
+        # Own profile: the child inherits HERMES_HOME; the ledger still needs a
+        # concrete non-empty requested-target identity.
+        return {
+            "platform": BOT_CHAT_PLATFORM,
+            "chat_id": BOT_CHAT_SELF_TARGET,
+            "thread_id": None,
+        }
     try:
         from hermes_cli.profiles import normalize_profile_name, profile_exists
 
@@ -2901,8 +2944,9 @@ def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[d
     targets = []
     for part in parts:
         target = _resolve_single_delivery_target(job, part)
-        if target:
-            key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))
+        if target is not None:
+            target = _normalize_delivery_target_identity(target)
+            key = (target["platform"].lower(), target["chat_id"], target["thread_id"])
             if key not in seen:
                 seen[key] = target
                 targets.append(target)
@@ -2938,6 +2982,7 @@ def _send_media_via_adapter(
     loop,
     job: dict,
     platform=None,
+    receipts_out: Optional[list] = None,
 ) -> list:
     """Send extracted MEDIA files as native platform attachments via a live adapter.
 
@@ -2953,7 +2998,11 @@ def _send_media_via_adapter(
     """
     from pathlib import Path
 
-    from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
+    from gateway.platforms.base import (
+        BasePlatformAdapter,
+        SendResult,
+        should_send_media_as_audio,
+    )
 
     errors: list = []
     requested = [(str(p), v) for p, v in (media_files or [])]
@@ -2973,18 +3022,21 @@ def _send_media_via_adapter(
         except Exception:
             errors.append(f"attachment dropped by media path policy: {raw_path}")
 
-    for media_path, _is_voice in media_files:
+    for media_ordinal, (media_path, _is_voice) in enumerate(media_files):
         try:
+            send_metadata = dict(metadata or {})
+            send_metadata["_transport_receipt_component"] = "media"
+            send_metadata["_transport_receipt_ordinal"] = media_ordinal
             ext = Path(media_path).suffix.lower()
             route_platform = platform if platform is not None else getattr(adapter, "platform", None)
             if should_send_media_as_audio(route_platform, ext, is_voice=_is_voice):
-                coro = adapter.send_voice(chat_id=chat_id, audio_path=media_path, metadata=metadata)
+                coro = adapter.send_voice(chat_id=chat_id, audio_path=media_path, metadata=send_metadata)
             elif ext in _VIDEO_EXTS:
-                coro = adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=metadata)
+                coro = adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=send_metadata)
             elif ext in _IMAGE_EXTS:
-                coro = adapter.send_image_file(chat_id=chat_id, image_path=media_path, metadata=metadata)
+                coro = adapter.send_image_file(chat_id=chat_id, image_path=media_path, metadata=send_metadata)
             else:
-                coro = adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=metadata)
+                coro = adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=send_metadata)
 
             from agent.async_utils import safe_schedule_threadsafe
             future = safe_schedule_threadsafe(coro, loop)
@@ -3003,10 +3055,26 @@ def _send_media_via_adapter(
             except TimeoutError:
                 future.cancel()
                 raise
-            if result and not getattr(result, "success", True):
+            receipt_bound = (
+                type(metadata) is dict
+                and "_transport_receipt_requested_target" in metadata
+            )
+            if type(result) is SendResult:
+                result_success = result.success is True
+                result_error = result.error
+                if receipts_out is not None:
+                    receipts_out.extend(result.receipts)
+            else:
+                legacy = _inert_legacy_send_result_fields(result)
+                if receipt_bound or legacy is None:
+                    errors.append("media adapter returned an invalid result")
+                    return errors
+                result_success = legacy["success"] is True
+                result_error = legacy["error"]
+            if not result_success:
                 msg = (
                     f"media send failed for {media_path}: "
-                    f"{getattr(result, 'error', 'unknown')}"
+                    f"{result_error or 'unknown'}"
                 )
                 logger.warning("Job '%s': %s", job.get("id", "?"), msg)
                 errors.append(msg)
@@ -3051,23 +3119,34 @@ def _confirm_adapter_delivery(send_result, job_id: str = "?", unverified: Option
       instead of masquerading as a confirmed one.  Telegram ``SendResult``
       objects carry ``message_id``; the dict-filter shape does not.
     """
-    if send_result is None:
-        return False
-    if isinstance(send_result, dict):
-        if "success" not in send_result:
+    from gateway.platforms.base import SendResult
+
+    if type(send_result) is dict:
+        if type(send_result.get("success")) is not bool:
             return False
-        success = bool(send_result.get("success"))
+        success = send_result["success"]
         delivered = send_result.get("delivered")
         message_id = send_result.get("message_id")
-        raw_response = send_result.get("raw_response")
-    else:
-        if not hasattr(send_result, "success"):
+        raw_response = (
+            send_result.get("raw_response")
+            if type(send_result.get("raw_response")) is dict else None
+        )
+    elif type(send_result) is SendResult:
+        if type(send_result.success) is not bool:
             return False
-        success = bool(getattr(send_result, "success"))
+        success = send_result.success
         delivered = getattr(send_result, "delivered", None)
-        message_id = getattr(send_result, "message_id", None)
-        raw_response = getattr(send_result, "raw_response", None)
-    if not success or delivered is False:
+        message_id = send_result.message_id
+        raw_response = send_result.raw_response
+    else:
+        legacy = _inert_legacy_send_result_fields(send_result)
+        if legacy is None:
+            return False
+        success = legacy["success"]
+        delivered = None
+        message_id = legacy["message_id"]
+        raw_response = legacy["raw_response"]
+    if success is not True or delivered is False:
         return False
     if message_id is None and not raw_response:
         logger.warning(
@@ -3079,6 +3158,27 @@ def _confirm_adapter_delivery(send_result, job_id: str = "?", unverified: Option
         if unverified is not None:
             unverified.append(True)
     return True
+
+
+def _inert_legacy_send_result_fields(send_result: Any) -> Optional[dict]:
+    """Read the one supported inert legacy container without object magic."""
+    if type(send_result) is not SimpleNamespace:
+        return None
+    fields = object.__getattribute__(send_result, "__dict__")
+    if type(fields) is not dict or type(fields.get("success")) is not bool:
+        return None
+    error = fields.get("error")
+    message_id = fields.get("message_id")
+    if error is not None and type(error) is not str:
+        error = None
+    if message_id is not None and type(message_id) not in {str, int}:
+        message_id = None
+    return {
+        "success": fields["success"],
+        "error": error,
+        "message_id": message_id,
+        "raw_response": fields.get("raw_response") if type(fields.get("raw_response")) is dict else None,
+    }
 
 
 def _is_channel_dm_topic(
@@ -3137,6 +3237,151 @@ def _is_channel_dm_topic(
     return is_channel
 
 
+def _receipt_text_chunks_for_target(
+    adapters: Any, platform_name: str, content: str, media_files=None,
+) -> list[str]:
+    """Return exact adapter-planned chunks when the adapter can prove them.
+
+    Opaque and standalone transports deliberately get one logical component:
+    a later multi-ack cannot be upgraded to delivery unless it binds that plan.
+    Matrix and Telegram expose this preflight because their send paths own the
+    deterministic formatting/splitting algorithm.
+    """
+    if not adapters:
+        if platform_name.lower() == "telegram":
+            from tools.send_message_tool import _plan_standalone_telegram_text
+
+            return _plan_standalone_telegram_text(
+                content, media_files=media_files,
+            )[1]
+        return [content]
+    candidate = None
+    try:
+        from gateway.config import Platform
+        candidate = adapters.get(Platform(platform_name.lower()))
+    except Exception:
+        candidate = None
+    if candidate is None:
+        try:
+            candidate = adapters.get(platform_name) or adapters.get(platform_name.lower())
+        except Exception:
+            candidate = None
+    if candidate is None:
+        if platform_name.lower() == "telegram":
+            from tools.send_message_tool import _plan_standalone_telegram_text
+
+            return _plan_standalone_telegram_text(
+                content, media_files=media_files,
+            )[1]
+        return [content]
+    planner = getattr(candidate, "plan_transport_text", None)
+    if not callable(planner):
+        return [content]
+    try:
+        chunks = planner(content)
+    except Exception as exc:
+        raise ValueError("transport planner failed before dispatch") from exc
+    if (
+        type(chunks) not in {list, tuple}
+        or len(chunks) == 0
+        or not all(type(chunk) is str and chunk for chunk in chunks)
+    ):
+        raise ValueError("transport planner returned invalid chunks")
+    return list(chunks)
+
+
+def _persist_target_text_receipts(
+    receipts: Any,
+    attempts: dict,
+    requested_target: dict[str, str],
+    components: Optional[set[str]] = None,
+    expected_actual_target: Optional[dict[str, str]] = None,
+) -> bool:
+    """Persist exact acknowledgements and prove the selected planned set.
+
+    Matching partial acknowledgements are retained even when the final result
+    is false. ``components=None`` requires every preregistered component;
+    callers passing a set require only those component kinds.
+    """
+    from gateway.platforms.base import TransportReceipt, TransportTarget
+
+    if type(receipts) is not tuple:
+        return False
+    if type(attempts) is not dict or type(requested_target) is not dict:
+        return False
+    if components is not None and type(components) is not set:
+        return False
+    if expected_actual_target is not None and type(expected_actual_target) is not dict:
+        return False
+    if not all(type(receipt) is TransportReceipt for receipt in receipts):
+        return False
+    if not attempts:
+        return bool(receipts)
+    expected = {
+        key for key in attempts
+        if key[:3] == (
+            requested_target["platform"], requested_target["chat_id"],
+            requested_target["thread_id"],
+        ) and (components is None or key[3] in components)
+    }
+    observed = set()
+    persisted_all = True
+    expected_actual = expected_actual_target or requested_target
+    try:
+        planned_target = (
+            expected_actual["platform"],
+            expected_actual["chat_id"],
+            expected_actual["thread_id"],
+        )
+    except (KeyError, TypeError):
+        return False
+    if not all(type(value) is str for value in planned_target):
+        return False
+    for receipt in receipts:
+        try:
+            requested = receipt.requested_target
+            key = (
+                requested.platform, requested.chat_id,
+                requested.thread_id or "", receipt.component, receipt.ordinal,
+            )
+            attempt_id = attempts.get(key)
+            persisted = bool(attempt_id) and record_transport_receipt(attempt_id, receipt)
+        except Exception:
+            persisted = False
+            key = None
+        actual = receipt.actual_target
+        actual_target = (
+            (actual.platform, actual.chat_id, actual.thread_id or "")
+            if type(actual) is TransportTarget
+            else None
+        )
+        if (
+            persisted
+            and key is not None
+            and receipt.outcome == "delivered"
+            and actual_target == planned_target
+        ):
+            observed.add(key)
+        else:
+            persisted_all = False
+    return bool(expected) and persisted_all and observed == expected
+
+
+def _receipt_delivery_outcome(execution_id: str) -> Optional[str]:
+    """Project a transport outcome only when this execution has a receipt plan."""
+    try:
+        counts = receipt_summary(execution_id)
+    except Exception:
+        return None
+    if counts.get("unknown", 0) > 0:
+        return "unknown"
+    if counts.get("failed", 0) > 0:
+        return "failed"
+    if counts.get("delivered", 0) > 0 and counts.get("targets_delivered", 0) > 0:
+        return "delivered"
+    return None
+
+
 def _cron_delivery_notify_enabled(cfg: Optional[dict]) -> bool:
     """Resolve ``cron.delivery.notify`` (config.yaml). Default True.
 
@@ -3180,7 +3425,15 @@ def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
 
 
 def _deliver_result(
-    job: dict, content: str, adapters=None, loop=None, *, for_failure: bool = False
+    job: dict,
+    content: str,
+    adapters=None,
+    loop=None,
+    *,
+    execution_id: Optional[str] = None,
+    fire_identity: Optional[str] = None,
+    for_failure: bool = False,
+
 ) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -3195,7 +3448,12 @@ def _deliver_result(
 
     Returns None on success, or an error string on failure.
     """
-    targets = _resolve_delivery_targets(job, for_failure=for_failure)
+    if type(job) is not dict or type(content) is not str:
+        return "delivery input is invalid; no delivery was sent"
+    try:
+        targets = _resolve_delivery_targets(job, for_failure=for_failure)
+    except (TypeError, ValueError):
+        return "delivery target is invalid; no delivery was sent"
     if not targets:
         deliver_value = _normalize_deliver_value(
             _delivery_lane_value(job, for_failure=for_failure)
@@ -3281,7 +3539,12 @@ def _deliver_result(
         delivery_content = content
 
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
-    from gateway.platforms.base import BasePlatformAdapter
+    from gateway.platforms.base import (
+        BasePlatformAdapter,
+        SendResult,
+        TransportReceipt,
+        TransportTarget,
+    )
 
     # Bridge gateway media-policy config (strict / allow_dirs / trust_recent)
     # into the env vars the path validator reads. Gateway startup does this
@@ -3336,11 +3599,91 @@ def _deliver_result(
         return msg
 
     delivery_errors = []
+    # Direct isolated callers may opt out of ledger persistence. Scheduler,
+    # provider, and manual routes pass the exact durable identity explicitly;
+    # never rely on mutating their job snapshot.
+    receipt_attempts = {}
+    if execution_id is None:
+        execution_id = job.get("execution_id")
+    if fire_identity is None:
+        fire_identity = job.get("fire_identity")
+    if fire_identity is None:
+        fire_identity = execution_id
+    receipt_planning_adapters = (
+        adapters
+        if adapters is not None
+        and loop is not None
+        and getattr(loop, "is_running", lambda: False)()
+        else None
+    )
+    if execution_id is not None:
+        if (
+            type(execution_id) is not str
+            or not execution_id
+            or type(fire_identity) is not str
+            or not fire_identity
+        ):
+            return "delivery receipt identity is invalid; no delivery was sent"
+        receipt_plan = []
+        for target in targets:
+            target_identity = dict(target)
+            target_identity["thread_id"] = target_identity["thread_id"] or ""
+            if target_identity["platform"] == BOT_CHAT_PLATFORM:
+                receipt_plan.append({
+                    "target": target_identity,
+                    "component": "text",
+                    "ordinal": 0,
+                    "content": _bot_chat_query_message(job, content),
+                })
+                continue
+            if cleaned_delivery_content.strip():
+                try:
+                    planned_chunks = _receipt_text_chunks_for_target(
+                        receipt_planning_adapters, target["platform"],
+                        cleaned_delivery_content.strip(),
+                        media_files=media_files,
+                    )
+                except (TypeError, ValueError):
+                    return "delivery receipt planner is invalid; no delivery was sent"
+                for ordinal, chunk in enumerate(planned_chunks):
+                    receipt_plan.append({
+                        "target": target_identity, "component": "text", "ordinal": ordinal,
+                        "content": chunk,
+                    })
+            for ordinal, (media_path, _is_voice) in enumerate(media_files):
+                if type(media_path) is not str:
+                    return "delivery media identity is invalid; no delivery was sent"
+                receipt_plan.append({
+                    "target": target_identity, "component": "media", "ordinal": ordinal,
+                    "content": media_path,
+                })
+        if receipt_plan:
+            try:
+                attempts = preregister_receipt_plan(
+                    execution_id,
+                    fire_identity=fire_identity,
+                    components=receipt_plan,
+                )
+            except Exception:
+                # The DB exception can include filesystem/provider details; it
+                # is not a safe delivery/operator payload.
+                logger.warning("Job '%s': receipt-plan preregistration failed", job["id"])
+                return "delivery receipt plan could not be persisted; no delivery was sent"
+            for attempt in attempts:
+                receipt_attempts[(
+                    attempt["platform"], attempt["chat_id"], attempt["thread_id"],
+                    attempt["component"], attempt["ordinal"],
+                )] = attempt["id"]
 
     for target in targets:
         platform_name = target["platform"]
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
+        receipt_requested_target = {
+            "platform": platform_name,
+            "chat_id": chat_id,
+            "thread_id": thread_id or "",
+        }
 
         # bot-chat targets don't ride a gateway adapter: the output becomes a
         # real inbound turn in the target profile's canonical Bot Chat via the
@@ -3348,8 +3691,56 @@ def _deliver_result(
         # bot runs a turn and can respond — handled before the Platform enum
         # below, which knows nothing about this pseudo-platform.
         if platform_name == BOT_CHAT_PLATFORM:
-            bot_chat_error = _deliver_to_bot_chat(job, content, chat_id)
-            if bot_chat_error:
+            bot_chat_profile = "" if chat_id == BOT_CHAT_SELF_TARGET else chat_id
+            bot_chat_error = _deliver_to_bot_chat(job, content, bot_chat_profile)
+            if receipt_attempts:
+                requested = TransportTarget(
+                    BOT_CHAT_PLATFORM,
+                    chat_id,
+                    thread_id,
+                )
+                if bot_chat_error == "bot-chat delivery failed":
+                    receipt = TransportReceipt(
+                        outcome="failed",
+                        requested_target=requested,
+                        failure_kind="pre_dispatch",
+                        component="text",
+                        ordinal=0,
+                    )
+                else:
+                    # Child completion has no provider/session acknowledgement;
+                    # any post-spawn result remains ambiguous.
+                    receipt = TransportReceipt(
+                        outcome="unknown",
+                        requested_target=requested,
+                        component="text",
+                        ordinal=0,
+                    )
+                if receipt.outcome == "unknown":
+                    attempt_id = receipt_attempts.get((
+                        BOT_CHAT_PLATFORM, chat_id,
+                        thread_id or "", "text", 0,
+                    ))
+                    persisted = bool(attempt_id) and observe_transport_unknown(
+                        attempt_id, receipt,
+                    )
+                else:
+                    persisted = _persist_target_text_receipts(
+                        (receipt,), receipt_attempts, receipt_requested_target,
+                        components={"text"},
+                    )
+                if not persisted:
+                    delivery_errors.append(
+                        "bot-chat delivery receipt could not be persisted; "
+                        "delivery is unknown"
+                    )
+                elif receipt.outcome == "unknown":
+                    delivery_errors.append(
+                        "bot-chat delivery confirmation unavailable"
+                    )
+                else:
+                    delivery_errors.append("bot-chat delivery failed")
+            elif bot_chat_error:
                 delivery_errors.append(bot_chat_error)
             continue
 
@@ -3489,6 +3880,7 @@ def _deliver_result(
         )
         delivered = False
         target_errors = []
+        ambiguous_live_timeout = False
 
         # Continuable cron surface (D1/D2/D6): resolve the delivery surface for
         # this platform generically from its config ``extra``. Default "thread"
@@ -3690,6 +4082,12 @@ def _deliver_result(
                 media_metadata = dict(media_metadata or {})
                 media_metadata.setdefault("scope_id", str(origin["scope_id"]))
 
+            # Provider routing may create, flatten, or fall back from a thread
+            # after the global receipt plan was durably registered. Preserve
+            # the logical requested identity separately; adapters record the
+            # routed destination as actual_target.
+            route_metadata["_transport_receipt_requested_target"] = receipt_requested_target
+
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content.
                 # Route through the gateway's DeliveryRouter so the live send
@@ -3702,6 +4100,8 @@ def _deliver_result(
                 adapter_ok = True
                 timed_out = False
                 delivered_message_id = None
+                send_result = None
+                send_receipts = ()
                 if not text_to_send and not media_files:
                     # Nothing to hand the adapter at all.  This used to fall
                     # straight through to the `if adapter_ok:` branch below and
@@ -3747,52 +4147,40 @@ def _deliver_result(
                         try:
                             send_result = future.result(timeout=60)
                         except TimeoutError:
-                            # #38922: a slow confirmation does NOT necessarily
-                            # mean the send failed — but we must distinguish two
-                            # cases via future.cancel()'s return value:
-                            #
-                            #   cancel() == False -> the coroutine was already
-                            #     running on the gateway loop when the timeout
-                            #     fired; the request is in flight on the wire and
-                            #     cannot be un-sent.  Re-sending via standalone
-                            #     would be a guaranteed DUPLICATE, so treat it as
-                            #     delivered (assume-delivered).
-                            #
-                            #   cancel() == True -> the scheduled callback never
-                            #     started executing (loop wedged/backlogged for
-                            #     the full 60s), so nothing was sent.  We MUST
-                            #     fall through to the standalone path or the
-                            #     message is silently dropped (worse than a
-                            #     duplicate).
-                            cancelled = future.cancel()
-                            if cancelled:
-                                msg = (
-                                    f"live adapter send to {platform_name}:{chat_id} "
-                                    "timed out before the coroutine was dispatched"
-                                )
-                                logger.warning(
-                                    "Job '%s': %s, falling back to standalone",
-                                    job["id"], msg,
-                                )
-                                target_errors.append(msg)
-                                adapter_ok = False  # fall through to standalone path
-                                timeout_handled = True
-                            else:
-                                timed_out = True
-                                timeout_handled = True
-                                logger.warning(
-                                    "Job '%s': live adapter send to %s:%s timed out "
-                                    "after 60s; already dispatched (in flight), "
-                                    "assuming delivered (skipping standalone fallback "
-                                    "to avoid duplicate)",
-                                    job["id"], platform_name, chat_id,
-                                )
+                            # Cancellation only describes the local Future's
+                            # state. It is neither an acknowledgement from the
+                            # provider nor proof that no request crossed the
+                            # wire. Conservatively classify either result as
+                            # unknown and prohibit same-identity fallback.
+                            future.cancel()
+                            timed_out = True
+                            timeout_handled = True
+                            ambiguous_live_timeout = True
+                            adapter_ok = False
+                            msg = (
+                                f"live adapter confirmation timed out for "
+                                f"{platform_name}:{chat_id}; delivery is unknown"
+                            )
+                            target_errors.append(msg)
+                            logger.warning("Job '%s': %s", job["id"], msg)
                         except Exception as ex:
-                            # A real send error (not a slow confirmation) — fall
-                            # through to the standalone path so the message is
-                            # still delivered.
                             target_errors.append(f"live adapter send failed: {ex}")
-                            raise
+                            # Exceptions do not prove a provider request was not
+                            # dispatched. Keep this target unknown and prohibit
+                            # same-identity fallback.
+                            ambiguous_live_timeout = True
+                            partial_result = getattr(ex, "send_result", None)
+                            if partial_result is None:
+                                raise
+                            # DeliveryRouter preserves a failed SendResult when
+                            # it contains provider acknowledgements for earlier
+                            # chunks. Skip success normalization but retain those
+                            # receipts below.
+                            send_result = partial_result
+                            if type(partial_result) is SendResult:
+                                send_receipts = partial_result.receipts
+                            adapter_ok = False
+                            timeout_handled = True
 
                         if timeout_handled:
                             # The timeout branch above already decided the
@@ -3808,16 +4196,35 @@ def _deliver_result(
                             # {"success": True, "delivered": False, ...}.
                             # Normalize both shapes so a getattr default doesn't
                             # misread a dict, and so a None / success-less object
-                            # is NOT counted as delivered (#47056).  The
-                            # confirmation itself handles both shapes: a truthy
-                            # `success` with `delivered: False` is a drop, not a
-                            # delivery (#77763).
-                            if isinstance(send_result, dict):
-                                send_raw_response = send_result.get("raw_response")
-                                delivered_message_id = send_result.get("message_id")
+                            # Normalize only inert/known result containers. A
+                            # filtered dict with delivered=False is not a delivery;
+                            # a successful send without provider evidence remains
+                            # explicitly UNVERIFIED.
+                            send_receipts = ()
+                            legacy_fields = None
+                            send_raw_response = None
+                            delivered_message_id = None
+                            if type(send_result) is dict:
+                                raw_response_value = send_result.get("raw_response")
+                                send_raw_response = (
+                                    raw_response_value
+                                    if type(raw_response_value) is dict else None
+                                )
+                                message_id_value = send_result.get("message_id")
+                                delivered_message_id = (
+                                    message_id_value
+                                    if type(message_id_value) in {str, int} else None
+                                )
+                            elif type(send_result) is SendResult:
+                                send_raw_response = send_result.raw_response
+                                delivered_message_id = send_result.message_id
+                                send_receipts = send_result.receipts
                             else:
-                                send_raw_response = getattr(send_result, "raw_response", None)
-                                delivered_message_id = getattr(send_result, "message_id", None)
+                                legacy_fields = _inert_legacy_send_result_fields(send_result)
+                                if legacy_fields is not None:
+                                    send_raw_response = legacy_fields["raw_response"]
+                                    delivered_message_id = legacy_fields["message_id"]
+
                             _evidence_gap: list = []
                             send_success = _confirm_adapter_delivery(
                                 send_result, job["id"], _evidence_gap,
@@ -3826,18 +4233,27 @@ def _deliver_result(
                                 unverified_targets.append(f"{platform_name}:{chat_id}")
 
                             if not send_success:
-                                if isinstance(send_result, dict):
-                                    # A filtered drop carries no "error" — name
-                                    # the filter instead of reporting "unknown".
+                                if type(send_result) is dict:
+                                    error_value = send_result.get("error")
+                                    filtered_value = send_result.get("filtered")
                                     err = (
-                                        send_result.get("error")
-                                        or send_result.get("filtered")
-                                        or "unknown"
+                                        error_value
+                                        if type(error_value) is str
+                                        else filtered_value
+                                        if type(filtered_value) is str
+                                        else "unknown"
+
                                     )
                                     shape = "dict"
+                                elif type(send_result) is SendResult:
+                                    err = send_result.error
+                                    shape = "SendResult"
+                                elif legacy_fields is not None:
+                                    err = legacy_fields["error"] or "unknown"
+                                    shape = "legacy"
                                 elif send_result is not None:
-                                    err = getattr(send_result, "error", None)
-                                    shape = type(send_result).__name__
+                                    err = "invalid adapter result"
+                                    shape = "invalid"
                                 else:
                                     err = "no response from adapter"
                                     shape = "None"
@@ -3853,7 +4269,28 @@ def _deliver_result(
                                         job["id"], msg,
                                     )
                                 target_errors.append(msg)
-                                adapter_ok = False  # fall through to standalone path
+                                # A negative legacy result does not prove the
+                                # request never crossed the provider boundary.
+                                # Preserve any earlier typed chunk receipts and
+                                # never blind-resend this execution identity.
+                                ambiguous_live_timeout = True
+                                adapter_ok = False
+                            elif not send_receipts and (
+                                receipt_attempts or type(send_result) is SendResult
+                            ):
+                                # ``success``/``message_id`` are legacy operation
+                                # fields, not provider acknowledgement evidence.
+                                # A same-identity retry could duplicate a write
+                                # which completed before an old adapter returned.
+                                ambiguous_live_timeout = True
+                                adapter_ok = False
+                                msg = (
+                                    f"live adapter send to {platform_name}:{chat_id} "
+                                    "returned legacy success without typed receipt; "
+                                    "delivery is unknown"
+                                )
+                                target_errors.append(msg)
+                                logger.warning("Job '%s': %s", job["id"], msg)
                             elif (
                                 send_raw_response
                                 and thread_id
@@ -3867,6 +4304,32 @@ def _deliver_result(
                                 logger.warning("Job '%s': %s", job["id"], msg)
                                 delivery_errors.append(msg)
 
+                # A typed acknowledgement must be committed before any follow-up
+                # send, fallback, mirror, or seed. A database error leaves its
+                # preregistered attempt unknown and makes retry unsafe.
+                if text_to_send and receipt_attempts and send_result is not None:
+                    persisted_all = _persist_target_text_receipts(
+                        send_receipts,
+                        receipt_attempts,
+                        receipt_requested_target,
+                        components={"text"},
+                        expected_actual_target={
+                            "platform": platform_name,
+                            "chat_id": chat_id,
+                            "thread_id": (
+                                str(route_metadata["direct_messages_topic_id"])
+                                if route_metadata.get("direct_messages_topic_id") is not None
+                                else route_thread_id or ""
+                            ),
+                        },
+                    )
+                    if not persisted_all:
+                        ambiguous_live_timeout = True
+                        adapter_ok = False
+                        target_errors.append(
+                            f"live adapter acknowledgement for {platform_name}:{chat_id} could not be persisted; delivery is unknown"
+                        )
+
                 # Send extracted media files as native attachments via the live
                 # adapter, using the same DM-topic-aware routing as the text send
                 # (#22773 — media previously used a bare thread_id and landed in
@@ -3876,6 +4339,8 @@ def _deliver_result(
                 # payload is already assumed delivered (#38922).  Record the
                 # skipped attachments so the drop is visible rather than silently
                 # lost.
+                _media_receipts = []
+                _media_errors = []
                 if adapter_ok and not timed_out and media_files:
                     routed_media_metadata = dict(media_metadata or {})
                     if transport is not None and transport.is_relay:
@@ -3886,6 +4351,9 @@ def _deliver_result(
                                 routed_media_metadata["user_id"] = logical_home.user_id
                             if logical_home.scope_id:
                                 routed_media_metadata["scope_id"] = logical_home.scope_id
+                    routed_media_metadata["_transport_receipt_requested_target"] = (
+                        receipt_requested_target
+                    )
                     _media_errors = _send_media_via_adapter(
                         runtime_adapter,
                         chat_id,
@@ -3894,6 +4362,7 @@ def _deliver_result(
                         loop,
                         job,
                         platform=platform,
+                        receipts_out=_media_receipts,
                     )
                     # Surface per-file failures into the run status (parity
                     # with the standalone lane): text delivered but an
@@ -3908,6 +4377,39 @@ def _deliver_result(
                     )
                     logger.warning("Job '%s': %s", job["id"], msg)
                     delivery_errors.append(msg)
+
+                media_receipts_persisted = bool(media_files) and _persist_target_text_receipts(
+                    tuple(_media_receipts) if not timed_out else (),
+                    receipt_attempts,
+                    receipt_requested_target,
+                    components={"media"},
+                    expected_actual_target={
+                        "platform": platform_name,
+                        "chat_id": chat_id,
+                        "thread_id": (
+                            str(route_metadata["direct_messages_topic_id"])
+                            if route_metadata.get("direct_messages_topic_id") is not None
+                            else route_thread_id or ""
+                        ),
+                    },
+                )
+                if _media_errors:
+                    # A failed SendResult does not prove that the provider did
+                    # not accept the media. Preserve any receipts above, but
+                    # never retry the whole target through the standalone lane:
+                    # that could duplicate text or attachments after an
+                    # ambiguous live-adapter write.
+                    ambiguous_live_timeout = True
+                    adapter_ok = False
+                if media_files and not media_receipts_persisted:
+                    # Preserve any partial typed acknowledgements, but keep the
+                    # target unknown unless every planned media component was
+                    # confirmed and persisted.
+                    ambiguous_live_timeout = True
+                    adapter_ok = False
+                    target_errors.append(
+                        f"media acknowledgement for {platform_name}:{chat_id} is unavailable; delivery is partial"
+                    )
 
                 if adapter_ok:
                     # Log WHERE it went, not just that it went: a ghost delivery
@@ -4010,6 +4512,12 @@ def _deliver_result(
                         job["id"], err_msg,
                     )
 
+        if ambiguous_live_timeout:
+            # No standalone retry, mirror, or seed after an ambiguous live
+            # send: any of them could duplicate an unconfirmed provider write.
+            delivery_errors.extend(target_errors)
+            continue
+
         if not delivered:
             if transport is not None and transport.is_relay:
                 # Relay owns the logical destination and its connector owns the
@@ -4050,7 +4558,11 @@ def _deliver_result(
                 delivery_errors.extend(target_errors)
                 continue
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            coro = _send_to_platform(
+                platform, pconfig, chat_id, cleaned_delivery_content,
+                thread_id=thread_id, media_files=media_files,
+                receipt_bound=bool(receipt_attempts),
+            )
             try:
                 result = asyncio.run(coro)
             except RuntimeError as run_err:
@@ -4079,6 +4591,13 @@ def _deliver_result(
                 try:
                     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                     try:
+                        def _run_standalone_send():
+                            return asyncio.run(_send_to_platform(
+                                platform, pconfig, chat_id, cleaned_delivery_content,
+                                thread_id=thread_id, media_files=media_files,
+                                receipt_bound=bool(receipt_attempts),
+                            ))
+
                         # The fallback worker is a fresh thread: it does NOT
                         # inherit the multiplexed profile ContextVars (home
                         # override + secret scope). Run inside a copy of the
@@ -4089,8 +4608,7 @@ def _deliver_result(
                         _fallback_context = contextvars.copy_context()
                         future = pool.submit(
                             _fallback_context.run,
-                            asyncio.run,
-                            _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files),
+                            _run_standalone_send,
                         )
                         result = future.result(timeout=30)
                     finally:
@@ -4115,6 +4633,27 @@ def _deliver_result(
                 target_errors.extend([msg])
                 delivery_errors.extend(target_errors)
                 continue
+
+            if receipt_attempts:
+                standalone_receipts = (
+                    result.get("receipts", ()) if isinstance(result, dict) else ()
+                )
+                if not _persist_target_text_receipts(
+                    standalone_receipts, receipt_attempts, receipt_requested_target,
+                ):
+                    if media_files:
+                        msg = (
+                            f"media acknowledgement for {platform_name}:{chat_id} "
+                            "is unavailable; delivery is partial"
+                        )
+                    else:
+                        msg = (
+                            f"standalone send to {platform_name}:{chat_id} returned "
+                            "without a complete typed receipt; delivery is unknown"
+                        )
+                    target_errors.append(msg)
+                    delivery_errors.extend(target_errors)
+                    continue
 
             if result and result.get("error"):
                 # Include target context (platform/chat) so a bare error string
@@ -7498,6 +8037,17 @@ def run_one_job(
                     _running_fire_owners.pop(job["id"], None)
 
 
+def _claimed_fire_identity(job: dict) -> Optional[str]:
+    """Resolve the immutable identity of an already-acquired fire claim."""
+    claim = job.get("fire_claim")
+    if not isinstance(claim, dict):
+        return None
+    fire_at = claim.get("fire_at")
+    if not isinstance(fire_at, str) or not fire_at:
+        raise ValueError("acquired fire claim has no immutable timestamp")
+    return scheduled_fire_identity(job["id"], fire_at)
+
+
 def _run_one_job_body(
     job: dict,
     *,
@@ -7538,9 +8088,28 @@ def _run_one_job_body(
             fire_claim_lost.set()
         return True
 
+    expected_fire_identity = _claimed_fire_identity(job)
     execution_id = job.get("execution_id")
     if not execution_id:
-        execution_id = create_execution(job["id"], source="direct")["id"]
+        create_kwargs = {"source": "direct"}
+        if expected_fire_identity is not None:
+            create_kwargs["fire_identity"] = expected_fire_identity
+        execution = create_execution(job["id"], **create_kwargs)
+        execution_id = execution["id"]
+        job["execution_id"] = execution_id
+        job["fire_identity"] = (
+            execution.get("fire_identity") or expected_fire_identity or execution_id
+        )
+    elif expected_fire_identity is not None:
+        # The job snapshot is not authoritative for durable binding. Always ask
+        # the ledger to verify or atomically bind before running; the operation
+        # is idempotent only when the persisted identity already matches.
+        bound_execution = bind_execution_fire_identity(
+            execution_id, expected_fire_identity,
+        )
+        job["fire_identity"] = (
+            bound_execution.get("fire_identity") or expected_fire_identity
+        )
     delivery_attempted = False
     delivery_error = None
     # Durable failure-incident bookkeeping for this run (see cron.incidents):
@@ -7826,6 +8395,8 @@ def _run_one_job_body(
                             deliver_content,
                             adapters=adapters,
                             loop=loop,
+                            execution_id=str(execution_id),
+                            fire_identity=str(job.get("fire_identity") or execution_id),
                             # Failure summaries (and drift/blocked-config alerts
                             # composed into deliver_content on the failure path)
                             # honor the job's failure_deliver override (NS-788).
@@ -7920,8 +8491,15 @@ def _run_one_job_body(
         normalized_deliver = _normalize_deliver_value(
             _delivery_lane_value(job, for_failure=not success)
         )
-        if delivery_error:
+        receipt_outcome = (
+            _receipt_delivery_outcome(str(execution_id)) if should_deliver else None
+        )
+        if receipt_outcome == "unknown":
+            delivery_outcome = "unknown"
+        elif delivery_error:
             delivery_outcome = "failed"
+        elif receipt_outcome is not None:
+            delivery_outcome = receipt_outcome
         elif should_deliver and unresolved_origin:
             delivery_outcome = "not_configured"
         elif should_deliver and normalized_deliver != "local":
@@ -7979,9 +8557,8 @@ def _run_one_job_body(
                 _delivery_lane_value(job, for_failure=True)
             )
             unresolved_origin = False
-            # Durable failure incident: same ack gate as the normal failure
-            # delivery above — an acked signature stays silent on this path
-            # too, so the retry-path alert cannot re-ping after acknowledgment.
+            # Durable failure incident: preserve upstream ack suppression while
+            # keeping the receipt-bound delivery contract for this PR.
             incident_acked, failure_incident_id = _upsert_incident_for_failure(
                 job, _err_text
             )
@@ -8002,6 +8579,8 @@ def _run_one_job_body(
                         + _failure_streak_nudge(job),
                         adapters=adapters,
                         loop=loop,
+                        execution_id=str(execution_id),
+                        fire_identity=str(job.get("fire_identity") or execution_id),
                         for_failure=True,
                     )
                 except Exception as delivery_exc:
@@ -8013,12 +8592,15 @@ def _run_one_job_body(
                     unresolved_origin = not _resolve_delivery_targets(
                         job, for_failure=True
                     )
-                if delivery_error:
+                receipt_outcome = _receipt_delivery_outcome(str(execution_id))
+                if receipt_outcome == "unknown":
+                    delivery_outcome = "unknown"
+                elif receipt_outcome == "failed" or delivery_error:
                     delivery_outcome = "failed"
                 elif unresolved_origin:
                     delivery_outcome = "not_configured"
                 elif normalized_deliver != "local":
-                    delivery_outcome = "delivered"
+                    delivery_outcome = receipt_outcome or "delivered"
                 if delivery_outcome in ("delivered", "not_configured"):
                     _mark_incident_alerted(failure_incident_id)
         try:
@@ -8412,7 +8994,7 @@ class CronSchedulerRegistrationError(RuntimeError):
     def to_dict(self) -> dict:
         """Return the public partial-failure contract without provider details."""
         return {
-            "error": str(self),
+            "error": "scheduler_registration_failed",
             "job_id": self.job["id"],
             "job_saved": True,
             "scheduler_registered": False,
@@ -8782,6 +9364,29 @@ def tick(
             # compatible; real callers using return_job=True never take it.
             claimed_job = dict(claimed) if isinstance(claimed, dict) else dict(job)
             claimed_job["execution_id"] = job["execution_id"]
+            if isinstance(claimed, dict):
+                try:
+                    expected_fire_identity = _claimed_fire_identity(claimed_job)
+                    bound_execution = bind_execution_fire_identity(
+                        job["execution_id"], expected_fire_identity,
+                    )
+                    claimed_job["fire_identity"] = (
+                        bound_execution.get("fire_identity") or expected_fire_identity
+                    )
+                except BaseException as exc:
+                    finish_execution(
+                        job["execution_id"],
+                        success=False,
+                        error=(
+                            "Fire identity binding failed before dispatch: "
+                            f"{type(exc).__name__}: {exc}"
+                        ),
+                    )
+                    raise
+            else:
+                claimed_job["fire_identity"] = (
+                    job.get("fire_identity") or job["execution_id"]
+                )
             return run_one_job(
                 claimed_job,
                 adapters=adapters,
@@ -8851,7 +9456,10 @@ def tick(
             # abandoned records as unknown; it never automatically retries them.
             try:
                 execution = create_execution(job_id, source="builtin")
-                dispatched_job = dict(job, execution_id=execution["id"])
+                dispatched_job = dict(
+                    job,
+                    execution_id=execution["id"],
+                )
                 _ctx = contextvars.copy_context()
             except Exception as execution_err:
                 # Init/creation failure between the claim and the submit —

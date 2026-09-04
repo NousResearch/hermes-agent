@@ -1061,8 +1061,24 @@ async def _send_via_adapter(
             except Exception as e:
                 return {"error": f"Plugin platform send failed: {_bounded_send_error(e)}"}
             if result.success:
-                return {"success": True, "message_id": result.message_id}
-            return {"error": f"Adapter send failed: {_bounded_send_error(result.error)}"}
+                # Receipts are content-free immutable evidence. Keep them on
+                # this internal result so cron can bind them to pre-registered
+                # attempts; legacy message_id remains only a display field.
+                normalized = {
+                    "success": True,
+                    "message_id": result.message_id,
+                }
+                receipts = tuple(getattr(result, "receipts", ()) or ())
+                if receipts:
+                    normalized["receipts"] = receipts
+                return normalized
+            normalized = {
+                "error": f"Adapter send failed: {_bounded_send_error(result.error)}"
+            }
+            receipts = tuple(getattr(result, "receipts", ()) or ())
+            if receipts:
+                normalized["receipts"] = receipts
+            return normalized
 
     entry = None
     try:
@@ -1109,7 +1125,10 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
+async def _send_to_platform(
+    platform, pconfig, chat_id, message, thread_id=None, media_files=None,
+    force_document=False, args=None, receipt_bound=False,
+):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -1203,6 +1222,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             thread_id=thread_id,
             disable_link_previews=disable_link_previews,
             force_document=force_document,
+            receipt_bound=receipt_bound,
         )
 
     # --- Discord: chunked delivery via the registry's standalone_sender_fn.
@@ -1556,7 +1576,43 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+def _plan_standalone_telegram_text(
+    message: str, media_files=None,
+) -> tuple[str, list[str], bool, str | None]:
+    """Format and split the exact text bytes used by standalone Telegram."""
+    from gateway.platforms.base import BasePlatformAdapter, utf16_len
+
+    has_html = bool(re.search(r'<[a-zA-Z/][^>]*>', message))
+    if has_html:
+        formatted = message
+    else:
+        try:
+            from plugins.platforms.telegram.adapter import TelegramAdapter
+            adapter = TelegramAdapter.__new__(TelegramAdapter)
+            formatted = adapter.format_message(message)
+        except Exception:
+            formatted = message
+    caption = None
+    candidate_caption, _ = _media_caption_split(
+        message, media_files, max_caption_len=_TELEGRAM_CAPTION_LIMIT,
+    )
+    if (
+        candidate_caption is not None
+        and utf16_len(formatted) <= _TELEGRAM_CAPTION_LIMIT
+    ):
+        caption = formatted
+    chunks = (
+        BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len)
+        if formatted.strip() and caption is None
+        else []
+    )
+    return formatted, list(chunks), has_html, caption
+
+
+async def _send_telegram(
+    token, chat_id, message, media_files=None, thread_id=None,
+    disable_link_previews=False, force_document=False, receipt_bound=False,
+):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -1568,23 +1624,10 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         from telegram import Bot
         from telegram.constants import ParseMode
 
-        # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
-        # Inspired by github.com/ashaney — PR #1568.
-        _has_html = bool(re.search(r'<[a-zA-Z/][^>]*>', message))
-
-        if _has_html:
-            formatted = message
-            send_parse_mode = ParseMode.HTML
-        else:
-            # Reuse the gateway adapter's format_message for markdown→MarkdownV2
-            try:
-                from plugins.platforms.telegram.adapter import TelegramAdapter
-                _adapter = TelegramAdapter.__new__(TelegramAdapter)
-                formatted = _adapter.format_message(message)
-            except Exception:
-                # Fallback: send as-is if formatting unavailable
-                formatted = message
-            send_parse_mode = ParseMode.MARKDOWN_V2
+        formatted, planned_text_chunks, _has_html, _tg_caption = (
+            _plan_standalone_telegram_text(message, media_files=media_files)
+        )
+        send_parse_mode = ParseMode.HTML if _has_html else ParseMode.MARKDOWN_V2
 
         # Honour a configured proxy (telegram.proxy_url in config.yaml, exported
         # as TELEGRAM_PROXY env var by load_gateway_config). Without this, the
@@ -1648,8 +1691,22 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         if disable_link_previews:
             text_kwargs["disable_web_page_preview"] = True
 
+        from gateway.platforms.base import (
+            TransportReceipt,
+            TransportTarget,
+            normalize_transport_provider_message_id,
+        )
+
         last_msg = None
+        last_provider_message_id = None
         warnings = []
+        receipts = []
+        requested_thread = (
+            str(effective_thread_id)
+            if thread_id is not None and effective_thread_id is not None
+            else None
+        )
+        requested_target = TransportTarget("telegram", str(chat_id), requested_thread)
 
         # MEDIA:<path> caption: when a single captionable file is accompanied
         # by short text, attach the text to the media bubble as its native
@@ -1659,28 +1716,11 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         # the formatted length against Telegram's 1024 cap — formatting can
         # inflate a raw-<1024 string past it, in which case fall back to a
         # separate body message.
-        _tg_caption = None
-        from gateway.platforms.base import utf16_len as _utf16_len
-        _cap, _ = _media_caption_split(
-            message, media_files, max_caption_len=_TELEGRAM_CAPTION_LIMIT
-        )
-        if _cap is not None and _utf16_len(formatted) <= _TELEGRAM_CAPTION_LIMIT:
-            _tg_caption = formatted
-            formatted = ""  # suppress the separate text send below
-
+        # The shared planner already selected caption-vs-text using the exact
+        # formatted UTF-16 length. ``_tg_caption`` is therefore also the
+        # preregistration decision for receipt-bound standalone sends.
         if formatted.strip():
-            # Chunk *after* formatting: MarkdownV2/HTML escaping inflates the
-            # text (each escaped char like `!`/`.`/`-` becomes `\!`/`\.`/`\-`),
-            # so a message that fit under 4096 UTF-16 units raw can exceed the
-            # Telegram limit once formatted and get rejected as "Message is too
-            # long". Sizing on the formatted text in UTF-16 units guarantees
-            # every chunk is deliverable. (issue #28557)
-            from gateway.platforms.base import BasePlatformAdapter, utf16_len
-
-            text_chunks = BasePlatformAdapter.truncate_message(
-                formatted, 4096, len_fn=utf16_len
-            )
-            for chunk in text_chunks:
+            for text_ordinal, chunk in enumerate(planned_text_chunks):
                 try:
                     last_msg = await _send_telegram_message_with_retry(
                         bot,
@@ -1703,6 +1743,8 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                             parse_mode=send_parse_mode, **text_kwargs
                         )
                     elif "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
+                        if receipt_bound:
+                            raise
                         logger.warning(
                             "Parse mode %s failed in _send_telegram, falling back to plain text: %s",
                             send_parse_mode,
@@ -1723,8 +1765,36 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                         )
                     else:
                         raise
+                actual_thread = text_kwargs.get("message_thread_id")
+                last_provider_message_id = normalize_transport_provider_message_id(
+                    getattr(last_msg, "message_id", None)
+                )
+                if last_provider_message_id is None:
+                    receipts.append(TransportReceipt(
+                        outcome="unknown",
+                        requested_target=requested_target,
+                        component="text",
+                        ordinal=text_ordinal,
+                    ))
+                    return {
+                        "error": "Telegram delivery acknowledgement is invalid",
+                        "error_kind": "unknown",
+                        "retryable": False,
+                        "receipts": tuple(receipts),
+                    }
+                receipts.append(TransportReceipt(
+                    outcome="delivered",
+                    provider_message_id=last_provider_message_id,
+                    requested_target=requested_target,
+                    actual_target=TransportTarget(
+                        "telegram", str(chat_id),
+                        str(actual_thread) if actual_thread is not None else None,
+                    ),
+                    component="text",
+                    ordinal=text_ordinal,
+                ))
 
-        for media_path, is_voice in media_files:
+        for media_ordinal, (media_path, is_voice) in enumerate(media_files):
             if not os.path.exists(media_path):
                 warning = f"Media file not found, skipping: {media_path}"
                 logger.warning(warning)
@@ -1732,12 +1802,34 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 # Caption mode suppressed the separate text send; if the file
                 # it was meant to caption is gone, deliver the caption text on
                 # its own so the words aren't silently lost.
-                if _tg_caption is not None and last_msg is None:
+                if (
+                    not receipt_bound
+                    and _tg_caption is not None
+                    and last_msg is None
+                ):
                     try:
                         last_msg = await _send_telegram_message_with_retry(
                             bot, chat_id=int_chat_id, text=_tg_caption,
                             parse_mode=send_parse_mode, **text_kwargs
                         )
+                        last_provider_message_id = (
+                            normalize_transport_provider_message_id(
+                                getattr(last_msg, "message_id", None)
+                            )
+                        )
+                        if last_provider_message_id is None:
+                            receipts.append(TransportReceipt(
+                                outcome="unknown",
+                                requested_target=requested_target,
+                                component="text",
+                                ordinal=0,
+                            ))
+                            return {
+                                "error": "Telegram delivery acknowledgement is invalid",
+                                "error_kind": "unknown",
+                                "retryable": False,
+                                "receipts": tuple(receipts),
+                            }
                         _tg_caption = None  # delivered — don't re-caption a later file
                     except Exception as _cap_err:
                         logger.warning(
@@ -1821,6 +1913,8 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                             "parse" in str(media_err).lower()
                             or "caption" in str(media_err).lower()
                         ):
+                            if receipt_bound:
+                                raise
                             # Caption failed to parse as MarkdownV2/HTML —
                             # retry with a plain-text caption so the media
                             # (and its caption) still deliver.
@@ -1850,6 +1944,34 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                                 )
                         else:
                             raise
+                    actual_thread = media_kwargs.get("message_thread_id")
+                    last_provider_message_id = normalize_transport_provider_message_id(
+                        getattr(last_msg, "message_id", None)
+                    )
+                    if last_provider_message_id is None:
+                        receipts.append(TransportReceipt(
+                            outcome="unknown",
+                            requested_target=requested_target,
+                            component="media",
+                            ordinal=media_ordinal,
+                        ))
+                        return {
+                            "error": "Telegram delivery acknowledgement is invalid",
+                            "error_kind": "unknown",
+                            "retryable": False,
+                            "receipts": tuple(receipts),
+                        }
+                    receipts.append(TransportReceipt(
+                        outcome="delivered",
+                        provider_message_id=last_provider_message_id,
+                        requested_target=requested_target,
+                        actual_target=TransportTarget(
+                            "telegram", str(chat_id),
+                            str(actual_thread) if actual_thread is not None else None,
+                        ),
+                        component="media",
+                        ordinal=media_ordinal,
+                    ))
             except Exception as e:
                 warning = _sanitize_error_text(f"Failed to send media {media_path}: {e}")
                 logger.error(warning)
@@ -1865,15 +1987,21 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             "success": True,
             "platform": "telegram",
             "chat_id": chat_id,
-            "message_id": str(last_msg.message_id),
+            "message_id": last_provider_message_id,
         }
+        if receipts:
+            result["receipts"] = tuple(receipts)
         if warnings:
             result["warnings"] = warnings
         return result
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}
     except Exception as e:
-        return _error(f"Telegram send failed: {e}")
+        result = _error(f"Telegram send failed: {e}")
+        partial = tuple(locals().get("receipts", ()))
+        if partial:
+            result["receipts"] = partial
+        return result
 
 
 # _send_slack moved to the slack plugin as _standalone_send
@@ -2254,11 +2382,16 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
 async def _matrix_send_core(adapter, chat_id, message, media_files, metadata):
     """Core send logic shared by live and ephemeral Matrix adapters."""
     last_result = None
+    receipts = []
 
     if message.strip():
         last_result = await adapter.send(chat_id, message, metadata=metadata)
+        receipts.extend(getattr(last_result, "receipts", ()))
         if not last_result.success:
-            return _error(f"Matrix send failed: {last_result.error}")
+            result = _error(f"Matrix send failed: {last_result.error}")
+            if receipts:
+                result["receipts"] = tuple(receipts)
+            return result
 
     for media_path, is_voice in media_files:
         if not os.path.exists(media_path):
@@ -2276,18 +2409,25 @@ async def _matrix_send_core(adapter, chat_id, message, media_files, metadata):
         else:
             last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
 
+        receipts.extend(getattr(last_result, "receipts", ()))
         if not last_result.success:
-            return _error(f"Matrix media send failed: {last_result.error}")
+            result = _error(f"Matrix media send failed: {last_result.error}")
+            if receipts:
+                result["receipts"] = tuple(receipts)
+            return result
 
     if last_result is None:
         return {"error": "No deliverable text or media remained after processing MEDIA tags"}
 
-    return {
+    result = {
         "success": True,
         "platform": "matrix",
         "chat_id": chat_id,
         "message_id": last_result.message_id,
     }
+    if receipts:
+        result["receipts"] = tuple(receipts)
+    return result
 
 
 # _send_dingtalk moved to plugins/platforms/dingtalk/adapter.py::_standalone_send,

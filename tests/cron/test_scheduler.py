@@ -1,10 +1,12 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
+import asyncio
 import contextlib
 import itertools
 import json
 import logging
 import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -390,8 +392,10 @@ class TestDeliverResultWrapping:
 
         relay = MagicMock()
         relay.fronts_platform.side_effect = lambda platform: platform == Platform.SLACK
-        relay.send_for_platform = AsyncMock(return_value=MagicMock(success=True))
-        relay.send_voice = AsyncMock(return_value=MagicMock(success=True))
+        relay.send_for_platform = AsyncMock(
+            return_value=SimpleNamespace(success=True)
+        )
+        relay.send_voice = AsyncMock(return_value=SimpleNamespace(success=True))
         relay.supports_inchannel_continuable = False
         # Not a real RelayAdapter: keep the auto-created accessor from
         # shadowing the scalar False (MagicMock fabricates truthy callables).
@@ -445,7 +449,8 @@ class TestDeliverResultWrapping:
                 loop=loop,
             )
 
-        assert result is None
+        assert result is not None
+        assert "media acknowledgement" in result
         relay.send_for_platform.assert_awaited_once()
         args = relay.send_for_platform.await_args.args
         assert args[:3] == (Platform.SLACK, "D123", "scheduled result")
@@ -466,8 +471,8 @@ class TestDeliverResultWrapping:
         media_path = self._safe_media_path(tmp_path, monkeypatch, "cron-voice.mp3")
 
         adapter = AsyncMock()
-        adapter.send.return_value = MagicMock(success=True)
-        adapter.send_voice.return_value = MagicMock(success=True)
+        adapter.send.return_value = SimpleNamespace(success=True)
+        adapter.send_voice.return_value = SimpleNamespace(success=True)
 
         pconfig = MagicMock()
         pconfig.enabled = True
@@ -1801,7 +1806,7 @@ class TestSendMediaViaAdapter:
         def fake_run_coro(coro, _loop):
             coro.close()
             completed = Future()
-            completed.set_result(MagicMock(success=True))
+            completed.set_result(SimpleNamespace(success=True))
             return completed
 
         with patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
@@ -1942,20 +1947,10 @@ class TestParallelTick:
 
 
 class TestDeliverResultTimeoutCancelsFuture:
-    """When future.result(timeout=60) raises TimeoutError in the live adapter
-    delivery path, the outcome depends on whether the coroutine was already
-    running.  future.cancel() returning False means it is in flight on the wire
-    (cannot be un-sent) → treat as DELIVERED and skip the standalone fallback to
-    avoid a duplicate (#38922).  future.cancel() returning True means it never
-    started (wedged loop) → nothing was sent, so fall through to standalone or
-    the message is silently dropped.  Regression for #38922.
-    """
+    """A live confirmation timeout is unknown, never receipt evidence."""
 
-    def test_live_adapter_timeout_assumes_delivered_no_duplicate(self):
-        """End-to-end: live adapter confirmation times out past the 60s budget.
-        The fix (#38922) treats the send as already-dispatched/delivered and
-        does NOT run the standalone fallback — otherwise the message is sent
-        twice."""
+    def test_live_adapter_timeout_is_unknown_without_fallback(self):
+        """Neither Future.cancel() result can prove dispatch or delivery."""
         from gateway.config import Platform
         from concurrent.futures import Future
 
@@ -1973,9 +1968,8 @@ class TestDeliverResultTimeoutCancelsFuture:
 
         # A real concurrent.futures.Future, but we override .result() to raise
         # TimeoutError exactly like the 60s wait firing in production.  We make
-        # .cancel() return False to simulate the coroutine being ALREADY RUNNING
-        # on the gateway loop (in flight on the wire) — the case where the send
-        # cannot be un-sent and a standalone resend would be a duplicate.
+        # cancel() returning False only says cancellation lost a race; it does
+        # not acknowledge a provider write or identify a recipient.
         captured_future = Future()
         cancel_calls = []
 
@@ -2009,12 +2003,14 @@ class TestDeliverResultTimeoutCancelsFuture:
                 loop=loop,
             )
 
-        # 1. cancel() was attempted (returned False = in flight).
+        # 1. Best-effort cancellation may still be attempted, but is not used
+        # as receipt evidence.
         assert cancel_calls == [True], "future.cancel() should be attempted on TimeoutError"
-        # 2. Delivery is reported successful (no error string returned).
-        assert result is None, f"expected successful delivery, got error: {result!r}"
-        # 3. The standalone fallback must NOT run — that is the #38922 fix:
-        #    an in-flight confirmation timeout is assume-delivered, not a resend.
+        # 2. The caller sees an ambiguous/unknown error, not success.
+        assert result is not None
+        assert "confirmation timed out" in result
+        # 3. No same-identity fallback after unknown: it could duplicate a
+        # request that reached Telegram.
         standalone_send.assert_not_awaited()
 
 
@@ -2073,12 +2069,22 @@ class TestDeliverResultLiveAdapterUnconfirmed:
             )
         return result, standalone_send
 
-    def test_none_result_falls_through_to_standalone(self):
-        """send() returning None must trigger the standalone fallback, not a
-        silent "delivered" log."""
+    def test_none_result_is_unknown_without_standalone_retry(self):
+        """No response cannot prove the adapter did not dispatch the write."""
         result, standalone_send = self._run(None)
-        assert result is None, f"standalone should have delivered, got: {result!r}"
-        standalone_send.assert_awaited_once()
+        assert result is not None
+        assert "unconfirmed" in result
+        standalone_send.assert_not_awaited()
+
+    def test_legacy_success_without_typed_receipt_is_unknown_without_fallback(self):
+        """A legacy success bit has no provider-issued delivery evidence."""
+        from gateway.platforms.base import SendResult
+
+        result, standalone_send = self._run(SendResult(success=True, message_id="legacy"))
+
+        assert result is not None
+        assert "unknown" in result
+        standalone_send.assert_not_awaited()
 
 
 class TestDeliverOriginUnresolvableIsLocal:
@@ -2416,7 +2422,7 @@ class TestCronContinuableSurfaceInChannel:
 
     def _slack_adapter(self, supports_inchannel=True, with_store=True):
         adapter = AsyncMock()
-        adapter.send.return_value = MagicMock(
+        adapter.send.return_value = SimpleNamespace(
             success=True, message_id="msg_1", raw_response=None,
         )
         # Capability flag read via getattr in the scheduler.
@@ -2522,8 +2528,18 @@ class TestCronContinuableSurfaceInChannel:
                 pass
 
             async def _deliver_to_platform(self, target, text, metadata):
+                from gateway.platforms.base import SendResult, TransportReceipt, TransportTarget
+
                 captured["target"] = target
-                return {"success": True, "message_id": "msg_1"}
+                receipt_target = TransportTarget("slack", "C123")
+                return SendResult(
+                    success=True,
+                    message_id="msg_1",
+                    receipts=(TransportReceipt(
+                        outcome="delivered", provider_message_id="msg_1",
+                        requested_target=receipt_target, actual_target=receipt_target,
+                    ),),
+                )
 
         adapter = self._slack_adapter(supports_inchannel=True)
         origin_with_thread = {
@@ -2733,6 +2749,10 @@ class TestMultiTargetDeliveryContinuesOnFailure:
         assert mock_pool.submit.call_count == 2, (
             f"expected 2 delivery attempts, got {mock_pool.submit.call_count}"
         )
+        assert all(
+            not any(asyncio.iscoroutine(arg) for arg in call.args)
+            for call in mock_pool.submit.call_args_list
+        ), "create the coroutine inside the worker, never before executor ownership"
         # First target's failure is surfaced in the returned error string.
         assert result is not None
         assert "a@example.com" in result

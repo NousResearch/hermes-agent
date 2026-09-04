@@ -3665,6 +3665,7 @@ def _claim_job_for_fire_locked(
                 return False
             now = _hermes_now()
             existing = job.get("fire_claim")
+            fire_at = now.isoformat()
             if existing:
                 try:
                     claimed_at = _ensure_aware(datetime.fromisoformat(existing["at"]))
@@ -3679,6 +3680,10 @@ def _claim_job_for_fire_locked(
                         return False  # someone holds a fresh claim
                 except Exception:
                     pass  # malformed claim → overwrite
+                if not force:
+                    existing_fire_at = existing.get("fire_at")
+                    if isinstance(existing_fire_at, str) and existing_fire_at:
+                        fire_at = existing_fire_at
             if force:
                 job["enabled"] = True
                 job["state"] = "scheduled"
@@ -3688,7 +3693,11 @@ def _claim_job_for_fire_locked(
             # stale lease, and the previous runner must not heartbeat the new
             # claim merely because hostname + PID are unchanged.
             owner = f"{_machine_id()}:{uuid.uuid4().hex}"
-            job["fire_claim"] = {"at": now.isoformat(), "by": owner}
+            job["fire_claim"] = {
+                "at": now.isoformat(),
+                "fire_at": fire_at,
+                "by": owner,
+            }
             kind = job.get("schedule", {}).get("kind")
             if kind in {"cron", "interval"}:
                 nxt = compute_next_run(job["schedule"], now.isoformat())

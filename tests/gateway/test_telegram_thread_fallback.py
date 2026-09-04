@@ -12,15 +12,17 @@ import sys
 import socket
 import types
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gateway.config import PlatformConfig, Platform
 from gateway.platforms.base import (
+    BasePlatformAdapter,
     MessageEvent,
     MessageType,
     SendResult,
+    TransportTarget,
     _reply_anchor_for_event,
     _thread_metadata_for_source,
 )
@@ -255,6 +257,441 @@ async def test_private_chat_explicit_thread_id_uses_message_thread_id_without_an
 
 
 @pytest.mark.asyncio
+async def test_send_thread_fallback_receipt_keeps_requested_and_actual_targets():
+    """A fallback acknowledgement must not claim the requested topic received it."""
+    adapter = _make_adapter()
+
+    async def mock_send_message(**kwargs):
+        if kwargs.get("message_thread_id") is not None:
+            raise FakeBadRequest("Message thread not found")
+        return SimpleNamespace(message_id=270454)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+    result = await adapter.send(
+        chat_id="-100123",
+        content="cron topic delivery",
+        metadata={"thread_id": "270453"},
+    )
+
+    assert result.receipt is not None
+    assert result.receipt.outcome == "delivered"
+    assert result.receipt.provider_message_id == "270454"
+    assert result.receipt.requested_target.thread_id == "270453"
+    assert result.receipt.actual_target.thread_id is None
+
+
+@pytest.mark.asyncio
+async def test_direct_messages_topic_receipt_preserves_logical_topic_target():
+    adapter = _make_adapter()
+    calls = []
+
+    async def mock_send_message(**kwargs):
+        calls.append(dict(kwargs))
+        return SimpleNamespace(message_id=270455)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+    result = await adapter.send(
+        chat_id="775566675",
+        content="cron direct-messages topic delivery",
+        metadata={
+            "direct_messages_topic_id": "270453",
+            "_transport_receipt_requested_target": {
+                "platform": "telegram",
+                "chat_id": "775566675",
+                "thread_id": "270453",
+            },
+        },
+    )
+
+    assert calls[0]["direct_messages_topic_id"] == 270453
+    assert calls[0].get("message_thread_id") is None
+    assert result.receipt is not None
+    assert result.receipt.requested_target.thread_id == "270453"
+    assert result.receipt.actual_target.thread_id == "270453"
+
+
+@pytest.mark.asyncio
+async def test_multi_chunk_send_emits_every_telegram_ack_in_order():
+    adapter = _make_adapter()
+    adapter.truncate_message = MagicMock(return_value=["one", "two"])
+    adapter._bot = SimpleNamespace(
+        send_message=AsyncMock(side_effect=[
+            SimpleNamespace(message_id=1), SimpleNamespace(message_id=2),
+        ])
+    )
+
+    result = await adapter.send(chat_id="-100123", content="long message")
+
+    assert [receipt.provider_message_id for receipt in result.receipts] == ["1", "2"]
+    assert [(receipt.component, receipt.ordinal) for receipt in result.receipts] == [
+        ("text", 0), ("text", 1),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_multi_chunk_failure_preserves_earlier_telegram_ack():
+    adapter = _make_adapter()
+    adapter.truncate_message = MagicMock(return_value=["one", "two"])
+    adapter._bot = SimpleNamespace(
+        send_message=AsyncMock(side_effect=[
+            SimpleNamespace(message_id=1), RuntimeError("second chunk failed"),
+        ])
+    )
+
+    result = await adapter.send(chat_id="-100123", content="long message")
+
+    assert result.success is False
+    assert [receipt.provider_message_id for receipt in result.receipts] == ["1"]
+    assert [(receipt.component, receipt.ordinal) for receipt in result.receipts] == [
+        ("text", 0),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_telegram_native_document_ack_emits_exact_media_receipt(tmp_path):
+    adapter = _make_adapter()
+    adapter._bot = SimpleNamespace(
+        send_document=AsyncMock(return_value=SimpleNamespace(message_id=42)),
+    )
+    document = tmp_path / "report.pdf"
+    document.write_bytes(b"bounded-document")
+
+    result = await adapter.send_document(
+        chat_id="-100123",
+        file_path=str(document),
+        metadata={
+            "thread_id": "270454",
+            "_transport_receipt_component": "media",
+            "_transport_receipt_ordinal": 7,
+            "_transport_receipt_requested_target": {
+                "platform": "telegram",
+                "chat_id": "-100123",
+                "thread_id": "270453",
+            },
+        },
+    )
+
+    assert result.success is True
+    assert result.receipt is not None
+    assert result.receipt.outcome == "delivered"
+    assert result.receipt.provider_message_id == "42"
+    assert (result.receipt.component, result.receipt.ordinal) == ("media", 7)
+    assert result.receipt.requested_target.thread_id == "270453"
+    assert result.receipt.actual_target is not None
+    assert result.receipt.actual_target.thread_id == "270454"
+
+
+@pytest.mark.asyncio
+async def test_telegram_native_media_legacy_ack_is_not_upgraded(tmp_path):
+    adapter = _make_adapter()
+    adapter._bot = SimpleNamespace(
+        send_document=AsyncMock(return_value=SimpleNamespace(message_id=43)),
+    )
+    document = tmp_path / "legacy.pdf"
+    document.write_bytes(b"bounded-document")
+
+    result = await adapter.send_document(
+        chat_id="-100123",
+        file_path=str(document),
+    )
+
+    assert result.success is True
+    assert result.message_id == "43"
+    assert result.receipt is None
+    assert result.receipts == ()
+
+
+@pytest.mark.asyncio
+async def test_telegram_invalid_media_receipt_metadata_sends_nothing(
+    tmp_path, monkeypatch,
+):
+    adapter = _make_adapter()
+    adapter._bot = SimpleNamespace(send_document=AsyncMock())
+    fallback = AsyncMock(return_value=SendResult(success=True, message_id="fallback"))
+    monkeypatch.setattr(BasePlatformAdapter, "send_document", fallback)
+    document = tmp_path / "report.pdf"
+    document.write_bytes(b"bounded-document")
+
+    result = await adapter.send_document(
+        chat_id="-100123",
+        file_path=str(document),
+        metadata={
+            "_transport_receipt_component": "media",
+            "_transport_receipt_ordinal": True,
+        },
+    )
+
+    assert result.success is False
+    assert result.error == "Invalid transport receipt metadata"
+    assert result.error_kind == "invalid_transport_receipt"
+    adapter._bot.send_document.assert_not_awaited()
+    fallback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_telegram_media_receipt_metadata_rejects_subclasses_before_fallback(
+    tmp_path, monkeypatch,
+):
+    adapter = _make_adapter()
+    adapter._bot = SimpleNamespace(send_document=AsyncMock())
+    fallback = AsyncMock(return_value=SendResult(success=True, message_id="fallback"))
+    monkeypatch.setattr(BasePlatformAdapter, "send_document", fallback)
+    document = tmp_path / "hostile.pdf"
+    document.write_bytes(b"bounded-document")
+
+    class HostileDict(dict):
+        def __bool__(self):
+            raise AssertionError("hostile metadata truthiness was evaluated")
+
+        def get(self, *_args, **_kwargs):
+            raise AssertionError("hostile metadata get was called")
+
+        def __contains__(self, _key):
+            raise AssertionError("hostile metadata membership was evaluated")
+
+    metadata_values = (
+        HostileDict({
+            "_transport_receipt_component": "media",
+            "_transport_receipt_ordinal": 0,
+        }),
+        {
+            "_transport_receipt_component": "media",
+            "_transport_receipt_ordinal": 0,
+            "_transport_receipt_requested_target": HostileDict({}),
+        },
+    )
+    for metadata in metadata_values:
+        result = await adapter.send_document(
+            chat_id="-100123", file_path=str(document), metadata=metadata,
+        )
+        assert result.success is False
+        assert result.error_kind == "invalid_transport_receipt"
+
+    adapter._bot.send_document.assert_not_awaited()
+    fallback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_telegram_receipt_metadata_rejects_subclasses_before_provider_send():
+    adapter = _make_adapter()
+    send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    adapter._bot = SimpleNamespace(send_message=send_message)
+
+    class HostileDict(dict):
+        def __bool__(self):
+            raise AssertionError("hostile metadata truthiness was evaluated")
+
+        def get(self, *_args, **_kwargs):
+            raise AssertionError("hostile metadata get was called")
+
+        def __contains__(self, _key):
+            raise AssertionError("hostile metadata membership was evaluated")
+
+    class HostileText(str):
+        def __bool__(self):
+            raise AssertionError("hostile routing truthiness was evaluated")
+
+        def __str__(self):
+            raise AssertionError("hostile routing value was stringified")
+
+    content_result = await adapter.send(
+        chat_id="-100123", content=HostileText("bounded"),
+        metadata={
+            "_transport_receipt_requested_target": {
+                "platform": "telegram", "chat_id": "-100123",
+            },
+        },
+    )
+    outer_result = await adapter.send(
+        chat_id="-100123", content="bounded",
+        metadata=HostileDict({"_transport_receipt_requested_target": {}}),
+    )
+    nested_result = await adapter.send(
+        chat_id="-100123", content="bounded",
+        metadata={"_transport_receipt_requested_target": HostileDict({})},
+    )
+    routing_result = await adapter.send(
+        chat_id="-100123", content="bounded",
+        metadata={
+            "_transport_receipt_requested_target": {
+                "platform": "telegram", "chat_id": "-100123",
+            },
+            "thread_id": HostileText("7"),
+        },
+    )
+
+    for result in (content_result, outer_result, nested_result, routing_result):
+        assert result.success is False
+        assert result.error_kind == "invalid_transport_receipt"
+    send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method_name", "suffix", "bot_method", "fallback_method"),
+    (
+        ("send_image_file", ".jpg", "send_photo", "send_document"),
+        ("send_document", ".pdf", "send_document", "send_document"),
+        ("send_video", ".mp4", "send_video", "send_video"),
+        ("send_voice", ".ogg", "send_voice", "send_voice"),
+        ("send_voice", ".mp3", "send_audio", "send_voice"),
+    ),
+)
+async def test_telegram_preregistered_media_timeout_never_falls_back(
+    tmp_path, monkeypatch, method_name, suffix, bot_method, fallback_method,
+):
+    adapter = _make_adapter()
+    provider_send = AsyncMock(side_effect=TimeoutError("ambiguous provider outcome"))
+    adapter._bot = SimpleNamespace(**{bot_method: provider_send})
+    fallback = AsyncMock(return_value=SendResult(success=True, message_id="fallback"))
+    if method_name == "send_image_file":
+        monkeypatch.setattr(adapter, fallback_method, fallback)
+    else:
+        monkeypatch.setattr(BasePlatformAdapter, fallback_method, fallback)
+    media = tmp_path / f"media{suffix}"
+    media.write_bytes(b"bounded-media")
+
+    result = await getattr(adapter, method_name)(
+        chat_id="123",
+        **{
+            {
+                "send_image_file": "image_path",
+                "send_document": "file_path",
+                "send_video": "video_path",
+                "send_voice": "audio_path",
+            }[method_name]: str(media),
+        },
+        metadata={
+            "_transport_receipt_component": "media",
+            "_transport_receipt_ordinal": 4,
+            "_transport_receipt_requested_target": {
+                "platform": "telegram",
+                "chat_id": "123",
+            },
+        },
+    )
+
+    provider_send.assert_awaited_once()
+    fallback.assert_not_awaited()
+    assert result.success is False
+    assert result.retryable is False
+    assert result.error_kind == "unknown"
+    assert result.receipt is not None
+    assert result.receipt.outcome == "unknown"
+    assert (result.receipt.component, result.receipt.ordinal) == ("media", 4)
+    assert result.receipt.requested_target == TransportTarget("telegram", "123")
+    assert result.receipt.provider_message_id is None
+    assert result.receipt.actual_target is None
+
+
+@pytest.mark.asyncio
+async def test_telegram_photo_timeout_with_dimension_marker_never_falls_back(
+    tmp_path, monkeypatch,
+):
+    adapter = _make_adapter()
+    provider_send = AsyncMock(
+        side_effect=TimeoutError(
+            "ambiguous provider outcome: PHOTO_INVALID_DIMENSIONS marker"
+        )
+    )
+    adapter._bot = SimpleNamespace(send_photo=provider_send)
+    fallback = AsyncMock(return_value=SendResult(success=True, message_id="fallback"))
+    monkeypatch.setattr(adapter, "send_document", fallback)
+    media = tmp_path / "media.jpg"
+    media.write_bytes(b"bounded-media")
+
+    result = await adapter.send_image_file(
+        chat_id="123",
+        image_path=str(media),
+        metadata={
+            "_transport_receipt_component": "media",
+            "_transport_receipt_ordinal": 4,
+            "_transport_receipt_requested_target": {
+                "platform": "telegram",
+                "chat_id": "123",
+            },
+        },
+    )
+
+    provider_send.assert_awaited_once()
+    fallback.assert_not_awaited()
+    assert result.success is False
+    assert result.retryable is False
+    assert result.error_kind == "unknown"
+    assert result.receipt is not None
+    assert result.receipt.outcome == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_telegram_exact_photo_dimensions_rejection_falls_back_once(
+    tmp_path, monkeypatch,
+):
+    from telegram.error import BadRequest
+
+    adapter = _make_adapter()
+    provider_send = AsyncMock(side_effect=BadRequest("PHOTO_INVALID_DIMENSIONS"))
+    adapter._bot = SimpleNamespace(send_photo=provider_send)
+    fallback_result = SendResult(success=True, message_id="fallback")
+    fallback = AsyncMock(return_value=fallback_result)
+    monkeypatch.setattr(adapter, "send_document", fallback)
+    media = tmp_path / "media.jpg"
+    media.write_bytes(b"bounded-media")
+
+    result = await adapter.send_image_file(
+        chat_id="123",
+        image_path=str(media),
+        metadata={
+            "_transport_receipt_component": "media",
+            "_transport_receipt_ordinal": 4,
+        },
+    )
+
+    provider_send.assert_awaited_once()
+    fallback.assert_awaited_once()
+    assert result is fallback_result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method_name", "suffix", "bot_method"),
+    (
+        ("send_image_file", ".jpg", "send_photo"),
+        ("send_video", ".mp4", "send_video"),
+        ("send_voice", ".ogg", "send_voice"),
+    ),
+)
+async def test_telegram_other_native_media_acks_emit_typed_receipts(
+    tmp_path, method_name, suffix, bot_method,
+):
+    adapter = _make_adapter()
+    provider_send = AsyncMock(return_value=SimpleNamespace(message_id=84))
+    adapter._bot = SimpleNamespace(**{bot_method: provider_send})
+    media = tmp_path / f"media{suffix}"
+    media.write_bytes(b"bounded-media")
+
+    result = await getattr(adapter, method_name)(
+        chat_id="-100123",
+        **({
+            "image_path": str(media),
+        } if method_name == "send_image_file" else {
+            "video_path": str(media),
+        } if method_name == "send_video" else {
+            "audio_path": str(media),
+        }),
+        metadata={
+            "_transport_receipt_component": "media",
+            "_transport_receipt_ordinal": 3,
+        },
+    )
+
+    assert result.success is True
+    assert result.receipt is not None
+    assert result.receipt.provider_message_id == "84"
+    assert (result.receipt.component, result.receipt.ordinal) == ("media", 3)
+    assert result.receipt.requested_target == result.receipt.actual_target
+
+
+@pytest.mark.asyncio
 async def test_private_dm_topic_reply_fallback_without_anchor_fails_loud():
     """Anchor-required DM topic fallback must not silently send elsewhere."""
     adapter = _make_adapter()
@@ -427,6 +864,8 @@ async def test_native_media_dm_topic_reply_not_found_retry_drops_thread_id(
             "thread_id": "20197",
             "telegram_dm_topic_reply_fallback": True,
             "telegram_reply_to_message_id": "462",
+            "_transport_receipt_component": "media",
+            "_transport_receipt_ordinal": 2,
         },
     )
 
@@ -436,6 +875,12 @@ async def test_native_media_dm_topic_reply_not_found_retry_drops_thread_id(
     assert call_log[1]["reply_to_message_id"] is None
     assert "message_thread_id" not in call_log[1]
     assert "direct_messages_topic_id" not in call_log[1]
+    assert result.receipt is not None
+    assert result.receipt.provider_message_id == "782"
+    assert (result.receipt.component, result.receipt.ordinal) == ("media", 2)
+    assert result.receipt.requested_target.thread_id == "20197"
+    assert result.receipt.actual_target is not None
+    assert result.receipt.actual_target.thread_id is None
 
 
 @pytest.mark.asyncio

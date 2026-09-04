@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import uuid
 import weakref
 from abc import ABC, abstractmethod
@@ -646,7 +647,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 
 import dataclasses
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 from enum import Enum
@@ -2679,13 +2680,169 @@ def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
         return
 
 
+TRANSPORT_RECEIPT_OUTCOMES = frozenset({"delivered", "unknown", "failed"})
+TRANSPORT_RECEIPT_FAILURE_KINDS = frozenset(
+    {
+        "bad_format",
+        "forbidden",
+        "invalid_target",
+        "not_configured",
+        "not_found",
+        "pre_dispatch",
+        "provider_rejected",
+    }
+)
+
+
+def normalize_transport_provider_message_id(value: Any) -> Optional[str]:
+    """Return an inert bounded provider acknowledgement id, or ``None``."""
+    if type(value) is str:
+        candidate = value
+    elif type(value) is int:
+        candidate = str(value)
+    else:
+        value_type = type(value)
+        try:
+            value_mro = type.__getattribute__(value_type, "__mro__")
+        except (AttributeError, TypeError):
+            return None
+        if type(value_mro) is not tuple or not any(
+            base is str for base in value_mro
+        ):
+            return None
+        candidate = str.__str__(value)
+    if (
+        not candidate
+        or len(candidate) > 1024
+        or candidate != unicodedata.normalize("NFC", candidate)
+        or any(
+            char.isspace() or unicodedata.category(char).startswith("C")
+            for char in candidate
+        )
+    ):
+        return None
+    return candidate
+
+
+@dataclass(frozen=True)
+class TransportTarget:
+    """A bounded, content-free identity for one provider delivery target."""
+
+    platform: str
+    chat_id: str
+    thread_id: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        for name, value, limit in (
+            ("platform", self.platform, 64),
+            ("chat_id", self.chat_id, 512),
+            ("thread_id", self.thread_id, 512),
+        ):
+            if value is None and name == "thread_id":
+                continue
+            if (
+                type(value) is not str
+                or not value
+                or len(value) > limit
+                or value != unicodedata.normalize("NFC", value)
+                or any(char.isspace() or unicodedata.category(char).startswith("C") for char in value)
+            ):
+                raise ValueError(f"{name} must be a non-empty string of at most {limit} characters")
+
+
+@dataclass(frozen=True)
+class TransportReceipt:
+    """Provider acknowledgement without payloads, raw errors, or credentials.
+
+    ``SendResult.success`` remains a legacy transport-operation signal.  A
+    receipt is deliberately separate: absent receipt means unknown, never an
+    implied delivery acknowledgement.
+    """
+
+    outcome: str
+    requested_target: TransportTarget
+    actual_target: Optional[TransportTarget] = None
+    provider_message_id: Optional[str] = None
+    observed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    failure_kind: Optional[str] = None
+    component: str = "text"
+    ordinal: int = 0
+
+    def __post_init__(self) -> None:
+        if type(self.requested_target) is not TransportTarget:
+            raise TypeError("requested_target must be a TransportTarget")
+        if self.actual_target is not None and type(self.actual_target) is not TransportTarget:
+            raise TypeError("actual_target must be a TransportTarget")
+        if type(self.outcome) is not str or self.outcome not in TRANSPORT_RECEIPT_OUTCOMES:
+            raise ValueError("outcome must be delivered, unknown, or failed")
+        if self.provider_message_id is not None:
+            if (
+                type(self.provider_message_id) is not str
+                or not self.provider_message_id
+                or len(self.provider_message_id) > 1024
+                or self.provider_message_id != unicodedata.normalize("NFC", self.provider_message_id)
+                or any(
+                    char.isspace() or unicodedata.category(char).startswith("C")
+                    for char in self.provider_message_id
+                )
+            ):
+                raise ValueError("provider_message_id must be a non-empty string of at most 1024 characters")
+        if (
+            type(self.component) is not str
+            or not self.component
+            or len(self.component) > 64
+            or any(char.isspace() or unicodedata.category(char).startswith("C") for char in self.component)
+            or type(self.ordinal) is not int
+            or self.ordinal < 0
+        ):
+            raise ValueError("receipt component must be a bounded name with non-negative ordinal")
+        if (
+            type(self.observed_at) is not datetime
+            or self.observed_at.tzinfo is None
+            or type(self.observed_at.tzinfo) is not timezone
+        ):
+            raise ValueError("observed_at must be timezone-aware")
+        observed_utc = self.observed_at.astimezone(timezone.utc)
+        if (
+            observed_utc < datetime(1970, 1, 1, tzinfo=timezone.utc)
+            or observed_utc > datetime.now(timezone.utc) + timedelta(minutes=5)
+        ):
+            raise ValueError("observed_at must be a bounded observation time")
+        if self.failure_kind is not None and type(self.failure_kind) is not str:
+            raise ValueError("failure_kind must be a bounded category")
+        if self.outcome == "delivered":
+            if not self.provider_message_id:
+                raise ValueError("delivered receipt requires provider_message_id")
+            if self.actual_target is None:
+                raise ValueError("delivered receipt requires actual_target")
+            if self.failure_kind is not None:
+                raise ValueError("delivered receipt cannot include failure_kind")
+        elif self.outcome == "failed":
+            if self.failure_kind not in TRANSPORT_RECEIPT_FAILURE_KINDS:
+                raise ValueError("failed receipt requires a bounded failure_kind")
+            if self.provider_message_id is not None:
+                raise ValueError("failed receipt cannot include provider evidence")
+            if self.actual_target is not None:
+                raise ValueError("failed receipt cannot include actual_target")
+        elif self.failure_kind is not None:
+            raise ValueError("unknown receipt cannot include failure_kind")
+        elif self.provider_message_id is not None or self.actual_target is not None:
+            raise ValueError("unknown receipt cannot include provider evidence")
+
+
 @dataclass
 class SendResult:
-    """Result of sending a message."""
+    """Result of sending a message.
+
+    ``receipt`` is additive and optional for adapter compatibility.  Consumers
+    requiring a provider acknowledgement must treat ``None`` as unknown.
+    """
     success: bool
     message_id: Optional[str] = None
     error: Optional[str] = None
     raw_response: Any = None
+    receipt: Optional[TransportReceipt] = None
+    receipts: Tuple[TransportReceipt, ...] = ()
     # Adapter-specific metadata.  Cross-layer contracts that affect delivery
     # semantics must be documented at the producer and consumer sites.  Current
     # known contract: Telegram edit overflow partials set
@@ -2711,6 +2868,60 @@ class SendResult:
     # ``None`` (unset / not classified).  Producers should set this via
     # :func:`classify_send_error`.
     error_kind: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        """Normalize the additive receipt tuple without upgrading legacy ids."""
+        if type(self.receipts) is not tuple:
+            raise ValueError("receipts must be an immutable tuple of TransportReceipt values")
+
+        def rebuild(item: Any) -> TransportReceipt:
+            if type(item) is not TransportReceipt:
+                raise ValueError(
+                    "receipts must be an immutable tuple of TransportReceipt values"
+                )
+            requested = item.requested_target
+            actual = item.actual_target
+            if type(requested) is not TransportTarget:
+                raise ValueError("receipt requested_target must be a TransportTarget")
+            if actual is not None and type(actual) is not TransportTarget:
+                raise ValueError("receipt actual_target must be a TransportTarget")
+            requested = TransportTarget(
+                requested.platform, requested.chat_id, requested.thread_id,
+            )
+            if actual is not None:
+                actual = TransportTarget(
+                    actual.platform, actual.chat_id, actual.thread_id,
+                )
+            return TransportReceipt(
+                outcome=item.outcome,
+                requested_target=requested,
+                actual_target=actual,
+                provider_message_id=item.provider_message_id,
+                observed_at=item.observed_at,
+                failure_kind=item.failure_kind,
+                component=item.component,
+                ordinal=item.ordinal,
+            )
+
+        receipts = tuple(rebuild(item) for item in self.receipts)
+        receipt = rebuild(self.receipt) if self.receipt is not None else None
+        if receipt is not None:
+            if receipts and receipt not in receipts:
+                raise ValueError("receipt must be included in receipts")
+            if not receipts:
+                receipts = (receipt,)
+        elif receipts:
+            receipt = receipts[0]
+        self.receipt = receipt
+        self.receipts = receipts
+        expected = sorted(
+            receipts,
+            key=lambda item: (item.component, item.ordinal),
+        )
+        if list(receipts) != expected:
+            raise ValueError("receipts must be ordered by component and ordinal")
+        if len({(item.component, item.ordinal) for item in receipts}) != len(receipts):
+            raise ValueError("receipts must not duplicate a component ordinal")
 
 
 # Machine-readable send-failure categories.  Kept platform-neutral so every

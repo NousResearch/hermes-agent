@@ -180,11 +180,57 @@ def _dispatch_display(dispatch: dict) -> Optional[str]:
     )
 
 
-def cron_list(show_all: bool = False):
-    """List all scheduled jobs."""
+def cron_list(show_all: bool = False, json_output: bool = False):
+    """List all scheduled jobs.
+
+    With ``json_output`` the listing becomes machine-readable: a JSON array
+    with one stable-shape object per job (id, name, schedule, state,
+    enabled, next/last run, delivery targets, skills, model overrides) so
+    fleet scripts and dashboards don't parse box-drawing output. An empty
+    fleet prints ``[]`` — never prose.
+    """
     from cron.jobs import list_jobs
 
     jobs = list_jobs(include_disabled=show_all)
+
+    if json_output:
+        from cron.jobs import effective_job_state
+
+        payload = []
+        for job in jobs:
+            repeat_info = job.get("repeat") or {}
+            deliver = job.get("deliver") or ["local"]
+            if isinstance(deliver, str):
+                deliver = [deliver]
+            # An explicitly empty skills list is honored (not swapped for the
+            # legacy singular fallback); None falls back to legacy `skill`.
+            raw_skills = job.get("skills")
+            if raw_skills is not None:
+                skills = raw_skills
+            else:
+                skills = [job["skill"]] if job.get("skill") else []
+            sched = job.get("schedule")
+            schedule_display = job.get("schedule_display") or (
+                sched.get("value") if isinstance(sched, dict) else None
+            )
+            payload.append({
+                "id": job.get("id"),
+                "name": job.get("name") or "",
+                "schedule": schedule_display,
+                "state": effective_job_state(job),
+                "enabled": bool(job.get("enabled", True)),
+                "repeat_times": repeat_info.get("times"),
+                "repeat_completed": repeat_info.get("completed", 0),
+                "next_run_at": job.get("next_run_at"),
+                "last_run_at": job.get("last_run_at"),
+                "last_status": job.get("last_status"),
+                "deliver": deliver,
+                "skills": skills,
+                "model": job.get("model"),
+                "provider": job.get("provider"),
+            })
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return
 
     if not jobs:
         print(color("No scheduled jobs.", Colors.DIM))
@@ -1060,7 +1106,7 @@ def cron_command(args):
 
     if subcmd is None or subcmd == "list":
         show_all = getattr(args, 'all', False)
-        cron_list(show_all)
+        cron_list(show_all, json_output=getattr(args, 'json_output', False))
         return 0
 
     if subcmd == "status":

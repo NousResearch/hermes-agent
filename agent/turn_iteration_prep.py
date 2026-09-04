@@ -469,6 +469,14 @@ def apply_retry_restarts(
         _retry.restart_with_redirected_messages = False
         return _verdict("continue")
 
+    if _retry.restart_with_kanban_stop_nudge:
+        # A truncation early-exit took the kanban stop nudge: the synthetic user
+        # nudge is already appended to ``messages``; re-enter the turn loop for a
+        # fresh API call against the nudged history (no budget refund — the
+        # truncated attempt itself is kept as history).
+        _retry.restart_with_kanban_stop_nudge = False
+        return _verdict("continue")
+
     if interrupted:
         _issuer = interrupt_issuer(agent)
         _turn_exit_reason = (

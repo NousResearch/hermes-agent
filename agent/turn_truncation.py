@@ -10,6 +10,7 @@ the final roll-back. Nothing here imports ``agent.conversation_loop`` at module 
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -149,6 +150,7 @@ class _Trunc(TruncationVerdict):
     api_call_count: int
     effective_task_id: Any
     current_turn_user_idx: Any
+    _retry: Any = None
     action: str = "fallthrough"
     result: Optional[Dict[str, Any]] = None
     window_filled: Optional[tuple[int, int]] = None  # (prompt_tokens, context_length)
@@ -177,6 +179,60 @@ class _Trunc(TruncationVerdict):
             self.messages if result_messages is None else result_messages, self.api_call_count,
             final_response, error, failed=failed, compression_exhausted=compression_exhausted,
         ), *failure))
+
+    def end_turn_with_kanban_nudge(
+        self, final_response: str, error: Optional[str] = None, *,
+        result_messages: Optional[List[Dict[str, Any]]] = None, cleanup: bool = True,
+        failed: bool = False, failure: Tuple[str, bool] = ("truncated", True),
+    ) -> TruncationVerdict:
+        """``end_turn`` with the kanban worker stop-nudge check first.
+
+        Truncation early-exits (output-length ceiling, truncated tool-call refusal,
+        roll-back, first-response failure) previously returned before the
+        finish_reason=stop stop-gates ran, so a kanban worker session could end
+        rc=0 with no ``kanban_complete`` / ``kanban_block`` and the dispatcher
+        records ``protocol_violation``. Before ending the turn, give the worker
+        the same bounded nudges the text-stop path gets (``build_kanban_stop_nudge``);
+        when a nudge fires, arm ``restart_with_kanban_stop_nudge`` so the loop
+        re-enters with a fresh API call against the nudged history instead of
+        returning a partial result."""
+        from agent.kanban_stop import build_kanban_stop_nudge
+
+        nudge = None
+        try:
+            nudge = build_kanban_stop_nudge(
+                messages=self.messages, attempts=getattr(self.agent, "_kanban_stop_nudges", 0)
+            )
+        except Exception:
+            logger.debug("kanban truncation stop-nudge check failed", exc_info=True)
+        if nudge is None:
+            return self.end_turn(
+                final_response, error, result_messages=result_messages,
+                cleanup=cleanup, failed=failed, failure=failure,
+            )
+        agent = self.agent
+        agent._kanban_stop_nudges = getattr(agent, "_kanban_stop_nudges", 0) + 1
+        # A trailing tool result must not be followed by a bare user turn on
+        # strict-alternation providers (#48879 class) — close it first.
+        close_interrupted_tool_sequence(self.messages, final_response)
+        append_message(self.messages, {
+            "role": "user", "content": nudge, "_kanban_stop_synthetic": True,
+        })
+        agent._session_messages = self.messages
+        logger.info(
+            "kanban truncation stop-loop nudge issued (attempt %d) task=%s",
+            agent._kanban_stop_nudges,
+            os.environ.get("HERMES_KANBAN_TASK", ""),
+        )
+        try:
+            agent._emit_status(
+                "⚠️  Truncation exit on a kanban worker without "
+                "kanban_complete/kanban_block — nudging to finish"
+            )
+        except Exception:
+            pass
+        self._retry.restart_with_kanban_stop_nudge = True
+        return self.done("break")
 
     @property
     def is_stub(self) -> bool:
@@ -306,11 +362,11 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     agent._session_messages = messages
     if filled is not None:
         notice = _WINDOW_FILLED.format(prompt=filled[0], ctx=filled[1])
-        return st.end_turn(
+        return st.end_turn_with_kanban_nudge(
             f"{partial_response}\n\n{notice}" if partial_response else notice,
             f"Prompt used {filled[0]} of {filled[1]} context tokens; no room to answer",
         )
-    return st.end_turn(
+    return st.end_turn_with_kanban_nudge(
         partial_response or _CEILING_NO_TEXT,
         "Response remained truncated after 4 continuation attempts",
     )
@@ -350,7 +406,7 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
     agent._cleanup_task_resources(st.effective_task_id)
     # Prior tool batches can leave a tool-result tail; this path never reaches finalize_turn.
     close_interrupted_tool_sequence(st.messages, _final_response)
-    return st.end_turn(
+    return st.end_turn_with_kanban_nudge(
         _final_response, cleanup=False,
         failure=(FailoverReason.timeout.value if st.is_stub else "truncated", True),
     )
@@ -374,7 +430,7 @@ def recover_from_truncation(
         messages=messages, length_continue_retries=length_continue_retries,
         truncated_response_parts=truncated_response_parts,
         truncated_tool_call_retries=truncated_tool_call_retries, retry_count=retry_count,
-        compression_attempts=compression_attempts,
+        compression_attempts=compression_attempts, _retry=_retry,
     )
     st.window_filled = _prompt_filled_window(agent, response)
     agent._vprint(
@@ -423,7 +479,7 @@ def recover_from_truncation(
     if abort is not None:
         line, user_response, error = abort
         agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
-        return st.end_turn(user_response, error)
+        return st.end_turn_with_kanban_nudge(user_response, error)
 
     if agent.api_mode in _CONTINUABLE_MODES:
         cf = _content_filter_fallback(st, _retry)
@@ -436,13 +492,13 @@ def recover_from_truncation(
 
     if len(messages) > 1:
         agent._vprint(f"{agent.log_prefix}   ⏪ Rolling back to last complete assistant turn", diagnostic=True)
-        return st.end_turn(
+        return st.end_turn_with_kanban_nudge(
             _TRUNCATED_FINAL, result_messages=agent._get_messages_up_to_last_assistant(messages)
         )
     # First message was truncated - mark as failed
     agent._flush_status_buffer()
     agent._vprint(f"{agent.log_prefix}❌ First response truncated - cannot recover", force=True, diagnostic=True)
-    return st.end_turn(_FIRST_TRUNCATED_FINAL, cleanup=False, failed=True)
+    return st.end_turn_with_kanban_nudge(_FIRST_TRUNCATED_FINAL, cleanup=False, failed=True)
 
 
 _CODEX_REPLAY_KEYS = (

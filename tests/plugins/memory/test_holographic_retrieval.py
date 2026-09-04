@@ -195,6 +195,9 @@ def test_search_results_bit_identical_to_unhoisted(hoisted_retriever):
     old_results = scored[:10]
     for fact in old_results:
         fact.pop("hrr_vector", None)
+        fact.pop("retrieval_count", None)  # bookkeeping, not ranking — bumped only by the live path
+    for fact in new_results:
+        fact.pop("retrieval_count", None)
 
     assert new_results == old_results
 

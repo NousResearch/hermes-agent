@@ -43,6 +43,32 @@ class FactRetriever:
             fts_weight, jaccard_weight, hrr_weight = 0.6, 0.4, 0.0
         self.fts_weight, self.jaccard_weight, self.hrr_weight = fts_weight, jaccard_weight, hrr_weight
 
+    def _mark_retrieved(self, results: list[dict]) -> None:
+        """Bump retrieval_count for facts surfaced to the agent.
+
+        The column feeds trust-weight maintenance and retention decisions
+        (list_facts surfaces it; scripts and retention logic key on
+        never-retrieved), yet no query path incremented it — every fact read
+        retrieval_count = 0 forever, so actively-used facts are
+        indistinguishable from never-read ones and retention deletes the
+        wrong rows. Track at every exit that returns facts to the caller.
+        """
+        if not results:
+            return
+        try:
+            ids = [r["fact_id"] for r in results if "fact_id" in r]
+            if not ids:
+                return
+            placeholders = ",".join("?" * len(ids))
+            self.store._conn.execute(
+                f"UPDATE facts SET retrieval_count = retrieval_count + 1 "
+                f"WHERE fact_id IN ({placeholders})",
+                ids,
+            )
+            self.store._conn.commit()
+        except Exception:
+            pass  # never let bookkeeping break a query
+
     def _atom(self, word: str):
         return hrr.encode_atom(word, self.hrr_dim)
 
@@ -72,6 +98,7 @@ class FactRetriever:
         results = sorted(candidates, key=lambda x: x["score"], reverse=True)[:limit]
         for fact in results:
             fact.pop("hrr_vector", None)  # callers expect JSON-serializable dicts
+        self._mark_retrieved(results)
         return results
 
     def _vector_query(self, fallback: str, category: str | None, limit: int, sim_fn: Callable) -> list[dict]:
@@ -89,11 +116,15 @@ class FactRetriever:
             bank_row = self.store._conn.execute("SELECT vector FROM memory_banks WHERE bank_name = ?", (f"cat:{category}",)).fetchone()
             if bank_row:
                 extracted = hrr.unbind(self._phases(bank_row["vector"]), probe_key)
-                return self._rank_by_vector(self._vector_rows(category), lambda _f, fact_vec: hrr.similarity(extracted, fact_vec), limit)
+                results = self._rank_by_vector(self._vector_rows(category), lambda _f, fact_vec: hrr.similarity(extracted, fact_vec), limit)
+                self._mark_retrieved(results)
+                return results
         role_content = self._atom(_ROLE_CONTENT)  # loop-invariant: encode once, not per row
         # Does unbinding the probe key leave the fact's content signal?
-        return self._vector_query(entity, category, limit, lambda fact, fact_vec: hrr.similarity(
+        results = self._vector_query(entity, category, limit, lambda fact, fact_vec: hrr.similarity(
             hrr.unbind(fact_vec, probe_key), hrr.bind(hrr.encode_text(fact["content"], self.hrr_dim), role_content)))
+        self._mark_retrieved(results)
+        return results
 
     def related(self, entity: str, category: str | None = None, limit: int = 10) -> list[dict]:
         """Facts structurally connected to an entity (shared context), not just facts *about* it as in probe.
@@ -103,8 +134,10 @@ class FactRetriever:
         entity_vec = self._atom(entity.lower())  # bare atom, not role-bound: ANY structural match
         roles = (self._atom(_ROLE_ENTITY), self._atom(_ROLE_CONTENT))  # loop-invariant: encode once
         # A residual similar to ANY role vector means the entity plays a structural role in the fact.
-        return self._vector_query(entity, category, limit, lambda _f, fact_vec: max(
+        results = self._vector_query(entity, category, limit, lambda _f, fact_vec: max(
             hrr.similarity(hrr.unbind(fact_vec, entity_vec), role) for role in roles))
+        self._mark_retrieved(results)
+        return results
 
     def reason(self, entities: list[str], category: str | None = None, limit: int = 10) -> list[dict]:
         """Multi-entity compositional query (vector-space JOIN): facts where ALL entities play structural roles.
@@ -114,8 +147,10 @@ class FactRetriever:
         role_entity, role_content = self._atom(_ROLE_ENTITY), self._atom(_ROLE_CONTENT)
         probe_keys = [hrr.bind(self._atom(entity.lower()), role_entity) for entity in entities]
         # AND semantics via min: high only if EVERY entity is structurally present.
-        return self._vector_query(" ".join(entities), category, limit, lambda _f, fact_vec: min(
+        results = self._vector_query(" ".join(entities), category, limit, lambda _f, fact_vec: min(
             hrr.similarity(hrr.unbind(fact_vec, key), role_content) for key in probe_keys))
+        self._mark_retrieved(results)
+        return results
 
     def contradict(self, category: str | None = None, threshold: float = 0.3, limit: int = 10) -> list[dict]:
         """Pairs of facts sharing entities (same subject) with low content-vector similarity (different claims). Empty without numpy."""

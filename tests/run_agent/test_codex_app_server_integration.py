@@ -508,6 +508,99 @@ class TestRunConversationCodexPath:
         assert routing.auto_approve_exec is True
         assert routing.auto_approve_apply_patch is True
 
+    def _capture_approval_decisions_across_turns(self, monkeypatch):
+        """Record the decisions made by one AIAgent-owned Codex session."""
+        decisions: list[tuple[str, str]] = []
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            decisions.append((
+                self._decide_exec_approval({"command": "pwd", "cwd": "/tmp"}),
+                self._decide_apply_patch_approval({}),
+            ))
+            return TurnResult(
+                final_text="ok",
+                projected_messages=[{"role": "assistant", "content": "ok"}],
+                turn_id="turn-stub-1",
+                thread_id="thread-stub-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            "tools.terminal_tool._get_approval_callback", lambda: None
+        )
+        return decisions
+
+    def test_disabling_bypass_revokes_codex_auto_approval_on_next_turn(
+        self, monkeypatch
+    ):
+        """A reused Codex session must not retain revoked bypass authority."""
+        bypass = {"enabled": True}
+        decisions = self._capture_approval_decisions_across_turns(monkeypatch)
+        monkeypatch.setattr(
+            "tools.approval.is_approval_bypass_active",
+            lambda: bypass["enabled"],
+        )
+        agent = _make_codex_agent()
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("first turn")
+            bypass["enabled"] = False
+            agent.run_conversation("second turn")
+
+        assert decisions == [
+            ("accept", "accept"),
+            ("decline", "decline"),
+        ]
+
+    def test_enabling_bypass_grants_codex_auto_approval_on_next_turn(
+        self, monkeypatch
+    ):
+        """A reused Codex session must observe newly enabled bypass authority."""
+        bypass = {"enabled": False}
+        decisions = self._capture_approval_decisions_across_turns(monkeypatch)
+        monkeypatch.setattr(
+            "tools.approval.is_approval_bypass_active",
+            lambda: bypass["enabled"],
+        )
+        agent = _make_codex_agent()
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("first turn")
+            bypass["enabled"] = True
+            agent.run_conversation("second turn")
+
+        assert decisions == [
+            ("decline", "decline"),
+            ("accept", "accept"),
+        ]
+
+    def test_bypass_lookup_failure_revokes_stale_codex_auto_approval(
+        self, monkeypatch
+    ):
+        """A refresh failure must deny instead of retaining prior authority."""
+        lookup_fails = {"value": False}
+        decisions = self._capture_approval_decisions_across_turns(monkeypatch)
+
+        def bypass_is_active():
+            if lookup_fails["value"]:
+                raise RuntimeError("lookup failed")
+            return True
+
+        monkeypatch.setattr(
+            "tools.approval.is_approval_bypass_active", bypass_is_active
+        )
+        agent = _make_codex_agent()
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("first turn")
+            lookup_fails["value"] = True
+            agent.run_conversation("second turn")
+
+        assert decisions == [
+            ("accept", "accept"),
+            ("decline", "decline"),
+        ]
+
 
 class TestReviewForkApiModeDowngrade:
     """When the parent agent runs on codex_app_server, the background

@@ -312,6 +312,19 @@ class CodexAppServerSession:
 
     # ---------- lifecycle ----------
 
+    def update_approval_routing(
+        self,
+        *,
+        auto_approve_requests: bool,
+    ) -> None:
+        """Update protocol-level approval defaults for subsequent requests.
+
+        The caller resolves Hermes approval policy before each turn; the
+        session owns how that policy is represented by its request router.
+        """
+        self._routing.auto_approve_exec = auto_approve_requests
+        self._routing.auto_approve_apply_patch = auto_approve_requests
+
     def ensure_started(self) -> str:
         """Spawn the subprocess, do the initialize handshake, and start a
         thread. Returns the codex thread id. Idempotent — repeated calls

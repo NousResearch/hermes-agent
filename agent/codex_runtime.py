@@ -715,6 +715,23 @@ def run_codex_app_server_turn(
         _ServerRequestRouting,
     )
 
+    # Gateway / cron contexts have no UI to surface codex's approval
+    # requests through, so codex app-server exec / apply_patch requests fail
+    # closed by default. Resolve the bypass for every turn: the app-server
+    # session is reused, while approvals.mode and the session /yolo toggle
+    # can change between turns.
+    auto_approve_requests = False
+    try:
+        from tools.approval import is_approval_bypass_active
+
+        auto_approve_requests = is_approval_bypass_active()
+    except Exception:
+        logger.debug(
+            "codex app-server: approval-bypass lookup failed; "
+            "keeping fail-closed default",
+            exc_info=True,
+        )
+
     # Lazy session: one CodexAppServerSession per AIAgent instance.
     # Spawned on first turn, reused across turns, closed at AIAgent
     # shutdown (see _cleanup hook).
@@ -731,27 +748,6 @@ def run_codex_app_server_turn(
         except Exception:
             approval_callback = None
 
-        # Gateway / cron contexts have no UI to surface codex's approval
-        # requests through, so codex app-server exec / apply_patch requests
-        # fail closed (silently decline) by default. When the user has
-        # explicitly opted out of Hermes approvals — via `approvals.mode: off`
-        # in config, the /yolo session toggle, or --yolo / HERMES_YOLO_MODE —
-        # honor that and let codex's own sandbox permission profile
-        # (~/.codex/config.toml) be the policy gate instead of double-gating
-        # with a missing Hermes UI. Defaults (manual/smart/unset) preserve the
-        # current fail-closed behavior — this is a no-op for those users.
-        auto_approve_requests = False
-        try:
-            from tools.approval import is_approval_bypass_active
-
-            auto_approve_requests = is_approval_bypass_active()
-        except Exception:
-            logger.debug(
-                "codex app-server: approval-bypass lookup failed; "
-                "keeping fail-closed default",
-                exc_info=True,
-            )
-
         # Bridge codex JSON-RPC notifications (item/started, item/completed,
         # item/agentMessage/delta, ...) into Hermes' gateway UI callbacks
         # (tool_progress_callback, _fire_stream_delta,
@@ -767,6 +763,10 @@ def run_codex_app_server_turn(
                 auto_approve_apply_patch=auto_approve_requests,
             ),
             on_event=make_codex_app_server_event_bridge(agent),
+        )
+    else:
+        agent._codex_session.update_approval_routing(
+            auto_approve_requests=auto_approve_requests,
         )
 
     # NOTE: the user message is ALREADY appended to messages by the

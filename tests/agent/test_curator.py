@@ -462,6 +462,41 @@ def test_run_review_synchronous_invokes_llm_stub(curator_env, monkeypatch):
     assert any("stubbed-summary" in s for s in captured)
 
 
+def test_llm_review_is_not_forked_when_there_is_nothing_to_review(curator_env, monkeypatch):
+    """An empty candidate list must skip the LLM consolidation fork.
+
+    The fork is an auxiliary-model run with a high iteration cap and a prompt
+    that pushes the reviewer to keep archiving; pointed at zero candidates it
+    burns tokens on nothing, once per ``curator.interval_hours`` tick. The
+    second half of this test pins the other direction — one candidate still
+    forks — so the guard cannot be "fixed" by skipping unconditionally.
+    """
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+
+    calls = []
+    def _stub(prompt):
+        calls.append(prompt)
+        return {"final": "", "summary": "s", "model": "", "provider": "",
+                "tool_calls": [], "error": None}
+    monkeypatch.setattr(c, "_run_llm_review", _stub)
+
+    assert c._safe_curated_report() == []  # precondition: nothing to review
+    c.run_curator_review(synchronous=True, consolidate=True)
+    assert calls == [], (
+        "the LLM review fork was spawned with no curator-managed skills to "
+        "review"
+    )
+    # The pass must have been skipped deliberately, not aborted by an error
+    # before it reached the fork.
+    assert "error" not in c.load_state()["last_run_summary"]
+
+    _write_skill(curator_env["home"] / "skills", "a")
+    u.mark_agent_created("a")
+    c.run_curator_review(synchronous=True, consolidate=True)
+    assert len(calls) == 1, "a real candidate must still reach the review fork"
+
+
 
 
 

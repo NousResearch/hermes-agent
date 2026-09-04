@@ -811,11 +811,14 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
 
 # --- Orchestrator — spawn a forked AIAgent for the LLM review pass ---
 
-def _render_candidate_list() -> str:
-    """Human/agent-readable list of curator-managed skills with usage stats."""
+def _render_candidate_list() -> Optional[str]:
+    """Human/agent-readable list of curator-managed skills with usage stats, or ``None`` when there are none.
+
+    ``None`` — not a "nothing to review" sentence — is the empty signal on purpose: the caller has to skip the fork,
+    and a rendered string invites a substring test that silently stops matching the day the wording is edited."""
     rows = skill_usage.curated_report()
     if not rows:
-        return "No curator-managed skills to review."
+        return None
     cron_referenced = _cron_referenced_skills()
     return "\n".join([f"Curator-managed skills ({len(rows)}):\n"] + [
         f"- {r['name']}  provenance={r.get('provenance', 'agent')}  state={r['state']}  "
@@ -848,7 +851,7 @@ def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_na
     needn't dig into REPORT.md. Returns ``(final_summary, llm_meta)``; never raises."""
     try:
         candidate_list = _render_candidate_list()
-        if "No agent-created skills" in candidate_list:
+        if candidate_list is None:
             final_summary = f"{prefix}{auto_summary}; llm: skipped (no candidates)"
             llm_meta = _llm_meta("skipped (no candidates)")
         else:

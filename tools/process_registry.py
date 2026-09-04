@@ -287,13 +287,17 @@ def _is_supervised_gateway_process() -> bool:
 def _build_systemd_scope_argv(
     shell_argv: List[str],
     unit_suffix: str,
+    *,
+    memory_max_bytes: Optional[int] = None,
+    unit_prefix: str = "hermes-worker",
 ) -> List[str]:
     """Wrap *shell_argv* in a ``systemd-run --user --scope`` invocation.
 
     The resulting cgroup gets its own memory accounting so an OOM in the
     worker does not kill the gateway cgroup (#70716).  ``--collect`` makes
     the transient scope self-clean after exit; ``--unit`` gives it a
-    recognisable name for ``systemctl --user status`` / journalctl.
+    recognisable name for ``systemctl --user status`` / journalctl. Foreground
+    local commands reuse this builder with an explicit limit and unit prefix.
     """
     import shutil
 
@@ -302,8 +306,12 @@ def _build_systemd_scope_argv(
         # Caller should have checked _systemd_run_user_scope_available();
         # guard anyway so we never pass None into Popen.
         return shell_argv
-    unit_name = f"hermes-worker-{unit_suffix}"
-    memory_max = _worker_memory_max_bytes()
+    unit_name = f"{unit_prefix}-{unit_suffix}"
+    memory_max = (
+        _worker_memory_max_bytes()
+        if memory_max_bytes is None
+        else memory_max_bytes
+    )
     return [
         binary,
         "--user",

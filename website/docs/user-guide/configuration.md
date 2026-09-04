@@ -221,7 +221,14 @@ The default. Commands run directly on your machine with no isolation. No special
 ```yaml
 terminal:
   backend: local
+  local_memory_max_mb: ""  # Optional foreground-command limit in MiB
 ```
+
+On Linux hosts with a working systemd user manager, set
+`local_memory_max_mb` to a positive integer to run foreground local commands
+in transient systemd scopes with `MemoryMax`. The default is unset, so local
+commands keep the existing direct-spawn behavior. If systemd user scopes are
+unavailable, Hermes also falls back to direct spawning.
 
 By default, local tool subprocesses keep your real OS-user `HOME`. This lets
 external CLIs such as `git`, `ssh`, `gh`, `az`, `npm`, Claude Code, and Codex

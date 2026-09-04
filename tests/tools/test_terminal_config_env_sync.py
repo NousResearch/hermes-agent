@@ -322,3 +322,9 @@ def test_docker_forward_env_is_bridged_everywhere():
     assert "docker_forward_env" in _gateway_env_map_keys()
     assert "docker_forward_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_FORWARD_ENV" in _terminal_tool_env_var_names()
+
+
+def test_local_memory_guard_is_bridged_everywhere():
+    assert "local_memory_max_mb" in _cli_env_map_keys()
+    assert "local_memory_max_mb" in _gateway_env_map_keys()
+    assert "local_memory_max_mb" in _save_config_env_sync_keys()

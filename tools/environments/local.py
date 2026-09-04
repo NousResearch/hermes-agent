@@ -12,8 +12,10 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment, _pipe_stdin
@@ -22,6 +24,50 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 _IS_WINDOWS = platform.system() == "Windows"
 
 logger = logging.getLogger(__name__)
+
+
+def _local_memory_max_bytes() -> int | None:
+    """Return the opt-in foreground-command limit, or None when disabled."""
+    raw = os.getenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip()
+    if not raw:
+        return None
+    try:
+        value_mb = int(raw)
+    except ValueError:
+        logger.warning(
+            "Ignoring invalid TERMINAL_LOCAL_MEMORY_MAX_MB=%r; expected a positive integer",
+            raw,
+        )
+        return None
+    if value_mb <= 0:
+        return None
+    return value_mb * 1024 * 1024
+
+
+def _maybe_guard_foreground_argv(args: list[str]) -> tuple[list[str], bool]:
+    """Wrap an opted-in foreground command in the shared systemd scope."""
+    memory_max = _local_memory_max_bytes()
+    if memory_max is None or _IS_WINDOWS:
+        return args, False
+
+    # Lazy import avoids the module cycle: process_registry imports local shell
+    # helpers for its existing background process implementation.
+    from tools.process_registry import (
+        _build_systemd_scope_argv,
+        _systemd_run_user_scope_available,
+    )
+
+    if not _systemd_run_user_scope_available():
+        return args, False
+    return (
+        _build_systemd_scope_argv(
+            args,
+            unit_suffix=uuid.uuid4().hex[:12],
+            memory_max_bytes=memory_max,
+            unit_prefix="hermes-terminal",
+        ),
+        True,
+    )
 
 # --- Terminal temp-cache pruning -------------------------------------------
 #
@@ -2142,21 +2188,43 @@ class LocalEnvironment(BaseEnvironment):
 
         _popen_cwd = self.cwd
 
-        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
-
-        proc = subprocess.Popen(
-            args,
-            text=True,
-            env=run_env,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            start_new_session=True,
-            cwd=_popen_cwd,
-            **_popen_kwargs,
+        _popen_kwargs: dict[str, Any] = (
+            {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
         )
+
+        guarded_args, guard_enabled = _maybe_guard_foreground_argv(args)
+
+        def _spawn(spawn_args: list[str]) -> subprocess.Popen:
+            return subprocess.Popen(
+                spawn_args,
+                text=True,
+                env=run_env,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=(
+                    subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL
+                ),
+                start_new_session=True,
+                cwd=_popen_cwd,
+                **_popen_kwargs,
+            )
+
+        try:
+            proc = _spawn(guarded_args)
+        except Exception:
+            if not guard_enabled:
+                raise
+            # Popen did not return a process, so the command did not start.
+            # Retry the direct argv once; never retry a launched systemd scope,
+            # because its child may already have executed.
+            logger.warning(
+                "Could not start foreground command in a systemd memory scope; "
+                "retrying once without the guard",
+                exc_info=True,
+            )
+            proc = _spawn(args)
         if not _IS_WINDOWS:
             try:
                 proc._hermes_pgid = os.getpgid(proc.pid)

@@ -511,6 +511,9 @@ DEFAULT_CONFIG = {
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
         "container_persistent": True,   # Persist filesystem across sessions
+        # Optional MemoryMax for foreground local commands, in MiB. Empty keeps
+        # the historical direct-spawn behavior; requires a systemd user manager.
+        "local_memory_max_mb": "",
         # Docker volume mounts — share host directories with the container.
         # Each entry is "host_path:container_path" (standard Docker -v syntax).
         # Example:

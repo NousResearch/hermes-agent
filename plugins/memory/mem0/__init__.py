@@ -86,7 +86,6 @@ def _load_config() -> dict:
 
     config = {
         "mode": os.environ.get("MEM0_MODE", "platform"),
-        "api_key": get_secret("MEM0_API_KEY", ""),
         "host": os.environ.get("MEM0_HOST", ""),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
         "oss": {},
@@ -106,6 +105,16 @@ def _load_config() -> dict:
                            if v is not None and v != ""})
         except Exception:
             pass
+
+    # MEM0_API_KEY authenticates the Platform and self-hosted HTTP backends;
+    # pure OSS mode constructs its backend from the local ``oss`` config and
+    # has no platform credential to resolve. Decide only after mem0.json has
+    # overridden the env fallback so a scope-less multiplex caller can load an
+    # OSS config without weakening fail-closed reads for credentialed modes.
+    if config.get("mode", "platform") == "oss":
+        config.setdefault("api_key", "")
+    elif not config.get("api_key"):
+        config["api_key"] = get_secret("MEM0_API_KEY", "")
 
     return config
 

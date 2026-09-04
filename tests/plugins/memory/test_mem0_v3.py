@@ -5,6 +5,7 @@ import threading
 import time
 import pytest
 
+from agent import secret_scope
 import plugins.memory.mem0 as mem0_plugin
 from plugins.memory.mem0 import Mem0MemoryProvider
 
@@ -263,6 +264,59 @@ class TestMem0V3Config:
 
 class TestMem0ModeSwitch:
 
+    def test_oss_mode_initializes_without_unscoped_platform_key(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("MEM0_API_KEY", raising=False)
+        (tmp_path / "mem0.json").write_text(
+            json.dumps(
+                {
+                    "mode": "oss",
+                    "oss": {"vector_store": {"provider": "qdrant"}},
+                }
+            )
+        )
+
+        token = secret_scope.set_secret_scope(None)
+        secret_scope.set_multiplex_active(True)
+        try:
+            provider = Mem0MemoryProvider()
+            provider._create_backend = lambda: None  # type: ignore[method-assign]
+            provider.initialize("test")
+            available = provider.is_available()
+        finally:
+            secret_scope.set_multiplex_active(False)
+            secret_scope.reset_secret_scope(token)
+
+        assert provider._mode == "oss"
+        assert provider._api_key == ""
+        assert available is True
+
+    def test_platform_config_still_fails_closed_without_profile_scope(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("MEM0_API_KEY", raising=False)
+
+        token = secret_scope.set_secret_scope(None)
+        secret_scope.set_multiplex_active(True)
+        try:
+            with pytest.raises(secret_scope.UnscopedSecretError):
+                Mem0MemoryProvider().is_available()
+        finally:
+            secret_scope.set_multiplex_active(False)
+            secret_scope.reset_secret_scope(token)
+
+    def test_file_api_key_still_overrides_environment(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "env-key")
+        (tmp_path / "mem0.json").write_text(
+            json.dumps({"api_key": "file-key"})
+        )
+
+        assert mem0_plugin._load_config()["api_key"] == "file-key"
+
     def test_default_mode_is_platform(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("MEM0_API_KEY", "test-key")
@@ -407,5 +461,3 @@ class TestSelfHostedConfig:
     def test_load_config_reads_mem0_host_env(self, monkeypatch):
         monkeypatch.setenv("MEM0_HOST", "http://localhost:8888")
         assert mem0_plugin._load_config()["host"] == "http://localhost:8888"
-
-

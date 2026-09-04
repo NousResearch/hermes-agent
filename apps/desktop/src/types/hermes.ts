@@ -1542,6 +1542,9 @@ export interface LocalRuntimeJob {
   /** The backend has accepted a pause request; the status flips when the
    * downloader actually parks. */
   pause_requested?: boolean
+  /** Epoch seconds, from the backend job registry (drives its ordering);
+   * optional so older gateways that omit it keep rendering. */
+  started_at?: number
 }
 
 export interface ActionResponse {

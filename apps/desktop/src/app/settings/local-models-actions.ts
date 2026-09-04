@@ -45,6 +45,34 @@ export function isActiveStatus(status: LocalRuntimeJob['status']): boolean {
   return status === 'paused' || status === 'running'
 }
 
+/** Stable operation identity for a job: the retry key a later success must
+ * match to retire an earlier error. `runtime-install` is a singleton (the
+ * engine), so its kind alone IS the operation; every multi-target kind
+ * (model-download, quickstart, model-activate) also compares the target
+ * model, so a later success for a DIFFERENT model never suppresses an
+ * error that is still the latest word for its own operation (#102616). */
+export function sameOperation(a: LocalRuntimeJob, b: LocalRuntimeJob): boolean {
+  if (a.kind !== b.kind) {
+    return false
+  }
+
+  return a.kind === 'runtime-install' || a.target === b.target
+}
+
+/** Whether `job` (an error) has been superseded by a strictly newer `done`
+ * job of the same operation — a completed retry that repaired the failure.
+ * Ordering is `started_at` (the backend registry's own clock); a missing
+ * `started_at` (older gateway) degrades to "never superseded" so a stale
+ * error stays visible rather than silently vanishing (#102616). */
+export function supersededByDone(jobs: readonly LocalRuntimeJob[], job: LocalRuntimeJob): boolean {
+  return jobs.some(
+    o =>
+      o.status === 'done' &&
+      sameOperation(o, job) &&
+      (o.started_at ?? 0) > (job.started_at ?? 0)
+  )
+}
+
 // The actions below never reject: a failure toasts only while its owner is
 // still the one on screen, so a late error cannot land on the next connection.
 

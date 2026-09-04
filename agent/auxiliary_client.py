@@ -7204,8 +7204,8 @@ def resolve_provider_client(
         if custom_entry is None:
             custom_entry = _get_named_custom_provider(provider)
         if custom_entry:
-            custom_base = (custom_entry.get("base_url") or "").strip()
-            custom_key = (custom_entry.get("api_key") or "").strip()
+            custom_base = (explicit_base_url or custom_entry.get("base_url") or "").strip()
+            custom_key = (explicit_api_key or custom_entry.get("api_key") or "").strip()
             custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
             if not custom_key and custom_key_env:
                 custom_key = _scoped_key_env(custom_key_env)
@@ -8130,6 +8130,7 @@ def resolve_vision_provider_client(
         return requested, client, final_model
 
     client, final_model = _get_cached_client(requested, resolved_model, async_mode,
+                                             api_key=resolved_api_key or None,
                                              api_mode=resolved_api_mode,
                                              main_runtime=runtime,
                                              is_vision=True)

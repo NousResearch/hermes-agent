@@ -141,7 +141,7 @@ def _(rid, params: dict) -> dict:
                 return submitted
             return _ok(
                 rid,
-                {"reply": f"Delivered into @{resolved}'s open Bot Chat; the reply will appear there."},
+                {"status": "accepted"},
             )
 
         fd, tmp = tempfile.mkstemp(prefix="hermes-relay-dm-", suffix=".txt", text=True)
@@ -237,6 +237,7 @@ def _(rid, params: dict) -> dict:
             reply=str(params.get("reply") or ""),
             error=str(params.get("error") or ""),
             reason=str(params.get("reason") or ""),
+            status=str(params.get("status") or "completed"),
         )
         return _ok(rid, {"ok": True})
     except ValueError as e:

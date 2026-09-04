@@ -431,7 +431,9 @@ def a2a_orchestrate(args: dict, **_: Any) -> str:
 
     # Fan-out
     results: list[tuple[str, str]] = []
-    with ThreadPoolExecutor(max_workers=min(len(matches), _ORCHESTRATE_MAX_WORKERS)) as pool:
+    first_succeeded = False
+    pool = ThreadPoolExecutor(max_workers=min(len(matches), _ORCHESTRATE_MAX_WORKERS))
+    try:
         futures = {
             pool.submit(_call_peer_sync, name, entry, message, context_id): name
             for name, entry in matches
@@ -441,12 +443,15 @@ def a2a_orchestrate(args: dict, **_: Any) -> str:
             try:
                 results.append(fut.result())
                 if mode == "first" and not results[-1][1].startswith("Error:"):
+                    first_succeeded = True
                     # Got a good reply; cancel peers that haven't started yet.
                     for f in futures:
                         f.cancel()
                     break
             except Exception as e:
                 results.append((name, f"Error: {e}"))
+    finally:
+        pool.shutdown(wait=not first_succeeded, cancel_futures=first_succeeded)
 
     # Sort results by peer name for deterministic output
     results.sort(key=lambda r: r[0])

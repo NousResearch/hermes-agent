@@ -606,6 +606,15 @@ def _bare_adapter():
 
 
 class TestReplyCapture:
+    def test_context_scope_separates_peers_and_agent_routes(self):
+        from plugins.platforms.a2a.adapter import _scoped_context_id
+
+        first = _scoped_context_id("peer-a", "agent", "tenant", "shared")
+
+        assert first == _scoped_context_id("peer-a", "agent", "tenant", "shared")
+        assert first != _scoped_context_id("peer-b", "agent", "tenant", "shared")
+        assert first != _scoped_context_id("peer-a", "other", "tenant", "shared")
+
     def test_send_waits_for_notify_marked_final_reply(self):
         """Interim/editable sends must not satisfy the blocked A2A RPC future."""
         adapter = _bare_adapter()
@@ -617,7 +626,8 @@ class TestReplyCapture:
                 "⏩ Steered into current run (iteration 1/200).",
                 metadata={"expect_edits": True},
             )
-            assert interim.success is True
+            assert interim.success is False
+            assert interim.message_id is None
             assert fut.done() is False
 
             final = await adapter.send(
@@ -694,6 +704,14 @@ class TestReplyCapture:
 # --------------------------------------------------------------------------
 
 class TestTaskRpcHandlers:
+    def test_task_queries_do_not_cross_authenticated_peers(self):
+        adapter = _bare_adapter()
+        adapter.tasks.create("alice-task", "ctx", "alice")
+
+        response = adapter._rpc_tasks_get(1, {"taskId": "alice-task"}, peer="bob")
+
+        assert response["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
+
     def test_tasks_get_unknown_uses_spec_error_code(self):
         adapter = _bare_adapter()
         resp = adapter._rpc_tasks_get(1, {"taskId": "ghost"})
@@ -1184,6 +1202,14 @@ class TestInboundRoundTrip:
             err = await asyncio.to_thread(_post_unauth)
             assert err["error"]["code"] == protocol.ERR_UNAUTHORIZED
 
+            with pytest.raises(urllib.error.HTTPError) as metrics_error:
+                await asyncio.to_thread(_get_json, base + "/metrics")
+            assert metrics_error.value.code == 401
+            metrics = await asyncio.to_thread(
+                _get_json, base + "/metrics", {"Authorization": "Bearer topsecret"}
+            )
+            assert "inbound_total" in metrics
+
             # POST with the token succeeds.
             resp = await asyncio.to_thread(
                 _post_json, base + "/", _send_body("hello"),
@@ -1280,6 +1306,44 @@ class TestInboundRoundTrip:
 
 @pytest.mark.integration
 class TestPushNotificationEndToEnd:
+    def test_push_transport_dials_the_validated_ip(self):
+        from plugins.platforms.a2a.adapter import _PinnedHTTPConnection
+
+        connection = _PinnedHTTPConnection("example.com", "93.184.216.34", timeout=10)
+        seen = {}
+        connection._create_connection = lambda address, *_args: seen.setdefault("address", address)
+
+        connection.connect()
+
+        assert seen["address"] == ("93.184.216.34", 80)
+
+    def test_https_push_keeps_original_hostname_for_certificate_validation(self, monkeypatch):
+        from plugins.platforms.a2a.adapter import _PinnedHTTPSConnection
+
+        connection = _PinnedHTTPSConnection("callbacks.example", "93.184.216.34", timeout=10)
+        seen = {}
+        sock = object()
+        monkeypatch.setattr(
+            connection,
+            "_create_connection",
+            lambda address, *_args: seen.setdefault("address", address) and sock,
+        )
+
+        class Context:
+            def wrap_socket(self, value, *, server_hostname):
+                seen["socket"] = value
+                seen["server_hostname"] = server_hostname
+                return value
+
+        monkeypatch.setattr(connection, "_context", Context())
+        connection.connect()
+
+        assert seen == {
+            "address": ("93.184.216.34", 443),
+            "socket": sock,
+            "server_hostname": "callbacks.example",
+        }
+
     def test_inline_push_config_delivers_stream_response(self, monkeypatch):
         """message/send carrying configuration.taskPushNotificationConfig gets
         a signed v1.0 StreamResponse POSTed to the callback on completion."""

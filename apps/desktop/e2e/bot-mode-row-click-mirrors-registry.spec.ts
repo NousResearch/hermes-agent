@@ -125,7 +125,7 @@ test('a bot row click lands on the Bot Chat the row previews, not a side thread'
   await settle(page, 15_000)
 
   // A `+` side thread for alpha, with a real turn so it is a persisted tile.
-  await page.keyboard.press('Control+t')
+  await page.keyboard.press('ControlOrMeta+t')
   const composer = page.locator('[data-slot="composer-root"] [contenteditable="true"]').filter({ visible: true }).first()
   await expect(composer).toBeVisible({ timeout: 15_000 })
   await composer.click()

@@ -236,8 +236,7 @@ async function relayAgentsOn(connection: RelayConnection): Promise<RelayAgentRow
 
 /** Last good agent rows per connection id — reused when a fetch blips so a
  *  transient failure never reads as "everyone on that machine went away".
- *  The sweep below drops disconnected ids, but only on a cycle that had two
- *  or more connections to relay between; the ceiling is what bounds the rest.
+ *  The sweep below drops disconnected ids on every non-empty registry cycle.
  *  Every live connection is rewritten each cycle, so eviction can only ever
  *  reach ids that stopped being fetched. */
 const RELAY_AGENTS_CACHE_MAX = 32
@@ -254,7 +253,7 @@ async function syncRelayRosters() {
   try {
     const connections = await relayConnections()
 
-    if (connections.length < 2) {
+    if (connections.length === 0) {
       return
     }
 
@@ -365,7 +364,12 @@ async function drainRelayOutboxes() {
         const envelopeId = String(envelope?.id || '')
         const target = byId.get(String(envelope?.target_connection || ''))
 
-        const postReply = async (payload: { error?: string; reason?: string; reply?: string }) => {
+        const postReply = async (payload: {
+          error?: string
+          reason?: string
+          reply?: string
+          status?: 'accepted' | 'completed'
+        }) => {
           try {
             await host.requestProfile(sender.route, 'bot_relay.reply', {
               id: envelopeId,
@@ -393,7 +397,7 @@ async function drainRelayOutboxes() {
         const attentionKey = `${target.id}::${String(envelope?.target_profile || '')}`
 
         try {
-          const res = await host.requestProfile<{ reply?: string }>(
+          const res = await host.requestProfile<{ reply?: string; status?: 'accepted' | 'completed' }>(
             target.route,
             'bot_relay.deliver',
             {
@@ -404,9 +408,11 @@ async function drainRelayOutboxes() {
           )
 
           clearBotAttention(attentionKey)
-          await postReply({
-            reply: String(res?.reply || '')
-          })
+          await postReply(
+            res?.status === 'accepted'
+              ? { status: 'accepted' }
+              : { status: 'completed', reply: String(res?.reply || '') }
+          )
         } catch (error: any) {
           // #93091: bot_relay.deliver classifies the failed turn and ships the
           // typed code in the JSON-RPC error's `data.reason`; forward it into

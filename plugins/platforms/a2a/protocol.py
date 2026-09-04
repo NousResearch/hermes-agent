@@ -590,10 +590,14 @@ class TaskStore:
         self._lock = threading.Lock()
 
     @staticmethod
-    def _in_scope(rec: dict, agent_slug: str = "", tenant: str = "") -> bool:
+    def _in_scope(
+        rec: dict, agent_slug: str = "", tenant: str = "", peer: str = ""
+    ) -> bool:
         if agent_slug and rec.get("agent_slug", "") != agent_slug:
             return False
         if tenant and rec.get("tenant", "") != tenant:
+            return False
+        if peer and rec.get("peer", "") != peer:
             return False
         return True
 
@@ -623,11 +627,11 @@ class TaskStore:
                 rec["state"] = state
 
     def set_push_config(self, task_id: str, url: str,
-                        agent_slug: str = "", tenant: str = "") -> Optional[dict]:
+                        agent_slug: str = "", tenant: str = "", peer: str = "") -> Optional[dict]:
         """Attach a push notification config; returns the stored config or None."""
         with self._lock:
             rec = self._tasks.get(task_id)
-            if not rec or not self._in_scope(rec, agent_slug, tenant):
+            if not rec or not self._in_scope(rec, agent_slug, tenant, peer):
                 return None
             rec["push_url"] = url
             rec["push_config_id"] = "cfg-" + uuid.uuid4().hex[:12]
@@ -644,27 +648,29 @@ class TaskStore:
         }
 
     def get_push_config(self, task_id: str, config_id: str = "",
-                        agent_slug: str = "", tenant: str = "") -> Optional[dict]:
+                        agent_slug: str = "", tenant: str = "", peer: str = "") -> Optional[dict]:
         with self._lock:
             rec = self._tasks.get(task_id)
-            if not rec or not self._in_scope(rec, agent_slug, tenant) or not rec.get("push_url"):
+            if not rec or not self._in_scope(rec, agent_slug, tenant, peer) or not rec.get("push_url"):
                 return None
             if config_id and rec.get("push_config_id") != config_id:
                 return None
             return self._push_config_view(rec)
 
-    def list_push_configs(self, task_id: str, agent_slug: str = "", tenant: str = "") -> list[dict]:
+    def list_push_configs(
+        self, task_id: str, agent_slug: str = "", tenant: str = "", peer: str = ""
+    ) -> list[dict]:
         with self._lock:
             rec = self._tasks.get(task_id)
-            if not rec or not self._in_scope(rec, agent_slug, tenant) or not rec.get("push_url"):
+            if not rec or not self._in_scope(rec, agent_slug, tenant, peer) or not rec.get("push_url"):
                 return []
             return [self._push_config_view(rec)]
 
     def delete_push_config(self, task_id: str, config_id: str = "",
-                           agent_slug: str = "", tenant: str = "") -> bool:
+                           agent_slug: str = "", tenant: str = "", peer: str = "") -> bool:
         with self._lock:
             rec = self._tasks.get(task_id)
-            if not rec or not self._in_scope(rec, agent_slug, tenant) or not rec.get("push_url"):
+            if not rec or not self._in_scope(rec, agent_slug, tenant, peer) or not rec.get("push_url"):
                 return False
             if config_id and rec.get("push_config_id") != config_id:
                 return False
@@ -680,10 +686,12 @@ class TaskStore:
             url, rec["push_url"] = rec["push_url"], ""
             return url
 
-    def get(self, task_id: str, agent_slug: str = "", tenant: str = "") -> Optional[dict]:
+    def get(
+        self, task_id: str, agent_slug: str = "", tenant: str = "", peer: str = ""
+    ) -> Optional[dict]:
         with self._lock:
             rec = self._tasks.get(task_id)
-            if not rec or not self._in_scope(rec, agent_slug, tenant):
+            if not rec or not self._in_scope(rec, agent_slug, tenant, peer):
                 return None
             return dict(rec)
 
@@ -705,10 +713,12 @@ class TaskStore:
                 fut.set_result((state, reply))
         return out
 
-    def watch(self, task_id: str, agent_slug: str = "", tenant: str = "") -> Optional[Future]:
+    def watch(
+        self, task_id: str, agent_slug: str = "", tenant: str = "", peer: str = ""
+    ) -> Optional[Future]:
         with self._lock:
             rec = self._tasks.get(task_id)
-            if not rec or not self._in_scope(rec, agent_slug, tenant):
+            if not rec or not self._in_scope(rec, agent_slug, tenant, peer):
                 return None
             fut: Future = Future()
             if rec["state"] in TERMINAL_STATES:
@@ -725,6 +735,7 @@ class TaskStore:
         offset: int = 0,
         agent_slug: str = "",
         tenant: str = "",
+        peer: str = "",
         with_total: bool = False,
     ):
         """Filtered task page (newest first).
@@ -735,8 +746,8 @@ class TaskStore:
         page_size = max(1, min(int(page_size or 50), 100))
         with self._lock:
             recs = [dict(r) for r in reversed(self._tasks.values())]
-        if agent_slug or tenant:
-            recs = [r for r in recs if self._in_scope(r, agent_slug, tenant)]
+        if agent_slug or tenant or peer:
+            recs = [r for r in recs if self._in_scope(r, agent_slug, tenant, peer)]
         if context_id:
             recs = [r for r in recs if r["context_id"] == context_id]
         if state:

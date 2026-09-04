@@ -141,7 +141,7 @@ def test_deliver_lands_in_live_bot_chat_instead_of_subprocess(home, monkeypatch)
     # queued=True is the invariant: a DM never interrupts a turn in flight.
     assert submitted == [{"session_id": "live-ops", "text": "ping", "queued": True}]
     assert not spawned
-    assert "reply" in out
+    assert out == {"status": "accepted"}
 
     # A live session titled anything else for the same profile does not qualify:
     # the subprocess path runs exactly as before.

@@ -456,7 +456,7 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
     stopBotRelay()
   })
 
-  it('stays quiet with a single connection — there is no peer to relay to', async () => {
+  it('clears stale remote agents when only one connection remains', async () => {
     hostMock.profileRoutes = vi.fn(async () => [route('a')])
 
     const calls = respondWith(() => ({}))
@@ -465,7 +465,14 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
     startBotRelay()
     await vi.advanceTimersByTimeAsync(0)
 
-    expect(calls).toHaveLength(0)
+    expect(calls).toEqual([
+      expect.objectContaining({ connectionId: 'a', method: 'profiles.list' }),
+      expect.objectContaining({
+        connectionId: 'a',
+        method: 'bot_relay.roster.sync',
+        params: { agents: [] }
+      })
+    ])
 
     stopBotRelay()
   })
@@ -507,6 +514,30 @@ describe('the drain loop wires drain → deliver → reply', () => {
     })
     // A delivered background DM is this bot's "good turn".
     expect(clearBotAttentionMock).toHaveBeenCalledWith('b::ops')
+
+    stopBotRelay()
+  })
+
+  it('keeps live-session acceptance distinct from a completed reply', async () => {
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: call.connectionId === 'a' ? [envelope] : [] }
+      }
+      if (call.method === 'bot_relay.deliver') {
+        return { status: 'accepted' }
+      }
+      return {}
+    })
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle()
+
+    expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toMatchObject({
+      id: 'env-1',
+      status: 'accepted'
+    })
+    expect(calls.find(call => call.method === 'bot_relay.reply')?.params.reply).toBeUndefined()
 
     stopBotRelay()
   })

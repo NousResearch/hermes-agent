@@ -20,6 +20,8 @@ import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/extern
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
+import { selectMarkdownPreprocessor } from '@/lib/markdown-preprocess-cache'
+import { createIncrementalPreprocessWithTailRepair } from '@/lib/markdown-preprocess-wrapper'
 import {
   downloadGatewayMediaFile,
   isFileMediaPath,
@@ -541,6 +543,16 @@ function MarkdownTextSurface({
 }: MarkdownTextSurfaceProps) {
   const { status, text } = useMessagePartText()
   const isStreaming = status.type === 'running'
+  const preprocessIncrementally = useMemo(createIncrementalPreprocessWithTailRepair, [])
+  const preprocess = selectMarkdownPreprocessor(isStreaming, preprocessIncrementally, preprocessWithTailRepair)
+
+  useEffect(() => {
+    if (!isStreaming) {
+      preprocessIncrementally.clear()
+    }
+
+    return preprocessIncrementally.clear
+  }, [isStreaming, preprocessIncrementally])
 
   // Keep code parsing enabled while streaming so incomplete fenced blocks still
   // render as code cards. The expensive Shiki pass is deferred by
@@ -691,7 +703,7 @@ function MarkdownTextSurface({
         parseIncompleteMarkdown={false}
         parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
         plugins={plugins}
-        preprocess={preprocessWithTailRepair}
+        preprocess={preprocess}
       />
     </ErrorBoundary>
   )

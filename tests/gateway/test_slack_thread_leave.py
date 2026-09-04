@@ -8,10 +8,12 @@ from plugins.platforms.slack.adapter import SlackAdapter
 from plugins.platforms.slack.thread_participation import SlackThreadParticipationStore
 
 
-def _event(text: str, *, ts: str, thread_ts: str, team: str = "T1") -> dict:
+def _event(
+    text: str, *, ts: str, thread_ts: str, team: str = "T1", channel: str = "C123"
+) -> dict:
     return {
         "type": "message",
-        "channel": "C123",
+        "channel": channel,
         "channel_type": "channel",
         "team": team,
         "user": "U123",
@@ -144,7 +146,78 @@ def test_leave_reports_failure_when_mute_cannot_be_persisted(tmp_path, monkeypat
         reply_to="100.000",
         metadata={"team_id": "T1"},
     )
+    assert not adapter._thread_participation.is_muted("T1", "C123", "100.000")
+
+
+def test_failed_mute_restores_exact_state_before_insert_and_prune(tmp_path, monkeypatch):
+    store = SlackThreadParticipationStore(tmp_path / "left.json", max_entries=2)
+    store._entries = {"older": 1.0, "newer": 2.0}
+    before = store._entries.copy()
+
+    def fail_write(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(
+        "plugins.platforms.slack.thread_participation.atomic_json_write", fail_write)
+
+    result = store.mute("T1", "C123", "100.000")
+
+    assert result.persisted is False
+    assert store._entries == before
+
+
+def test_failed_unmute_restores_state_and_reports_persistence_failure(tmp_path, monkeypatch):
+    store = SlackThreadParticipationStore(tmp_path / "left.json")
+    assert store.mute("T1", "C123", "100.000").persisted is True
+    before = store._entries.copy()
+
+    def fail_write(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(
+        "plugins.platforms.slack.thread_participation.atomic_json_write", fail_write)
+
+    result = store.unmute("T1", "C123", "100.000")
+
+    assert result.changed is True
+    assert result.persisted is False
+    assert store._entries == before
+
+
+def test_failed_durable_rejoin_acknowledges_failure_without_model_turn(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path)
+    assert adapter._thread_participation.mute("T1", "C123", "100.000").persisted is True
+
+    def fail_write(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(
+        "plugins.platforms.slack.thread_participation.atomic_json_write", fail_write)
+
+    asyncio.run(adapter._handle_slack_message(
+        _event("<@UBOT> come back", ts="101.000", thread_ts="100.000")))
+
+    adapter.send.assert_awaited_once_with(
+        "C123",
+        "Couldn't rejoin this thread because the leave state could not be saved. Please try again.",
+        reply_to="100.000",
+        metadata={"team_id": "T1"},
+    )
+    adapter.handle_message.assert_not_awaited()
     assert adapter._thread_participation.is_muted("T1", "C123", "100.000")
+
+
+def test_leave_in_excluded_channel_is_silently_ignored(tmp_path):
+    adapter = _adapter(tmp_path)
+
+    asyncio.run(adapter._handle_slack_message(
+        _event(
+            "<@UBOT> !leave", ts="101.000", thread_ts="100.000", channel="C999"
+        )))
+
+    adapter.send.assert_not_awaited()
+    adapter.handle_message.assert_not_awaited()
+    assert not adapter._thread_participation.is_muted("T1", "C999", "100.000")
 
 
 def test_participation_store_prunes_oversized_state_on_load(tmp_path):

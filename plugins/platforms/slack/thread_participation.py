@@ -6,6 +6,7 @@ import json
 import logging
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -13,6 +14,14 @@ from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ParticipationMutationResult:
+    """Outcome of an in-memory mutation and its required durable write."""
+
+    changed: bool
+    persisted: bool
 
 
 class SlackThreadParticipationStore:
@@ -62,15 +71,28 @@ class SlackThreadParticipationStore:
         with self._lock:
             return self._key(team_id, channel_id, thread_ts) in self._entries
 
-    def mute(self, team_id: str, channel_id: str, thread_ts: str) -> bool:
+    def mute(
+        self, team_id: str, channel_id: str, thread_ts: str
+    ) -> ParticipationMutationResult:
         with self._lock:
+            before = self._entries.copy()
             self._entries[self._key(team_id, channel_id, thread_ts)] = time.time()
             self._prune_locked()
-            return self._flush_locked()
+            changed = self._entries != before
+            persisted = self._flush_locked()
+            if not persisted:
+                self._entries = before
+            return ParticipationMutationResult(changed=changed, persisted=persisted)
 
-    def unmute(self, team_id: str, channel_id: str, thread_ts: str) -> bool:
+    def unmute(
+        self, team_id: str, channel_id: str, thread_ts: str
+    ) -> ParticipationMutationResult:
         with self._lock:
+            before = self._entries.copy()
             removed = self._entries.pop(self._key(team_id, channel_id, thread_ts), None) is not None
-            if removed:
-                self._flush_locked()
-            return removed
+            if not removed:
+                return ParticipationMutationResult(changed=False, persisted=True)
+            persisted = self._flush_locked()
+            if not persisted:
+                self._entries = before
+            return ParticipationMutationResult(changed=True, persisted=persisted)

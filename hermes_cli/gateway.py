@@ -815,6 +815,13 @@ def find_windows_gateway_services(
                 raise RuntimeError("SCM service inspection failed") from exc
             if not service_name:
                 raise RuntimeError("SCM service has an empty name")
+            if service_name.casefold() == "schedule":
+                # Built-in Task Scheduler (svchost -k netsvcs). Scheduled-Task
+                # gateways inherit it as an ancestor process but it is NOT a
+                # gateway owner; treating it as one made the updater call
+                # `sc.exe stop Schedule` (i.e. stop Task Scheduler itself),
+                # which needs admin and aborts every update. Skip it.
+                continue
             if service_status == "stopped":
                 continue
             if service_status != "running":

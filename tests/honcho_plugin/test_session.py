@@ -1164,6 +1164,7 @@ class TestSetPeerCardNoneGuard:
         cfg = HonchoClientConfig(api_key="test-key", enabled=True)
         mgr = HonchoSessionManager.__new__(HonchoSessionManager)
         mgr._cache = {}
+        mgr._cache_lock = threading.RLock()
         mgr._sessions_cache = {}
         mgr._config = cfg
         mgr._session_observation = {}
@@ -1203,6 +1204,7 @@ class TestGetSessionContextFallback:
         cfg = HonchoClientConfig(api_key="test-key", enabled=True)
         mgr = HonchoSessionManager.__new__(HonchoSessionManager)
         mgr._cache = {}
+        mgr._cache_lock = threading.RLock()
         mgr._sessions_cache = {}
         mgr._config = cfg
         mgr._dialectic_dynamic = True
@@ -1520,22 +1522,22 @@ class TestObservationPerSessionScoping:
             )
 
     def test_sync_back_scopes_flags_per_session(self):
-        """Server flags land under each session's own id; manager snapshot untouched."""
+        """Server flags come back per session; manager snapshot untouched."""
         mgr = self._make_manager()
 
         # Session A's server config disables user observe_others...
-        self._setup_session(
+        _, _, flags_a = self._setup_session(
             mgr, "sid-a",
             _FakeSdkSession(_FakeServerPeerConfig(observe_others=False), _FakeServerPeerConfig()),
         )
         # ...session B's server leaves everything at the synced-in defaults.
-        self._setup_session(
+        _, _, flags_b = self._setup_session(
             mgr, "sid-b",
             _FakeSdkSession(_FakeServerPeerConfig(), _FakeServerPeerConfig()),
         )
 
-        assert mgr._session_observation["sid-a"]["user_observe_others"] is False
-        assert mgr._session_observation["sid-b"]["user_observe_others"] is True
+        assert flags_a["user_observe_others"] is False
+        assert flags_b["user_observe_others"] is True
         # The config snapshot on the manager must survive both syncs — this is
         # the regression: last-session-wins used to overwrite it (#98936).
         assert mgr._user_observe_others is True
@@ -1547,7 +1549,8 @@ class TestObservationPerSessionScoping:
         fake = _FakeSdkSession(
             _FakeServerPeerConfig(observe_others=False), _FakeServerPeerConfig()
         )
-        self._setup_session(mgr, "sid-a", fake)
+        _, _, flags = self._setup_session(mgr, "sid-a", fake)
+        mgr._session_observation["sid-a"] = flags  # what get_or_create stores next to the cache entry
 
         # Force the full setup path again (cache cleared, e.g. after re-auth).
         mgr._sessions_cache = {}

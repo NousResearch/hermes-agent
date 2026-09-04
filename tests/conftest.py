@@ -1749,3 +1749,15 @@ def _moa_caches_isolated():
     yield
     moa._preset_cache.clear()
     moa._runtime_cache.clear()
+
+
+@pytest.fixture
+def short_tmp_path():
+    """Private temporary directory for Unix sockets and near-PATH_MAX fixtures.
+
+    pytest's descriptive paths can exceed sockaddr_un.sun_path on macOS.
+    Avoid both those names and macOS's long per-user TMPDIR prefix.
+    """
+    base = "/tmp" if os.name == "posix" else tempfile.gettempdir()
+    with tempfile.TemporaryDirectory(prefix="ht-", dir=base) as directory:
+        yield Path(directory)

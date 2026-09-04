@@ -150,9 +150,9 @@ def _fake_flaps(tmp_path, status_line, capture):
     return sock_path, t
 
 
-def test_suspend_self_posts_suspend_for_this_machine(tmp_path):
+def test_suspend_self_posts_suspend_for_this_machine(short_tmp_path):
     captured: list[bytes] = []
-    sock_path, t = _fake_flaps(tmp_path, "200 OK", captured)
+    sock_path, t = _fake_flaps(short_tmp_path, "200 OK", captured)
     assert suspend_self(_FLY_ENV, socket_path=sock_path) is True
     t.join(timeout=5)
     request = captured[0].decode()
@@ -164,9 +164,9 @@ def test_suspend_self_posts_suspend_for_this_machine(tmp_path):
     assert "Host: flaps\r\n" in request
 
 
-def test_suspend_self_non_2xx_is_false_not_raise(tmp_path):
+def test_suspend_self_non_2xx_is_false_not_raise(short_tmp_path):
     captured: list[bytes] = []
-    sock_path, t = _fake_flaps(tmp_path, "412 Precondition Failed", captured)
+    sock_path, t = _fake_flaps(short_tmp_path, "412 Precondition Failed", captured)
     assert suspend_self(_FLY_ENV, socket_path=sock_path) is False
     t.join(timeout=5)
 

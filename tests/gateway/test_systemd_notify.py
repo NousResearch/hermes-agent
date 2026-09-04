@@ -8,9 +8,7 @@ import socket
 import pytest
 
 
-@pytest.mark.skipif(
-    not hasattr(socket, "AF_UNIX"), reason="Unix datagram sockets are unavailable"
-)
+@pytest.mark.linux_only
 def test_notify_supports_systemd_abstract_socket(monkeypatch):
     name = "\0hermes-test-notify"
     receiver = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
@@ -25,6 +23,29 @@ def test_notify_supports_systemd_abstract_socket(monkeypatch):
         assert receiver.recv(4096) == b"WATCHDOG=1"
     finally:
         receiver.close()
+
+
+@pytest.mark.macos_only
+def test_notify_supports_filesystem_socket_on_macos(monkeypatch, short_tmp_path):
+    _assert_filesystem_notification(monkeypatch, short_tmp_path)
+
+
+@pytest.mark.linux_only
+def test_notify_supports_filesystem_socket_on_linux(monkeypatch, short_tmp_path):
+    _assert_filesystem_notification(monkeypatch, short_tmp_path)
+
+
+def _assert_filesystem_notification(monkeypatch, short_tmp_path):
+    path = str(short_tmp_path / "notify.sock")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as receiver:
+        receiver.bind(path)
+        receiver.settimeout(1.0)
+        monkeypatch.setenv("NOTIFY_SOCKET", path)
+
+        from gateway.systemd_notify import notify
+
+        assert notify("WATCHDOG=1") is True
+        assert receiver.recv(4096) == b"WATCHDOG=1"
 
 
 def test_notify_uses_nonblocking_datagram_send(monkeypatch):

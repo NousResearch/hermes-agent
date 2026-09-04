@@ -3,12 +3,23 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from collections import namedtuple
 from pathlib import Path
+
+import pytest
 
 from gateway.readiness import collect_runtime_readiness
 
 
-def test_collect_runtime_readiness_reports_healthy_local_runtime(tmp_path, monkeypatch):
+@pytest.mark.parametrize("used, expected_status", [(50, "ok"), (95, "degraded")])
+def test_collect_runtime_readiness_reports_disk_health(
+    tmp_path, monkeypatch, used, expected_status
+):
+    usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr(
+        "gateway.readiness.shutil.disk_usage",
+        lambda _path: usage(100, used, 100 - used),
+    )
     home = tmp_path / ".hermes"
     home.mkdir()
     (home / "config.yaml").write_text(
@@ -29,14 +40,14 @@ def test_collect_runtime_readiness_reports_healthy_local_runtime(tmp_path, monke
         active_api_runs=2,
     )
 
-    assert result["status"] == "ok"
+    assert result["status"] == expected_status
     assert result["checks"]["state_db"]["status"] == "ok"
     assert result["checks"]["session_store"]["status"] == "ok"
     assert result["checks"]["config"]["status"] == "ok"
     assert result["checks"]["model"]["status"] == "ok"
     assert result["checks"]["gateway"]["status"] == "ok"
     assert result["checks"]["background_queues"]["active_api_runs"] == 2
-    assert result["checks"]["disk"]["status"] in {"ok", "degraded"}
+    assert result["checks"]["disk"]["status"] == expected_status
 
 
 def test_collect_runtime_readiness_degrades_on_invalid_config_and_stopped_gateway(

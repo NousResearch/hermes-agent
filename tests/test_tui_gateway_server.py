@@ -16274,6 +16274,7 @@ def test_model_options_preserves_canonical_custom_row_after_agent_init(monkeypat
             custom_providers=[],
         ),
     )
+    monkeypatch.setattr("hermes_cli.inventory._anthropic_oauth_credentials_present", lambda: False)
     canonical = Mock(return_value="custom:local-ollama")
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.canonical_custom_identity",

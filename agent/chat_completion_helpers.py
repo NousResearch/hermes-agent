@@ -1530,8 +1530,19 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     OpenCode models). No-op for every other provider.
     """
     from agent.opencode_affinity import merge_opencode_session_headers
+    from agent.agent_runtime_helpers import cap_custom_provider_messages
+
+    # Custom OpenAI-compatible gateways may enforce a hard message-count
+    # limit independently of their token context window. Cap before building
+    # kwargs so cache keys and provider transformations describe the same wire
+    # request; cap again after transport conversion as the final guarantee.
+    api_messages = cap_custom_provider_messages(agent, api_messages)
 
     kwargs = _build_api_kwargs_for_mode(agent, api_messages, tools_for_api)
+    if isinstance(kwargs.get("messages"), list):
+        kwargs["messages"] = cap_custom_provider_messages(
+            agent, kwargs["messages"]
+        )
     return merge_opencode_session_headers(
         kwargs,
         getattr(agent, "provider", None),

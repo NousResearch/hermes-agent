@@ -198,6 +198,27 @@ def _make_hermes_provider_class() -> Optional[type]:
             request = await super()._refresh_token()
             return self._stamp_token_user_agent(request)
 
+        def _preserve_refresh_token(self, token_response):
+            """RFC 6749 §6: a refresh-grant response may omit refresh_token,
+            meaning "keep the existing one". Google does this every time.
+            Without this, each hourly self-refresh degrades the stored token
+            to access-only and it dies an hour later."""
+            from mcp.shared.auth import OAuthToken
+
+            prev = getattr(self.context, "current_tokens", None)
+            prev_rt = getattr(prev, "refresh_token", None)
+            if getattr(token_response, "refresh_token", None) is None and prev_rt:
+                try:
+                    token_response.refresh_token = prev_rt
+                except Exception:
+                    data = token_response.model_dump(mode="json", exclude_none=True)
+                    data["refresh_token"] = prev_rt
+                    token_response = OAuthToken.model_validate(data)
+                logger.info(
+                    "Server omitted refresh_token on refresh; carried forward existing"
+                )
+            return token_response
+
         async def _handle_token_response(self, response):
             """Accept any 2xx token response and avoid leaking token bodies in errors."""
             if 200 <= response.status_code < 300:
@@ -209,6 +230,7 @@ def _make_hermes_provider_class() -> Optional[type]:
                     token_response = await handle_token_response_scopes(response)
                 except (HTTPError, OAuthTokenError):
                     raise OAuthTokenError("Invalid token response") from None
+                token_response = self._preserve_refresh_token(token_response)
                 self.context.current_tokens = token_response
                 self.context.update_token_expiry(token_response)
                 await self.context.storage.set_tokens(token_response)
@@ -232,6 +254,7 @@ def _make_hermes_provider_class() -> Optional[type]:
             try:
                 content = await response.aread()
                 token_response = OAuthToken.model_validate_json(content)
+                token_response = self._preserve_refresh_token(token_response)
                 self.context.current_tokens = token_response
                 self.context.update_token_expiry(token_response)
                 await self.context.storage.set_tokens(token_response)

@@ -118,9 +118,16 @@ def mount_spa(application: FastAPI):
             # See #94227, #95575.
             gated = bool(getattr(application.state, "auth_required", False))
             if full_path == "" and not gated:
+                # Live read: _SESSION_TOKEN is rebound by _apply_ssh_session_token()
+                # AFTER this module is first imported (Desktop SSH token-file path).
+                # A module-level from-import captures the pre-apply random token and
+                # the injected value never matches the token /api/ws actually checks.
+                from hermes_cli import web_server as _web_server_root
+
                 return HTMLResponse(
                     "<!doctype html><html><head><script>"
-                    f"window.__HERMES_SESSION_TOKEN__={json.dumps(_SESSION_TOKEN)};"
+                    "window.__HERMES_SESSION_TOKEN__="
+                    f"{json.dumps(_web_server_root._SESSION_TOKEN)};"
                     "window.__HERMES_AUTH_REQUIRED__=false;"
                     f"</script></head><body>{_HEADLESS_MSG}</body></html>",
                     headers=_NO_STORE,
@@ -151,7 +158,15 @@ def mount_spa(application: FastAPI):
             return JSONResponse({"error": "Frontend not built. Run: cd web && npm run build"}, status_code=404)
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
-        token_js = "" if gated else f'window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
+        # Live read — see the no_frontend() note: _SESSION_TOKEN is rebound after
+        # this module's first import on the Desktop SSH token-file path.
+        from hermes_cli import web_server as _web_server_root
+
+        token_js = (
+            ""
+            if gated
+            else f'window.__HERMES_SESSION_TOKEN__="{_web_server_root._SESSION_TOKEN}";'
+        )
         bootstrap_script = (
             f"<script>{token_js}"
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"

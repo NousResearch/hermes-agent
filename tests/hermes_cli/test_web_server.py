@@ -5125,6 +5125,69 @@ class TestHeadlessServeTokenPage:
             assert "web UI disabled" in resp.json()["error"]
             assert ws._SESSION_TOKEN not in resp.text
 
+    def test_root_injects_live_token_after_rebind(self, monkeypatch):
+        """The injected token must be resolved at request time.
+
+        Desktop SSH serves rebind ``_SESSION_TOKEN`` via
+        ``_apply_ssh_session_token()`` AFTER this module is first imported
+        (the token-file path). A module-level from-import captures the
+        pre-apply random token, and the injected value then never matches
+        what ``/api/ws`` validates — every Desktop SSH connect fails with
+        an opaque "Could not connect to Hermes gateway" despite green
+        HTTP probes.
+        """
+        import json as _json
+        import re
+
+        client, ws = self._headless_client(monkeypatch, gated=False)
+        rebinding = "b" * 64
+        monkeypatch.setattr(ws, "_SESSION_TOKEN", rebinding)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        match = re.search(
+            r'window\.__HERMES_SESSION_TOKEN__\s*=\s*("(?:\\.|[^"\\])*")',
+            resp.text,
+        )
+        assert match, resp.text
+        assert _json.loads(match.group(1)) == rebinding
+
+
+class TestServeIndexLiveToken:
+    """The SPA index must inject the live ``_SESSION_TOKEN`` for the same
+    reason as TestHeadlessServeTokenPage: the token is rebound after this
+    module's first import on the Desktop SSH token-file path, and the SPA
+    reads the injected value for /api/ws auth."""
+
+    def test_index_injects_live_token_after_rebind(self, tmp_path, monkeypatch):
+        import json as _json
+        import re
+
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as ws
+
+        dist = tmp_path / "web_dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text(
+            "<html><head></head><body>SPA</body></html>", encoding="utf-8"
+        )
+        monkeypatch.setattr(ws, "WEB_DIST", dist)
+        monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
+        spa_app = FastAPI()
+        _web_server_dashboard.mount_spa(spa_app)
+        client = TestClient(spa_app)
+
+        rebinding = "c" * 64
+        monkeypatch.setattr(ws, "_SESSION_TOKEN", rebinding)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        match = re.search(
+            r'window\.__HERMES_SESSION_TOKEN__\s*=\s*("(?:\\.|[^"\\])*")',
+            resp.text,
+        )
+        assert match, resp.text
+        assert _json.loads(match.group(1)) == rebinding
+
 
 class TestHashedAssetCacheHeaders:
     """Hashed /assets/* responses must be immutable-cacheable; index.html

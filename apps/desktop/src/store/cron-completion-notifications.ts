@@ -3,6 +3,9 @@ import { translateNow } from '@/i18n'
 
 import { dispatchNativeNotification, type NativeNotificationInput } from './native-notifications'
 
+const FAILED_RUN_STATUSES = new Set(['error', 'failed', 'timeout'])
+const MAX_RUN_LOOKUP_MISSES = 3
+
 interface CronCompletionNotifierDependencies {
   getRuns: (jobId: string, limit?: number) => Promise<SessionInfo[]>
   notify: (input: NativeNotificationInput) => boolean | void
@@ -23,7 +26,13 @@ function deliversLocally(job: CronJob): boolean {
 }
 
 function runFailed(job: CronJob): boolean {
-  return Boolean(job.last_error) || (Boolean(job.last_status) && job.last_status !== 'ok')
+  const status = job.last_status?.trim().toLowerCase()
+
+  return Boolean(job.last_error) || Boolean(status && FAILED_RUN_STATUSES.has(status))
+}
+
+function runLookupKey(jobId: string, completedAt: string): string {
+  return `${jobId}\u0000${completedAt}`
 }
 
 function runNearestCompletion(runs: SessionInfo[], completedAt: string): SessionInfo | undefined {
@@ -72,12 +81,14 @@ export function createCronCompletionNotifier({
   let generation = 0
   const seenRuns = new Map<string, null | string>()
   const inFlight = new Set<string>()
+  const runLookupMisses = new Map<string, number>()
 
   const reset = () => {
     activeScope = null
     generation += 1
     seenRuns.clear()
     inFlight.clear()
+    runLookupMisses.clear()
   }
 
   const observe = async (scope: string, jobs: CronJob[]) => {
@@ -86,6 +97,7 @@ export function createCronCompletionNotifier({
       generation += 1
       seenRuns.clear()
       inFlight.clear()
+      runLookupMisses.clear()
 
       for (const job of jobs) {
         seenRuns.set(job.id, job.last_run_at ?? null)
@@ -99,6 +111,14 @@ export function createCronCompletionNotifier({
     for (const jobId of seenRuns.keys()) {
       if (!liveJobIds.has(jobId)) {
         seenRuns.delete(jobId)
+      }
+    }
+
+    for (const lookupKey of runLookupMisses.keys()) {
+      const jobId = lookupKey.split('\u0000', 1)[0]
+
+      if (!liveJobIds.has(jobId)) {
+        runLookupMisses.delete(lookupKey)
       }
     }
 
@@ -140,9 +160,26 @@ export function createCronCompletionNotifier({
           const runs = await getRuns(job.id, 5)
           const run = runNearestCompletion(runs, completedAt)
 
-          if (!run || generation !== observedGeneration || activeScope !== scope) {
+          if (generation !== observedGeneration || activeScope !== scope) {
             return
           }
+
+          const lookupKey = runLookupKey(job.id, completedAt)
+
+          if (!run) {
+            const missCount = (runLookupMisses.get(lookupKey) ?? 0) + 1
+
+            if (missCount >= MAX_RUN_LOOKUP_MISSES) {
+              advanceSeenRun(seenRuns, job.id, completedAt)
+              runLookupMisses.delete(lookupKey)
+            } else {
+              runLookupMisses.set(lookupKey, missCount)
+            }
+
+            return
+          }
+
+          runLookupMisses.delete(lookupKey)
 
           // Two accepted snapshots can advance the same job while the first
           // run lookup is still in flight. Never let the older lookup resolve
@@ -163,8 +200,24 @@ export function createCronCompletionNotifier({
             )
           })
         } catch {
+          if (generation !== observedGeneration || activeScope !== scope) {
+            return
+          }
+
+          const lookupKey = runLookupKey(job.id, completedAt)
+          const missCount = (runLookupMisses.get(lookupKey) ?? 0) + 1
+
+          if (missCount >= MAX_RUN_LOOKUP_MISSES) {
+            advanceSeenRun(seenRuns, job.id, completedAt)
+            runLookupMisses.delete(lookupKey)
+          } else {
+            runLookupMisses.set(lookupKey, missCount)
+          }
+
           // The jobs file can become visible just before its session row. Keep
-          // the timestamp unconsumed so the next cron refresh retries quietly.
+          // the timestamp unconsumed for a bounded retry window, then consume it
+          // silently so a removed or unavailable runs endpoint cannot hot-loop
+          // forever on every cron refresh.
         } finally {
           inFlight.delete(key)
         }

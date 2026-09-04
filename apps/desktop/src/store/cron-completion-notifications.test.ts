@@ -112,6 +112,26 @@ describe('cron completion notifications', () => {
     )
   })
 
+  it('does not label unknown successful statuses as failures', async () => {
+    const getRuns = vi.fn().mockResolvedValue([run])
+    const notify = vi.fn()
+    const observer = createCronCompletionNotifier({ getRuns, notify })
+
+    await observer.observe('local\0default', [job()])
+    await observer.observe('local\0default', [
+      job({
+        last_run_at: '2026-08-20T10:00:00+00:00',
+        last_status: 'completed'
+      })
+    ])
+
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: expect.not.stringMatching(/failed/i)
+      })
+    )
+  })
+
   it('matches the notification to the run nearest the accepted completion timestamp', async () => {
     const completedRun = { ended_at: 1_777_000_000, id: 'cron_daily_completed' } as SessionInfo
     const newerRun = { ended_at: 1_777_000_120, id: 'cron_daily_newer' } as SessionInfo
@@ -173,5 +193,37 @@ describe('cron completion notifications', () => {
 
     expect(getRuns).toHaveBeenCalledTimes(2)
     expect(notify).toHaveBeenCalledOnce()
+  })
+
+  it('stops retrying when the completed run never becomes visible', async () => {
+    const getRuns = vi.fn().mockResolvedValue([])
+    const notify = vi.fn()
+    const observer = createCronCompletionNotifier({ getRuns, notify })
+    const completed = job({ last_run_at: '2026-08-20T10:00:00+00:00' })
+
+    await observer.observe('local\0default', [job()])
+    await observer.observe('local\0default', [completed])
+    await observer.observe('local\0default', [completed])
+    await observer.observe('local\0default', [completed])
+    await observer.observe('local\0default', [completed])
+
+    expect(getRuns).toHaveBeenCalledTimes(3)
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('stops retrying after repeated run lookup failures', async () => {
+    const getRuns = vi.fn().mockRejectedValue(new Error('route removed'))
+    const notify = vi.fn()
+    const observer = createCronCompletionNotifier({ getRuns, notify })
+    const completed = job({ last_run_at: '2026-08-20T10:00:00+00:00' })
+
+    await observer.observe('local\0default', [job()])
+    await observer.observe('local\0default', [completed])
+    await observer.observe('local\0default', [completed])
+    await observer.observe('local\0default', [completed])
+    await observer.observe('local\0default', [completed])
+
+    expect(getRuns).toHaveBeenCalledTimes(3)
+    expect(notify).not.toHaveBeenCalled()
   })
 })

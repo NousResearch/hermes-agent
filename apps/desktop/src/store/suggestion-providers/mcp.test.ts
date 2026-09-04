@@ -100,4 +100,16 @@ describe('matchSuggestions', () => {
 
     expect(matchSuggestions('connect github', index)).toEqual([])
   })
+
+  it('points Hugging Face at the OAuth login URL so the suggestion pill can connect', () => {
+    const huggingFace = MCP_DIRECTORY.find(entry => entry.name === 'hugging_face')
+
+    expect(huggingFace?.url).toBe('https://huggingface.co/mcp?login')
+
+    const index = MCP_DIRECTORY.map(entry => ({ hosts: entry.hosts, keywords: entry.keywords, server: entry.name }))
+
+    expect(matchSuggestions('add hugging face mcp ', index)).toEqual([
+      { keyword: 'hugging face', server: 'hugging_face' }
+    ])
+  })
 })

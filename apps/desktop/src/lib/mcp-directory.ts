@@ -129,8 +129,10 @@ export const MCP_DIRECTORY: McpDirectoryEntry[] = [
     hosts: ['huggingface.co', 'hf.co'],
     keywords: ['hugging face', 'huggingface'],
     // Underscored so prettyName renders "Hugging Face", not "Huggingface".
+    // `?login` is required for OAuth discovery; the anonymous `/mcp` URL never
+    // challenges, so the suggestion pill's forced-OAuth flow cannot start.
     name: 'hugging_face',
-    url: 'https://huggingface.co/mcp'
+    url: 'https://huggingface.co/mcp?login'
   },
   {
     description: 'Tasks, projects, and goals from your Asana workspace.',

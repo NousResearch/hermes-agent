@@ -12,9 +12,13 @@ source: https://huggingface.co/docs/hub/agents-mcp
 # Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE, token
 # exchange, and refresh.
 # Underscored name so UIs render "Hugging Face", not "Huggingface".
+# The `?login` suffix is what makes the server return 401 + WWW-Authenticate
+# (RFC 8414 resource_metadata). The anonymous URL (`/mcp` with no query)
+# serves tools without a challenge, so a forced-OAuth connect never obtains
+# an authorization URL and the desktop suggestion pill rolls the config back.
 transport:
   type: http
-  url: https://huggingface.co/mcp
+  url: https://huggingface.co/mcp?login
 
 auth:
   type: oauth

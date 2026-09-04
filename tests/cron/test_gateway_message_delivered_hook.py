@@ -34,7 +34,10 @@ def test_delivery_hook_uses_only_the_documented_payload():
     job = _job()
 
     with (
-        patch("hermes_cli.plugins.has_hook", return_value=True),
+        patch(
+            "hermes_cli.plugins.has_hook",
+            side_effect=lambda name: name == "gateway_message_delivered",
+        ),
         patch("hermes_cli.plugins.invoke_hook") as invoke,
     ):
         _emit_gateway_message_delivered(
@@ -110,7 +113,10 @@ def test_live_telegram_delivery_uses_the_confirmed_message_id():
             return_value={"cron": {"wrap_response": False}},
         ),
         patch("asyncio.run_coroutine_threadsafe", side_effect=_run_coro),
-        patch("hermes_cli.plugins.has_hook", return_value=True),
+        patch(
+            "hermes_cli.plugins.has_hook",
+            side_effect=lambda name: name == "gateway_message_delivered",
+        ),
         patch("hermes_cli.plugins.invoke_hook") as invoke,
     ):
         error = _deliver_result(

@@ -373,7 +373,7 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Four hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call, [`gateway_message_before_send`](#gateway_message_before_send) can add an outbound Telegram keyboard, and [`telegram_callback_query`](#telegram_callback_query) can handle an otherwise-unmatched Telegram button. All other hooks are fire-and-forget observers.
 - Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
 ### Quick reference
@@ -393,6 +393,8 @@ def register(ctx):
 | [`subagent_stop`](#subagent_stop) | A `delegate_task` child has exited | ignored |
 | [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
 | [`gateway_message_delivered`](#gateway_message_delivered) | A live Telegram cron text message is confirmed delivered | ignored |
+| [`gateway_message_before_send`](#gateway_message_before_send) | Before a live Telegram delivery is sent | `{"telegram_inline_keyboard": ...}` to add a keyboard |
+| [`telegram_callback_query`](#telegram_callback_query) | Authorized unmatched Telegram button callback | `{"handled": true, ...}` to acknowledge/edit it |
 | [`pre_approval_request`](#pre_approval_request) | An approval decision is requested, including smart-mode auto decisions | ignored |
 | [`post_approval_response`](#post_approval_response) | An approval decision is made (or a prompt times out) | ignored |
 | [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
@@ -1077,6 +1079,66 @@ def register(ctx):
 ```
 
 The payload contains `source`, `execution_id`, `job_id`, `platform`, `chat_id`, `thread_id`, and the Telegram-confirmed `message_id`. It has no message text or Telegram client object. Callback failures do not affect delivery.
+
+### `gateway_message_before_send`
+
+Fires before an outbound Telegram message is sent. It is intended for plugins
+that add a small amount of Telegram-native presentation without taking control
+of the adapter. A callback may return a neutral keyboard shape:
+
+```python
+def add_feedback_buttons(source, execution_id, job_id, platform, chat_id,
+                         routine_feedback_eligible,
+                         thread_id, **kwargs):
+    if not routine_feedback_eligible:
+        return None
+    return {"telegram_inline_keyboard": [[
+        {"text": "👍", "callback_data": f"rf:up:{execution_id}"},
+        {"text": "👎", "callback_data": f"rf:down:{execution_id}"},
+    ]]}
+
+def register(ctx):
+    ctx.register_hook("gateway_message_before_send", add_feedback_buttons)
+```
+
+The hook receives routing and execution identifiers, but never message content,
+the bot token, or the adapter object. `routine_feedback_eligible` is true only
+for a generated successful cron result that Hermes records after confirmed live
+Telegram delivery. Feedback plugins must require it before adding controls.
+Invalid or failing plugin directives are ignored and delivery continues normally.
+The keyboard is attached only to the first Telegram chunk when a message is split.
+
+Plugins can add `requires_hooks` to `plugin.yaml` to refuse loading on an older
+Hermes core that does not support a required hook:
+
+```yaml
+requires_hooks:
+  - gateway_message_before_send
+  - telegram_callback_query
+```
+
+### `telegram_callback_query`
+
+Fires for an otherwise-unmatched Telegram inline-button callback after native
+callback handlers, the adapter's chat boundary, and callback-user authorization
+checks. Plugins should ignore callback prefixes they do not own. Returning
+`{"handled": True}` lets a plugin acknowledge the tap and optionally edit the
+message:
+
+```python
+def on_feedback(data, chat_id, thread_id, message_id, user_id, **kwargs):
+    if not data.startswith("rf:"):
+        return None
+    return {"handled": True, "answer_text": "Mulțumesc", "clear_keyboard": True}
+
+def register(ctx):
+    ctx.register_hook("telegram_callback_query", on_feedback)
+```
+
+Supported directive fields are `answer_text`, `clear_keyboard`,
+`telegram_inline_keyboard`, and `edit_text`. The callback payload contains only
+the callback data and Telegram message/user identifiers, not the raw Telegram
+objects. Plugin failures are fail-open.
 
 ---
 

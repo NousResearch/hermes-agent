@@ -7,6 +7,7 @@ Mirrors test_telegram_approval_buttons.py for the new ``send_clarify`` and
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -521,3 +522,133 @@ class TestBaseAdapterClarifyFallback:
         assert "Free form?" in adapter.sent[0]
         # No numbered list — choices were empty
         assert "1." not in adapter.sent[0]
+
+
+@pytest.mark.asyncio
+async def test_send_uses_plugin_keyboard_metadata():
+    adapter = _make_adapter()
+    message = MagicMock(message_id=100)
+    adapter._bot.send_message = AsyncMock(return_value=message)
+    adapter._should_attempt_rich = MagicMock(return_value=False)
+
+    result = await adapter.send(
+        "12345",
+        "Routine result",
+        metadata={
+            "telegram_inline_keyboard": [[
+                {"text": "👍", "callback_data": "rf:up:exec-1"},
+                {"text": "👎", "callback_data": "rf:down:exec-1"},
+            ]]
+        },
+    )
+
+    assert result.success is True
+    assert result.message_id == "100"
+    assert adapter._bot.send_message.call_args.kwargs["reply_markup"] is not None
+
+
+def test_malformed_plugin_keyboard_does_not_disable_rich_delivery():
+    adapter = _make_adapter()
+    adapter._rich_eligible = MagicMock(return_value=True)
+
+    assert adapter._should_attempt_rich(
+        "Routine result", metadata={"telegram_inline_keyboard": "invalid"}
+    ) is True
+    assert adapter._should_attempt_rich(
+        "Routine result",
+        metadata={"telegram_inline_keyboard": [[{"text": "OK", "callback_data": "ok"}]]},
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_unmatched_callback_is_dispatched_to_plugin(monkeypatch):
+    adapter = _make_adapter()
+    adapter._is_callback_user_authorized = MagicMock(return_value=True)
+    monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: name == "telegram_callback_query")
+    monkeypatch.setattr(
+        "hermes_cli.plugins.invoke_hook",
+        lambda name, **kwargs: [{
+            "handled": True,
+            "answer_text": "Mulțumesc",
+            "clear_keyboard": True,
+        }],
+    )
+    query = SimpleNamespace(
+        data="rf:up:exec-1",
+        from_user=SimpleNamespace(id=7, first_name="Isac"),
+        message=SimpleNamespace(
+            chat_id="12345",
+            chat=SimpleNamespace(type="private"),
+            message_thread_id=None,
+            message_id=100,
+        ),
+        answer=AsyncMock(),
+        edit_message_reply_markup=AsyncMock(),
+    )
+
+    await adapter._handle_callback_query(
+        SimpleNamespace(callback_query=query),
+        SimpleNamespace(),
+    )
+
+    query.answer.assert_awaited_once_with(text="Mulțumesc")
+    query.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
+
+
+@pytest.mark.asyncio
+async def test_unmatched_callback_does_not_reach_plugin_when_unauthorized(monkeypatch):
+    adapter = _make_adapter()
+    adapter._is_callback_user_authorized = MagicMock(return_value=False)
+    invoke = MagicMock()
+    monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: name == "telegram_callback_query")
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", invoke)
+    query = SimpleNamespace(
+        data="rf:up:exec-1",
+        from_user=SimpleNamespace(id=7, first_name="Other"),
+        message=SimpleNamespace(
+            chat_id="12345",
+            chat=SimpleNamespace(type="private"),
+            message_thread_id=None,
+            message_id=100,
+        ),
+        answer=AsyncMock(),
+    )
+
+    await adapter._handle_callback_query(
+        SimpleNamespace(callback_query=query),
+        SimpleNamespace(),
+    )
+
+    invoke.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_native_update_prompt_is_not_dispatched_to_plugin(monkeypatch, tmp_path):
+    adapter = _make_adapter()
+    invoke = MagicMock(return_value=[{"handled": True}])
+    monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: name == "telegram_callback_query")
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", invoke)
+    query = SimpleNamespace(
+        data="update_prompt:y",
+        from_user=SimpleNamespace(id=7, first_name="Isac"),
+        message=SimpleNamespace(
+            chat_id="12345",
+            chat=SimpleNamespace(type="private"),
+            message_thread_id=None,
+            message_id=100,
+        ),
+        answer=AsyncMock(),
+        edit_message_text=AsyncMock(),
+    )
+
+    with (
+        patch("hermes_constants.get_hermes_home", return_value=tmp_path),
+        patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}),
+    ):
+        await adapter._handle_callback_query(
+            SimpleNamespace(callback_query=query),
+            SimpleNamespace(),
+        )
+
+    invoke.assert_not_called()
+    assert (tmp_path / ".update_response").read_text() == "y"

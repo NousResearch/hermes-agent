@@ -203,6 +203,63 @@ class TestGetModelContextLengthHonorsOverride:
                 p.stop()
         assert ctx == DEFAULT_FALLBACK_CONTEXT
 
+    def test_string_config_context_length_is_honored(self):
+        """A numeric string override (hand-edited YAML, REST payload) must
+        win at step 0 — never silently fall through to auto-detect (#102626).
+        """
+        from agent.model_metadata import get_model_context_length
+        ctx = get_model_context_length(
+            "m",
+            base_url="https://example.invalid/v1",
+            provider="custom",
+            config_context_length="500000",
+            custom_providers=None,
+        )
+        assert ctx == 500_000
+
+    def test_garbage_string_config_context_length_falls_through(self):
+        """A non-numeric override is not a window — resolution must fall
+        through to the normal chain instead of returning it (#102626).
+        """
+        from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
+        patches = self._mock_all_probes()
+        for p in patches:
+            p.start()
+        try:
+            ctx = get_model_context_length(
+                "unknown-model",
+                base_url="https://example.invalid/v1",
+                provider="custom",
+                config_context_length="not-a-number",
+                custom_providers=None,
+            )
+        finally:
+            for p in patches:
+                p.stop()
+        assert ctx == DEFAULT_FALLBACK_CONTEXT
+
+
+class TestCoerceContextLengthOverride:
+    """coerce_context_length_override: one contract for every read boundary."""
+
+    def test_coercion_table(self):
+        from agent.model_metadata import coerce_context_length_override
+        assert coerce_context_length_override(128000) == 128000
+        assert coerce_context_length_override("128000") == 128000
+        assert coerce_context_length_override("  128000  ") == 128000
+        assert coerce_context_length_override(128000.0) == 128000
+        assert coerce_context_length_override(None) is None
+        assert coerce_context_length_override(0) is None
+        assert coerce_context_length_override(-5) is None
+        assert coerce_context_length_override("0") is None
+        assert coerce_context_length_override("-5") is None
+        assert coerce_context_length_override("not-a-number") is None
+        assert coerce_context_length_override("128000.5") is None
+        assert coerce_context_length_override(128000.5) is None
+        assert coerce_context_length_override(True) is None
+        assert coerce_context_length_override(False) is None
+        assert coerce_context_length_override([128000]) is None
+
 
 class TestContextProbeTiers:
     def test_256k_is_top_tier_and_default(self):

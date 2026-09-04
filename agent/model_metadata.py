@@ -3060,6 +3060,31 @@ def _resolve_nous_context_length(
     return None, ""
 
 
+def coerce_context_length_override(value: Any) -> Optional[int]:
+    """Coerce a configured ``model.context_length`` to a positive int.
+
+    Config values can arrive as strings (hand-edited YAML, ``config set``,
+    REST/PUT payloads) or floats. Read boundaries previously strict-checked
+    ``isinstance(int)`` and silently fell through to auto-detection for
+    anything else — so an explicit ``"128000"`` was ignored and the
+    conversation used the detected window (#102626). Returns the positive
+    int, else None (unset/auto).
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, float):
+        return int(value) if value > 0 and value.is_integer() else None
+    if isinstance(value, str):
+        try:
+            parsed = int(value.strip())
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+    return None
+
+
 def get_model_context_length(
     model: str,
     base_url: str = "",
@@ -3095,8 +3120,9 @@ def get_model_context_length(
     8. Hardcoded defaults (broad family patterns, longest-key-first)
     9. Default fallback (256K)"""
     # 0. Explicit config override — user knows best
-    if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
-        return config_context_length
+    _override_ctx = coerce_context_length_override(config_context_length)
+    if _override_ctx is not None:
+        return _override_ctx
 
     # 0a. MoA virtual provider — ``model`` is a preset name, not a real model,
     # and ``base_url`` is the local virtual endpoint, so every probe below would

@@ -185,3 +185,25 @@ def test_quickstart_is_single_flight(client, quickstart_ready, monkeypatch):
         assert "already running" in r.json()["detail"].lower()
     finally:
         lm._QUICKSTART_LOCK.release()
+
+
+def test_assign_default_resolves_against_defining_module(monkeypatch):
+    """_assign_default must bind _apply_model_assignment_sync to the module
+    that defines it (web_server_config), not the web_server facade it was
+    extracted from. Without the explicit module the late() proxy defaults to
+    web_server and the quickstart's 'making it your default' step fails with
+    AttributeError (regression from the god-file decomposition)."""
+    import hermes_cli.web_routers.local_models as lm
+    from hermes_cli import web_deps
+
+    seen: dict = {}
+
+    def _fake_late(name, module=None):
+        seen["name"] = name
+        seen["module"] = module
+        return lambda *a, **k: None
+
+    monkeypatch.setattr(web_deps, "late", _fake_late)
+    lm._assign_default({}, "some-model")
+    assert seen["name"] == "_apply_model_assignment_sync"
+    assert seen["module"] == "hermes_cli.web_server_config"

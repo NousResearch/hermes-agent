@@ -309,11 +309,16 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # re-resolving to a different element. Cleared whenever a fresh capture overwrites the snapshot
         # context.
         self._snapshot_tokens: Dict[int, str] = {}
+        # Snapshot handle the current `_snapshot_tokens` map belongs to (same lifetime as the map).
+        # Snapshot-gated drivers accept `element_index` only with this handle (or an element_token)
+        # attached; pre-snapshot drivers never receive it.
+        self._last_snapshot_id: Optional[str] = None
 
     def _set_active_target(self, target: Dict[str, Any]) -> None:
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         self._snapshot_tokens = {}  # prior snapshot's tokens: disarm before any capture so an exception can't pair them
+        self._last_snapshot_id = None  # same disarming for the snapshot handle
         self._last_target = {"pid": self._active_pid, "window_id": self._active_window_id}
 
     def launch_app(self, *, bundle_id: Optional[str] = None, name: Optional[str] = None,
@@ -359,6 +364,14 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         token = self._snapshot_tokens.get(idx) if isinstance(idx, int) else None
         if token and self._session.supports_capability("accessibility.element_tokens", tool=name):
             args["element_token"] = token
+        elif (
+            isinstance(idx, int)
+            and self._last_snapshot_id
+            and self._session.supports_input_property(name, "snapshot_id")
+        ):
+            # Snapshot-gated drivers (trycua/cua element_token gate) refuse a bare element_index; the
+            # token is preferable but this capture carried none, so pin the index to its snapshot handle.
+            args["snapshot_id"] = self._last_snapshot_id
         if inject_session:  # setdefault preserves any explicit session a caller already supplied
             args.setdefault("session", self._session_id)
         try:

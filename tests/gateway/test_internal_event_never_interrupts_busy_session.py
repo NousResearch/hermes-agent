@@ -64,6 +64,23 @@ def _make_internal_event(text: str = "[async delegation completed]") -> MessageE
     )
 
 
+def _make_photo_event() -> MessageEvent:
+    source = SessionSource(
+        platform=MagicMock(value="photon"),
+        chat_id="any;-;+31600000000",
+        chat_type="private",
+        user_id="+31600000000",
+    )
+    return MessageEvent(
+        text="What is in this image?",
+        message_type=MessageType.PHOTO,
+        source=source,
+        message_id="photo-msg",
+        media_urls=["/tmp/photo.heic"],
+        media_types=["image/heic"],
+    )
+
+
 def _make_runner() -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
@@ -124,6 +141,25 @@ async def test_internal_event_does_not_interrupt_busy_session() -> None:
     # The active turn must survive.
     parent.interrupt.assert_not_called()
     # No "⚡ Interrupting current task" (or any) ack for a synthetic event.
+    adapter._send_with_retry.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_photo_followup_defers_to_silent_base_queue() -> None:
+    """Photo completions must use the base adapter's no-interrupt media path."""
+    runner = _make_runner()
+    runner._busy_input_mode = "interrupt"
+    adapter = _make_adapter()
+    event = _make_photo_event()
+    sk = build_session_key(event.source)
+    parent = _make_running_parent()
+    runner._running_agents[sk] = parent
+    runner.adapters[event.source.platform] = adapter
+
+    handled = await runner._handle_active_session_busy_message(event, sk)
+
+    assert handled is False
+    parent.interrupt.assert_not_called()
     adapter._send_with_retry.assert_not_called()
 
 

@@ -11414,6 +11414,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if getattr(event, "internal", False):
             return False
 
+        # Photo bursts and mixed caption+photo payloads can arrive as a media
+        # completion while the session guard is still active.  Defer them to
+        # BasePlatformAdapter.handle_message(), which already merges PHOTO
+        # follow-ups into the pending turn without interrupting the active run
+        # or emitting a user-facing busy acknowledgment.
+        if event.message_type == MessageType.PHOTO:
+            return False
+
         _busy_state = self._peek_session_state(session_key)
         running_agent = _busy_state.turn.agent if _busy_state else None
 

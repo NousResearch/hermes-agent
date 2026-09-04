@@ -2206,10 +2206,12 @@ def _build_skills_system_prompt_inner(
 
         result = (
             "## Skills\n"
-            "Before replying, scan the skills below. Treat each description as a routing contract, "
-            "including when not to use it. If a skill's description matches your task, you MUST "
-            "load it with skill_view(name) and follow its instructions. Topical overlap alone is not "
-            "enough; when several skills match, load only those needed for the task. "
+            "Before replying, scan the skills below. For fully described skills, treat each description "
+            "as a routing contract, including when not to use it. A counter-trigger is not a match, "
+            "and topical overlap alone is not enough. If a description positively matches your task, "
+            "you MUST load it with skill_view(name) and follow its instructions. A [names only] "
+            "skill may still be loaded when the user explicitly names it or its visible name/category "
+            "clearly matches the task. When several skills match, load only those needed for the task. "
             "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
             "and proven workflows that outperform general-purpose approaches. Load the skill "
             f"even if you think you could handle the task with basic tools like {_basic_tools}. "
@@ -2225,7 +2227,8 @@ def _build_skills_system_prompt_inner(
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
             "\n"
-            "Proceed without loading a skill when no description matches the task."
+            "Proceed without loading a skill when no description positively matches and no [names only] "
+            "entry has an explicit or clear name/category match."
             + hidden_note
         )
 

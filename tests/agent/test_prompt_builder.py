@@ -341,7 +341,9 @@ class TestBuildSkillsSystemPrompt:
 
         assert "description as a routing contract" in result
         assert "including when not to use it" in result
-        assert "Topical overlap alone is not enough" in result
+        assert "A counter-trigger is not a match" in result
+        assert "topical overlap alone is not enough" in result
+        assert "description positively matches" in result
         assert "you MUST load it" in result
 
 
@@ -361,6 +363,10 @@ class TestBuildSkillsSystemPrompt:
         )
         assert "thread-writer" in compact
         assert "Write threads" not in compact
+        assert "A [names only] skill may still be loaded" in compact
+        assert "user explicitly names it" in compact
+        assert "visible name/category clearly matches the task" in compact
+        assert "no [names only] entry has an explicit or clear name/category match" in compact
         # Unfiltered call must not be served from the compacted cache entry.
         full = build_skills_system_prompt()
         assert "Write threads" in full

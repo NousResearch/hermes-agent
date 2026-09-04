@@ -14,6 +14,13 @@ except ImportError:
 from gateway.platforms.api_server_room_grants import _json_error
 
 
+def _reserved_room_run_fields(body: Any) -> set[str]:
+    if not isinstance(body, dict):
+        return set()
+    return {key for key in body if isinstance(key, str)
+            and (key == "hosted_room_dispatch" or key.startswith("_room_"))}
+
+
 async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
     """Create or verify the target's canonical hidden group session. The ``Group: <room_id>``
     namespace is reused on purpose (Desktop-assisted -> hosted keeps one transcript); a
@@ -58,6 +65,11 @@ async def _normalize_room_dispatch(
     """Validate and normalize a scoped RoomLink dispatch request."""
     _openai_error, room_token = _api_server._openai_error, self._room_grant_token(request)
     if not room_token:
+        if _reserved_room_run_fields(body):
+            return body, _json_error(
+                _openai_error, "Room dispatch fields require HermesRoom authorization.",
+                code="invalid_room_dispatch", status=400,
+            )
         return body, None
     if not isinstance(body, dict) or set(body) - {"input", "hosted_room_dispatch"}:
         return body, _json_error(
@@ -69,7 +81,8 @@ async def _normalize_room_dispatch(
         from gateway.hosted_room_execution_policy import RoomExecutionPolicy
         from gateway.platforms.api_server_room_grants import _local_room_catalog
         dispatch = HostedMemberDispatch.from_mapping(body.get("hosted_room_dispatch"))
-        verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission="dispatch")
+        grant_claims = verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission="dispatch")
+        artifact_publication = {"artifact.ack", "artifact.read"} <= set(grant_claims.get("permissions") or ())
         active_profile = _api_server._api_request_profile.get() or "default"
         local_install = hosted_rooms.local_authority_gateway_id()
         if dispatch.target_profile != active_profile or dispatch.target_install_id != local_install:
@@ -92,6 +105,7 @@ async def _normalize_room_dispatch(
             "session_id": session_id,
             "hosted_room_dispatch": dispatch.as_mapping(),
             "_room_execution_policy": policy.as_mapping(),
+            "_room_artifact_publication": artifact_publication,
         }
         from gateway.platforms.api_server_room_attachments import _validate_dispatch_attachments
         return await _validate_dispatch_attachments(normalized, _openai_error=_openai_error)

@@ -675,6 +675,14 @@ class HostedRoomRuntime:
                 # A submit should fail before admission or return after it; an unexpected
                 # exception at that boundary is ambiguous, never a proven failure.
                 submit_attempted = True
+                bind_artifact_scope = getattr(transport, "bind_artifact_scope", None)
+                if callable(bind_artifact_scope):
+                    bind_artifact_scope(
+                        task=attempt.identity, execution_generation=attempt.execution_generation,
+                        member_id=str(task["payload"].get("target_member_id") or profile),
+                        authority_gateway_id=binding.gateway_id, authority_epoch=binding.authority_epoch,
+                        profile=profile,
+                    )
                 deadline_monotonic = time.monotonic() + self.turn_timeout_seconds
                 transport.submit(
                     **_session_kw(profile, session_id), prompt=prompt,
@@ -1080,6 +1088,8 @@ def _bounded_terminal_result(receipt: Mapping[str, Any]) -> dict[str, Any]:
     error, error_truncated = _truncate_utf8(receipt.get("error", ""), max_bytes=4096)
     return {
         "message_id": receipt.get("message_id"), "text": text,
+        **({"artifacts": receipt.get("artifacts")} if receipt.get("artifacts") else {}),
+        **({"run_id": receipt.get("run_id")} if receipt.get("run_id") else {}),
         **({"error": error} if error else {}),
         **({"truncated": True} if truncated or error_truncated else {})}
 
@@ -1100,7 +1110,8 @@ def _find_terminal_receipt(
         return _TerminalReceipt(
             status=cast(state.TerminalStatus, status), settlement_id=receipt_id,
             result=_bounded_terminal_result(
-                {"message_id": receipt_id, "text": message.get("content", "")}))
+                {"message_id": receipt_id, "text": message.get("content", ""),
+                 "artifacts": message.get("artifacts"), "run_id": message.get("run_id")}))
     return None
 
 

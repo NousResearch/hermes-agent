@@ -377,8 +377,9 @@ def _validate_user_event(kind: str, payload: Payload, actor: Payload, room: Disc
 
 
 def _validate_member_message(kind: str, payload: Payload, actor: Payload, room: DiscussionRoom) -> Payload:
-    _exact_fields(payload, label="message.member payload", required=_MEMBER_MESSAGE_FIELDS)
+    _exact_fields(payload, label="message.member payload", required=_MEMBER_MESSAGE_FIELDS, optional={"attachments"})
     _validate_turn_coordinates(payload, room)
+    _validate_attachments(payload.get("attachments", []), member_ids=tuple(member.member_id for member in room.members))
     if not isinstance(text := payload.get("text"), str) or not text.strip() or is_pass_text(text):
         raise DiscussionValidationError("message.member text must be a non-pass string")
     member = _member_by_id(room, payload.get("member_id"))
@@ -562,6 +563,7 @@ def _build_prompt(
         "- Reply with one conversational message only when you have something new worth adding.",
         '- If you have nothing new to add, reply with exactly "(pass)".',
         "- Mention a teammate by handle to pull them into the next round; do not repeat points already made.",
+        "- To hand off a local file, call share_group_file; never paste a local path into chat.",
         "- Never reveal content from private conversations. Your reply is published verbatim."]
     attachment_lines = _attachment_prompt_lines(delta)
     fixed_bytes = len("\n".join([*opening, *attachment_lines, *rules]).encode("utf-8"))
@@ -616,6 +618,7 @@ def _make_task_plan(
         turn_id=turn_id,
     )
     payload = {
+        "recipient_member_ids": [candidate.member_id for candidate in room.members],
         "target_member_id": member.member_id,
         "target_profile": member.profile,
         "prompt": prompt,
@@ -715,7 +718,7 @@ def plan_next_task(
         for member_index, member in enumerate(_rotate(responders, round_index)):
             watermark = watermarks.get((thread_id, member.member_id), 0)
             pending_attachments = any(
-                event.kind == "message.user" and watermark < event.seq <= maximum_seen_seq
+                watermark < event.seq <= maximum_seen_seq
                 and event.payload.get("attachments") for event in thread_messages)
             if (round_index, member.member_id) in terminals and not pending_attachments:
                 continue
@@ -767,6 +770,9 @@ def reconstruct_task_plan(
         if m.profile == profile and (target_member_id is None or m.member_id == target_member_id)), None)
     if member is None or _member_digest(member) != match.group("member"):
         raise DiscussionReconstructionError("task target member does not match turn_id")
+    frozen_recipient_ids = payload.get("recipient_member_ids")
+    if frozen_recipient_ids is not None and member.member_id not in frozen_recipient_ids:
+        raise DiscussionReconstructionError("task target is missing from recipient roster")
     if not isinstance(prompt := payload.get("prompt"), str) or not prompt.strip():
         raise DiscussionReconstructionError("task prompt is missing")
     if len(prompt.encode("utf-8")) > driver.MAX_PROMPT_BYTES:
@@ -795,12 +801,19 @@ def reconstruct_task_plan(
             raise DiscussionReconstructionError("task input message is missing")
         task_messages = tuple(by_seq[seq] for seq in input_context["event_seqs"])
     attachments = [dict(attachment) for event in task_messages
-                   if watermark < event.seq <= seen_through_seq and event.kind == "message.user"
+                   if watermark < event.seq <= seen_through_seq
                    for attachment in event.payload.get("attachments", [])]
     reconstructed = _make_task_plan(
         room=room, discussion_event=discussion, member=member, member_index=int(match.group("position")),
         round_index=int(match.group("round")), seen_through_seq=seen_through_seq, prompt=prompt,
         attachments=attachments, input_context=input_context)
+    reconstructed_payload = dict(reconstructed.payload)
+    if frozen_recipient_ids is None:
+        reconstructed_payload.pop("recipient_member_ids", None)
+    else:
+        reconstructed_payload["recipient_member_ids"] = list(frozen_recipient_ids)
+    from dataclasses import replace
+    reconstructed = replace(reconstructed, payload=reconstructed_payload)
     if reconstructed.identity != identity or dict(reconstructed.payload) != dict(payload):
         raise DiscussionReconstructionError("driver task failed deterministic reconstruction")
     return reconstructed
@@ -830,11 +843,17 @@ def _settled_effects(
     text = _truncate_utf8_text(
         _terminal_text(result, field="text", fallback=""), max_bytes=MAX_MEMBER_TEXT_BYTES,
         suffix=_TRUNCATED_REPLY_NOTICE)
-    if is_pass_text(text):
+    attachments = (
+        _validate_attachments(result.get("attachments", []), member_ids=tuple(member.member_id for member in room.members))
+        if isinstance(result, Mapping) else []
+    )
+    if attachments and (not text or is_pass_text(text)):
+        text = "Shared " + ", ".join(attachment["name"] for attachment in attachments) + "."
+    if is_pass_text(text) and not attachments:
         return {"message_event_id": None, "passed": True}, []
     return {"message_event_id": message_event_id, "passed": False}, [EventPlan(
         event_id=message_event_id, kind="message.member", actor=_member_actor(task.member),
-        payload={**_turn_coordinates(task), "text": text}, authority_gateway_id=room.gateway_id,
+        payload={**_turn_coordinates(task), "text": text, **({"attachments": attachments} if attachments else {})}, authority_gateway_id=room.gateway_id,
         authority_epoch=room.authority_epoch)]
 
 
@@ -929,11 +948,7 @@ def _bounded_task_delta(
     for event in messages:
         if not watermark < event.seq <= maximum_seq:
             continue
-        event_attachments = (
-            list(event.payload.get("attachments", []))
-            if event.kind == "message.user"
-            else []
-        )
+        event_attachments = list(event.payload.get("attachments", []))
         next_count = len(attachments) + len(event_attachments)
         next_bytes = attachment_bytes + sum(
             int(attachment["size"]) for attachment in event_attachments
@@ -960,8 +975,6 @@ def _attachment_prompt_lines(
     entries: list[str] = []
     queued_media = False
     for event in messages:
-        if event.kind != "message.user":
-            continue
         for attachment in event.payload.get("attachments", []):
             name = compact_json(attachment["name"])
             metadata = f"{attachment['mime']}, {attachment['size']} bytes"

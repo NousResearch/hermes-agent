@@ -939,12 +939,19 @@ def test_disband_stops_and_revokes_before_tombstoning(home, monkeypatch):
         def revoke_room_routes(self, room_id):
             calls.append(("revoke", room_id))
 
+        def retire_and_disband_room(self, room_id, **kwargs):
+            from gateway.hosted_rooms import disband_room
+
+            calls.append(("artifacts", room_id))
+            return disband_room(self.db_path, room_id=room_id, **kwargs)
+
     monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
     _result(srv._methods["groups.disband"](9, {"room_id": "room-1"}))
 
     assert calls == [
         ("stop", "room-1"),
         ("revoke", "room-1"),
+        ("artifacts", "room-1"),
         ("files", "room-1"),
         ("prune", "room-1"),
     ]

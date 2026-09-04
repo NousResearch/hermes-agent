@@ -179,6 +179,9 @@ def test_roomlink_and_run_route_tuples_are_shard_owned():
             "DELETE",
             "/v1/room-members/attachments/{task_id}/{execution_generation}",
         ),
+        ("GET", "/v1/runs/{run_id}/artifacts/{artifact_id}"),
+        ("POST", "/v1/runs/{run_id}/artifacts/ack"),
+        ("POST", "/v1/runs/{run_id}/artifacts/discard"),
     ]
     assert [(method, path) for method, path, _ in run_routes] == [
         ("POST", "/v1/runs"),

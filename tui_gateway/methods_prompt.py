@@ -187,7 +187,11 @@ def _typed_stop_phrase_response(rid, text):
     return _ok(rid, {"voice_stopped": True})
 
 
-_HOSTED_TASK_FIELDS = {"room_id", "task_id", "thread_id", "turn_id", "execution_generation"}
+_HOSTED_TASK_FIELDS = {
+    "room_id", "task_id", "thread_id", "turn_id", "execution_generation",
+    "member_id", "target_profile", "home_install_id", "target_install_id",
+    "authority_gateway_id", "authority_epoch",
+}
 
 
 def _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback):
@@ -198,8 +202,9 @@ def _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback):
         isinstance(hosted_task, dict) and callable(hosted_terminal_callback)
         and set(hosted_task) == _HOSTED_TASK_FIELDS
         and all(isinstance(hosted_task.get(f), str) and hosted_task[f]
-                for f in _HOSTED_TASK_FIELDS - {"execution_generation"})
-        and isinstance(hosted_task.get("execution_generation"), int))
+                for f in _HOSTED_TASK_FIELDS - {"execution_generation", "authority_epoch"})
+        and all(isinstance(hosted_task.get(f), int) and not isinstance(hosted_task.get(f), bool)
+                and hosted_task[f] >= 1 for f in ("execution_generation", "authority_epoch")))
     return None if valid else _err(rid, 4120, "invalid hosted room turn proof")
 
 

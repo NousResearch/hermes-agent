@@ -1220,3 +1220,70 @@ def test_renewal_never_shortens_an_active_lease(db):
     renewed = driver.renew_lease(db, lease, ttl_seconds=2, clock=clock)
 
     assert renewed.expires_at == lease.expires_at
+
+
+def test_prune_keeps_task_that_owns_pending_artifact_retry(db):
+    clock = FakeClock()
+    lease = _lease(db, clock)
+    identity = _identity("task-retry", turn_id="turn-retry")
+    _admit(db, identity, clock)
+    attempt = driver.start_task(
+        db,
+        identity,
+        lease,
+        expected_cancel_generation=0,
+        clock=clock,
+    )
+    driver.settle_task(
+        db,
+        attempt,
+        settlement_id="result:task-retry",
+        status="settled",
+        result={"text": "done"},
+        clock=clock,
+    )
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """CREATE TABLE hosted_room_policy_publications (
+                room_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                execution_generation INTEGER NOT NULL DEFAULT 0,
+                seq INTEGER NOT NULL,
+                PRIMARY KEY(room_id, task_id, kind, execution_generation)
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_policy_publications
+               VALUES ('room-1', 'task-retry', 'turn.settled', 0, 3)"""
+        )
+        conn.execute(
+            """CREATE TABLE hosted_room_artifact_retries (
+                room_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                execution_generation INTEGER NOT NULL,
+                PRIMARY KEY(room_id, task_id, execution_generation)
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_artifact_retries
+               VALUES ('room-1', 'task-retry', 1)"""
+        )
+
+    clock.advance(driver.TERMINAL_TASK_RETENTION_SECONDS + 1)
+    assert driver.prune_published_terminal_tasks(
+        db,
+        room_id="room-1",
+        clock=clock,
+        retain=0,
+    ) == 0
+    assert driver.get_task(db, identity)["status"] == "settled"
+
+    with sqlite3.connect(db) as conn:
+        conn.execute("DELETE FROM hosted_room_artifact_retries")
+    assert driver.prune_published_terminal_tasks(
+        db,
+        room_id="room-1",
+        clock=clock,
+        retain=0,
+    ) == 1

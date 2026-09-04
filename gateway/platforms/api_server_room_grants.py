@@ -73,7 +73,7 @@ def _local_room_catalog(self, profile: str, installation_id: str) -> tuple[dict,
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
-    from gateway.platforms import api_server_room_attachments
+    from gateway.platforms import api_server_room_attachments, api_server_room_artifacts
 
     return [
         (
@@ -96,7 +96,7 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
             "/v1/room-members/grants/revoke",
             self._handle_room_member_grant_revoke,
         ),
-    ] + api_server_room_attachments._http_routes(self)
+    ] + api_server_room_attachments._http_routes(self) + api_server_room_artifacts._http_routes(self)
 
 
 def _room_grant_token(request: "web.Request") -> str:
@@ -252,6 +252,14 @@ async def _handle_room_member_grant_revoke(
             await asyncio.to_thread(_default_spool().discard_scope, claims)
         except Exception:
             # Authorization is already revoked; bounded expiry backs up failed cleanup.
+            pass
+        try:
+            from gateway.hosted_room_artifacts import RoomArtifactOutbox
+            from hermes_constants import get_hermes_home
+
+            await asyncio.to_thread(RoomArtifactOutbox(get_hermes_home() / "state.db").discard_claims, claims)
+        except Exception:
+            # Revocation closes access even if private-byte cleanup must wait.
             pass
     except Exception:
         return _room_grant_error_response(_openai_error=_openai_error)

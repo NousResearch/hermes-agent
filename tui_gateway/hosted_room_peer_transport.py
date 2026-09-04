@@ -51,6 +51,34 @@ class HostedRoomPeerClient(Protocol):
     ) -> Mapping[str, Any]: ...
 
 
+    def read_artifact(
+        self,
+        *,
+        run_id: str,
+        artifact_id: str,
+        grant: str,
+    ) -> bytes: ...
+
+
+    def acknowledge_artifacts(
+        self,
+        *,
+        run_id: str,
+        artifact_ids: Sequence[str],
+        manifest_digest: str,
+        message_event_id: str,
+        grant: str,
+    ) -> Mapping[str, Any]: ...
+
+
+    def discard_artifacts(
+        self,
+        *,
+        run_id: str,
+        grant: str,
+    ) -> Mapping[str, Any]: ...
+
+
 @dataclass(frozen=True)
 class RoomLinkCandidate:
     """One address/provider for the same authenticated target gateway."""
@@ -125,6 +153,18 @@ class FailoverHostedRoomPeerClient:
 
     def stage_attachments(self, **kwargs):
         return self._call("stage_attachments", **kwargs)
+
+
+    def read_artifact(self, **kwargs):
+        return self._call("read_artifact", **kwargs)
+
+
+    def acknowledge_artifacts(self, **kwargs):
+        return self._call("acknowledge_artifacts", **kwargs)
+
+
+    def discard_artifacts(self, **kwargs):
+        return self._call("discard_artifacts", **kwargs)
 
 
 @dataclass(frozen=True)

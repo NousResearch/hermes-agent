@@ -13,7 +13,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Callable
 
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
@@ -26,6 +26,7 @@ from gateway.hosted_room_peer import (
     attachment_manifest_digest)
 from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime, MemberTransportUnavailable
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
+from tui_gateway.hosted_room_artifact_service import HostedRoomArtifactMixin
 from tui_gateway.hosted_room_peer_http import (
     PeerRunsHTTPClient, PeerRunsHTTPError, digest_reauthorization_error)
 from tui_gateway.hosted_room_peer_transport import (
@@ -65,17 +66,24 @@ def _authority(room: Mapping[str, Any]) -> tuple[str, int]:
     return str(room["authority_gateway_id"]), int(room["authority_epoch"])
 
 
-class HostedRoomService:
+class HostedRoomService(HostedRoomArtifactMixin):
     """Own the hosted Discussion policy and its transport-free worker."""
 
     def __init__(
         self, server: ModuleType, *, db_path: Path | str | None = None,
         peer_routes: Mapping[tuple[str, str], PeerMemberRoute] | None = None,
-        peer_clients: Mapping[Any, HostedRoomPeerClient] | None = None) -> None:
+        peer_clients: Mapping[Any, HostedRoomPeerClient] | None = None,
+        artifact_clock: Callable[[], float] = time.time,
+        artifact_retry_min_seconds: float = 1.0,
+        artifact_retry_max_seconds: float = 60.0) -> None:
         self.server, self.db_path = server, Path(db_path or hosted_rooms.default_db_path())
         hosted_rooms.prune_disbanded_rooms(self.db_path)
         self._policy_lock = threading.RLock()
         self.attachments = HostedRoomAttachmentStore(self.db_path)
+        self._artifact_clock = artifact_clock
+        self._artifact_retry_min_seconds = max(0.01, float(artifact_retry_min_seconds))
+        self._artifact_retry_max_seconds = max(self._artifact_retry_min_seconds, float(artifact_retry_max_seconds))
+        self._prepare_artifact_retry_store()
         self._pending_actions: dict[tuple[str, str], dict[str, Any]] = {}
         self.policy_checkpoint = HostedRoomPolicyCheckpoint(self.db_path)
         self.rpc = HostedRoomServerRPC(server)
@@ -201,6 +209,7 @@ class HostedRoomService:
         # Persistence is the publication boundary: a failed disk write must never
         # leave a process-local route that disappears after restart.
         self._publish_route((room_id, member_id), route, client)
+        self._unblock_artifact_retries(room_id, member_id)
         self.runtime.wakeup()
 
     def _publish_route(self, key: tuple[str, str], route: PeerMemberRoute, client=None) -> None:
@@ -372,6 +381,7 @@ class HostedRoomService:
             target_profile=stored.target_profile, grant=grant, catalog=catalog or stored.catalog,
             cancellation_scope_id=stored.cancellation_scope_id, trace_id=stored.trace_id)
         self._publish_route(key, replace(route, grant=grant, **digests))
+        self._unblock_artifact_retries(room_id, member_id)
 
     def _route_statuses(self, room_id: str | None = None) -> list[dict[str, str]]:
         with self._policy_lock:
@@ -400,39 +410,6 @@ class HostedRoomService:
         return self.policy_checkpoint.snapshot(
             room_id=str(room["room_id"]), latest_seq=int(room["latest_seq"]))
 
-    def _publish_terminal_tasks(self, room: Mapping[str, Any]) -> bool:
-        changed, room_id, local_profiles = False, str(room["room_id"]), self.local_profiles()
-        for task in self._list_tasks(room_id, _TERMINAL_STATUSES):
-            status, execution_generation = task["status"], int(task["execution_generation"])
-            if self.policy_checkpoint.publication_exists(
-                room_id=room_id, task_id=task["identity"].task_id, status=status,
-                execution_generation=execution_generation):
-                continue
-            publication_cursor = int(self._room(room_id)["latest_seq"])
-            task_events = self.policy_checkpoint.events_for_task(
-                room_id=room_id, source_event_seq=int(task["payload"]["source_event_seq"]),
-                input_context=task["payload"].get("input_context"), task_id=task["identity"].task_id)
-            plan = discussion.reconstruct_task_plan(
-                room, task_events, task, local_profiles=local_profiles)
-            message_id = f"dmessage:{task['identity'].task_id.removeprefix('dtask:')}"
-            if any(event.get("event_id") == message_id and event["kind"] == "message.member" for event in task_events):
-                # Finish an already visible immutable reply even if a later request arrived.
-                task_events = [event for event in task_events if event["kind"] != "message.user"
-                               or int(event["seq"]) <= int(task["payload"]["source_event_seq"])]
-            publication = discussion.plan_publication(
-                room, task_events, plan, status=status, result=task.get("result"),
-                execution_generation=execution_generation if status == "deferred" else None,
-                local_profiles=local_profiles)
-            try:
-                for event in publication.events:
-                    appended = hosted_rooms.append_event(self.db_path, **event.append_kwargs(room_id),
-                                                         expected_latest_seq=publication_cursor)
-                    publication_cursor = max(publication_cursor, int(appended["seq"]))
-            except hosted_rooms.EventCursorConflictError:
-                # Retry publication on an ordinary prepare poll, never rerun the model.
-                continue
-            changed = True
-        return changed
 
     def _append_room_status(
         self, room: Mapping[str, Any], decision: discussion.DiscussionDecision) -> None:
@@ -584,6 +561,8 @@ class HostedRoomService:
                 result = self.runtime.cancel(task["identity"], cancel_id=own_cancel_id or cancel_id)
                 if result["status"] == "stopping":
                     pending += 1
+                else:
+                    self._discard_cancelled_task_artifacts(room_id, task)
         if require_acknowledged and pending:
             raise RuntimeError("room work is still stopping; retry deletion after Stop completes")
         self.runtime.wakeup()
@@ -853,6 +832,27 @@ class HostedRoomService:
             producer_member_id=producer_member_id,
             recipient_member_id=recipient_member_id,
         )
+
+
+    def _append_plan(
+        self,
+        room_id: str,
+        plan: discussion.PublicationPlan,
+        *,
+        expected_latest_seq: int | None = None,
+    ) -> None:
+        for event in plan.events:
+            appended = hosted_rooms.append_event(
+                self.db_path,
+                **event.append_kwargs(room_id),
+                **(
+                    {"expected_latest_seq": expected_latest_seq}
+                    if expected_latest_seq is not None
+                    else {}
+                ),
+            )
+            if expected_latest_seq is not None:
+                expected_latest_seq = max(expected_latest_seq, int(appended["seq"]))
 
 
 class _RouteStatusPeerClient:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from gateway.hosted_room_attachments import MAX_ATTACHMENT_BYTES
+
 import errno
 import hashlib
 import json
@@ -42,7 +44,7 @@ _RECEIPT_SCOPE_FIELDS = (
 _TERMINAL_RUN_STATES = frozenset({"completed", "failed", "interrupted", "cancelled"})
 _ACTIVE_RUN_STATES = frozenset({"queued", "running", "waiting_for_approval", "stopping"})
 _KNOWN_RUN_STATES = _TERMINAL_RUN_STATES | _ACTIVE_RUN_STATES
-_RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event")
+_RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event", "artifacts")
 # Older target gateways wrap these inside the generic dispatch error; normalize locally.
 _LEGACY_DISPATCH_MESSAGE_CODES = (
     ("room grant", "invalid_room_grant"),
@@ -207,13 +209,17 @@ class PeerRunsHTTPClient:
     """Drive a peer's dedicated group session via scoped async Runs APIs."""
 
     def __init__(
-        self, *, base_url: str, api_key: str, timeout_seconds: float = 30,
+        self, *, base_url: str, api_key: str, target_profile: str | None = None, timeout_seconds: float = 30,
         receipt_db_path: Path | str | None = None, poll_min_seconds: float = 0.1,
         poll_max_seconds: float = 2.0, clock: Callable[[], float] = time.monotonic) -> None:
         base_url, self.transport_security = validate_room_link_url(base_url)
         if api_key and len(api_key) < 16:
             raise ValueError("peer API key is missing or too short")
         self.base_url, self.api_key, self.clock = base_url, api_key, clock
+        profile = str(target_profile or "").strip()
+        if profile and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", profile) is None:
+            raise ValueError("peer target profile is invalid")
+        self._profile_prefix = f"/p/{urllib.parse.quote(profile, safe='')}" if profile else ""
         self.timeout_seconds = float(timeout_seconds)
         self.receipt_db_path = Path(receipt_db_path) if receipt_db_path else None
         if poll_min_seconds <= 0 or poll_max_seconds < poll_min_seconds:
@@ -284,7 +290,7 @@ class PeerRunsHTTPClient:
         reject_redirects: bool = False) -> dict[str, Any]:
         deadline, ambiguous = time.monotonic() + self.timeout_seconds, method == "POST"
         request = urllib.request.Request(
-            f"{self.base_url}{path}", method=method,
+            self._request_url(path), method=method,
             data=None if body is None else json.dumps(body, separators=(",", ":")).encode("utf-8"),
             headers={
                 "Authorization": (
@@ -505,7 +511,9 @@ class PeerRunsHTTPClient:
             "execution_generation": receipt["execution_generation"],
             "status": "settled" if state == "completed" else "failed",
             "message_id": f"peer-run:{status.get('run_id')}",
-            "content": status.get("output") or status.get("error") or ""}]
+            "content": status.get("output") or status.get("error") or "",
+            **({"artifacts": status.get("artifacts"), "run_id": status.get("run_id")}
+               if status.get("artifacts") else {})}]
 
     def status(
         self, *, room_id: str, profile: str, session_id: str, grant: str) -> Mapping[str, Any]:
@@ -631,7 +639,7 @@ class PeerRunsHTTPClient:
                 yield view[offset : offset + 64 * 1024].tobytes()
 
         request = urllib.request.Request(
-            f"{self.base_url}{path}",
+            self._request_url(path),
             data=chunks() if streamed else data,
             method="PUT",
             headers={
@@ -811,6 +819,126 @@ class PeerRunsHTTPClient:
             "manifest_digest": digest,
             "count": len(manifest),
         }
+
+
+    def read_artifact(
+        self,
+        *,
+        run_id: str,
+        artifact_id: str,
+        grant: str,
+    ) -> bytes:
+        path = (
+            f"/v1/runs/{urllib.parse.quote(run_id, safe='')}/"
+            f"artifacts/{urllib.parse.quote(artifact_id, safe='')}"
+        )
+        request = urllib.request.Request(
+            self._request_url(path),
+            method="GET",
+            headers={
+                "Authorization": f"HermesRoom {self._require_room_grant(grant)}",
+                "User-Agent": "Hermes-RoomLink/1.0",
+            },
+        )
+        deadline = time.monotonic() + self.timeout_seconds
+        try:
+            with _open_roomlink_url(
+                request,
+                timeout=self.timeout_seconds,
+                reject_redirects=True,
+            ) as response:
+                data = _read_bounded_response(
+                    response,
+                    max_bytes=MAX_ATTACHMENT_BYTES,
+                    deadline=deadline,
+                )
+        except _PeerResponseTooLarge as exc:
+            raise PeerRunsHTTPError("peer artifact bytes exceed the size limit") from exc
+        except _PeerResponseDeadlineExceeded as exc:
+            raise PeerRunsHTTPError(
+                "peer artifact download exceeded the RoomLink time budget",
+                retryable=True,
+            ) from exc
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = _read_bounded_response(
+                    exc,
+                    max_bytes=MAX_PEER_ERROR_RESPONSE_BYTES,
+                    deadline=deadline,
+                ).decode("utf-8", "replace")[:500]
+            except _PeerResponseTooLarge as body_exc:
+                raise PeerRunsHTTPError(
+                    "peer artifact error exceeded the RoomLink size limit",
+                    status_code=exc.code,
+                ) from body_exc
+            except _PeerResponseDeadlineExceeded as body_exc:
+                raise PeerRunsHTTPError(
+                    "peer artifact error exceeded the RoomLink time budget",
+                    retryable=True,
+                    status_code=exc.code,
+                ) from body_exc
+            except Exception:
+                detail = ""
+            raise PeerRunsHTTPError(
+                (
+                    "peer artifact download refused an HTTP redirect"
+                    if exc.code in {301, 302, 303, 307, 308}
+                    else f"peer rejected artifact download with HTTP {exc.code}: {detail}"
+                ),
+                retryable=exc.code in {408, 425, 429} or exc.code >= 500,
+                status_code=exc.code,
+                error_code=_response_error_code(detail),
+            ) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise PeerRunsHTTPError(
+                f"peer is unreachable: {exc}",
+                retryable=True,
+            ) from exc
+        if not data:
+            raise PeerRunsHTTPError("peer artifact bytes are invalid")
+        return data
+
+
+    def acknowledge_artifacts(
+        self,
+        *,
+        run_id: str,
+        artifact_ids: Sequence[str],
+        manifest_digest: str,
+        message_event_id: str,
+        grant: str,
+    ) -> Mapping[str, Any]:
+        return self._request(
+            f"/v1/runs/{urllib.parse.quote(run_id, safe='')}/artifacts/ack",
+            method="POST",
+            body={
+                "artifact_ids": list(artifact_ids),
+                "manifest_digest": manifest_digest,
+                "message_event_id": message_event_id,
+            },
+            room_grant=grant,
+            reject_redirects=True,
+        )
+
+
+    def discard_artifacts(
+        self,
+        *,
+        run_id: str,
+        grant: str,
+    ) -> Mapping[str, Any]:
+        return self._request(
+            f"/v1/runs/{urllib.parse.quote(run_id, safe='')}/artifacts/discard",
+            method="POST",
+            body={"reason": "verification_failed"},
+            room_grant=grant,
+            reject_redirects=True,
+        )
+
+
+    def _request_url(self, path: str) -> str:
+        """Keep JSON and binary operations on this client's profile route."""
+        return f"{self.base_url}{self._profile_prefix}{path}"
 
 
 def _open_roomlink_url(

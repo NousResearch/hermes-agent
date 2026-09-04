@@ -103,35 +103,7 @@ def _append_user(
     thread_id: str = "thread-1",
     attachments: list[dict] | None = None,
 ) -> dict:
-    if attachments:
-        store = HostedRoomAttachmentStore(db)
-        for entry in attachments:
-            header = {"image": b"\x89PNG\r\n\x1a\n", "pdf": b"%PDF-"}.get(
-                entry["kind"], b""
-            )
-            data = header + b"x" * (entry["size"] - len(header))
-            # Keep stable planner fixtures, but require real verified commitments.
-            with patch(
-                "gateway.hosted_room_attachments.secrets.token_hex",
-                return_value=entry["attachment_id"].removeprefix("att_"),
-            ):
-                uploaded = store.put(
-                    room_id=ROOM_ID,
-                    upload_id=entry["attachment_id"],
-                    kind=entry["kind"],
-                    name=entry["name"],
-                    mime=entry["mime"],
-                    data=data,
-                )
-            assert {key: uploaded[key] for key in entry} == entry
-        store.commit_message(
-            room_id=ROOM_ID,
-            event_id=event_id,
-            manifest=attachments,
-            recipient_member_ids=MEMBER_IDS,
-            viewer_access=True,
-            hold_until_event=True,
-        )
+    _stage_attachments(db, event_id, attachments or [])
     return hosted_rooms.append_event(
         db,
         room_id=ROOM_ID,
@@ -153,6 +125,8 @@ def _append_publication(
     db: Path,
     plan: discussion.PublicationPlan,
 ) -> list[dict]:
+    for event in plan.events:
+        _stage_attachments(db, event.event_id, event.payload.get("attachments", []))
     return [
         hosted_rooms.append_event(
             db,
@@ -307,12 +281,14 @@ def test_deterministic_task_fits_existing_driver_and_reconstructs_after_restart(
     assert first == repeated
     assert first.identity.thread_id == "thread-1"
     assert first.payload == {
+        "recipient_member_ids": [member["member_id"] for member in room["members"]],
         "target_member_id": "member-research",
         "target_profile": "research",
         "prompt": first.payload["prompt"],
         "source_event_seq": user["seq"],
     }
     assert set(first.payload) == {
+        "recipient_member_ids",
         "target_member_id",
         "target_profile",
         "prompt",
@@ -1235,3 +1211,155 @@ def test_valid_image_pdf_and_file_manifest_is_normalized():
         "size": 2048,
         "mime": "image/png",
     }
+
+
+def _stage_attachments(db: Path, event_id: str, manifest: list[dict]) -> None:
+    if not manifest:
+        return
+    store = HostedRoomAttachmentStore(db)
+    for entry in manifest:
+        header = {"image": b"\x89PNG\r\n\x1a\n", "pdf": b"%PDF-"}.get(
+            entry["kind"], b""
+        )
+        data = header + b"x" * (entry["size"] - len(header))
+        # Keep stable planner fixtures, but require real verified commitments.
+        with patch(
+            "gateway.hosted_room_attachments.secrets.token_hex",
+            return_value=entry["attachment_id"].removeprefix("att_"),
+        ):
+            uploaded = store.put(
+                room_id=ROOM_ID,
+                upload_id=entry["attachment_id"],
+                kind=entry["kind"],
+                name=entry["name"],
+                mime=entry["mime"],
+                data=data,
+            )
+        assert {key: uploaded[key] for key in entry} == entry
+    store.commit_message(
+        room_id=ROOM_ID,
+        event_id=event_id,
+        manifest=manifest,
+        recipient_member_ids=MEMBER_IDS,
+        viewer_access=True,
+        hold_until_event=True,
+    )
+
+
+def test_reconstructs_pre_file_handoff_task_without_recipient_snapshot(room_db):
+    db, room = room_db
+    _append_user(db, event_id="legacy-user", text="Check the release.")
+    planned = _next_task(room, db)
+    legacy_payload = dict(planned.payload)
+    legacy_payload.pop("recipient_member_ids")
+    driver.admit_task(
+        db,
+        planned.identity,
+        payload=legacy_payload,
+        clock=time.time,
+    )
+
+    reconstructed = discussion.reconstruct_task_plan(
+        room,
+        _events(db),
+        driver.get_task(db, planned.identity),
+        local_profiles=LOCAL_PROFILES,
+    )
+
+    assert reconstructed.identity == planned.identity
+    assert reconstructed.payload == legacy_payload
+
+
+def test_reconstruction_keeps_admission_time_recipients(room_db):
+    db, room = room_db
+    _append_user(db, event_id="user-frozen-roster", text="Prepare the file.")
+    planned = _next_task(room, db)
+    driver.admit_task(db, planned.identity, payload=planned.payload, clock=time.time)
+    expanded_room = {
+        **room,
+        "members": [
+            *room["members"],
+            {
+                "member_id": "member-late",
+                "profile": "late",
+                "handle": "late",
+                "display_name": "Late",
+            },
+        ],
+    }
+
+    reconstructed = discussion.reconstruct_task_plan(
+        expanded_room,
+        _events(db),
+        driver.get_task(db, planned.identity),
+        local_profiles=(*LOCAL_PROFILES, "late"),
+    )
+
+    assert reconstructed.payload["recipient_member_ids"] == planned.payload[
+        "recipient_member_ids"
+    ]
+
+
+def test_member_file_publication_reaches_the_next_bot(room_db: tuple[Path, dict]):
+    db, room = room_db
+    _append_user(db, event_id="user-file-handoff", text="Prepare and share the notes.")
+    first = _next_task(room, db)
+    handoff = [_attachment(
+        "file",
+        "handoff.md",
+        "text/markdown",
+        size=42,
+        attachment_id="att_44444444444444444444444444444444",
+    )]
+    publication = discussion.plan_publication(
+        room,
+        _events(db),
+        first,
+        status="settled",
+        result={"text": "Draft attached for review.", "attachments": handoff},
+        local_profiles=LOCAL_PROFILES,
+    )
+
+    message = next(event for event in publication.events if event.kind == "message.member")
+    assert message.payload["attachments"] == handoff
+    _append_publication(db, publication)
+
+    second = _next_task(room, db)
+    assert second.member.member_id != first.member.member_id
+    assert second.payload["attachments"] == handoff
+    assert 'Staged file "handoff.md"' in second.payload["prompt"]
+    driver.admit_task(db, second.identity, payload=second.payload, clock=time.time)
+    assert discussion.reconstruct_task_plan(
+        room,
+        _events(db),
+        driver.get_task(db, second.identity),
+        local_profiles=LOCAL_PROFILES,
+    ) == second
+
+
+def test_attachment_only_member_result_gets_readable_copy(room_db: tuple[Path, dict]):
+    db, room = room_db
+    _append_user(db, event_id="user-file-only", text="Share the finished file.")
+    task = _next_task(room, db)
+    handoff = [_attachment(
+        "file",
+        "result.md",
+        "text/markdown",
+        size=17,
+        attachment_id="att_55555555555555555555555555555555",
+    )]
+
+    publication = discussion.plan_publication(
+        room,
+        _events(db),
+        task,
+        status="settled",
+        result={"text": "(pass)", "attachments": handoff},
+        local_profiles=LOCAL_PROFILES,
+    )
+
+    message = next(event for event in publication.events if event.kind == "message.member")
+    assert message.payload["text"] == "Shared result.md."
+    assert message.payload["attachments"] == handoff
+    terminal = next(event for event in publication.events if event.kind == "turn.settled")
+    assert terminal.payload["passed"] is False

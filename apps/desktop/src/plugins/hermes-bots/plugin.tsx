@@ -41,6 +41,7 @@ import {
   cachedUnionRoster,
   isActiveRosterBot,
   migrateBotMeta,
+  primeRoster,
   resolveRosterMentions
 } from './data'
 import {
@@ -114,6 +115,22 @@ export default {
       ctx.onDispose(stopFaceClock)
       ctx.onDispose(stopBotRelay)
     }
+
+    // Prime the roster cache so the composer surfaces below can resolve
+    // cross-connection @mentions without the Bots pane ever being mounted.
+    // The gateway is usually still connecting at registration, so prime on
+    // the first 'open' transition (and immediately if it is already up).
+    // One fetch per open — the pane still owns the 5s refresh while it is
+    // visible.
+    const primeOnGatewayOpen = (state: unknown) => {
+      if (String(state) === 'open') {
+        void primeRoster()
+      }
+    }
+
+    primeOnGatewayOpen(host.state.gateway?.get?.())
+
+    const unbindRosterPrime = host.state.gateway.listen(primeOnGatewayOpen)
 
     // @-mention autocomplete: typing "@rese…" in ANY composer offers the
     // roster's handles (issue #88060). Reads the roster straight from the
@@ -349,6 +366,10 @@ export default {
 
         if (typeof unbindGatewayListener === 'function') {
           unbindGatewayListener()
+        }
+
+        if (typeof unbindRosterPrime === 'function') {
+          unbindRosterPrime()
         }
 
         if (typeof unbindConnectionsChanged === 'function') {
@@ -701,7 +722,19 @@ export default {
           }
 
           const cached = cachedUnionRoster()
-          const roster = Array.isArray(cached?.profiles) ? cached.profiles : null
+          let roster = Array.isArray(cached?.profiles) ? cached.profiles : null
+
+          if (!roster) {
+            // Cold cache (the pane has not run this launch, or the entry was
+            // evicted). Fill it the same way the pane does — a bare
+            // profiles.list here would only see the ACTIVE gateway and drop
+            // every cross-connection target on the floor.
+            await primeRoster()
+
+            const primed = cachedUnionRoster()
+            roster = Array.isArray(primed?.profiles) ? primed.profiles : null
+          }
+
           let mentionedBots = roster ? resolveRosterMentions(text, roster, live) : []
 
           if (!roster) {

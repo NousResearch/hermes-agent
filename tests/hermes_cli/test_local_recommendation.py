@@ -14,9 +14,9 @@ human approved, exactly like a golden file. When a cell flips on
 purpose, update it in the same commit and say why. When one flips by
 surprise, that is the test doing its job.
 
-Budgets mirror hardware.probe_budget's planning-mode shapes (margins,
-UMA headroom) so the cells match what a real machine of that class
-resolves.
+Budgets mirror hardware.probe_budget's planning-mode shapes (VRAM
+margins, UMA headroom, discrete host RAM headroom) so the cells match
+what a real machine of that class resolves.
 """
 
 from __future__ import annotations
@@ -38,9 +38,12 @@ _GIB = 1 << 30
 def _discrete(size_gb: int) -> HardwareBudget:
     total = size_gb * _GIB
     margin = max(2 * _GIB, int(total * 0.09))
+    # Mirror probe_budget(planning=True) discrete host headroom (40%, floor 4 GiB).
+    ram_total = 64 * _GIB
+    headroom = max(4 * _GIB, int(ram_total * 0.40))
     return HardwareBudget(usable_vram_bytes=max(0, total - margin),
                           total_device_bytes=total,
-                          ram_available_bytes=64 * _GIB, uma=False)
+                          ram_available_bytes=ram_total - headroom, uma=False)
 
 
 def _unified(size_gb: int) -> HardwareBudget:
@@ -167,3 +170,29 @@ def test_quality_decides_where_speed_permits():
         if (c := select_variant(e, budget)) is not None and c.zero_spill
     ]
     assert pick == max(resident, key=lambda e: e.quality).id
+
+
+def test_discrete_30gib_laptop_does_not_recommend_thrash_spill():
+    """#102865: 8 GiB VRAM + ~30 GiB RAM must not auto-pick a ~21 GiB MoE.
+
+    Planning used to budget full ram_total for spill room; the 35B-A3B then
+    looked like the least-painful spilled pick and freeze-thrashed the
+    desktop on load. Host headroom must refuse that pick and land on a
+    smaller spilled alternative (or None if the catalog has nothing left).
+    """
+    vram_total = 8 * _GIB
+    ram_total = int(30.6 * _GIB)
+    margin = max(2 * _GIB, int(vram_total * 0.09))
+    headroom = max(4 * _GIB, int(ram_total * 0.40))
+    budget = HardwareBudget(
+        usable_vram_bytes=vram_total - margin,
+        total_device_bytes=vram_total,
+        ram_available_bytes=ram_total - headroom,
+        uma=False,
+    )
+    entry_35b = next(e for e in CATALOG if e.id == "qwen3.6-35b-a3b")
+    assert select_variant(entry_35b, budget) is None
+    picked = recommended_entry(budget)
+    assert picked is not None
+    assert picked[0].id != "qwen3.6-35b-a3b"
+    assert picked[1] == "least-painful-spilled"

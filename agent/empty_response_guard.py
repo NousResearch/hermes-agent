@@ -207,21 +207,22 @@ def record_empty_attempt(
 def deterministic_empty(agent: Any) -> bool:
     """True when the current streak looks deterministic.
 
-    Requires >= 2 consecutive attempts with an identical (model, provider,
-    finish_reason) signature. Usage-backed attempts must all prove zero output.
-    Usage-absent attempts must all have no observed content or reasoning. Mixed
-    evidence fails open so ambiguous transients keep their retries.
+    Requires >= 2 consecutive attempts, with the trailing attempts having an
+    identical (model, provider, finish_reason) signature. Usage-backed attempts
+    must all prove zero output. Usage-absent attempts must all have no observed
+    content or reasoning. Mixed evidence fails open so ambiguous transients
+    keep their retries.
     """
     if not guard_enabled(agent):
         return False
     attempts = getattr(agent, _ATTEMPTS_ATTR, None) or []
     if len(attempts) < 2:
         return False
-    first = attempts[0]
-    same_signature = all(a.signature == first.signature for a in attempts)
-    usage_proves_empty = all(a.usage_present and a.zero_output for a in attempts)
+    last_two = attempts[-2:]
+    same_signature = last_two[0].signature == last_two[1].signature
+    usage_proves_empty = all(a.usage_present and a.zero_output for a in last_two)
     response_proves_empty = all(
-        not a.usage_present and not a.observed_generation for a in attempts
+        not a.usage_present and not a.observed_generation for a in last_two
     )
     return same_signature and (usage_proves_empty or response_proves_empty)
 

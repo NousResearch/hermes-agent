@@ -853,6 +853,37 @@ def _sanitize_tool_error(error_msg: str) -> str:
 # Tool argument type coercion
 # =========================================================================
 
+# ``items`` types whose single-key-dict unwrap is safe: a dict landing on an
+# array of scalars can only be the model's serialization of one element, so
+# the sole value is extracted; object/unknown item types keep the wrap.
+_SCALAR_ITEM_TYPES = ("integer", "number", "string", "boolean")
+
+
+def _array_items_type(prop_schema: Any) -> Optional[str]:
+    """Return the declared scalar ``items`` type of an array property schema.
+
+    ``None`` when the schema has no ``items`` or a non-scalar-announced
+    ``items`` (missing/union types) — callers treat that as "unknown, do
+    not unwrap". JSON Schema also allows the union array form; a union of
+    scalar members plus optional ``"null"`` (``["integer", "null"]``, the
+    shape ``strip_nullable_unions`` leaves untouched because it only folds
+    ``anyOf``/``oneOf``) resolves to its first non-null scalar member, while
+    a union mixing in a non-scalar type (``["integer", "object"]``) stays
+    unknown so object-ish elements are never unwrapped.
+    """
+    items = prop_schema.get("items") if isinstance(prop_schema, dict) else None
+    if not isinstance(items, dict):
+        return None
+    declared = items.get("type")
+    if isinstance(declared, str):
+        return declared
+    if isinstance(declared, list):
+        non_null = [t for t in declared if isinstance(t, str) and t != "null"]
+        if non_null and all(t in _SCALAR_ITEM_TYPES for t in non_null):
+            return non_null[0]
+    return None
+
+
 def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """Coerce tool call arguments to match their JSON Schema types.
 
@@ -870,6 +901,15 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     sometimes emit ``{"urls": "https://a.com"}`` when the tool expects
     ``{"urls": ["https://a.com"]}``; wrapping here avoids a confusing tool
     failure on what is otherwise a well-formed call.
+
+    Some models go one step further and emit a scalar-array argument as a
+    single-key dict (``{"ids": {"item": 14}}``) — their serialization of the
+    array's inner slot.  When the declared ``items`` type is scalar (including
+    the JSON-Schema union array form ``["integer", "null"]``, which some MCP
+    servers emit and the sanitizer leaves as-is), the sole value is unwrapped
+    before wrapping so the tool receives ``[14]`` instead of ``[{"item": 14}]``;
+    object-item schemas are untouched because single-key dicts are legitimate
+    elements there.
     """
     if not args or not isinstance(args, dict):
         return args
@@ -929,6 +969,31 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                     tool_name, key,
                 )
                 continue
+            # Single-key dict for a scalar-items array (e.g. ``{"item": 14}``
+            # for ``array<integer>``): unwrap the sole value instead of
+            # wrapping the whole dict. Sending ``[{"item": 14}]`` makes strict
+            # servers reject the call — or silently coerce it to ``[]``.
+            if (
+                isinstance(value, dict)
+                and len(value) == 1
+                and _array_items_type(prop_schema) in _SCALAR_ITEM_TYPES
+            ):
+                inner = next(iter(value.values()))
+                args[key] = list(inner) if isinstance(inner, (list, tuple)) else [inner]
+                logger.info(
+                    "coerce_tool_args: unwrapped single-key dict into list for %s.%s",
+                    tool_name, key,
+                )
+                continue
+            if isinstance(value, dict):
+                # Keys only, never values: the dict shape is the diagnostic
+                # that decides whether the unwrap rule needs widening — the
+                # payload itself may carry user content.
+                logger.info(
+                    "coerce_tool_args: wrapping bare dict {keys: %s} in list for %s.%s "
+                    "— scalar-array unwrap did not apply (item schema or key count)",
+                    sorted(str(k) for k in value.keys()), tool_name, key,
+                )
             args[key] = [value]
             logger.info(
                 "coerce_tool_args: wrapped bare %s in list for %s.%s",

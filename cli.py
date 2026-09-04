@@ -3170,7 +3170,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         "palette": ("_open_command_palette", False), "whoami": ("_handle_whoami_command", False),
         "profile": ("_handle_profile_command", False), "toolsets": ("show_toolsets", False),
         "config": ("show_config", False), "redraw": ("_cmd_redraw", True), "clear": ("_cmd_clear", True),
-        "history": ("show_history", False), "title": ("_cmd_title", True), "new": ("_cmd_new", True),
+        "history": ("show_history", False), "title": ("_cmd_title", True), "retitle": ("_cmd_retitle", True), "new": ("_cmd_new", True),
         "model": ("_handle_model_switch", True), "codex-runtime": ("_handle_codex_runtime", True),
         "retry": ("_cmd_retry", True), "prompt": ("_handle_prompt_compose_command", True),
         "undo": ("_cmd_undo", True), "save": ("save_conversation", True), "skills": ("_cmd_skills", True),

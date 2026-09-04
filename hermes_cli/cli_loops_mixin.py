@@ -148,6 +148,60 @@ class CLILoopsMixin:
                 self._pending_title = new_title
                 _cprint(f"  Session title queued: {new_title} (will be saved on first message)")
 
+    def _cmd_retitle(self, cmd_original: str):
+        """Regenerate the current session's title from recent conversation.
+
+        Mirrors /retitle in the gateway (gateway/slash_commands_session.py) and
+        ``hermes sessions retitle`` in the CLI: reads turns_window*2 recent
+        messages from the DB, runs ``regenerate_title``, persists with
+        ``source="llm"``. DB-only by default — Telegram/Discord names stay
+        user-authored unless the operator opted into ``touch_platform_names``.
+
+        Args: bare ``/retitle`` regenerates, ``/retitle force`` overwrites a
+        user-set title too (matches the CLI's ``--force`` behavior).
+        """
+        from cli import _cprint
+        from hermes_state import format_session_db_unavailable
+        args = cmd_original.split(maxsplit=1)
+        force = len(args) > 1 and args[1].strip().lower() == "force"
+        if not self._session_db:
+            _cprint(f"  {format_session_db_unavailable()}")
+            return True
+        try:
+            from agent.title_generator import _retitle_config, retitle_session
+            cfg = _retitle_config()
+            if not cfg.get("enabled", True):
+                _cprint("  Retitle is disabled by config (auxiliary.title_generation.retitle.enabled).")
+                return True
+            turns_window = int(cfg.get("turns_window", 10) or 10)
+            touch = bool(cfg.get("touch_platform_names", False))
+            history = self._session_db.get_messages(
+                self.session_id, latest=True, limit=turns_window * 2,
+            )
+            if not history:
+                _cprint("  No conversation history to retitle from.")
+                return True
+            new_title = retitle_session(
+                self._session_db, self.session_id, history,
+                turns_window=turns_window,
+                force=force,
+                touch_platform_names=touch,
+            )
+            if new_title:
+                self._status_bar_title_checked_at = 0.0
+                _cprint(f"  🔄 Retitled: {new_title}")
+            else:
+                try:
+                    src = self._session_db.get_session_title_source(self.session_id)
+                    if src == "user" and not force:
+                        _cprint("  Session has a manual title. Add `force` to overwrite: /retitle force")
+                        return True
+                except Exception:
+                    pass
+                _cprint("  No title change (model returned nothing usable).")
+        except Exception as e:
+            _cprint(f"  Retitle failed: {e}")
+
     def _cmd_new(self, cmd_original: str):
         # Strip inline-skip tokens (now/--yes/-y) before deriving the title so
         # "/new now My Session" yields title="My Session". See _split_destructive_skip.

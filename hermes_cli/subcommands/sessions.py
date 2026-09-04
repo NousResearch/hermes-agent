@@ -240,6 +240,41 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_retitle.add_argument(
         "--limit", type=int, default=200, help="Maximum sessions to examine (default: 200)")
 
+    sessions_retitle_new = sessions_subparsers.add_parser(
+        "retitle",
+        help="Regenerate a session's title from recent conversation (DB-only)",
+        description=(
+            "Regenerate a session's title using the last N turns of conversation "
+            "as context, instead of just the opening message. Writes to the DB "
+            "only — does NOT rename Telegram topics or Discord threads (matches "
+            "the /retitle slash command default). Sessions with a user-set "
+            "title are skipped unless --force is passed."
+        ),
+    )
+    sessions_retitle_new.add_argument(
+        "session_id", help="Session ID or unique prefix to retitle"
+    )
+    sessions_retitle_new.add_argument(
+        "--turns",
+        type=int,
+        default=None,
+        help=(
+            "Number of user+assistant turns to feed the title model "
+            "(default: auxiliary.title_generation.retitle.turns_window, "
+            "typically 10)"
+        ),
+    )
+    sessions_retitle_new.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite even a user-set title (default: skip user-set titles)",
+    )
+    sessions_retitle_new.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would happen without calling the model or writing",
+    )
+
     sessions_browse = sessions_subparsers.add_parser(
         "browse", help="Interactive session picker — browse, search, and resume sessions")
     sessions_browse.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")

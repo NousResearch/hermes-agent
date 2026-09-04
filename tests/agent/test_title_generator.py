@@ -9,6 +9,14 @@ from agent.title_generator import (
     auto_title_session,
     maybe_auto_title,
     _title_language,
+    _retitle_config,
+    _retitle_enabled,
+    _condense_history,
+    _looks_like_title,
+    regenerate_title,
+    retitle_session,
+    maybe_auto_retitle,
+    MAX_TITLE_INPUT_CHARS,
 )
 from hermes_state import SessionDB
 
@@ -598,3 +606,581 @@ class TestModelSwitchMarkerNotTitleable:
         assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
             "南京市秦淮区 小时级天气预报"
         )
+
+
+class TestRetitleConfig:
+    """Unit tests for _retitle_config() and _retitle_enabled()."""
+
+    DEFAULT_KEYS = {
+        "enabled": True,
+        "auto_at_turn": 10,
+        "turns_window": 10,
+        "slash_command": True,
+        "cli_command": True,
+        "touch_platform_names": False,
+        "provider": "",
+        "model": "",
+        "base_url": "",
+        "api_key": "",
+        "timeout": 30,
+        "max_concurrency": 2,
+        "prefer_fast_model": None,
+    }
+
+    def test_retitle_config_returns_defaults_when_block_missing(self):
+        with patch("hermes_cli.config.load_config", return_value={}), \
+             patch("hermes_cli.config.load_config_readonly", return_value={}):
+            cfg = _retitle_config()
+        for key, expected in self.DEFAULT_KEYS.items():
+            assert cfg[key] == expected, f"default for {key} lost"
+
+    def test_retitle_config_merges_partial_user_overrides(self):
+        user_cfg = {
+            "auxiliary": {
+                "title_generation": {
+                    "retitle": {
+                        "enabled": False,
+                        "auto_at_turn": 20,
+                        # None must be treated as "use default"
+                        "provider": None,
+                    }
+                }
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=user_cfg), \
+             patch("hermes_cli.config.load_config_readonly", return_value=user_cfg):
+            cfg = _retitle_config()
+
+        assert cfg["enabled"] is False
+        assert cfg["auto_at_turn"] == 20
+        # None override was skipped → default preserved
+        assert cfg["provider"] == ""
+        # Untouched keys keep defaults
+        assert cfg["turns_window"] == 10
+        assert cfg["slash_command"] is True
+        assert cfg["timeout"] == 30
+        assert cfg["max_concurrency"] == 2
+        assert cfg["prefer_fast_model"] is None
+
+    def test_retitle_config_returns_empty_dict_on_config_error(self):
+        with patch("hermes_cli.config.load_config",
+                   side_effect=RuntimeError("bad config")), \
+             patch("hermes_cli.config.load_config_readonly",
+                   side_effect=RuntimeError("bad config")):
+            assert _retitle_config() == {}
+
+    def test_retitle_enabled_true_by_default(self):
+        with patch("hermes_cli.config.load_config", return_value={}), \
+             patch("hermes_cli.config.load_config_readonly", return_value={}):
+            assert _retitle_enabled() is True
+
+    def test_retitle_enabled_false_when_disabled(self):
+        user_cfg = {
+            "auxiliary": {
+                "title_generation": {
+                    "retitle": {"enabled": False}
+                }
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=user_cfg), \
+             patch("hermes_cli.config.load_config_readonly", return_value=user_cfg):
+            assert _retitle_enabled() is False
+
+    def test_retitle_enabled_true_when_config_broken(self):
+        with patch("hermes_cli.config.load_config",
+                   side_effect=RuntimeError("bad config")), \
+             patch("hermes_cli.config.load_config_readonly",
+                   side_effect=RuntimeError("bad config")):
+            assert _retitle_enabled() is True
+
+
+class TestCondenseHistory:
+    """Unit tests for _condense_history()."""
+
+    def test_returns_empty_for_none_history(self):
+        assert _condense_history(None) == ""
+
+    def test_returns_empty_for_empty_history(self):
+        assert _condense_history([]) == ""
+
+    def test_includes_recent_user_and_assistant_turns_with_labels(self):
+        history = [
+            {"role": "user", "content": "How do I center a div?"},
+            {"role": "assistant", "content": "Use flexbox with justify-content."},
+        ]
+        result = _condense_history(history)
+        assert "User: How do I center a div?" in result
+        assert "Assistant: Use flexbox with justify-content." in result
+
+    def test_skips_tool_messages(self):
+        history = [
+            {"role": "user", "content": "Run the tests"},
+            {"role": "tool", "content": "pytest output goes here"},
+            {"role": "assistant", "content": "Tests passed."},
+        ]
+        result = _condense_history(history)
+        assert "pytest output" not in result
+        assert "User: Run the tests" in result
+        assert "Assistant: Tests passed." in result
+
+    def test_skips_machine_authored_user_turns(self):
+        history = [
+            {"role": "user", "content": "[System note: session resumed]"},
+            {"role": "user", "content": "What's the weather like?"},
+            {"role": "assistant", "content": "I can't check weather directly."},
+        ]
+        result = _condense_history(history)
+        assert "[System note:" not in result
+        assert "User: What's the weather like?" in result
+
+    def test_skips_empty_assistant_content(self):
+        history = [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "   "},
+            {"role": "assistant", "content": "Hello!"},
+        ]
+        result = _condense_history(history)
+        lines = result.split("\n")
+        assistant_lines = [ln for ln in lines if ln.startswith("Assistant:")]
+        assert len(assistant_lines) == 1
+        assert "Assistant: Hello!" in result
+
+    def test_truncates_individual_message_bodies_to_200_chars(self):
+        long_body = "a" * 500
+        history = [
+            {"role": "user", "content": long_body},
+            {"role": "assistant", "content": long_body},
+        ]
+        result = _condense_history(history)
+        for line in result.split("\n"):
+            # strip label prefix
+            if line.startswith("User: "):
+                body = line[len("User: "):]
+            elif line.startswith("Assistant: "):
+                body = line[len("Assistant: "):]
+            else:
+                continue
+            assert len(body) <= 200
+
+    def test_returns_only_last_turns_window_pairs(self):
+        history = []
+        for i in range(20):
+            history.append({"role": "user", "content": f"user-msg-{i}"})
+            history.append({"role": "assistant", "content": f"assistant-msg-{i}"})
+        result = _condense_history(history, turns_window=5)
+        # window=5 => last 10 messages: user-msg-15..19, assistant-msg-15..19
+        assert "user-msg-0" not in result
+        assert "user-msg-14" not in result
+        assert "user-msg-15" in result
+        assert "user-msg-19" in result
+        assert "assistant-msg-19" in result
+
+    def test_final_output_capped_at_max_title_input_chars(self):
+        history = []
+        chunk = "word " * 40  # ~200 chars → truncated to 200 per body
+        for i in range(200):
+            history.append({"role": "user", "content": chunk})
+            history.append({"role": "assistant", "content": chunk})
+        result = _condense_history(history, turns_window=100)
+        assert len(result) <= MAX_TITLE_INPUT_CHARS
+
+    def test_multimodal_user_content_flattens_to_text(self):
+        history = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Here's a screenshot,"},
+                    {"type": "image_url", "image_url": {"url": "data:..."}},
+                    {"type": "text", "text": "fix the login."},
+                ],
+            },
+            {"role": "assistant", "content": "Sure, checking now."},
+        ]
+        result = _condense_history(history)
+        assert "User:" in result
+        assert "Here's a screenshot," in result
+        assert "fix the login." in result
+
+
+class TestLooksLikeTitle:
+    """Unit tests for _looks_like_title() quality gate."""
+
+    def test_rejects_empty(self):
+        assert _looks_like_title("") is False
+
+    def test_rejects_none(self):
+        assert _looks_like_title(None) is False
+
+    def test_rejects_single_word(self):
+        assert _looks_like_title("Hello") is False
+
+    def test_rejects_thirteen_word_prose(self):
+        text = "one two three four five six seven eight nine ten eleven twelve thirteen"
+        assert _looks_like_title(text) is False
+
+    def test_rejects_here_is_prefix(self):
+        assert _looks_like_title("Here is a summary") is False
+
+    def test_rejects_about_prefix(self):
+        assert _looks_like_title("about databases and connection pools") is False
+
+    def test_rejects_this_conversation_prefix(self):
+        assert _looks_like_title("This conversation is about Postgres") is False
+
+    def test_rejects_the_conversation_prefix(self):
+        assert _looks_like_title("The conversation covers Postgres") is False
+
+    def test_accepts_concise_two_words(self):
+        assert _looks_like_title("Friendly greeting") is True
+
+    def test_accepts_seven_words(self):
+        assert (
+            _looks_like_title(
+                "Debugging Postgres connection pool exhaustion during migration"
+            )
+            is True
+        )
+
+    def test_accepts_the_prefix_when_not_conversation(self):
+        assert _looks_like_title("The Postgres pool issue") is True
+
+
+class TestRegenerateTitle:
+    """Unit tests for regenerate_title()."""
+
+    def test_returns_none_for_empty_condensed(self):
+        assert regenerate_title("") is None
+        assert regenerate_title(None) is None
+        assert regenerate_title("   \n  ") is None
+
+    def test_returns_none_when_retitle_disabled(self):
+        with patch("agent.title_generator._retitle_enabled", return_value=False):
+            assert regenerate_title("User: hi\nAssistant: hello") is None
+
+    def test_calls_call_llm_with_condensed_and_title_generation_task(self):
+        captured = {}
+
+        def mock_call_llm(**kwargs):
+            captured.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = '{"title": "Debugging Postgres pool"}'
+            return resp
+
+        condensed = "User: Postgres pool is exhausted\nAssistant: Let's check settings"
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm), \
+             patch("agent.title_generator._retitle_enabled", return_value=True):
+            title = regenerate_title(condensed)
+
+        assert title == "Debugging Postgres pool"
+        assert captured["task"] == "title_generation"
+        assert captured["max_tokens"] == 64
+        assert captured["temperature"] == 0.3
+        messages = captured["messages"]
+        assert messages[0]["role"] == "system"
+        assert messages[1]["role"] == "user"
+        assert messages[1]["content"] == condensed
+        # response_format schema is passed through
+        assert "response_format" in captured["extra_body"]
+
+    def test_extracts_json_response_via_extract_title_text(self):
+        def mock_call_llm(**kwargs):
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = '{"title": "Fix login button on mobile"}'
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm), \
+             patch("agent.title_generator._retitle_enabled", return_value=True):
+            assert regenerate_title("User: fix mobile login") == "Fix login button on mobile"
+
+    def test_rejects_prose_via_looks_like_title(self):
+        def mock_call_llm(**kwargs):
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            # 15 words of prose — should be rejected by _looks_like_title
+            resp.choices[0].message.content = (
+                "This conversation is a long summary about postgres and how the "
+                "user tried to fix it eventually."
+            )
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm), \
+             patch("agent.title_generator._retitle_enabled", return_value=True):
+            assert regenerate_title("User: pg\nAssistant: ok") is None
+
+    def test_returns_none_on_call_llm_exception(self):
+        def mock_call_llm(**kwargs):
+            raise RuntimeError("upstream 500")
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm), \
+             patch("agent.title_generator._retitle_enabled", return_value=True):
+            assert regenerate_title("User: hi\nAssistant: hey") is None
+
+    def test_respects_pinned_language(self):
+        captured = {}
+
+        def mock_call_llm(**kwargs):
+            captured.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = '{"title": "ポストグレス プール修正"}'
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm), \
+             patch("agent.title_generator._retitle_enabled", return_value=True), \
+             patch("agent.title_generator._title_language", return_value="Japanese"):
+            regenerate_title("User: pg\nAssistant: hai")
+
+        system_prompt = captured["messages"][0]["content"]
+        assert "Japanese" in system_prompt
+
+    def test_truncates_condensed_to_max_title_input_chars(self):
+        captured = {}
+
+        def mock_call_llm(**kwargs):
+            captured.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = '{"title": "Long convo title"}'
+            return resp
+
+        big = "x" * 5000
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm), \
+             patch("agent.title_generator._retitle_enabled", return_value=True):
+            regenerate_title(big)
+
+        user_content = captured["messages"][1]["content"]
+        assert len(user_content) == MAX_TITLE_INPUT_CHARS
+
+
+class TestRetitleSession:
+    """Unit tests for retitle_session() — the sync worker."""
+
+    def test_returns_none_when_session_db_is_none(self):
+        assert retitle_session(None, "sess-1", []) is None
+
+    def test_returns_none_when_session_id_is_empty(self):
+        db = MagicMock()
+        assert retitle_session(db, "", []) is None
+        assert retitle_session(db, None, []) is None
+
+    def test_skips_when_user_title_and_not_forced(self):
+        db = MagicMock()
+        db.get_session_title_source.return_value = "user"
+        with patch("agent.title_generator._persist_session_title") as mock_persist, \
+             patch("agent.title_generator.regenerate_title") as mock_regen:
+            result = retitle_session(db, "sess-1", [{"role": "user", "content": "hi"}])
+        assert result is None
+        mock_persist.assert_not_called()
+        mock_regen.assert_not_called()
+
+    def test_proceeds_when_user_title_and_force_is_true(self):
+        db = MagicMock()
+        db.get_session_title_source.return_value = "user"
+        db.get_conversation_root.return_value = "sess-1"
+        with patch("agent.title_generator._condense_history", return_value="User: hi\nAssistant: hello"), \
+             patch("agent.title_generator.regenerate_title", return_value="Cool title") as mock_regen, \
+             patch("agent.title_generator._persist_session_title", return_value="Cool title") as mock_persist, \
+             patch("agent.aux_accounting.set_accounting_context"), \
+             patch("agent.portal_tags.set_conversation_context"):
+            result = retitle_session(db, "sess-1", [{"role": "user", "content": "hi"}], force=True)
+        assert result == "Cool title"
+        mock_regen.assert_called_once()
+        mock_persist.assert_called_once()
+        # Persist called with source="llm"
+        _, kwargs = mock_persist.call_args
+        assert kwargs.get("source") == "llm"
+
+    def test_condenses_history_and_persists_llm_title(self):
+        db = MagicMock()
+        db.get_session_title_source.return_value = "llm"
+        db.get_conversation_root.return_value = "sess-1"
+        history = [
+            {"role": "user", "content": "postgres pool exhausted"},
+            {"role": "assistant", "content": "let's check settings"},
+        ]
+        with patch("agent.title_generator._condense_history", return_value="User: postgres\nAssistant: check") as mock_cond, \
+             patch("agent.title_generator.regenerate_title", return_value="Debugging Postgres pool") as mock_regen, \
+             patch("agent.title_generator._persist_session_title", return_value="Debugging Postgres pool") as mock_persist, \
+             patch("agent.aux_accounting.set_accounting_context"), \
+             patch("agent.portal_tags.set_conversation_context"):
+            result = retitle_session(db, "sess-1", history, turns_window=7)
+
+        assert result == "Debugging Postgres pool"
+        mock_cond.assert_called_once_with(history, turns_window=7)
+        mock_regen.assert_called_once_with("User: postgres\nAssistant: check")
+        args, kwargs = mock_persist.call_args
+        assert args[0] is db
+        assert args[1] == "sess-1"
+        assert args[2] == "Debugging Postgres pool"
+        assert kwargs["source"] == "llm"
+
+    def test_returns_none_when_condensed_empty(self):
+        db = MagicMock()
+        db.get_session_title_source.return_value = "llm"
+        db.get_conversation_root.return_value = "sess-1"
+        with patch("agent.title_generator._condense_history", return_value=""), \
+             patch("agent.title_generator.regenerate_title") as mock_regen, \
+             patch("agent.title_generator._persist_session_title") as mock_persist, \
+             patch("agent.aux_accounting.set_accounting_context"), \
+             patch("agent.portal_tags.set_conversation_context"):
+            result = retitle_session(db, "sess-1", [])
+        assert result is None
+        mock_regen.assert_not_called()
+        mock_persist.assert_not_called()
+
+    def test_returns_none_when_regenerate_returns_none(self):
+        db = MagicMock()
+        db.get_session_title_source.return_value = "llm"
+        db.get_conversation_root.return_value = "sess-1"
+        with patch("agent.title_generator._condense_history", return_value="User: hi"), \
+             patch("agent.title_generator.regenerate_title", return_value=None), \
+             patch("agent.title_generator._persist_session_title") as mock_persist, \
+             patch("agent.aux_accounting.set_accounting_context"), \
+             patch("agent.portal_tags.set_conversation_context"):
+            result = retitle_session(db, "sess-1", [{"role": "user", "content": "hi"}])
+        assert result is None
+        mock_persist.assert_not_called()
+
+    def test_returns_none_when_persist_returns_none(self):
+        db = MagicMock()
+        db.get_session_title_source.return_value = "llm"
+        db.get_conversation_root.return_value = "sess-1"
+        with patch("agent.title_generator._condense_history", return_value="User: hi"), \
+             patch("agent.title_generator.regenerate_title", return_value="Some title"), \
+             patch("agent.title_generator._persist_session_title", return_value=None), \
+             patch("agent.aux_accounting.set_accounting_context"), \
+             patch("agent.portal_tags.set_conversation_context"):
+            result = retitle_session(db, "sess-1", [{"role": "user", "content": "hi"}])
+        assert result is None
+
+    def test_never_raises_on_internal_exception(self):
+        db = MagicMock()
+        db.get_session_title_source.return_value = "llm"
+        db.get_conversation_root.return_value = "sess-1"
+        with patch("agent.title_generator._condense_history", side_effect=RuntimeError("boom")), \
+             patch("agent.aux_accounting.set_accounting_context"), \
+             patch("agent.portal_tags.set_conversation_context"):
+            # Must not raise
+            result = retitle_session(db, "sess-1", [{"role": "user", "content": "hi"}])
+        assert result is None
+
+    def test_sets_accounting_and_conversation_context(self):
+        db = MagicMock()
+        db.get_session_title_source.return_value = "llm"
+        db.get_conversation_root.return_value = "root-sess"
+        with patch("agent.title_generator._condense_history", return_value=""), \
+             patch("agent.aux_accounting.set_accounting_context") as mock_acc, \
+             patch("agent.portal_tags.set_conversation_context") as mock_conv:
+            retitle_session(db, "sess-1", [])
+        mock_conv.assert_called_once_with("root-sess")
+        mock_acc.assert_called_once_with(db, "sess-1")
+
+    def test_falls_back_to_session_id_when_conversation_root_raises(self):
+        db = MagicMock()
+        db.get_session_title_source.return_value = "llm"
+        db.get_conversation_root.side_effect = RuntimeError("db locked")
+        with patch("agent.title_generator._condense_history", return_value=""), \
+             patch("agent.aux_accounting.set_accounting_context"), \
+             patch("agent.portal_tags.set_conversation_context") as mock_conv:
+            retitle_session(db, "sess-1", [])
+        mock_conv.assert_called_once_with("sess-1")
+
+
+class TestMaybeAutoRetitle:
+    """Tests for maybe_auto_retitle() — one-shot fire-and-forget trigger."""
+
+    def _make_history(self, n_user_turns):
+        """Build a history with n real user turns interleaved with assistant."""
+        history = []
+        for i in range(n_user_turns):
+            history.append({"role": "user", "content": f"user message {i} is a real question"})
+            history.append({"role": "assistant", "content": f"assistant reply {i}"})
+        return history
+
+    def test_returns_early_when_session_db_none(self):
+        with patch("agent.title_generator.threading.Thread") as mock_thread:
+            maybe_auto_retitle(None, "sess-1", self._make_history(10))
+            mock_thread.assert_not_called()
+
+    def test_returns_early_when_session_id_empty(self):
+        db = MagicMock()
+        with patch("agent.title_generator.threading.Thread") as mock_thread:
+            maybe_auto_retitle(db, "", self._make_history(10))
+            mock_thread.assert_not_called()
+
+    def test_returns_early_when_disabled_by_config(self):
+        db = MagicMock()
+        with patch("agent.title_generator._retitle_enabled", return_value=False), \
+             patch("agent.title_generator.threading.Thread") as mock_thread:
+            maybe_auto_retitle(db, "sess-1", self._make_history(10))
+            mock_thread.assert_not_called()
+
+    def test_returns_early_when_auto_at_turn_is_zero(self):
+        db = MagicMock()
+        with patch("agent.title_generator._retitle_enabled", return_value=True), \
+             patch("agent.title_generator.threading.Thread") as mock_thread:
+            maybe_auto_retitle(db, "sess-1", self._make_history(10), auto_at_turn=0)
+            mock_thread.assert_not_called()
+
+    def test_fires_thread_at_exactly_10_user_turns(self):
+        db = MagicMock()
+        with patch("agent.title_generator._retitle_enabled", return_value=True), \
+             patch("agent.title_generator._retitle_config", return_value={"touch_platform_names": False}), \
+             patch("agent.title_generator.threading.Thread") as mock_thread:
+            maybe_auto_retitle(db, "sess-1", self._make_history(10), auto_at_turn=10)
+            assert mock_thread.call_count == 1
+            _, kwargs = mock_thread.call_args
+            assert kwargs["target"] is retitle_session
+            mock_thread.return_value.start.assert_called_once()
+
+    def test_does_not_fire_at_9_user_turns(self):
+        db = MagicMock()
+        with patch("agent.title_generator._retitle_enabled", return_value=True), \
+             patch("agent.title_generator._retitle_config", return_value={"touch_platform_names": False}), \
+             patch("agent.title_generator.threading.Thread") as mock_thread:
+            maybe_auto_retitle(db, "sess-1", self._make_history(9), auto_at_turn=10)
+            mock_thread.assert_not_called()
+
+    def test_does_not_fire_at_11_user_turns(self):
+        # Exactly-N semantics — one-shot trigger, not "N or more".
+        db = MagicMock()
+        with patch("agent.title_generator._retitle_enabled", return_value=True), \
+             patch("agent.title_generator._retitle_config", return_value={"touch_platform_names": False}), \
+             patch("agent.title_generator.threading.Thread") as mock_thread:
+            maybe_auto_retitle(db, "sess-1", self._make_history(11), auto_at_turn=10)
+            mock_thread.assert_not_called()
+
+    def test_thread_is_daemon_with_correct_name(self):
+        db = MagicMock()
+        with patch("agent.title_generator._retitle_enabled", return_value=True), \
+             patch("agent.title_generator._retitle_config", return_value={"touch_platform_names": False}), \
+             patch("agent.title_generator.threading.Thread") as mock_thread:
+            maybe_auto_retitle(db, "sess-1", self._make_history(10), auto_at_turn=10)
+            _, kwargs = mock_thread.call_args
+            assert kwargs["daemon"] is True
+            assert kwargs["name"] == "auto-retitle"
+            # kwargs passed to retitle_session
+            call_kwargs = kwargs["kwargs"]
+            assert call_kwargs["force"] is False
+            assert "turns_window" in call_kwargs
+            assert "touch_platform_names" in call_kwargs
+
+    def test_passes_touch_platform_names_from_config(self):
+        db = MagicMock()
+        with patch("agent.title_generator._retitle_enabled", return_value=True), \
+             patch("agent.title_generator._retitle_config", return_value={"touch_platform_names": True}), \
+             patch("agent.title_generator.threading.Thread") as mock_thread:
+            maybe_auto_retitle(db, "sess-1", self._make_history(10), auto_at_turn=10)
+            _, kwargs = mock_thread.call_args
+            assert kwargs["kwargs"]["touch_platform_names"] is True
+
+    def test_passes_turns_window_to_thread_kwargs(self):
+        db = MagicMock()
+        with patch("agent.title_generator._retitle_enabled", return_value=True), \
+             patch("agent.title_generator._retitle_config", return_value={"touch_platform_names": False}), \
+             patch("agent.title_generator.threading.Thread") as mock_thread:
+            maybe_auto_retitle(db, "sess-1", self._make_history(10), auto_at_turn=10, turns_window=15)
+            _, kwargs = mock_thread.call_args
+            assert kwargs["kwargs"]["turns_window"] == 15

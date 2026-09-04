@@ -32,6 +32,26 @@ from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
 
 
+def _is_dispatcher_owned_kanban_worker() -> bool:
+    """True only when this execution owns the dispatcher's kanban task.
+
+    ``HERMES_KANBAN_TASK`` in ``os.environ`` says a dispatcher worker's
+    identity is *visible*, not that this execution *is* that worker: cron
+    jobs fired in-process from a worker (``cron.scheduler.run_job`` enters
+    ``non_dispatcher_owned_context``) and ``hermes cron run`` subprocesses
+    that inherited the worker's env both see the vars without owning the
+    task. Delegates to the canonical predicate every other
+    ``HERMES_KANBAN_*`` identity gate uses; fail-open on import failure so
+    exotic runtimes never lose the dispatcher's failure-circuit signal.
+    """
+    try:
+        from agent.delegation_context import is_dispatcher_owned_worker_context
+
+        return is_dispatcher_owned_worker_context()
+    except Exception:
+        return True
+
+
 def _assistant_row_missing_visible_text(msg: dict) -> bool:
     """True when an assistant row has no visible text (blank final or tool-only)."""
     if not isinstance(msg, dict) or msg.get("role") != "assistant":
@@ -220,8 +240,15 @@ def finalize_turn(
         # We route through ``_record_task_failure(outcome="timed_out")``
         # rather than ``kanban_block`` so this counts toward the dispatcher's
         # consecutive-failure circuit breaker (#29747 gap 2).
+        #
+        # ``HERMES_KANBAN_TASK`` in ``os.environ`` is not ownership: a cron
+        # job fired in-process from a worker (or a ``hermes cron run``
+        # subprocess that inherited the worker's env) sees the variable
+        # without owning that task, and recording a failure here would close
+        # the worker's run behind its back. Same canonical predicate the
+        # kanban toolset / worker-protocol gates use.
         _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
-        if _kanban_task:
+        if _kanban_task and _is_dispatcher_owned_kanban_worker():
             _record_kanban_budget_exhausted(
                 _kanban_task, api_call_count, agent.max_iterations, logger,
             )
@@ -234,8 +261,9 @@ def finalize_turn(
         # ``_record_task_failure`` (compare-and-swap receipt path) which
         # is a no-op if another path closed it — the CAS invariant in
         # ``_end_run`` (``WHERE ended_at IS NULL``) guarantees idempotence.
+        # Ownership-gated for the same reason as the branch above.
         _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
-        if _kanban_task:
+        if _kanban_task and _is_dispatcher_owned_kanban_worker():
             _record_kanban_budget_exhausted(
                 _kanban_task, api_call_count, agent.max_iterations, logger,
             )

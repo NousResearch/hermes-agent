@@ -8,6 +8,7 @@ pause/resume/run/remove, status, and tick.
 import json
 import re
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -47,6 +48,34 @@ def _cron_api(**kwargs):
     from tools.cronjob_tools import cronjob as cronjob_tool
 
     return json.loads(cronjob_tool(**kwargs))
+
+
+@contextmanager
+def _non_dispatcher_owned_cron_cli_scope():
+    """Mark a standalone ``hermes cron run`` / ``cron tick`` CLI process as
+    not owning any dispatcher kanban task.
+
+    When a kanban worker fires a cron job *in-process* (``cronjob`` tool),
+    ``cron.scheduler.run_job()`` enters ``non_dispatcher_owned_context`` so
+    the cron agent is not misread as the worker. A ``hermes cron run``
+    subprocess spawned from a worker inherits the worker's
+    ``HERMES_KANBAN_*`` env, but a ContextVar cannot cross the process
+    boundary — so without this marker the freshly spawned CLI process
+    defaults to "owns the dispatcher's task" and its cron agent inherits
+    the worker's kanban identity (stop-nudge, budget-exhausted task
+    failure records, force-added kanban toolset).
+
+    Scoped to the command only and best-effort: if the delegation-context
+    import fails, run exactly as before.
+    """
+    try:
+        from agent.delegation_context import non_dispatcher_owned_context
+    except Exception:
+        # Degrade to historical behavior rather than block the command.
+        yield
+        return
+    with non_dispatcher_owned_context():
+        yield
 
 
 def _active_cron_provider_name() -> str:
@@ -1071,7 +1100,8 @@ def cron_command(args):
         return cron_doctor()
 
     if subcmd == "tick":
-        return cron_tick()
+        with _non_dispatcher_owned_cron_cli_scope():
+            return cron_tick()
 
     if subcmd in {"runs", "history"}:
         cron_runs(getattr(args, "job_id", None), getattr(args, "limit", 20))
@@ -1096,7 +1126,8 @@ def cron_command(args):
         return cron_resume(args)
 
     if subcmd == "run":
-        return _job_action("run", args.job_id, "Triggered")
+        with _non_dispatcher_owned_cron_cli_scope():
+            return _job_action("run", args.job_id, "Triggered")
 
     if subcmd in {"remove", "rm", "delete"}:
         return _job_action("remove", args.job_id, "Removed")

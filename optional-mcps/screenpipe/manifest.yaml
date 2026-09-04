@@ -1,0 +1,63 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: screenpipe
+description: >-
+  Private, local workflow memory from screen and audio history. Recall past
+  work, meetings, decisions, and repeated workflows with timestamped evidence.
+source: https://github.com/screenpipe/screenpipe/tree/main/packages/screenpipe-mcp
+
+# The desktop app owns capture and the local API. This MCP server is a stdio
+# bridge to that loopback service; it does not expose a public port.
+transport:
+  type: stdio
+  command: npx
+  args:
+    - "-y"
+    - "screenpipe-mcp@0.19.1"
+  env:
+    SCREENPIPE_DISABLE_TELEMETRY: "1"
+
+# screenpipe-mcp discovers the local API key from the desktop installation.
+auth:
+  type: none
+
+# Keep the default surface read-only and focused on recall, meetings, and
+# workflow reconstruction. Users can opt into mutation and automation tools
+# from Hermes's install-time tool checklist.
+tools:
+  default_enabled:
+    - activity-summary
+    - search-content
+    - keyword-search
+    - frame-context
+    - search-elements
+    - get-frame-elements
+    - list-meetings
+    - get-meeting
+    - get-feedback
+    - health-check
+
+suggest:
+  keywords:
+    - screenpipe
+    - screen history
+    - workflow memory
+  hosts:
+    - screenpi.pe
+
+post_install: |
+  The screenpipe desktop app continuously records your screen and microphone
+  audio while recording is enabled. Review its retention and delete-range
+  controls at https://docs.screenpipe.com/api-recipes before enabling capture.
+
+  Install and run the screenpipe desktop app, or start the CLI with
+  `npx screenpipe record`, before using these tools. The MCP server connects
+  only to screenpipe's local API at http://localhost:3030 and discovers its
+  local API key from the screenpipe installation.
+
+  The default tool selection is read-only. Review the install-time checklist
+  before enabling tools that update memories, meetings, recordings, or pipes.
+
+  Start a new Hermes session to load the screenpipe tools.

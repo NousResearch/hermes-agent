@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 
 from plugins.web._common import (
     BaseWebSearchProvider, cached_sdk_client, document, keyless_extract, keyless_search, keyless_variant_schema,
-    provider_env, run_extract, run_search, search_ok, use_keyless, web_hit,
+    page_error, provider_env, run_extract, run_search, search_ok, use_keyless, web_hit,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,44 @@ class ExaWebSearchProvider(BaseWebSearchProvider):
                 return keyless_extract("Exa", "exa", urls, logger)
             logger.info("Exa extract: %d URL(s)", len(urls))
             response = _get_exa_client().get_contents(urls, text=True)
-            return [document(r.url or "", r.title or "", r.text or "") for r in response.results or []]
+            # Exa reports per-URL failures in response.statuses (e.g.
+            # CRAWL_NOT_FOUND for a dead link) — NOT in response.results.
+            # Without this, a single 404 made the whole call return [] and
+            # callers saw a silent empty result instead of an honest per-URL
+            # error. Surface each failed status as an error doc so the
+            # 1-doc-per-URL contract holds regardless of how many results or
+            # statuses the API returns.
+            by_url = {
+                r.url: r
+                for r in response.results or []
+                if getattr(r, "url", None)
+            }
+            status_by_id = {
+                s.id: s
+                for s in response.statuses or []
+                if getattr(s, "id", None)
+            }
+            docs: List[Dict[str, Any]] = []
+            for url in urls:
+                result = by_url.get(url)
+                if result is not None:
+                    docs.append(document(result.url or "", result.title or "", result.text or ""))
+                    continue
+                status = status_by_id.get(url)
+                if status is None:
+                    # Status id may not match the raw URL (redirect or
+                    # normalization) — fall back to a generic per-URL error
+                    # rather than dropping the URL silently.
+                    docs.append(page_error(url, f"Exa could not fetch {url}"))
+                    continue
+                error = (status.status or "").strip()
+                docs.append(
+                    page_error(
+                        url,
+                        f"Exa fetch failed ({error})" if error else f"Exa could not fetch {url}",
+                    )
+                )
+            return docs
 
         return run_extract("Exa", logger, urls, _body, sdk=True)
 

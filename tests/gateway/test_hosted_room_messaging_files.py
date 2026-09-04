@@ -12,6 +12,7 @@ import pytest
 from gateway.choice_picker import ChoicePage, ChoiceProgress
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.group_chat_slash import GroupChatSlashCommandsMixin
+from gateway.native_document_guard import mark_native_document_guard
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -58,6 +59,7 @@ class NativeAdapter:
             metadata=metadata,
         )
 
+    @mark_native_document_guard
     async def send_document(self, *, chat_id, file_path, file_name=None, **kwargs):
         path = Path(file_path)
         assert path.stat().st_mode & 0o777 == 0o600
@@ -142,7 +144,7 @@ def consumer(file_state, monkeypatch):
     adapter = NativeAdapter()
     runner = Runner(adapter)
     monkeypatch.setattr(rooms, "current_room_backend", lambda: state.backend)
-    assert BasePlatformAdapter.send_document.strict_native_document_guard is True
+    assert type(adapter).send_document.strict_native_document_guard is True
     return state, runner, adapter
 
 

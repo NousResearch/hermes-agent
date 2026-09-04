@@ -44,9 +44,7 @@ def native_document_limit(adapter, source):
     method = getattr(type(adapter), "send_document", None)
     if method is None or method is BasePlatformAdapter.send_document:
         raise FileDeliveryError("unsupported")
-    if not getattr(
-        BasePlatformAdapter.send_document, "strict_native_document_guard", False
-    ):
+    if not getattr(method, "strict_native_document_guard", False):
         raise FileDeliveryError("unsupported")
     platform = str(getattr(source.platform, "value", source.platform))
     if platform not in {

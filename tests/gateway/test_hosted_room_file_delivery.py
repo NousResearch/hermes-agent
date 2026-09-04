@@ -86,7 +86,7 @@ async def test_missing_production_guard_fails_closed_before_loading(
     async def missing_guard(*_args, **_kwargs):
         pytest.fail("an unadvertised native document fallback was called")
 
-    monkeypatch.setattr(BasePlatformAdapter, "send_document", missing_guard)
+    monkeypatch.setattr(type(adapter), "send_document", missing_guard)
     monkeypatch.setattr(
         state.backend,
         "read_file",

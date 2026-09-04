@@ -44,7 +44,7 @@ def native(request, tmp_path, monkeypatch):
         assert isinstance(discord.__version__, str)
         adapter = DiscordAdapter(config)
     assert type(adapter).send_document is not BasePlatformAdapter.send_document
-    assert BasePlatformAdapter.send_document.strict_native_document_guard is True
+    assert type(adapter).send_document.strict_native_document_guard is True
     adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="notice"))
     path = tmp_path / "private-source.txt"
     path.write_bytes(b"exact native bytes\x00\xff")

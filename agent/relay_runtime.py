@@ -501,6 +501,11 @@ class RelayRuntime:
         with session.lock:
             return None if session.closing else session
 
+    def get_session_handle(self, session_id: str) -> Any:
+        """Return the Relay parent handle for an active Hermes session, if any."""
+        session = self.get_session(session_id)
+        return None if session is None else session.handle
+
     def _session_context(self, session: RelaySession, *, allow_closing: bool) -> contextvars.Context:
         """Copy the current context and overlay the session's saved Relay vars (a copy: re-entrant from callbacks)."""
         with session.lock:
@@ -600,6 +605,16 @@ class RelayRuntime:
         """Retain plugin lifetime for work that outlives one Relay await."""
         self._begin_operation()
         return RelayOperationLease(self)
+
+    def emit_mark(self, name: str, event: dict[str, Any], *, data: Any = None, metadata: Any = None) -> bool:
+        """Emit a mark parented to the Hermes session identified by ``event``."""
+        session = self.ensure_session(event)
+        if session is None:
+            return False
+        self.run_in_session(
+            session, self.relay.scope.event, name, handle=session.handle, data=data, metadata=metadata,
+        )
+        return True
 
     def apply_tool_request_intercepts(self, *, session_id: str, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         """Apply Relay request rewriting before Hermes authorizes a tool call."""
@@ -745,6 +760,16 @@ class NoopRelayRuntime:
 
     def apply_tool_request_intercepts(self, *, session_id: str, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         return args
+
+    @staticmethod
+    def emit_mark(name: str, event: dict[str, Any], *, data: Any = None, metadata: Any = None) -> bool:
+        """Marks are intentionally inert when the native Relay host is unavailable."""
+        return False
+
+    @staticmethod
+    def get_session_handle(session_id: str) -> Any:
+        """Noop hosts have no native session handles."""
+        return None
 
     @staticmethod
     def retain_managed_execution(consumer: str) -> None:

@@ -17,16 +17,16 @@ import {
 } from 'react'
 import { type GetTargetScrollTop, useStickToBottom } from 'use-stick-to-bottom'
 
+import { usePaneLifecycle, usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { useI18n } from '@/i18n'
 import { messagePaintWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
 import {
-  $threadScrolledUp,
   onScrollToBottomRequest,
   onThreadEditClose,
   onThreadEditOpen,
-  resetThreadScroll,
-  setThreadAtBottom
+  publishThreadAtBottom,
+  resetPublishedThreadScroll
 } from '@/store/thread-scroll'
 import { isSecondaryWindow } from '@/store/windows'
 
@@ -96,10 +96,33 @@ const MIN_VISIBLE_GROUPS = 8
 // interruptibly, so the only thing a smaller budget changes is how much work
 // blocks the click-to-paint path.
 const FIRST_PAINT_BUDGET = 20
-// Units the backfill adds per committed step (see the backfill effect). ~8-15
-// ordinary turns or 1-2 tool-heavy ones per frame — big enough to fill a page
-// in ~10 frames, small enough that no single commit approaches a frame budget.
-const BACKFILL_STEP = 60
+// A hot-hidden transcript is retained for instant tab return, but keeping its
+// full scrollback mounted defeats the bounded pane cache. Preserve only the
+// live tail while hidden; revealing it resumes stepped backfill.
+export const HIDDEN_TRANSCRIPT_RENDER_BUDGET = 40
+
+export const transcriptPaneBudget = (mountedPanes: number, hidden: boolean): number =>
+  hidden
+    ? HIDDEN_TRANSCRIPT_RENDER_BUDGET
+    : Math.max(Math.ceil(RENDER_BUDGET / Math.max(1, mountedPanes)), RENDER_BUDGET / 4)
+
+// "Show earlier" raises renderBudget ABOVE paneBudget (one pane page per click).
+// The render-phase cap must only snap a hot-hidden pane down to its retention
+// budget — a visible pane's growth has to survive the next render or the click
+// is a no-op. Parked panes are unmounted, so they never hit this path.
+export const shouldClampTranscriptBudget = (hidden: boolean, renderBudget: number, paneBudget: number): boolean =>
+  hidden && renderBudget > paneBudget
+// Units the backfill adds per committed step (see the backfill effect). A
+// 60-unit step produced ~10 visible prepend frames after FIRST_PAINT_BUDGET
+// retune (#83681). 290 fills a 600-unit page in two interruptible commits —
+// still well under the measured 780ms single-jump freeze.
+const BACKFILL_STEP = 290
+
+export const transcriptBackfillFrameCount = (
+  firstPaint = FIRST_PAINT_BUDGET,
+  step = BACKFILL_STEP,
+  budget = RENDER_BUDGET
+): number => Math.ceil(Math.max(0, budget - firstPaint) / step)
 
 // Browsers may quantize a requested scrollTop to a nearby device-pixel
 // boundary. use-stick-to-bottom otherwise compares the lower actual value to
@@ -115,11 +138,71 @@ export const resolveThreadScrollTarget: GetTargetScrollTop = (targetScrollTop, {
   return remaining >= 0 && remaining <= SCROLL_TARGET_EPSILON_PX ? currentScrollTop : targetScrollTop
 }
 
+/** Near-bottom slack for a run-start snap. Wider than the subpixel epsilon
+ *  use-stick-to-bottom uses for resize follow — a follow-up sent a line or two
+ *  off the bottom should still track, but a reader in history must not yank. */
+export const RUN_START_SNAP_THRESHOLD_PX = 64
+
+export function shouldSnapOnRunStart(remainingPx: number, thresholdPx = RUN_START_SNAP_THRESHOLD_PX): boolean {
+  return remainingPx < thresholdPx
+}
+
+// True when the pin-to-bottom settle should re-arm. A same-session refresh
+// (transcript briefly emptied and repopulated under the same key) must keep
+// the reader's position; only a session switch or a cold-load arrival re-pins.
+export function shouldRePinOnTranscriptReload(opts: { sessionSwitched: boolean; settledNonEmpty: boolean }): boolean {
+  return opts.sessionSwitched || !opts.settledNonEmpty
+}
+
+export function subscribeToThreadForeground(shouldReanchor: () => boolean, onReanchor: () => void): () => void {
+  let frameId: number | null = null
+  let framePending = false
+
+  const onForeground = () => {
+    if (framePending || document.visibilityState !== 'visible' || !shouldReanchor()) {
+      return
+    }
+
+    framePending = true
+
+    const scheduledId = requestAnimationFrame(() => {
+      frameId = null
+      framePending = false
+
+      if (document.visibilityState === 'visible' && shouldReanchor()) {
+        onReanchor()
+      }
+    })
+
+    // Browser callbacks are asynchronous; the guard also keeps synchronous
+    // requestAnimationFrame test doubles from leaving a completed frame pending.
+    if (framePending) {
+      frameId = scheduledId
+    }
+  }
+
+  document.addEventListener('visibilitychange', onForeground)
+  window.addEventListener('focus', onForeground)
+
+  return () => {
+    document.removeEventListener('visibilitychange', onForeground)
+    window.removeEventListener('focus', onForeground)
+
+    if (frameId !== null) {
+      cancelAnimationFrame(frameId)
+    }
+
+    frameId = null
+    framePending = false
+  }
+}
+
 interface ThreadMessageListProps {
   clampToComposer: boolean
   components: ThreadMessageComponents
   emptyPlaceholder?: ReactNode
   loadingIndicator?: ReactNode
+  sessionId?: string | null
   sessionKey?: string | null
 }
 
@@ -309,6 +392,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   components,
   emptyPlaceholder,
   loadingIndicator,
+  sessionId = null,
   sessionKey
 }) => {
   // TWO signatures, deliberately split. The STRUCTURAL one (ids/roles/count)
@@ -354,8 +438,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   }, [])
 
   const mountedPanes = useStore($mountedTranscriptPanes)
-  // This pane's share of the render budget — see $mountedTranscriptPanes.
-  const paneBudget = Math.max(Math.ceil(RENDER_BUDGET / Math.max(1, mountedPanes)), RENDER_BUDGET / 4)
+  const paneLifecycle = usePaneLifecycle()
+  const paneVisible = usePaneVisible()
+  // Hidden panes retain only a live-tail budget. Visible panes share the normal
+  // screen budget; a reveal backfills older rows in bounded transition steps.
+  const paneBudget = transcriptPaneBudget(mountedPanes, paneLifecycle === 'hot-hidden')
 
   const [renderBudget, setRenderBudget] = useState(FIRST_PAINT_BUDGET)
 
@@ -379,6 +466,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     setBudgetSessionKey(sessionKey)
     setHadGroups(hasGroups)
     setRenderBudget(FIRST_PAINT_BUDGET)
+  } else if (shouldClampTranscriptBudget(paneLifecycle === 'hot-hidden', renderBudget, paneBudget)) {
+    // Apply the hidden budget during render so React never first commits the
+    // stale full transcript after this pane moves to the background.
+    setRenderBudget(paneBudget)
   } else if (hadGroups !== hasGroups) {
     setHadGroups(hasGroups)
 
@@ -397,6 +488,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // Session the settle loop last armed for, so a re-arm within the same load
   // is distinguishable from a switch to a different transcript.
   const settleKeyRef = useRef(sessionKey)
+  // True once the CURRENT session has settled with a non-empty transcript.
+  // A same-session refresh must keep the reader's position; only a switch or
+  // a cold-load arrival re-arms. Reset on switch so a mid-settle key change
+  // cannot inherit the outgoing session's settled flag.
+  const settledNonEmptyRef = useRef(false)
 
   // Record where the view should land once a prepend has grown the content,
   // measured from the BOTTOM so the added height doesn't invalidate it. Only a
@@ -421,8 +517,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // backfilled turn at once — measured as a 780ms uninterruptible frame when
   // the session was revealed while other tiles streamed (the flushes kept
   // interrupting the transition, which finally landed whole, seconds later,
-  // mid-stream). Each step commits at most BACKFILL_STEP units (~40-80ms);
-  // the effect re-arms off the committed budget, so steps pace one per frame.
+  // mid-stream). Each step commits at most BACKFILL_STEP units; the effect
+  // re-arms off the committed budget, so steps pace one per frame.
   useEffect(() => {
     if (renderBudget >= paneBudget) {
       return
@@ -503,28 +599,29 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     ? 'pt-[calc(var(--titlebar-height)+0.75rem)]'
     : 'pt-[calc(var(--titlebar-height)-0.5rem)]'
 
-  useEffect(() => setThreadAtBottom(isAtBottom), [isAtBottom])
-  useEffect(() => () => resetThreadScroll(), [])
+  useEffect(() => publishThreadAtBottom(isAtBottom, { paneVisible }), [isAtBottom, paneVisible])
+  useEffect(() => () => resetPublishedThreadScroll({ paneVisible }), [paneVisible])
 
   // Floating jump button (outside this subtree) → return to the bottom.
-  useEffect(() => onScrollToBottomRequest(() => void scrollToBottom()), [scrollToBottom])
+  useEffect(() => onScrollToBottomRequest(() => void scrollToBottom(), sessionId), [scrollToBottom, sessionId])
 
   // Waking from display: hidden (HUD mode hides the main window; OS hide does
-  // the same to any window): rAF and ResizeObserver were frozen the whole
-  // time, so the virtualizer's measurements — and scrollTop itself — are
-  // stale. If the user was following the bottom, re-anchor once visible;
-  // leave a scrolled-up reader exactly where they were.
-  useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState === 'visible' && !$threadScrolledUp.get()) {
-        requestAnimationFrame(() => void scrollToBottom())
-      }
-    }
-
-    document.addEventListener('visibilitychange', onVisible)
-
-    return () => document.removeEventListener('visibilitychange', onVisible)
-  }, [scrollToBottom])
+  // the same to any window): rAF and ResizeObserver may have been frozen, so
+  // the virtualizer's measurements — and scrollTop itself — are stale. Active
+  // turns disable Chromium's background throttling, which can keep visibility
+  // pinned at `visible`; window focus is then the only foreground edge. If the
+  // user was following the bottom, re-anchor on either signal. Consult this
+  // thread's local state rather than the composer-facing global mirror, which
+  // can be overwritten by another mounted pane; leave a scrolled-up reader
+  // exactly where they were.
+  useEffect(
+    () =>
+      subscribeToThreadForeground(
+        () => isAtBottom,
+        () => void scrollToBottom()
+      ),
+    [isAtBottom, scrollToBottom]
+  )
 
   const endEditHold = useCallback(() => {
     scrollRef.current?.removeAttribute('data-editing')
@@ -547,8 +644,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useEffect(() => onThreadEditOpen(beginEditHold), [beginEditHold])
   useEffect(() => onThreadEditClose(endEditHold), [endEditHold])
   useEffect(() => () => endEditHold(), [endEditHold])
-  // New run → snap to the latest turn.
-  useAuiEvent('thread.runStart', () => void scrollToBottom())
+  // New run → snap to the latest turn only when already near the bottom.
+  useAuiEvent('thread.runStart', () => {
+    const el = scrollRef.current
+
+    if (el && shouldSnapOnRunStart(el.scrollHeight - el.scrollTop - el.clientHeight)) {
+      scrollToBottom()
+    }
+  })
 
   // Reset the cap and pin to bottom on mount + every session switch (messages
   // swap in place on a long-lived runtime, so sessionKey is the only signal).
@@ -573,6 +676,19 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       return
     }
 
+    const sessionSwitched = settleKeyRef.current !== sessionKey
+
+    if (sessionSwitched) {
+      settledNonEmptyRef.current = false
+    }
+
+    // Same-session refresh (transcript briefly cleared and repopulated) must
+    // keep the reader's position. Run before stopScroll / scrollTop reset so
+    // a refresh neither yanks the view nor clears the settled flag.
+    if (!shouldRePinOnTranscriptReload({ sessionSwitched, settledNonEmpty: settledNonEmptyRef.current })) {
+      return
+    }
+
     stopScroll()
     el.scrollTop = el.scrollHeight
     loadSettledRef.current = false
@@ -580,7 +696,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // An anchor captured for the OUTGOING transcript must not be applied to
     // this one — a switch owns the position outright. The empty→non-empty
     // re-arm is the SAME load, whose in-flight anchor is still correct.
-    if (settleKeyRef.current !== sessionKey) {
+    if (sessionSwitched) {
       settleKeyRef.current = sessionKey
       restoreFromBottomRef.current = null
     }
@@ -607,6 +723,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // frames to minimize the settle-loop racing markdown paint on every switch.
       if (stableFrames >= 2 || ++frame > 15) {
         void scrollToBottom('instant')
+        settledNonEmptyRef.current = hasGroups
         loadSettledRef.current = true
 
         return
@@ -633,14 +750,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
 
     anchorBeforePrepend()
+    // Both paths grow the DOM budget by one pane page. Windowed rows are older
+    // than the current page, so expand-without-grow paints nothing.
+    setRenderBudget(budget => budget + paneBudget)
 
-    if (action === 'dom') {
-      setRenderBudget(budget => budget + paneBudget)
-
-      return
+    if (action === 'window') {
+      expandWindow()
     }
-
-    expandWindow()
   }, [anchorBeforePrepend, expandWindow, hiddenCount, olderAvailable, paneBudget])
 
   useLayoutEffect(() => {

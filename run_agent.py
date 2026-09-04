@@ -103,6 +103,51 @@ def _session_source_for_agent(platform: Optional[str]) -> str:
     return platform or "cli"
 
 
+def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
+    """Build the gateway routing ``origin_json`` for a session row.
+
+    Mirrors the shape of ``SessionSource.to_dict()`` (platform, chat_id,
+    chat_name, chat_type, user_id, user_name, thread_id, optional
+    user_id_alt / profile) so consumers that read ``origin_json`` from
+    state.db (channel directory, mcp_serve, mirror) see the same fields the
+    gateway's own ``record_gateway_session_peer`` would write. Returns None
+    when the agent carries no gateway identity (plain CLI session), matching
+    the previous identity-less creation.
+    """
+    chat_id = getattr(agent, "_chat_id", None)
+    session_key = getattr(agent, "_gateway_session_key", None)
+    user_id = getattr(agent, "_user_id", None)
+    if not (chat_id or session_key or user_id):
+        return None
+    origin: Dict[str, Any] = {
+        "platform": getattr(agent, "platform", None) or "",
+        "chat_id": chat_id,
+        "chat_name": getattr(agent, "_chat_name", None),
+        "chat_type": getattr(agent, "_chat_type", None) or "dm",
+        "user_id": user_id,
+        "user_name": getattr(agent, "_user_name", None),
+        "thread_id": getattr(agent, "_thread_id", None),
+    }
+    user_id_alt = getattr(agent, "_user_id_alt", None)
+    if user_id_alt:
+        origin["user_id_alt"] = user_id_alt
+    profile = getattr(agent, "_profile_name", None)
+    if not profile:
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            profile = get_active_profile_name()
+            if profile == "default":
+                profile = None
+        except Exception:
+            profile = None
+    if profile:
+        origin["profile"] = profile
+    try:
+        return json.dumps(origin)
+    except Exception:
+        return None
+
+
 # OpenAI lazy proxy + safe stdio + proxy URL helpers — see agent/process_bootstrap.py.
 # `OpenAI` is re-exported here so `patch("run_agent.OpenAI", ...)` in tests works.
 # The other `# noqa: F401` re-exports below cover names accessed via
@@ -162,6 +207,7 @@ from agent.usage_pricing import normalize_usage
 from agent.context_compressor import (  # noqa: F401
     COMPRESSED_SUMMARY_METADATA_KEY,
     ContextCompressor,
+    user_originated_turn_view,
 )
 from agent.retry_utils import jittered_backoff  # noqa: F401
 from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock.patch("run_agent.<name>") / from run_agent import <name>
@@ -169,7 +215,6 @@ from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock
     build_skills_system_prompt,
     build_context_files_prompt,
     build_environment_hints,
-    build_nous_subscription_prompt,
     load_soul_md,
 )
 from agent.process_bootstrap import _get_proxy_from_env  # noqa: F401
@@ -183,6 +228,7 @@ from agent.message_sanitization import (  # noqa: F401
     _strip_non_ascii,
     _sanitize_messages_non_ascii,
     _sanitize_tools_non_ascii,
+    _looks_like_image_content_rejection,
     _strip_images_from_messages,
     _sanitize_structure_non_ascii,
     coalesce_tool_call_id as _sanitize_coalesce_tool_call_id,
@@ -276,6 +322,15 @@ _MAX_TOOL_WORKERS = 8
 # (agent/transports/chat_completions.py, agent/chat_completion_helpers.py) strip
 # every top-level ``_``-prefixed key before the request leaves the process, so
 # this never reaches a strict OpenAI-compatible gateway.
+#
+# CONTRACT (#92231): the marker asserts "this dict's CONTENT is durable as
+# written". Loaded rows are stamped at materialization time
+# (hermes_state._rows_to_conversation), so any code that mutates a loaded or
+# flushed dict's content in place and needs the change persisted MUST pop the
+# marker (and invalidate _db_flush_scan_prefix if the dict may sit inside the
+# bounded-scan prefix) — see agent/turn_finalizer.py (fill-empty-tail) and
+# agent/context_compressor.py (micro-compaction defrag) for the two canonical
+# pop sites. Mutating without popping leaves the DB silently stale.
 _DB_PERSISTED_MARKER = "_db_persisted"
 
 
@@ -443,7 +498,7 @@ class AIAgent:
         command: str = None,
         args: list[str] | None = None,
         model: str = "",
-        max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
+        max_iterations: int = sys.maxsize,  # Default: unlimited tool-calling iterations (shared with subagents)
         tool_delay: float = None,  # Deprecated: accepted for compatibility, ignored
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -470,7 +525,10 @@ class AIAgent:
         clarify_callback: callable = None,
         read_terminal_callback: callable = None,
         read_preview_callback: callable = None,
+        drive_preview_callback: callable = None,
         read_window_below_callback: callable = None,
+        setup_mcp_callback: callable = None,
+        tour_callback: callable = None,
         step_callback: callable = None,
         stream_delta_callback: callable = None,
         interim_assistant_callback: callable = None,
@@ -501,6 +559,7 @@ class AIAgent:
         session_db=None,
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
+        run_budget_seconds: Optional[float] = None,
         fallback_model: Dict[str, Any] = None,
         credential_pool=None,
         checkpoints_enabled: bool = False,
@@ -509,6 +568,7 @@ class AIAgent:
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
         requested_provider: str = None,
+        capabilities: Dict[str, bool] | None = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         if tool_delay is not None:
@@ -525,6 +585,7 @@ class AIAgent:
             api_key=api_key,
             provider=provider,
             requested_provider=requested_provider,
+            capabilities=capabilities,
             api_mode=api_mode,
             acp_command=acp_command,
             acp_args=acp_args,
@@ -557,7 +618,10 @@ class AIAgent:
             clarify_callback=clarify_callback,
             read_terminal_callback=read_terminal_callback,
             read_preview_callback=read_preview_callback,
+            drive_preview_callback=drive_preview_callback,
             read_window_below_callback=read_window_below_callback,
+            setup_mcp_callback=setup_mcp_callback,
+            tour_callback=tour_callback,
             step_callback=step_callback,
             stream_delta_callback=stream_delta_callback,
             interim_assistant_callback=interim_assistant_callback,
@@ -588,6 +652,7 @@ class AIAgent:
             session_db=session_db,
             parent_session_id=parent_session_id,
             iteration_budget=iteration_budget,
+            run_budget_seconds=run_budget_seconds,
             fallback_model=fallback_model,
             credential_pool=credential_pool,
             checkpoints_enabled=checkpoints_enabled,
@@ -614,9 +679,9 @@ class AIAgent:
         if self._session_db is not None:
             return self._session_db
         try:
-            from hermes_state import SessionDB
+            from hermes_state import get_shared_session_db
 
-            self._session_db = SessionDB()
+            self._session_db = get_shared_session_db()
             # We opened it here, so nothing else holds a reference — this agent
             # is its only owner and close() must release it.
             self._owns_session_db = True
@@ -636,8 +701,13 @@ class AIAgent:
             try:
                 from hermes_cli.profiles import get_active_profile_name
                 _profile_for_session = get_active_profile_name()
-                if _profile_for_session == "default":
-                    _profile_for_session = None
+                # Persist the profile name EXPLICITLY, including "default".
+                # NULL used to stand in for the default profile, but the
+                # #94724 legacy-owner backfill already stamps literal
+                # "default" onto old rows, and profile-keyed consumers
+                # (sidebar scope matching, @session:<profile>/<id> deep
+                # links) treat NULL as unowned — rows minted NULL after the
+                # one-shot backfill vanished from the sidebar (#99222).
             except Exception:
                 _profile_for_session = None
             # Carry the live YOLO bypass into the creation-time model_config so
@@ -653,13 +723,34 @@ class AIAgent:
                     _init_model_config["yolo_mode"] = True
             except Exception:
                 pass
+            # Persist the gateway routing identity with the row. The gateway's
+            # SessionStore normally creates the row first (db_create_kwargs) and
+            # record_gateway_session_peer self-heals a missing row (#82616), but
+            # when the default/global state.db is corrupt or unavailable at
+            # gateway startup the SessionStore degrades to a JSONL fallback
+            # (_db=None) and the peer recorder no-ops. In that degraded mode
+            # this lazy creation is the ONLY durable write for the session, so
+            # it must carry session_key/chat_id/chat_type/thread_id/user_id/
+            # display_name/origin_json or the row is identity-less and
+            # unrecoverable by find_latest_gateway_session_for_peer (regression:
+            # Telegram rows with chat_id=NULL/session_key=NULL under multiplexed
+            # profile routes).
             self._session_db.create_session(
                 session_id=self.session_id,
                 source=source,
                 model=self.model,
                 model_config=_init_model_config,
                 system_prompt=self._cached_system_prompt,
-                user_id=None,
+                user_id=getattr(self, "_user_id", None),
+                session_key=getattr(self, "_gateway_session_key", None),
+                chat_id=getattr(self, "_chat_id", None),
+                chat_type=getattr(self, "_chat_type", None),
+                thread_id=getattr(self, "_thread_id", None),
+                display_name=(
+                    getattr(self, "_chat_name", None)
+                    or getattr(self, "_user_name", None)
+                ),
+                origin_json=_gateway_origin_json(self),
                 parent_session_id=self._parent_session_id,
                 cwd=_launch_cwd_for_session(source),
                 profile_name=_profile_for_session,
@@ -780,6 +871,12 @@ class AIAgent:
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
+
+        # Session boundary: the usage anchor describes the OLD session's
+        # transcript — a fresh/branched/resumed session must fall back to
+        # full estimation until its first provider response re-anchors.
+        self._usage_anchor = None
+        self._turn_base_usage_anchor = None
         
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
@@ -876,10 +973,26 @@ class AIAgent:
             return_load_result=True,
         )
 
-    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
+    def switch_model(
+        self,
+        new_model,
+        new_provider,
+        api_key='',
+        base_url='',
+        api_mode='',
+        capabilities=None,
+    ):
         """Forwarder — see ``agent.agent_runtime_helpers.switch_model``."""
         from agent.agent_runtime_helpers import switch_model
-        return switch_model(self, new_model, new_provider, api_key, base_url, api_mode)
+        return switch_model(
+            self,
+            new_model,
+            new_provider,
+            api_key,
+            base_url,
+            api_mode,
+            capabilities,
+        )
 
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.
@@ -952,7 +1065,15 @@ class AIAgent:
         callers. The CLI may still want compact progress hints when no callback
         owns rendering. Embedded/library callers, on the other hand, expect
         quiet mode to be truly silent.
+
+        ``suppress_status_output`` (the strict machine-readable mode used by
+        ``hermes chat -Q``) always wins: those flows neutralize the rendering
+        callbacks, and without this gate the "no callback owns rendering"
+        fallback would print ``[tool]``/``[done]`` spinner lines into the
+        captured stdout it exists to keep clean (#93220).
         """
+        if getattr(self, "suppress_status_output", False):
+            return False
         return (
             self.quiet_mode
             and not self.tool_progress_callback
@@ -1034,6 +1155,26 @@ class AIAgent:
                     threshold=threshold_tokens,
                     reason=reason,
                 )
+            )
+
+    def _warn_uncompressed_context_overflow(
+        self, preflight_tokens: int, context_length: int
+    ) -> None:
+        """Surface a deduped warning when uncompressed context exceeds model limit.
+
+        When compression is explicitly disabled (compression.enabled: false), long
+        sessions can grow past the model context window with no compression to shrink
+        them (#89297). Surface an actionable warning so the user knows to run /compact
+        or enable compression.
+        """
+        _warn_key = ("uncompressed_ctx_overflow", context_length)
+        if getattr(self, "_last_ctx_overflow_warn", None) != _warn_key:
+            self._last_ctx_overflow_warn = _warn_key
+            self._emit_warning(
+                f"⚠️ Session context (~{preflight_tokens:,} tokens) exceeds the model "
+                f"context window (~{context_length:,} tokens) with compression disabled "
+                f"(compression.enabled: false). Use /compact to compress history or "
+                f"enable compression in config.yaml."
             )
 
     def _clear_context_overflow_warn(self) -> None:
@@ -1159,7 +1300,14 @@ class AIAgent:
                 # Clear before emitting so a (swallowed) callback error can't
                 # leave the notice set for a stale re-emit on a later turn.
                 self._pending_fallback_notice = None
-                self._emit_status(notice)
+                notices = notice if isinstance(notice, list) else [notice]
+                for item in notices:
+                    try:
+                        self._emit_status(str(item))
+                    except Exception:
+                        # A single surface callback failure must not hide later
+                        # switches from the same fallback chain.
+                        continue
         except Exception:
             # Never break the conversation loop on a notice hiccup.
             pass
@@ -1357,7 +1505,7 @@ class AIAgent:
             url = str(base_url).lower()
         else:
             url = getattr(self, "_base_url_lower", "") or ""
-        return "openai.azure.com" in url
+        return base_url_host_matches(url, "openai.azure.com")
 
     def _is_github_copilot_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets GitHub Copilot's OpenAI-compatible API."""
@@ -1448,10 +1596,40 @@ class AIAgent:
         from agent.chat_completion_helpers import estimate_request_context_tokens
         est_tokens = estimate_request_context_tokens(api_payload)
         if est_tokens > 100_000:
-            return max(stale_base, 240.0)
-        if est_tokens > 50_000:
-            return max(stale_base, 150.0)
-        return stale_base
+            timeout = max(stale_base, 240.0)
+        elif est_tokens > 50_000:
+            timeout = max(stale_base, 150.0)
+        else:
+            timeout = stale_base
+
+        # Wall-clock run budget cap: when a run budget is active, an implicit
+        # (floor-/default-derived) stale timeout is capped at half the
+        # remaining budget (>= 60s) so a single hung provider call cannot eat
+        # the whole run — e.g. deepseek-v4-pro's 600s reasoning floor inside a
+        # 900s eval ceiling. NEVER raises the timeout above what it would
+        # otherwise be, and an explicit user-configured stale_timeout_seconds
+        # (or env var) still wins untouched.
+        run_budget = getattr(self, "run_budget_seconds", None)
+        if run_budget and not self._stale_timeout_is_explicit():
+            started = getattr(self, "_run_budget_started_at", None)
+            if started:
+                remaining = float(run_budget) - (time.time() - started)
+                deadline_cap = max(60.0, remaining * 0.5)
+                if deadline_cap < timeout:
+                    timeout = deadline_cap
+        return timeout
+
+    def _stale_timeout_is_explicit(self) -> bool:
+        """True when the user explicitly configured the non-stream stale timeout.
+
+        Explicit = provider/model ``stale_timeout_seconds`` in config.yaml or
+        the ``HERMES_API_CALL_STALE_TIMEOUT`` env var. Reasoning-model floors
+        and the 90s default are implicit — they yield to the wall-clock run
+        budget cap; explicit user configuration never does.
+        """
+        if get_provider_stale_timeout(self.provider, self.model) is not None:
+            return True
+        return os.getenv("HERMES_API_CALL_STALE_TIMEOUT") is not None
 
     def _codex_silent_hang_hint(self, model: Optional[str] = None) -> Optional[str]:
         """Return an actionable hint when this request matches a known
@@ -1477,14 +1655,9 @@ class AIAgent:
         """
         if self.api_mode != "codex_responses":
             return None
-        is_codex_backend = (
-            self.provider == "openai-codex"
-            or (
-                getattr(self, "_base_url_hostname", "") == "chatgpt.com"
-                and "/backend-api/codex" in (getattr(self, "_base_url_lower", "") or "")
-            )
-        )
-        if not is_codex_backend:
+        from agent.codex_responses_adapter import classify_responses_route
+
+        if not classify_responses_route(self).is_codex_backend:
             return None
         eff_model = (model if model is not None else self.model) or ""
         model_lower = eff_model.lower()
@@ -1512,8 +1685,8 @@ class AIAgent:
     def _is_copilot_url(self) -> bool:
         """Return True when the base URL targets GitHub Copilot or GitHub Models."""
         return (
-            "api.githubcopilot.com" in self._base_url_lower
-            or "models.github.ai" in self._base_url_lower
+            base_url_host_matches(self._base_url_lower, "api.githubcopilot.com")
+            or base_url_host_matches(self._base_url_lower, "models.github.ai")
         )
 
     def _is_copilot_provider(self) -> bool:
@@ -1712,12 +1885,26 @@ class AIAgent:
         (LiteLLM/sglang/vLLM/LM Studio proxies, Tailscale boxes), which
         report finish_reason correctly and were the source of #13971's
         false-positive truncation continuations.
+
+        Also excludes Ollama Cloud — the hosted service correctly reports
+        finish_reason and is not affected by the local Ollama stop-reason
+        bug (GH-72316).  Two signatures identify it: the ``ollama.com`` host
+        (provider ``ollama-cloud``) and the ``:cloud`` model suffix (cloud
+        generation proxied through a local 11434 endpoint, #98406).  Applying
+        the stop→length rewrite to them manufactures false truncations and
+        causes the continuation nudge to consume the model's output budget
+        on the next retry, making further false-positives more likely.
         """
         model_lower = (self.model or "").lower()
         provider_lower = (self.provider or "").lower()
         if "glm" not in model_lower and provider_lower != "zai":
             return False
-        if "ollama" in self._base_url_lower or ":11434" in self._base_url_lower:
+        base = self._base_url_lower
+        # Ollama Cloud (hosted service or :cloud proxy) forwards finish_reason
+        # faithfully — do not rewrite.
+        if "ollama.com" in base or ":cloud" in model_lower:
+            return False
+        if "ollama" in base or ":11434" in base:
             return True
         return provider_lower == "ollama"
 
@@ -1804,6 +1991,71 @@ class AIAgent:
         review_memory: bool = False,
         review_skills: bool = False,
         focus: Optional[str] = None,
+        explicit: bool = False,
+    ) -> None:
+        """Post-turn review entry point: decide WHEN, then spawn.
+
+        The decision to review (nudge intervals, enabled gate) already
+        happened at the call site. This wrapper adds one policy: a review
+        whose runtime resolves to the MANAGED LOCAL llama-server is queued
+        for machine idle instead of spawned into the user's GPU mid-session
+        (auxiliary.background_review.defer: auto|never). Everything else —
+        cloud runtimes, external local servers, explicit /refine — spawns
+        immediately, exactly as before.
+
+        ``explicit`` marks a user-initiated review (/refine, with or
+        without focus text): never deferred. It does NOT touch the
+        delegate/enabled gates below — those stay keyed on ``focus`` so a
+        bare /refine keeps its historical gating behavior.
+        """
+        # Delegation-subagent and enabled gates run here at enqueue/spawn
+        # time; the idle dispatcher re-checks the enabled gate again at
+        # dispatch time so a review queued for minutes cannot be
+        # resurrected after the user disables reviews.
+        if focus is None and getattr(self, "_delegate_depth", 0) > 0:
+            return
+        task_cfg = None
+        if focus is None:
+            from agent.background_review import load_background_review_settings
+            enabled, task_cfg = load_background_review_settings()
+            if not enabled:
+                return
+
+        # Structural clone at the single chokepoint every review path
+        # (automatic, /refine, idle-queue deferral) goes through. The fork
+        # sanitizes its transcript in place; a shallow copy would alias the
+        # nested tool_calls/content containers of the live history (#100795).
+        from agent.turn_finalizer import _clone_background_review_messages
+        messages_snapshot = _clone_background_review_messages(messages_snapshot)
+
+        kwargs = dict(
+            messages_snapshot=messages_snapshot,
+            review_memory=review_memory,
+            review_skills=review_skills,
+            focus=focus,
+            task_cfg=task_cfg,
+        )
+        if focus is None and not explicit:
+            from agent.review_idle_queue import (
+                QUEUE,
+                defer_mode,
+                review_targets_managed_local,
+            )
+            if (defer_mode(task_cfg) == "auto"
+                    and review_targets_managed_local(self, task_cfg)):
+                session_key = str(getattr(self, "session_id", None) or id(self))
+                QUEUE.enqueue(self, session_key, kwargs)
+                return
+        self._spawn_background_review_now(**kwargs)
+
+    def _spawn_background_review_now(
+        self,
+        messages_snapshot: List[Dict],
+        review_memory: bool = False,
+        review_skills: bool = False,
+        focus: Optional[str] = None,
+        task_cfg: Optional[Dict[str, Any]] = None,
+        _requeue_attempts: int = 0,
     ) -> None:
         """Spawn the background memory/skill review thread.
 
@@ -1816,22 +2068,99 @@ class AIAgent:
         ``focus`` is optional user-supplied steering (from ``/refine``)
         appended to the review prompt — e.g. "save the deploy workflow as a
         skill". The automatic post-turn triggers never set it.
+
+        ``task_cfg`` is the pre-loaded ``auxiliary.background_review``
+        block from the entry wrapper (None on direct calls, e.g. /refine —
+        the spawn path reads config itself then).
+
+        A deferred review preempted by a live turn is REQUEUED (bounded by
+        ``_requeue_attempts``) instead of lost: on the managed local
+        runtime a review takes minutes, so cancel-and-forget — harmless on
+        cloud, where reviews finish in seconds — would silently discard
+        most learning on an active session.
         """
-        from agent.background_review import spawn_background_review_thread
+        from agent.background_review import (
+            finish_background_review_run,
+            prepare_background_review_run,
+            spawn_background_review_thread,
+        )
         from tools.thread_context import propagate_context_to_thread
-        target, _prompt = spawn_background_review_thread(
-            self,
-            messages_snapshot,
-            review_memory=review_memory,
-            review_skills=review_skills,
-            focus=focus,
-        )
-        # Carry the active profile into the review thread so MEMORY.md / skill
-        # review writes land in the right profile (#54937).
-        t = threading.Thread(
-            target=propagate_context_to_thread(target), daemon=True, name="bg-review"
-        )
-        t.start()
+
+        review_run = prepare_background_review_run(self)
+        if review_run is None:
+            return
+        try:
+            target, _prompt = spawn_background_review_thread(
+                self,
+                messages_snapshot,
+                review_memory=review_memory,
+                review_skills=review_skills,
+                focus=focus,
+                task_cfg=task_cfg,
+                review_run=review_run,
+            )
+
+            def _target_with_requeue() -> None:
+                target()
+                self._maybe_requeue_preempted_review(
+                    review_run,
+                    dict(
+                        messages_snapshot=messages_snapshot,
+                        review_memory=review_memory,
+                        review_skills=review_skills,
+                        focus=focus,
+                        task_cfg=task_cfg,
+                        _requeue_attempts=_requeue_attempts + 1,
+                    ),
+                )
+
+            # Carry the active profile into the review thread so MEMORY.md /
+            # skill review writes land in the right profile (#54937).
+            t = threading.Thread(
+                target=propagate_context_to_thread(_target_with_requeue),
+                daemon=True,
+                name="bg-review",
+            )
+            t.start()
+        except Exception:
+            finish_background_review_run(self, review_run)
+            raise
+
+    _REVIEW_REQUEUE_MAX_ATTEMPTS = 3
+
+    def _maybe_requeue_preempted_review(self, review_run, kwargs) -> None:
+        """Requeue a deferred-mode review that a live turn cancelled.
+
+        Only fires for automatic reviews whose runtime targets the managed
+        local server (the deferred population); bounded attempts prevent a
+        busy box from cycling one review forever — past the cap it is
+        dropped exactly like the pre-deferral behavior dropped every
+        cancelled review.
+        """
+        try:
+            if not review_run.cancel_requested.is_set():
+                return  # ran to completion (or never admitted for other reasons)
+            if kwargs.get("focus") is not None:
+                return
+            if kwargs.get("_requeue_attempts", 0) > self._REVIEW_REQUEUE_MAX_ATTEMPTS:
+                logger.info("Preempted background review dropped after %d requeues",
+                            self._REVIEW_REQUEUE_MAX_ATTEMPTS)
+                return
+            from agent.review_idle_queue import (
+                QUEUE,
+                defer_mode,
+                review_targets_managed_local,
+            )
+            task_cfg = kwargs.get("task_cfg")
+            if (defer_mode(task_cfg) != "auto"
+                    or not review_targets_managed_local(self, task_cfg)):
+                return
+            session_key = str(getattr(self, "session_id", None) or id(self))
+            # kwargs carries the incremented _requeue_attempts through the
+            # queue so the cap survives the round trip.
+            QUEUE.enqueue(self, session_key, dict(kwargs))
+        except Exception:  # noqa: BLE001 — requeue is best-effort
+            logger.debug("Preempted-review requeue failed", exc_info=True)
 
     def _build_memory_write_metadata(
         self,
@@ -1864,7 +2193,10 @@ class AIAgent:
         idx = getattr(self, "_persist_user_message_idx", None)
         override = getattr(self, "_persist_user_message_override", None)
         timestamp = getattr(self, "_persist_user_message_timestamp", None)
-        if idx is None or (override is None and timestamp is None):
+        platform_id = getattr(self, "_persist_user_message_platform_id", None)
+        if idx is None or (
+            override is None and timestamp is None and platform_id is None
+        ):
             return
         if 0 <= idx < len(messages):
             msg = messages[idx]
@@ -1896,6 +2228,14 @@ class AIAgent:
                     msg["content"] = override
                 if timestamp is not None:
                     msg["timestamp"] = timestamp
+                # Platform-side message id (e.g. the Discord/Telegram message
+                # id) — metadata, load-bearing for restart drain-window
+                # recovery dedup: it lets a recovery pass ask
+                # ``has_platform_message_id`` whether an interrupted turn
+                # already reached the transcript. Stamped here in addition to
+                # ``build_turn_context`` so it survives the override path.
+                if platform_id is not None:
+                    msg["platform_message_id"] = platform_id
 
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Save session state to both JSON log and SQLite on any exit path.
@@ -2011,6 +2351,7 @@ class AIAgent:
         self,
         messages: List[Dict],
         conversation_history: Optional[List[Dict]] = None,
+        _adoption_budget: int = 1,
     ):
         """Persist any un-flushed messages to the SQLite session store.
 
@@ -2108,6 +2449,7 @@ class AIAgent:
                 while (
                     _scan_start < _limit
                     and messages[_scan_start] is _prev_prefix[_scan_start]
+                    and bool(messages[_scan_start].get(_DB_PERSISTED_MARKER))
                 ):
                     _scan_start += 1
 
@@ -2233,7 +2575,7 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
-                _batch_rows.append({
+                _row = {
                     "role": role,
                     "content": content,
                     "tool_name": msg.get("tool_name"),
@@ -2247,6 +2589,7 @@ class AIAgent:
                     "reasoning_details": msg.get("reasoning_details"),
                     "codex_reasoning_items": msg.get("codex_reasoning_items"),
                     "codex_message_items": msg.get("codex_message_items"),
+                    "_compressed_summary": bool(msg.get(COMPRESSED_SUMMARY_METADATA_KEY)),
                     "timestamp": _row_timestamp,
                     "api_content": _row_api_content,
                     # Standalone reference handoffs are always hidden, even
@@ -2259,6 +2602,7 @@ class AIAgent:
                         "hidden"
                         if (
                             msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                            and user_originated_turn_view(msg) is None
                             and (
                                 ContextCompressor.classify_summary_content(
                                     msg.get("content")
@@ -2272,7 +2616,15 @@ class AIAgent:
                         else msg.get("display_kind")
                     ),
                     "display_metadata": msg.get("display_metadata"),
-                })
+                    # Platform-side message id (e.g. the Discord/Telegram
+                    # message id). _insert_message_rows reads it off the row
+                    # dict; load-bearing for restart drain-window recovery
+                    # dedup via has_platform_message_id.
+                    "platform_message_id": msg.get("platform_message_id"),
+                }
+                if isinstance(msg.get("_row_id"), int):
+                    _row["_row_id"] = msg["_row_id"]
+                _batch_rows.append(_row)
                 _batch_msgs.append(msg)
             # One transaction for the whole turn's new rows (typically 3-8
             # messages): one BEGIN IMMEDIATE / commit — and, off WAL, one
@@ -2288,9 +2640,17 @@ class AIAgent:
                     compression_lock_holder=getattr(
                         self, "_active_compression_lock_holder", None
                     ),
+                    turn_lease_holder=getattr(
+                        self, "_active_session_turn_lease_holder", None
+                    ),
+                    turn_lease_ttl_seconds=getattr(
+                        self, "_active_session_turn_lease_ttl_seconds", 300.0
+                    )
+                    or 300.0,
                 )
-                for _written in _batch_msgs:
-                    _written[_DB_PERSISTED_MARKER] = True
+                from agent.transcript_repair import sync_flushed_message_markers
+
+                sync_flushed_message_markers(_batch_msgs, _batch_rows)
             # The intrinsic markers are now the sole source of truth. Reset the
             # one-shot seed so no id() outlives this flush to alias a message
             # allocated next turn at a recycled address.
@@ -2308,9 +2668,83 @@ class AIAgent:
             # before it is swallowed into a bare ``False`` — classify it here
             # so the turn-end explanation can distinguish lock contention
             # ("storage was busy, send it again") from disk-full/read-only.
-            from hermes_state import classify_persistence_error
+            from hermes_state import (
+                CompressionSessionClosedError,
+                StateDbCorruptError,
+                StateDbReplacedError,
+                classify_persistence_error,
+                divert_session_transcript_jsonl,
+            )
 
             self._last_persistence_error_cause = classify_persistence_error(e)
+            if isinstance(e, (StateDbReplacedError, StateDbCorruptError)):
+                # Replaced generation or quarantined (structurally corrupt)
+                # handle: SQLite will not take this batch again, so keep it
+                # on disk instead of only in RAM.
+                try:
+                    divert_session_transcript_jsonl(
+                        getattr(self, "session_id", "") or "",
+                        _batch_rows,
+                    )
+                except Exception:
+                    logger.warning(
+                        "JSONL divert failed after state.db %s for %s",
+                        self._last_persistence_error_cause,
+                        getattr(self, "session_id", None),
+                        exc_info=True,
+                    )
+            if isinstance(e, CompressionSessionClosedError):
+                # Compression race: another path rotated this session while
+                # this turn was still writing against it. The store resolves
+                # the continuation chain transitively via the canonical API
+                # ``get_compression_tip`` (bounded walk, excludes branch/
+                # delegate/tool children, prefers live children over stale
+                # closed siblings such as ``ws_orphan_reap``). Adopt the tip
+                # ONLY when it is a different row AND still live, and retry
+                # the flush exactly once (adoption budget) — a second
+                # closed-parent write must fail closed, never loop. The tip
+                # walk returns the input id when no continuation exists, so
+                # ``tip == session_id`` means fail closed.
+                if _adoption_budget > 0:
+                    old_id = self.session_id
+                    tip = None
+                    try:
+                        tip = self._session_db.get_compression_tip(old_id)
+                    except Exception as tip_exc:
+                        logger.warning(
+                            "compression tip lookup failed for %s: %s",
+                            old_id,
+                            tip_exc,
+                        )
+                    if tip and tip != old_id:
+                        tip_row = None
+                        try:
+                            tip_row = self._session_db.get_session(tip)
+                        except Exception:
+                            tip_row = None
+                        if tip_row is not None and tip_row.get("ended_at") is None:
+                            logger.warning(
+                                "Adopted live compression tip %s for closed "
+                                "session %s; retrying flush once",
+                                tip,
+                                old_id,
+                            )
+                            self.session_id = tip
+                            self._flushed_db_message_ids = set()
+                            self._last_flushed_db_idx = 0
+                            self._compression_adoption_failed = False
+                            return self._flush_messages_to_session_db_unlocked(
+                                messages,
+                                conversation_history,
+                                _adoption_budget=0,
+                            )
+                # No live tip (or budget exhausted): fail closed — never guess
+                # a target session. The per-turn diagnostic flag lets the
+                # turn-completion explanation name compression rotation
+                # instead of the historical (misleading) full-disk advice.
+                self._compression_adoption_failed = True
+                logger.warning("Session DB append_message failed: %s", e)
+                return False
             logger.warning("Session DB append_message failed: %s", e)
             return False
 
@@ -3088,7 +3522,14 @@ class AIAgent:
                 logging.warning(f"Failed to save session log: {e}")
 
 
-    def interrupt(self, message: Optional[str] = None, *, hard_cancel: bool = False) -> None:
+    def interrupt(
+        self,
+        message: Optional[str] = None,
+        *,
+        hard_cancel: bool = False,
+        tool_reason: Optional[str] = None,
+        require_generation: Optional[int] = None,
+    ) -> bool:
         """
         Request the agent to interrupt its current tool-calling loop.
         
@@ -3103,7 +3544,34 @@ class AIAgent:
                      If provided, the agent will include this in its response context.
             hard_cancel: Mark this as an explicit stop rather than a redirect or
                          incoming-message interrupt. Compression may honor this
-                         atomic signal even while ordinary interrupts are masked.
+                         atomic signal even while ordinary interrupts are
+                         masked. With a generation claim in play, the
+                         destructive compression-fence cancellation is
+                         deferred until after the claim survives, so a
+                         declined abort never cancels a legitimate pending
+                         compression.
+            tool_reason: Trusted fixed category safe to expose in tool output.
+                         Arbitrary diagnostic or caller text belongs in message.
+            require_generation: Optional activity-generation claim (#95663).
+                         When set, the interrupt is published only if the
+                         turn's activity generation still equals this value
+                         at the final mutation edge. The claim is RESERVED
+                         under the activity lock — ``_touch_activity``
+                         invalidates the reservation the instant real
+                         progress lands — survives every blocking boundary in
+                         between (including the compression commit fence),
+                         and is CONSUMED in ONE lock critical section
+                         together with the first observable publication
+                         (``_interrupt_requested`` / ``_interrupt_message`` /
+                         ``_tool_interrupt_reason`` and the hard-cancel
+                         event). If the turn resumed in the window, the call
+                         abandons itself without publishing anything (no
+                         flag, no hard-cancel event, no tool signal).
+
+        Returns:
+            True when the interrupt was published, False when a
+            ``require_generation`` claim no longer matched the live activity
+            clock and the call was abandoned without publishing.
         
         Example (CLI):
             # In a separate input thread:
@@ -3115,43 +3583,170 @@ class AIAgent:
             if session_has_running_agent:
                 running_agent.interrupt(new_message.text)
         """
+        if require_generation is not None:
+            # RESERVE the abort's generation claim under the SAME lock
+            # `_touch_activity` stamps the clock with. Real progress
+            # invalidates the reservation the instant it lands, and the
+            # claim is CONSUMED at the final mutation edge — after every
+            # blocking boundary — in ONE critical section with the first
+            # observable publication. A resumed turn therefore abandons
+            # the abort instead of being hard-cancelled by a stale proof.
+            with self._liveness_activity_lock():
+                if (
+                    getattr(self, "_turn_liveness_activity_generation", 0)
+                    != require_generation
+                ):
+                    return False
+                self._turn_liveness_abort_claim = require_generation
+
         # A hard stop and redirect share one lock so /stop cannot race with an
         # accepted correction and accidentally turn itself into a retry.
-        def _admit_hard_cancel() -> None:
-            event = getattr(self, "_hard_interrupt_requested", None)
-            if event is None:
-                return
+        def _wait_for_compression_commit() -> None:
+            # Pre-claim half of hard-cancel admission (#99758 P1): wait out
+            # a commit that ALREADY crossed its boundary, so the interrupt
+            # is published only after the in-flight SessionDB mutation has
+            # finished — but mutate NOTHING. Cancelling a pending commit is
+            # a destructive, irreversible fence mutation (``begin_commit``
+            # refuses a cancelled fence forever), so it must not run while
+            # a generation claim can still be vetoed: an abort that declines
+            # after the fence was cancelled would have killed the recovered
+            # turn's legitimate pending compression. The destructive half
+            # runs in _cancel_pending_compression_commit(), only after the
+            # claim survived the final mutation edge.
             fence = vars(self).get("_active_compression_commit_fence")
+            if fence is None:
+                return
+            if not getattr(fence, "commit_in_flight", False):
+                # No commit crossed its boundary — nothing to wait out,
+                # and calling cancel_before_commit here WOULD cancel the
+                # pending commit (the production fence's
+                # cancel_before_commit sets _cancelled whenever no commit
+                # has started). Skip it; the destructive half handles it.
+                return
             cancel_before_commit = getattr(
                 type(fence), "cancel_before_commit", None
             )
             if callable(cancel_before_commit):
                 try:
-                    # This sets the Event while holding the same lock used by
-                    # begin_commit(). If commit already won, it waits for that
-                    # tracked mutation to finish before publishing the stop.
-                    cancel_before_commit(fence, event)
-                    return
+                    # A commit is in flight (it holds the fence lock
+                    # through finish_commit), so this call blocks until
+                    # the commit finishes and returns False WITHOUT
+                    # setting _cancelled — the started-commit branch of
+                    # the production fence never cancels.
+                    cancel_before_commit(fence)
+                except Exception:
+                    logger.debug(
+                        "Compression hard-cancel fence wait failed",
+                        exc_info=True,
+                    )
+
+        def _cancel_pending_compression_commit() -> None:
+            # Destructive half of hard-cancel admission (#99758 P1): runs
+            # only AFTER the generation claim survived the final mutation
+            # edge, so an abort that declines can never leave the active
+            # compression fence cancelled. Waiting for an in-flight commit
+            # already happened in _wait_for_compression_commit(); if a
+            # commit crossed its boundary in between, it can no longer be
+            # fence-cancelled (it owns the fence until finish_commit and
+            # completes on its own), so only a still-pending commit is
+            # cancelled here.
+            fence = vars(self).get("_active_compression_commit_fence")
+            if fence is None:
+                return
+            if getattr(fence, "commit_in_flight", False):
+                return
+            cancel_before_commit = getattr(
+                type(fence), "cancel_before_commit", None
+            )
+            if callable(cancel_before_commit):
+                try:
+                    # Marks the fence cancelled (or waits out a commit
+                    # that started between the wait above and now) without
+                    # setting the hard-stop Event, which was already
+                    # published at the final claim edge.
+                    cancel_before_commit(fence)
                 except Exception:
                     logger.debug(
                         "Compression hard-cancel fence admission failed",
                         exc_info=True,
                     )
-            event.set()
+
+        def _publish_interrupt_state() -> None:
+            self._interrupt_requested = True
+            self._interrupt_message = message
+            self._tool_interrupt_reason = tool_interrupt_reason
+            if hard_cancel:
+                _hard_event = getattr(
+                    self, "_hard_interrupt_requested", None
+                )
+                if _hard_event is not None:
+                    _hard_event.set()
+
+        def _consume_claim_and_publish_first_state() -> bool:
+            # Final mutation edge: when a generation claim is in play,
+            # claim consumption and the FIRST observable interrupt
+            # publication are ONE activity-lock critical section — the
+            # same lock `_touch_activity` stamps the clock with. The
+            # generation winner is therefore total: either the claim
+            # survives and the interrupt state commits under the lock
+            # BEFORE any later activity stamp, or the stamp landed first
+            # and the abort declines without publishing anything. (A
+            # consume-then-release-then-publish split would let a turn
+            # that resumed in the consume→publication window be
+            # hard-cancelled by an already-consumed claim.)
+            if require_generation is None:
+                # No claim to race the activity clock against: publish
+                # WITHOUT touching the liveness lock. ``AIAgent``
+                # stand-ins used by unrelated suites (e.g. the
+                # start-order gate `_Stub`) do not carry the liveness
+                # seam, and an unconditional
+                # ``_liveness_activity_lock()`` acquisition here
+                # regresses them with AttributeError.
+                _publish_interrupt_state()
+                return True
+            with self._liveness_activity_lock():
+                if (
+                    getattr(self, "_turn_liveness_abort_claim", None)
+                    != require_generation
+                ):
+                    return False
+                self._turn_liveness_abort_claim = None
+                _publish_interrupt_state()
+            return True
+
+        # Keep tool cancellation attribution separate from _interrupt_message:
+        # ordinary interrupts may carry the user's full next message, which
+        # must not be copied into tool output.
+        tool_interrupt_reason = (
+            (tool_reason or "explicit stop requested")
+            if hard_cancel
+            else ("user sent a new message" if message else "user interrupt")
+        )
 
         _redirect_lock = getattr(self, "_pending_redirect_lock", None)
         if _redirect_lock is not None:
             with _redirect_lock:
-                self._interrupt_requested = True
-                self._interrupt_message = message
+                # The (potentially blocking) in-flight-commit wait runs
+                # BEFORE the atomic claim/publication edge; the redirect
+                # lock is still held across it, exactly as before, so /stop
+                # cannot race with an accepted correction. The destructive
+                # pending-commit cancellation runs AFTER the claim survives
+                # (#99758 P1) so a declined abort can never cancel the
+                # recovered turn's legitimate compression.
                 if hard_cancel:
-                    _admit_hard_cancel()
+                    _wait_for_compression_commit()
+                if not _consume_claim_and_publish_first_state():
+                    return False
+                if hard_cancel:
+                    _cancel_pending_compression_commit()
                 self._pending_redirect = None
         else:
-            self._interrupt_requested = True
-            self._interrupt_message = message
             if hard_cancel:
-                _admit_hard_cancel()
+                _wait_for_compression_commit()
+            if not _consume_claim_and_publish_first_state():
+                return False
+            if hard_cancel:
+                _cancel_pending_compression_commit()
             self._pending_redirect = None
 
         # Codex app-server owns its model/tool loop and watches a private
@@ -3182,7 +3777,11 @@ class AIAgent:
         # Scope the interrupt to this agent's execution thread so other
         # agents running in the same process (gateway) are not affected.
         if self._execution_thread_id is not None:
-            _set_interrupt(True, self._execution_thread_id)
+            _set_interrupt(
+                True,
+                self._execution_thread_id,
+                reason=tool_interrupt_reason,
+            )
             self._interrupt_thread_signal_pending = False
         else:
             # The interrupt arrived before run_conversation() finished
@@ -3206,7 +3805,7 @@ class AIAgent:
                 _worker_tids = list(_tracker)
             for _wtid in _worker_tids:
                 try:
-                    _set_interrupt(True, _wtid)
+                    _set_interrupt(True, _wtid, reason=tool_interrupt_reason)
                 except Exception:
                     pass
         # Propagate interrupt to any running child agents (subagent delegation)
@@ -3215,15 +3814,25 @@ class AIAgent:
         for child in children_copy:
             try:
                 if hard_cancel:
-                    request_hard_interrupt(child, message)
+                    request_hard_interrupt(
+                        child,
+                        message,
+                        tool_reason=tool_interrupt_reason,
+                    )
                 else:
                     child.interrupt(message)
             except Exception as e:
                 logger.debug("Failed to propagate interrupt to child agent: %s", e)
         if not self.quiet_mode:
             print("\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
+        return True
 
-    def hard_interrupt(self, message: Optional[str] = None) -> None:
+    def hard_interrupt(
+        self,
+        message: Optional[str] = None,
+        *,
+        tool_reason: Optional[str] = None,
+    ) -> None:
         """Request an explicit stop while preserving ``interrupt()`` ABI.
 
         Frontends can feature-detect this method and fall back to the legacy
@@ -3232,7 +3841,12 @@ class AIAgent:
         # Deliberately bypass dynamic dispatch: subclasses written against the
         # legacy interrupt(message=None) ABI may override interrupt without the
         # newer keyword-only hard_cancel argument.
-        AIAgent.interrupt(self, message, hard_cancel=True)
+        AIAgent.interrupt(
+            self,
+            message,
+            hard_cancel=True,
+            tool_reason=tool_reason,
+        )
 
     def clear_interrupt(self, *, preserve_redirect: bool = False) -> bool:
         """Clear the interrupt request and per-thread tool signal.
@@ -3248,6 +3862,7 @@ class AIAgent:
                     return False
                 self._interrupt_requested = False
                 self._interrupt_message = None
+                self._tool_interrupt_reason = None
                 getattr(self, "_hard_interrupt_requested", threading.Event()).clear()
                 if not preserve_redirect:
                     self._pending_redirect = None
@@ -3256,6 +3871,7 @@ class AIAgent:
                 return False
             self._interrupt_requested = False
             self._interrupt_message = None
+            self._tool_interrupt_reason = None
             getattr(self, "_hard_interrupt_requested", threading.Event()).clear()
             if not preserve_redirect:
                 self._pending_redirect = None
@@ -3478,9 +4094,19 @@ class AIAgent:
             return
         landed = file_mutation_result_landed(tool_name, result)
         if landed:
+            landed_paths = _extract_landed_file_mutation_paths(tool_name, args, result)
             changed = getattr(self, "_turn_file_mutation_paths", None)
             if changed is not None:
-                changed.update(_extract_landed_file_mutation_paths(tool_name, args, result))
+                changed.update(landed_paths)
+            # Feed the checkpoint agent-write ledger so /rollback's safe mode
+            # can tell Hermes-authored content from later user hand-edits.
+            mgr = getattr(self, "_checkpoint_mgr", None)
+            if mgr is not None and getattr(mgr, "enabled", False):
+                for _p in landed_paths:
+                    try:
+                        mgr.record_agent_write(_p)
+                    except Exception:
+                        pass
         if is_error and not landed:
             preview = _extract_error_preview(result)
             for path in targets:
@@ -3503,12 +4129,21 @@ class AIAgent:
         ``HERMES_FILE_MUTATION_VERIFIER`` env var overrides config.  Exposed
         as a method so tests can patch a single seam without reaching into
         the private ``_turn_failed_file_mutations`` state dict.
+
+        The config lookup is read once per agent and cached (mirroring
+        ``_credits_notices_enabled``) — the footer gate runs at the end of
+        every turn, and a config flip applying on the next session is fine.
+        The env-var override stays authoritative on every call and is never
+        cached, so tests and operators can still flip it at runtime.
         """
         try:
             import os as _os
             env = _os.environ.get("HERMES_FILE_MUTATION_VERIFIER")
             if env is not None:
                 return env.strip().lower() not in {"0", "false", "no", "off"}
+            cached = getattr(self, "_file_mutation_verifier_enabled_cache", None)
+            if cached is not None:
+                return cached
             # Read from the persisted config.yaml so gateway and CLI share
             # the same setting.  Import lazily to avoid a startup-time cycle.
             try:
@@ -3518,7 +4153,11 @@ class AIAgent:
                 _cfg = {}
             _display = _cfg.get("display") if isinstance(_cfg, dict) else None
             if isinstance(_display, dict) and "file_mutation_verifier" in _display:
-                return bool(_display.get("file_mutation_verifier"))
+                enabled = bool(_display.get("file_mutation_verifier"))
+            else:
+                enabled = True  # safe default: verifier on
+            self._file_mutation_verifier_enabled_cache = enabled
+            return enabled
         except Exception:
             pass
         return True  # safe default: verifier on
@@ -3600,12 +4239,21 @@ class AIAgent:
         True).  ``HERMES_TURN_COMPLETION_EXPLAINER`` env var overrides
         config.  Exposed as a method so tests can patch a single seam,
         mirroring ``_file_mutation_verifier_enabled``.
+
+        The config lookup is read once per agent and cached (mirroring
+        ``_credits_notices_enabled``) — the gate runs at the end of every
+        turn, and a config flip applying on the next session is fine.
+        The env-var override stays authoritative on every call and is never
+        cached, so tests and operators can still flip it at runtime.
         """
         try:
             import os as _os
             env = _os.environ.get("HERMES_TURN_COMPLETION_EXPLAINER")
             if env is not None:
                 return env.strip().lower() not in {"0", "false", "no", "off"}
+            cached = getattr(self, "_turn_completion_explainer_enabled_cache", None)
+            if cached is not None:
+                return cached
             # Read from the persisted config.yaml so gateway and CLI share
             # the same setting.  Import lazily to avoid a startup-time cycle.
             try:
@@ -3615,7 +4263,11 @@ class AIAgent:
                 _cfg = {}
             _display = _cfg.get("display") if isinstance(_cfg, dict) else None
             if isinstance(_display, dict) and "turn_completion_explainer" in _display:
-                return bool(_display.get("turn_completion_explainer"))
+                enabled = bool(_display.get("turn_completion_explainer"))
+            else:
+                enabled = True  # safe default: explainer on
+            self._turn_completion_explainer_enabled_cache = enabled
+            return enabled
         except Exception:
             pass
         return True  # safe default: explainer on
@@ -3711,6 +4363,13 @@ class AIAgent:
                 + "an error occurred near the iteration limit before a final "
                 "answer. Check the tool output above, then send `continue`."
             )
+        if reason.startswith("repeated_outer_errors"):
+            return (
+                prefix
+                + "the turn kept failing with repeated errors and was stopped "
+                "early instead of retrying forever. Check the errors above, "
+                "then send `continue` to retry."
+            )
         if reason == "pending_tool_result":
             return (
                 prefix
@@ -3720,6 +4379,30 @@ class AIAgent:
             )
         if reason == "session_persistence_failed":
             cause = persistence_cause or "unknown"
+            if cause == "compression":
+                return (
+                    prefix
+                    + "the turn was stopped because another process was "
+                    "compressing this session. Your message should already be "
+                    "saved — please send it again after compression completes."
+                )
+            if cause == "compression_closed":
+                return (
+                    prefix
+                    + "the turn was stopped because this session was rotated "
+                    "by context compression and its live continuation could "
+                    "not be adopted. The storage itself is healthy — refresh "
+                    "the client (or start a new turn) so it picks up the new "
+                    "session id, then send your message again."
+                )
+            if cause == "turn_lease":
+                return (
+                    prefix
+                    + "the turn was stopped because another Hermes process "
+                    "took over this session. Your reply was not saved — wait "
+                    "for the other process to finish, then send your message "
+                    "again."
+                )
             if cause == "locked":
                 return (
                     prefix
@@ -3727,6 +4410,42 @@ class AIAgent:
                     "(another Hermes process was writing to the state "
                     "database). Your message should already be saved — "
                     "please send it again in a moment."
+                )
+            if cause == "replaced":
+                return (
+                    prefix
+                    + "the turn was stopped because the state database file "
+                    "was replaced underneath this process. Do not run "
+                    "`hermes doctor --fix` or in-place FTS repair — stop "
+                    "the process, restore the intended state.db, then "
+                    "restart. Unwritten messages were diverted to "
+                    "sessions/<session_id>.jsonl and, on the gateway, "
+                    "pending_messages/pending-*.json."
+                )
+            if cause == "corrupt":
+                from hermes_state import _default_db_path
+
+                # Copy-pasteable, so name the real store (profiles /
+                # HERMES_HOME do not live under ~/.hermes).
+                db_path = _default_db_path()
+                return (
+                    prefix
+                    + "the turn was stopped because the state database "
+                    "reported structural corruption (the transcript would "
+                    "have been lost on restart). Freeing disk space will "
+                    "not help. Recovery options:\n"
+                    "1. Run `hermes doctor --fix`\n"
+                    "2. Stop the gateway, then recover with:\n"
+                    f"   hermes sessions recover --source {db_path} "
+                    "--inspect-only\n"
+                    "   (if it reports recoverable) hermes sessions recover "
+                    f"--source {db_path} --output recovered-state.db\n"
+                    "   — recovery snapshots the damaged file first; do NOT "
+                    "run `sqlite3 ... \".recover\"` against the live "
+                    "state.db, a vulnerable sqlite3 CLI can corrupt it "
+                    "further\n"
+                    "3. Restore from a backup in ~/.hermes/backups/\n"
+                    "Then send your message again."
                 )
             if cause == "disk":
                 return (
@@ -3753,6 +4472,22 @@ class AIAgent:
         from agent.agent_runtime_helpers import apply_pending_steer_to_tool_results
         return apply_pending_steer_to_tool_results(self, messages, num_tool_msgs)
 
+    def _liveness_activity_lock(self) -> "threading.Lock":
+        """Shared lock for the activity clock and its generation counter.
+
+        ``_touch_activity`` stamps the clock under this lock; the turn
+        liveness watchdog (``agent/turn_liveness.py``) samples and commits
+        under the same lock, so a stall observation can never abort a turn
+        that resumed between the sample and the commit (#95663 review).
+        Created lazily so ``AIAgent.__new__``-based test doubles keep
+        working.
+        """
+        _lock = getattr(self, "_turn_liveness_activity_lock", None)
+        if _lock is None:
+            _lock = threading.Lock()
+            self._turn_liveness_activity_lock = _lock
+        return _lock
+
     def _touch_activity(
         self,
         desc: str,
@@ -3761,6 +4496,12 @@ class AIAgent:
         force_persist: bool = False,
     ) -> None:
         """Update the last-activity timestamp and description (thread-safe).
+
+        The clock stamp is synchronized on ``_liveness_activity_lock`` and
+        bumps a monotonic generation counter, so concurrent readers (the
+        turn liveness watchdog, #95548) can bind their stall observation to
+        the exact ``(generation, timestamp)`` pair they sampled and
+        revalidate it at the commit point.
 
         Also bridges to the kanban board's heartbeat fields when this
         process is a dispatcher-spawned worker (HERMES_KANBAN_TASK set),
@@ -3785,9 +4526,28 @@ class AIAgent:
             reset_session_activity_persist_window,
         )
 
-        self._last_activity_ts = time.time()
-        self._last_activity_desc = bound_activity_description(desc)
-        self._last_activity_provenance = normalize_activity_provenance(provenance)
+        # Lazy per-instance lock (inline so bare doubles like
+        # types.SimpleNamespace fixtures keep working — they bind
+        # _touch_activity without the class, so they cannot call
+        # self._liveness_activity_lock(); see
+        # tests/run_agent/test_session_activity_persist.py).
+        _clock_lock = getattr(self, "_turn_liveness_activity_lock", None)
+        if _clock_lock is None:
+            _clock_lock = threading.Lock()
+            self._turn_liveness_activity_lock = _clock_lock
+        with _clock_lock:
+            self._turn_liveness_activity_generation = (
+                getattr(self, "_turn_liveness_activity_generation", 0) + 1
+            )
+            self._last_activity_ts = time.time()
+            self._last_activity_desc = bound_activity_description(desc)
+            self._last_activity_provenance = normalize_activity_provenance(provenance)
+            # Real progress invalidates any reserved abort claim. A watchdog
+            # interrupt that is still in flight (e.g. parked inside the
+            # compression commit fence) must abandon itself at the final
+            # mutation edge instead of publishing against a generation the
+            # turn has already left behind.
+            self._turn_liveness_abort_claim = None
         if os.environ.get("HERMES_KANBAN_TASK"):
             try:
                 from tools.kanban_tools import (
@@ -4020,7 +4780,8 @@ class AIAgent:
                 latch = self._credits_latch = new_credits_latch()
             # Free-model gate: a depleted account on a free model can still
             # inference, so the depleted error banner is suppressed. Local-data
-            # only (":free" suffix + pricing-cache peek) — never a network call.
+            # only (":free" suffix, "stealth/" prefix + pricing-cache peek) —
+            # never a network call.
             model_is_free = is_free_tier_model(
                 getattr(self, "model", "") or "",
                 getattr(self, "base_url", "") or "",
@@ -4119,13 +4880,14 @@ class AIAgent:
         )
 
     def shutdown_memory_provider(self, messages: list = None) -> None:
-        """Shut down the memory provider and context engine — call at actual session boundaries.
+        """Shut down the memory provider and context engine at session end.
 
-        This calls on_session_end() then shutdown_all() on the memory
-        manager, and on_session_end() on the context engine.
-        NOT called per-turn — only at CLI exit, /reset, gateway
-        session expiry, etc.
+        Idempotent: gateway cleanup and AIAgent.close() may share this
+        ownership boundary.
         """
+        if getattr(self, "_memory_provider_shutdown", False):
+            return
+        self._memory_provider_shutdown = True
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
@@ -4295,6 +5057,10 @@ class AIAgent:
             self._close_cached_request_openai_client(reason="cache_evict")
         except Exception:
             pass
+        try:
+            self._close_cached_request_anthropic_client(reason="cache_evict")
+        except Exception:
+            pass
 
     def close(self) -> None:
         """Release all resources held by this agent instance.
@@ -4310,6 +5076,17 @@ class AIAgent:
         Safe to call multiple times (idempotent).  Each cleanup step is
         independently guarded so a failure in one does not prevent the rest.
         """
+        # AIAgent.close() is the hard owner boundary. Gateway cleanup may
+        # call shutdown_memory_provider() first; its idempotence prevents
+        # duplicate extraction while direct callers cannot skip provider close.
+        try:
+            session_messages = getattr(self, "_session_messages", None)
+            self.shutdown_memory_provider(
+                session_messages if isinstance(session_messages, list) else None
+            )
+        except Exception:
+            pass
+
         task_id = getattr(self, "session_id", None) or ""
 
         # 1. Kill background processes for this task
@@ -4371,6 +5148,10 @@ class AIAgent:
             self._close_cached_request_openai_client(reason="agent_close")
         except Exception:
             pass
+        try:
+            self._close_cached_request_anthropic_client(reason="agent_close")
+        except Exception:
+            pass
 
         # 6c. Close the Codex app-server session. The runtime already drops
         # it on turn crash / retirement (agent/codex_runtime.py), but hard
@@ -4395,6 +5176,14 @@ class AIAgent:
         # still holds the closed agent (e.g. a draining background task).
         try:
             self._session_messages = []
+            # Shadow copies of the same transcript: the DB-flush settled-prefix
+            # snapshot (a shallow copy of the whole list, see
+            # _flush_session_to_db) and the streamed-text accumulator. On a
+            # closed delegate child these were the only remaining owners of
+            # every message dict, so a retained child kept its full history
+            # alive in the parent's heap.
+            self._db_flush_scan_prefix = None
+            self._streamed_assistant_text_parts = []
         except Exception:
             pass
 
@@ -4437,7 +5226,10 @@ class AIAgent:
         try:
             if getattr(self, "_owns_session_db", False) and session_db is not None:
                 self._owns_session_db = False
-                session_db.close()
+                # Shared instances no-op on close(); release the refcount
+                # so the registry can close when the last caller is done (#90837).
+                from hermes_state import release_or_close
+                release_or_close(session_db)
         except Exception:
             pass
 
@@ -4460,6 +5252,7 @@ class AIAgent:
 
         # Walk history backwards to find the most recent todo tool response
         last_todo_response = None
+        last_todo_revision = 0
         for idx in range(len(history) - 1, -1, -1):
             msg = history[idx]
             if msg.get("role") != "tool":
@@ -4485,15 +5278,32 @@ class AIAgent:
                 data = json.loads(content)
                 if "todos" in data and isinstance(data["todos"], list):
                     last_todo_response = data["todos"]
+                    last_todo_revision = data.get("revision", 1)
                     break
             except (json.JSONDecodeError, TypeError):
                 continue
 
-        if last_todo_response:
-            # Replay the items into the store (replace mode)
-            self._todo_store.write(last_todo_response, merge=False)
-            if not self.quiet_mode:
-                self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
+        if last_todo_response is not None:
+            # Restore only when history carries a newer revision than the
+            # store already holds (a live store re-hydrated in place must not
+            # be rolled back by older history). Sessions that predate
+            # revisions default to 1 so they still hydrate. Empty lists
+            # matter: they are an authoritative clear after an earlier
+            # non-empty plan.
+            current_revision = int(
+                self._todo_store.snapshot().get("revision", 0) or 0
+            )
+            try:
+                history_revision = max(0, int(last_todo_revision or 0))
+            except (TypeError, ValueError):
+                history_revision = 1
+            if history_revision > current_revision:
+                self._todo_store.restore(
+                    last_todo_response,
+                    revision=history_revision,
+                )
+                if not self.quiet_mode:
+                    self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
         _set_interrupt(False)
 
     @classmethod
@@ -4653,6 +5463,18 @@ class AIAgent:
                 return False
         elif content is not None and content != "":
             return False
+        # A native compaction checkpoint makes a carrier never thinking-only,
+        # regardless of api_mode or which reasoning field is populated. The
+        # checkpoint is the server-side stand-in for already-pruned history
+        # and exists in exactly one place; the codex_responses adapter also
+        # surfaces commentary text via msg["reasoning"], so the string branch
+        # below would otherwise drop a carrier before the sidecar is ever
+        # inspected. Checked here — above every reasoning branch — so no
+        # carrier shape can fall into a drop path (#82108 review finding).
+        from agent.native_compaction import has_compaction_checkpoint
+
+        if has_compaction_checkpoint(msg.get("codex_reasoning_items")):
+            return False
         reasoning = msg.get("reasoning_content") or msg.get("reasoning")
         if isinstance(reasoning, str) and reasoning.strip():
             return True
@@ -4720,13 +5542,23 @@ class AIAgent:
     def _deduplicate_tool_calls(tool_calls: list) -> list:
         """Remove duplicate (tool_name, arguments) pairs within a single turn.
 
-        Only the first occurrence of each unique pair is kept.
+        Valid JSON arguments are canonicalized so equivalent objects do not
+        evade deduplication merely because their keys or whitespace differ.
+        Malformed arguments retain their raw representation rather than being
+        repaired here. Only the first occurrence of each unique pair is kept.
         Returns the original list if no duplicates were found.
         """
         seen: set = set()
         unique: list = []
         for tc in tool_calls:
-            key = (tc.function.name, tc.function.arguments)
+            arguments = tc.function.arguments
+            try:
+                arguments = json.dumps(
+                    json.loads(arguments), separators=(",", ":"), sort_keys=True
+                )
+            except (TypeError, ValueError):
+                pass
+            key = (tc.function.name, arguments)
             if key not in seen:
                 seen.add(key)
                 unique.append(tc)
@@ -4831,73 +5663,10 @@ class AIAgent:
 
     @staticmethod
     def _build_keepalive_http_client(base_url: str = "", *, verify: Any = True) -> Any:
-        """Build an httpx.Client with proactive idle-connection reaping.
+        """Build the shared OpenAI httpx client used by main and aux paths."""
+        from agent.process_bootstrap import build_keepalive_http_client
 
-        Previously this method injected a custom ``httpx.HTTPTransport``
-        with ``socket_options`` (``SO_KEEPALIVE``, ``TCP_KEEPIDLE``, …) to
-        prevent CLOSE-WAIT accumulation on long-lived connections (#10324).
-
-        That approach broke streaming for providers behind reverse proxies
-        (OpenResty, Cloudflare, etc.) because the custom socket options
-        conflict with the proxy's chunked-transfer handling (#54049,
-        #12952).  It also stripped ``TCP_NODELAY``, stalling TLS handshakes
-        and SSE encoding.
-
-        The fix moves connection lifecycle management from the socket layer
-        to the HTTP pool layer: ``keepalive_expiry=20.0`` tells httpx to
-        close idle pooled connections *before* a reverse proxy's typical
-        30–60 s timeout drops them, preventing CLOSE-WAIT accumulation
-        without modifying socket options.  The default httpx transport
-        preserves OS TCP defaults (including ``TCP_NODELAY``).
-
-        ``verify`` carries per-provider ``ssl_ca_cert`` / ``ssl_verify`` and
-        ``HERMES_CA_BUNDLE`` settings.  It is passed on the client AND on
-        the plain no-proxy mounts (a mounted transport owns the SSL context
-        for its scheme).
-        """
-        try:
-            import httpx as _httpx
-
-            # Explicitly read proxy settings so requests route through
-            # HTTP_PROXY / HTTPS_PROXY / NO_PROXY correctly.
-            _proxy = _get_proxy_for_base_url(base_url)
-
-            # Proactive pool reaping: close idle connections at 20 s,
-            # before reverse proxies (30–60 s typical) send FIN and
-            # cause CLOSE-WAIT accumulation.
-            _limits = _httpx.Limits(
-                max_keepalive_connections=20,
-                max_connections=100,
-                keepalive_expiry=20.0,
-            )
-
-            # Timeouts: generous read=None for SSE streaming endpoints.
-            _timeout = _httpx.Timeout(
-                connect=15.0,
-                read=None,
-                write=15.0,
-                pool=10.0,
-            )
-
-            # When _proxy is None (NO_PROXY bypass or no proxy configured),
-            # mount plain transports to prevent httpx from reading env proxy
-            # vars and creating an HTTPProxy mount that would bypass our
-            # NO_PROXY resolution.
-            _mounts = {}
-            if _proxy is None:
-                _mounts = {
-                    "http://": _httpx.HTTPTransport(verify=verify),
-                    "https://": _httpx.HTTPTransport(verify=verify),
-                }
-            return _httpx.Client(
-                limits=_limits,
-                timeout=_timeout,
-                proxy=_proxy,
-                mounts=_mounts or None,
-                verify=verify,
-            )
-        except Exception:
-            return None
+        return build_keepalive_http_client(base_url, verify=verify)
 
     def _create_openai_client(self, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
         """Forwarder — see ``agent.agent_runtime_helpers.create_openai_client``."""
@@ -4975,14 +5744,103 @@ class AIAgent:
                 exc,
             )
 
+    def _drain_transports_after_abandonment(self, *, reason: str) -> int:
+        """FD-safe transport drain for an abandoned (timed-out) worker (#94248).
+
+        A delegation deadline abandons this agent's daemon worker while it may
+        still be blocked inside an in-flight OpenSSL ``read`` (Codex Responses
+        stream, httpx request). The timeout thread must never hard-close those
+        transports — ``client.close()`` releases raw FDs under a live SSL BIO,
+        the #29507 / #67142 / #70773 native-corruption family and the SIGSEGV
+        shape reported in #94248. This helper only ``shutdown()``s pooled
+        sockets (safe from any thread), settling blocked reads with EOF/EPIPE
+        so the worker can unwind and run the real close from its own thread.
+
+        Returns the number of sockets shut down across all transports.
+        """
+        drained = 0
+        # Shared primary client (codex-direct / MoA stream on it directly).
+        try:
+            client = getattr(self, "client", None)
+            if client is not None:
+                drained += self._force_close_tcp_sockets(client)
+        except Exception:
+            logger.debug("Abandoned-worker drain: shared client sweep failed",
+                         exc_info=True)
+        # Cached per-request wire clients: abort (shutdown + poison the reuse
+        # slot) so the unwinding worker discards them instead of re-caching.
+        try:
+            with self._openai_client_lock():
+                cache = getattr(self, "_request_client_cache", None)
+                cached = cache["client"] if cache else None
+            if cached is not None:
+                self._abort_request_openai_client(cached, reason=reason)
+        except Exception:
+            logger.debug("Abandoned-worker drain: request client abort failed",
+                         exc_info=True)
+        try:
+            with self._openai_client_lock():
+                cache = getattr(self, "_request_anthropic_client_cache", None)
+                cached = cache["client"] if cache else None
+            if cached is not None:
+                self._abort_request_anthropic_client(cached, reason=reason)
+        except Exception:
+            logger.debug("Abandoned-worker drain: anthropic client abort failed",
+                         exc_info=True)
+        # Codex app-server session watches a private interrupt event.
+        try:
+            codex_session = getattr(self, "_codex_session", None)
+            request_interrupt = getattr(codex_session, "request_interrupt", None)
+            if callable(request_interrupt):
+                request_interrupt()
+        except Exception:
+            logger.debug("Abandoned-worker drain: codex interrupt failed",
+                         exc_info=True)
+        # Inline (cron-style) request abort hook, when registered.
+        try:
+            abort_active = getattr(self, "_active_request_abort", None)
+            if callable(abort_active):
+                abort_active(reason)
+        except Exception:
+            logger.debug("Abandoned-worker drain: active request abort failed",
+                         exc_info=True)
+        logger.info(
+            "Abandoned-worker transports drained (%s, tcp_shutdown=%d, "
+            "fd_release=deferred_to_worker) %s",
+            reason,
+            drained,
+            self._client_log_context(),
+        )
+        return drained
+
+    def _build_primary_client_for_active_provider(self, *, reason: str) -> Any:
+        """Build the shared client shape required by the active provider.
+
+        MoA is a virtual provider whose ``client`` is an in-process facade,
+        not an OpenAI SDK client. Generic rebuild paths (credential rotation,
+        timeout application, and dead-connection cleanup) still pass through
+        this helper, so they must preserve that provider/client invariant.
+        """
+        if (getattr(self, "provider", "") or "").strip().lower() == "moa":
+            from agent.moa_loop import build_moa_facade
+
+            return build_moa_facade(self, self.model)
+        return self._create_openai_client(
+            self._client_kwargs,
+            reason=reason,
+            shared=True,
+        )
+
     def _replace_primary_openai_client(self, *, reason: str) -> bool:
         with self._openai_client_lock():
             old_client = getattr(self, "client", None)
             try:
-                new_client = self._create_openai_client(self._client_kwargs, reason=reason, shared=True)
+                new_client = self._build_primary_client_for_active_provider(
+                    reason=reason,
+                )
             except Exception as exc:
                 logger.warning(
-                    "Failed to rebuild shared OpenAI client (%s) %s error=%s",
+                    "Failed to rebuild shared primary client (%s) %s error=%s",
                     reason,
                     self._client_log_context(),
                     exc,
@@ -5253,8 +6111,31 @@ class AIAgent:
                 exc,
             )
 
+    def _request_anthropic_client_cache_ref(self) -> dict:
+        # Lazy init — tests build agents via AIAgent.__new__ without __init__.
+        cache = getattr(self, "_request_anthropic_client_cache", None)
+        if cache is None:
+            cache = {"client": None, "key": None, "poisoned": False, "in_use": False}
+            self._request_anthropic_client_cache = cache
+        return cache
+
+    def _request_anthropic_client_key(self) -> tuple:
+        """Cache key covering everything that forces a fresh client: credential
+        rotation, base URL / region changes, timeout changes (model switch),
+        and the 1M-context beta flag."""
+        if getattr(self, "provider", None) == "bedrock":
+            region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
+            return ("bedrock", region)
+        return (
+            "direct",
+            self._anthropic_api_key,
+            getattr(self, "_anthropic_base_url", None),
+            get_provider_request_timeout(self.provider, self.model),
+            bool(getattr(self, "_oauth_1m_beta_disabled", False)),
+        )
+
     def _create_request_anthropic_client(self, *, reason: str) -> Any:
-        """Build a request-local Anthropic client for one in-flight call.
+        """Build (or reuse) a request-local Anthropic client for one in-flight call.
 
         The shared ``_anthropic_client`` stays the long-lived primary, but the
         stale/interrupt watchdog runs on the poll thread and must never call
@@ -5266,24 +6147,56 @@ class AIAgent:
         worker performs the SDK-level close from its own context — the same
         ownership contract the OpenAI-wire path already uses.
 
+        Also mirrors the OpenAI-wire path's single-slot cache
+        (``_create_request_openai_client``): building ``anthropic.Anthropic``
+        means a fresh httpx pool and TCP+TLS handshake per call, so the client
+        is kept warm across sequential calls whose cache key (credentials,
+        base URL/region, timeout, 1M-beta flag) hasn't changed. ``in_use``
+        keeps a second concurrent call from sharing one pool's close/abort
+        lifecycle — it gets a fresh untracked client instead.
+
         Mirrors ``_rebuild_anthropic_client`` construction (direct + Bedrock,
-        1M-beta drop) but returns a fresh client instead of swapping the shared
-        one.
+        1M-beta drop) but returns a fresh/cached client instead of swapping
+        the shared one.
         """
         if self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()
-        _drop_1m = bool(getattr(self, "_oauth_1m_beta_disabled", False))
-        if getattr(self, "provider", None) == "bedrock":
+        key = self._request_anthropic_client_key()
+
+        stale = None
+        with self._openai_client_lock():
+            cache = self._request_anthropic_client_cache_ref()
+            cached = cache["client"]
+            if cached is not None and not cache["in_use"]:
+                if (
+                    not cache["poisoned"]
+                    and cache["key"] == key
+                    and not self._is_openai_client_closed(cached)
+                ):
+                    cache["in_use"] = True
+                    return cached
+                # Key changed (credential rotation, base URL/region, timeout,
+                # 1M-beta flip), poisoned by a cross-thread abort, or
+                # externally closed — never reuse; discard and rebuild below.
+                stale = cached
+                cache["client"] = None
+                cache["key"] = None
+                cache["poisoned"] = False
+        if stale is not None:
+            # Safe to close from this thread: in_use was False, so no worker
+            # thread owns the pool's FDs (same #29507 reasoning as OpenAI).
+            self._close_request_anthropic_client(stale, reason=f"reuse_evict:{reason}")
+
+        if key[0] == "bedrock":
             from agent.anthropic_adapter import build_anthropic_bedrock_client
-            region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
-            client = build_anthropic_bedrock_client(region)
+            client = build_anthropic_bedrock_client(key[1])
         else:
             from agent.anthropic_adapter import build_anthropic_client
             client = build_anthropic_client(
                 self._anthropic_api_key,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
-                drop_context_1m_beta=_drop_1m,
+                drop_context_1m_beta=key[4],
             )
         logger.debug(
             "Anthropic request client created (%s, shared=False) provider=%s model=%s",
@@ -5291,17 +6204,41 @@ class AIAgent:
             getattr(self, "provider", None),
             getattr(self, "model", None),
         )
+        with self._openai_client_lock():
+            cache = self._request_anthropic_client_cache_ref()
+            if cache["client"] is None:
+                cache["client"] = client
+                cache["key"] = key
+                cache["poisoned"] = False
+                cache["in_use"] = True
+            # else: a concurrent call holds the slot — hand this client out
+            # untracked; _close_request_anthropic_client fully closes
+            # untracked clients, preserving the per-request lifecycle.
         return client
 
     def _close_request_anthropic_client(self, client: Any, *, reason: str) -> None:
-        """Owner-thread full close of a request-local Anthropic client.
+        """Owner-thread close of a request-local Anthropic client.
 
-        Force-closes the pool's TCP sockets first (CLOSE-WAIT hygiene, parity
-        with ``_close_openai_client``), then does the graceful SDK close. Safe
+        On a clean finish (``reason`` in ``_REQUEST_CLIENT_REUSE_REASONS``)
+        the pool is kept warm in the cache slot for the next sequential call,
+        mirroring ``_close_request_openai_client``. Any other outcome
+        (error / kill / abort / stale-slot eviction) force-closes the pool's
+        TCP sockets first (CLOSE-WAIT hygiene, parity with
+        ``_close_openai_client``), then does the graceful SDK close. Safe
         because the caller owns the connection.
         """
         if client is None:
             return
+        with self._openai_client_lock():
+            cache = self._request_anthropic_client_cache_ref()
+            if cache["client"] is client:
+                if reason in self._REQUEST_CLIENT_REUSE_REASONS and not cache["poisoned"]:
+                    cache["in_use"] = False
+                    return
+                cache["client"] = None
+                cache["key"] = None
+                cache["poisoned"] = False
+                cache["in_use"] = False
         try:
             self._force_close_tcp_sockets(client)
             client.close()
@@ -5320,6 +6257,30 @@ class AIAgent:
                 exc,
             )
 
+    def _close_cached_request_anthropic_client(self, *, reason: str) -> None:
+        """Teardown hook: really close the cached per-request Anthropic client."""
+        with self._openai_client_lock():
+            cache = getattr(self, "_request_anthropic_client_cache", None)
+            client = cache["client"] if cache else None
+            in_use = bool(cache["in_use"]) if cache else False
+            if cache is not None:
+                cache["client"] = None
+                cache["key"] = None
+                cache["poisoned"] = False
+                cache["in_use"] = False
+        if client is None:
+            return
+        if in_use:
+            # A worker thread has this client checked out for an in-flight
+            # request — same #29507 reasoning as the OpenAI teardown hook.
+            self._abort_request_anthropic_client(client, reason=f"{reason}_in_flight")
+            return
+        try:
+            self._force_close_tcp_sockets(client)
+            client.close()
+        except Exception:
+            pass
+
     def _abort_request_anthropic_client(self, client: Any, *, reason: str) -> None:
         """Cross-thread abort for request-local Anthropic clients.
 
@@ -5331,6 +6292,13 @@ class AIAgent:
         """
         if client is None:
             return
+        # A pool whose sockets were shut down from a stranger thread must
+        # never be reused: poison the cache slot so the owner-thread close
+        # discards it and the next create builds a fresh client.
+        with self._openai_client_lock():
+            cache = self._request_anthropic_client_cache_ref()
+            if cache["client"] is client:
+                cache["poisoned"] = True
         try:
             shutdown_count = self._force_close_tcp_sockets(client)
             # Same visibility contract as the OpenAI abort path (#72975):
@@ -5475,9 +6443,12 @@ class AIAgent:
         try:
             from hermes_cli.auth import resolve_nous_runtime_credentials
 
+            # Pass the bearer that just 401'd so a refresh already done by a
+            # sibling process is adopted instead of rotating the grant again.
             creds = resolve_nous_runtime_credentials(
                 timeout_seconds=env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15),
                 force_refresh=force,
+                stale_access_token=self.api_key or None,
             )
         except Exception as exc:
             logger.debug("Nous credential refresh failed: %s", exc)
@@ -5870,7 +6841,7 @@ class AIAgent:
         # Azure endpoints use static API keys — OAuth token rotation doesn't apply.
         # Refreshing would pick up ~/.claude/.credentials.json OAuth token and break auth.
         _base = getattr(self, "_anthropic_base_url", "") or ""
-        if "azure.com" in _base:
+        if base_url_host_matches(_base, "azure.com"):
             return False
 
         try:
@@ -5941,9 +6912,9 @@ class AIAgent:
         elif base_url_host_matches(base_url, "portal.qwen.ai"):
             self._client_kwargs["default_headers"] = _qwen_portal_headers()
         elif base_url_host_matches(base_url, "chatgpt.com"):
-            from agent.auxiliary_client import _codex_cloudflare_headers
-            self._client_kwargs["default_headers"] = _codex_cloudflare_headers(
-                self._client_kwargs.get("api_key", "")
+            from agent.codex_headers import codex_cloudflare_headers
+            self._client_kwargs["default_headers"] = codex_cloudflare_headers(
+                self._client_kwargs.get("api_key", ""), base_url=base_url,
             )
         elif base_url_host_matches(base_url, "x.ai"):
             # Cover both provider=xai and provider=xai-oauth (api.x.ai).
@@ -6093,10 +7064,11 @@ class AIAgent:
         has_retried_429: bool,
         classified_reason: Optional[FailoverReason] = None,
         error_context: Optional[Dict[str, Any]] = None,
+        billing_unverified: bool = False,
     ) -> tuple[bool, bool]:
         """Forwarder — see ``agent.agent_runtime_helpers.recover_with_credential_pool``."""
         from agent.agent_runtime_helpers import recover_with_credential_pool
-        return recover_with_credential_pool(self, status_code=status_code, has_retried_429=has_retried_429, classified_reason=classified_reason, error_context=error_context)
+        return recover_with_credential_pool(self, status_code=status_code, has_retried_429=has_retried_429, classified_reason=classified_reason, error_context=error_context, billing_unverified=billing_unverified)
 
     def _credential_pool_may_recover_rate_limit(self) -> bool:
         """Whether a rate-limit retry should wait for same-provider credentials."""
@@ -6200,6 +7172,26 @@ class AIAgent:
                 self._record_streamed_assistant_text(tail)
         self._current_streamed_assistant_text = ""
 
+    @property
+    def _current_streamed_assistant_text(self) -> str:
+        """Visible assistant text streamed so far this turn.
+
+        Backed by a list of pieces rather than one growing string. Adding to
+        a string with ``+=`` on an attribute copies the whole thing every
+        time, so a long reply costs the square of its length in copying. The
+        pieces are joined here when a caller needs the full text. Emptiness
+        checks on the hot path should look at ``_streamed_assistant_text_parts``
+        instead, so they do not join on every delta.
+        """
+        parts = getattr(self, "_streamed_assistant_text_parts", None)
+        if not parts:
+            return ""
+        return "".join(parts)
+
+    @_current_streamed_assistant_text.setter
+    def _current_streamed_assistant_text(self, value: str) -> None:
+        self._streamed_assistant_text_parts = [value] if value else []
+
     def _record_streamed_assistant_text(self, text: str) -> None:
         """Accumulate visible assistant text emitted through stream callbacks."""
         # Single-writer guard (#65991): a superseded stream must not pollute the
@@ -6209,9 +7201,11 @@ class AIAgent:
         if self._stream_writer_superseded():
             return
         if isinstance(text, str) and text:
-            self._current_streamed_assistant_text = (
-                getattr(self, "_current_streamed_assistant_text", "") + text
-            )
+            parts = getattr(self, "_streamed_assistant_text_parts", None)
+            if parts is None:
+                parts = []
+                self._streamed_assistant_text_parts = parts
+            parts.append(text)
 
     @staticmethod
     def _normalize_interim_visible_text(text: str) -> str:
@@ -6355,8 +7349,7 @@ class AIAgent:
         when the only streamed text was unrelated mid-turn commentary. (#65919
         review: response-loss blocker)
         """
-        cb = getattr(self, "interim_assistant_callback", None)
-        if cb is None or not isinstance(assistant_msg, dict):
+        if not isinstance(assistant_msg, dict):
             return
         commentary_parts = self._extract_codex_interim_visible_parts(assistant_msg)
         undelivered_parts: List[str] = []
@@ -6383,6 +7376,25 @@ class AIAgent:
         ):
             return
         already_streamed = self._interim_content_was_streamed(visible)
+        try:
+            from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
+
+            enqueue_plugin_stream_hook(
+                "on_interim_message",
+                turn_id=getattr(self, "_current_turn_id", "") or "",
+                iteration=int(getattr(self, "_api_call_count", 0) or 0),
+                session_id=self.session_id or "",
+                model=self.model or "",
+                provider=self.provider or "",
+                surface=self.platform or "cli",
+                text=visible,
+                already_streamed=already_streamed,
+            )
+        except Exception:
+            logger.debug("on_interim_message plugin hook enqueue failed", exc_info=True)
+        cb = getattr(self, "interim_assistant_callback", None)
+        if cb is None:
+            return
         try:
             cb(visible, already_streamed=already_streamed)
             if undelivered_parts:
@@ -6468,6 +7480,38 @@ class AIAgent:
                 where, _n,
             )
 
+    def _stream_hook_base_payload(self) -> Dict[str, Any]:
+        return {
+            "turn_id": getattr(self, "_current_turn_id", "") or "",
+            "iteration": int(getattr(self, "_api_call_count", 0) or 0),
+            "session_id": self.session_id or "",
+            "model": self.model or "",
+            "provider": self.provider or "",
+            "surface": self.platform or "cli",
+        }
+
+    def _emit_stream_start(self) -> None:
+        try:
+            from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
+
+            enqueue_plugin_stream_hook("on_stream_start", **self._stream_hook_base_payload())
+        except Exception:
+            logger.debug("on_stream_start plugin hook enqueue failed", exc_info=True)
+
+    def _emit_stream_end(self, *, final_text: str, finished: bool, error: str | None) -> None:
+        try:
+            from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
+
+            enqueue_plugin_stream_hook(
+                "on_stream_end",
+                **self._stream_hook_base_payload(),
+                final_text=final_text,
+                finished=finished,
+                error=error,
+            )
+        except Exception:
+            logger.debug("on_stream_end plugin hook enqueue failed", exc_info=True)
+
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""
         # Single-writer guard (#65991): a superseded stream must not interleave
@@ -6508,9 +7552,12 @@ class AIAgent:
             else:
                 # Defensive: legacy callers without the scrubber attribute.
                 text = sanitize_context(text)
-            # Only strip leading newlines on the first delta — mid-stream "\n" is legitimate markdown.
+            # Only strip leading newlines on the first delta. Mid-stream
+            # newlines are legitimate markdown. Look at the parts list, not
+            # the joined property: joining on every token would copy the
+            # whole reply again.
             if not prepended_break and not getattr(
-                self, "_current_streamed_assistant_text", ""
+                self, "_streamed_assistant_text_parts", None
             ):
                 text = text.lstrip("\n")
         if not text:
@@ -6523,6 +7570,17 @@ class AIAgent:
                 delivered = True
             except Exception:
                 pass
+        try:
+            from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
+
+            enqueue_plugin_stream_hook(
+                "on_stream_delta",
+                **self._stream_hook_base_payload(),
+                delta=text,
+                kind="text",
+            )
+        except Exception:
+            logger.debug("on_stream_delta plugin hook enqueue failed", exc_info=True)
         if delivered:
             self._record_streamed_assistant_text(text)
 
@@ -6539,6 +7597,18 @@ class AIAgent:
                 cb(text)
             except Exception:
                 pass
+        try:
+            from agent.plugin_stream_hooks import enqueue_plugin_stream_hook, stream_reasoning_deltas_enabled
+
+            if stream_reasoning_deltas_enabled():
+                enqueue_plugin_stream_hook(
+                    "on_stream_delta",
+                    **self._stream_hook_base_payload(),
+                    delta=text,
+                    kind="reasoning",
+                )
+        except Exception:
+            logger.debug("reasoning on_stream_delta plugin hook enqueue failed", exc_info=True)
 
     def _fire_tool_gen_started(self, tool_name: str) -> None:
         """Notify display layer that the model is generating tool call arguments.
@@ -6557,6 +7627,13 @@ class AIAgent:
 
     def _has_stream_consumers(self) -> bool:
         """Return True if any streaming consumer is registered."""
+        try:
+            from agent.plugin_stream_hooks import has_stream_observer_hooks
+
+            if has_stream_observer_hooks():
+                return True
+        except Exception:
+            logger.debug("plugin stream hook consumer check failed", exc_info=True)
         return (
             self.stream_delta_callback is not None
             or getattr(self, "_stream_callback", None) is not None
@@ -7046,19 +8123,20 @@ class AIAgent:
         }:
             return True
         base = (getattr(self, "base_url", "") or "").lower()
+        host = base_url_hostname(base)
         return (
-            "dashscope" in base
-            or "aliyuncs" in base
-            or "minimax" in base
-            or "opencode.ai/zen/" in base
-            or "bigmodel.cn" in base
-            or "xiaomimimo.com" in base
+            "dashscope" in host
+            or base_url_host_matches(base, "aliyuncs.com")
+            or "minimax" in host
+            or (base_url_host_matches(base, "opencode.ai") and "/zen/" in base)
+            or base_url_host_matches(base, "bigmodel.cn")
+            or base_url_host_matches(base, "xiaomimimo.com")
             # Vertex AI OpenAI-compat endpoint — Gemini model ids keep dots
             # (e.g. google/gemini-3.5-flash); the hyphenated form is wrong.
-            or "aiplatform.googleapis.com" in base
+            or base_url_host_matches(base, "aiplatform.googleapis.com")
             # AWS Bedrock runtime endpoints — defense-in-depth when
             # ``provider`` is unset but ``base_url`` still names Bedrock.
-            or "bedrock-runtime." in base
+            or host.startswith("bedrock-runtime.")
         )
 
     def _is_qwen_portal(self) -> bool:
@@ -7162,12 +8240,37 @@ class AIAgent:
         # has it; gemma3 / qwen3-coder don't. Cached per (model, base_url).
         if base_url_host_matches(self._base_url_lower, "ollama.com"):
             return self._ollama_supports_thinking_cached()
-        if "openrouter" not in self._base_url_lower:
+        if not self._is_openrouter_url():
             return False
-        if "api.mistral.ai" in self._base_url_lower:
+        if base_url_host_matches(self._base_url_lower, "api.mistral.ai"):
             return False
 
         model = (self.model or "").lower()
+        # Live-catalog metadata first (ported from
+        # PrimeIntellect-ai/prime-agent#1258): OpenRouter's /v1/models entries
+        # advertise reasoning support via supported_parameters + a reasoning
+        # object, which covers every routed vendor without a hand-maintained
+        # prefix list. The static prefix allowlist below repeatedly went
+        # stale one vendor at a time (nvidia/ missing → #75386; same class
+        # as tencent/, xiaomi/ additions before it) — metadata makes new
+        # vendors work without a code change. One catalog fetch per process,
+        # cached; unknown (catalog unreachable / unlisted model) falls back
+        # to the static list.
+        try:
+            from hermes_cli.models import (
+                openrouter_model_reasoning_capabilities,
+                warm_openrouter_reasoning_caps_async,
+            )
+            caps = openrouter_model_reasoning_capabilities(self.model)
+            if caps is None:
+                # Cache cold (no picker run this process) — warm it in the
+                # background so subsequent turns get metadata; never block
+                # this turn on HTTP.
+                warm_openrouter_reasoning_caps_async()
+        except Exception:
+            caps = None
+        if caps is not None:
+            return bool(caps.get("supports_reasoning"))
         reasoning_model_prefixes = (
             "deepseek/",
             "anthropic/",
@@ -7176,7 +8279,7 @@ class AIAgent:
             "google/gemini-2",
             "google/gemma-4",
             "qwen/qwen3",
-            "tencent/hy3",
+            "tencent/hy",
             "xiaomi/",
         )
         return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
@@ -7319,9 +8422,46 @@ class AIAgent:
             self._needs_deepseek_tool_reasoning()
             or self._needs_kimi_tool_reasoning()
             or self._needs_mimo_tool_reasoning()
+            or self._reasoning_echo_opt_in()
         )
         self._thinking_pad_cache = (key, result)
         return result
+
+    def _reasoning_echo_opt_in(self) -> bool:
+        """Return True when the user has opted in to ``reasoning_content``
+        echo-back for the *current* provider via config.
+
+        This covers custom providers and OpenAI-compatible gateways that
+        proxy thinking-mode models (e.g. a reverse proxy fronting Kimi K3
+        or GLM-5.2) but are not matched by the built-in host-based
+        ``_REASONING_ECHO_RULES`` (DeepSeek / Kimi / MiMo).
+
+        The flag is per-active-provider:
+
+        * **Primary** — read from ``model.reasoning_echo`` in config.yaml
+          at agent init and on ``switch_model()``.
+        * **Fallback** — set by ``try_activate_fallback()`` from the
+          fallback entry's ``reasoning_echo`` field.
+        * **Restore** — ``restore_primary_runtime()`` copies the snapshot
+          saved by ``switch_model()``.
+
+        Unlike a global toggle, this flag travels with the active
+        provider, so falling back to a strict provider (Mistral, Groq,
+        Cerebras) correctly strips ``reasoning_content`` even when the
+        primary had the flag enabled.
+        """
+        return bool(getattr(self, "_reasoning_echo_flag", False))
+
+    @staticmethod
+    def _read_reasoning_echo_from_config() -> bool:
+        """Read ``model.reasoning_echo`` from config; False on any error."""
+        try:
+            from hermes_cli.config import load_config_readonly
+            return bool(
+                (load_config_readonly().get("model") or {}).get("reasoning_echo")
+            )
+        except Exception:
+            return False
 
     def _needs_kimi_tool_reasoning(self) -> bool:
         """Return True when the current provider is Kimi / Moonshot thinking mode.
@@ -7454,6 +8594,7 @@ class AIAgent:
         task_id: str = "default",
         focus_topic: str = None,
         force: bool = False,
+        bypass_cooldown: bool = False,
         defer_context_engine_notification: bool = False,
         commit_fence=None,
     ) -> tuple:
@@ -7462,19 +8603,35 @@ class AIAgent:
         ``force=True`` is passed by the manual ``/compress`` slash command
         so users can bypass the summary-failure cooldown after an
         auto-compress abort.  Auto-compress callers use the default
-        ``force=False``.
+        ``force=False``.  ``bypass_cooldown=True`` is passed by the
+        provider-proven overflow recovery path so one real attempt runs while
+        the cooldown is armed (#100661) — without clearing it.
         """
+        # Per-attempt signal consumed by turn-start preflight (#98424) and the
+        # in-loop pre-API/overflow consumers. A stalled compression must not
+        # be mistaken for a structural no-op and followed by the oversized
+        # provider request it was meant to prevent. The typed helper upgrades
+        # the simple attribute to thread-local state guarded by a per-agent
+        # lock so overlapping automatic/manual entrypoints cannot clobber each
+        # other's outcome (#98741).
         from agent.conversation_compression import (
             CompressionCommitFence,
             compress_context,
+            mark_context_compression_timed_out,
+            reset_context_compression_timeout_outcome,
             resolve_context_compression_timeouts,
             run_compress_context_with_progress_timeout,
         )
+        reset_context_compression_timeout_outcome(self)
         from agent.portal_tags import (
+            get_affinity_scope,
             get_conversation_context,
+            reset_affinity_scope,
             reset_conversation_context,
+            set_affinity_scope,
             set_conversation_context,
         )
+        from agent.prompt_cache_scope import declared_conversation_scope_safe
         # Out-of-turn compaction entry points — ``/compact`` (cli.py), the
         # gateway ``/compress`` command and its hygiene sweep (both of which
         # build a throwaway agent), and partial head compression — call this
@@ -7494,6 +8651,16 @@ class AIAgent:
             root = self._conversation_root_id()
             if root:
                 token = set_conversation_context(root)
+        # Same fallback for the ROUTING scope: out-of-turn compaction would
+        # otherwise send the summarizer's call with no sticky key at all, or
+        # (worse, on a per-response host) with a key that no longer matches
+        # the conversation it is compacting. Only set when the host declared
+        # one — unset keeps the pre-#96811 conversation-id fallback.
+        affinity_token = None
+        if get_affinity_scope() is None:
+            declared = declared_conversation_scope_safe(self)
+            if declared:
+                affinity_token = set_affinity_scope(declared)
         # Every AIAgent compression has a fence, including ordinary in-turn and
         # manual paths. hard_interrupt() uses this exact instance to serialize
         # cancel admission against begin_commit().
@@ -7519,6 +8686,7 @@ class AIAgent:
                     approx_tokens=approx_tokens, task_id=task_id,
                     focus_topic=focus_topic,
                     force=force,
+                    bypass_cooldown=bypass_cooldown,
                     defer_context_engine_notification=(
                         defer_context_engine_notification
                     ),
@@ -7527,129 +8695,275 @@ class AIAgent:
 
             # Callers that already own a progress-aware wait (gateway session
             # hygiene) pass commit_fence and must not be double-wrapped.
-            if commit_fence is not None:
-                return _run(active_fence)
+            direct_path = commit_fence is not None
+            idle_timeout = total_ceiling = None
+            if not direct_path:
+                idle_timeout, total_ceiling = resolve_context_compression_timeouts()
+                if idle_timeout <= 0:
+                    direct_path = True
 
-            idle_timeout, total_ceiling = resolve_context_compression_timeouts()
-            if idle_timeout <= 0:
-                return _run(active_fence)
-
-            def _snapshot_worker(fence=None):
-                # #76354 review F3: the pooled worker must NEVER share the
-                # caller's live transcript. Plugin/legacy context engines are
-                # allowed to mutate their input list in place; after a host
-                # timeout the worker stays alive, so a shared list would let
-                # a late engine rewrite the live conversation (roles,
-                # ordering, persisted content) behind the caller's back.
-                # Deep-snapshot here, on the worker thread, so the caller's
-                # list object is never touched by pooled code. Results are
-                # published to caller-visible state only via the returned
-                # value of an ADMITTED commit (the host discards results on
-                # timeout/cancel); durable SessionDB mutation is already
-                # gated behind the commit fence inside compress_context.
-                snapshot = copy.deepcopy(messages)
-                result_msgs, result_prompt = _run(
-                    fence, target_messages=snapshot
-                )
-                if result_msgs is snapshot:
-                    # No-op/abort path returned the snapshot unchanged: hand
-                    # back the caller's ORIGINAL list so identity-based
-                    # semantics (len/identity no-op detection, flush dedup
-                    # by id()) keep working.
-                    return messages, result_prompt
-                return result_msgs, result_prompt
-
-            # Resolve the fallback prompt lazily on timeout only. Eager
-            # rebuild here would raise before compress_context runs whenever
-            # _cached_system_prompt is unset and _build_system_prompt fails
-            # (lock-refresher / noop-exception tests rely on that path).
-            def _fallback_prompt():
-                cached = getattr(self, "_cached_system_prompt", None)
-                if cached:
-                    return cached
-                try:
-                    return self._build_system_prompt(system_message)
-                except Exception:
-                    logger.debug(
-                        "compress_context timeout fallback prompt rebuild "
-                        "failed; using raw system_message",
-                        exc_info=True,
+            if direct_path:
+                result = _run(active_fence)
+            else:
+                def _snapshot_worker(fence=None):
+                    # #76354 review F3: the pooled worker must NEVER share the
+                    # caller's live transcript. Plugin/legacy context engines are
+                    # allowed to mutate their input list in place; after a host
+                    # timeout the worker stays alive, so a shared list would let
+                    # a late engine rewrite the live conversation (roles,
+                    # ordering, persisted content) behind the caller's back.
+                    # Deep-snapshot here, on the worker thread, so the caller's
+                    # list object is never touched by pooled code. Results are
+                    # published to caller-visible state only via the returned
+                    # value of an ADMITTED commit (the host discards results on
+                    # timeout/cancel); durable SessionDB mutation is already
+                    # gated behind the commit fence inside compress_context.
+                    snapshot = copy.deepcopy(messages)
+                    result_msgs, result_prompt = _run(
+                        fence, target_messages=snapshot
                     )
-                    return system_message or ""
+                    if result_msgs is snapshot:
+                        # No-op/abort path returned the snapshot unchanged: hand
+                        # back the caller's ORIGINAL list so identity-based
+                        # semantics (len/identity no-op detection, flush dedup
+                        # by id()) keep working.
+                        return messages, result_prompt
+                    return result_msgs, result_prompt
 
-            def _on_timeout(idle, waited, since_progress):
-                logger.warning(
-                    "Context compression made no progress for %.1fs "
-                    "(total wait %.1fs, ceiling %.1fs); continuing without "
-                    "compression",
-                    since_progress,
-                    waited,
-                    total_ceiling,
-                )
-                touch = getattr(self, "_touch_activity", None)
-                if callable(touch):
+                # Resolve the fallback prompt lazily on timeout only. Eager
+                # rebuild here would raise before compress_context runs whenever
+                # _cached_system_prompt is unset and _build_system_prompt fails
+                # (lock-refresher / noop-exception tests rely on that path).
+                def _fallback_prompt():
+                    cached = getattr(self, "_cached_system_prompt", None)
+                    if cached:
+                        return cached
                     try:
-                        touch(
-                            "context compression timed out",
-                            provenance=ActivityProvenance.AGENT_COMPRESSION_TIMEOUT,
-                        )
+                        return self._build_system_prompt(system_message)
                     except Exception:
                         logger.debug(
-                            "compress_context timeout activity touch failed",
+                            "compress_context timeout fallback prompt rebuild "
+                            "failed; using raw system_message",
                             exc_info=True,
                         )
-                # Same timeout cooldown ladder as summary-LLM timeouts
-                # (#62452): avoid re-burning the full idle budget every turn.
-                compressor = getattr(self, "context_compressor", None)
-                if compressor is not None:
-                    record = getattr(compressor, "record_timeout_failure", None)
-                    if callable(record):
+                        return system_message or ""
+
+                timeout_cause = {
+                    "total_exhausted": False,
+                    "progress_observed": False,
+                }
+
+                def _on_timeout_cause(total_exhausted, progress_observed):
+                    timeout_cause["total_exhausted"] = total_exhausted
+                    timeout_cause["progress_observed"] = progress_observed
+
+                def _on_timeout(idle, waited, since_progress):
+                    mark_context_compression_timed_out(self)
+                    total_exhausted = timeout_cause["total_exhausted"]
+                    progress_observed = timeout_cause["progress_observed"]
+                    if total_exhausted:
+                        logger.warning(
+                            "Context compression reached its total ceiling "
+                            "after %.1fs (progress observed=%s); continuing "
+                            "without compression",
+                            waited,
+                            progress_observed,
+                        )
+                    else:
+                        logger.warning(
+                            "Context compression made no progress for %.1fs "
+                            "(total wait %.1fs, ceiling %.1fs); continuing "
+                            "without compression",
+                            since_progress,
+                            waited,
+                            total_ceiling,
+                        )
+                    touch = getattr(self, "_touch_activity", None)
+                    if callable(touch):
                         try:
-                            record(
-                                "host compress_context timeout "
-                                "(no summary progress)"
+                            touch(
+                                "context compression timed out",
+                                provenance=ActivityProvenance.AGENT_COMPRESSION_TIMEOUT,
                             )
                         except Exception:
                             logger.debug(
-                                "failed to record compress_context timeout "
-                                "cooldown",
+                                "compress_context timeout activity touch failed",
                                 exc_info=True,
                             )
-                emit = getattr(self, "_emit_warning", None)
-                if callable(emit):
-                    emit(
-                        "⚠ Context compression timed out "
-                        f"after {idle:.1f}s with no output from the summary "
-                        "model. No messages were dropped — continuing without "
-                        "compression. Run /compress to retry, /new for a clean "
-                        "session, or check auxiliary.compression."
-                    )
+                    # Same timeout cooldown ladder as summary-LLM timeouts
+                    # (#62452): avoid re-burning the full idle budget every turn.
+                    compressor = getattr(self, "context_compressor", None)
+                    if compressor is not None:
+                        record = getattr(compressor, "record_timeout_failure", None)
+                        if callable(record):
+                            try:
+                                reason = (
+                                    "host compress_context total ceiling "
+                                    "exhausted"
+                                    if total_exhausted
+                                    else "host compress_context timeout "
+                                    "(no summary progress)"
+                                )
+                                record(
+                                    reason,
+                                    failure_kind=(
+                                        "ceiling_exhausted"
+                                        if total_exhausted
+                                        else "stalled"
+                                    ),
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "failed to record compress_context timeout "
+                                    "cooldown",
+                                    exc_info=True,
+                                )
+                    emit = getattr(self, "_emit_warning", None)
+                    if callable(emit):
+                        if total_exhausted:
+                            progress = (
+                                " after summary output was observed"
+                                if progress_observed
+                                else ""
+                            )
+                            emit(
+                                "⚠ Context compression reached its total ceiling "
+                                f"after {waited:.1f}s{progress}. No messages were "
+                                "dropped — continuing without compression. Run "
+                                "/compress to retry or /new for a clean session."
+                            )
+                        else:
+                            emit(
+                                "⚠ Context compression timed out "
+                                f"after {idle:.1f}s with no output from the summary "
+                                "model. No messages were dropped — continuing "
+                                "without compression. Run /compress to retry, /new "
+                                "for a clean session, or check "
+                                "auxiliary.compression."
+                            )
 
-            def _on_commit_overrun(waited, ceiling):
-                # Commit-phase ceiling breach: the SessionDB mutation is in
-                # flight and must complete (abandoning it mid-commit would
-                # diverge live messages from durable session state), so this
-                # only surfaces the overrun — it never cancels the commit.
-                emit = getattr(self, "_emit_warning", None)
-                if callable(emit):
-                    emit(
-                        "⚠ Context compression commit is taking unusually "
-                        f"long ({waited:.0f}s, ceiling {ceiling:.0f}s). "
-                        "Waiting for it to finish safely — if this persists, "
-                        "check SessionDB health (disk / lock contention)."
-                    )
+                def _on_commit_overrun(waited, ceiling):
+                    # Commit-phase ceiling breach: the SessionDB mutation is in
+                    # flight and must complete (abandoning it mid-commit would
+                    # diverge live messages from durable session state), so this
+                    # only surfaces the overrun — it never cancels the commit.
+                    emit = getattr(self, "_emit_warning", None)
+                    if callable(emit):
+                        emit(
+                            "⚠ Context compression commit is taking unusually "
+                            f"long ({waited:.0f}s, ceiling {ceiling:.0f}s). "
+                            "Waiting for it to finish safely — if this persists, "
+                            "check SessionDB health (disk / lock contention)."
+                        )
 
-            result = run_compress_context_with_progress_timeout(
-                worker=_snapshot_worker,
-                messages=messages,
-                system_prompt_fallback=_fallback_prompt,
-                idle_timeout_seconds=idle_timeout,
-                total_ceiling_seconds=total_ceiling,
-                on_timeout=_on_timeout,
-                on_commit_overrun=_on_commit_overrun,
-                fence=active_fence,
-                telemetry_agent=self,
+                def _publish_new_fence():
+                    # The stall-fallback retry (#78981) needs a fence the aborted
+                    # attempt cannot veto. Publish it on the same serialized slot
+                    # hard_interrupt() reads, so a /stop during the retry admits
+                    # against the attempt that is actually running. The finally
+                    # below restores whatever the caller had either way.
+                    retry_fence = CompressionCommitFence()
+                    with fence_registration_lock:
+                        self._active_compression_commit_fence = retry_fence
+                    return retry_fence
+
+                result = run_compress_context_with_progress_timeout(
+                    worker=_snapshot_worker,
+                    messages=messages,
+                    system_prompt_fallback=_fallback_prompt,
+                    idle_timeout_seconds=idle_timeout,
+                    total_ceiling_seconds=total_ceiling,
+                    on_timeout=_on_timeout,
+                    on_timeout_cause=_on_timeout_cause,
+                    on_commit_overrun=_on_commit_overrun,
+                    fence=active_fence,
+                    telemetry_agent=self,
+                    new_fence=_publish_new_fence,
+                )
+            # _DB_PERSISTED_MARKER lives at module level in
+            # agent.context_compressor; conversation_compression only
+            # imports it locally (cannot be imported from there). Imported
+            # UNCONDITIONALLY (no fallback): both modules are already
+            # hard dependencies at this point — agent.context_compressor is
+            # imported at the top of this module (line ~162), and
+            # agent.conversation_compression is imported at the top of this
+            # very method and its compress_context is invoked below. The
+            # only way these imports can fail while the wrapper is
+            # functional is a renamed/removed symbol, and that must fail
+            # LOUDLY: a silent fallback literal ("_db_persisted") would
+            # split the stamping key from the flush's and quietly resurrect
+            # the duplicate-row bug this fix removed.
+            from agent.context_compressor import _DB_PERSISTED_MARKER
+            from agent.conversation_compression import (
+                _messages_match_scoped_identity,
+
             )
+
+            def _sync_persisted_markers(target_messages, source_messages):
+                if not isinstance(target_messages, list) or not isinstance(
+                    source_messages, list
+                ):
+                    return
+                # Compression runs against a deepcopy snapshot on the pooled
+                # worker path, so publish stamps land on the result list first.
+                # Mirror them back onto the live caller lists by scoped
+                # identity after publish succeeds; timestamp-less repeated
+                # content is ambiguous, so we stamp every scoped match instead
+                # of stopping at the first one.
+                for source_message in source_messages:
+                    if not (
+                        isinstance(source_message, dict)
+                        and source_message.get(_DB_PERSISTED_MARKER)
+                    ):
+                        continue
+                    source_timestamp = source_message.get("timestamp")
+                    matched_exact_timestamp = False
+                    if source_timestamp is not None:
+                        for target_message in target_messages:
+                            if not isinstance(target_message, dict):
+                                continue
+                            if target_message.get(_DB_PERSISTED_MARKER):
+                                continue
+                            if not _messages_match_scoped_identity(
+                                target_message, source_message
+                            ):
+                                continue
+                            if target_message.get("timestamp") != source_timestamp:
+                                continue
+                            target_message[_DB_PERSISTED_MARKER] = True
+                            matched_exact_timestamp = True
+                        if matched_exact_timestamp:
+                            continue
+                    for target_message in target_messages:
+                        if not isinstance(target_message, dict):
+                            continue
+                        if target_message.get(_DB_PERSISTED_MARKER):
+                            continue
+                        if not _messages_match_scoped_identity(
+                            target_message, source_message
+                        ):
+                            continue
+                        target_message[_DB_PERSISTED_MARKER] = True
+
+            if isinstance(result, tuple) and result:
+                result_messages = result[0]
+                if isinstance(result_messages, list):
+                    # Direct-path callers bypass the snapshot worker, so they
+                    # still need the same post-publish mirror onto the live
+                    # caller list even when the returned list already points at
+                    # the active transcript.
+                    if direct_path or result_messages is not messages:
+                        _sync_persisted_markers(messages, result_messages)
+                    session_messages = getattr(self, "_session_messages", None)
+                    if (
+                        isinstance(session_messages, list)
+                        and session_messages is not messages
+                    ):
+                        # Intentional: durable-parent adoption can leave
+                        # `_session_messages` on the pre-adoption live list
+                        # while `messages` now points at the adopted snapshot,
+                        # so both lists need the post-publish marker sync.
+                        _sync_persisted_markers(session_messages, result_messages)
             # compress_context ran on a daemon pool worker thread; the session
             # id rotation updated hermes_logging._session_context (a
             # threading.local) on the WORKER thread, not this one. Propagate
@@ -7687,6 +9001,8 @@ class AIAgent:
             # tag into the surrounding scope.
             if token is not None:
                 reset_conversation_context(token)
+            if affinity_token is not None:
+                reset_affinity_scope(affinity_token)
 
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
         """Record the first guardrail decision that should stop this turn."""
@@ -7709,6 +9025,7 @@ class AIAgent:
         function_result: str,
         *,
         failed: bool,
+        tool_call_id: str = "",
     ) -> str:
         decision = self._tool_guardrails.after_call(
             tool_name,
@@ -7716,11 +9033,54 @@ class AIAgent:
             function_result,
             failed=failed,
         )
+        # Identical-call stall guards (agent.stall_guards): notice-only, no
+        # blocking. Observed on the RAW result (before the loop-warning suffix
+        # below, whose embedded count changes per call and would defeat
+        # result-identity matching). Applied here — at result construction,
+        # before the tool message is built — so it is cache-safe (tool results
+        # are append-only; nothing already sent to the provider is mutated).
+        stall_notice = None
+        result_stub = None
+        if self._stall_guards_enabled():
+            try:
+                observation = self._tool_guardrails.observe_call(
+                    tool_name,
+                    function_args,
+                    function_result if isinstance(function_result, str) else None,
+                    tool_call_id=tool_call_id,
+                    failed=failed,
+                )
+                stall_notice = observation.notice
+                result_stub = observation.stub
+            except Exception as exc:
+                logger.debug("stall-guard identical-call observation failed: %s", exc)
+        # Result-reference stubbing: a 2nd+ consecutive identical call whose
+        # FRESH result is byte-identical enters context as a short reference
+        # stub instead of the duplicate payload. The tool still executed —
+        # this is not a cache; a changed result flows through whole. Only
+        # plain-string results are stubbed (multimodal content lists pass
+        # through untouched), and the current message keeps its role and
+        # tool_call_id — only the content is replaced.
+        if result_stub and isinstance(function_result, str):
+            function_result = result_stub
         if decision.action in {"warn", "halt"}:
             function_result = append_toolguard_guidance(function_result, decision)
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
+        else:
+            # observe_call may have raised the identical-call streak halt
+            # (hard_stop_enabled, tool-agnostic) — surface it the same way.
+            streak_halt = self._tool_guardrails.halt_decision
+            if streak_halt is not None and streak_halt.code == "identical_call_streak_halt":
+                function_result = append_toolguard_guidance(function_result, streak_halt)
+                self._set_tool_guardrail_halt(streak_halt)
+        if stall_notice:
+            function_result = (function_result or "") + "\n\n" + stall_notice
         return function_result
+
+    def _stall_guards_enabled(self) -> bool:
+        """Config gate for the runtime anti-stall guards (agent.stall_guards)."""
+        return bool(getattr(self, "_stall_guards", True))
 
     def _guardrail_block_result(self, decision: ToolGuardrailDecision) -> str:
         self._set_tool_guardrail_halt(decision)
@@ -7799,6 +9159,9 @@ class AIAgent:
             max_iterations=function_args.get("max_iterations"),
             role=function_args.get("role"),
             background=(not _is_subagent),
+            action=function_args.get("action"),
+            subagent_id=function_args.get("subagent_id"),
+            message=function_args.get("message"),
             parent_agent=self,
         )
 
@@ -7903,9 +9266,26 @@ class AIAgent:
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         persist_user_display_metadata: Optional[Dict[str, Any]] = None,
+        persist_user_platform_id: Optional[str] = None,
         moa_config: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
+        # A review deliberately shares this agent's session_id for prompt-cache
+        # parity. Fence review startup or interrupt an admitted request, then
+        # await that request's exit before opening any live-turn Relay or task
+        # instrumentation for the same session. Foreground priority is retained
+        # if the review does not acknowledge within the bounded deadline (#84423).
+        from agent.background_review import cancel_background_review_for_live_turn
+
+        cancel_background_review_for_live_turn(self)
+
+        # Turn liveness for the deferred-review idle queue: a queued review
+        # must not dispatch into the settle gap between two quick prompts.
+        # Marked inside the try below so the balancing note_turn_finished in
+        # its finally covers every exit; the actual start-mark happens as the
+        # first statement of the try.
+        from agent.review_idle_queue import QUEUE as _review_queue
+
         from agent.aux_accounting import (
             reset_accounting_context,
             set_accounting_context,
@@ -7913,9 +9293,12 @@ class AIAgent:
         from agent import relay_runtime
         from agent.conversation_loop import run_conversation
         from agent.portal_tags import (
+            reset_affinity_scope,
             reset_conversation_context,
+            set_affinity_scope,
             set_conversation_context,
         )
+        from agent.prompt_cache_scope import declared_conversation_scope_safe
         from hermes_cli.observability.relay_shared_metrics import (
             finish_task_run,
             start_task_run,
@@ -7939,12 +9322,425 @@ class AIAgent:
         )
         relay_lease = None
         relay_turn = None
+        durable_turn_lease = None
+        durable_turn_lease_stop = None
+        durable_turn_lease_refresh = None
+        durable_turn_liveness_watchdog = None
+        # Handles on the shared periodic scheduler thread (one per process,
+        # agent/periodic_scheduler.py) instead of 1-2 daemon threads per turn.
+        durable_turn_timer_handles = []
+        durable_turn_lease_activity_lock = threading.Lock()
+        durable_turn_lease_turn_active = False
+        durable_turn_lease_interrupt_message = None
         token = None
+        # Initialized alongside `token`: the turn-lease timeout/interrupt
+        # early returns leave the try block before set_affinity_scope() runs,
+        # and the finally reads this name unconditionally (UnboundLocalError
+        # otherwise — the 4 red cross-process lease tests on PR #97158).
+        affinity_token = None
         acct_token = None
         task_started = False
         task_finished = False
         relay_outcome = "failed"
+
+        def _stop_durable_turn_lease_refresher() -> None:
+            nonlocal durable_turn_lease_turn_active
+            with durable_turn_lease_activity_lock:
+                durable_turn_lease_turn_active = False
+                if durable_turn_lease_stop is not None:
+                    durable_turn_lease_stop.set()
+
+        def _clear_durable_turn_lease_interrupt() -> None:
+            """Clear only the interrupt admitted by this turn's refresher."""
+            message = durable_turn_lease_interrupt_message
+            if not message:
+                return
+
+            def _clear_if_owned() -> None:
+                if getattr(self, "_interrupt_message", None) != message:
+                    return
+                self._interrupt_requested = False
+                self._interrupt_message = None
+                getattr(self, "_hard_interrupt_requested", threading.Event()).clear()
+                self._interrupt_thread_signal_pending = False
+                if self._execution_thread_id is not None:
+                    _set_interrupt(False, self._execution_thread_id)
+
+            redirect_lock = getattr(self, "_pending_redirect_lock", None)
+            if redirect_lock is None:
+                _clear_if_owned()
+            else:
+                with redirect_lock:
+                    _clear_if_owned()
+
         try:
+            _review_queue.note_turn_started()
+            # Serialize the full load -> run -> flush region across Hermes
+            # processes. Gateway's asyncio lease closes alias routing inside one
+            # process; this durable lease covers Desktop, CLI resume, gateway,
+            # and background delivery processes sharing state.db (#84234).
+            _turn_db = getattr(self, "_session_db", None)
+            _durable_session_exists = False
+            if _turn_db is not None and session_id:
+                try:
+                    _durable_session_exists = _turn_db.get_session(session_id) is not None
+                except Exception:
+                    # A locked / non-WAL read is not proof the row is absent.
+                    # Treating probe failure as "fresh session" skipped the
+                    # lease this block exists to take and ran fail-open on
+                    # the exact contention point (#84234). Acquire (or fail
+                    # closed if acquire itself cannot) rather than start
+                    # load/run/flush unsynchronized. get_session returns
+                    # None — it does not raise — when the row is missing.
+                    logger.warning(
+                        "Could not check durable session before turn lease; "
+                        "will acquire rather than run without serialization",
+                        exc_info=True,
+                    )
+                    _durable_session_exists = True
+            if (
+                _turn_db is not None
+                and session_id
+                and not getattr(self, "_persist_disabled", False)
+                # A fresh session id is process-unique and has no durable
+                # transcript to race over. More importantly, subagent/new-turn
+                # callers may intentionally supply an in-memory seed before the
+                # row exists; reloading an absent row would erase that seed.
+                and _durable_session_exists
+                # Test doubles and third-party DB shims may accept arbitrary
+                # MagicMock attributes without implementing the protocol. Check
+                # the concrete type so only real implementations opt in.
+                and callable(
+                    getattr(type(_turn_db), "acquire_session_turn_lease", None)
+                )
+            ):
+                # Resumed agents also defer their create check until the turn
+                # prologue. We just proved this row exists, so suppress the
+                # redundant create attempt after acquiring it.
+                self._session_db_created = True
+                _durable_holder = (
+                    f"pid={os.getpid()}:turn={relay_turn_id}:platform="
+                    f"{task_context['platform'] or 'unknown'}"
+                )
+                _lease_ttl = 300.0
+                _lease_waited = False
+
+                def _on_session_turn_lease_wait(elapsed: float) -> None:
+                    nonlocal _lease_waited
+                    _lease_waited = True
+                    if elapsed < 1.0:
+                        self._emit_status(
+                            "⏳ Another Hermes process is using this session; "
+                            "waiting for it to finish before starting your turn..."
+                        )
+                    else:
+                        self._emit_status(
+                            "⏳ Still waiting for the other Hermes process on "
+                            f"this session ({int(elapsed)}s)..."
+                        )
+
+                if not _turn_db.acquire_session_turn_lease(
+                    session_id,
+                    _durable_holder,
+                    ttl_seconds=_lease_ttl,
+                    wait_seconds=1800.0,
+                    on_wait=_on_session_turn_lease_wait,
+                    should_abort=lambda: getattr(self, "_interrupt_requested", False),
+                ):
+                    if getattr(self, "_interrupt_requested", False):
+                        logger.info(
+                            "session turn lease wait aborted by interrupt: %s",
+                            session_id,
+                        )
+                        relay_outcome = "cancelled"
+                        interrupt_msg = (
+                            "Stopped waiting for another Hermes process on "
+                            "this session. Your message was not processed."
+                        )
+                        interrupt_result = {
+                            "final_response": interrupt_msg,
+                            "messages": list(conversation_history or []),
+                            "api_calls": 0,
+                            "completed": False,
+                            "interrupted": True,
+                        }
+                        interrupt_message = getattr(
+                            self, "_interrupt_message", None
+                        )
+                        if interrupt_message:
+                            interrupt_result["interrupt_message"] = (
+                                interrupt_message
+                            )
+                        # Conversation-loop finalizer never runs on this
+                        # early return. Clear so a cached agent cannot
+                        # fail-close the next turn as interrupted.
+                        try:
+                            self.clear_interrupt()
+                        except Exception:
+                            self._interrupt_requested = False
+                            self._interrupt_message = None
+                        return interrupt_result
+                    # Fail closed like gateway TurnLeaseTimeoutError: do not
+                    # enter load/run/flush, and surface a resend notice instead
+                    # of a bare TimeoutError that looks like a hang.
+                    timeout_msg = (
+                        "⏳ Another Hermes process kept this session busy too "
+                        "long. Your message was not processed - wait for the "
+                        "other process to finish, then send it again."
+                    )
+                    logger.error(
+                        "session turn lease wait timed out for %s",
+                        session_id,
+                    )
+                    try:
+                        self._emit_warning(timeout_msg)
+                    except Exception:
+                        logger.debug(
+                            "Failed to emit session turn lease timeout warning",
+                            exc_info=True,
+                        )
+                    relay_outcome = "timed_out"
+                    return {
+                        "final_response": timeout_msg,
+                        "messages": list(conversation_history or []),
+                        "api_calls": 0,
+                        "completed": False,
+                        "failed": True,
+                        "error": f"session_turn_lease_timeout:{session_id}",
+                    }
+
+                # Assign only after admission so finally release cannot target a
+                # holder string that never owned the row. Persist paths read
+                # the agent attr so a late flush after reclaim is fenced in
+                # the same SQLite write transaction as the transcript insert.
+                durable_turn_lease = _durable_holder
+                self._active_session_turn_lease_holder = _durable_holder
+                self._active_session_turn_lease_ttl_seconds = _lease_ttl
+                if _lease_waited:
+                    self._emit_status(
+                        "Session is free; loading the latest transcript..."
+                    )
+
+                # The holder may have compressed and rotated the session while
+                # this process waited. Resolve and reload only AFTER admission;
+                # a caller-provided in-memory snapshot is necessarily stale.
+                # Skip when acquisition was immediate — no other process held
+                # the lease, so the in-memory history is current and reloading
+                # would only cause an unnecessary prompt cache miss.
+                if _lease_waited:
+                    latest_session_id = _turn_db.resolve_resume_session_id(session_id)
+                    if latest_session_id:
+                        self.session_id = latest_session_id
+                        task_context["session_id"] = latest_session_id
+                    conversation_history = _turn_db.get_messages_as_conversation(
+                        self.session_id,
+                        repair_alternation=True,
+                        include_row_ids=True,
+                    )
+
+                # Long model/tool/compression turns outlive a fixed TTL. Refresh
+                # on the shared periodic scheduler; holder-qualified UPDATE and DELETE fence a
+                # late refresher/release from a successor lease.
+                durable_turn_lease_stop = threading.Event()
+                _lease_refresh_interval = float(
+                    getattr(self, "_session_turn_lease_refresh_interval", 60.0)
+                )
+
+                # ── Turn liveness watchdog (#95548) ─────────────────────
+                # The durable lease refresher keeps the lease alive for as
+                # long as the turn runs, so lease renewal is NOT evidence of
+                # progress. A turn that stalls silently (observed #95548: no
+                # tool execution, no API call, no persisted message for 9+
+                # minutes after a slow model response + desktop WS
+                # disconnect) would otherwise renew its lease forever, look
+                # "active", and never be force-aborted.
+                #
+                # The watchdog policy (config resolution, sampling state
+                # machine, polling mechanics) lives in agent/turn_liveness.py;
+                # this block is only the integration seam: resolve the
+                # config.yaml settings, wire the commit/deactivate callbacks
+                # that own turn-lease state, and schedule the poll.
+                try:
+                    from hermes_cli.config import (
+                        load_config_readonly as _liveness_load_config,
+                    )
+                    _liveness_config = _liveness_load_config() or {}
+                except Exception:
+                    _liveness_config = {}
+                from agent import turn_liveness
+
+                _liveness_timeout, _liveness_poll = (
+                    turn_liveness.resolve_turn_liveness_settings(_liveness_config)
+                )
+
+                def _interrupt_turn(message: str) -> None:
+                    # Lease-loss interrupts fire UNCONDITIONALLY (no
+                    # require_generation claim): losing the durable lease
+                    # means this process no longer owns the session, so
+                    # the turn must stop regardless of activity-clock
+                    # progress. The generation-claim machinery is the
+                    # liveness watchdog's only — its stalls can be
+                    # spuriously stale, a lost lease cannot.
+                    nonlocal durable_turn_lease_interrupt_message
+                    with durable_turn_lease_activity_lock:
+                        if (
+                            durable_turn_lease_stop.is_set()
+                            or not durable_turn_lease_turn_active
+                        ):
+                            return
+                        durable_turn_lease_interrupt_message = message
+                        try:
+                            self.interrupt(message, hard_cancel=True)
+                        except Exception:
+                            self._interrupt_requested = True
+                            self._interrupt_message = message
+
+                def _commit_turn_liveness_abort(
+                    snapshot: "turn_liveness.ActivitySnapshot",
+                    message: str,
+                ) -> bool:
+                    """Commit point for the watchdog's stall observation.
+
+                    Revalidates the observed ``(generation, timestamp)`` pair
+                    under the SAME lock ``_touch_activity`` stamps the clock
+                    with, so a turn that resumed while the stall was being
+                    logged/emitted is never hard-cancelled (#95663 review):
+                    it continues and its lease keeps renewing. Returns False
+                    when the observation is stale (watchdog keeps sampling)
+                    or the turn is already winding down.
+
+                    Round-3 (#95663): the revalidated generation is carried
+                    into the interrupt path as a claim
+                    (``require_generation``); ``interrupt`` reserves it,
+                    consumes it and publishes the first interrupt state in
+                    ONE activity-lock critical section (round-6) and
+                    abandons the abort when it went stale.
+
+                    Round-4 (#95663): if ``interrupt`` raises, the abort
+                    declines FAIL-CLOSED — the exceptional path must not
+                    convert the inability to validate/publish the claim
+                    through the normal path into unconditional interrupt
+                    authority. No interrupt state is mutated here; the
+                    watchdog keeps sampling while the turn (which may have
+                    resumed) continues.
+                    """
+                    nonlocal durable_turn_lease_interrupt_message
+                    with self._liveness_activity_lock():
+                        current_generation = getattr(
+                            self, "_turn_liveness_activity_generation", 0
+                        )
+                        if (
+                            current_generation,
+                            getattr(self, "_last_activity_ts", None),
+                        ) != (snapshot.generation, snapshot.activity_ts):
+                            return False
+                    with durable_turn_lease_activity_lock:
+                        if (
+                            durable_turn_lease_stop.is_set()
+                            or not durable_turn_lease_turn_active
+                        ):
+                            return False
+                    try:
+                        published = self.interrupt(
+                            message,
+                            hard_cancel=True,
+                            require_generation=current_generation,
+                        )
+                    except Exception:
+                        # Round-4 (#95663): fail closed. An exceptional
+                        # interrupt path must not turn the inability to
+                        # validate/publish the generation claim into
+                        # unconditional abort authority — declining keeps
+                        # the watchdog sampling while the turn (which may
+                        # have resumed) continues.
+                        logger.debug(
+                            "Turn liveness abort interrupt raised; "
+                            "declining the abort",
+                            exc_info=True,
+                        )
+                        published = False
+                    if published is False:
+                        # The generation claim went stale between the
+                        # revalidation above and the hammer: real progress
+                        # landed in the window, so the abort abandons itself
+                        # and the watchdog keeps sampling while the turn
+                        # (and its lease) continue.
+                        return False
+                    with durable_turn_lease_activity_lock:
+                        durable_turn_lease_interrupt_message = message
+                    return True
+
+                def _deactivate_turn_after_liveness_abort() -> None:
+                    """Stop lease renewal after a committed liveness abort.
+
+                    A wedge the hard interrupt cannot unwind must not keep
+                    the lease alive forever (the issue's "lease keeps
+                    renewing" masking); TTL expiry then lets stale-turn
+                    cleanup reclaim the row.
+                    """
+                    nonlocal durable_turn_lease_turn_active
+                    with durable_turn_lease_activity_lock:
+                        durable_turn_lease_stop.set()
+                        durable_turn_lease_turn_active = False
+
+                def _turn_is_active() -> bool:
+                    with durable_turn_lease_activity_lock:
+                        return durable_turn_lease_turn_active
+
+                def _refresh_durable_turn_lease():
+                    # One periodic tick on the shared scheduler thread every
+                    # _lease_refresh_interval; returning False stops it.
+                    if durable_turn_lease_stop.is_set():
+                        return False
+                    try:
+                        if not _turn_db.refresh_session_turn_lease(
+                            getattr(self, "session_id", None) or session_id,
+                            durable_turn_lease,
+                            ttl_seconds=_lease_ttl,
+                        ):
+                            # finally sets the stop event then releases.
+                            # A late holder-fenced miss after that cancel
+                            # wait must not hard-interrupt the next turn.
+                            if durable_turn_lease_stop.is_set():
+                                return False
+                            logger.error(
+                                "Lost session turn lease while turn is active: %s",
+                                getattr(self, "session_id", None) or session_id,
+                            )
+                            _interrupt_turn(
+                                "Session turn lease lost; stopping to protect "
+                                "the transcript."
+                            )
+                            return False
+                    except Exception:
+                        if durable_turn_lease_stop.is_set():
+                            return False
+                        logger.warning(
+                            "Failed to refresh session turn lease: %s",
+                            getattr(self, "session_id", None) or session_id,
+                            exc_info=True,
+                        )
+                        _interrupt_turn(
+                            "Session turn lease could not be refreshed; "
+                            "stopping to protect the transcript."
+                        )
+                        return False
+
+                durable_turn_lease_refresh = _refresh_durable_turn_lease
+                if _liveness_timeout is not None:
+                    durable_turn_liveness_watchdog = turn_liveness.TurnLivenessWatchdog(
+                        self,
+                        session_id=getattr(self, "session_id", None) or session_id,
+                        timeout_s=_liveness_timeout,
+                        poll_s=_liveness_poll,
+                        stop_event=durable_turn_lease_stop,
+                        activity_lock=self._liveness_activity_lock(),
+                        is_turn_active=_turn_is_active,
+                        commit_abort=_commit_turn_liveness_abort,
+                        deactivate_turn=_deactivate_turn_after_liveness_abort,
+                    )
+
+
             relay_lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
                 profile_key=relay_runtime.current_profile_key(),
                 session_id=task_context["session_id"],
@@ -7971,6 +9767,13 @@ class AIAgent:
             # (which copy this Context into their thread) — inherits the
             # ``conversation=<root>`` tag with zero per-call-site plumbing.
             token = set_conversation_context(self._conversation_root_id())
+            # Routing/affinity scope for the same turn — the conversation the
+            # HOST declared, when it declared one. Providers fall back to the
+            # attribution id above when it is unset, so this changes nothing
+            # for a host that keeps one session id per conversation (#96811).
+            affinity_token = set_affinity_scope(
+                declared_conversation_scope_safe(self)
+            )
             # Publish the session accounting handles the same way so auxiliary
             # calls record their token usage into session_model_usage (task
             # dimension) — the fix for aux spend being invisible in analytics
@@ -7986,19 +9789,53 @@ class AIAgent:
             # Keep the scope local instead of storing ContextVar tokens on the agent,
             # which may be observed from another thread.
             with bind_subagent_parent(self), scoped_runtime_main({}):
-                result = run_conversation(
-                    self,
-                    user_message,
-                    system_message,
-                    conversation_history,
-                    effective_task_id,
-                    stream_callback,
-                    persist_user_message,
-                    persist_user_timestamp=persist_user_timestamp,
-                    persist_user_display_kind=persist_user_display_kind,
-                    persist_user_display_metadata=persist_user_display_metadata,
-                    moa_config=moa_config,
-                )
+                try:
+                    if durable_turn_lease_refresh is not None:
+                        with durable_turn_lease_activity_lock:
+                            durable_turn_lease_turn_active = True
+                        # Stamp the activity clock at turn entry (#95663
+                        # review): a real agent keeps ``_last_activity_ts``
+                        # across turns (idle time between turns is normal —
+                        # ``_reset_activity_labels_after_turn`` preserves
+                        # it by design), so without this stamp the liveness
+                        # watchdog would measure idle from the PREVIOUS
+                        # turn and force-abort a just-started turn on its
+                        # first poll whenever the agent had been idle longer
+                        # than the watchdog bound.
+                        self._touch_activity("starting new turn")
+                        from agent.periodic_scheduler import schedule as _schedule_periodic
+
+                        durable_turn_timer_handles.append(
+                            _schedule_periodic(
+                                durable_turn_lease_refresh, _lease_refresh_interval
+                            )
+                        )
+                        if durable_turn_liveness_watchdog is not None:
+                            durable_turn_timer_handles.append(
+                                durable_turn_liveness_watchdog.schedule()
+                            )
+                    result = run_conversation(
+                        self,
+                        user_message,
+                        system_message,
+                        conversation_history,
+                        effective_task_id,
+                        stream_callback,
+                        persist_user_message,
+                        persist_user_timestamp=persist_user_timestamp,
+                        persist_user_display_kind=persist_user_display_kind,
+                        persist_user_display_metadata=persist_user_display_metadata,
+                        persist_user_platform_id=persist_user_platform_id,
+                        moa_config=moa_config,
+                    )
+                finally:
+                    # The lease remains held through relay/task finalization, but
+                    # those post-loop steps must not receive a late refresh
+                    # interrupt that poisons the next turn on a cached agent.
+                    _stop_durable_turn_lease_refresher()
+                    # Interrupt clear is deferred to after thread join in the
+                    # outer finally: a refresher firing between stop and join
+                    # would otherwise set an interrupt that survives the clear.
             terminal = result if isinstance(result, dict) else {}
             if terminal.get("interrupted") is True:
                 relay_outcome = "cancelled"
@@ -8044,6 +9881,32 @@ class AIAgent:
                             relay_lease
                         )
                 finally:
+                    _stop_durable_turn_lease_refresher()
+                    # wait=1.0 mirrors the old thread join(timeout=1.0): an
+                    # in-flight tick on the scheduler thread finishes first.
+                    for _durable_handle in durable_turn_timer_handles:
+                        _durable_handle.cancel(wait=1.0)
+                    # Clear any interrupt the refresher may have fired between
+                    # the inner stop and this cancel. Must run AFTER it so a
+                    # late interrupt does not survive into the next turn.
+                    _clear_durable_turn_lease_interrupt()
+                    if durable_turn_lease is not None:
+                        try:
+                            _turn_db.release_session_turn_lease(
+                                session_id, durable_turn_lease
+                            )
+                        except Exception:
+                            logger.error(
+                                "Failed to release session turn lease: %s",
+                                session_id,
+                                exc_info=True,
+                            )
+                        if (
+                            getattr(self, "_active_session_turn_lease_holder", None)
+                            == durable_turn_lease
+                        ):
+                            self._active_session_turn_lease_holder = None
+                            self._active_session_turn_lease_ttl_seconds = None
                     # Always clear mid-turn labels when the turn exits — including
                     # interrupted early returns that skip finalize_turn. Keep ts.
                     try:
@@ -8056,6 +9919,15 @@ class AIAgent:
                         reset_accounting_context(acct_token)
                     if token is not None:
                         reset_conversation_context(token)
+                    if affinity_token is not None:
+                        reset_affinity_scope(affinity_token)
+                    # Balance the note_turn_started above — every exit path
+                    # lands here, so the idle queue's live-turn count cannot
+                    # leak upward and starve deferred reviews.
+                    try:
+                        _review_queue.note_turn_finished()
+                    except Exception:
+                        pass
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

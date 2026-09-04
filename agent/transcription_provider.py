@@ -190,4 +190,9 @@ class TranscriptionProvider(abc.ABC):
                 ignore this argument.
             **extra: Forward-compat parameters future schema versions
                 may expose. Implementations should ignore unknown keys.
+                The dispatcher currently forwards ``prompt`` here when a
+                transcription prompt is set (via the ``stt.prompt`` config
+                key or a ``pre_transcription`` hook) — prompt-capable
+                providers may use it as a vocabulary/context hint; others
+                should ignore it.
         """

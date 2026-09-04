@@ -40,6 +40,7 @@ import json
 import logging
 import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
@@ -1013,6 +1014,12 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     (task_id, json.dumps({"priority": int(payload.priority)}),
                      int(time.time())),
                 )
+            # Mutation-boundary observer (RFC #58548): this direct-SQL write
+            # bypasses every kanban_db mutator, so report it here — after
+            # the txn commits.
+            kanban_db.notify_task_updated(
+                conn, task_id, ("priority",), board=board,
+            )
 
         # --- title / body -------------------------------------------------
         if payload.title is not None or payload.body is not None:
@@ -1035,6 +1042,13 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     "VALUES (?, 'edited', NULL, ?)",
                     (task_id, int(time.time())),
                 )
+            # Mutation-boundary observer (RFC #58548), post-commit. Field
+            # names only — values never leave the DB via this payload.
+            kanban_db.notify_task_updated(
+                conn, task_id,
+                [f for f in ("title", "body") if getattr(payload, f) is not None],
+                board=board,
+            )
 
         updated = kanban_db.get_task(conn, task_id)
         return {"task": _task_dict(updated) if updated else None}
@@ -1402,6 +1416,12 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             (tid, json.dumps({"priority": int(payload.priority)}),
                              int(time.time())),
                         )
+                    # Mutation-boundary observer (RFC #58548): the bulk
+                    # editor writes with direct SQL too — report each task's
+                    # committed write.
+                    kanban_db.notify_task_updated(
+                        conn, tid, ("priority",), board=board,
+                    )
                 if payload.clear_model_override or payload.model_override is not None:
                     new_model = (
                         None if payload.clear_model_override
@@ -2354,6 +2374,26 @@ class RenameBoardBody(BaseModel):
     project_id: Optional[str] = None
 
 
+# Board transfer exchanges filesystem PATHS, not bytes — same contract as
+# profile export/import, and for the same reason: the clients that drive it
+# (desktop, dashboard) run the native save/open dialog on the machine that
+# hosts the backend, so a path is all either side needs.
+
+class ExportBoardBody(BaseModel):
+    # Where to write the archive. Empty → a staging path under the kanban root.
+    output: str = ""
+    attachments: bool = True
+    logs: bool = False
+
+
+class ImportBoardBody(BaseModel):
+    # Path to a board .tar.gz on the backend's filesystem.
+    archive: str
+    # Override the slug from the archive. Collisions auto-suffix either way.
+    slug: Optional[str] = None
+    switch: bool = False
+
+
 def _resolve_project(ref: Optional[str]) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """Resolve a project id/slug to ``(id, name, primary_path)``.
 
@@ -2564,6 +2604,70 @@ def delete_board(slug: str, delete: bool = Query(False, description="Hard-delete
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"result": res, "current": kanban_db.get_current_board()}
+
+
+@router.post("/boards/{slug}/export")
+async def export_board_endpoint(slug: str, body: ExportBoardBody):
+    """Write ``slug`` to a portable archive; return the path written."""
+    from hermes_cli import kanban_transfer
+
+    output = (body.output or "").strip()
+    if not output:
+        staging = kanban_db.kanban_home() / "kanban" / "board-exports"
+        try:
+            staging.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Could not create export directory: {exc}"
+            )
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        output = str(staging / f"{slug}-{stamp}.tar.gz")
+
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: kanban_transfer.export_board(
+                slug, output,
+                include_attachments=body.attachments,
+                include_logs=body.logs,
+            ),
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        log.exception("POST /boards/%s/export failed", slug)
+        raise HTTPException(status_code=500, detail=str(exc))
+    return result
+
+
+@router.post("/boards/import")
+async def import_board_endpoint(body: ImportBoardBody):
+    """Import a board archive as a NEW board; return the landed board."""
+    from hermes_cli import kanban_transfer
+
+    archive = (body.archive or "").strip()
+    if not archive:
+        raise HTTPException(status_code=400, detail="archive path is required")
+
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: kanban_transfer.import_board(
+                archive, (body.slug or "").strip() or None, activate=body.switch
+            ),
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        log.exception("POST /boards/import failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {**result, "current": kanban_db.get_current_board()}
 
 
 @router.post("/boards/{slug}/switch")
@@ -2881,6 +2985,21 @@ async def stream_events(ws: WebSocket):
         await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
         return
     await ws.accept()
+
+    # Keep one connection alive for this socket after its first poll. SQLite
+    # connections are thread-affine by default, so every operation (including
+    # close) runs on the same dedicated worker. Besides preserving that safety
+    # contract, this avoids repeatedly creating and deleting the WAL/SHM
+    # sidecars while an idle dashboard polls for events.
+    event_conn: Optional[sqlite3.Connection] = None
+    event_executor: Optional[ThreadPoolExecutor] = None
+
+    def _close_event_conn() -> None:
+        nonlocal event_conn
+        if event_conn is not None:
+            event_conn.close()
+            event_conn = None
+
     try:
         since_raw = ws.query_params.get("since", "0")
         try:
@@ -2899,38 +3018,60 @@ async def stream_events(ws: WebSocket):
             ws_board = None
 
         def _fetch_new(cursor_val: int) -> tuple[int, list[dict]]:
-            conn = kanban_db.connect(board=ws_board)
-            try:
-                rows = conn.execute(
-                    "SELECT id, task_id, run_id, kind, payload, created_at "
-                    "FROM task_events WHERE id > ? ORDER BY id ASC LIMIT 200",
-                    (cursor_val,),
-                ).fetchall()
-                out: list[dict] = []
-                new_cursor = cursor_val
-                for r in rows:
-                    try:
-                        payload = json.loads(r["payload"]) if r["payload"] else None
-                    except Exception:
-                        payload = None
-                    out.append({
-                        "id": r["id"],
-                        "task_id": r["task_id"],
-                        "run_id": r["run_id"],
-                        "kind": r["kind"],
-                        "payload": payload,
-                        "created_at": r["created_at"],
-                    })
-                    new_cursor = r["id"]
-                return new_cursor, out
-            finally:
-                conn.close()
+            nonlocal event_conn
+            if event_conn is None:
+                event_conn = kanban_db.connect(board=ws_board)
+            rows = event_conn.execute(
+                "SELECT id, task_id, run_id, kind, payload, created_at "
+                "FROM task_events WHERE id > ? ORDER BY id ASC LIMIT 200",
+                (cursor_val,),
+            ).fetchall()
+            out: list[dict] = []
+            new_cursor = cursor_val
+            for r in rows:
+                try:
+                    payload = json.loads(r["payload"]) if r["payload"] else None
+                except Exception:
+                    payload = None
+                out.append({
+                    "id": r["id"],
+                    "task_id": r["task_id"],
+                    "run_id": r["run_id"],
+                    "kind": r["kind"],
+                    "payload": payload,
+                    "created_at": r["created_at"],
+                })
+                new_cursor = r["id"]
+            return new_cursor, out
 
         while True:
-            cursor, events = await asyncio.to_thread(_fetch_new, cursor)
+            # Race receive() against the poll interval to detect client
+            # disconnect even when no events are being sent. Without this,
+            # a disconnect is only detected via send_json() raising
+            # WebSocketDisconnect, so an idle board leaks zombie poll tasks.
+            try:
+                msg = await asyncio.wait_for(
+                    ws.receive(), timeout=_EVENT_POLL_SECONDS
+                )
+                if msg["type"] == "websocket.disconnect":
+                    return
+                # Any other client message (pong, text) is ignored; we
+                # continue polling.
+            except asyncio.TimeoutError:
+                pass  # no client message — poll the DB
+
+            if event_executor is None:
+                event_executor = ThreadPoolExecutor(
+                    max_workers=1,
+                    thread_name_prefix="kanban-events",
+                )
+            cursor, events = await asyncio.get_running_loop().run_in_executor(
+                event_executor,
+                _fetch_new,
+                cursor,
+            )
             if events:
                 await ws.send_json({"events": events, "cursor": cursor})
-            await asyncio.sleep(_EVENT_POLL_SECONDS)
     except WebSocketDisconnect:
         return
     except asyncio.CancelledError:
@@ -2946,3 +3087,14 @@ async def stream_events(ws: WebSocket):
             await ws.close()
         except Exception:
             pass
+    finally:
+        if event_executor is not None:
+            try:
+                await asyncio.get_running_loop().run_in_executor(
+                    event_executor,
+                    _close_event_conn,
+                )
+            except Exception as exc:
+                log.warning("Kanban event stream connection cleanup failed: %s", exc)
+            finally:
+                event_executor.shutdown(wait=True, cancel_futures=True)

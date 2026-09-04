@@ -319,6 +319,32 @@ def _unique_slug(conn: sqlite3.Connection, candidate: str) -> str:
     return slug
 
 
+def _primary_path_key(path: str) -> str:
+    """Comparison key for primary-path dedup (absolute + case/sep-normalized)."""
+    return os.path.normcase(_normalize_path(path))
+
+
+def find_by_primary_path(
+    conn: sqlite3.Connection, path: str, *, include_archived: bool = False
+) -> Optional[Project]:
+    """The first (oldest) project whose primary path matches ``path``, else None.
+
+    Comparison is separator/case normalized so equivalent Windows spellings of
+    the same folder do not slip past the dedup check.
+    """
+    key = _primary_path_key(path)
+    if not key:
+        return None
+    for proj in list_projects(conn, include_archived=include_archived):
+        primary = proj.primary_path or next(
+            (f.path for f in proj.folders if f.is_primary),
+            proj.folders[0].path if proj.folders else None,
+        )
+        if primary and _primary_path_key(primary) == key:
+            return proj
+    return None
+
+
 def create_project(
     conn: sqlite3.Connection,
     *,
@@ -330,12 +356,19 @@ def create_project(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     board_slug: Optional[str] = None,
+    allow_duplicate_path: bool = False,
 ) -> str:
     """Create a project and return its id.
 
     ``folders`` are normalized to absolute paths. If ``primary_path`` is given
     it is added to the folder set (if not already present) and marked primary;
     otherwise the first folder becomes primary.
+
+    Duplicate projects pointing at the same folder multiply the sidebar's
+    per-project repo subtrees (every duplicate renders its own copy of the same
+    lanes), so a create whose resolved primary path already belongs to a
+    non-archived project raises ``ValueError`` naming the existing project —
+    pass ``allow_duplicate_path=True`` to bypass deliberately.
     """
     name = str(name or "").strip()
     if not name:
@@ -356,6 +389,14 @@ def create_project(
         folder_paths.insert(0, primary)
     if primary is None and folder_paths:
         primary = folder_paths[0]
+
+    if primary and not allow_duplicate_path:
+        existing = find_by_primary_path(conn, primary)
+        if existing is not None:
+            raise ValueError(
+                f"folder already belongs to project '{existing.slug}' ({existing.id}); "
+                "switch to it instead of creating a duplicate"
+            )
 
     with write_txn(conn):
         unique = _unique_slug(conn, slug_candidate)

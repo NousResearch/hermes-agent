@@ -23,7 +23,14 @@ export function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
       session.preview === other.preview &&
       session.message_count === other.message_count &&
       session.last_active === other.last_active &&
-      session.ended_at === other.ended_at
+      session.ended_at === other.ended_at &&
+      // Row STATE, not just row content: session-pin-sync reconciles the
+      // sidebar's pins against `pinned` on the rows in this atom, so a page
+      // whose only delta is a flag has to swap in or the reconciler reads a
+      // frozen copy forever. An idle conversation never moves any of the
+      // fields above again, which is exactly when a pin gets toggled (#76919).
+      session.pinned === other.pinned &&
+      session.archived === other.archived
     )
   })
 }

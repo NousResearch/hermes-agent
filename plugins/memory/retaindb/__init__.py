@@ -364,6 +364,10 @@ class _WriteQueue:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         # Thread-local connection cache — one connection per thread, reused.
         self._local = threading.local()
+        self._connections: set[sqlite3.Connection] = set()
+        self._connections_lock = threading.Lock()
+        self._shutdown_lock = threading.Lock()
+        self._shutdown = False
         self._init_db()
         self._thread.start()
         # Replay any rows left from a previous crash
@@ -374,10 +378,37 @@ class _WriteQueue:
         """Return a cached connection for the current thread."""
         conn = getattr(self._local, "conn", None)
         if conn is None:
-            conn = sqlite3.connect(str(self._db_path), timeout=30)
+            conn = sqlite3.connect(
+                str(self._db_path), timeout=30, check_same_thread=False
+            )
             conn.row_factory = sqlite3.Row
             self._local.conn = conn
+            with self._connections_lock:
+                self._connections.add(conn)
         return conn
+
+    def _close_thread_conn(self) -> None:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            return
+        self._local.conn = None
+        with self._connections_lock:
+            self._connections.discard(conn)
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    def _close_all_connections(self) -> None:
+        """Close tracked connections left by short-lived worker threads."""
+        with self._connections_lock:
+            connections = list(self._connections)
+            self._connections.clear()
+        for conn in connections:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def _init_db(self) -> None:
         conn = self._get_conn()
@@ -394,14 +425,17 @@ class _WriteQueue:
 
     def enqueue(self, user_id: str, session_id: str, messages: list) -> None:
         now = datetime.now(timezone.utc).isoformat()
-        conn = self._get_conn()
-        cur = conn.execute(
-            "INSERT INTO pending (user_id, session_id, messages_json, created_at) VALUES (?,?,?,?)",
-            (user_id, session_id, json.dumps(messages, ensure_ascii=False), now),
-        )
-        row_id = cur.lastrowid
-        conn.commit()
-        self._q.put((row_id, user_id, session_id, messages))
+        with self._shutdown_lock:
+            if self._shutdown:
+                return
+            conn = self._get_conn()
+            cur = conn.execute(
+                "INSERT INTO pending (user_id, session_id, messages_json, created_at) VALUES (?,?,?,?)",
+                (user_id, session_id, json.dumps(messages, ensure_ascii=False), now),
+            )
+            row_id = cur.lastrowid
+            conn.commit()
+            self._q.put((row_id, user_id, session_id, messages))
 
     def _flush_row(self, row_id: int, user_id: str, session_id: str, messages: list) -> None:
         try:
@@ -417,20 +451,35 @@ class _WriteQueue:
             time.sleep(2)
 
     def _loop(self) -> None:
-        while True:
-            try:
-                item = self._q.get(timeout=5)
-                if item is _ASYNC_SHUTDOWN:
-                    break
-                self._flush_row(*item)
-            except queue.Empty:
-                continue
-            except Exception as exc:
-                logger.error("RetainDB writer error: %s", exc)
+        try:
+            while True:
+                try:
+                    item = self._q.get(timeout=5)
+                    if item is _ASYNC_SHUTDOWN:
+                        break
+                    self._flush_row(*item)
+                except queue.Empty:
+                    continue
+                except Exception as exc:
+                    logger.error("RetainDB writer error: %s", exc)
+        finally:
+            # sqlite3 connections must close on their owning thread.
+            self._close_thread_conn()
 
     def shutdown(self) -> None:
-        self._q.put(_ASYNC_SHUTDOWN)
+        with self._shutdown_lock:
+            if self._shutdown:
+                return
+            self._shutdown = True
+            self._q.put(_ASYNC_SHUTDOWN)
+        # Caller thread owns connection opened by _init_db/_pending_rows.
+        self._close_thread_conn()
         self._thread.join(timeout=10)
+        if not self._thread.is_alive():
+            # MemoryManager's executor may have opened a connection on a
+            # worker that has already exited; check_same_thread=False lets
+            # shutdown close that tracked handle deterministically.
+            self._close_all_connections()
 
 
 # ---------------------------------------------------------------------------
@@ -581,6 +630,9 @@ class RetainDBMemoryProvider(MemoryProvider):
         # Prevents thread accumulation if turns fire faster than prefetches complete.
         for t in self._prefetch_threads:
             t.join(timeout=2.0)
+        if any(t.is_alive() for t in self._prefetch_threads):
+            logger.debug("RetainDB prefetch still running; skipping new batch")
+            return
         threads = [
             threading.Thread(target=self._prefetch_context, args=(query,), name="retaindb-ctx", daemon=True),
             threading.Thread(target=self._prefetch_dialectic, args=(query,), name="retaindb-dialectic", daemon=True),
@@ -795,8 +847,12 @@ class RetainDBMemoryProvider(MemoryProvider):
     def shutdown(self) -> None:
         for t in self._prefetch_threads:
             t.join(timeout=3.0)
-        if self._queue:
-            self._queue.shutdown()
+        self._prefetch_threads = []
+        queue_obj = self._queue
+        self._queue = None
+        if queue_obj:
+            queue_obj.shutdown()
+        self._client = None
 
 
 def register(ctx) -> None:

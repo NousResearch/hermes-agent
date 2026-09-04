@@ -12,13 +12,17 @@ late-binding seam in :mod:`hermes_cli.web_deps` so tests that
 ``monkeypatch.setattr(web_server, "_helper", ...)`` keep working.
 """
 
-import asyncio  # noqa: F401 — used by handlers
+import copy
+import functools
+import inspect
 import json
 import logging
 import re
 import subprocess  # noqa: F401
 import sys  # noqa: F401
+import threading
 import time  # noqa: F401
+from collections import OrderedDict
 from pathlib import Path  # noqa: F401
 from typing import Any, Dict, List, Optional, Tuple  # noqa: F401
 
@@ -74,9 +78,153 @@ _profile_setup_command = late("_profile_setup_command")
 _profile_to_dict = late("_profile_to_dict")
 _resolve_profile_dir = late("_resolve_profile_dir")
 _spawn_hermes_action = late("_spawn_hermes_action")
+run_in_threadpool = late("run_in_threadpool")
 _strip_session_list_rows = late("_strip_session_list_rows")
 _write_profile_mcp_servers = late("_write_profile_mcp_servers")
 _write_profile_model = late("_write_profile_model")
+
+# Returned by the offloaded file readers below to mean "the file is not there",
+# which a plain ``None`` cannot express: ``desktop.json`` may legitimately hold
+# the document ``null``, and that is an existing-but-empty overlay rather than
+# an absent one.
+_MISSING = object()
+
+
+# Bounded cache lifetime for the expensive sidebar scan. Short enough that the
+# UI never shows meaningfully stale data, long enough to coalesce the desktop's
+# reconnect/focus/change poll bursts into one scan.
+_SIDEBAR_CACHE_TTL_SECONDS = 5.0
+_SIDEBAR_CACHE_MAX_ENTRIES = 32
+_SIDEBAR_PROFILE_CACHE_MAX_ENTRIES = 256
+_SIDEBAR_PROFILE_CACHE = OrderedDict()
+_SIDEBAR_PROFILE_CACHE_LOCK = threading.Lock()
+
+
+def _stat_fingerprint(path: Path):
+    """Return identity + mutation metadata without opening the file."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+
+def _sidebar_db_fingerprint(db_path: Path):
+    """Track SQLite content changes through the main DB and its WAL."""
+    wal_path = Path(f"{db_path}-wal")
+    return (_stat_fingerprint(db_path), _stat_fingerprint(wal_path))
+
+
+def _sidebar_profile_cache_get(key):
+    with _SIDEBAR_PROFILE_CACHE_LOCK:
+        value = _SIDEBAR_PROFILE_CACHE.get(key)
+        if value is None:
+            return None
+        _SIDEBAR_PROFILE_CACHE.move_to_end(key)
+        return copy.deepcopy(value)
+
+
+def _sidebar_profile_cache_put(key, value):
+    db_path, fingerprint = key[:2]
+    snapshot = copy.deepcopy(value)
+    with _SIDEBAR_PROFILE_CACHE_LOCK:
+        # A changed DB/WAL makes all older parameter variants for that profile
+        # obsolete. Remove them eagerly rather than waiting for LRU pressure.
+        stale = [
+            existing
+            for existing in _SIDEBAR_PROFILE_CACHE
+            if existing[0] == db_path and existing[1] != fingerprint
+        ]
+        for existing in stale:
+            _SIDEBAR_PROFILE_CACHE.pop(existing, None)
+        _SIDEBAR_PROFILE_CACHE[key] = snapshot
+        _SIDEBAR_PROFILE_CACHE.move_to_end(key)
+        while len(_SIDEBAR_PROFILE_CACHE) > _SIDEBAR_PROFILE_CACHE_MAX_ENTRIES:
+            _SIDEBAR_PROFILE_CACHE.popitem(last=False)
+
+
+def _sidebar_profile_cache_clear():
+    with _SIDEBAR_PROFILE_CACHE_LOCK:
+        _SIDEBAR_PROFILE_CACHE.clear()
+
+
+def _sidebar_singleflight_cache(func):
+    """Coalesce concurrent sidebar scans and briefly reuse their response.
+
+    Every uncached refresh opens every profile database and runs up to three
+    session queries per profile. Desktop reconnect/focus/change bursts can
+    therefore overlap several identical scans in AnyIO worker threads, which
+    amplifies YAML/SQLite work and starves the uvicorn event loop for the GIL.
+
+    The short TTL bounds UI staleness while the single-flight lock guarantees
+    only one expensive scan runs at a time. Cached values are copied on store
+    and hit so FastAPI serialization or a caller cannot mutate shared state.
+    """
+    signature = inspect.signature(func)
+    cache = OrderedDict()
+    cache_lock = threading.Lock()
+    refresh_lock = threading.Lock()
+    miss = object()
+
+    def _key(args, kwargs):
+        bound = signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        return tuple(bound.arguments.items())
+
+    def _lookup(key):
+        now = time.monotonic()
+        with cache_lock:
+            item = cache.get(key)
+            if item is None:
+                return miss
+            expires_at, value = item
+            if now >= expires_at:
+                cache.pop(key, None)
+                return miss
+            cache.move_to_end(key)
+            return copy.deepcopy(value)
+
+    @functools.wraps(func)
+    def wrapped(*args, **kwargs):
+        ttl = _SIDEBAR_CACHE_TTL_SECONDS
+        if ttl <= 0:
+            return func(*args, **kwargs)
+
+        key = _key(args, kwargs)
+        cached = _lookup(key)
+        if cached is not miss:
+            return cached
+
+        # A plain Lock is intentional: FastAPI executes this sync handler in
+        # the AnyIO worker pool, so contenders sleep without holding the GIL.
+        with refresh_lock:
+            cached = _lookup(key)
+            if cached is not miss:
+                return cached
+            result = func(*args, **kwargs)
+            # A 200 carrying errors[] is a FAILED profile scan, not a
+            # successful empty page. Caching it holds the empty recents in
+            # front of a store that has already recovered, for the whole TTL.
+            if isinstance(result, dict) and result.get("errors"):
+                return result
+            try:
+                snapshot = copy.deepcopy(result)
+            except Exception:
+                _log.exception("sidebar response could not be cached")
+                return result
+            with cache_lock:
+                cache[key] = (time.monotonic() + ttl, snapshot)
+                cache.move_to_end(key)
+                while len(cache) > _SIDEBAR_CACHE_MAX_ENTRIES:
+                    cache.popitem(last=False)
+            return result
+
+    def cache_clear():
+        with cache_lock:
+            cache.clear()
+
+    wrapped.cache_clear = cache_clear
+    return wrapped
 
 
 @sessions_router.get("/api/profiles/sessions")
@@ -123,8 +271,9 @@ def get_profiles_sessions(
         targets.append((name, home))
     else:
         try:
-            infos = profiles_mod.list_profiles()
-            targets = [(info.name, info.path) for info in infos]
+            # This endpoint only needs name/path. Avoid list_profiles(), which
+            # parses config/meta and probes gateways/skills per profile.
+            targets = profiles_mod.profiles_to_serve(multiplex=True)
         except Exception:
             _log.exception("GET /api/profiles/sessions: list_profiles failed")
             targets = []
@@ -230,6 +379,7 @@ def get_profiles_sessions(
 
 
 @sessions_router.get("/api/profiles/sessions/sidebar")
+@_sidebar_singleflight_cache
 def get_profiles_sessions_sidebar(
     recents_profile: str = "all",
     recents_limit: int = 20,
@@ -263,8 +413,9 @@ def get_profiles_sessions_sidebar(
     from hermes_cli import profiles as profiles_mod
 
     try:
-        infos = profiles_mod.list_profiles()
-        targets: List[Tuple[str, Path]] = [(info.name, info.path) for info in infos]
+        # Session aggregation only needs name/path; the lightweight enumerator
+        # avoids YAML/meta/gateway/skill probes for all profiles per refresh.
+        targets: List[Tuple[str, Path]] = profiles_mod.profiles_to_serve(multiplex=True)
     except Exception:
         _log.exception("GET /api/profiles/sessions/sidebar: list_profiles failed")
         targets = []
@@ -323,38 +474,61 @@ def get_profiles_sessions_sidebar(
         db_path = Path(home) / "state.db"
         if not db_path.exists():
             continue
-        try:
-            # Read-only with the stale-schema heal — same contract as the
-            # per-slice endpoint above (one-time writable reconcile when the
-            # store predates a schema addition, plain read-only otherwise).
-            db = _open_session_db_at_path(db_path, read_only=True)
-        except Exception as exc:
-            _warn_profile_read_error(name, exc)
-            errors.append({"profile": name, "error": str(exc)})
-            continue
-        try:
-            profile_rows = _slice(db, exclude=recents_exclude_list, cap=recents_cap)
-            # A full window means more rows remain on disk. That is all the
-            # sidebar's "load more" needs, and unlike an exact COUNT(*) per
-            # profile per refresh it costs nothing beyond the rows already
-            # read. Discount pinned back-fills — they arrive past the LIMIT
-            # and would otherwise fake a full page on a short list.
-            unpinned_count = sum(1 for s in profile_rows if not s.get("pinned"))
-            recents_truncated[name] = unpinned_count >= recents_cap
-            recents_rows.extend(_tag(profile_rows, name))
-            # Aggregated in SQL rather than over the window above: the window is
-            # a page, and a total that shrank when you scrolled would be worse
-            # than no total at all.
-            profile_totals[name] = db.usage_totals()
-            cron_rows.extend(_tag(_slice(db, source="cron", cap=cron_cap), name))
-            messaging_rows.extend(
-                _tag(_slice(db, exclude=messaging_exclude_list, cap=messaging_cap), name)
-            )
-        except Exception as exc:
-            _warn_profile_read_error(name, exc)
-            errors.append({"profile": name, "error": str(exc)})
-        finally:
-            db.close()
+        fingerprint = _sidebar_db_fingerprint(db_path)
+        profile_cache_key = (
+            str(db_path),
+            fingerprint,
+            recents_cap,
+            tuple(recents_exclude_list),
+            cron_cap,
+            messaging_cap,
+            tuple(messaging_exclude_list),
+        )
+        slices = _sidebar_profile_cache_get(profile_cache_key)
+        if slices is None:
+            try:
+                # Read-only with the stale-schema heal — same contract as the
+                # per-slice endpoint above (one-time writable reconcile when the
+                # store predates a schema addition, plain read-only otherwise).
+                db = _open_session_db_at_path(db_path, read_only=True)
+            except Exception as exc:
+                _warn_profile_read_error(name, exc)
+                errors.append({"profile": name, "error": str(exc)})
+                continue
+            try:
+                slices = {
+                    "recents": _slice(db, exclude=recents_exclude_list, cap=recents_cap),
+                    # Aggregated in SQL rather than over the recents window: the
+                    # window is a page, and a total that shrank when you scrolled
+                    # would be worse than no total at all.
+                    "usage": db.usage_totals(),
+                    "cron": _slice(db, source="cron", cap=cron_cap),
+                    "messaging": _slice(
+                        db,
+                        exclude=messaging_exclude_list,
+                        cap=messaging_cap,
+                    ),
+                }
+                _sidebar_profile_cache_put(profile_cache_key, slices)
+            except Exception as exc:
+                _warn_profile_read_error(name, exc)
+                errors.append({"profile": name, "error": str(exc)})
+                continue
+            finally:
+                db.close()
+
+        profile_rows = slices["recents"]
+        # A full window means more rows remain on disk. That is all the
+        # sidebar's "load more" needs, and unlike an exact COUNT(*) per
+        # profile per refresh it costs nothing beyond the rows already
+        # read. Discount pinned back-fills — they arrive past the LIMIT
+        # and would otherwise fake a full page on a short list.
+        unpinned_count = sum(1 for s in profile_rows if not s.get("pinned"))
+        recents_truncated[name] = unpinned_count >= recents_cap
+        recents_rows.extend(_tag(profile_rows, name))
+        profile_totals[name] = slices["usage"]
+        cron_rows.extend(_tag(slices["cron"], name))
+        messaging_rows.extend(_tag(slices["messaging"], name))
 
     def _window(rows: List[Dict[str, Any]], cap: int) -> List[Dict[str, Any]]:
         rows.sort(key=lambda s: s.get("last_active") or s.get("started_at") or 0, reverse=True)
@@ -614,8 +788,7 @@ def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
     try:
-        loop = asyncio.get_running_loop()
-        profiles = await loop.run_in_executor(None, profiles_mod.list_profiles)
+        profiles = await run_in_threadpool(profiles_mod.list_profiles)
         return {"profiles": [_profile_to_dict(p) for p in profiles]}
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
@@ -745,15 +918,23 @@ async def get_active_profile_endpoint():
     the running dashboard/gateway is scoped to (derived from HERMES_HOME).
     """
     from hermes_cli import profiles as profiles_mod
-    try:
-        active = profiles_mod.get_active_profile() or "default"
-    except Exception:
-        active = "default"
-    try:
-        current = profiles_mod.get_active_profile_name() or "default"
-    except Exception:
-        current = "default"
-    return {"active": active, "current": current}
+
+    def _run():
+        # Both reads touch the filesystem: get_active_profile() reads the
+        # active_profile state file and get_active_profile_name() resolves
+        # HERMES_HOME against the profiles root. Batched into one hop so the
+        # sidebar's polling costs a single executor round-trip, not two.
+        try:
+            active = profiles_mod.get_active_profile() or "default"
+        except Exception:
+            active = "default"
+        try:
+            current = profiles_mod.get_active_profile_name() or "default"
+        except Exception:
+            current = "default"
+        return {"active": active, "current": current}
+
+    return await run_in_threadpool(_run)
 
 
 @router.post("/api/profiles/active")
@@ -764,8 +945,14 @@ async def set_active_profile_endpoint(body: ProfileActiveUpdate):
     it changes which profile subsequent CLI commands and gateways use.
     """
     from hermes_cli import profiles as profiles_mod
+
+    def _run():
+        return profiles_mod.set_active_profile(body.name)
+
     try:
-        profiles_mod.set_active_profile(body.name)
+        # set_active_profile() stats the target profile, creates the state
+        # directory and writes active_profile through a temp file + replace.
+        await run_in_threadpool(_run)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -838,8 +1025,16 @@ async def open_profile_terminal_endpoint(name: str):
 @router.patch("/api/profiles/{name}")
 async def rename_profile_endpoint(name: str, body: ProfileRename):
     from hermes_cli import profiles as profiles_mod
+
+    def _run():
+        return profiles_mod.rename_profile(name, body.new_name)
+
     try:
-        path = profiles_mod.rename_profile(name, body.new_name)
+        # rename_profile() stops a running gateway through the same 10-second
+        # _stop_gateway_process() poll that delete does, then renames the
+        # profile directory, rewrites the Honcho host blocks and regenerates
+        # the wrapper script.
+        path = await run_in_threadpool(_run)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except (ValueError, FileExistsError) as e:
@@ -847,7 +1042,25 @@ async def rename_profile_endpoint(name: str, body: ProfileRename):
     except Exception as e:
         _log.exception("PATCH /api/profiles/%s failed", name)
         raise HTTPException(status_code=500, detail=str(e))
-    return {"ok": True, "name": body.new_name, "path": str(path)}
+    # For the default profile the rename lands as a presentation-only
+    # display_name; the canonical id ("default") is unchanged. Always
+    # return the canonical id so callers keying on `name` stay correct.
+    try:
+        is_default = profiles_mod.normalize_profile_name(name) == "default"
+    except ValueError:
+        is_default = False
+    if is_default:
+        return {
+            "ok": True,
+            "name": "default",
+            "display_name": body.new_name.strip(),
+            "path": str(path),
+        }
+    return {
+        "ok": True,
+        "name": profiles_mod.normalize_profile_name(body.new_name),
+        "path": str(path),
+    }
 
 
 @router.delete("/api/profiles/{name}")
@@ -856,8 +1069,18 @@ async def delete_profile_endpoint(name: str):
     its own dialog before this request, so we always pass ``yes=True`` to
     skip the CLI's interactive prompt."""
     from hermes_cli import profiles as profiles_mod
+
+    def _run():
+        return profiles_mod.delete_profile(name, yes=True)
+
     try:
-        path = profiles_mod.delete_profile(name, yes=True)
+        # delete_profile() stops a running gateway by polling its PID once
+        # every 500 ms for up to 10 s (profiles._stop_gateway_process) and
+        # then rmtree()s the profile directory. Deleting a profile whose
+        # gateway is up — which this path announces as "⚠ Gateway is running
+        # — it will be stopped" — therefore parks the loop for a full ten
+        # seconds, and the desktop's WebSocket ready-probe gives up at ten.
+        path = await run_in_threadpool(_run)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -871,18 +1094,28 @@ async def delete_profile_endpoint(name: str):
 @router.get("/api/profiles/{name}/soul")
 async def get_profile_soul(name: str):
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
-    if soul_path.exists():
-        try:
-            return {"content": soul_path.read_text(encoding="utf-8"), "exists": True}
-        except OSError as e:
-            raise HTTPException(status_code=500, detail=f"Could not read SOUL.md: {e}")
-    return {"content": "", "exists": False}
+
+    def _run():
+        # Probe and read in the same hop: two round-trips would also widen the
+        # window between the existence check and the read.
+        if not soul_path.exists():
+            return _MISSING
+        return soul_path.read_text(encoding="utf-8")
+
+    try:
+        content = await run_in_threadpool(_run)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not read SOUL.md: {e}")
+    if content is _MISSING:
+        return {"content": "", "exists": False}
+    return {"content": content, "exists": True}
 
 
 @router.put("/api/profiles/{name}/soul")
 async def update_profile_soul(name: str, body: ProfileSoulUpdate):
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
-    try:
+
+    def _run():
         from utils import atomic_write_text
 
         # PUT replaces the whole persona document from the dashboard editor.
@@ -902,6 +1135,12 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
         atomic_write_text(
             soul_path, body.content, preserve_mode=True, create_mode=0o644
         )
+
+    try:
+        # atomic_write_text() writes a temp file, fsyncs it and replaces the
+        # original — three syscalls that block for as long as the filesystem
+        # takes to durably commit the persona document.
+        await run_in_threadpool(_run)
     except OSError as e:
         _log.exception("PUT /api/profiles/%s/soul failed", name)
         raise HTTPException(status_code=500, detail=f"Could not write SOUL.md: {e}")
@@ -919,12 +1158,18 @@ async def update_profile_description_endpoint(name: str, body: ProfileDescriptio
     from hermes_cli import profiles as profiles_mod
     profile_dir = _resolve_profile_dir(name)
     text = (body.description or "").strip()
-    try:
+
+    def _run():
         profiles_mod.write_profile_meta(
             profile_dir,
             description=text,
             description_auto=False,
         )
+
+    try:
+        # write_profile_meta() reads profile.yaml, merges the new keys and
+        # writes the document back out.
+        await run_in_threadpool(_run)
     except Exception as e:
         _log.exception("PUT /api/profiles/%s/description failed", name)
         raise HTTPException(status_code=500, detail=str(e))
@@ -944,7 +1189,8 @@ async def update_profile_model_endpoint(name: str, body: ProfileModelUpdate):
     if not provider or not model:
         raise HTTPException(status_code=400, detail="provider and model are required")
     try:
-        _write_profile_model(profile_dir, provider, model)
+        # _write_profile_model() reads and rewrites the profile's config.yaml.
+        await run_in_threadpool(_write_profile_model, profile_dir, provider, model)
     except Exception as e:
         _log.exception("PUT /api/profiles/%s/model failed", name)
         raise HTTPException(status_code=500, detail=str(e))
@@ -961,10 +1207,21 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
     ``ok: false`` with a reason rather than an HTTP error so the UI can
     surface it inline and let the operator fix config and retry.
     """
+    # Resolution stays on the loop: it is a name check plus one stat, and it
+    # owns the 400/404 mapping that the ``except Exception`` below would
+    # otherwise flatten into a 500.
     _resolve_profile_dir(name)
-    try:
+
+    def _run():
         from hermes_cli import profile_describer
-        outcome = profile_describer.describe_profile(name, overwrite=bool(body.overwrite))
+        return profile_describer.describe_profile(name, overwrite=bool(body.overwrite))
+
+    try:
+        # describe_profile() is a plain def that reaches auxiliary_client's
+        # call_llm() — a synchronous provider round-trip with a 60 s ceiling,
+        # six times the desktop's WebSocket disconnect threshold. Held on the
+        # loop it stalls every other dashboard request for that whole window.
+        outcome = await run_in_threadpool(_run)
     except Exception as e:
         _log.exception("POST /api/profiles/%s/describe-auto failed", name)
         raise HTTPException(status_code=500, detail=str(e))
@@ -992,20 +1249,16 @@ async def export_profile_endpoint(name: str, body: ProfileExport):
 
     output = (body.output or "").strip()
     if not output:
-        from hermes_constants import get_hermes_home
-        staging = get_hermes_home() / "profile-exports"
         try:
-            staging.mkdir(parents=True, exist_ok=True)
+            output = str(profiles_mod.get_profile_export_path(name))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"Could not create export directory: {exc}")
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        output = str(staging / f"{profiles_mod.normalize_profile_name(name)}-{stamp}.tar.gz")
 
-    loop = asyncio.get_running_loop()
     try:
-        result = await loop.run_in_executor(
-            None,
-            lambda: profiles_mod.export_profile(name, output, extra_files=body.extra_files or None),
+        result = await run_in_threadpool(
+            profiles_mod.export_profile, name, output, extra_files=body.extra_files or None
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1025,11 +1278,9 @@ async def import_profile_endpoint(body: ProfileImport):
     if not archive:
         raise HTTPException(status_code=400, detail="archive path is required")
 
-    loop = asyncio.get_running_loop()
     try:
-        profile_dir = await loop.run_in_executor(
-            None,
-            lambda: profiles_mod.import_profile(archive, name=(body.name or "").strip() or None),
+        profile_dir = await run_in_threadpool(
+            profiles_mod.import_profile, archive, name=(body.name or "").strip() or None
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1072,10 +1323,19 @@ async def get_profile_desktop_overlay(name: str):
     """The desktop appearance/interface overlay bundled with an imported
     profile (``desktop.json`` at the profile root), or ``exists: false``."""
     overlay_path = _resolve_profile_dir(name) / "desktop.json"
-    if not overlay_path.is_file():
-        return {"exists": False, "desktop": None}
-    try:
+
+    def _run():
+        if not overlay_path.is_file():
+            return _MISSING
         import json as _json
-        return {"exists": True, "desktop": _json.loads(overlay_path.read_text(encoding="utf-8"))}
+        return _json.loads(overlay_path.read_text(encoding="utf-8"))
+
+    try:
+        overlay = await run_in_threadpool(_run)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not read desktop.json: {e}")
+    # _MISSING rather than None: an overlay file holding the document ``null``
+    # exists, and must not be reported as absent.
+    if overlay is _MISSING:
+        return {"exists": False, "desktop": None}
+    return {"exists": True, "desktop": overlay}

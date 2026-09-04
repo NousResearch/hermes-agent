@@ -19,6 +19,7 @@ call time, when main.py is fully loaded) so this module never imports
 """
 
 from __future__ import annotations
+from hermes_cli.cli_output import line_input
 
 import argparse
 import os
@@ -99,15 +100,23 @@ def _prune_replaced_custom_model_config_credentials(
     try:
         from agent.credential_pool import (
             CUSTOM_POOL_PREFIX,
-            get_custom_provider_pool_key,
+            custom_provider_pool_key_candidates,
         )
         from hermes_cli.auth import read_credential_pool, write_credential_pool
 
-        active_pool_key = get_custom_provider_pool_key(
-            base_url,
-            provider_name=provider_name or None,
-        )
-        if not active_pool_key:
+        # A keyed ``providers.<key>`` endpoint stores under the durable slug
+        # while legacy-named pools keep the ``custom:<display-name>`` key, so
+        # every identity the active endpoint may occupy must be skipped —
+        # comparing against a single preferred key false-prunes the provider's
+        # own legacy-named pool (verified regression from PR #100413 review).
+        active_pool_keys = {
+            str(key).strip().lower()
+            for key in custom_provider_pool_key_candidates(
+                base_url,
+                provider_name=provider_name or None,
+            )
+        }
+        if not active_pool_keys:
             return
         pools = read_credential_pool(None)
         if not isinstance(pools, dict):
@@ -116,7 +125,7 @@ def _prune_replaced_custom_model_config_credentials(
             if (
                 not isinstance(pool_key, str)
                 or not pool_key.startswith(CUSTOM_POOL_PREFIX)
-                or pool_key == active_pool_key
+                or pool_key in active_pool_keys
                 or not isinstance(entries, list)
             ):
                 continue
@@ -530,6 +539,15 @@ def _model_flow_nous(config, current_model="", args=None):
     # of CLI release cadence.
     unavailable_models: list[str] = []
     unavailable_message = ""
+
+    # Neither the curated list nor the Portal's recommendations know what the
+    # org may reach. Narrow before the tier split, so an id the policy rescues
+    # still has to pass the free/paid predicate instead of going around it.
+    from hermes_cli.models import nous_policy_allowed_ids, restrict_to_nous_policy
+
+    _policy_allowed = nous_policy_allowed_ids()
+    _policy_narrowed = False
+
     if free_tier:
         try:
             from hermes_cli.nous_account import (
@@ -550,6 +568,11 @@ def _model_flow_nous(config, current_model="", args=None):
         model_ids, pricing = union_with_portal_free_recommendations(
             model_ids, pricing, _nous_portal_url,
         )
+        _before_policy = model_ids
+        model_ids = restrict_to_nous_policy(
+            model_ids, _policy_allowed, rescue_empty=True,
+        )
+        _policy_narrowed = model_ids != _before_policy
         model_ids, unavailable_models = partition_nous_models_by_tier(
             model_ids, pricing, free_tier=True
         )
@@ -557,6 +580,11 @@ def _model_flow_nous(config, current_model="", args=None):
         model_ids, pricing = union_with_portal_paid_recommendations(
             model_ids, pricing, _nous_portal_url,
         )
+        _before_policy = model_ids
+        model_ids = restrict_to_nous_policy(
+            model_ids, _policy_allowed, rescue_empty=True,
+        )
+        _policy_narrowed = model_ids != _before_policy
 
     if not model_ids and not unavailable_models:
         print("No models available for Nous Portal after filtering.")
@@ -571,6 +599,11 @@ def _model_flow_nous(config, current_model="", args=None):
             print(unavailable_message or f"Upgrade at {_url} to access paid models.")
         return
 
+    from hermes_cli.nous_account import nous_policy_notice
+
+    _policy_notice = nous_policy_notice(removed=_policy_narrowed)
+    if _policy_notice:
+        print(_policy_notice)
     print(
         f'Showing {len(model_ids)} curated models — use "Enter custom model name" for others.'
     )
@@ -720,7 +753,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         DEFAULT_XAI_OAUTH_BASE_URL,
         PROVIDER_REGISTRY,
     )
-    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_cli.models import provider_model_ids
 
     status = get_xai_oauth_auth_status()
     if status.get("logged_in"):
@@ -780,8 +813,8 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     except Exception:
         pass
 
-    models = list(_PROVIDER_MODELS.get("xai-oauth") or _PROVIDER_MODELS.get("xai") or [])
-    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-build-0.1"))
+    models = provider_model_ids("xai-oauth")
+    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.6"))
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("xai-oauth", base_url)
@@ -919,7 +952,7 @@ def _model_flow_custom(config):
     print()
 
     try:
-        base_url = input(
+        base_url = line_input(
             f"API base URL [{current_url or 'e.g. https://api.example.com/v1'}]: "
         ).strip()
         api_key = masked_secret_prompt(
@@ -1020,7 +1053,7 @@ def _model_flow_custom(config):
             if confirm in {"", "y", "yes"}:
                 model_name = detected_models[0]
             else:
-                model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
+                model_name = line_input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
         elif len(detected_models) > 1:
             print("  Available models:")
             for i, m in enumerate(detected_models, 1):
@@ -1033,15 +1066,15 @@ def _model_flow_custom(config):
             elif pick:
                 model_name = pick
         else:
-            model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
+            model_name = line_input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
 
-        context_length_str = input(
+        context_length_str = line_input(
             "Context length in tokens [leave blank for auto-detect]: "
         ).strip()
 
         # Prompt for a display name — shown in the provider menu on future runs
         default_name = _auto_provider_name(effective_url)
-        display_name = input(f"Display name [{default_name}]: ").strip() or default_name
+        display_name = line_input(f"Display name [{default_name}]: ").strip() or default_name
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return
@@ -1224,7 +1257,7 @@ def _model_flow_azure_foundry(config, current_model=""):
             or "e.g. https://<resource>.openai.azure.com/openai/v1 "
               "or https://<resource>.services.ai.azure.com/anthropic"
         )
-        base_url = input(
+        base_url = line_input(
             f"API endpoint URL [{_placeholder}]: "
         ).strip()
     except (KeyboardInterrupt, EOFError):
@@ -1421,7 +1454,7 @@ def _model_flow_azure_foundry(config, current_model=""):
             effective_model = pick
     else:
         try:
-            model_name = input(
+            model_name = line_input(
                 f"Model / deployment name [{current_model or 'e.g. gpt-5.4, claude-sonnet-4-6'}]: "
             ).strip()
         except (KeyboardInterrupt, EOFError):
@@ -1505,14 +1538,25 @@ def _model_flow_azure_foundry(config, current_model=""):
 def _model_flow_named_custom(config, provider_info):
     """Handle a named custom provider from config.yaml custom_providers list.
 
-    Always probes the endpoint's /models API to let the user pick a model.
+    Probes the endpoint's model catalog to let the user pick a model, using
+    native ``/api/tags`` for endpoints conservatively identified as Ollama.
     If a model was previously saved, it is pre-selected in the menu.
     Falls back to the saved model if probing fails.
     """
     from hermes_cli.main import _custom_provider_api_key_config_value, _custom_provider_base_url_config_value, _save_custom_provider
     from hermes_cli.auth import _save_model_choice, deactivate_provider
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.models import fetch_api_models
+    from hermes_cli.config import load_config, normalize_extra_headers, save_config
+    from hermes_cli.model_switch import (
+        _entry_models_discovered,
+        _models_config_is_allowlist,
+    )
+    from hermes_cli.models import (
+        fetch_api_models,
+        fetch_ollama_local_models,
+        _get_ollama_native_headers,
+        _normalize_openai_base_url,
+        should_use_ollama_native_catalog,
+    )
 
     name = provider_info["name"]
     base_url = provider_info["base_url"]
@@ -1538,13 +1582,30 @@ def _model_flow_named_custom(config, provider_info):
     if isinstance(discover, str):
         discover = discover.lower() not in {"false", "no", "0"}
     configured_models: list[str] = []
+    native_catalog_empty = False
     cfg_models = provider_info.get("models", {})
+    explicit_catalog = _models_config_is_allowlist(
+        cfg_models, _entry_models_discovered(provider_info)
+    )
     if isinstance(cfg_models, dict):
-        configured_models = [str(m) for m in cfg_models if str(m).strip()]
-    elif isinstance(cfg_models, list):
         configured_models = [
-            str(m) for m in cfg_models if isinstance(m, str) and m.strip()
+            str(m)
+            for m in cfg_models
+            if m not in {
+                "__explicit_model_allowlist__",
+                "__discovered_model_catalog__",
+            }
+            and str(m).strip()
         ]
+    elif isinstance(cfg_models, list):
+        configured_models = []
+        for model_entry in cfg_models:
+            if isinstance(model_entry, dict):
+                model_id = str(model_entry.get("id") or model_entry.get("model") or "").strip()
+            else:
+                model_id = str(model_entry).strip() if isinstance(model_entry, str) else ""
+            if model_id:
+                configured_models.append(model_id)
 
     print(f"  Provider: {name}")
     print(f"  URL:      {base_url}")
@@ -1552,19 +1613,75 @@ def _model_flow_named_custom(config, provider_info):
         print(f"  Current:  {saved_model}")
     print()
 
-    if not discover and configured_models:
-        # Discovery disabled with an explicit list — use it verbatim, no probe.
-        print(f"Using configured models (discover_models: false): {len(configured_models)}")
-        models = configured_models
+    if not discover:
+        # Discovery disabled: never probe, even when only the singular active
+        # model is configured. The active model is useful as the sole picker
+        # choice, but it is not an endpoint catalog.
+        models = configured_models or ([saved_model] if saved_model else [])
+        print(
+            "Using configured models (discover_models: false): "
+            f"{len(models)}"
+        )
     else:
         print("Fetching available models...")
         fetch_kwargs = {"timeout": 8.0}
         if api_mode:
             fetch_kwargs["api_mode"] = api_mode
-        live_models = fetch_api_models(api_key, base_url, **fetch_kwargs)
-        # If the probe came back empty but the operator configured an explicit
-        # list, fall back to it rather than forcing manual entry.
-        models = live_models or configured_models
+        native_catalog_provider = (
+            "ollama"
+            if provider_key.lower() == "ollama" or name.strip().lower() == "ollama"
+            else "custom"
+        )
+        extra_headers = normalize_extra_headers(provider_info.get("extra_headers")) or {}
+        candidate_headers = _get_ollama_native_headers(base_url, api_key=api_key)
+        for key in tuple(candidate_headers):
+            if any(key.lower() == existing.lower() for existing in extra_headers):
+                del candidate_headers[key]
+        candidate_headers.update(extra_headers)
+        caller_has_authorization = any(
+            key.lower() == "authorization" for key in extra_headers
+        )
+        if api_key and not caller_has_authorization:
+            for key in tuple(candidate_headers):
+                if key.lower() == "authorization":
+                    del candidate_headers[key]
+            candidate_headers["Authorization"] = f"Bearer {api_key}"
+        use_native = should_use_ollama_native_catalog(
+            native_catalog_provider, base_url, headers=candidate_headers or None
+        )
+        native_headers_arg = candidate_headers or None if use_native else (extra_headers or None)
+        explicit_allowlist = explicit_catalog
+        if use_native:
+            if explicit_catalog and configured_models:
+                live_models = configured_models
+                native_catalog_empty = False
+            else:
+                live_models = fetch_ollama_local_models(
+                    base_url,
+                    timeout=8.0,
+                    headers=native_headers_arg,
+                )
+                native_catalog_empty = live_models == []
+                if live_models is None:
+                    live_models = fetch_api_models(
+                        api_key,
+                        _normalize_openai_base_url(base_url),
+                        headers=native_headers_arg,
+                        **fetch_kwargs,
+                    )
+                    native_catalog_empty = False
+        else:
+            live_models = fetch_api_models(
+                api_key, base_url, headers=native_headers_arg, **fetch_kwargs
+            )
+            native_catalog_empty = False
+        models = (
+            configured_models
+            if explicit_allowlist
+            else []
+            if native_catalog_empty
+            else (live_models or configured_models)
+        )
         # Persist the live catalog back to the custom_providers entry so that
         # no-probe surfaces (dashboard, desktop, ACP) show the full model list
         # instead of collapsing to the single ``model:`` default. Mirrors the
@@ -1576,7 +1693,12 @@ def _model_flow_named_custom(config, provider_info):
                     _save_discovered_models_to_config,
                 )
 
-                _save_discovered_models_to_config(base_url, live_models)
+                _save_discovered_models_to_config(
+                    base_url,
+                    live_models,
+                    api_mode=api_mode,
+                    headers=extra_headers or None,
+                )
             except Exception:
                 pass
 
@@ -1623,17 +1745,17 @@ def _model_flow_named_custom(config, provider_info):
             except (ValueError, KeyboardInterrupt, EOFError):
                 print("\nCancelled.")
                 return
-    elif saved_model:
+    elif saved_model and not native_catalog_empty:
         print("Could not fetch models from endpoint.")
         try:
-            model_name = input(f"Model name [{saved_model}]: ").strip() or saved_model
+            model_name = line_input(f"Model name [{saved_model}]: ").strip() or saved_model
         except (KeyboardInterrupt, EOFError):
             print("\nCancelled.")
             return
     else:
         print("Could not fetch models from endpoint. Enter model name manually.")
         try:
-            model_name = input("Model name: ").strip()
+            model_name = line_input("Model name: ").strip()
         except (KeyboardInterrupt, EOFError):
             print("\nCancelled.")
             return
@@ -1850,7 +1972,7 @@ def _model_flow_copilot(config, current_model=""):
         )
     else:
         try:
-            selected = input("Model name: ").strip()
+            selected = line_input("Model name: ").strip()
         except (KeyboardInterrupt, EOFError):
             selected = None
 
@@ -1991,7 +2113,7 @@ def _model_flow_copilot_acp(config, current_model=""):
         )
     else:
         try:
-            selected = input("Model name: ").strip()
+            selected = line_input("Model name: ").strip()
         except (KeyboardInterrupt, EOFError):
             selected = None
 
@@ -2089,7 +2211,7 @@ def _model_flow_kimi(config, current_model=""):
         )
     else:
         try:
-            selected = input("Enter model name: ").strip()
+            selected = line_input("Enter model name: ").strip()
         except (KeyboardInterrupt, EOFError):
             selected = None
 
@@ -2202,7 +2324,7 @@ def _model_flow_stepfun(config, current_model=""):
         )
     else:
         try:
-            selected = input("Model name: ").strip()
+            selected = line_input("Model name: ").strip()
         except (KeyboardInterrupt, EOFError):
             selected = None
 
@@ -2295,7 +2417,7 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         )
     else:
         try:
-            selected = input("  Model ID: ").strip()
+            selected = line_input("  Model ID: ").strip()
         except (KeyboardInterrupt, EOFError):
             selected = None
 
@@ -2308,10 +2430,25 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         if not isinstance(model, dict):
             model = {"default": model} if model else {}
             cfg["model"] = model
-        model["provider"] = "custom"
-        model["base_url"] = mantle_base_url
-        model.pop("api_mode", None)  # chat_completions is the default
-        clear_model_endpoint_credentials(model, clear_api_mode=False)
+        model["provider"] = "custom:bedrock-mantle"
+        clear_model_endpoint_credentials(
+            model, clear_api_mode=True, clear_base_url=True
+        )
+
+        # Deliver the bearer token through a named provider entry. A bare
+        # ``provider: custom`` cannot carry a credential for this host:
+        # OPENAI_API_KEY is deliberately gated to openai.com (#28660), so the
+        # token was dropped and requests went out as "no-key-required".
+        providers = cfg.get("providers")
+        if not isinstance(providers, dict):
+            providers = {}
+            cfg["providers"] = providers
+        mantle_entry = providers.get("bedrock-mantle")
+        if not isinstance(mantle_entry, dict):
+            mantle_entry = {}
+        mantle_entry["base_url"] = mantle_base_url
+        mantle_entry["key_env"] = "AWS_BEARER_TOKEN_BEDROCK"
+        providers["bedrock-mantle"] = mantle_entry
 
         # Also save region in bedrock config for reference
         bedrock_cfg = cfg.get("bedrock", {})
@@ -2319,10 +2456,6 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
             bedrock_cfg = {}
         bedrock_cfg["region"] = region
         cfg["bedrock"] = bedrock_cfg
-
-        # Save the API key env var name so hermes knows where to find it
-        save_env_value("OPENAI_API_KEY", existing_key)
-        save_env_value("OPENAI_BASE_URL", mantle_base_url)
 
         save_config(cfg)
         deactivate_provider()
@@ -2376,7 +2509,7 @@ def _model_flow_bedrock(config, current_model=""):
     # 2. Region selection
     current_region = resolve_bedrock_region()
     try:
-        region_input = input(f"  AWS Region [{current_region}]: ").strip()
+        region_input = line_input(f"  AWS Region [{current_region}]: ").strip()
     except (KeyboardInterrupt, EOFError):
         print()
         return
@@ -2507,7 +2640,7 @@ def _model_flow_bedrock(config, current_model=""):
         )
     else:
         try:
-            selected = input("  Model ID: ").strip()
+            selected = line_input("  Model ID: ").strip()
         except (KeyboardInterrupt, EOFError):
             selected = None
 
@@ -2577,7 +2710,7 @@ def _model_flow_vertex(config, current_model=""):
     # 2. Project ID (optional — falls back to the project embedded in creds).
     current_project = str(vertex_cfg.get("project_id") or "").strip()
     try:
-        project_input = input(
+        project_input = line_input(
             f"  GCP project ID [{current_project or 'from credentials'}]: "
         ).strip()
     except (KeyboardInterrupt, EOFError):
@@ -2588,7 +2721,7 @@ def _model_flow_vertex(config, current_model=""):
     # 3. Region (default global — required for the Gemini 3.x previews).
     current_region = str(vertex_cfg.get("region") or "global").strip() or "global"
     try:
-        region_input = input(f"  Vertex region [{current_region}]: ").strip()
+        region_input = line_input(f"  Vertex region [{current_region}]: ").strip()
     except (KeyboardInterrupt, EOFError):
         print()
         return
@@ -2685,7 +2818,7 @@ def _select_zai_endpoint(current_base: str) -> str:
     if selected == len(options):
         # Custom proxy URL
         try:
-            override = input(f"Custom base URL [{current_base}]: ").strip()
+            override = line_input(f"Custom base URL [{current_base}]: ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return current_base
@@ -2725,17 +2858,23 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
-    # Check / prompt for API key
-    existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
+    # OpenCode Free is keyless — the tier is served anonymously and any
+    # unrecognized bearer 401s, so there is no key to prompt for.
+    if provider_id == "opencode-free":
+        print("  OpenCode Free is keyless — no API key or account needed.")
+        existing_key = ""
+    else:
+        # Check / prompt for API key
+        existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
 
-    existing_key, abort = _prompt_api_key(
-        pconfig,
-        existing_key,
-        provider_id=provider_id,
-        existing_source=existing_source,
-    )
-    if abort:
-        return
+        existing_key, abort = _prompt_api_key(
+            pconfig,
+            existing_key,
+            provider_id=provider_id,
+            existing_source=existing_source,
+        )
+        if abort:
+            return
 
     # Gemini free-tier gate: free-tier daily quotas (<= 250 RPD for Flash)
     # are exhausted in a handful of agent turns, so refuse to wire up the
@@ -2823,7 +2962,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         effective_base = chosen_base
     else:
         try:
-            override = input(f"Base URL [{effective_base}]: ").strip()
+            override = line_input(f"Base URL [{effective_base}]: ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             override = ""
@@ -2904,6 +3043,16 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                     print(
                         f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
                     )
+    elif provider_id == "opencode-free":
+        # Keyless free tier: the curated list is synced against anonymous
+        # live probes (models.dev's cost.input==0 filter lags reality —
+        # e.g. deepseek-v4-flash-free stayed "free" there after its promo
+        # ended and the relay started 401ing it keyless).
+        model_list = _PROVIDER_MODELS.get(provider_id, [])
+        if model_list:
+            print(
+                f'  Showing {len(model_list)} keyless free models — use "Enter custom model name" for others.'
+            )
     else:
         curated = _PROVIDER_MODELS.get(provider_id, [])
 
@@ -2952,7 +3101,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                     )
             # else: no defaults either, will fall through to raw input
 
-    if provider_id in {"opencode-zen", "opencode-go"}:
+    if provider_id in {"opencode-zen", "opencode-go", "opencode-free"}:
         model_list = [
             normalize_opencode_model_id(provider_id, mid) for mid in model_list
         ]
@@ -2982,12 +3131,12 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         )
     else:
         try:
-            selected = input("Model name: ").strip()
+            selected = line_input("Model name: ").strip()
         except (KeyboardInterrupt, EOFError):
             selected = None
 
     if selected:
-        if provider_id in {"opencode-zen", "opencode-go"}:
+        if provider_id in {"opencode-zen", "opencode-go", "opencode-free"}:
             selected = normalize_opencode_model_id(provider_id, selected)
 
         _save_model_choice(selected)
@@ -3001,7 +3150,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         model["provider"] = provider_id
         model["base_url"] = effective_base
         clear_model_endpoint_credentials(model, clear_api_mode=False)
-        if provider_id in {"opencode-zen", "opencode-go"}:
+        if provider_id in {"opencode-zen", "opencode-go", "opencode-free"}:
             model["api_mode"] = opencode_model_api_mode(provider_id, selected)
         else:
             model.pop("api_mode", None)
@@ -3137,7 +3286,7 @@ def _model_flow_anthropic(config, current_model=""):
         )
     else:
         try:
-            selected = input("Model name (e.g., claude-sonnet-4-20250514): ").strip()
+            selected = line_input("Model name (e.g., claude-sonnet-4-20250514): ").strip()
         except (KeyboardInterrupt, EOFError):
             selected = None
 

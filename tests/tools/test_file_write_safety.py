@@ -23,6 +23,50 @@ class TestStaticDenyList:
         assert _is_write_denied("/etc/shadow") is True
 
 
+class TestSshConfigApprovalGate:
+    """~/.ssh/config is approval-gated, not hard-denied (private keys stay denied)."""
+
+    def test_ssh_config_not_hard_denied(self):
+        from agent.file_safety import is_write_denied
+
+        # The client config carries no key material — it must NOT be in the
+        # flat credential deny (it is routed through approval instead).
+        assert is_write_denied(os.path.expanduser("~/.ssh/config")) is False
+
+    def test_ssh_config_get_write_denied_error_is_none(self):
+        from agent.file_safety import get_write_denied_error
+
+        assert get_write_denied_error(os.path.expanduser("~/.ssh/config")) is None
+
+    def test_ssh_config_is_approval_required(self):
+        from agent.file_safety import is_write_approval_required
+
+        assert is_write_approval_required(os.path.expanduser("~/.ssh/config")) is True
+
+    def test_private_keys_still_hard_denied(self):
+        from agent.file_safety import is_write_approval_required, is_write_denied
+
+        for name in ("id_rsa", "id_ed25519", "authorized_keys"):
+            p = os.path.expanduser(f"~/.ssh/{name}")
+            assert is_write_denied(p) is True, name
+            # A hard-denied credential is not merely approval-gated.
+            assert is_write_approval_required(p) is False, name
+
+    def test_other_ssh_dir_files_still_hard_denied(self):
+        from agent.file_safety import is_write_denied
+
+        # The ~/.ssh/ directory prefix deny still covers everything else,
+        # e.g. a known_hosts or an arbitrary key file.
+        assert is_write_denied(os.path.expanduser("~/.ssh/id_rsa.pub")) is True
+        assert is_write_denied(os.path.expanduser("~/.ssh/secret_key")) is True
+
+    def test_regular_file_not_approval_required(self, tmp_path: Path):
+        from agent.file_safety import is_write_approval_required
+
+        assert is_write_approval_required(str(tmp_path / "notes.txt")) is False
+
+
+
 class TestSafeWriteRoot:
     """HERMES_WRITE_SAFE_ROOT should sandbox writes to a specific subtree."""
 
@@ -419,6 +463,19 @@ class TestProtectedInstructionFiles:
         self._write(target, "second")
         assert len(approvals["calls"]) == 2
 
+    def test_cli_prompt_is_told_no_scope_persists(self, tmp_path, approvals):
+        """The prompt must not advertise a scope this gate discards.
+
+        Since nothing is persisted, a rendered "session"/"always" option
+        re-prompts on the very next write and reads as a broken gate
+        (#81887).
+        """
+        approvals["answer"] = "once"
+        self._write(tmp_path / "SOUL.md")
+        call = approvals["calls"][0]
+        assert call["allow_session"] is False
+        assert call["allow_permanent"] is False
+
     def test_regular_file_never_prompts(self, tmp_path, approvals):
         res = self._write(tmp_path / "notes.md", "hello")
         assert not res.get("error"), res
@@ -599,6 +656,35 @@ class TestProtectedInstructionFiles:
                 A.unregister_gateway_notify(session_key)
         finally:
             A.reset_current_session_key(token)
+
+    def test_gateway_payload_renders_only_once_and_deny(self, tmp_path):
+        """End-to-end: what this gate emits, a TUI/desktop client can render.
+
+        The transport used to derive its button set from ``allow_permanent``
+        alone, so it re-added a "session" scope the gate refuses to persist —
+        users tapped it and got re-prompted on every write (#81887). Asserting
+        the two layers together is what catches that drift.
+        """
+        import tools.approval as A
+        from tui_gateway.server import _approval_request_payload
+
+        session_key = "protected-files-payload-session"
+        token = A.set_current_session_key(session_key)
+        rendered = {}
+        try:
+            def notify(approval_data):
+                rendered.update(_approval_request_payload(approval_data))
+                A.resolve_gateway_approval(session_key, "once")
+
+            A.register_gateway_notify(session_key, notify)
+            try:
+                self._write(tmp_path / "SOUL.md", "gateway approved")
+            finally:
+                A.unregister_gateway_notify(session_key)
+        finally:
+            A.reset_current_session_key(token)
+
+        assert rendered["choices"] == ["once", "deny"]
 
 
 if __name__ == "__main__":

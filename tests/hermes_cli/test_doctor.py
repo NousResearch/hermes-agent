@@ -1,6 +1,7 @@
 """Tests for hermes_cli.doctor."""
 
 import os
+import subprocess
 import sys
 import types
 import io
@@ -39,6 +40,20 @@ class TestDoctorPlatformHints:
 
         assert "run `hermes update`" in hint
 
+    def test_sqlite_upgrade_hint_uses_pkg_for_apt_managed_install(self):
+        hint = doctor._sqlite_upgrade_hint("apt")
+
+        assert "run `pkg upgrade hermes-agent`" in hint
+        assert "hermes update" not in hint
+
+    def test_sqlite_upgrade_hint_preserves_nix_guidance_as_prose(self):
+        guidance = doctor.recommended_update_command_for_method("nix")
+        hint = doctor._sqlite_upgrade_hint("nix")
+
+        assert guidance in hint
+        assert f"run `{guidance}`" not in hint
+        assert "hermes update" not in hint
+
 
 class TestProviderEnvDetection:
     def test_detects_openai_api_key(self):
@@ -62,6 +77,52 @@ class TestDoctorToolAvailabilitySummary:
         filtered = doctor._missing_api_key_toolsets_for_summary(unavailable)
 
         assert [item["name"] for item in filtered] == ["web"]
+
+    def test_web_capability_rows_warn_when_selected_provider_not_ready(self, monkeypatch):
+        """#78412: selected firecrawl with is_available=False must warn."""
+        class _Unavailable:
+            name = "firecrawl"
+
+            def is_available(self):
+                return False
+
+        unavailable = _Unavailable()
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: unavailable,
+        )
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_extract_provider",
+            lambda: unavailable,
+        )
+
+        rows = doctor._doctor_web_capability_rows()
+        assert rows
+        assert all(status == "warn" for status, _, _ in rows)
+        assert any("firecrawl selected; provider not configured" in detail for _, _, detail in rows)
+
+    def test_web_capability_rows_ok_when_provider_ready(self, monkeypatch):
+        class _Ready:
+            name = "ddgs"
+
+            def is_available(self):
+                return True
+
+        ready = _Ready()
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: ready,
+        )
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_extract_provider",
+            lambda: ready,
+        )
+
+        rows = doctor._doctor_web_capability_rows()
+        assert rows == [
+            ("ok", "web search", "(ddgs)"),
+            ("ok", "web extract", "(ddgs)"),
+        ]
 
 
 class TestDoctorEnvFileEncoding:
@@ -224,18 +285,34 @@ def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
 class TestDoctorMemoryProviderSection:
     """The ◆ Memory Provider section should respect memory.provider config."""
 
-    def _make_hermes_home(self, tmp_path, provider=""):
+    def _make_hermes_home(self, tmp_path, provider="", memory_config=None):
         """Create a minimal HERMES_HOME with config.yaml."""
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
         import yaml
-        config = {"memory": {"provider": provider}} if provider else {"memory": {}}
+        config = dict(memory_config or {})
+        if provider:
+            config["provider"] = provider
+        config = {"memory": config}
         (home / "config.yaml").write_text(yaml.dump(config))
         return home
 
-    def _run_doctor_and_capture(self, monkeypatch, tmp_path, provider=""):
+    def _run_doctor_and_capture(
+        self,
+        monkeypatch,
+        tmp_path,
+        provider="",
+        *,
+        memory_config=None,
+        stale_builtin_files=False,
+    ):
         """Run doctor and capture stdout."""
-        home = self._make_hermes_home(tmp_path, provider)
+        home = self._make_hermes_home(tmp_path, provider, memory_config)
+        if stale_builtin_files:
+            memories = home / "memories"
+            memories.mkdir()
+            (memories / "MEMORY.md").write_text("stale memory", encoding="utf-8")
+            (memories / "USER.md").write_text("stale user", encoding="utf-8")
         monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
         monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
         monkeypatch.setattr(doctor_mod, "_DHH", str(home))
@@ -278,6 +355,26 @@ class TestDoctorMemoryProviderSection:
         out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0")
         assert "Memory Provider" in out
         assert "Built-in memory active" not in out
+
+    @pytest.mark.parametrize("memory_enabled", [False, True])
+    def test_stale_builtin_files_reported_only_when_store_enabled(
+        self, monkeypatch, tmp_path, memory_enabled
+    ):
+        # #100668: disabled built-in stores must not surface stale files as active.
+        out = self._run_doctor_and_capture(
+            monkeypatch,
+            tmp_path,
+            provider="mnemosyne",
+            memory_config={
+                "memory_enabled": memory_enabled,
+                "user_profile_enabled": False,
+            },
+            stale_builtin_files=True,
+        )
+
+        assert ("MEMORY.md exists" in out) is memory_enabled
+        assert "USER.md exists" not in out
+        assert ("Built-in memory files disabled by config" in out) is not memory_enabled
 
 
 def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkeypatch, tmp_path):
@@ -680,41 +777,24 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
     assert "npm install -g agent-browser && agent-browser install" in out
 
 
-def _run_doctor_with_managed_agent_browser(monkeypatch, tmp_path, runnable):
-    """Set up run_doctor with node present, agent-browser only in the
-    Hermes-managed node bin (~/.hermes/node/bin), not on PATH or in
-    PROJECT_ROOT/node_modules. Returns the captured stdout."""
+def _doctor_env_for_agent_browser(monkeypatch, tmp_path):
+    """Shared non-Termux fixture setup for the agent-browser npx-resolution
+    branch in run_doctor (hermes_cli/doctor.py ~1557-1605)."""
     home = tmp_path / ".hermes"
-    (home / "node" / "bin").mkdir(parents=True, exist_ok=True)
+    home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
-    managed_ab = home / "node" / "bin" / "agent-browser"
-    managed_ab.write_text("#!/bin/sh\n", encoding="utf-8")
-    managed_ab.chmod(0o755)
     project = tmp_path / "project"
-    project.mkdir(exist_ok=True)  # no node_modules/agent-browser here
+    project.mkdir(exist_ok=True)
 
     monkeypatch.delenv("TERMUX_VERSION", raising=False)
-    monkeypatch.delenv("PREFIX", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
     monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
     monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
     monkeypatch.setattr(doctor_mod, "_DHH", str(home))
-
-    # node on PATH, agent-browser is NOT on PATH (only in the managed bin).
-    # The managed-dir rung resolves via shutil.which(..., path=<dir>) so
-    # Windows picks the .cmd shim — mirror that shape here.
-    def _fake_which(cmd, path=None):
-        if path is not None:
-            if cmd == "agent-browser" and str(managed_ab.parent) == str(path):
-                return str(managed_ab)
-            return None
-        return "/usr/bin/node" if cmd in {"node", "npm"} else None
-
-    monkeypatch.setattr(doctor_mod.shutil, "which", _fake_which)
-    # agent_browser_runnable is imported into doctor's namespace
     monkeypatch.setattr(
-        doctor_mod,
-        "agent_browser_runnable",
-        lambda path: runnable and str(path) == str(managed_ab),
+        doctor_mod.shutil,
+        "which",
+        lambda cmd: "/usr/bin/node" if cmd in {"node", "npm"} else None,
     )
 
     fake_model_tools = types.SimpleNamespace(
@@ -731,10 +811,74 @@ def _run_doctor_with_managed_agent_browser(monkeypatch, tmp_path, runnable):
     except Exception:
         pass
 
+
+def test_run_doctor_reports_agent_browser_resolves_via_npx(monkeypatch, tmp_path):
+    """When agent-browser has no local/global install, _find_agent_browser
+    falls through to 'npx agent-browser' — doctor must report that as OK
+    (#43564: agent-browser is no longer a root package.json dependency, so
+    this is the expected common case now, not a warning)."""
+    _doctor_env_for_agent_browser(monkeypatch, tmp_path)
+
+    import tools.browser_tool as bt
+    monkeypatch.setattr(bt, "_find_agent_browser", lambda **_kw: "npx agent-browser")
+    warm_calls = []
+    monkeypatch.setattr(
+        bt, "warm_agent_browser_npx_cache", lambda *a, **kw: warm_calls.append(1) or True
+    )
+
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         doctor_mod.run_doctor(Namespace(fix=False))
-    return buf.getvalue()
+    out = buf.getvalue()
+
+    assert "agent-browser" in out
+    assert "resolves via npx on first use" in out
+    assert "agent-browser not installed" not in out
+    # --fix was not requested: the warm-up must not fire on a plain check.
+    assert not warm_calls
+
+
+def test_run_doctor_fix_warms_npx_cache_when_agent_browser_resolves_via_npx(
+    monkeypatch, tmp_path
+):
+    """`hermes doctor --fix` must actually call warm_agent_browser_npx_cache()
+    when agent-browser resolves via npx, and report success."""
+    _doctor_env_for_agent_browser(monkeypatch, tmp_path)
+
+    import tools.browser_tool as bt
+    monkeypatch.setattr(bt, "_find_agent_browser", lambda **_kw: "npx agent-browser")
+    warm_calls = []
+    monkeypatch.setattr(
+        bt, "warm_agent_browser_npx_cache", lambda *a, **kw: warm_calls.append(1) or True
+    )
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=True))
+    out = buf.getvalue()
+
+    assert warm_calls, "warm_agent_browser_npx_cache() must be called under --fix"
+    assert "Warmed npx cache for agent-browser" in out
+    assert "Could not warm npx cache" not in out
+
+
+def test_run_doctor_fix_reports_when_npx_warmup_fails(monkeypatch, tmp_path):
+    """If warm_agent_browser_npx_cache() fails (offline, npx missing from
+    PATH at call time, etc.), doctor must say so instead of silently
+    claiming success — and must not count it as a fix."""
+    _doctor_env_for_agent_browser(monkeypatch, tmp_path)
+
+    import tools.browser_tool as bt
+    monkeypatch.setattr(bt, "_find_agent_browser", lambda **_kw: "npx agent-browser")
+    monkeypatch.setattr(bt, "warm_agent_browser_npx_cache", lambda *a, **kw: False)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=True))
+    out = buf.getvalue()
+
+    assert "Could not warm npx cache (offline or npx unavailable)" in out
+    assert "Warmed npx cache for agent-browser" not in out
 
 
 def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, tmp_path):
@@ -1410,3 +1554,186 @@ class TestDoctorDeprecatedConfigAndEnv:
         assert "Deprecated: delegation.max_async_children" in out
         assert "Deprecated: HERMES_TOOL_PROGRESS_MODE" in out
         assert "⚠" in out or "Deprecated" in out
+
+
+class TestMacOSTCCGrants:
+    """macOS TCC grant persistence check (issue #86385)."""
+
+    def test_silent_on_non_macos(self, monkeypatch, capsys, tmp_path):
+        """Non-macOS: the check must produce no output even with a bundle present."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "linux")
+        monkeypatch.setattr(
+            doctor_mod,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+        doctor_mod.check_macos_tcc_grants()
+        assert capsys.readouterr().out == ""
+
+    def test_silent_when_no_desktop_bundle(self, monkeypatch, capsys):
+        """No locally-built desktop bundle: nothing to check, no output."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(doctor_mod, "_desktop_app_bundle", lambda: None)
+        doctor_mod.check_macos_tcc_grants()
+        assert capsys.readouterr().out == ""
+
+    def test_warns_on_cdhash_pinned_dr(self, monkeypatch, capsys, tmp_path):
+        """Pre-#73681 builds have a cdhash-pinned DR → warn that grants reset."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_mod,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+        monkeypatch.setattr(
+            doctor_mod,
+            "_macos_desktop_dr",
+            lambda app: 'designated => identifier "com.nousresearch.hermes" and cdhash H"97e692f3890f781fa0ad5ad6cb9d769cfaf42628"',
+        )
+        doctor_mod.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "TCC grants will reset after every update" in out
+        assert "cdhash-pinned" in out
+        assert "hermes update" in out
+
+    def test_ok_and_repair_info_on_identifier_dr(self, monkeypatch, capsys, tmp_path):
+        """Post-#73681 identifier-only DR → stable + stale-grant repair info."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_mod,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+        monkeypatch.setattr(
+            doctor_mod,
+            "_macos_desktop_dr",
+            lambda app: 'designated => identifier "com.nousresearch.hermes"',
+        )
+        doctor_mod.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "TCC signing identity is stable" in out
+        assert "identifier-pinned" in out
+        # Identifier-pinned is stable but not the strongest anchor — the check
+        # should point at the cert-anchored upgrade path.
+        assert "--setup-tcc-identity" in out
+        assert "tccutil reset ScreenCapture com.nousresearch.hermes" in out
+        assert "toggle" in out
+        assert "relaunch" in out
+
+    def test_ok_on_certificate_anchored_dr(self, monkeypatch, capsys, tmp_path):
+        """A cert-anchored DR (hermes desktop --setup-tcc-identity, or a
+        notarized release) classifies as stable in its own class — no upgrade
+        hint, still prints the stale-grant repair info."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_mod,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+        monkeypatch.setattr(
+            doctor_mod,
+            "_macos_desktop_dr",
+            lambda app: 'designated => identifier "com.nousresearch.hermes" and certificate root = H"aabbcc"',
+        )
+        doctor_mod.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "TCC signing identity is stable" in out
+        assert "certificate-anchored" in out
+        assert "--setup-tcc-identity" not in out
+        assert "tccutil reset ScreenCapture com.nousresearch.hermes" in out
+
+    def test_warns_when_dr_unreadable(self, monkeypatch, capsys, tmp_path):
+        """codesign failure → warn, never crash."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_mod,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+        monkeypatch.setattr(doctor_mod, "_macos_desktop_dr", lambda app: None)
+        doctor_mod.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "could not read code-signing requirement" in out
+
+    def test_warns_when_dr_empty_string(self, monkeypatch, capsys, tmp_path):
+        """Empty DR output must not false-positive as a stable identity."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_mod,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+        monkeypatch.setattr(doctor_mod, "_macos_desktop_dr", lambda app: "")
+        doctor_mod.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "could not read code-signing requirement" in out
+        assert "stable" not in out
+
+    def test_warns_when_codesign_times_out(self, monkeypatch, capsys, tmp_path):
+        """A hanging codesign must degrade to the unreadable-DR warning, never crash."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_mod,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+
+        def _timeout(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=["codesign"], timeout=15)
+
+        monkeypatch.setattr(doctor_mod.subprocess, "run", _timeout)
+        doctor_mod.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "could not read code-signing requirement" in out
+        assert "stable" not in out
+
+    def test_warns_when_codesign_missing(self, monkeypatch, capsys, tmp_path):
+        """No codesign binary → same graceful unreadable-DR warning."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_mod,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+        monkeypatch.setattr(doctor_mod.shutil, "which", lambda _name: None)
+        doctor_mod.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "could not read code-signing requirement" in out
+        assert "stable" not in out
+
+
+def test_run_doctor_reports_shadowed_lightpanda_engine(monkeypatch, tmp_path):
+    helper = TestDoctorMemoryProviderSection()
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_using_lightpanda_engine", lambda: True)
+    monkeypatch.setattr(
+        bt, "lightpanda_engine_status",
+        lambda: (False, "cloud provider Browserbase is selected"),
+    )
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
+    assert "browser.engine=lightpanda is shadowed" in out
+    assert "Browserbase" in out
+
+
+def test_run_doctor_reports_lightpanda_ok(monkeypatch, tmp_path):
+    helper = TestDoctorMemoryProviderSection()
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_using_lightpanda_engine", lambda: True)
+    monkeypatch.setattr(bt, "lightpanda_engine_status", lambda: (True, "Browser Use mode"))
+    monkeypatch.setattr("tools.browser_lightpanda.find_lightpanda_binary", lambda: "/opt/lightpanda")
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
+    assert "Lightpanda" in out
+    assert "shadowed" not in out
+
+
+def test_run_doctor_warns_when_lightpanda_binary_missing(monkeypatch, tmp_path):
+    helper = TestDoctorMemoryProviderSection()
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_using_lightpanda_engine", lambda: True)
+    monkeypatch.setattr(bt, "lightpanda_engine_status", lambda: (True, "Browser Use mode"))
+    monkeypatch.setattr("tools.browser_lightpanda.find_lightpanda_binary", lambda: None)
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
+    assert "Lightpanda selected but binary not found" in out

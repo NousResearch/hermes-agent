@@ -220,6 +220,11 @@ export const CodingStatusRow = memo(function CodingStatusRow({
           }
         >
           <div className="flex min-w-0 flex-1 items-center gap-1">
+            {/* PR number first, right against the leading git glyph — the chip
+                borrows that icon instead of carrying a second one of its own
+                (`showIcon={false}`), so the row reads glyph → #number → branch. */}
+            {pr && <PrTag pr={pr} showIcon={false} />}
+
             {/* Branch name — the other half of the review-pane target. `contents`
                 so the button lays out nothing of its own: the label stays the
                 same flex child it always was, and the hit area is the text. */}
@@ -228,8 +233,6 @@ export const CodingStatusRow = memo(function CodingStatusRow({
                 {branchLabel}
               </span>
             </button>
-
-            {pr && <PrTag pr={pr} />}
 
             {/* Worktree path + copy — plain muted text, not a chip. Always in the
                 flex so hover doesn't reflow the row; opacity alone reveals the

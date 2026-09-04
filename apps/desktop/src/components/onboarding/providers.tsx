@@ -5,7 +5,7 @@ import type { OAuthProvider } from '@/types/hermes'
 
 const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
   nous: { order: 0, title: 'Nous Portal' },
-  'openai-codex': { order: 1, title: 'OpenAI OAuth (ChatGPT)' },
+  'openai-codex': { order: 1, title: 'ChatGPT or Codex Subscription' },
   'minimax-oauth': { order: 2, title: 'MiniMax' },
   'qwen-oauth': { order: 3, title: 'Qwen Code' },
   'xai-oauth': { order: 4, title: 'xAI Grok' },
@@ -93,6 +93,16 @@ export function FireworksProviderRow({ onClick }: { onClick: () => void }) {
   const { t } = useI18n()
 
   return <KeyProviderRow onClick={onClick} pitch={t.onboarding.fireworksPitch} title="Fireworks AI" />
+}
+
+/** Onboarding row for the managed local runtime: no account, no key — the
+ *  destination is the Local Models pane where install/download live. */
+export function LocalModelsProviderRow({ onClick }: { onClick: () => void }) {
+  const { t } = useI18n()
+
+  return (
+    <KeyProviderRow onClick={onClick} pitch={t.onboarding.localModelsPitch} title={t.onboarding.localModelsTitle} />
+  )
 }
 
 export function OpenRouterProviderRow({ onClick }: { onClick: () => void }) {

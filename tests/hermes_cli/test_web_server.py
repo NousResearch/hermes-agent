@@ -3,6 +3,7 @@
 import asyncio
 import os
 import json
+import re
 import shutil
 import sys
 import threading
@@ -318,6 +319,29 @@ class TestWebServerEndpoints:
                 monitor.close()
             writer.close()
 
+    def test_get_sessions_transient_ioerr_is_503(self, monkeypatch):
+        """Busy store, not a gone store: the desktop keeps the list it has."""
+        import sqlite3
+
+        from hermes_cli import web_server
+
+        def boom(*_args, **_kwargs):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        monkeypatch.setattr(web_server, "_open_session_db_for_profile", boom)
+        assert self.client.get("/api/sessions?limit=1&offset=0").status_code == 503
+
+    def test_get_sessions_non_transient_operational_error_is_500(self, monkeypatch):
+        import sqlite3
+
+        from hermes_cli import web_server
+
+        def boom(*_args, **_kwargs):
+            raise sqlite3.OperationalError("no such table: sessions")
+
+        monkeypatch.setattr(web_server, "_open_session_db_for_profile", boom)
+        assert self.client.get("/api/sessions?limit=1&offset=0").status_code == 500
+
     def test_get_status_loads_gateway_config_off_event_loop(self, monkeypatch):
         """Cold gateway config loading must not block the WebSocket loop.
 
@@ -416,6 +440,9 @@ class TestWebServerEndpoints:
 
         legacy = sqlite3.connect(str(db_path))
         try:
+            # SQLite refuses DROP COLUMN while an index references the
+            # column; a pre-column legacy store has neither.
+            legacy.execute("DROP INDEX IF EXISTS idx_sessions_effective_activity")
             legacy.execute(f"ALTER TABLE sessions DROP COLUMN {missing_column}")
             legacy.commit()
         finally:
@@ -462,6 +489,7 @@ class TestWebServerEndpoints:
 
         legacy = sqlite3.connect(str(db_path))
         try:
+            legacy.execute("DROP INDEX IF EXISTS idx_sessions_effective_activity")
             legacy.execute("ALTER TABLE sessions DROP COLUMN last_activity_at")
             legacy.commit()
         finally:
@@ -475,6 +503,70 @@ class TestWebServerEndpoints:
         assert [row["id"] for row in payload["recents"]["sessions"]] == [
             "sidebar-stale"
         ]
+
+    def test_startup_eager_reconcile_heals_stale_store(self):
+        """The lifespan's eager reconcile brings a stale store current.
+
+        #79531/#80037: after `hermes update` an old-schema state.db used to
+        stay stale until the first NEW session forced a writable open —
+        every /api/sessions poll 500ed with "no such column" in between.
+        The lifespan now schedules one writable open at startup; this
+        exercises that worker directly against a store missing
+        sessions.last_read_at and asserts the schema is brought current.
+        """
+        import sqlite3
+
+        from hermes_cli import web_server
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        seed = SessionDB(db_path=db_path)
+        try:
+            seed.create_session("eager-stale", source="cli")
+        finally:
+            seed.close()
+
+        legacy = sqlite3.connect(str(db_path))
+        try:
+            legacy.execute("ALTER TABLE sessions DROP COLUMN last_read_at")
+            legacy.commit()
+        finally:
+            legacy.close()
+
+        web_server._eager_reconcile_own_session_db()
+
+        healed = sqlite3.connect(str(db_path))
+        try:
+            columns = {
+                row[1] for row in healed.execute("PRAGMA table_info(sessions)")
+            }
+        finally:
+            healed.close()
+        assert "last_read_at" in columns
+
+        # The healed store serves the full rich listing.
+        db = SessionDB(db_path=db_path, read_only=True)
+        try:
+            rows = db.list_sessions_rich(limit=10, compact_rows=True)
+        finally:
+            db.close()
+        assert [r["id"] for r in rows] == ["eager-stale"]
+
+    def test_startup_eager_reconcile_never_raises(self, monkeypatch):
+        """A store the eager reconcile cannot open must not break startup."""
+        import sqlite3 as sqlite3_module
+
+        import hermes_state
+
+        from hermes_cli import web_server
+
+        def boom(*args, **kwargs):
+            raise sqlite3_module.OperationalError("database is locked")
+
+        monkeypatch.setattr(hermes_state, "SessionDB", boom)
+        # Must swallow — reads fall back to the per-poll probe heal.
+        web_server._eager_reconcile_own_session_db()
 
     def test_heal_gives_up_when_reconcile_cannot_fix_the_store(self, monkeypatch):
         """A probe failure reconciliation can't cure must not retry forever.
@@ -538,6 +630,60 @@ class TestWebServerEndpoints:
         finally:
             db.close()
         assert len(writable_opens) == 1
+
+    def test_generic_corruption_does_not_trigger_writable_heal(
+        self, tmp_path, monkeypatch
+    ):
+        """Unscoped SQLITE_CORRUPT must not escalate a dashboard read to writes."""
+        import sqlite3
+
+        import hermes_state
+        from hermes_cli import web_server
+
+        db_path = tmp_path / "state.db"
+        db_path.write_bytes(b"not-empty")
+        opens = []
+
+        def corrupt_open(*_args, **kwargs):
+            opens.append(kwargs.get("read_only", False))
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+        monkeypatch.setattr(hermes_state, "SessionDB", corrupt_open)
+
+        with pytest.raises(sqlite3.DatabaseError, match="disk image is malformed"):
+            web_server._open_session_db_at_path(db_path, read_only=True)
+
+        assert opens == [True]
+
+    def test_decode_error_triggers_writable_heal(self, tmp_path, monkeypatch):
+        """UnicodeDecodeError — pysqlite failing to decode SQLite's own error
+        message over corrupt file bytes (#98924) — must route through the
+        same one-writable-open heal as malformed schema."""
+        import hermes_state
+        from hermes_cli import web_server
+
+        db_path = tmp_path / "state.db"
+        db_path.write_bytes(b"not-empty")
+        opens = []
+
+        class _OkDB:
+            _conn = None
+
+            def close(self):
+                pass
+
+        def scripted_open(*_args, **kwargs):
+            opens.append(kwargs.get("read_only", False))
+            if opens == [True]:
+                raise UnicodeDecodeError("utf-8", b"\x81", 0, 1, "invalid start byte")
+            return _OkDB()
+
+        monkeypatch.setattr(hermes_state, "SessionDB", scripted_open)
+
+        db = web_server._open_session_db_at_path(db_path, read_only=True)
+
+        assert isinstance(db, _OkDB)
+        assert opens == [True, False, True]
 
     def test_get_sessions_zero_byte_store_returns_empty_list(self):
         from hermes_constants import get_hermes_home
@@ -1084,6 +1230,11 @@ class TestWebServerEndpoints:
 
         # Bypass the managed-externally gate so we reach the docker install check.
         monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: False)
+        # The shared admission gate (#91277 Phase 3) resolves the install
+        # method through hermes_cli.config directly.
+        monkeypatch.setattr(
+            "hermes_cli.config.detect_install_method", lambda *_a, **_k: "docker"
+        )
         monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "docker")
         monkeypatch.setattr(web_server, "_spawn_hermes_action", fail_spawn)
         web_server._ACTION_PROCS.pop("hermes-update", None)
@@ -1107,6 +1258,76 @@ class TestWebServerEndpoints:
         assert status_data["exit_code"] == 1
         assert status_data["pid"] is None
         assert any("docker pull nousresearch/hermes-agent:latest" in line for line in status_data["lines"])
+
+    def test_update_hermes_returns_apt_guidance_without_spawning(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        spawned = False
+
+        def fail_spawn(*_args, **_kwargs):
+            nonlocal spawned
+            spawned = True
+            raise AssertionError("APT-managed update guard should not spawn hermes update")
+
+        monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: False)
+        # The shared admission gate (#91277 Phase 3) resolves the install
+        # method through hermes_cli.config directly, so patch it there (the
+        # web_server module alias only feeds the /update/check endpoint).
+        monkeypatch.setattr(
+            "hermes_cli.config.detect_install_method", lambda *_a, **_k: "apt"
+        )
+        monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "apt")
+        monkeypatch.setattr(web_server, "_spawn_hermes_action", fail_spawn)
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_RESULTS.pop("hermes-update", None)
+
+        resp = self.client.post("/api/hermes/update")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["pid"] is None
+        assert data["error"] == "apt_update_required"
+        assert data["update_command"] == "pkg upgrade hermes-agent"
+        assert spawned is False
+
+        check = self.client.get("/api/hermes/update/check")
+        assert check.status_code == 200
+        check_data = check.json()
+        assert check_data["install_method"] == "apt"
+        assert check_data["can_apply"] is False
+        assert check_data["update_command"] == "pkg upgrade hermes-agent"
+        assert "Termux APT" in check_data["message"]
+
+    def test_update_status_recovers_completed_result_after_dashboard_restart(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        action_id = "c" * 32
+        (tmp_path / "hermes-update.log").write_text(
+            "=== hermes-update started 2026-08-17 11:19:34 ===\n"
+            "pulling updates...\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "update.log").write_text(
+            "=== hermes update started 2026-08-17T11:19:35 ===\n"
+            "✓ Update complete!\n"
+            f"=== hermes-update completed {action_id} ===\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(web_server, "_ACTION_LOG_DIR", tmp_path)
+        monkeypatch.setattr(web_server, "_ACTION_PROCS", {})
+        monkeypatch.setattr(web_server, "_ACTION_RESULTS", {})
+        monkeypatch.setattr(web_server, "_ACTION_COMMANDS", {})
+        monkeypatch.setattr(web_server, "_ACTION_IDS", {})
+
+        status = self.client.get("/api/actions/hermes-update/status?lines=2000")
+
+        assert status.status_code == 200
+        data = status.json()
+        assert data["running"] is False
+        assert data["exit_code"] == 0
+        assert data["action_id"] == action_id
+        assert f"=== hermes-update completed {action_id} ===" in data["lines"]
 
     def test_update_hermes_spawns_with_action_id(self, monkeypatch):
         import hermes_cli.web_server as web_server
@@ -1578,6 +1799,46 @@ class TestWebServerEndpoints:
         assert not get_env_value(env_var), "deleted endpoint's key still in .env"
 
 
+    def test_numeric_yaml_provider_key_can_be_activated_and_deleted(self):
+        """Hand-edited `providers: 2070:` (YAML int key) must still activate.
+
+        PyYAML loads unquoted 2070 as int; string lookup then 404ed, so
+        Desktop could list the endpoint but not assign or delete it.
+        """
+        from hermes_cli.config import get_config_path, load_config
+
+        get_config_path().write_text(
+            "model:\n"
+            "  provider: 2070\n"
+            "  default: Qwen.gguf\n"
+            "  base_url: http://192.168.1.10:8082/v1\n"
+            "providers:\n"
+            "  2070:\n"
+            "    name: 2070\n"
+            "    base_url: http://192.168.1.10:8082/v1\n"
+            "    model: Qwen.gguf\n",
+            encoding="utf-8",
+        )
+
+        listed = self.client.get("/api/providers/custom-endpoints")
+        assert listed.status_code == 200
+        assert "2070" in [e["id"] for e in listed.json()["endpoints"]]
+
+        activate = self.client.post(
+            "/api/providers/custom-endpoints/2070/activate", json={}
+        )
+        assert activate.status_code == 200, activate.text
+        assert activate.json()["provider"] == "2070"
+
+        deleted = self.client.request(
+            "DELETE", "/api/providers/custom-endpoints/2070"
+        )
+        assert deleted.status_code == 200, deleted.text
+        providers = load_config().get("providers") or {}
+        assert 2070 not in providers
+        assert "2070" not in providers
+
+
     def test_custom_endpoint_save_scopes_to_the_requested_profile(self):
         """``?profile=<name>`` must write into that profile's config.yaml.
 
@@ -1876,6 +2137,178 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/sessions/many-messages/messages?limit=1000")
         assert resp.status_code == 200
         assert resp.json()["pagination"]["limit"] == 500
+
+    def test_get_session_messages_default_hides_compacted_rows(self):
+        """The endpoint default matches get_messages: active rows only.
+
+        Guards the #80680 contract — display reads opt into compacted history
+        explicitly; the dashboard default view stays as it was.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="compacted-default", source="cli")
+            db.append_messages_batch(
+                "compacted-default",
+                [
+                    {"role": "user", "content": "old q"},
+                    {"role": "assistant", "content": "old a"},
+                ],
+            )
+            db.archive_and_compact(
+                "compacted-default",
+                [
+                    {"role": "assistant", "content": "summary"},
+                    {"role": "user", "content": "live q"},
+                    {"role": "assistant", "content": "live a"},
+                ],
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/compacted-default/messages")
+        assert resp.status_code == 200
+        contents = [m["content"] for m in resp.json()["messages"]]
+        assert contents == ["summary", "live q", "live a"]
+
+    def test_get_session_messages_include_compacted_surfaces_archived_rows(self):
+        """include_compacted=true returns the full display history: archived
+        (active=0, compacted=1) rows plus live rows, in insertion order.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="compacted-visible", source="cli")
+            db.append_messages_batch(
+                "compacted-visible",
+                [
+                    {"role": "user", "content": "old q"},
+                    {"role": "assistant", "content": "old a"},
+                ],
+            )
+            db.archive_and_compact(
+                "compacted-visible",
+                [
+                    {"role": "assistant", "content": "summary"},
+                    {"role": "user", "content": "live q"},
+                    {"role": "assistant", "content": "live a"},
+                ],
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get(
+            "/api/sessions/compacted-visible/messages?include_compacted=true"
+        )
+        assert resp.status_code == 200
+        contents = [m["content"] for m in resp.json()["messages"]]
+        assert contents == ["old q", "old a", "summary", "live q", "live a"]
+
+    def test_get_session_messages_projects_and_dedupes_composite_carrier(self):
+        from agent.context_compressor import (
+            HISTORICAL_TASK_HEADING,
+            SUMMARY_PREFIX,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+            _SUMMARY_END_MARKER,
+        )
+        from hermes_state import SessionDB
+
+        handoff = (
+            f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\nold task\n\n"
+            f"{_SUMMARY_END_MARKER}"
+        )
+        carrier = f"{handoff}\n\nREAL ASK"
+        assistant_carrier = (
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\n"
+            "real completed answer\n\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n\n{handoff}"
+        )
+        db = SessionDB()
+        try:
+            db.create_session(session_id="compacted-carrier-display", source="desktop")
+            db.append_message(
+                "compacted-carrier-display",
+                "user",
+                "REAL ASK",
+                timestamp=123.0,
+            )
+            db.archive_and_compact(
+                "compacted-carrier-display",
+                [{"role": "user", "content": carrier, "timestamp": 123.0}],
+            )
+            db.append_message(
+                "compacted-carrier-display",
+                "user",
+                handoff,
+                timestamp=124.0,
+            )
+            db.append_message(
+                "compacted-carrier-display",
+                "assistant",
+                assistant_carrier,
+                timestamp=125.0,
+            )
+            active_id = db.get_messages("compacted-carrier-display")[0]["id"]
+        finally:
+            db.close()
+
+        resp = self.client.get(
+            "/api/sessions/compacted-carrier-display/messages"
+            "?include_compacted=true"
+        )
+        assert resp.status_code == 200
+        messages = resp.json()["messages"]
+        assert len(messages) == 3
+        assert messages[0]["id"] == active_id
+        assert messages[0]["content"] == carrier
+        assert messages[0]["display_content"] == "REAL ASK"
+        assert not messages[0].get("display_kind")
+        assert messages[1]["content"] == handoff
+        assert messages[1]["display_kind"] == "hidden"
+        assert messages[2]["content"] == assistant_carrier
+        assert messages[2]["display_content"] == "real completed answer"
+
+    def test_get_session_messages_latest_page_with_compacted_rows(self):
+        """The desktop's real read path (getLatestSessionMessages: limit +
+        order=latest + include_compacted=true) pages back from the newest
+        message and returns the window in chronological order.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="compacted-latest", source="cli")
+            db.append_messages_batch(
+                "compacted-latest",
+                [
+                    {"role": "user", "content": "old q"},
+                    {"role": "assistant", "content": "old a"},
+                ],
+            )
+            db.archive_and_compact(
+                "compacted-latest",
+                [
+                    {"role": "assistant", "content": "summary"},
+                    {"role": "user", "content": "live q"},
+                    {"role": "assistant", "content": "live a"},
+                ],
+            )
+        finally:
+            db.close()
+
+        # Display history: old q, old a, summary, live q, live a (5 rows).
+        resp = self.client.get(
+            "/api/sessions/compacted-latest/messages"
+            "?include_compacted=true&limit=2&offset=1&order=latest"
+        )
+        assert resp.status_code == 200
+        contents = [m["content"] for m in resp.json()["messages"]]
+        # Newest-first window of 2, skipping the newest (live a):
+        # summary, live q — chronological order, matching the non-compacted path.
+        assert contents == ["summary", "live q"]
 
     def test_get_session_messages_omitted_limit_defaults_to_500(self):
         """The dashboard must never load an entire unbounded transcript."""
@@ -2307,6 +2740,8 @@ class TestNewEndpoints:
             "name": "discord",
             "platform": "discord",
             "enabled": True,
+            # Install-on-enable: no provider post_setup pending for discord.
+            "post_setup_started": None,
         }
 
         config = load_config()
@@ -2463,9 +2898,12 @@ class TestNewEndpoints:
         assert data["needs_nous_auth"] is True
         assert data["feature"] == "browser"
         # The selection is still persisted — activation is what's gated.
+        # Managed rows store the single 'nous' provider string (the runtime
+        # maps it to the Browser Use cloud through the Nous Tool Gateway).
         from hermes_cli.config import load_config
         cfg = load_config()
-        assert cfg["browser"]["cloud_provider"] == "browser-use"
+        assert cfg["browser"]["cloud_provider"] == "nous"
+        assert "use_gateway" not in cfg["browser"]
 
 
     # -- Web capability split (search vs extract backends) ------------------
@@ -2634,6 +3072,69 @@ class TestNewEndpoints:
         assert any(tool["tool"] == "read_file" for tool in resp.json()["tools"])
 
 # ---------------------------------------------------------------------------
+# Desktop-owned loopback backends are not gated by dashboard.public_url (#96490)
+# ---------------------------------------------------------------------------
+
+
+class TestDesktopLoopbackAuthExemption:
+    """``_desktop_loopback_auth_exempt`` decides the #96490 exemption."""
+
+    def test_exempt_with_desktop_env_and_session_token_on_loopback(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-minted")
+        assert web_server._desktop_loopback_auth_exempt("127.0.0.1") is True
+        assert web_server._desktop_loopback_auth_exempt("::1") is True
+
+    def test_exempt_via_ssh_spawn_credentials_without_env_token(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+        assert web_server._desktop_loopback_auth_exempt(
+            "127.0.0.1", ssh_session_token="tok"
+        )
+        assert web_server._desktop_loopback_auth_exempt(
+            "127.0.0.1", ssh_owner_nonce="nonce"
+        )
+
+    def test_not_exempt_without_desktop_env(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "tok")
+        assert web_server._desktop_loopback_auth_exempt("127.0.0.1") is False
+
+    def test_not_exempt_without_any_credential(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        # HERMES_DESKTOP=1 alone is not enough: a plain serve with the env var
+        # exported must stay gated.
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+        assert web_server._desktop_loopback_auth_exempt("127.0.0.1") is False
+
+    def test_not_exempt_on_non_loopback_bind(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "tok")
+        assert web_server._desktop_loopback_auth_exempt("0.0.0.0") is False
+        assert web_server._desktop_loopback_auth_exempt("192.168.1.10") is False
+
+    def test_public_url_engages_gate_for_non_desktop_loopback(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        # Sanity: the base behaviour is untouched — a non-Desktop loopback
+        # serve with a public_url configured stays ticket-gated.
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+        assert web_server.should_require_dashboard_auth(
+            "127.0.0.1", frozenset({"dash.example.com"})
+        ) is True
+
+
+# ---------------------------------------------------------------------------
 # Model context length: normalize/denormalize + /api/model/info
 # ---------------------------------------------------------------------------
 
@@ -2682,6 +3183,43 @@ class TestModelContextLength:
         assert isinstance(result["model"], dict)
         assert result["model"]["context_length"] == 100000
         assert "model_context_length" not in result  # virtual field removed
+
+    def test_denormalize_context_length_alone_is_applied(self):
+        """The Settings autosave now sends a diff, not the full draft: editing
+        only the Context Window control must not omit ``model`` and thereby
+        drop the context_length edit on the floor (#89597 review)."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {"default": "anthropic/claude-sonnet-4", "provider": "anthropic",
+                      "context_length": 100000}
+        })
+
+        result = _denormalize_config_from_web({"model_context_length": 200000})
+        assert isinstance(result["model"], dict)
+        assert result["model"]["context_length"] == 200000
+        assert result["model"]["default"] == "anthropic/claude-sonnet-4"
+
+    def test_denormalize_model_alone_preserves_context_length(self):
+        """The mirror case: editing only the Model field must not silently
+        wipe an existing context_length override just because the diff omits
+        the unrelated model_context_length key (#89597 review).
+
+        No ``provider`` on disk here on purpose: that keeps this test isolated
+        to the diff-omission bug rather than the separate, pre-existing (and
+        intentional, see ``_apply_main_model_assignment``) behavior where a
+        real provider switch drops the context_length override."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {"default": "anthropic/claude-sonnet-4", "context_length": 150000}
+        })
+
+        result = _denormalize_config_from_web({"model": "anthropic/claude-opus-4.6"})
+        assert result["model"]["context_length"] == 150000
+        assert result["model"]["default"] == "anthropic/claude-opus-4.6"
 
 
 class TestDenormalizeProviderSwitch:
@@ -2936,6 +3474,98 @@ class TestStatusRemoteGateway:
         assert data["gateway_state"] == "running"
 
 
+class TestStatusInstallId:
+    """Stable per-install identity on /api/status.
+
+    Behaviour contracts: the id is minted once, persisted under the ROOT
+    Hermes home (not the profile home), survives a fresh process-cache read,
+    and is byte-identical for every profile served by the same install — the
+    desktop uses it to collapse duplicate roster rows when one backend is
+    registered under two addresses.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_cli.web_server as ws
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        # Fresh process cache per test: the cache is process-global by design
+        # (stability), so tests must not observe a previous test's id.
+        monkeypatch.setattr(ws, "_INSTALL_ID_CACHE", {"value": None})
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def test_status_reports_persistent_install_id(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        from hermes_constants import get_default_hermes_root
+
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+
+        first = self.client.get("/api/status")
+        assert first.status_code == 200
+        install_id = first.json().get("install_id")
+        assert isinstance(install_id, str)
+        # Opaque random hex only — no hardware/user-derived material.
+        assert re.fullmatch(r"[0-9a-f]{32}", install_id)
+
+        # Persisted under the ROOT home, and stable across calls.
+        id_file = get_default_hermes_root() / "install_id"
+        assert id_file.is_file()
+        assert id_file.read_text(encoding="utf-8").strip() == install_id
+
+        second = self.client.get("/api/status")
+        assert second.json().get("install_id") == install_id
+
+    def test_install_id_survives_process_cache_reset(self, monkeypatch):
+        """A restart (fresh cache) re-reads the SAME persisted id."""
+        import hermes_cli.web_server as ws
+
+        first = ws.get_install_id()
+        assert first
+        monkeypatch.setattr(ws, "_INSTALL_ID_CACHE", {"value": None})
+        assert ws.get_install_id() == first
+
+    def test_all_profiles_of_one_install_share_the_id(self, monkeypatch, tmp_path):
+        """HERMES_HOME=<root> and HERMES_HOME=<root>/profiles/<name> resolve to
+        the same id file — profiles share one physical install identity."""
+        import hermes_cli.web_server as ws
+
+        root = tmp_path / "hermes-root"
+        profile_home = root / "profiles" / "research"
+        profile_home.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        monkeypatch.setattr(ws, "_INSTALL_ID_CACHE", {"value": None})
+        root_id = ws.get_install_id()
+        assert root_id
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setattr(ws, "_INSTALL_ID_CACHE", {"value": None})
+        assert ws.get_install_id() == root_id
+        # Exactly one id file exists — under the root, not the profile home.
+        assert (root / "install_id").is_file()
+        assert not (profile_home / "install_id").exists()
+
+    def test_corrupt_id_file_is_replaced_not_propagated(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as ws
+
+        root = tmp_path / "hermes-root"
+        root.mkdir()
+        (root / "install_id").write_text("not-a-valid-id\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        monkeypatch.setattr(ws, "_INSTALL_ID_CACHE", {"value": None})
+
+        value = ws.get_install_id()
+        assert value and re.fullmatch(r"[0-9a-f]{32}", value)
+        assert (root / "install_id").read_text(encoding="utf-8").strip() == value
+
+
 class TestGatewayBusyReadout:
     """Tests for the NAS busy/drainable readout on /api/status.
 
@@ -2990,6 +3620,61 @@ class TestGatewayBusyReadout:
         data = self.client.get("/api/status").json()
         assert data["active_agents"] == 0
         assert data["gateway_busy"] is False
+
+
+class TestStatusMemoryBlock:
+    """NS-656: /api/status must always carry a `memory` block."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def test_memory_block_present_with_pressure_field(self):
+        data = self.client.get("/api/status").json()
+        assert "memory" in data
+        assert data["memory"]["pressure"] in {
+            "ok", "elevated", "critical", "unknown",
+        }
+
+    def test_memory_block_degrades_when_collector_raises(self, monkeypatch):
+        """A broken collector must never take down the status endpoint —
+        the block degrades to pressure=unknown."""
+        import gateway.memory_status as ms
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("collector exploded")
+
+        monkeypatch.setattr(ms, "collect_memory_status", _boom)
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        assert resp.json()["memory"] == {"pressure": "unknown"}
+
+    def test_disk_block_present_with_pressure_field(self):
+        data = self.client.get("/api/status").json()
+        assert "disk" in data
+        assert data["disk"]["pressure"] in {
+            "ok", "elevated", "critical", "unknown",
+        }
+
+    def test_disk_block_degrades_when_collector_raises(self, monkeypatch):
+        """Same contract as the memory block: a broken collector must never
+        take down the status endpoint."""
+        import gateway.disk_status as ds
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("collector exploded")
+
+        monkeypatch.setattr(ds, "collect_disk_status", _boom)
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        assert resp.json()["disk"] == {"pressure": "unknown"}
 
 
 class TestGatewayUpdatedAtContract:
@@ -3734,6 +4419,51 @@ class TestDashboardPluginManifestExtensions:
             reset_hermes_home_override(token)
         assert any(p["name"] == "skin-home" for p in plugins)
 
+    def test_user_plugins_found_under_profile_scoped_process(self, tmp_path, monkeypatch):
+        """Regression #87197: a profile-scoped process (``--profile <name>``
+        sets HERMES_HOME=<root>/profiles/<name>) must still discover user
+        plugins installed in the hermes root's plugins/ directory."""
+        root = tmp_path / "hermes-root"
+        profile_home = root / "profiles" / "presale"
+        profile_home.mkdir(parents=True)
+        self._write_plugin(root, "meeting-intelligence", {
+            "name": "meeting-intelligence",
+            "label": "Meeting Intelligence",
+            "tab": {"path": "/meetings"},
+            "entry": "dist/index.js",
+        })
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        from hermes_cli import web_server
+        plugins = web_server._discover_dashboard_plugins()
+        assert any(p["name"] == "meeting-intelligence" for p in plugins)
+
+    def test_profile_local_plugin_wins_over_root_plugin(self, tmp_path, monkeypatch):
+        """A same-named plugin in the profile home takes precedence over the
+        root copy (seen_names dedupe, profile scanned first)."""
+        root = tmp_path / "hermes-root"
+        profile_home = root / "profiles" / "presale"
+        profile_home.mkdir(parents=True)
+        self._write_plugin(profile_home, "dupe", {
+            "name": "dupe",
+            "label": "Profile Copy",
+            "tab": {"path": "/from-profile"},
+            "entry": "dist/index.js",
+        })
+        self._write_plugin(root, "dupe", {
+            "name": "dupe",
+            "label": "Root Copy",
+            "tab": {"path": "/from-root"},
+            "entry": "dist/index.js",
+        })
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        from hermes_cli import web_server
+        plugins = web_server._discover_dashboard_plugins()
+        entries = [p for p in plugins if p["name"] == "dupe"]
+        assert len(entries) == 1
+        assert entries[0]["tab"]["path"] == "/from-profile"
+
 
 
 
@@ -4326,6 +5056,66 @@ class TestServeIndexMissingIndex:
         assert "SPA-rebuilt" in resp.text
 
 
+class TestHeadlessServeTokenPage:
+    """Headless `hermes serve` must serve the Desktop token handshake page
+    at `/` when the dashboard auth gate is off (#94227).
+
+    The Electron renderer boots by fetching `/` and extracting
+    ``window.__HERMES_SESSION_TOKEN__`` for WebSocket auth. Headless serve
+    used to 404 every path, so after an update replaced the backend (and
+    the spawn-token env pin no longer matched the token the new backend
+    generated) the renderer was stuck with a stale token, /api/ws rejected
+    it, and the window white-screened (#95575).
+    """
+
+    @staticmethod
+    def _headless_client(monkeypatch, *, gated: bool):
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
+        spa_app = FastAPI()
+        spa_app.state.auth_required = gated
+        ws.mount_spa(spa_app)
+        return TestClient(spa_app), ws
+
+    def test_root_serves_token_page_when_not_gated(self, monkeypatch):
+        import re
+
+        client, ws = self._headless_client(monkeypatch, gated=False)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/html")
+        assert "no-store" in resp.headers.get("cache-control", "")
+        # Must match the desktop's extraction regex exactly
+        # (apps/desktop/electron/dashboard-token.ts).
+        match = re.search(
+            r'window\.__HERMES_SESSION_TOKEN__\s*=\s*("(?:\\.|[^"\\])*")',
+            resp.text,
+        )
+        assert match, resp.text
+        import json as _json
+
+        assert _json.loads(match.group(1)) == ws._SESSION_TOKEN
+        assert "window.__HERMES_AUTH_REQUIRED__=false" in resp.text
+
+    def test_root_stays_404_json_when_auth_gated(self, monkeypatch):
+        client, ws = self._headless_client(monkeypatch, gated=True)
+        resp = client.get("/")
+        assert resp.status_code == 404
+        assert "web UI disabled" in resp.json()["error"]
+        assert ws._SESSION_TOKEN not in resp.text
+
+    def test_non_root_paths_stay_404_json(self, monkeypatch):
+        client, ws = self._headless_client(monkeypatch, gated=False)
+        for route in ("/chat", "/api/status-page", "/assets/index-abc.js"):
+            resp = client.get(route)
+            assert resp.status_code == 404
+            assert "web UI disabled" in resp.json()["error"]
+            assert ws._SESSION_TOKEN not in resp.text
+
+
 class TestHashedAssetCacheHeaders:
     """Hashed /assets/* responses must be immutable-cacheable; index.html
     must stay no-store so it always references the current hashes
@@ -4469,3 +5259,109 @@ class TestDashboardComponentHealth:
         assert self.ws.DASHBOARD_HEALTH.selftest_status == "failing"
         assert self.ws.DASHBOARD_HEALTH.selftest_http_status == 500
         assert self.ws.DASHBOARD_HEALTH.snapshot()["status"] == "degraded"
+
+
+class TestSessionPatchUnread:
+    """PATCH /api/sessions/{id} with {"unread": bool} marks the session
+    read/unread, and GET /api/sessions surfaces the derived flag."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        monkeypatch.setattr(
+            hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
+        )
+
+        self.client = TestClient(app)
+        self.auth_client = TestClient(app)
+        self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="s1", source="cli")
+            db.append_message(session_id="s1", role="user", content="hi")
+            db.set_session_read("s1")  # start read, like a conversation you opened
+        finally:
+            db.close()
+
+    def test_patch_unread_true_marks_row_unread(self):
+        resp = self.auth_client.patch("/api/sessions/s1", json={"unread": True})
+        assert resp.status_code == 200
+        assert resp.json()["unread"] is True
+
+        rows = self.auth_client.get("/api/sessions?limit=100").json()["sessions"]
+        assert next(s for s in rows if s["id"] == "s1")["unread"] is True
+
+    def test_patch_unread_false_marks_row_read(self):
+        self.auth_client.patch("/api/sessions/s1", json={"unread": True})
+        resp = self.auth_client.patch("/api/sessions/s1", json={"unread": False})
+        assert resp.status_code == 200
+        assert resp.json()["unread"] is False
+
+        rows = self.auth_client.get("/api/sessions?limit=100").json()["sessions"]
+        assert next(s for s in rows if s["id"] == "s1")["unread"] is False
+
+    def test_patch_unread_alone_is_accepted(self):
+        # The route's "Nothing to update" guard must not reject a bare unread.
+        resp = self.auth_client.patch("/api/sessions/s1", json={"unread": True})
+        assert resp.status_code == 200
+
+    def test_patch_unread_rejects_non_bool(self):
+        # NB: pydantic v2 coerces "yes"/"no"/"1"/"0"/"on"/"off" to bool, so use
+        # a string outside the accepted set to prove validation rejects it.
+        resp = self.auth_client.patch("/api/sessions/s1", json={"unread": "maybe"})
+        assert resp.status_code == 422  # pydantic validation
+
+    def test_patch_hidden_updates_persisted_session_without_live_runtime(self):
+        resp = self.auth_client.patch("/api/sessions/s1", json={"hidden": True})
+        assert resp.status_code == 200
+        assert resp.json()["hidden"] is True
+
+        rows = self.auth_client.get("/api/sessions?limit=100").json()["sessions"]
+        assert all(s["id"] != "s1" for s in rows)
+
+        restored = self.auth_client.patch(
+            "/api/sessions/s1", json={"hidden": False}
+        )
+        assert restored.status_code == 200
+        rows = self.auth_client.get("/api/sessions?limit=100").json()["sessions"]
+        assert bool(next(s for s in rows if s["id"] == "s1")["hidden"]) is False
+
+    def test_patch_hidden_alone_is_accepted(self):
+        resp = self.auth_client.patch("/api/sessions/s1", json={"hidden": True})
+        assert resp.status_code == 200
+
+
+def test_mount_spa_dynamic_web_dist_recheck(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from hermes_cli import web_server
+
+    app = FastAPI()
+    dist = tmp_path / "web_dist"
+    monkeypatch.setattr(web_server, "WEB_DIST", dist)
+
+    web_server.mount_spa(app)
+    client = TestClient(app)
+
+    # 1. missing build -> 404
+    res1 = client.get("/")
+    assert res1.status_code == 404
+    assert res1.json()["error"] == "Frontend not built. Run: cd web && npm run build"
+
+    # 2. build created dynamically -> 200
+    dist.mkdir(parents=True, exist_ok=True)
+    (dist / "index.html").write_text("<html><body>Test</body></html>")
+    res2 = client.get("/")
+    assert res2.status_code == 200
+    assert "Test" in res2.text

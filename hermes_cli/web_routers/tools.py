@@ -43,12 +43,17 @@ _spawn_hermes_action = late("_spawn_hermes_action")
 _toolset_model_catalog = late("_toolset_model_catalog")
 load_config = late("load_config")
 save_config = late("save_config")
+run_in_threadpool = late("run_in_threadpool")
 
 # Live proxies for web_server-owned module state (mutations/monkeypatches
 # on web_server remain authoritative; resolved at operation time).
 _MODEL_CATALOG_TOOLSETS = LateState("_MODEL_CATALOG_TOOLSETS")
 _TERMINAL_BACKENDS = LateState("_TERMINAL_BACKENDS")
 _TERMINAL_BACKEND_NAMES = LateState("_TERMINAL_BACKEND_NAMES")
+# Dynamic variants: built-ins + plugin-registered backends, computed per
+# request so a plugin installed after server start still shows up.
+_terminal_backend_rows = late("_terminal_backend_rows")
+_terminal_backend_names = late("_terminal_backend_names")
 # Config read-modify-write serialization for off-loop handlers (defined in
 # web_server.py; LateState supports ``with``-blocks, so this is the live lock).
 _CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
@@ -86,7 +91,7 @@ async def get_toolsets(profile: Optional[str] = None):
             features = get_nous_subscription_features(config)
         return config, toolset_rows, enabled_by_platform, features
 
-    config, toolset_rows, enabled_by_platform, features = await asyncio.to_thread(_read)
+    config, toolset_rows, enabled_by_platform, features = await run_in_threadpool(_read)
     result = []
     for name, label, desc in toolset_rows:
         try:
@@ -175,11 +180,53 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
                 _save_platform_tools(config, target_platform, enabled)
 
     await asyncio.to_thread(_run)
+
+    # Install-on-enable: when the newly enabled toolset's provider carries a
+    # post_setup hook with a registered, UNSATISFIED install-state predicate
+    # (cua-driver binary missing, etc. — see _POST_SETUP_INSTALLED), spawn the
+    # same background install `hermes tools` runs interactively. Without this,
+    # a dashboard/desktop toggle "saves" but the tool silently never appears
+    # in the schema because its check_fn can't find the binary — the exact
+    # dead-end that forced users to discover `hermes computer-use install`
+    # by hand. Best-effort: a spawn failure never fails the toggle.
+    post_setup_started: Optional[str] = None
+    if body.enabled and name not in _CONFIG_ONLY_TOOLSETS:
+        def _pending_install_key() -> Optional[str]:
+            from hermes_cli.tools_config import (
+                TOOL_CATEGORIES,
+                _post_setup_already_installed,
+                _visible_providers,
+            )
+
+            cat = TOOL_CATEGORIES.get(name)
+            if not cat:
+                return None
+            with _profile_scope(body.profile or profile):
+                config = load_config()
+                for prov in _visible_providers(cat, config):
+                    key = prov.get("post_setup")
+                    if key and not _post_setup_already_installed(key):
+                        return key
+            return None
+
+        try:
+            pending_key = await asyncio.to_thread(_pending_install_key)
+            if pending_key:
+                _spawn_hermes_action(
+                    _profile_cli_args(body.profile or profile)
+                    + ["tools", "post-setup", pending_key],
+                    "tools-post-setup",
+                )
+                post_setup_started = pending_key
+        except Exception:
+            _log.exception("install-on-enable post-setup spawn failed for %s", name)
+
     return {
         "ok": True,
         "name": name,
         "platform": target_platform,
         "enabled": body.enabled,
+        "post_setup_started": post_setup_started,
     }
 
 
@@ -683,12 +730,13 @@ async def get_terminal_backends(profile: Optional[str] = None):
             terminal_cfg = config.get("terminal")
             if not isinstance(terminal_cfg, dict):
                 terminal_cfg = {}
+            rows = _terminal_backend_rows()
             active = str(terminal_cfg.get("backend") or "local").strip().lower()
-            if active not in _TERMINAL_BACKEND_NAMES:
+            if active not in {row["name"] for row in rows}:
                 active = "local"
 
             backends = []
-            for row in _TERMINAL_BACKENDS:
+            for row in rows:
                 status, detail = _probe_terminal_backend(row["name"], terminal_cfg)
                 backends.append({
                     "name": row["name"],
@@ -714,11 +762,12 @@ async def select_terminal_backend(
     allowed — the picker shows guidance instead of blocking, matching the CLI.
     """
     backend = (body.backend or "").strip().lower()
-    if backend not in _TERMINAL_BACKEND_NAMES:
+    valid_names = _terminal_backend_names()
+    if backend not in valid_names:
         raise HTTPException(
             status_code=400,
             detail=f"Unknown terminal backend: {body.backend!r}. "
-            f"Use one of: {', '.join(sorted(_TERMINAL_BACKEND_NAMES))}",
+            f"Use one of: {', '.join(sorted(valid_names))}",
         )
 
     def _run():

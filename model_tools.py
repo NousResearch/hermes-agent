@@ -24,6 +24,8 @@ import os
 import json
 import re
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
 import logging
 import threading
 import time
@@ -39,6 +41,20 @@ from tools.registry import (
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
+
+_post_tool_call_hook_suppressed: ContextVar[bool] = ContextVar(
+    "post_tool_call_hook_suppressed", default=False
+)
+
+
+@contextmanager
+def suppress_post_tool_call_hook():
+    """Let an outer executor own the terminal post-tool event."""
+    token = _post_tool_call_hook_suppressed.set(True)
+    try:
+        yield
+    finally:
+        _post_tool_call_hook_suppressed.reset(token)
 
 # Tracks platform-bundle names already flagged in disabled_toolsets so the
 # advisory (#33924) is logged once per name, not on every tool recompute.
@@ -263,7 +279,7 @@ _LEGACY_TOOLSET_MAP = {
         "browser_press", "browser_get_images",
         "browser_vision", "browser_console"
     ],
-    "cronjob_tools": ["cronjob"],
+    "cronjob_tools": ["cronjob_manage"],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
     "tts_tools": ["text_to_speech"],
 }
@@ -274,7 +290,7 @@ _LEGACY_TOOLSET_MAP = {
 # =============================================================================
 
 # Module-level memoization for get_tool_definitions(). Keyed on
-# (frozenset(enabled_toolsets), frozenset(disabled_toolsets), registry._generation).
+# (profile scope, enabled/disabled toolsets, registry generation).
 # Hot callers (gateway runner, AIAgent.__init__) invoke this on every turn
 # with quiet_mode=True; caching avoids ~7 ms of registry walking + schema
 # filtering + check_fn probing per call. Only active when quiet_mode=True
@@ -285,6 +301,7 @@ _LEGACY_TOOLSET_MAP = {
 # inner check_fn TTL cache in registry.py handles environment drift (Docker
 # daemon start/stop, env var changes, etc.) on a 30 s horizon.
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
+_tool_defs_cache_lock = threading.Lock()
 
 # Hard cap on memoized get_tool_definitions() results. A long-lived Gateway
 # process sees many distinct toolset/config fingerprints over its lifetime
@@ -299,7 +316,8 @@ def _clear_tool_defs_cache() -> None:
     """Drop memoized get_tool_definitions() results. Called when dynamic
     schema dependencies change (e.g. discord capability cache reset,
     execute_code sandbox reconfigured)."""
-    _tool_defs_cache.clear()
+    with _tool_defs_cache_lock:
+        _tool_defs_cache.clear()
 
 
 def get_tool_definitions(
@@ -346,6 +364,7 @@ def get_tool_definitions(
         profile_scope = check_fn_cache_scope()
         if profile_scope != CHECK_FN_CACHE_BYPASS:
             cache_key = (
+                registry.current_scope_key(),
                 frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
                 frozenset(disabled_toolsets) if disabled_toolsets else None,
                 registry._generation,
@@ -356,7 +375,8 @@ def get_tool_definitions(
                 _is_dispatcher_owned_worker(),
                 profile_scope,
             )
-        cached = _tool_defs_cache.get(cache_key) if cache_key is not None else None
+        with _tool_defs_cache_lock:
+            cached = _tool_defs_cache.get(cache_key) if cache_key is not None else None
         if cached is not None:
             # Update _last_resolved_tool_names so downstream callers see
             # consistent state even on a cache hit.
@@ -379,10 +399,16 @@ def get_tool_definitions(
         # Bound the cache with LRU eviction so a long-lived Gateway process
         # doesn't accumulate entries unboundedly across the many distinct
         # toolset/config fingerprints it sees over its lifetime (#19251).
-        if len(_tool_defs_cache) >= _TOOL_DEFS_CACHE_MAX:
-            _tool_defs_cache.pop(next(iter(_tool_defs_cache)))  # evict oldest
-        _tool_defs_cache[cache_key] = result
-        return list(result)
+        with _tool_defs_cache_lock:
+            # Another thread may have populated this exact key while this
+            # thread computed. Reuse it and serialize capacity eviction.
+            cached = _tool_defs_cache.get(cache_key)
+            if cached is None:
+                if len(_tool_defs_cache) >= _TOOL_DEFS_CACHE_MAX:
+                    _tool_defs_cache.pop(next(iter(_tool_defs_cache)))
+                _tool_defs_cache[cache_key] = result
+                cached = result
+        return list(cached)
     if quiet_mode:
         return list(result)
     return result
@@ -566,6 +592,54 @@ def _compute_tool_definitions(
         ]
         available_tool_names.discard("browser_exec")
 
+    # delegate_task's child-restrictions rule names sibling tools (clarify,
+    # memory, cronjob). Warning about tools this session doesn't even have
+    # teaches ghost vocabulary — filter the list to tools actually present
+    # and drop the line entirely when none apply. Two source variants exist
+    # (depth-derived): the depth-off line also names delegate_task itself;
+    # the depth-on line lists only the siblings. Pattern order matters —
+    # the sibling list is a substring of the full list.
+    # Same session-level seam as the browser_exec gate above.
+    if "delegate_task" in available_tool_names:
+        blocked_present = [
+            t for t in ("clarify", "memory", "cronjob_manage") if t in available_tool_names
+        ]
+        if len(blocked_present) < 3:
+            full_offvariant = "delegate_task, clarify, memory, or cronjob"
+            full_onvariant = "clarify, memory, or cronjob"
+            for i, td in enumerate(filtered_tools):
+                fn = td.get("function", {})
+                desc = fn.get("description", "")
+                if fn.get("name") != "delegate_task":
+                    continue
+                if full_offvariant in desc:
+                    full, keep_self = full_offvariant, True
+                elif full_onvariant in desc:
+                    full, keep_self = full_onvariant, False
+                else:
+                    break
+                names = (["delegate_task"] if keep_self else []) + blocked_present
+                if blocked_present:
+                    if len(names) == 1:
+                        replacement = names[0]
+                    elif len(names) == 2:
+                        replacement = f"{names[0]} or {names[1]}"
+                    else:
+                        replacement = ", ".join(names[:-1]) + ", or " + names[-1]
+                    desc = desc.replace(full, replacement)
+                else:
+                    # No sibling tools here — drop the restriction line
+                    # (both variants end at the following "\n").
+                    start = desc.find("- Children cannot call " + full)
+                    if start != -1:
+                        end = desc.index("\n", start) + 1
+                        desc = desc[:start] + desc[end:]
+                filtered_tools[i] = {
+                    **td,
+                    "function": {**fn, "description": desc},
+                }
+                break
+
     if not quiet_mode:
         if filtered_tools:
             tool_names = [t["function"]["name"] for t in filtered_tools]
@@ -638,7 +712,11 @@ def _resolve_active_context_length() -> int:
         model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
         if not isinstance(model_cfg, dict):
             model_cfg = {}
-        model_id = (model_cfg.get("model") or model_cfg.get("default") or "").strip()
+        _raw_model_id = model_cfg.get("model") or model_cfg.get("default") or ""
+        if isinstance(_raw_model_id, dict):
+            from hermes_cli.config import split_model_config_default
+            _raw_model_id, _ = split_model_config_default(_raw_model_id)
+        model_id = str(_raw_model_id).strip()
         if not model_id:
             return 0
         from agent.model_metadata import get_model_context_length
@@ -710,7 +788,18 @@ def _resolve_active_context_length() -> int:
 # because they need agent-level state (TodoStore, MemoryStore, etc.).
 # The registry still holds their schemas; dispatch just returns a stub error
 # so if something slips through, the LLM sees a sensible message.
-_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
+_AGENT_LOOP_TOOLS = {"todo_list", "memory", "session_search", "delegate_task"}
+
+# Legacy tool-name aliases (2026-08 renames): accepted at every dispatch seam
+# (handle_function_call + both executors) so old sessions and saved prompts
+# keep working; schemas only advertise the new names.
+_LEGACY_TOOL_ALIASES = {
+    "todo": "todo_list",
+    "cronjob": "cronjob_manage",
+    "process": "process_manage",
+    "tour": "gui_tour",
+    "tip": "show_tip",
+}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
@@ -1128,6 +1217,8 @@ def _emit_post_tool_call_hook(
     result *after* the gate (parsing the result is only worth it when a
     listener will actually consume it).
     """
+    if _post_tool_call_hook_suppressed.get():
+        return
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook
         if not has_hook("post_tool_call"):
@@ -1203,6 +1294,13 @@ def handle_function_call(
     if not isinstance(function_args, dict):
         function_args = {}
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
+
+    # ── Legacy tool-name aliases (2026-08 renames) ────────────────────
+    # Old sessions resuming mid-conversation (and users' muscle memory in
+    # saved skills/cron prompts) still emit the pre-rename names. Alias at
+    # the dispatch seam so every replay keeps working; new schemas only
+    # advertise the new names, so fresh sessions never see the old ones.
+    function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
 
     # ── Tool Search bridge dispatch ──────────────────────────────────
     # tool_search and tool_describe are pure catalog reads — handle them
@@ -1288,9 +1386,9 @@ def handle_function_call(
                         "Use tool_search to find tools you can call."
                     )
                 )
-            # Probe-validate against the deferred tool's schema (ironclaw#5149):
-            # a blind call missing required arguments returns the parameter
-            # schema instead of dispatching into an opaque downstream failure.
+            # Validate against the deferred tool's concrete schema before
+            # dispatch. This covers constraints the provider cannot enforce
+            # through the generic tool_call ``arguments: object`` bridge.
             _probe_err = _ts_mod.validate_deferred_call_args(underlying_name, underlying_args)
             if _probe_err is not None:
                 return _return_bridge_result(_probe_err)
@@ -1338,22 +1436,22 @@ def handle_function_call(
         if function_name in _AGENT_LOOP_TOOLS:
             return tool_error(f"{function_name} must be handled by the agent loop")
 
-        # Check plugin hooks for a block/approve directive (unless caller
+        # Check plugin hooks for a block/approve/modify directive (unless caller
         # already checked — e.g. run_agent._invoke_tool passes skip=True to
         # avoid double-firing the hook).
         #
         # Single-fire contract: pre_tool_call fires exactly once per tool
-        # execution. resolve_pre_tool_block() internally calls
-        # invoke_hook("pre_tool_call", ...) once and returns the block message
-        # for a `block` directive OR for an `approve` directive whose human
-        # gate denied/timed-out/errored (fail-closed). Observer plugins see
+        # execution. _dispatch_pre_tool_call_hooks() internally calls
+        # invoke_hook("pre_tool_call", ...) once and returns both the block
+        # message (for `block`/`approve` directives) and any modified args
+        # (for `modify` directives). Observer plugins see
         # the hook on that same pass. When skip=True, the caller already
         # fired it — do nothing here.
         if not skip_pre_tool_call_hook:
             block_message: Optional[str] = None
             try:
-                from hermes_cli.plugins import resolve_pre_tool_block
-                block_message = resolve_pre_tool_block(
+                from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+                block_message, modified_args = _dispatch_pre_tool_call_hooks(
                     function_name,
                     function_args,
                     task_id=task_id or "",
@@ -1363,6 +1461,8 @@ def handle_function_call(
                     api_request_id=api_request_id or "",
                     middleware_trace=list(_tool_middleware_trace),
                 )
+                if modified_args is not None:
+                    function_args = modified_args
             except Exception as _hook_err:
                 logger.debug("pre_tool_call hook error: %s", _hook_err)
 
@@ -1451,6 +1551,7 @@ def handle_function_call(
             _approval_tokens = set_current_observability_context(
                 turn_id=turn_id or "",
                 tool_call_id=tool_call_id or "",
+                session_id=session_id or "",
             )
         except Exception:
             reset_current_observability_context = None

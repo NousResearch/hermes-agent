@@ -251,10 +251,16 @@ def _goal_judge_available() -> bool:
     return client is not None and bool(model)
 
 
-def _goal_mode_handoff_rejection(task, evidence: str) -> Optional[str]:
-    """Return a rejection reason when a goal-mode terminal handoff is premature."""
+def _goal_mode_handoff_rejection(task, evidence: str):
+    """Return ``(verdict, reason_or_None)`` for a goal-mode terminal handoff.
+
+    ``{"done", None}`` means the judge allows the handoff; anything else is
+    a rejection whose verdict disambiguates the guidance the caller gives
+    the worker (``continue`` = not done yet, ``blocked`` = judged
+    unachievable — see #100954).
+    """
     if not task or not task.goal_mode or not _goal_judge_available():
-        return None
+        return ("done", None)
     verdict = "done"
     reason = ""
     try:
@@ -270,7 +276,7 @@ def _goal_mode_handoff_rejection(task, evidence: str) -> Optional[str]:
             judge_exc,
             exc_info=True,
         )
-    return reason if verdict != "done" else None
+    return (verdict, None if verdict == "done" else reason)
 
 
 # ---------------------------------------------------------------------------
@@ -752,10 +758,18 @@ def _handle_complete(args: dict, **kw) -> str:
             # Only enforce when a judge is actually reachable — see
             # _goal_judge_available for why an unavailable judge fails open.
             task = kb.get_task(conn, tid)
-            rejection = _goal_mode_handoff_rejection(
+            gate_verdict, rejection = _goal_mode_handoff_rejection(
                 task,
                 (summary or result or "").strip(),
             )
+            if gate_verdict == "blocked":
+                return tool_error(
+                    f"Goal completion rejected: judge ruled the goal "
+                    f"unachievable — {rejection}. The task will NOT complete "
+                    f"silently. Either re-scope the task with kanban_edit, "
+                    f"or record the block with kanban_block and hand the "
+                    f"decision to a human / reviewer."
+                )
             if rejection is not None:
                 return tool_error(
                     f"Goal completion rejected by judge: {rejection}. "
@@ -937,7 +951,13 @@ def _handle_request_review(args: dict, **kw) -> str:
         kb, conn = _connect(board=board)
         try:
             task = kb.get_task(conn, tid)
-            rejection = _goal_mode_handoff_rejection(task, summary)
+            gate_verdict, rejection = _goal_mode_handoff_rejection(task, summary)
+            if gate_verdict == "blocked":
+                return tool_error(
+                    f"Goal review handoff rejected: judge ruled the goal "
+                    f"unachievable — {rejection}. Record the block with "
+                    f"kanban_block instead of requesting review."
+                )
             if rejection is not None:
                 return tool_error(
                     f"Goal review handoff rejected by judge: {rejection}. "
@@ -1556,9 +1576,12 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
                 return False  # CLI / cron / test — no persistent channel
             platform = "tui"
             chat_id = session_key
+        is_gateway_session = platform != "tui"
+        chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE", "") or None
+        delivery_mode = "notify+wake" if is_gateway_session else None
         thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
         user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
-        chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE", "") or None
+        user_id_alt = get_session_env("HERMES_SESSION_USER_ID_ALT", "") or None
         message_id = get_session_env("HERMES_SESSION_MESSAGE_ID", "") or ""
         notifier_profile = (
             get_session_env("HERMES_SESSION_PROFILE", "")
@@ -1591,9 +1614,10 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
         _kb.add_notify_sub(
             conn, task_id=task_id,
             platform=platform, chat_id=chat_id,
+            thread_id=thread_id, user_id=user_id, user_id_alt=user_id_alt,
             chat_type=chat_type,
-            thread_id=thread_id, user_id=user_id,
             notifier_profile=notifier_profile,
+            delivery_mode=delivery_mode,
             delivery_metadata=delivery_metadata or None,
         )
         return True

@@ -83,6 +83,45 @@ def test_fresh_param_ignores_channel_active_session_file(pty_client, monkeypatch
     assert not active_file.exists()
 
 
+def test_active_session_fallback_sends_resume_control_message(pty_client, monkeypatch):
+    """Implicit resume (no `?resume=`) must tell the client which session.
+
+    Regression for #93518: the dashboard's stick-to-bottom replay logic only
+    fires when the frontend can see a resume id. Without `?resume=` on the URL
+    it previously had no way to learn that `pty_ws` fell back to the
+    per-channel active-session file, so the viewport stayed pinned at the top
+    of the replayed scrollback.
+    """
+    ws, client, token = pty_client
+    channel = "implicit-resume-chan"
+    active_file = ws._active_session_file_for_channel(ws.app, channel)
+    active_file.write_text(json.dumps({"session_id": "sess-old"}), encoding="utf-8")
+
+    monkeypatch.setattr(
+        ws, "_resolve_chat_argv", lambda **kw: (["fake-hermes-tui"], None, None)
+    )
+
+    with client.websocket_connect(_url(token, channel=channel)) as conn:
+        assert conn.receive_json() == {"type": "resume", "id": "sess-old"}
+        assert conn.receive_bytes() == b"ready"
+
+
+def test_explicit_resume_sends_no_control_message(pty_client, monkeypatch):
+    """An explicit `?resume=` already tells the client via the URL param."""
+    ws, client, token = pty_client
+    channel = "explicit-resume-chan"
+
+    monkeypatch.setattr(
+        ws, "_resolve_chat_argv", lambda **kw: (["fake-hermes-tui"], None, None)
+    )
+
+    with client.websocket_connect(
+        _url(token, channel=channel, resume="sess-explicit")
+    ) as conn:
+        # The first (and only) frame is PTY output, not a control message.
+        assert conn.receive_bytes() == b"ready"
+
+
 def test_child_eof_closes_socket_and_bridge(pty_client, monkeypatch):
     """Child EOF must close the WS server-side and reap the PTY.
 

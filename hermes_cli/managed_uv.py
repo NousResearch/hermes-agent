@@ -44,6 +44,7 @@ _RUNTIME_DIR_NAME = ".hermes-runtime"
 _VENV_NAME = "venv"
 _ALT_VENV_NAME = ".venv"
 _REPAIR_LOCK_NAME = "runtime-repair.lock"
+_MACOS_MANAGED_PYTHON_IDENTIFIER = "com.nousresearch.hermes.managed-python"
 
 # ---------------------------------------------------------------------------
 # Public helpers
@@ -114,6 +115,79 @@ def managed_python_env(
         "UV_PYTHON_INSTALL_REGISTRY": "0",
     })
     return env
+
+
+def _macos_sign_managed_python(python: Path) -> bool:
+    """Give a newly downloaded managed Python a stable macOS code identity.
+
+    python-build-standalone binaries are ad-hoc signed, which leaves macOS
+    TCC with a cdhash-only identity that changes whenever Hermes provisions a
+    new runtime generation.  An identifier-pinned designated requirement
+    gives those generations a stable identity even when no Developer ID
+    certificate is available locally.
+
+    Signing is deliberately best effort.  Runtime repair exists to remove a
+    security vulnerability, so an unavailable or incompatible ``codesign``
+    must not prevent the fixed interpreter from being installed.
+    """
+    if platform.system() != "Darwin":
+        return False
+
+    codesign = shutil.which("codesign")
+    if not codesign:
+        logger.info(
+            "macOS codesign is unavailable; using the downloaded Python signature"
+        )
+        return False
+
+    requirement = (
+        "=designated => identifier "
+        f'"{_MACOS_MANAGED_PYTHON_IDENTIFIER}"'
+    )
+    try:
+        signed = subprocess.run(
+            [
+                codesign,
+                "--force",
+                "--deep",
+                "--sign",
+                "-",
+                "--timestamp=none",
+                "--identifier",
+                _MACOS_MANAGED_PYTHON_IDENTIFIER,
+                "--requirements",
+                requirement,
+                str(python),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if signed.returncode != 0:
+            logger.warning(
+                "could not stably sign managed Python %s: %s",
+                python,
+                (signed.stderr or signed.stdout or "codesign failed").strip(),
+            )
+            return False
+
+        verified = subprocess.run(
+            [codesign, "--verify", "--deep", "--strict", str(python)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if verified.returncode != 0:
+            logger.warning(
+                "macOS signature verification failed for managed Python %s: %s",
+                python,
+                (verified.stderr or verified.stdout or "verification failed").strip(),
+            )
+            return False
+        return True
+    except Exception as exc:
+        logger.warning("could not sign managed Python %s: %s", python, exc)
+        return False
 
 
 @dataclass(frozen=True)
@@ -514,6 +588,8 @@ def _attempt_install_generation(
     project_root: Path,
     python_root: Path,
     current: SQLiteRuntimeInfo,
+    allow_minor_upgrade: bool = False,
+    tried_versions: set[tuple[int, int, int]] | None = None,
 ) -> tuple[Path, Path, SQLiteRuntimeInfo] | None:
     """One install+probe attempt for a specific version request (bare minor
     like "3.11", or an explicit patch like "3.11.15"). Each attempt gets its
@@ -521,6 +597,12 @@ def _attempt_install_generation(
     cleaned up before the next attempt, matching --reinstall semantics.
     Returns None (and cleans up) on any failure, including a vulnerable
     or off-line candidate.
+
+    When *tried_versions* is given, the probed candidate's version is
+    recorded in it so callers looping over explicit patches can skip a
+    version a bare-minor request already resolved to (and rejected) --
+    retrying it explicitly would spend a full download+install+probe+delete
+    cycle to reach a certain rejection.
     """
     token = f"{int(time.time())}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
     generation = python_root / f"generation-{token}"
@@ -588,12 +670,31 @@ def _attempt_install_generation(
         _remove_tree(generation, boundary=python_root)
         return None
 
+    # Do this before the candidate is probed or promoted.  On macOS, the
+    # stable identifier prevents each immutable generation from looking like
+    # a new TCC principal.  Failure is non-fatal: the SQLite repair must still
+    # proceed when codesign is unavailable or rejects a particular artifact.
+    _macos_sign_managed_python(python)
+
     candidate = probe_sqlite_runtime(python)
     if candidate is None:
         logger.warning("could not probe candidate Python runtime: %s", python)
         _remove_tree(generation, boundary=python_root)
         return None
-    if candidate.python_version[:2] != current.python_version[:2] or (
+    if tried_versions is not None:
+        tried_versions.add(candidate.python_version[:3])
+    if allow_minor_upgrade:
+        # When falling forward to a higher minor line (e.g. 3.11 → 3.12),
+        # only reject downgrades — allow the minor to differ.
+        if candidate.python_version < current.python_version:
+            logger.warning(
+                "candidate Python downgraded from %s: %s",
+                ".".join(str(p) for p in current.python_version),
+                candidate.python_version,
+            )
+            _remove_tree(generation, boundary=python_root)
+            return None
+    elif candidate.python_version[:2] != current.python_version[:2] or (
         candidate.python_version < current.python_version
     ):
         logger.warning(
@@ -627,9 +728,11 @@ def _install_safe_python_generation(
 
     request = _runtime_request(current)
     print(f"  → Provisioning a private Python {request} runtime with fixed SQLite...")
+    tried_versions = {current.python_version[:3]}
     result = _attempt_install_generation(
         uv_bin, request, project_root=project_root,
         python_root=python_root, current=current,
+        tried_versions=tried_versions,
     )
     if result is not None:
         return result
@@ -645,7 +748,6 @@ def _install_safe_python_generation(
     patches = _list_available_patches(
         uv_bin, request, cwd=project_root, env=env_for_list
     )
-    tried_versions = {current.python_version[:3]}
     attempts = 0
     for version_tuple in patches:
         if attempts >= _MAX_PATCH_RETRIES:
@@ -673,6 +775,54 @@ def _install_safe_python_generation(
         )
         if result is not None:
             return result
+
+    # All patches on the current minor line are vulnerable or rejected.
+    # Fall forward to the next supported minor (e.g. 3.11 → 3.12) so the
+    # user isn't stuck on every `hermes update` with no path to a fixed
+    # runtime (issue #76106).  The requires-python constraint
+    # (>=3.11,<3.14) and the downstream import smoke-test gate
+    # compatibility; we only need to stay inside that window.
+    cur_major, cur_minor = current.python_version[:2]
+    fb_tried: set[tuple[int, int, int]] = set(tried_versions)
+    for next_minor in range(cur_minor + 1, 14):  # up to 3.13
+        next_request = f"{cur_major}.{next_minor}"
+        print(
+            f"  → No fixed {cur_major}.{cur_minor} build available; "
+            f"trying {next_request} as fallback..."
+        )
+        result = _attempt_install_generation(
+            uv_bin, next_request, project_root=project_root,
+            python_root=python_root, current=current,
+            allow_minor_upgrade=True,
+            tried_versions=fb_tried,
+        )
+        if result is not None:
+            return result
+        # Also try explicit patches on this minor line, skipping whatever
+        # version the bare request above already resolved to (retrying it
+        # explicitly would spend a full download+install+probe+delete cycle
+        # to reach a certain rejection).
+        env_for_list = managed_python_env(project_root, install_dir=python_root)
+        fb_patches = _list_available_patches(
+            uv_bin, next_request, cwd=project_root, env=env_for_list
+        )
+        fb_attempts = 0
+        for version_tuple in fb_patches:
+            if fb_attempts >= _MAX_PATCH_RETRIES:
+                break
+            if version_tuple in fb_tried:
+                continue
+            fb_tried.add(version_tuple)
+            explicit = ".".join(str(p) for p in version_tuple)
+            print(f"  → Retrying with explicit patch {explicit}...")
+            fb_attempts += 1
+            result = _attempt_install_generation(
+                uv_bin, explicit, project_root=project_root,
+                python_root=python_root, current=current,
+                allow_minor_upgrade=True,
+            )
+            if result is not None:
+                return result
     return None
 
 
@@ -958,6 +1108,76 @@ def _windows_runtime_holders() -> tuple[bool, str]:
     return False, ""
 
 
+def _windows_runtime_self_lock(live: Path) -> tuple[bool, str]:
+    """Detect the one holder the generic scan above is blind to: THIS process.
+
+    ``_detect_venv_python_processes`` excludes the calling process and its
+    ancestors on purpose — a CLI ``hermes update`` itself runs from the
+    venv python — which is correct for the dependency-sync path, where only
+    a *loaded* ``.pyd`` image blocks the rewrite and a fresh child process
+    dodges it.  For the whole-venv park rename that exemption is fatal:
+    Windows keeps the image of any executable a running process was started
+    from mapped until that process exits, so a directory containing the
+    updater's own ``python.exe`` (or a waiting ``hermes.exe`` launcher
+    ancestor) can never be renamed from inside the updater.  The retry loop
+    in ``_cut_over_candidate`` cannot help against that — the lock is
+    structural, not transient (#93032).
+
+    No-op off Windows: POSIX renames work fine while this process maps
+    files from the renamed tree (open FDs and mmaps keep inodes alive).
+    """
+    if platform.system() != "Windows":
+        return False, ""
+    try:
+        live_res = str(live.resolve()).lower().rstrip(os.sep) + os.sep
+    except OSError:
+        live_res = str(live).lower().rstrip(os.sep) + os.sep
+
+    def _under_live(path_value: str | None) -> bool:
+        if not path_value:
+            return False
+        try:
+            resolved = str(Path(path_value).resolve()).lower()
+        except (OSError, ValueError):
+            resolved = str(path_value).lower()
+        return resolved.startswith(live_res)
+
+    try:
+        exe = sys.executable
+    except Exception:
+        exe = None
+    if _under_live(exe):
+        return True, (
+            f"the updater itself runs from the live venv it must replace "
+            f"({exe}); Windows cannot rename a directory while a process "
+            "executes from inside it"
+        )
+    # Belt-and-braces: the venv\Scripts\hermes.exe launcher stays mapped
+    # while it waits for this child, so an ancestor started from the venv
+    # blocks the rename too.
+    try:
+        import psutil
+
+        try:
+            parents = psutil.Process().parents()
+        except Exception:
+            parents = []
+        for anc in parents:
+            try:
+                anc_exe = anc.exe()
+            except Exception:
+                continue
+            if _under_live(anc_exe):
+                return True, (
+                    f"ancestor process PID {anc.pid} runs from the live venv "
+                    f"({anc_exe}); Windows cannot rename a directory while a "
+                    "process executes from inside it"
+                )
+    except Exception:
+        pass
+    return False, ""
+
+
 def _uv_version_string(uv_bin: str) -> str:
     """Return ``uv --version`` output, or ``""`` when it cannot be read."""
     try:
@@ -1123,6 +1343,34 @@ def repair_vulnerable_runtime(
         return RuntimeRepairResult(
             "skipped",
             detail,
+            sqlite_before=current.sqlite_version_string,
+        )
+
+    self_locked, self_detail = _windows_runtime_self_lock(live)
+    if self_locked:
+        # Structural, not transient: this process maps the live venv's own
+        # executable, so the park rename fails the same way on every run and
+        # no number of retries converges. Defer BEFORE provisioning — a
+        # candidate staged for a cutover that can never run only leaks an
+        # incomplete generation (#93032).
+        print(f"  ⚠ SQLite runtime repair deferred: {self_detail}.")
+        print(
+            "    Retrying `hermes update` from inside this venv cannot help: "
+            "the mapped executable is released only when this process exits."
+        )
+        print(
+            "    To complete the repair, run the updater from an interpreter "
+            "that lives outside this venv, e.g.:"
+        )
+        print(f"      cd {root}")
+        print("      <system Python> -m hermes_cli.main update")
+        print(
+            "    Sessions stay protected meanwhile: Hermes keeps databases "
+            "out of WAL mode on this SQLite build."
+        )
+        return RuntimeRepairResult(
+            "skipped",
+            self_detail,
             sqlite_before=current.sqlite_version_string,
         )
 

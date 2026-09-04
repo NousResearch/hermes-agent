@@ -104,6 +104,7 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "xiaomi",
     "arcee",
     "ollama-cloud",
+    "nebius-token-factory",
     "custom",
     "gemini",
     "xai",
@@ -504,11 +505,14 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     #     — commonly copied from aggregator slugs into fallback_model lists —
     #     resolve to bare ``minimax-m2.7`` / ``deepseek-v4-flash`` the API
     #     actually serves.  See PR reviewing opencode-go fallback 401s. ---
-    if provider in {"opencode-zen", "opencode-go"}:
+    from hermes_cli.models import opencode_provider_family
+
+    _oc_family = opencode_provider_family(provider)
+    if _oc_family is not None:
         if "/" in name:
             _, bare_after_slash = name.split("/", 1)
             name = bare_after_slash.strip() or name
-        if provider == "opencode-zen" and name.lower().startswith("claude-"):
+        if _oc_family == "opencode-zen" and name.lower().startswith("claude-"):
             return _dots_to_hyphens(name)
         return name
 

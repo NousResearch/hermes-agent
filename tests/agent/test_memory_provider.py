@@ -216,6 +216,26 @@ class TestMemoryManager:
         # p1 failed but p2 still synced
         assert p2.synced_turns == [("user", "assistant")]
 
+    def test_sync_all_keeps_legacy_provider_working_when_messages_are_available(self):
+        """New optional turn context is not sent to an old provider signature."""
+        mgr = MemoryManager()
+        legacy_provider = FakeMemoryProvider("legacy")
+        mgr.add_provider(legacy_provider)
+        completed_messages = [
+            {"role": "user", "content": "user"},
+            {"role": "assistant", "content": "assistant"},
+        ]
+
+        mgr.sync_all(
+            "user",
+            "assistant",
+            session_id="legacy-session",
+            messages=completed_messages,
+        )
+        mgr.flush_pending(timeout=5)
+
+        assert legacy_provider.synced_turns == [("user", "assistant")]
+
     # -- Tool routing -------------------------------------------------------
 
 
@@ -417,13 +437,15 @@ class TestUserInstalledProviderCli:
             "    def get_tool_schemas(self): return []\n"
             "    def handle_tool_call(self, *a, **kw): return '{}'\n"
             "def register(ctx):\n"
-            "    ctx.register_memory_provider(MyProvider())\n"
+            "    ctx.register_memory_provider(MyProvider())\n",
+            encoding="utf-8",
         )
-        (plugin_dir / "config.py").write_text("STATUS = 'ok'\n")
+        (plugin_dir / "config.py").write_text("STATUS = 'ok'\n", encoding="utf-8")
         (plugin_dir / "cli.py").write_text(
             "from . import config\n"
             "def register_cli(subparser):\n"
-            "    subparser.add_argument('--status', action='store_true')\n"
+            "    subparser.add_argument('--status', action='store_true')\n",
+            encoding="utf-8",
         )
         return plugin_dir
 
@@ -463,6 +485,208 @@ class TestUserInstalledProviderCli:
         p = load_memory_provider("extcliload")
         assert p is not None
         assert p.name == "extcliload"
+
+
+class TestEntryPointMemoryProviderDiscovery:
+    """Memory providers installed as Python packages should be discoverable."""
+
+    class FakeEntryPoint:
+        def __init__(self, name, module, exposure="register"):
+            self.name = name
+            self.value = f"{module}:{exposure}"
+            self.group = "hermes_agent.memory_providers"
+            self._module = module
+            self._exposure = exposure
+
+        def load(self):
+            import importlib
+
+            return getattr(importlib.import_module(self._module), self._exposure)
+
+    class FakeEntryPoints(list):
+        def select(self, *, group):
+            return [ep for ep in self if ep.group == group]
+
+    def _make_entrypoint_module(
+        self,
+        tmp_path,
+        module_name="ep_memory_provider",
+        exposure="register",
+        include_skill=False,
+    ):
+        module_file = tmp_path / f"{module_name}.py"
+        register_skill = ""
+        if include_skill:
+            skill_md = tmp_path / "skills" / "maintenance" / "SKILL.md"
+            skill_md.parent.mkdir(parents=True)
+            skill_md.write_text(
+                "---\nname: maintenance\ndescription: Memory maintenance\n---\n\n"
+                "Packaged provider maintenance body.\n"
+            )
+            register_skill = (
+                "    ctx.register_skill(\n"
+                "        'maintenance',\n"
+                "        Path(__file__).parent / 'skills' / 'maintenance' / 'SKILL.md',\n"
+                "    )\n"
+            )
+        module_file.write_text(
+            "from pathlib import Path\n"
+            "from agent.memory_provider import MemoryProvider\n"
+            "class Provider(MemoryProvider):\n"
+            "    @property\n"
+            "    def name(self): return 'entrymem'\n"
+            "    def is_available(self): return True\n"
+            "    def initialize(self, **kw): pass\n"
+            "    def sync_turn(self, *a, **kw): pass\n"
+            "    def get_tool_schemas(self): return []\n"
+            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
+            "def register(ctx):\n"
+            "    ctx.register_memory_provider(Provider())\n"
+            f"{register_skill}"
+            "def make_provider():\n"
+            "    return Provider()\n"
+        )
+        return module_name, exposure
+
+    def test_discover_finds_entry_point_provider(self, tmp_path, monkeypatch):
+        from plugins.memory import discover_memory_providers
+        import plugins.memory as memory_plugins
+
+        module_name, exposure = self._make_entrypoint_module(tmp_path)
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(memory_plugins, "_get_user_plugins_dir", lambda: None)
+        monkeypatch.setattr(
+            memory_plugins.importlib.metadata,
+            "entry_points",
+            lambda: self.FakeEntryPoints([
+                self.FakeEntryPoint("entrymem", module_name, exposure)
+            ]),
+        )
+
+        providers = discover_memory_providers()
+
+        assert ("entrymem", "", True) in providers
+
+    @pytest.mark.parametrize("exposure", ["register", "Provider", "make_provider"])
+    def test_load_entry_point_provider(self, tmp_path, monkeypatch, exposure):
+        from plugins.memory import load_memory_provider
+        import plugins.memory as memory_plugins
+
+        module_name, exposure = self._make_entrypoint_module(tmp_path, exposure=exposure)
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(memory_plugins, "_get_user_plugins_dir", lambda: None)
+        monkeypatch.setattr(
+            memory_plugins.importlib.metadata,
+            "entry_points",
+            lambda: self.FakeEntryPoints([
+                self.FakeEntryPoint("entrymem", module_name, exposure)
+            ]),
+        )
+
+        provider = load_memory_provider("entrymem")
+
+        assert provider is not None
+        assert provider.name == "entrymem"
+        assert provider.is_available()
+
+    def test_active_entry_point_provider_registers_skill(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+        import plugins.memory as memory_plugins
+
+        module_name, exposure = self._make_entrypoint_module(
+            tmp_path,
+            module_name="ep_memory_provider_with_skill",
+            include_skill=True,
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(memory_plugins, "_get_user_plugins_dir", lambda: None)
+        monkeypatch.setattr(
+            memory_plugins.importlib.metadata,
+            "entry_points",
+            lambda: self.FakeEntryPoints([
+                self.FakeEntryPoint("entrymem", module_name, exposure)
+            ]),
+        )
+        monkeypatch.setattr(
+            memory_plugins,
+            "_get_active_memory_provider",
+            lambda: "entrymem",
+        )
+
+        result = json.loads(skill_view("entrymem:maintenance"))
+
+        assert result["success"] is True
+        assert result["name"] == "entrymem:maintenance"
+        assert "Packaged provider maintenance body." in result["content"]
+
+    def test_inactive_entry_point_load_does_not_register_skill(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli.plugins import get_plugin_manager
+        from plugins.memory import load_memory_provider
+        import plugins.memory as memory_plugins
+
+        module_name, exposure = self._make_entrypoint_module(
+            tmp_path,
+            module_name="ep_inactive_memory_provider_with_skill",
+            include_skill=True,
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(memory_plugins, "_get_user_plugins_dir", lambda: None)
+        monkeypatch.setattr(
+            memory_plugins.importlib.metadata,
+            "entry_points",
+            lambda: self.FakeEntryPoints([
+                self.FakeEntryPoint("entrymem", module_name, exposure)
+            ]),
+        )
+        monkeypatch.setattr(
+            memory_plugins,
+            "_get_active_memory_provider",
+            lambda: "other-provider",
+        )
+
+        provider = load_memory_provider("entrymem")
+
+        assert provider is not None
+        assert get_plugin_manager().find_plugin_skill("entrymem:maintenance") is None
+
+    def test_switching_provider_prunes_registered_entry_point_skill(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli.plugins import get_plugin_manager
+        from tools.skills_tool import skill_view
+        import plugins.memory as memory_plugins
+
+        module_name, exposure = self._make_entrypoint_module(
+            tmp_path,
+            module_name="ep_switched_memory_provider_with_skill",
+            include_skill=True,
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(memory_plugins, "_get_user_plugins_dir", lambda: None)
+        monkeypatch.setattr(
+            memory_plugins.importlib.metadata,
+            "entry_points",
+            lambda: self.FakeEntryPoints([
+                self.FakeEntryPoint("entrymem", module_name, exposure)
+            ]),
+        )
+        active = {"name": "entrymem"}
+        monkeypatch.setattr(
+            memory_plugins,
+            "_get_active_memory_provider",
+            lambda: active["name"],
+        )
+
+        loaded = json.loads(skill_view("entrymem:maintenance"))
+        active["name"] = "other-provider"
+        switched = json.loads(skill_view("entrymem:maintenance"))
+
+        assert loaded["success"] is True
+        assert switched["success"] is False
+        assert "not found" in switched["error"].lower()
+        assert get_plugin_manager().find_plugin_skill("entrymem:maintenance") is None
 
 
 # ---------------------------------------------------------------------------
@@ -1158,3 +1382,85 @@ class TestTrivialPromptClassifier:
                   "hello world", "ok so what's next", "what's my name",
                   "hey can you check the logs", "continue the migration plan"):
             assert not is_trivial_prompt(t), f"expected non-trivial: {t!r}"
+
+
+# ---------------------------------------------------------------------------
+# System-prompt gate parity — #81014
+# ---------------------------------------------------------------------------
+
+
+class TestSystemPromptGateParity:
+    """The memory provider's ``system_prompt_block()`` must be injected only
+    when ``inject_memory_provider_tools`` would actually expose its tools.
+
+    Otherwise the agent receives instructions for tools that don't exist
+    in its tool surface (issue #81014).
+    """
+
+    def _agent_with_provider(
+        self,
+        *,
+        enabled_toolsets=None,
+        disabled_toolsets=None,
+        tools=None,
+        prompt_block="Use mnemosyne_remember to save facts.",
+    ):
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("mnemosyne", tools=[
+            {"name": "mnemosyne_remember", "description": "Remember", "parameters": {}},
+        ])
+        provider._prompt_block = prompt_block
+        mgr.add_provider(provider)
+        agent = SimpleNamespace(
+            _memory_manager=mgr,
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            tools=list(tools) if tools is not None else [],
+        )
+        return agent, mgr, provider
+
+    def test_tools_exposed_when_memory_in_enabled_toolsets(self):
+        from agent.memory_manager import memory_provider_tools_exposed
+        agent, _mgr, _p = self._agent_with_provider(enabled_toolsets=["memory"])
+        assert memory_provider_tools_exposed(agent) is True
+
+    def test_tools_hidden_when_memory_in_disabled_toolsets(self):
+        from agent.memory_manager import memory_provider_tools_exposed
+        agent, _mgr, _p = self._agent_with_provider(disabled_toolsets=["memory"])
+        assert memory_provider_tools_exposed(agent) is False
+
+    def test_tools_hidden_when_memory_not_in_enabled_toolsets(self):
+        from agent.memory_manager import memory_provider_tools_exposed
+        agent, _mgr, _p = self._agent_with_provider(enabled_toolsets=["web_search"])
+        assert memory_provider_tools_exposed(agent) is False
+
+    def test_tools_exposed_when_memory_tool_already_present(self):
+        """The built-in "memory" tool is a sufficient opt-in even when the
+        toolset gate says nothing about memory."""
+        from agent.memory_manager import memory_provider_tools_exposed
+        tools = [
+            {"type": "function", "function": {"name": "memory", "description": "x", "parameters": {}}},
+        ]
+        agent, _mgr, _p = self._agent_with_provider(enabled_toolsets=["web_search"], tools=tools)
+        assert memory_provider_tools_exposed(agent) is True
+
+    def test_inject_and_exposed_share_the_same_gate(self):
+        """``inject_memory_provider_tools`` and ``memory_provider_tools_exposed``
+        must agree — both determine whether provider tools are presented to
+        the model (#81014)."""
+        from agent.memory_manager import inject_memory_provider_tools, memory_provider_tools_exposed
+
+        # Disabled toolsets — neither path should add or advertise provider tools.
+        agent, _mgr, _p = self._agent_with_provider(disabled_toolsets=["memory"])
+        assert memory_provider_tools_exposed(agent) is False
+        assert inject_memory_provider_tools(agent) == 0
+
+        # Enabled with "memory" — both paths must add/advertise.
+        agent, _mgr, _p = self._agent_with_provider(
+            enabled_toolsets=["memory"], tools=[]
+        )
+        assert memory_provider_tools_exposed(agent) is True
+        added = inject_memory_provider_tools(agent)
+        assert added == 1
+        names = {t["function"]["name"] for t in agent.tools}
+        assert "mnemosyne_remember" in names

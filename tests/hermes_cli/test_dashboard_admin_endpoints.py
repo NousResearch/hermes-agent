@@ -545,9 +545,35 @@ class TestSessionManagementEndpoints:
         assert r.status_code == 200
         body = r.json()
         assert body["matched"] >= 1
+        assert "skipped_open" in body
         assert "oldest_started_at" in body and "newest_started_at" in body
         assert "oldest_last_active" in body and "newest_last_active" in body
         assert all("last_active" in session for session in body["sessions"])
+
+    def test_prune_reports_open_sessions_excluded_by_safety_guard(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        db.create_session(session_id="sess-old-open", source="skip-test")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (1.0, "sess-old-open"),
+        )
+        db._conn.commit()
+        db.close()
+
+        r = self.client.post(
+            "/api/sessions/prune",
+            json={"older_than_days": 1, "source": "skip-test"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["removed"] == 0
+        assert body["skipped_open"] == 1
+
+        db = SessionDB()
+        assert db.get_session("sess-old-open") is not None
+        db.close()
 
 
 
@@ -633,6 +659,42 @@ class TestSkillsHubSourcesEndpoint:
         assert len(body["featured"]) == 1
         assert body["featured"][0]["trust_level"] == "trusted"
         assert isinstance(body["installed"], dict)
+
+
+class TestOfficialSkillsCatalogEndpoint:
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, _ = _client()
+
+    def test_lists_full_catalog_with_installed_flags(self, monkeypatch):
+        # Serve the catalog from OptionalSkillSource.list_local() (no network),
+        # with the per-profile installed map marking already-installed rows.
+        metas = [
+            _FakeMeta("official/gifs/gif-search", "builtin", "official"),
+            _FakeMeta("official/creative/ascii-art", "builtin", "official"),
+        ]
+        monkeypatch.setattr(
+            "tools.skills_hub.OptionalSkillSource.list_local",
+            lambda self: metas,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.web_server._installed_hub_identifiers",
+            lambda profile=None: {"official/gifs/gif-search": {"name": "gif-search"}},
+        )
+        r = self.client.get("/api/skills/hub/official")
+        assert r.status_code == 200
+        skills = r.json()["skills"]
+        by_ident = {s["identifier"]: s for s in skills}
+        assert set(by_ident) == {
+            "official/gifs/gif-search",
+            "official/creative/ascii-art",
+        }
+        # Category derived from the identifier's directory segment.
+        assert by_ident["official/gifs/gif-search"]["category"] == "gifs"
+        assert by_ident["official/creative/ascii-art"]["category"] == "creative"
+        # Installed flag comes from the profile's hub lock.
+        assert by_ident["official/gifs/gif-search"]["installed"] is True
+        assert by_ident["official/creative/ascii-art"]["installed"] is False
 
 
 class TestSkillsHubPreviewEndpoint:

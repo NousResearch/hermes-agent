@@ -79,6 +79,10 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/messaging/platforms",
   "/api/messaging/telegram/onboarding",
   "/api/messaging/whatsapp/onboarding",
+  // OAuth/account state is profile-owned too: status, login sessions, polling,
+  // cancellation, and disconnect must all follow the selected management
+  // profile rather than silently targeting the dashboard process's profile.
+  "/api/providers/oauth",
   "/api/model/info",
   "/api/model/set",
   "/api/model/auxiliary",
@@ -452,11 +456,18 @@ export const api = {
     source?: string,
     profile = getManagementProfile(),
   ) =>
-    fetchJSON<{ ok: boolean; removed: number }>("/api/sessions/prune", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ older_than_days, source, profile: profile || undefined }),
-    }),
+    fetchJSON<{ ok: boolean; removed: number; skipped_open: number }>(
+      "/api/sessions/prune",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          older_than_days,
+          source,
+          profile: profile || undefined,
+        }),
+      },
+    ),
   listFiles: (path?: string) => {
     const query = path ? `?path=${encodeURIComponent(path)}` : "";
     return fetchJSON<ManagedFilesResponse>(`/api/files${query}`);
@@ -1861,11 +1872,13 @@ export interface StatusResponse {
    * fail-closed state (the dashboard will refuse to bind). */
   auth_providers?: string[];
   /** Supported dashboard auth flows for the client to choose from. In gated
-   * mode always includes ``"cookie"``; includes ``"native_pkce"`` when a
-   * brokerable OAuth provider is registered, signalling that the desktop can
-   * use the RFC 8252 system-browser + loopback + PKCE flow (no embedded
-   * webview, no session cookies). Absent / missing ``"native_pkce"`` ⇒ an
-   * older gateway ⇒ the desktop falls back to the embedded-webview flow. */
+   * mode always includes ``"cookie"``; includes ``"native_pkce"`` when any
+   * interactive session provider is registered (OAuth providers broker the
+   * IDP redirect; password providers complete at /login in the system
+   * browser), signalling that the desktop can use the RFC 8252
+   * system-browser + loopback + PKCE flow (no embedded webview, no session
+   * cookies). Absent / missing ``"native_pkce"`` ⇒ an older gateway ⇒ the
+   * desktop falls back to the embedded-webview flow. */
   auth_flows?: string[];
   /** False when the dashboard is running in a hosted/managed layout where
    * updates are handled by the outer launcher instead of ``hermes update``. */
@@ -1882,8 +1895,42 @@ export interface StatusResponse {
   gateway_updated_at: string | null;
   hermes_home: string;
   latest_config_version: number;
+  /** NS-656: memory-pressure rollup from the gateway heartbeat +
+   * lifecycle ledger. Absent on older gateways. */
+  memory?: MemoryPressureStatus;
+  /** NS-656: disk-usage rollup for the HERMES_HOME volume. Absent on
+   * older gateways. */
+  disk?: DiskPressureStatus;
   release_date: string;
   version: string;
+}
+
+/** NS-656: coarse memory telemetry served by /api/status. */
+export interface MemoryPressureStatus {
+  pressure: "ok" | "elevated" | "critical" | "unknown";
+  gateway_rss_mb?: number | null;
+  system_total_mb?: number | null;
+  system_available_mb?: number | null;
+  swap_used_mb?: number | null;
+  sampled_at?: string | null;
+  /** Previous gateway life died without running any exit path. */
+  last_boot_unclean?: boolean;
+  /** ...and its final heartbeat showed near-exhausted memory. Heuristic —
+   * strong evidence of an OOM kill, not proof the kernel OOM killer acted. */
+  last_boot_suspected_oom?: boolean;
+  /** Identity of the current gateway life (sentinel started_at). Changes on
+   * every restart; keys per-incident banner dismissal. */
+  boot_id?: string | null;
+}
+
+/** NS-656: coarse disk telemetry served by /api/status. Live statvfs
+ * sample of the HERMES_HOME volume — no staleness dimension, so no
+ * sampled_at. */
+export interface DiskPressureStatus {
+  pressure: "ok" | "elevated" | "critical" | "unknown";
+  total_mb?: number | null;
+  free_mb?: number | null;
+  used_percent?: number | null;
 }
 
 export interface SessionInfo {
@@ -1901,6 +1948,9 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
+  /** Owning profile stamped by the list/detail endpoints (the store the row
+   * was read from). Absent on search-endpoint rows, which carry no stamp. */
+  profile?: string;
 }
 
 export interface SessionLatestDescendantResponse {
@@ -2137,6 +2187,7 @@ export interface ProfileInfo {
   gateway_running: boolean;
   description: string;
   description_auto: boolean;
+  display_name?: string;
   distribution_name: string | null;
   distribution_version: string | null;
   distribution_source: string | null;
@@ -2232,6 +2283,7 @@ export interface CronJob {
   last_status?: string | null;
   last_error?: string | null;
   last_delivery_error?: string | null;
+  last_fire_error?: { at?: string | null; detail?: string | null } | null;
 }
 
 export interface CronDeliveryTarget {

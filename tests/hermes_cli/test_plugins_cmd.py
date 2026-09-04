@@ -153,11 +153,146 @@ class TestResolveGitExecutable:
             return_value="/resolved/git",
         ):
             with patch.object(pc.subprocess, "run") as run:
-                run.return_value = MagicMock(returncode=0, stdout="Already up to date\n", stderr="")
+                # First call is `git status --porcelain` (clean tree),
+                # second is the pull itself.
+                run.side_effect = [
+                    MagicMock(returncode=0, stdout="", stderr=""),
+                    MagicMock(returncode=0, stdout="Already up to date\n", stderr=""),
+                ]
                 ok, msg = pc._git_pull_plugin_dir(tmp_path)
         assert ok is True
-        run.assert_called_once()
-        assert run.call_args[0][0][0] == "/resolved/git"
+        assert run.call_count == 2
+        for call in run.call_args_list:
+            assert call.args[0][0] == "/resolved/git"
+        assert run.call_args_list[1].args[0][1:] == ["pull", "--ff-only"]
+
+    def test_git_pull_clean_tree_never_stashes(self, tmp_path):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(pc, "_resolve_git_executable", return_value="/g"):
+            with patch.object(pc.subprocess, "run") as run:
+                run.side_effect = [
+                    MagicMock(returncode=0, stdout="", stderr=""),      # status
+                    MagicMock(returncode=0, stdout="Updated\n", stderr=""),  # pull
+                ]
+                ok, msg = pc._git_pull_plugin_dir(tmp_path)
+        assert ok is True
+        assert msg == "Updated"
+        commands = [c.args[0][1] for c in run.call_args_list]
+        assert "stash" not in commands
+
+
+class TestGitPullPluginDirAutostash:
+    """Real-git E2E: local edits in a plugin checkout must not block updates."""
+
+    @staticmethod
+    def _make_repos(tmp_path):
+        import subprocess as sp
+
+        def git(cwd, *args):
+            r = sp.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+            assert r.returncode == 0, r.stderr
+            return r.stdout
+
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        git(origin, "init", "-q", "-b", "main")
+        git(origin, "config", "user.email", "t@t")
+        git(origin, "config", "user.name", "t")
+        pad = "\n".join(f"# pad {i}" for i in range(12))
+        (origin / "plugin.py").write_text(
+            f"VALUE = 1\n{pad}\nOTHER = 'a'\n", encoding="utf-8"
+        )
+        git(origin, "add", ".")
+        git(origin, "commit", "-qm", "init")
+
+        checkout = tmp_path / "checkout"
+        git(tmp_path, "clone", "-q", str(origin), str(checkout))
+        git(checkout, "config", "user.email", "t@t")
+        git(checkout, "config", "user.name", "t")
+        return origin, checkout, git
+
+    @staticmethod
+    def _set_line(repo, prefix, new_line):
+        """Replace the line starting with ``prefix`` in plugin.py, keep the rest."""
+        f = repo / "plugin.py"
+        lines = f.read_text(encoding="utf-8").splitlines()
+        lines = [new_line if ln.startswith(prefix) else ln for ln in lines]
+        f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_dirty_checkout_pulls_and_reapplies_local_edit(self, tmp_path):
+        import hermes_cli.plugins_cmd as pc
+
+        if not pc._resolve_git_executable():
+            pytest.skip("git not available")
+        origin, checkout, git = self._make_repos(tmp_path)
+
+        # Upstream changes one line; local edit touches a DIFFERENT line.
+        self._set_line(origin, "VALUE", "VALUE = 2")
+        git(origin, "commit", "-qam", "bump value")
+        self._set_line(checkout, "OTHER", "OTHER = 'local'")
+
+        ok, msg = pc._git_pull_plugin_dir(checkout)
+        assert ok is True
+        content = (checkout / "plugin.py").read_text(encoding="utf-8")
+        assert "VALUE = 2" in content        # update landed
+        assert "OTHER = 'local'" in content  # local edit survived
+        assert "re-applied" in msg
+        # Clean re-apply drops the autostash entry.
+        assert git(checkout, "stash", "list").strip() == ""
+
+    def test_conflicting_local_edit_is_preserved_in_stash(self, tmp_path):
+        import hermes_cli.plugins_cmd as pc
+
+        if not pc._resolve_git_executable():
+            pytest.skip("git not available")
+        origin, checkout, git = self._make_repos(tmp_path)
+
+        # Upstream and local both change the SAME line → re-apply conflicts.
+        self._set_line(origin, "VALUE", "VALUE = 2")
+        git(origin, "commit", "-qam", "bump value")
+        self._set_line(checkout, "VALUE", "VALUE = 99")
+
+        ok, msg = pc._git_pull_plugin_dir(checkout)
+        assert ok is True
+        content = (checkout / "plugin.py").read_text(encoding="utf-8")
+        # Checkout is importable on the updated revision — no conflict markers.
+        assert "<<<<<<<" not in content
+        assert "VALUE = 2" in content
+        assert "preserved in git stash" in msg
+        # The local edit is recoverable from the kept stash entry.
+        stash_list = git(checkout, "stash", "list")
+        assert "hermes-plugin-update-autostash" in stash_list
+        stash_diff = git(checkout, "stash", "show", "-p", "stash@{0}")
+        assert "VALUE = 99" in stash_diff
+
+    def test_untracked_local_file_survives_update(self, tmp_path):
+        import hermes_cli.plugins_cmd as pc
+
+        if not pc._resolve_git_executable():
+            pytest.skip("git not available")
+        origin, checkout, git = self._make_repos(tmp_path)
+
+        self._set_line(origin, "VALUE", "VALUE = 2")
+        git(origin, "commit", "-qam", "bump value")
+        (checkout / "local_notes.txt").write_text("keep me\n", encoding="utf-8")
+
+        ok, msg = pc._git_pull_plugin_dir(checkout)
+        assert ok is True
+        assert (checkout / "local_notes.txt").read_text(encoding="utf-8") == "keep me\n"
+        assert "VALUE = 2" in (checkout / "plugin.py").read_text(encoding="utf-8")
+
+    def test_clean_checkout_unchanged_behavior(self, tmp_path):
+        import hermes_cli.plugins_cmd as pc
+
+        if not pc._resolve_git_executable():
+            pytest.skip("git not available")
+        origin, checkout, git = self._make_repos(tmp_path)
+
+        ok, msg = pc._git_pull_plugin_dir(checkout)
+        assert ok is True
+        assert "Already up to date" in msg
 
 
 # ── _repo_name_from_url ──────────────────────────────────────────────────
@@ -277,11 +412,14 @@ class TestCmdUpdate:
         )
         mock_sanitize.return_value = mock_target
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="Updated", stderr="")
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="", stderr=""),        # status: clean
+            MagicMock(returncode=0, stdout="Updated", stderr=""),  # pull
+        ]
 
         cmd_update("test-plugin")
 
-        mock_run.assert_called_once()
+        assert mock_run.call_count == 2
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")

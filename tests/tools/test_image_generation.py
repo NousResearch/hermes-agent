@@ -57,25 +57,6 @@ class TestFalCatalog:
             assert not missing, f"{mid} missing required keys: {missing}"
 
 
-    def test_upscale_defaults_track_native_resolution(self, image_tool):
-        """Default-on upscaling: every model whose native output is below
-        ~2MP upscales by default so users never silently get low-res images.
-        Models that already emit >=2MP natively (Seedream tiers, Krea 2
-        Large on FAL) skip the pass — upscaling them wastes money."""
-        native_hi_res = {
-            "bytedance/seedream/v5/pro/text-to-image",   # 1536²-2048² native
-            "bytedance/seedream/v5/lite/text-to-image",  # up to 4K native
-            "fal-ai/krea/v2/large/text-to-image",        # 2K native
-        }
-        for mid, meta in image_tool.FAL_MODELS.items():
-            if mid in native_hi_res:
-                assert meta["upscale"] is False, \
-                    f"{mid} is native hi-res — should not double-upscale"
-            else:
-                assert meta["upscale"] is True, \
-                    f"{mid} should default to upscale=True (sub-2MP native)"
-
-
     def test_edit_capable_entries_declare_a_full_edit_contract(self, image_tool):
         """An `edit_endpoint` is useless without the whitelist and the
         reference-image cap that `_build_fal_edit_payload` reads."""
@@ -366,16 +347,18 @@ class TestAspectRatioNormalization:
 class TestRegistryIntegration:
 
     def test_schema_exposes_expected_agent_params(self, image_tool):
-        """The agent-facing schema exposes the unified text+image surface:
-        prompt (required), aspect_ratio, the image-to-image inputs
-        image_url + reference_image_urls, and the opt-in upscale pass. Model
-        selection stays a user-level config choice, never an agent-level arg."""
+        """The static registration schema stays minimal — prompt (required)
+        + aspect_ratio. Capability args (image_url, reference_image_urls,
+        upscale) are added per-model by the dynamic override so sessions
+        whose active model can't honor them never see them (#95681 diet).
+        Model selection stays a user-level config choice, never an
+        agent-level arg."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
-        assert set(props.keys()) == {
-            "prompt", "aspect_ratio", "image_url", "reference_image_urls",
-            "upscale",
-        }
+        assert set(props.keys()) == {"prompt", "aspect_ratio"}
         assert image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["required"] == ["prompt"]
+        # The dynamic builder owns the capability args.
+        dyn = image_tool._build_dynamic_image_schema()
+        assert "parameters" in dyn and "prompt" in dyn["parameters"]["properties"]
 
     def test_aspect_ratio_enum_is_three_values(self, image_tool):
         enum = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["aspect_ratio"]["enum"]
@@ -594,8 +577,8 @@ class TestUpscaleOptIn:
                   model="bytedance/seedream/v5/lite/text-to-image",
                   upscale=True, upscaler_called=True)
 
-    def test_explicit_false_disables_default_on_model(self, image_tool, monkeypatch):
-        """Klein defaults to upscale=True (sub-2MP native) — explicit False wins."""
+    def test_explicit_false_stays_off(self, image_tool, monkeypatch):
+        """Explicit False and the catalog default agree: no upscale."""
         self._run(image_tool, monkeypatch,
                   model="fal-ai/flux-2/klein/9b", upscale=False, upscaler_called=False)
 
@@ -604,9 +587,10 @@ class TestUpscaleOptIn:
                   model="bytedance/seedream/v5/lite/text-to-image",
                   upscale=None, upscaler_called=False)
 
-    def test_omitted_keeps_catalog_default_on(self, image_tool, monkeypatch):
+    def test_omitted_is_off_for_previously_default_on_model(self, image_tool, monkeypatch):
+        """flux-2-pro was the old default-on model — now off like the rest."""
         self._run(image_tool, monkeypatch,
-                  model="fal-ai/flux-2-pro", upscale=None, upscaler_called=True)
+                  model="fal-ai/flux-2-pro", upscale=None, upscaler_called=False)
 
     def test_upscale_failure_falls_back_to_native(self, image_tool, monkeypatch):
         monkeypatch.setenv("FAL_IMAGE_MODEL", "fal-ai/flux-2/klein/9b")

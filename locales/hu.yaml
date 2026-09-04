@@ -68,8 +68,16 @@ gateway:
     always_plural:         "✅ Parancsok jóváhagyva (minta véglegesen jóváhagyva) ({count} parancs). Az ügynök folytatja..."
 
   background:
-    usage:                 "Használat: /background <prompt>\nPélda: /background Foglald össze a mai legjobb HN sztorikat\n\nKülön munkamenetben futtatja a promptot. Folytathatod a beszélgetést — az eredmény itt jelenik meg, amint elkészül."
+    usage:                 "Használat: /bg <prompt>\nPélda: /bg Foglald össze a mai legjobb HN sztorikat\n\nKülön munkamenetben futtatja a promptot. Folytathatod a beszélgetést — az eredmény itt jelenik meg, amint elkészül."
     started:               "🔄 Háttérfeladat elindítva: \"{preview}\"\nFeladatazonosító: {task_id}\nFolytathatod a beszélgetést — az eredmények itt jelennek meg, amint elkészülnek."
+
+  btw:
+    usage:                 "Használat: /btw <kérdés>\nPélda: /btw melyik fájlban volt az a hiba?\n\nGyors mellékkérdésre válaszol erről a beszélgetésről anélkül, hogy megszakítaná. Független háttérfeladathoz használd a /bg <prompt> parancsot."
+    no_history:            "Még nincs beszélgetés — küldd el a kérdésed normál üzenetként."
+    no_provider:           "❌ A mellékkérdés nem válaszolható meg: nincs szolgáltatói hitelesítő adat beállítva."
+    started:               "💬 Mellékkérdés: \"{preview}\"\nA beszélgetés pillanatképéből válaszolunk — a jelenlegi munka folytatódik."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ A /btw sikertelen: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "A munkamenet-adatbázis nem érhető el."
@@ -98,6 +106,7 @@ gateway:
     summary_failed:        "⚠️ Az összefoglaló generálása sikertelen ({error}). {count} korábbi üzenet eltávolítva és helykitöltővel helyettesítve; a korábbi kontextus már nem helyreállítható. Érdemes ellenőrizni az auxiliary.compression modell konfigurációját."
     aborted:               "⚠️ Tömörítés megszakítva ({error}). Egyetlen üzenet sem lett eldobva — a beszélgetés változatlan. Futtass /compress parancsot az újrapróbálkozáshoz, /reset egy új munkamenethez, vagy ellenőrizd az auxiliary.compression modell konfigurációt."
     aux_failed:            "ℹ️ A beállított tömörítőmodell (`{model}`) hibát adott ({error}). A főmodellel helyreállítva — a kontextus érintetlen — de érdemes ellenőrizni az `auxiliary.compression.model` beállítást a config.yaml fájlban."
+    turnhold_deferred:     "ℹ️ A kontextustömörítés elhalasztva — az összefoglaló még streamel. Ebben a körben tömörítés nélkül folytatjuk."
     failed:                "Tömörítés sikertelen: {error}"
 
   debug:
@@ -128,6 +137,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\nJelenlegi mód: `{mode}`\\n\\nVálassz egy opciót:"
     choice_fast:           "fast — Priority Processing bekapcsolva"
     choice_normal:         "normal — normál feldolgozás"
+    choice_auto:           "auto — gyors minden kör első másodperceiben"
+    choice_cold:           "cold — gyors csak a munkamenet első körében"
 
   footer:
     status:                "📎 Futási idejű lábléc: **{state}**\nMezők: `{fields}`\nPlatform: `{platform}`"
@@ -142,7 +153,7 @@ gateway:
     no_goal_set:           "Nincs cél beállítva."
     paused:                "⏸ Cél szüneteltetve: {goal}"
     no_resume:             "Nincs folytatható cél."
-    resumed:               "▶ Cél folytatva: {goal}\nKüldj bármilyen üzenetet a folytatáshoz, vagy várj — a következő körben megteszem a következő lépést."
+    resumed:               "▶ Cél folytatva: {goal}\nMáris folytatom — azonnal megteszem a következő lépést."
     invalid:               "Érvénytelen cél: {error}"
     set:                   "⊙ Cél beállítva ({budget} körös keret): {goal}\nDolgozni fogok rajta, amíg a cél el nem készül, te nem szünetelteted/törlöd, vagy a keret ki nem merül.\nVezérlés: /goal status · /goal pause · /goal resume · /goal clear"
 
@@ -166,9 +177,15 @@ gateway:
       crashed:             "crashed (worker exited); dispatcher will retry"
       timed_out:           "timed out; dispatcher will retry"
       blocked:             "blocked; needs attention"
+      review_requested:    "handed off for review; the implementation is done"
+      changes_requested:   "review requested changes (BLOCK); implementation is not approved"
+      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
+      handoff:             "Result: {summary}"
+      review_detail:       "Review feedback: {reason}\nInspect the existing card and its current review run; return work to the same implementation task. Do not treat this BLOCK as approval and do not create a duplicate task."
+      guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
     none_configured:       "Nincs személyiség beállítva itt: `{path}/config.yaml`"
@@ -254,6 +271,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Nem található elnevezett munkamenet.\nHasználd a `/title Saját munkamenet` parancsot a jelenlegi munkamenet elnevezéséhez, majd a `/resume Saját munkamenet` paranccsal térhetsz vissza hozzá."
+    all_requires_admin: "_Megjegyzés: az `--all` (csevegések közötti listázás) beállított adminisztrátort igényel; csak ennek a csevegésnek a munkamenetei jelennek meg._"
     list_header:           "📋 **Elnevezett munkamenetek**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"
@@ -277,6 +295,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     none_found:            "Nem található ellenőrzőpont ehhez: {cwd}"
     invalid_number:        "Érvénytelen ellenőrzőpont-szám. Használj 1-{max} közötti értéket."
     restored:              "✅ Visszaállítva a(z) {hash} ellenőrzőpontra: {reason}\nA visszaállítás előtti pillanatkép automatikusan elmentve."
+    kept_user_edits:       "↷ A kézi szerkesztéseid megmaradtak: {files}\nHasználd a /rollback <N> --all parancsot, hogy azokat is visszaállítsd."
+    kept_oversize:         "↷ Megtartva (túl nagy az ellenőrzőpontokhoz, nincs tárolt másolat, amire vissza lehetne állni): {files}"
+    failed_deletes:        "⚠️ Nem sikerült eltávolítani (a helyén maradt): {files}"
     restore_failed:        "❌ {error}"
 
   diff:

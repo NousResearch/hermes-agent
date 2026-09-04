@@ -326,6 +326,44 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     b_set_wd.add_argument("path", nargs="?", default=None,
                           help="Absolute path to use as default workdir. Omit to clear.")
 
+    b_export = boards_sub.add_parser(
+        "export",
+        help="Export a board to a portable .tar.gz archive",
+        description=(
+            "Package a board's tasks, comments, links, history, and file "
+            "attachments into one archive that can be imported on another "
+            "machine. Claims, worker PIDs, chat subscriptions, and paths "
+            "belonging to this machine are stripped. Workspaces are never "
+            "included — they are rebuilt on demand."
+        ),
+    )
+    b_export.add_argument("slug", nargs="?", default=None,
+                          help="Board to export (default: the current board)")
+    b_export.add_argument("-o", "--output", default=None,
+                          help="Archive path (default: ./<slug>.tar.gz)")
+    b_export.add_argument("--no-attachments", action="store_true",
+                          help="Skip attachment files, keeping the archive small")
+    b_export.add_argument("--include-logs", action="store_true",
+                          help="Include per-task worker logs")
+    b_export.add_argument("--json", action="store_true")
+
+    b_import = boards_sub.add_parser(
+        "import",
+        help="Import a board archive as a new board",
+        description=(
+            "Import a .tar.gz produced by `hermes kanban boards export`. "
+            "The board always lands as a NEW board — the slug gains a "
+            "numeric suffix if it is already taken — so an import can "
+            "never overwrite or merge into a board you already have."
+        ),
+    )
+    b_import.add_argument("archive", help="Path to the .tar.gz archive")
+    b_import.add_argument("--as", dest="as_slug", default=None,
+                          help="Slug for the imported board (default: from the archive)")
+    b_import.add_argument("--switch", action="store_true",
+                          help="Switch to the imported board afterwards")
+    b_import.add_argument("--json", action="store_true")
+
     # --- create ---
     p_create = sub.add_parser("create", help="Create a new task")
     p_create.add_argument("title", help="Task title")
@@ -814,12 +852,32 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_nsub.add_argument("task_id")
     p_nsub.add_argument("--platform", required=True)
     p_nsub.add_argument("--chat-id", required=True)
-    p_nsub.add_argument("--chat-type", default="", help="dm / group / channel (used by wake routing)")
     p_nsub.add_argument("--thread-id", default=None)
     p_nsub.add_argument("--user-id", default=None)
+    p_nsub.add_argument("--user-id-alt", default=None)
+    p_nsub.add_argument(
+        "--chat-type",
+        choices=("dm", "group", "channel", "thread"),
+        default=None,
+        help="Originating source chat_type, recorded so the active-wake "
+             "delivery modes resolve the operator's real session. Omit to "
+             "leave an existing sub unchanged (new subs default to 'dm').",
+    )
     p_nsub.add_argument(
         "--notifier-profile", default=None,
         help="Profile gateway that owns/delivers this subscription (default: active profile)",
+    )
+    p_nsub.add_argument(
+        "--delivery-mode",
+        # Single source of truth shared with the DB/watcher enum.
+        choices=kb._NOTIFY_DELIVERY_MODES,
+        default=None,
+        help="How the kanban-notifier reacts to terminal events for this "
+             "subscription: 'notify' (passive message only; default), "
+             "'notify+wake' (message AND wake the destination gateway agent so "
+             "it reads the full board context and replies in its own voice), or "
+             "'wake' (wake the agent only, no passive message). Omit to leave an "
+             "existing subscription's mode unchanged (new subs default to 'notify').",
     )
 
     p_nlist = sub.add_parser(
@@ -1248,6 +1306,10 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
         return _cmd_boards_rename(args)
     if sub == "set-default-workdir":
         return _cmd_boards_set_default_workdir(args)
+    if sub == "export":
+        return _cmd_boards_export(args)
+    if sub == "import":
+        return _cmd_boards_import(args)
     print(f"kanban boards: unknown action {sub!r}", file=sys.stderr)
     return 2
 
@@ -1420,6 +1482,64 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
         print(f"Board {normed!r} default workdir set to {new_val!r}.")
     else:
         print(f"Board {normed!r} default workdir cleared.")
+    return 0
+
+
+def _cmd_boards_export(args: argparse.Namespace) -> int:
+    from hermes_cli import kanban_transfer
+    from hermes_cli.sizefmt import format_bytes
+
+    slug = args.slug or kb.get_current_board()
+    output = args.output or f"{slug}.tar.gz"
+    try:
+        res = kanban_transfer.export_board(
+            slug,
+            output,
+            include_attachments=not args.no_attachments,
+            include_logs=args.include_logs,
+        )
+    except (OSError, ValueError) as exc:
+        print(f"kanban boards export: {exc}", file=sys.stderr)
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+        return 0
+    counts = res["counts"]
+    print(f"Exported board {res['board']!r} → {res['archive']}")
+    print(f"  Size:        {format_bytes(res['size'])}")
+    print(f"  Tasks:       {counts['tasks']}")
+    print(f"  Comments:    {counts['task_comments']}")
+    print(f"  Attachments: {counts['attachment_files']}")
+    print("Import it with `hermes kanban boards import <archive>`.")
+    return 0
+
+
+def _cmd_boards_import(args: argparse.Namespace) -> int:
+    from hermes_cli import kanban_transfer
+
+    try:
+        res = kanban_transfer.import_board(
+            args.archive, args.as_slug, activate=args.switch
+        )
+    except (OSError, ValueError) as exc:
+        print(f"kanban boards import: {exc}", file=sys.stderr)
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+        return 0
+    print(f"Imported board {res['board']!r} ({res['name']}).")
+    if res["renamed"]:
+        print(f"  Renamed from {res['requested_board']!r} — that slug was taken.")
+    print(f"  Path:  {res['path']}")
+    print(f"  Tasks: {res['counts']['tasks']}")
+    for warning in res["warnings"]:
+        print(f"  Note:  {warning}")
+    if res["activated"]:
+        print(f"  Active board is now {res['board']!r}.")
+    else:
+        print(f"  Switch to it with `hermes kanban boards switch {res['board']}`.")
     return 0
 
 
@@ -2191,18 +2311,23 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return None
 
 
-def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str) -> Optional[str]:
-    """Apply the goal judge to every terminal worker handoff, including review."""
+def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
+    """Apply the goal judge to every terminal worker handoff, including review.
+
+    Returns ``(verdict, reason_or_None)`` — ``"done"`` allows the handoff;
+    ``"blocked"`` means the judge ruled the goal unachievable (#100954);
+    ``"continue"``/``"wait"`` reject with the judge's reason.
+    """
     if task is None or not task.goal_mode:
-        return None
+        return ("done", None)
     try:
         from agent.auxiliary_client import get_text_auxiliary_client
 
         client, model = get_text_auxiliary_client("goal_judge")
     except Exception:
-        return None
+        return ("done", None)
     if client is None or not model:
-        return None
+        return ("done", None)
 
     from hermes_cli.goals import judge_goal
 
@@ -2221,7 +2346,7 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str) -> Opti
             judge_exc,
             exc_info=True,
         )
-    return reason if verdict != "done" else None
+    return (verdict, None if verdict == "done" else reason)
 
 
 def _cmd_complete(args: argparse.Namespace) -> int:
@@ -2259,10 +2384,20 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             # to every terminal handoff so request-review cannot bypass the
             # acceptance contract that protects complete.
             task = kb.get_task(conn, tid)
-            rejection = _goal_mode_handoff_rejection(
+            gate_verdict, rejection = _goal_mode_handoff_rejection(
                 task,
                 (summary or args.result or "").strip(),
             )
+            if gate_verdict == "blocked":
+                print(
+                    f"kanban: goal completion of {tid} rejected: judge ruled "
+                    f"the goal unachievable — {rejection}. Re-scope with "
+                    f"kanban edit, or record the block with kanban block "
+                    f"instead of completing.",
+                    file=sys.stderr,
+                )
+                failed.append(tid)
+                continue
             if rejection is not None:
                 print(
                     f"kanban: goal completion of {tid} rejected by judge: {rejection}. "
@@ -2412,10 +2547,18 @@ def _cmd_request_review(args: argparse.Namespace) -> int:
             return 2
     reviewer = getattr(args, "reviewer", None)
     with kb.connect_closing() as conn:
-        rejection = _goal_mode_handoff_rejection(
+        gate_verdict, rejection = _goal_mode_handoff_rejection(
             kb.get_task(conn, tid),
             summary or "",
         )
+        if gate_verdict == "blocked":
+            print(
+                f"kanban: goal review handoff of {tid} rejected: judge ruled "
+                f"the goal unachievable — {rejection}. Record the block with "
+                f"kanban block instead of requesting review.",
+                file=sys.stderr,
+            )
+            return 1
         if rejection is not None:
             print(
                 f"kanban: goal review handoff of {tid} rejected by judge: "
@@ -2623,6 +2766,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             _kanban_cfg.get("max_in_progress_per_profile")
         )
         max_in_progress = _coerce_positive_int(_kanban_cfg.get("max_in_progress"))
+        # Memory-derived default when unset (OOF-30/OOF-77) — same
+        # fallback the gateway-embedded dispatcher applies, so behaviour
+        # matches regardless of which path runs the tick.
+        max_in_progress = kb.resolve_max_in_progress(max_in_progress)
         # CLI --max overrides config kanban.max_spawn when both are present;
         # CLI is the more explicit signal so it wins.
         cli_max = getattr(args, "max", None)
@@ -2923,7 +3070,9 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
             platform=args.platform, chat_id=args.chat_id,
             chat_type=args.chat_type,
             thread_id=args.thread_id, user_id=args.user_id,
+            user_id_alt=getattr(args, "user_id_alt", None),
             notifier_profile=args.notifier_profile or _profile_author(),
+            delivery_mode=getattr(args, "delivery_mode", None),
         )
     print(f"Subscribed {args.platform}:{args.chat_id}"
           + (f":{args.thread_id}" if args.thread_id else "")
@@ -2943,8 +3092,13 @@ def _cmd_notify_list(args: argparse.Namespace) -> int:
     for s in subs:
         thr = f":{s['thread_id']}" if s.get("thread_id") else ""
         owner = f"  owner={s['notifier_profile']}" if s.get("notifier_profile") else ""
+        dmode = s.get("delivery_mode") or "notify"
+        mode = "" if dmode == "notify" else f"  mode={dmode}"
+        ctype = s.get("chat_type") or "dm"
+        ct = "" if ctype == "dm" else f"  chat_type={ctype}"
+        uid_alt = f"  user_id_alt={s['user_id_alt']}" if s.get("user_id_alt") else ""
         print(f"  {s['task_id']:10s}  {s['platform']}:{s['chat_id']}{thr}"
-              f"  (since event {s['last_event_id']}){owner}")
+              f"  (since event {s['last_event_id']}){owner}{ct}{uid_alt}{mode}")
     return 0
 
 
@@ -3190,9 +3344,20 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     removed_ws = 0
     with kb.connect_closing() as conn:
         rows = conn.execute(
-            "SELECT id, workspace_kind, workspace_path FROM tasks WHERE status = 'archived'"
+            "SELECT id, workspace_kind, workspace_path, branch_name FROM tasks "
+            "WHERE status = 'archived'"
         ).fetchall()
     for row in rows:
+        if row["workspace_kind"] == "worktree":
+            # Backstop for worktrees that escaped the completion/archive hook
+            # (e.g. tasks archived before that hook existed). Same safety
+            # predicate: only clean, fully-pushed worktrees are removed.
+            wt_path = row["workspace_path"]
+            if wt_path and Path(wt_path).is_dir():
+                kb._cleanup_worktree_workspace(row["id"], wt_path, row["branch_name"])
+                if not Path(wt_path).is_dir():
+                    removed_ws += 1
+            continue
         if row["workspace_kind"] != "scratch":
             continue
         path = Path(row["workspace_path"] or (scratch_root / row["id"]))
@@ -3286,8 +3451,10 @@ def _cmd_repair(args: argparse.Namespace) -> int:
         print(f"  corrupt copy quarantined at: {report.backup_path}",
               file=sys.stderr)
     print(
-        "  Recover manually (e.g. `sqlite3 kanban.db \".recover\"` into a "
-        "fresh file) or move the file aside to start a new board.",
+        "  Recover manually (copy kanban.db aside FIRST, then run "
+        "`sqlite3 <copy> \".recover\"` into a fresh file — never against "
+        "the live path, a WAL-reset-vulnerable sqlite3 CLI can corrupt it "
+        "further) or move the file aside to start a new board.",
         file=sys.stderr,
     )
     return 1

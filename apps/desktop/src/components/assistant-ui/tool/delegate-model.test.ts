@@ -53,6 +53,25 @@ describe('delegateRowsFromCall', () => {
     expect(rows[0]).toMatchObject({ activity: ['found it'], durationSeconds: 12, model: 'anthropic/claude-opus-5' })
   })
 
+  // #73728 / #85492: the delegate tool settles rows with 'ok', 'error' or
+  // 'timeout' — anything that is not a success must render as failed instead
+  // of hiding behind a green 'completed' check.
+  it('renders timeout/error settled results as failed, ok as completed', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }, { goal: 'B' }, { goal: 'C' }, { goal: 'D' }] },
+      {
+        results: [
+          { status: 'ok', summary: 'done' },
+          { status: 'timeout', error: 'Timed out after 600s' },
+          { status: 'error', error: 'boom' },
+          { status: 'failure' }
+        ]
+      }
+    )
+
+    expect(rows.map(r => r.status)).toEqual(['completed', 'failed', 'failed', 'failed'])
+  })
+
   it('still lists a background dispatch whose goals only survive in the result', () => {
     expect(delegateRowsFromCall({}, { status: 'dispatched', goals: ['A', 'B'] }).map(r => r.goal)).toEqual(['A', 'B'])
   })

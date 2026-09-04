@@ -22,8 +22,10 @@ import { useI18n } from '@/i18n'
 import { desktopGit } from '@/lib/desktop-git'
 import { cn } from '@/lib/utils'
 import {
+  $sidebarCardRows,
   $sidebarFiltersActive,
   $sidebarGrouping,
+  $sidebarListGroupIds,
   $sidebarOrdering,
   $sidebarPrFilter,
   $sidebarProfileFilter,
@@ -34,6 +36,7 @@ import {
   $sidebarViewCustomized,
   $sidebarWorkspaceNodeOpen,
   resetSidebarView,
+  setSidebarCardRows,
   setSidebarGrouping,
   setSidebarOrdering,
   setSidebarShowArchived,
@@ -87,6 +90,7 @@ const ORDERINGS: Option<SidebarOrdering>[] = [
 
 const ROW_META: Option<SidebarRowMeta>[] = [
   { icon: 'clock', id: 'updated', label: 'Updated' },
+  { icon: 'comment', id: 'preview', label: 'Preview' },
   { icon: 'symbol-numeric', id: 'tokens', label: 'Tokens' },
   { icon: 'credit-card', id: 'cost', label: 'Cost' },
   { icon: 'git-pull-request', id: 'pr', label: 'PR' },
@@ -150,6 +154,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const grouping = useStore($sidebarGrouping)
   const ordering = useStore($sidebarOrdering)
   const rowMeta = useStore($sidebarRowMeta)
+  const cardRows = useStore($sidebarCardRows)
   const statusFilter = useStore($sidebarStatusFilter)
   const projectFilter = useStore($sidebarProjectFilter)
   const profileFilter = useStore($sidebarProfileFilter)
@@ -161,6 +166,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const filtersActive = useStore($sidebarFiltersActive)
   const viewCustomized = useStore($sidebarViewCustomized)
   const nodeOpen = useStore($sidebarWorkspaceNodeOpen)
+  const listGroupIds = useStore($sidebarListGroupIds)
   const projects = useStore($projectTree)
   const hasCost = useStore($sessionsHaveCost)
   const unreadIds = useStore($unreadFinishedSessionIds)
@@ -168,9 +174,18 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   // locally, the gateway's REST mirror remotely. Resolved per render, not once
   // at module load: switching to a remote profile swaps the bridge underneath.
   const prAvailable = Boolean(desktopGit()?.review?.prList)
-  // Project rows default open, so "all collapsed" means every one of them has
-  // been explicitly shut.
-  const projectsCollapsed = projects.length > 0 && projects.every(project => nodeOpen[project.id] === false)
+
+  // Fold the level in view: project rows, or the date/status buckets. Project
+  // rows default open, so "all collapsed" means every one of them has been
+  // explicitly shut. Never sweeps Pinned or Cron.
+  const foldIds =
+    grouping === 'project'
+      ? projects.map(project => project.id)
+      : grouping === 'date' || grouping === 'status'
+        ? listGroupIds
+        : []
+
+  const foldCollapsed = foldIds.length > 0 && foldIds.every(id => nodeOpen[id] === false)
 
   const groupingLabel = GROUPINGS.find(option => option.id === grouping)?.label
 
@@ -188,6 +203,11 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const rowMetaOptions = ROW_META.filter(option => {
     if (option.id === 'cost') {
       return hasCost || rowMeta.includes('cost')
+    }
+
+    // Preview is a card line; the one-line row has nowhere to put it.
+    if (option.id === 'preview') {
+      return cardRows
     }
 
     return option.id !== 'pr' || prAvailable
@@ -263,6 +283,14 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
               ))}
             </DropdownMenuSubContent>
           </DropdownMenuSub>
+
+          {/* A render variant, not a grouping: three-line cards (project · age /
+              title / model · size) compose with whichever grouping is active. */}
+          <OptionCheckbox
+            checked={cardRows}
+            onCheck={() => setSidebarCardRows(!cardRows)}
+            option={{ icon: 'inbox', id: 'card-rows', label: 'Inbox style' }}
+          />
         </DropdownMenuGroup>
 
         <DropdownMenuSeparator />
@@ -375,20 +403,9 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
 
         <DropdownMenuSeparator />
 
-        {/* Only the project rows fold, and only when they're what you're
-            looking at — sweeping Pinned and Cron shut alongside them is not
-            what "collapse all" means here. Their lanes underneath keep their
-            own state, so re-opening a project shows it as you left it. */}
-        {grouping === 'project' && projects.length > 0 && (
-          <DropdownMenuItem
-            onSelect={() =>
-              setWorkspaceNodesOpen(
-                projects.map(project => project.id),
-                projectsCollapsed
-              )
-            }
-          >
-            {projectsCollapsed ? 'Expand all' : 'Collapse all'}
+        {foldIds.length > 0 && (
+          <DropdownMenuItem onSelect={() => setWorkspaceNodesOpen(foldIds, foldCollapsed)}>
+            {foldCollapsed ? 'Expand all' : 'Collapse all'}
           </DropdownMenuItem>
         )}
         <DropdownMenuItem disabled={unreadIds.length === 0} onSelect={markAllSessionsRead}>

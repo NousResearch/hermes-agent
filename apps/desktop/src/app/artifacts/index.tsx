@@ -474,7 +474,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
     let active = true
 
     setSrc('')
-    void artifactImageSrc(artifact.value, artifact.href)
+    void artifactImageSrc(artifact.value)
       .then(nextSrc => {
         if (active) {
           setSrc(nextSrc)
@@ -492,7 +492,10 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
   }, [artifact.href, artifact.id, artifact.value, onImageError])
 
   return (
-    <article className="group/artifact overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)">
+    <article
+      className="group/artifact overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)"
+      data-tour="artifact-card"
+    >
       <div
         className={cn(
           'relative flex h-40 w-full items-center justify-center overflow-hidden border-b border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-1.5',

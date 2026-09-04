@@ -33,9 +33,43 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from typing import Any, Callable, Dict, List, Optional
 
-from agent.memory_provider import MemoryProvider
+from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
+
+# Providers that predate the checkpoint-API attribute are implicitly on the
+# historical best-effort contract (API v1).
+_LEGACY_PRE_COMPRESS_API_VERSION = 1
+
+
+def _accepts_require_checkpoint(fn: Callable[..., Any]) -> bool:
+    """True if ``fn`` can receive the ``require_checkpoint`` keyword.
+
+    Checkpoint (v2) providers written against the original docs example use
+    the bare ``on_pre_compress(self, messages)`` signature; calling them with
+    the keyword would raise ``TypeError`` — which, under
+    ``require_checkpoint=True``, the host would re-raise as a checkpoint
+    failure even though the provider's durable write succeeded. Inspect the
+    signature and fall back to the legacy call shape when the keyword (or a
+    ``**kwargs`` catch-all) is absent. Unreadable signatures (C callables,
+    exotic proxies) conservatively report False.
+    """
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    for param in sig.parameters.values():
+        if param.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if (
+            param.name == "require_checkpoint"
+            and param.kind in (
+                inspect.Parameter.KEYWORD_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        ):
+            return True
+    return False
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +141,29 @@ def memory_provider_tools_enabled(
         return False
 
 
+def memory_provider_tools_exposed(agent: Any) -> bool:
+    """Whether external memory-provider tools are exposed on ``agent``.
+
+    Same gate as ``inject_memory_provider_tools`` so the provider's
+    ``system_prompt_block()`` and its tool schemas are presented to the
+    model together — otherwise the system prompt would advertise tools
+    that don't exist in the tool surface (#81014).
+    """
+    tools = getattr(agent, "tools", None)
+    if isinstance(tools, (list, tuple)):
+        memory_tool_present = any(
+            isinstance(tool, dict) and tool.get("function", {}).get("name") == "memory"
+            for tool in tools
+        )
+    else:
+        memory_tool_present = False
+    return memory_provider_tools_enabled(
+        getattr(agent, "enabled_toolsets", None),
+        getattr(agent, "disabled_toolsets", None),
+        memory_tool_present=memory_tool_present,
+    )
+
+
 def inject_memory_provider_tools(agent: Any) -> int:
     """Append external memory-provider tool schemas to an agent tool surface."""
     memory_manager = getattr(agent, "_memory_manager", None)
@@ -119,11 +176,23 @@ def inject_memory_provider_tools(agent: Any) -> int:
         for tool in tools
         if isinstance(tool, dict)
     }
-    if not memory_provider_tools_enabled(
-        getattr(agent, "enabled_toolsets", None),
-        getattr(agent, "disabled_toolsets", None),
-        memory_tool_present="memory" in existing_tool_names,
-    ):
+    if not memory_provider_tools_exposed(agent):
+        # A provider is configured but the memory toolset is gated off
+        # (platform_toolsets / disabled_toolsets). Say so once — a silent
+        # return 0 here made #81014 undiagnosable: the provider looked
+        # "half on" with no clue which config key suppressed its tools.
+        _providers = [
+            p for p in (getattr(memory_manager, "providers", None) or [])
+            if getattr(p, "name", "") != "builtin"
+        ]
+        if _providers:
+            logger.info(
+                "Memory provider(s) %s configured but the 'memory' toolset is "
+                "gated off for this session (platform_toolsets / "
+                "agent.disabled_toolsets) — provider tools and system-prompt "
+                "block are both withheld.",
+                [getattr(p, "name", type(p).__name__) for p in _providers],
+            )
         return 0
 
     get_schemas = getattr(memory_manager, "get_all_tool_schemas", None)
@@ -559,8 +628,13 @@ class MemoryManager:
             except Exception as exc:  # pragma: no cover - re-raised by caller
                 error_box["value"] = exc
 
+        # Propagate the caller's contextvars (profile HERMES_HOME override)
+        # to the prefetch thread — see _submit_background.
+        import contextvars
+        from functools import partial
+
         thread = threading.Thread(
-            target=_run,
+            target=partial(contextvars.copy_context().run, _run),
             daemon=True,
             name=f"memory-prefetch-{provider.name}",
         )
@@ -593,6 +667,38 @@ class MemoryManager:
         if error_box:
             raise error_box["value"]
         return result_box.get("value", "")
+
+    def describe_recall(self) -> str:
+        """Build a deterministic, model-independent recall indicator line.
+
+        Call right after :meth:`prefetch_all` on the turn thread. Collects each
+        provider's :meth:`MemoryProvider.recall_status` and renders a single
+        status string (e.g. ``"🧠 Provider — recalled 3 memories"``) so the
+        user SEES memory was used regardless of whether the model mentions it.
+        Returns ``""`` when no provider injected memory this turn — callers can
+        emit the result unconditionally.
+        """
+        segments: List[str] = []
+        for provider in self._providers:
+            try:
+                status = provider.recall_status()
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' recall_status failed (non-fatal): %s",
+                    provider.name, e,
+                )
+                continue
+            if status is None:
+                continue
+            if status.count == 1:
+                detail = "recalled 1 memory"
+            elif status.count > 1:
+                detail = f"recalled {status.count} memories"
+            else:
+                # count <= 0 → content injected but no discrete count (reflect).
+                detail = "recalled relevant memory"
+            segments.append(f"{status.glyph} {status.provider_label} — {detail}")
+        return "  ".join(segments)
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
         """Queue background prefetch on all providers for the next turn.
@@ -696,7 +802,20 @@ class MemoryManager:
     # -- Background dispatch -------------------------------------------------
 
     def _submit_background(self, fn, *, kind: str = "write") -> None:
-        """Queue ``fn`` on the serialized worker and track its durability class."""
+        """Queue ``fn`` on the serialized worker and track its durability class.
+
+        The submitted callable is wrapped with the CALLER's contextvars:
+        profile isolation in multi-profile processes (gateway multiplexer,
+        dashboard, cron) is a ContextVar-scoped HERMES_HOME override, and
+        executor worker threads start with empty contexts — without the
+        wrap, a provider resolving ambient state (config paths, secrets)
+        from the worker would silently land on the default profile.
+        """
+        import contextvars
+        from functools import partial
+
+        ctx = contextvars.copy_context()
+        fn = partial(ctx.run, fn)
         executor = self._get_sync_executor()
         if executor is None:
             if self._shutting_down:
@@ -971,16 +1090,82 @@ class MemoryManager:
                     provider.name, e,
                 )
 
-    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+    def supports_pre_compress_checkpoint(
+        self,
+        api_version: int = PRE_COMPRESS_CHECKPOINT_API_VERSION,
+    ) -> bool:
+        """Return whether an active provider guarantees checkpoint API support."""
+        for provider in self._providers:
+            try:
+                provider_version = int(
+                    getattr(
+                        provider,
+                        "pre_compress_checkpoint_api_version",
+                        _LEGACY_PRE_COMPRESS_API_VERSION,
+                    )
+                )
+            except (TypeError, ValueError):
+                continue
+            if provider_version >= api_version:
+                return True
+        return False
+
+    def on_pre_compress(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        evidence_messages: Optional[List[Dict[str, Any]]] = None,
+        require_checkpoint: bool = False,
+        checkpoint_api_version: int = PRE_COMPRESS_CHECKPOINT_API_VERSION,
+    ) -> str:
         """Notify all providers before context compression.
 
         Returns combined text from providers to include in the compression
         summary prompt. Empty string if no provider contributes.
+
+        ``messages`` is the raw transcript — the historical (API v1)
+        contract every existing provider receives unchanged.
+        ``evidence_messages`` is the host-normalized direct-evidence list
+        handed only to providers that opted into checkpoint API v2+; when
+        omitted, v2 providers receive the raw list too.
+
+        When ``require_checkpoint`` is true, at least one provider
+        advertising the requested checkpoint API must return successfully;
+        its exception is propagated so the caller can preserve the
+        uncompressed transcript.
         """
         parts = []
+        checkpoint_succeeded = False
         for provider in self._providers:
             try:
-                result = provider.on_pre_compress(messages)
+                provider_version = int(
+                    getattr(
+                        provider,
+                        "pre_compress_checkpoint_api_version",
+                        _LEGACY_PRE_COMPRESS_API_VERSION,
+                    )
+                )
+            except (TypeError, ValueError):
+                provider_version = _LEGACY_PRE_COMPRESS_API_VERSION
+            is_checkpoint_provider = provider_version >= checkpoint_api_version
+            provider_messages = messages
+            if is_checkpoint_provider and evidence_messages is not None:
+                provider_messages = evidence_messages
+            try:
+                if is_checkpoint_provider and _accepts_require_checkpoint(
+                    provider.on_pre_compress
+                ):
+                    result = provider.on_pre_compress(
+                        provider_messages,
+                        require_checkpoint=require_checkpoint,
+                    )
+                else:
+                    # Legacy (v1) providers keep the strict one-argument
+                    # contract. v2 providers written against the original
+                    # docs example (``def on_pre_compress(self, messages)``)
+                    # also land here instead of dying on an unexpected
+                    # kwarg — they simply never see the requirement signal.
+                    result = provider.on_pre_compress(provider_messages)
                 if result and result.strip():
                     parts.append(result)
             except Exception as e:
@@ -988,6 +1173,16 @@ class MemoryManager:
                     "Memory provider '%s' on_pre_compress failed: %s",
                     provider.name, e,
                 )
+                if require_checkpoint and is_checkpoint_provider:
+                    raise
+            else:
+                if is_checkpoint_provider:
+                    checkpoint_succeeded = True
+        if require_checkpoint and not checkpoint_succeeded:
+            raise RuntimeError(
+                "No active memory provider completed pre-compress checkpoint "
+                f"API v{checkpoint_api_version}"
+            )
         return "\n\n".join(parts)
 
     @staticmethod

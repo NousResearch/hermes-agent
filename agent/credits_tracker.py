@@ -226,12 +226,15 @@ def is_free_tier_model(model: str, base_url: str = "") -> bool:
     1. The ``:free`` suffix — the canonical Nous free SKU marker (e.g.
        ``nvidia/nemotron-3-ultra:free``). Free by construction on the API side
        (spend is forced to 0 for ``:free`` ids).
-    2. A peek into the in-process pricing cache in ``hermes_cli.models``
+    2. The ``stealth/`` prefix — Nous stealth-preview SKUs (e.g.
+       ``stealth/ox-alpha``) are free-tier but carry no ``:free`` suffix.  Spend
+       is forced to zero server-side, so these are also free by construction.
+    3. A peek into the in-process pricing cache in ``hermes_cli.models``
        (populated when the model picker fetched ``/v1/models`` pricing for
        *base_url*). PEEK ONLY — a cache miss never triggers a fetch. This is
        CLI/TUI-session best-effort: gateway sessions never run the picker's
        pricing fetch, so suppression there rests entirely on the ``:free``
-       suffix (which all Nous free SKUs carry).
+       suffix and ``stealth/`` prefix.
 
     Fail-open to False (the depleted notice still shows) on any error: wrongly
     showing the warning is recoverable noise; wrongly hiding it on a paid model
@@ -241,18 +244,18 @@ def is_free_tier_model(model: str, base_url: str = "") -> bool:
         return False
     if model.endswith(":free"):
         return True
+    # Stealth-preview SKUs are free-tier but carry no ``:free`` suffix (see
+    # docstring point 2). Naming-convention trust: if a PAID model ever shipped
+    # under ``stealth/`` this would wrongly suppress the banner on it.
+    if model.startswith("stealth/"):
+        return True
     if not base_url:
         return False
     try:
-        from hermes_cli.models import _is_model_free, _pricing_cache
+        from hermes_cli.models import _is_model_free, peek_cached_pricing
 
-        # Mirror get_pricing_for_provider's key normalization: the agent's
-        # Nous base_url is /v1-suffixed (https://inference-api.nousresearch.com/v1)
-        # but the picker keys _pricing_cache on the pre-/v1 root.
-        key = base_url.rstrip("/")
-        if key.endswith("/v1"):
-            key = key[:-3].rstrip("/")
-        pricing = _pricing_cache.get(key)
+        # peek_cached_pricing owns the /v1-suffix and auth-state key details.
+        pricing = peek_cached_pricing(base_url)
         if not pricing:
             return False
         return _is_model_free(model, pricing)

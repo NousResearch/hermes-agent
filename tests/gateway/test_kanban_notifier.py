@@ -100,6 +100,7 @@ def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, m
             platform="telegram",
             chat_id="chat-1",
             thread_id="20197",
+            delivery_mode="notify+wake",
             delivery_metadata={
                 "chat_type": "dm",
                 "direct_messages_topic_id": "20197",
@@ -353,6 +354,110 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
     assert "crashed" in adapter.sent[1]["text"].lower()
 
 
+def test_notifier_subscription_survives_done_reopen_until_archive(
+    tmp_path, monkeypatch,
+):
+    """Done is reversible; archive alone ends notification ownership."""
+    db_path = tmp_path / "done-reopen-archive.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="review continuation",
+            assignee="worker",
+            session_id="origin-session",
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="origin-chat",
+            thread_id="origin-thread",
+            user_id="origin-user",
+            chat_type="group",
+            notifier_profile="reviewer",
+            delivery_mode="notify+wake",
+        )
+        assert kb.complete_task(conn, tid, summary="first completion")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._active_profile_name = lambda: "reviewer"
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert len(adapter.handled) == 1
+    assert adapter.sent[0]["chat_id"] == "origin-chat"
+    assert adapter.sent[0]["metadata"]["thread_id"] == "origin-thread"
+    assert adapter.handled[0].source.thread_id == "origin-thread"
+    assert adapter.handled[0].source.profile == "reviewer"
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+        assert len(subs) == 1, "completion must retain the origin subscription"
+        first_cursor = subs[0]["last_event_id"]
+    finally:
+        conn.close()
+
+    # A quiet tick proves the completed event cannot replay after its cursor
+    # was advanced, even though the subscription now remains present.
+    runner = _make_runner(adapter)
+    runner._active_profile_name = lambda: "reviewer"
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    assert len(adapter.sent) == 1
+    assert len(adapter.handled) == 1
+
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (tid,))
+            kb._append_event(conn, tid, "status", {"status": "ready"})
+        assert kb.complete_task(conn, tid, summary="corrected completion")
+    finally:
+        conn.close()
+
+    runner = _make_runner(adapter)
+    runner._active_profile_name = lambda: "reviewer"
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    # The reopen status and second completion each deliver once, while only
+    # completion wakes the exact original session/thread.
+    assert len(adapter.sent) == 3
+    assert len(adapter.handled) == 2
+    assert all(item["chat_id"] == "origin-chat" for item in adapter.sent)
+    assert adapter.handled[-1].source.thread_id == "origin-thread"
+    assert adapter.handled[-1].source.profile == "reviewer"
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+        assert len(subs) == 1
+        assert subs[0]["last_event_id"] > first_cursor
+        assert kb.archive_task(conn, tid)
+    finally:
+        conn.close()
+
+    runner = _make_runner(adapter)
+    runner._active_profile_name = lambda: "reviewer"
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    # Archive itself is intentionally silent, but consumes its event and
+    # removes the subscription so no later historical event can replay.
+    assert len(adapter.sent) == 3
+    assert len(adapter.handled) == 2
+    conn = kb.connect()
+    try:
+        assert kb.list_notify_subs(conn, tid) == []
+    finally:
+        conn.close()
+
+
 def test_notifier_wakeup_uses_subscription_chat_type(tmp_path, monkeypatch):
     db_path = tmp_path / "chat-type-wakeup.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
@@ -372,6 +477,7 @@ def test_notifier_wakeup_uses_subscription_chat_type(tmp_path, monkeypatch):
             platform="telegram",
             chat_id="chat-dm",
             chat_type="dm",
+            delivery_mode="notify+wake",
         )
         kb.complete_task(conn, tid, summary="done")
     finally:
@@ -516,3 +622,126 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
     finally:
         conn.close()
     assert remaining == []
+
+
+# ---------------------------------------------------------------------------
+# Handoffs that hand a decision back to the origin must wake it, not only ping
+# it: `review_requested` (implementation done, waiting for a reviewer) and
+# `block_loop_detected` (routed to triage) are terminal kinds just like
+# `blocked`.
+# ---------------------------------------------------------------------------
+
+
+def _wake_text(adapter):
+    """Text of the single synthetic wake turn injected into the adapter."""
+    assert len(adapter.handled) == 1, (
+        f"expected exactly one wake turn, got {len(adapter.handled)}"
+    )
+    return getattr(adapter.handled[0], "text", "") or ""
+
+
+def _review_handoff_task(
+    *,
+    delivery_mode="notify+wake",
+    summary="PR ready: https://example.invalid/pr/7\nfull details below",
+):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="implement the thing",
+            assignee="worker",
+            session_id="agent:main:telegram:dm:chat-1",
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            chat_type="dm",
+            delivery_mode=delivery_mode,
+        )
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        assert kb.request_review(
+            conn, tid, summary=summary, expected_run_id=run_id,
+        ) is True
+        return tid
+    finally:
+        conn.close()
+
+
+def test_review_requested_wakes_the_origin_session(tmp_path, monkeypatch):
+    """A review handoff wakes the origin and carries the worker's summary."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "review-wake.db"))
+    kb.init_db()
+    tid = _review_handoff_task()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1, "the passive review ping is unchanged"
+    assert "ready for review" in adapter.sent[0]["text"]
+
+    wake = _wake_text(adapter)
+    assert tid in wake
+    assert "PR ready: https://example.invalid/pr/7" in wake, (
+        "the worker's handoff must ride the wake turn like it does for "
+        "`completed`, otherwise the woken reviewer has to re-read the board"
+    )
+
+
+def test_block_loop_detected_wakes_the_origin_session(tmp_path, monkeypatch):
+    """A triage escalation wakes the origin so a decision gets made."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "triage-wake.db"))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="loops forever",
+            assignee="worker",
+            session_id="agent:main:telegram:dm:chat-1",
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            chat_type="dm",
+            delivery_mode="notify+wake",
+        )
+        kb._append_event(
+            conn, tid, "block_loop_detected",
+            {"reason": "needs credentials", "kind": "needs_input",
+             "recurrences": 2, "limit": kb.BLOCK_RECURRENCE_LIMIT},
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert tid in _wake_text(adapter)
+
+
+def test_review_requested_does_not_wake_a_notify_only_subscription(
+    tmp_path, monkeypatch,
+):
+    """delivery_mode still decides whether a wake-worthy kind wakes at all."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "review-notify.db"))
+    kb.init_db()
+    _review_handoff_task(delivery_mode="notify")
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert adapter.handled == [], (
+        "notify-only subscriptions must not be woken by a review handoff"
+    )

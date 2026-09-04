@@ -92,3 +92,83 @@ describe('PaneTab close gestures', () => {
     expect(onPointerDown).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('PaneTab hover close button', () => {
+  it('clicking the ✕ closes without activating or dragging the tab', () => {
+    const onClose = vi.fn()
+    const onActivate = vi.fn()
+    const onPointerDown = vi.fn()
+    render(
+      <PaneTab onClose={onClose} onPointerDown={onPointerDown}>
+        <PaneTabLabel as="button" onClick={onActivate}>
+          tab
+        </PaneTabLabel>
+      </PaneTab>
+    )
+
+    const close = screen.getByRole('button', { name: 'Close' })
+    fireEvent.pointerDown(close, { button: 0 })
+    fireEvent.click(close, { button: 0 })
+    expect(onClose).toHaveBeenCalledTimes(1)
+    expect(onActivate).not.toHaveBeenCalled()
+    expect(onPointerDown).not.toHaveBeenCalled()
+  })
+
+  it('renders no ✕ without an onClose', () => {
+    render(
+      <PaneTab>
+        <PaneTabLabel>tab</PaneTabLabel>
+      </PaneTab>
+    )
+
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull()
+  })
+
+  it('reserves a close-button runway only on closeable horizontal tabs', () => {
+    const onClose = vi.fn()
+
+    const { rerender } = render(
+      <PaneTab onClose={onClose}>
+        <PaneTabLabel>BROWSER</PaneTabLabel>
+      </PaneTab>
+    )
+
+    const horizontalTab = screen.getByText('BROWSER').parentElement?.parentElement
+    expect(horizontalTab?.className).toContain('pr-9')
+
+    rerender(
+      <PaneTab onClose={onClose} vertical>
+        <PaneTabLabel>BROWSER</PaneTabLabel>
+      </PaneTab>
+    )
+    const verticalTab = screen.getByText('BROWSER').parentElement?.parentElement
+    expect(verticalTab?.className).not.toContain('pr-9')
+  })
+
+  it('a closeable horizontal tab always shows its ✕ — the chip and the pointer gestures are one affordance', () => {
+    const onClose = vi.fn()
+    render(
+      <PaneTab onClose={onClose}>
+        <PaneTabLabel>tab</PaneTabLabel>
+      </PaneTab>
+    )
+
+    expect(screen.getByRole('button', { name: 'Close' })).toBeTruthy()
+
+    const tab = screen.getByText('tab')
+    fireEvent.pointerDown(tab, { button: 1 })
+    fireEvent.pointerUp(tab, { button: 1 })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders no ✕ on a vertical rail tab (middle/⌘-click only there)', () => {
+    const onClose = vi.fn()
+    render(
+      <PaneTab onClose={onClose} vertical>
+        <PaneTabLabel>tab</PaneTabLabel>
+      </PaneTab>
+    )
+
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull()
+  })
+})

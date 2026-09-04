@@ -26,6 +26,8 @@ whose behavior is separately covered by a real test.
 from __future__ import annotations
 
 import ast
+import functools
+import os
 from pathlib import Path
 
 import pytest
@@ -121,12 +123,35 @@ def _iter_which_calls(tree: ast.AST):
 
 def _source_files() -> list[Path]:
     files: list[Path] = []
-    for path in REPO_ROOT.rglob("*.py"):
-        rel = path.relative_to(REPO_ROOT)
-        if rel.parts and rel.parts[0] in _EXEMPT_DIRS:
-            continue
-        files.append(path)
+    # os.walk instead of Path.rglob: rglob raises FileNotFoundError when a
+    # directory vanishes mid-scan — a sibling CI job's sdist extraction
+    # (hermes_agent-<version>/) gets created and deleted concurrently, and
+    # that TOCTOU failed this guard on runs 33531869442/33455779041-era
+    # workspaces. os.walk tolerates vanishing dirs (onerror=None), and
+    # pruning exempt/packaging dirs at the top level also skips their
+    # subtrees entirely.
+    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
+        rel_dir = Path(dirpath).relative_to(REPO_ROOT)
+        if rel_dir == Path("."):
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in _EXEMPT_DIRS and not _is_packaging_copy(d)
+            ]
+        for fname in filenames:
+            if fname.endswith(".py"):
+                files.append(Path(dirpath) / fname)
     return files
+
+
+@functools.lru_cache(maxsize=None)
+def _is_packaging_copy(top_level: str) -> bool:
+    """Whether *top_level* (a dir name under REPO_ROOT) is a build artifact."""
+    if top_level in ("build", "dist") or top_level.endswith(".egg-info"):
+        return True
+    candidate = REPO_ROOT / top_level
+    if not candidate.is_dir():
+        return False
+    return (candidate / "PKG-INFO").exists()
 
 
 def _findings() -> list[tuple[str, str, int]]:

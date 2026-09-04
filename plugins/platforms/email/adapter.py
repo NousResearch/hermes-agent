@@ -7,8 +7,12 @@ Uses IMAP to receive and SMTP to send messages.
 Environment variables:
     EMAIL_IMAP_HOST     — IMAP server host (e.g., imap.gmail.com)
     EMAIL_IMAP_PORT     — IMAP server port (default: 993)
+    EMAIL_IMAP_SECURITY — IMAP transport: tls, starttls, or plain (default: tls)
+    EMAIL_IMAP_TLS_VERIFY — Verify the IMAP TLS certificate (default: true)
     EMAIL_SMTP_HOST     — SMTP server host (e.g., smtp.gmail.com)
     EMAIL_SMTP_PORT     — SMTP server port (default: 587)
+    EMAIL_SMTP_SECURITY — SMTP transport: tls, starttls, or plain (port-based default)
+    EMAIL_SMTP_TLS_VERIFY — Verify the SMTP TLS certificate (default: true)
     EMAIL_ADDRESS       — Email address for the agent
     EMAIL_PASSWORD      — Email password or app-specific password
     EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
@@ -88,7 +92,40 @@ def _esecret_int(name: str, default: int) -> int:
 
 def _esecret_bool(name: str, default: bool = False) -> bool:
     """Scope-aware boolean read (``env_bool`` variant of ``_get_esecret``)."""
-    return is_truthy_value(_get_esecret(name, ""), default=default)
+    raw = str(_get_esecret(name, "")).strip()
+    return is_truthy_value(raw, default=default) if raw else default
+
+
+_SECURITY_ALIASES = {
+    "tls": "tls", "ssl": "tls", "implicit": "tls",
+    "starttls": "starttls",
+    "plain": "plain", "none": "plain",
+}
+
+
+def _normalize_security(value: Any, default: str = "tls") -> str:
+    """Map an IMAP/SMTP security setting to ``tls`` | ``starttls`` | ``plain``.
+
+    Unknown values log a warning and fall back to *default* rather than
+    failing the connection, so a typo never silently downgrades to plaintext.
+    """
+    raw = str(value or "").strip().lower().replace("-", "").replace("_", "")
+    if not raw:
+        return default
+    mode = _SECURITY_ALIASES.get(raw)
+    if mode is None:
+        logger.warning("Unknown email security mode %r; using %r", value, default)
+        return default
+    return mode
+
+
+def _tls_context(verify: bool, host: str) -> ssl.SSLContext:
+    """Verified context by default; unverified only when explicitly opted out."""
+    if verify:
+        return ssl.create_default_context()
+    if host not in ("127.0.0.1", "::1", "localhost"):
+        logger.warning("TLS verification disabled for non-loopback host %s", host)
+    return ssl._create_unverified_context()
 
 
 # Automated sender patterns — emails from these are silently ignored
@@ -110,6 +147,28 @@ _AUTOMATED_HEADERS = {
 MAX_MESSAGE_LENGTH = 50_000
 
 SMTP_CONNECT_TIMEOUT = 30
+
+
+def _close_imap(imap: "imaplib.IMAP4") -> None:
+    """Best-effort teardown that guarantees the underlying socket is closed.
+
+    ``IMAP4.logout()`` only guards against ``OSError`` internally: a broken
+    connection makes ``_simple_command('LOGOUT')`` raise ``IMAP4.abort``
+    (which is *not* an ``OSError``), so ``logout()`` propagates before its
+    own ``shutdown()`` call and the TCP socket stays open. On macOS, where
+    the default soft fd limit is 256 and pollers may run through a local
+    proxy, these abandoned sockets accumulate one per failed poll until the
+    gateway hits ``[Errno 24] Too many open files`` (#79889). Always chase a
+    failed ``logout()`` with ``shutdown()``, which closes the socket
+    unconditionally.
+    """
+    try:
+        imap.logout()
+    except Exception:
+        try:
+            imap.shutdown()
+        except Exception:
+            pass
 
 
 def _create_ipv4_connection(
@@ -507,6 +566,15 @@ def _extract_attachments(
 class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
 
+    # Per-account snapshot of seen UIDs, surviving adapter recreation.
+    # The gateway's reconnect watcher builds a FRESH adapter instance for
+    # each retry; without this, connect(is_reconnect=True) would re-mark the
+    # entire mailbox seen and silently skip every message that arrived
+    # during the outage. Keyed by account address (multiplex gateways can
+    # run several email accounts in one process). Same-process only by
+    # design — after a full restart the usual mark-all-seen baseline applies.
+    _seen_uids_snapshot: Dict[str, set] = {}
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
 
@@ -523,8 +591,23 @@ class EmailAdapter(BasePlatformAdapter):
         self._password = _get_secret("EMAIL_PASSWORD", "")
         self._imap_host = (_get_secret("EMAIL_IMAP_HOST", "") or extra.get("imap_host", "")).strip()
         self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
+        self._imap_security = _normalize_security(
+            _get_secret("EMAIL_IMAP_SECURITY", "") or extra.get("imap_security", "")
+        )
+        self._imap_tls_verify = _esecret_bool(
+            "EMAIL_IMAP_TLS_VERIFY",
+            is_truthy_value(extra.get("imap_tls_verify"), default=True),
+        )
         self._smtp_host = (_get_secret("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
         self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587)
+        self._smtp_security = _normalize_security(
+            _get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security", ""),
+            default="tls" if self._smtp_port == 465 else "starttls",
+        )
+        self._smtp_tls_verify = _esecret_bool(
+            "EMAIL_SMTP_TLS_VERIFY",
+            is_truthy_value(extra.get("smtp_tls_verify"), default=True),
+        )
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
 
         # Skip attachments — configured via config.yaml:
@@ -566,6 +649,11 @@ class EmailAdapter(BasePlatformAdapter):
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
 
+        # Track the last IMAP fetch attempt so the poll loop can distinguish
+        # "checked, nothing new" from "the check itself failed" (#80016).
+        self._last_fetch_failed: bool = False
+        self._last_fetch_error: str = ""
+
         # Map chat_id (sender email) -> last subject + message-id for threading
         self._thread_context: Dict[str, Dict[str, str]] = {}
 
@@ -591,6 +679,25 @@ class EmailAdapter(BasePlatformAdapter):
             # Fallback: just clear old entries if sort fails
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
 
+    def _connect_imap(self) -> imaplib.IMAP4:
+        """Create an IMAP connection using implicit TLS, STARTTLS, or plaintext."""
+        if self._imap_security == "tls":
+            return imaplib.IMAP4_SSL(
+                self._imap_host,
+                self._imap_port,
+                timeout=30,
+                ssl_context=_tls_context(self._imap_tls_verify, self._imap_host),
+            )
+
+        imap = imaplib.IMAP4(self._imap_host, self._imap_port, timeout=30)
+        if self._imap_security == "starttls":
+            try:
+                imap.starttls(ssl_context=_tls_context(self._imap_tls_verify, self._imap_host))
+            except Exception:
+                _close_imap(imap)
+                raise
+        return imap
+
     def _connect_smtp(self) -> smtplib.SMTP:
         """Create an SMTP connection, selecting the correct protocol for the port.
 
@@ -606,22 +713,24 @@ class EmailAdapter(BasePlatformAdapter):
         Returns a connected SMTP object with TLS established — callers
         can proceed directly to ``login()``.
         """
-        ctx = ssl.create_default_context()
         host = self._smtp_host
         port = self._smtp_port
+        security = self._smtp_security
+        ctx = _tls_context(self._smtp_tls_verify, host)
 
         def _connect(*, ipv4_only: bool = False) -> smtplib.SMTP:
             """Attempt one SMTP connection."""
             smtp_cls = _IPv4SMTP if ipv4_only else smtplib.SMTP
             smtp_ssl_cls = _IPv4SMTP_SSL if ipv4_only else smtplib.SMTP_SSL
-            if port == 465:
+            if security == "tls":
                 return smtp_ssl_cls(host, port, timeout=SMTP_CONNECT_TIMEOUT, context=ctx)
             smtp = smtp_cls(host, port, timeout=SMTP_CONNECT_TIMEOUT)
-            try:
-                smtp.starttls(context=ctx)
-            except Exception:
-                smtp.close()
-                raise
+            if security == "starttls":
+                try:
+                    smtp.starttls(context=ctx)
+                except Exception:
+                    smtp.close()
+                    raise
             return smtp
 
         try:
@@ -666,22 +775,64 @@ class EmailAdapter(BasePlatformAdapter):
             return False
 
         try:
-            # Test IMAP connection
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
-            imap.login(self._address, self._password)
-            _send_imap_id(imap)
-            # Mark all existing messages as seen so we only process new ones
-            imap.select("INBOX")
-            status, data = imap.uid("search", None, "ALL")
-            if status == "OK" and data and data[0]:
-                for uid in data[0].split():
-                    self._seen_uids.add(uid)
-            # Keep only the most recent UIDs to prevent unbounded growth
-            self._trim_seen_uids()
-            imap.logout()
-            logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
+            # Test IMAP connection. The handle is closed in ``finally`` —
+            # before this, a failure in login/select/search left the TCP
+            # socket open with no owner, leaking one fd per connect attempt.
+            # Under the gateway's reconnect watcher (fresh adapter instance
+            # per retry) against an unreachable/proxied host this grew
+            # monotonically until fd exhaustion on macOS's 256 soft limit
+            # (#79889).
+            imap = None
+            try:
+                imap = self._connect_imap()
+                imap.login(self._address, self._password)
+                _send_imap_id(imap)
+                imap.select("INBOX")
+                snapshot = self._seen_uids_snapshot.get(self._address)
+                if is_reconnect and snapshot is not None:
+                    # Reconnect within the same process: restore the previous
+                    # adapter's seen-UID baseline instead of re-marking the whole
+                    # mailbox. Mail that arrived during the outage stays UNSEEN
+                    # relative to the baseline and is dispatched by the next poll
+                    # instead of being silently skipped.
+                    self._seen_uids = set(snapshot)
+                    self._trim_seen_uids()
+                    logger.info(
+                        "[Email] IMAP reconnect test passed. Restored %d seen UIDs; "
+                        "messages received during the outage will be processed.",
+                        len(self._seen_uids),
+                    )
+                else:
+                    # First connect (or no snapshot): mark all existing messages as
+                    # seen so we only process new ones.
+                    status, data = imap.uid("search", None, "ALL")
+                    if status == "OK" and data and data[0]:
+                        for uid in data[0].split():
+                            self._seen_uids.add(uid)
+                    # Keep only the most recent UIDs to prevent unbounded growth
+                    self._trim_seen_uids()
+                    logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
+            finally:
+                if imap is not None:
+                    _close_imap(imap)
+            self._seen_uids_snapshot[self._address] = set(self._seen_uids)
         except Exception as e:
             logger.error("[Email] IMAP connection failed: %s", e)
+            # Always set an explicit fatal code (OOF-156): returning False
+            # with no error info made the gateway treat every IMAP failure —
+            # including permanently bad credentials — as transient, retrying
+            # forever with zero owner signal ("stuck retrying 22h").
+            # Kept retryable=True deliberately: imaplib raises the same
+            # generic IMAP4.error for bad credentials AND transient server
+            # NOs (e.g. Gmail's "too many simultaneous connections"), so a
+            # type-based terminal classification isn't safe here. Long-lived
+            # loops surface via the reconnect watcher's NEEDS_ATTENTION
+            # escalation instead.
+            self._set_fatal_error(
+                "email_imap_connect_error",
+                f"IMAP connection to {self._imap_host}:{self._imap_port} failed: {e}",
+                retryable=True,
+            )
             return False
 
         try:
@@ -692,13 +843,34 @@ class EmailAdapter(BasePlatformAdapter):
             finally:
                 smtp.quit()
             logger.info("[Email] SMTP connection test passed.")
+        except smtplib.SMTPAuthenticationError as e:
+            logger.error("[Email] SMTP authentication failed: %s", e)
+            # Typed auth failure (535 & friends): bad or revoked credentials
+            # can never self-heal, so drop out of the reconnect queue instead
+            # of retrying a dead password forever (OOF-156). Type-based only —
+            # SMTPAuthenticationError is unambiguous, unlike IMAP4.error above.
+            self._set_fatal_error(
+                "email_auth_error",
+                f"SMTP authentication failed for {self._address}: {e}. "
+                "Check EMAIL_PASSWORD (for Gmail/Outlook this must be an "
+                "app password, not the account password).",
+                retryable=False,
+            )
+            return False
         except Exception as e:
             logger.error("[Email] SMTP connection failed: %s", e)
+            self._set_fatal_error(
+                "email_smtp_connect_error",
+                f"SMTP connection to {self._smtp_host} failed: {e}",
+                retryable=True,
+            )
             return False
 
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())
         print(f"[Email] Connected as {self._address}")
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:
@@ -729,14 +901,34 @@ class EmailAdapter(BasePlatformAdapter):
         # Run IMAP operations in a thread to avoid blocking the event loop
         loop = asyncio.get_running_loop()
         messages = await loop.run_in_executor(None, self._fetch_new_messages)
+        # Dispatch whatever the fetch managed to return BEFORE escalating a
+        # failure: on a mid-batch exception _fetch_new_messages returns the
+        # partial results, and dropping them here would lose those messages
+        # (their processing already marked them seen).
         for msg_data in messages:
             await self._dispatch_message(msg_data)
+        if self._last_fetch_failed:
+            # The IMAP check itself failed (connect/login/select/search/fetch),
+            # not just an empty inbox. Surface it through the fatal-error hook
+            # so the gateway's existing reconnect/backoff/status machinery
+            # re-establishes the mailbox instead of silently treating every
+            # failed check as "nothing new" (#80016). The handler runs in a
+            # detached task (gateway/run.py), so awaiting it from our own poll
+            # task is safe even though teardown cancels this task.
+            self._last_fetch_failed = False
+            self._set_fatal_error(
+                "email_imap_fetch_failed",
+                self._last_fetch_error or "IMAP fetch failed",
+                retryable=True,
+            )
+            await self._notify_fatal_error()
 
     def _fetch_new_messages(self) -> List[Dict[str, Any]]:
         """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
         results = []
+        imap: Optional[imaplib.IMAP4] = None
         try:
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+            imap = self._connect_imap()
             try:
                 imap.login(self._address, self._password)
                 _send_imap_id(imap)
@@ -749,21 +941,26 @@ class EmailAdapter(BasePlatformAdapter):
                 for uid in data[0].split():
                     if uid in self._seen_uids:
                         continue
+
+                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                    if status != "OK":
+                        # Transient per-UID fetch refusal: leave the UID out of
+                        # _seen_uids so the next poll retries it.
+                        continue
+
+                    # IMAP fetch can return unexpected structures (e.g. a
+                    # single bytes item instead of a list of tuples). Mark the
+                    # UID seen once a response arrived (even a malformed one)
+                    # so a garbage response is skipped once, not retried
+                    # forever — but NOT before the fetch: a connection failure
+                    # above must leave the remaining batch eligible for the
+                    # next poll instead of permanently skipping it (#80032
+                    # review).
                     self._seen_uids.add(uid)
                     # Trim periodically to prevent unbounded memory growth
                     if len(self._seen_uids) > self._seen_uids_max:
                         self._trim_seen_uids()
 
-                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
-                    if status != "OK":
-                        continue
-
-                    # IMAP fetch can return unexpected structures (e.g. a
-                    # single bytes item instead of a list of tuples). Guard
-                    # against IndexError / TypeError so one malformed response
-                    # doesn't abort the batch — the UID is already in
-                    # _seen_uids, so an abort would permanently skip the
-                    # remaining messages in this batch.
                     try:
                         raw_email = msg_data[0][1]
                     except (IndexError, TypeError):
@@ -777,58 +974,88 @@ class EmailAdapter(BasePlatformAdapter):
                             "[Email] Non-bytes IMAP payload for UID %s, skipping", uid
                         )
                         continue
-                    msg = email_lib.message_from_bytes(raw_email)
-
-                    sender_raw = msg.get("From", "")
-                    sender_addr = _extract_email_address(sender_raw)
-                    sender_name = _decode_header_value(sender_raw)
-                    # Remove email from name if present
-                    if "<" in sender_name:
-                        sender_name = sender_name.split("<")[0].strip().strip('"')
-
-                    subject = _decode_header_value(msg.get("Subject", "(no subject)"))
-                    message_id = msg.get("Message-ID", "")
-                    in_reply_to = msg.get("In-Reply-To", "")
-                    # Skip automated/noreply senders before any processing
-                    msg_headers = dict(msg.items())
-                    if _is_automated_sender(sender_addr, msg_headers):
-                        logger.debug("[Email] Skipping automated sender: %s", sender_addr)
+                    # Per-message processing guard: one poison message
+                    # (unparseable headers, pathological attachment, DNS
+                    # hiccup in SPF/DKIM verification) must not abort the
+                    # batch or escalate to a reconnect — it is already marked
+                    # seen above, so log the UID and move on (#80032 review).
+                    try:
+                        parsed = self._parse_fetched_message(uid, raw_email)
+                    except Exception as parse_exc:
+                        logger.error(
+                            "[Email] Failed to process message UID %s, skipping: %s",
+                            uid,
+                            parse_exc,
+                        )
                         continue
-
-                    # Verify the From: domain is authenticated (SPF/DKIM/DMARC)
-                    # while the raw message — and its trusted
-                    # Authentication-Results header — is still in scope. The
-                    # verdict is consumed at dispatch where authorization is
-                    # decided. From: is attacker-controlled, so this is the only
-                    # place a spoof can be caught (GHSA-rxqh-5572-8m77).
-                    sender_authenticated, auth_reason = _verify_sender_authentication(
-                        msg, sender_addr, authserv_id=self._authserv_id
-                    )
-
-                    body = _extract_text_body(msg)
-                    attachments = _extract_attachments(msg, skip_attachments=self._skip_attachments)
-
-                    results.append({
-                        "uid": uid,
-                        "sender_addr": sender_addr,
-                        "sender_name": sender_name,
-                        "subject": subject,
-                        "message_id": message_id,
-                        "in_reply_to": in_reply_to,
-                        "body": body,
-                        "attachments": attachments,
-                        "date": msg.get("Date", ""),
-                        "sender_authenticated": sender_authenticated,
-                        "auth_reason": auth_reason,
-                    })
+                    if parsed is not None:
+                        results.append(parsed)
             finally:
-                try:
-                    imap.logout()
-                except Exception:
-                    pass
+                # _close_imap guarantees the socket dies even when logout()
+                # raises IMAP4.abort on a broken connection (#79889).
+                _close_imap(imap)
         except Exception as e:
             logger.error("[Email] IMAP fetch error: %s", e)
+            self._last_fetch_failed = True
+            self._last_fetch_error = str(e)
+        # Keep the reconnect snapshot current with every poll so a mid-outage
+        # adapter recreation restores an up-to-date baseline: stale snapshots
+        # would re-dispatch messages this instance already processed.
+        self._seen_uids_snapshot[self._address] = set(self._seen_uids)
         return results
+
+    def _parse_fetched_message(self, uid: bytes, raw_email: "bytes | bytearray") -> Optional[Dict[str, Any]]:
+        """Parse one fetched RFC822 payload into a dispatchable dict.
+
+        Returns ``None`` for messages that should be silently skipped
+        (automated/noreply senders). Raises on pathological input — the
+        caller's per-message guard logs the UID and continues, so a poison
+        message never aborts the batch or escalates to a reconnect.
+        """
+        msg = email_lib.message_from_bytes(raw_email)
+
+        sender_raw = msg.get("From", "")
+        sender_addr = _extract_email_address(sender_raw)
+        sender_name = _decode_header_value(sender_raw)
+        # Remove email from name if present
+        if "<" in sender_name:
+            sender_name = sender_name.split("<")[0].strip().strip('"')
+
+        subject = _decode_header_value(msg.get("Subject", "(no subject)"))
+        message_id = msg.get("Message-ID", "")
+        in_reply_to = msg.get("In-Reply-To", "")
+        # Skip automated/noreply senders before any processing
+        msg_headers = dict(msg.items())
+        if _is_automated_sender(sender_addr, msg_headers):
+            logger.debug("[Email] Skipping automated sender: %s", sender_addr)
+            return None
+
+        # Verify the From: domain is authenticated (SPF/DKIM/DMARC)
+        # while the raw message — and its trusted
+        # Authentication-Results header — is still in scope. The
+        # verdict is consumed at dispatch where authorization is
+        # decided. From: is attacker-controlled, so this is the only
+        # place a spoof can be caught (GHSA-rxqh-5572-8m77).
+        sender_authenticated, auth_reason = _verify_sender_authentication(
+            msg, sender_addr, authserv_id=self._authserv_id
+        )
+
+        body = _extract_text_body(msg)
+        attachments = _extract_attachments(msg, skip_attachments=self._skip_attachments)
+
+        return {
+            "uid": uid,
+            "sender_addr": sender_addr,
+            "sender_name": sender_name,
+            "subject": subject,
+            "message_id": message_id,
+            "in_reply_to": in_reply_to,
+            "body": body,
+            "attachments": attachments,
+            "date": msg.get("Date", ""),
+            "sender_authenticated": sender_authenticated,
+            "auth_reason": auth_reason,
+        }
 
     @staticmethod
     def _allow_all_senders() -> bool:
@@ -1284,7 +1511,6 @@ async def _standalone_send(
     """Out-of-process Email delivery via SMTP (one-shot). Implements the
     standalone_sender_fn contract; replaces the legacy _send_email helper."""
     import smtplib
-    import ssl as _ssl
     from email.mime.text import MIMEText
     from email.utils import formatdate
 
@@ -1296,6 +1522,14 @@ async def _standalone_send(
         smtp_port = int(_get_secret("EMAIL_SMTP_PORT", "587") or "587")
     except (ValueError, TypeError):
         smtp_port = 587
+    smtp_security = _normalize_security(
+        _get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security"),
+        default="tls" if smtp_port == 465 else "starttls",
+    )
+    smtp_tls_verify = _esecret_bool(
+        "EMAIL_SMTP_TLS_VERIFY",
+        is_truthy_value(extra.get("smtp_tls_verify"), default=True),
+    )
 
     if not all([address, password, smtp_host]):
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
@@ -1307,8 +1541,17 @@ async def _standalone_send(
         msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
 
-        server = smtplib.SMTP(smtp_host, smtp_port)
-        server.starttls(context=_ssl.create_default_context())
+        ctx = _tls_context(smtp_tls_verify, smtp_host)
+        if smtp_security == "tls":
+            server = smtplib.SMTP_SSL(smtp_host, smtp_port, context=ctx)
+        else:
+            server = smtplib.SMTP(smtp_host, smtp_port)
+            if smtp_security == "starttls":
+                try:
+                    server.starttls(context=ctx)
+                except Exception:
+                    server.close()
+                    raise
         server.login(address, password)
         server.send_message(msg)
         server.quit()

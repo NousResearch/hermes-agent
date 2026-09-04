@@ -26,6 +26,11 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from gateway.restart import (
+    DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
+    resolve_systemd_timeout_stop_sec,
+)
+
 
 _SIGNAL_NAME_BY_NUM: Dict[int, str] = {}
 for _name in ("SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT", "SIGUSR1", "SIGUSR2"):
@@ -319,15 +324,19 @@ def context_as_json(ctx: Dict[str, Any]) -> str:
         return "{}"
 
 
-def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, Any]]:
-    """At startup, sanity-check that systemd's TimeoutStopSec >= drain_timeout.
+def check_systemd_timing_alignment(
+    drain_timeout: float,
+    cron_drain_timeout: float = DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
+) -> Optional[Dict[str, Any]]:
+    """At startup, sanity-check that systemd's TimeoutStopSec covers stop.
 
     When the gateway is run under a stale systemd unit file (e.g. the user
     upgraded hermes-agent but never re-ran ``hermes setup`` to regenerate
-    the unit), ``TimeoutStopSec`` can be smaller than the configured
-    ``restart_drain_timeout``.  Result: SIGTERM arrives, the drain starts,
-    and systemd SIGKILLs the cgroup mid-drain — looks like a phantom kill
-    in the journal because the journal only logs ``code=killed status=9``.
+    the unit), ``TimeoutStopSec`` can be smaller than the full stop budget
+    (``restart_drain_timeout`` vs ``cron_drain_timeout`` + cleanup reserve,
+    plus headroom).  Result: SIGTERM arrives, the drain starts, and systemd
+    SIGKILLs the cgroup mid-drain — looks like a phantom kill in the journal
+    because the journal only logs ``code=killed status=9``.
 
     Returns ``None`` when the alignment is fine OR we can't determine it
     (not running under systemd, ``systemctl`` unavailable, etc.).  Returns
@@ -382,7 +391,7 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
                 if value.isdigit():
                     timeout_us = int(value)
                 else:
-                    timeout_us = _parse_systemd_duration_to_us(value)
+                    timeout_us = parse_systemd_duration_to_us(value)
                 if timeout_us is not None:
                     break
         if timeout_us is not None:
@@ -392,25 +401,26 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
         return None
 
     timeout_stop_sec = timeout_us / 1_000_000.0
-    # systemd needs headroom for: post-interrupt kill, adapter disconnect,
-    # SessionDB close, file unlinks, etc.  30s matches the unit-template
-    # constant in hermes_cli/gateway.py.
-    headroom = 30.0
-    expected = drain_timeout + headroom
+    expected = float(
+        resolve_systemd_timeout_stop_sec(drain_timeout, cron_drain_timeout)
+    )
     return {
         "unit": unit_name,
         "timeout_stop_sec": timeout_stop_sec,
         "drain_timeout": drain_timeout,
+        "cron_drain_timeout": cron_drain_timeout,
         "expected_min": expected,
         "mismatch": timeout_stop_sec < expected,
     }
 
 
-def _parse_systemd_duration_to_us(raw: str) -> Optional[int]:
+def parse_systemd_duration_to_us(raw: str) -> Optional[int]:
     """Parse 'TimeoutStopUSec=1min 30s' / '90s' style values to microseconds.
 
     systemd accepts a wide grammar; we cover the common cases (s, ms, min,
     h) and return None on anything unexpected.  Never raises.
+
+    Public: also consumed by hermes_cli.gateway's restart-wait sizing.
     """
     if not raw:
         return None
@@ -460,3 +470,7 @@ def _parse_systemd_duration_to_us(raw: str) -> Optional[int]:
                 return None
             digits = ""
     return total_us if total_us > 0 else None
+
+
+# Backward-compat private alias (pre-promotion name).
+_parse_systemd_duration_to_us = parse_systemd_duration_to_us

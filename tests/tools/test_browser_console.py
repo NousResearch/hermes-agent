@@ -274,6 +274,9 @@ class TestBrowserVisionConfig:
         assert result["analysis"] == "Annotated screenshot analysis"
         assert mock_llm.call_args.kwargs["temperature"] == 1.0
         assert mock_llm.call_args.kwargs["timeout"] == 45.0
+        # No hardcoded output cap — the aux client omits max_tokens so the
+        # provider uses its full output budget (max-tokens-knob policy).
+        assert "max_tokens" not in mock_llm.call_args.kwargs
 
 
     def test_browser_vision_native_fast_path_returns_multimodal(self, tmp_path):
@@ -313,6 +316,68 @@ class TestBrowserVisionConfig:
         assert any(p.get("type") == "image_url" for p in result["content"])
         assert f"Screenshot path: {screenshot}" in result["text_summary"]
         mock_get_vision_model.assert_not_called()
+        mock_llm.assert_not_called()
+
+    def test_browser_vision_native_fast_path_caps_history_embed(self, tmp_path):
+        """Oversized screenshots are resized before entering history (#92699).
+
+        browser_vision's native fast path bakes the data URL into the tool
+        result exactly like vision_analyze — without the proactive resize a
+        full-res screenshot rides every later request uncapped.
+        """
+        pytest.importorskip("PIL")
+        import base64
+        from io import BytesIO
+
+        from PIL import Image
+
+        from agent.auxiliary_client import clear_runtime_main, set_runtime_main
+        from tools.browser_tool import browser_vision
+        from tools.vision_tools import _EMBED_MAX_DIMENSION, _EMBED_TARGET_BYTES
+
+        shots_dir = tmp_path / "browser_screenshots"
+        shots_dir.mkdir()
+        screenshot = shots_dir / "shot.png"
+        # Taller than the long-edge cap so the resize path must fire.
+        Image.new("RGB", (400, _EMBED_MAX_DIMENSION + 500), (0, 100, 0)).save(
+            screenshot, format="PNG"
+        )
+
+        set_runtime_main("brand-new-provider", "llava-v1.6")
+        try:
+            with (
+                patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
+                patch("tools.browser_tool._cleanup_old_screenshots"),
+                patch(
+                    "tools.browser_tool._run_browser_command",
+                    return_value={
+                        "success": True,
+                        "data": {"path": str(screenshot)},
+                    },
+                ),
+                patch(
+                    "hermes_cli.config.load_config",
+                    return_value={"model": {"supports_vision": True}},
+                ),
+                patch("tools.browser_tool.call_llm") as mock_llm,
+            ):
+                result = browser_vision("what is on the page?", task_id="test")
+        finally:
+            clear_runtime_main()
+
+        assert isinstance(result, dict)
+        assert result["_multimodal"] is True
+        url = next(
+            p["image_url"]["url"]
+            for p in result["content"]
+            if p.get("type") == "image_url"
+        )
+        assert len(url) <= _EMBED_TARGET_BYTES, (
+            f"embedded browser screenshot {len(url) / 1024:.0f} KB exceeds the "
+            f"history-reuse cap {_EMBED_TARGET_BYTES / 1024:.0f} KB"
+        )
+        with Image.open(BytesIO(base64.b64decode(url.partition(",")[2]))) as img:
+            assert max(img.size) <= _EMBED_MAX_DIMENSION
         mock_llm.assert_not_called()
 
     def test_browser_vision_text_mode_blocks_native_fast_path(self, tmp_path):

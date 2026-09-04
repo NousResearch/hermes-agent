@@ -1,0 +1,4 @@
+name: extractive
+display_name: Tameru compatibility alias
+description: "Deprecated compatibility alias; migrate context.engine to tameru"
+version: 1.2.0

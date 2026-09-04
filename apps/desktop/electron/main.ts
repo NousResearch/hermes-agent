@@ -633,6 +633,7 @@ import {
 import { registerWindowControlIpc, windowControlState } from './window-controls'
 import { revealAction, shouldFocusToTakeKeyboard } from './window-focus-policy'
 import { createWindowOpenHandler } from './window-open-policy'
+import { windowMenuTemplate } from './window-menu'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { wireWindowReveal } from './window-reveal'
 import {
@@ -6917,24 +6918,7 @@ function buildApplicationMenu() {
       { role: 'togglefullscreen' }
     ]
   })
-  template.push({
-    label: 'Window',
-    submenu: IS_MAC
-      ? [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }]
-      : // Click-only Close: the `close` role would register its default
-        // CommandOrControl+W accelerator, claiming the chord before the
-        // before-input-event run that routes a terminal-focused Ctrl+W to the
-        // shell's word erase (#65457). The menu item still closes the focused
-        // window when clicked.
-        [
-          { role: 'minimize' },
-          {
-            click: (_menuItem, window) => window?.close(),
-            label: 'Close',
-            registerAccelerator: false
-          }
-        ]
-  })
+  template.push(windowMenuTemplate(IS_MAC))
   template.push({
     label: 'Help',
     role: 'help',

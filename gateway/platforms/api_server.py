@@ -795,7 +795,12 @@ if AIOHTTP_AVAILABLE:
         cannot produce a key it lacks — so it adds nothing on top of the key here,
         while it *does* block legitimate browser-context clients (Electron renderers
         send an unsuppressible ``Origin: null``). The converse route accepts no
-        cookie auth, so relaxing Origin for key-bearing upgrades is safe."""
+        cookie auth, so relaxing Origin for key-bearing upgrades is safe.
+
+        INVARIANT: this holds ONLY while ``/v1/audio/converse`` authenticates with
+        the explicit key alone (no cookie/session fallback). If ambient auth is ever
+        added to that handler, this exemption silently becomes a Cross-Site
+        WebSocket Hijacking hole — ``test_cookie_is_not_a_credential`` guards it."""
         if request.headers.get("Upgrade", "").lower() != "websocket":
             return False
         if "upgrade" not in request.headers.get("Connection", "").lower():

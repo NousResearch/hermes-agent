@@ -319,3 +319,24 @@ async def test_query_token_is_not_a_credential(monkeypatch):
             assert json.loads(msg.data) == {"type": "error", "error": "unauthorized"}
         finally:
             await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_cookie_is_not_a_credential(monkeypatch):
+    """Locks the invariant the Origin exemption depends on: this route has NO ambient
+    (cookie/session) auth. A cookie must never authenticate — without a key the socket
+    is still rejected. If cookie/session auth is ever added to this handler this test
+    breaks loudly; otherwise the Origin exemption would silently become a CSWSH hole."""
+    adapter = _adapter()
+    async with TestClient(TestServer(_app(adapter))) as client:
+        # A session-looking cookie + no key subprotocol -> still the first-message-auth
+        # path; a non-auth first frame is rejected. The cookie grants nothing.
+        ws = await client.ws_connect(
+            "/v1/audio/converse", headers={"Cookie": "session=pretend-valid"})
+        try:
+            await ws.send_str(json.dumps({"commit": True}))
+            msg = await ws.receive()
+            assert msg.type == web.WSMsgType.TEXT
+            assert json.loads(msg.data) == {"type": "error", "error": "unauthorized"}
+        finally:
+            await ws.close()

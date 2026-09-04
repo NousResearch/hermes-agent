@@ -6102,7 +6102,12 @@ class TurnRunner:
                 log_message="interim_assistant_callback scheduling error",
             )
 
-        turn_route = self._runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
+        turn_route = self._runner._resolve_turn_agent_config(
+            ctx.message,
+            model,
+            runtime_kwargs,
+            session_id=ctx.session_key or ctx.session_id or "",
+        )
 
         # Per-platform skip_context_files — messaging platforms can opt out
         # of filesystem-heavy context-file discovery (SOUL.md, AGENTS.md,
@@ -9044,7 +9049,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return model, runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        model: str,
+        runtime_kwargs: dict,
+        *,
+        session_id: str = "",
+    ) -> dict:
         """Build the effective model/runtime config for a single turn.
 
         Always uses the session's primary model/provider.  If `/fast` is
@@ -9108,7 +9120,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         raw_candidates = router_cfg.get("candidates", []) if isinstance(router_cfg, dict) else []
         if mode in {"suggest", "auto"} and isinstance(raw_candidates, list) and raw_candidates:
             try:
-                from agent.model_router import Candidate, route_turn
+                from agent.model_router import (
+                    Candidate,
+                    RoutingRequest,
+                    RouterPipeline,
+                    profile_from_config,
+                    router_config_from_dict,
+                    route_turn,
+                )
 
                 candidates = []
                 runtimes = {}
@@ -9138,16 +9157,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         cost=float(item.get("cost", 0.5)),
                     ))
                     runtimes[candidate_model.strip()] = candidate_runtime
-                decision = route_turn(user_message, candidates, current_model=model, mode=mode)
+                # Prefer the staged pi-smart-router-compatible pipeline. Keep
+                # the legacy scorer as a last-resort compatibility path so a
+                # malformed new section never disables the old router.
+                profiles = [
+                    profile_from_config(item)
+                    for item in raw_candidates
+                    if isinstance(item, dict)
+                ]
+                profiles = [profile for profile in profiles if profile is not None]
+                if profiles:
+                    staged = RouterPipeline(
+                        profiles,
+                        router_config_from_dict(router_cfg),
+                    )
+                    decision = staged.route(
+                        RoutingRequest(
+                            prompt_text=user_message,
+                            session_id=session_id,
+                            estimated_input_tokens=max(0, len(str(user_message or "")) // 4),
+                        ),
+                        current_model=model,
+                        mode=mode,
+                    )
+                else:
+                    decision = route_turn(user_message, candidates, current_model=model, mode=mode)
                 route["model_router"] = {
-                    "reason": decision.reason,
+                    "reason": getattr(decision, "reason_code", None) or getattr(decision, "reason", "unknown"),
                     "explanation": decision.explanation,
                     "suggestion": decision.suggestion,
                     "rejected": list(decision.rejected),
+                    "stage": getattr(decision, "stage", "legacy"),
+                    "turn_type": getattr(decision, "turn_type", "unknown"),
+                    "routing_latency_ms": getattr(decision, "routing_latency_ms", 0.0),
                 }
                 logger.info(
                     "Model router decision: mode=%s current=%s selected=%s reason=%s",
-                    mode, model, decision.selected_model, decision.reason,
+                    mode, model, decision.selected_model,
+                    getattr(decision, "reason_code", getattr(decision, "reason", "unknown")),
                 )
                 if mode == "auto" and decision.selected_model in runtimes:
                     selected_runtime = runtimes[decision.selected_model]

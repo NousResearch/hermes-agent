@@ -1,4 +1,8 @@
-"""Deterministic, turn-boundary model routing.
+"""Legacy deterministic, turn-boundary model routing.
+
+Preserved verbatim from the original ``agent/model_router.py`` so the public
+API (``Candidate``, ``Features``, ``RouteDecision``, ``extract_features``,
+``route_turn``) keeps its exact behavior for existing callers and tests.
 
 This module is intentionally pure: it never discovers credentials, performs
 network calls, or mutates an agent. Callers resolve authenticated candidates
@@ -38,7 +42,7 @@ class RouteDecision:
     explanation: str
     features: Features
     suggestion: str = ""
-    rejected: tuple[str, ...] = field(default_factory=tuple)
+    rejected: tuple = field(default_factory=tuple)
 
 
 _CODE_RE = re.compile(r"\b(code|coding|debug|traceback|python|javascript|typescript|sql|api|implement|refactor|test|代码|调试|报错|脚本|编程)\b", re.I)
@@ -52,7 +56,7 @@ def _contains_image(message: object) -> bool:
     return False
 
 
-def extract_features(message: str | list[object], *, has_images: bool = False, context_tokens: int = 0) -> Features:
+def extract_features(message, *, has_images: bool = False, context_tokens: int = 0) -> Features:
     """Extract stable routing signals without an LLM or network lookup."""
     text = str(message or "")
     coding = bool(_CODE_RE.search(text))
@@ -61,7 +65,7 @@ def extract_features(message: str | list[object], *, has_images: bool = False, c
     return Features(coding=coding, reasoning=reasoning, vision=bool(has_images or _contains_image(message)), context_tokens=max(0, int(context_tokens)), complexity=complexity)
 
 
-def _eligible(candidate: Candidate, features: Features) -> tuple[bool, str]:
+def _eligible(candidate: Candidate, features: Features):
     if features.vision and not candidate.vision:
         return False, "requires vision"
     if features.reasoning and not candidate.reasoning:
@@ -82,7 +86,7 @@ def _score(candidate: Candidate, features: Features) -> float:
     return score
 
 
-def route_turn(message: str | list[object], candidates: Iterable[Candidate], *, current_model: str, mode: str = "off", has_images: bool = False, context_tokens: int = 0) -> RouteDecision:
+def route_turn(message, candidates: Iterable[Candidate], *, current_model: str, mode: str = "off", has_images: bool = False, context_tokens: int = 0) -> RouteDecision:
     """Choose at most one model for a turn; modes are off, suggest, and auto."""
     if mode not in {"off", "suggest", "auto"}:
         mode = "off"

@@ -13,6 +13,19 @@ DEFAULT_CONFIG = {
     "model_router": {
         "mode": "off",  # "off", "suggest", or "auto"
         "candidates": [],
+        # Staged pi-smart-router-compatible controls. All are conservative:
+        # no local/network probes or semantic model downloads by default.
+        "frugality": {
+            "lambda_cost": 0.5,
+            "lambda_latency": 0.1,
+            "lambda_verbosity": 0.15,
+        },
+        "loop_escalation": {"threshold": 3},
+        "session_pin": {"enabled": True, "dwell_turns": 3, "switch_margin": 0.25},
+        "safe_tier": "economical",
+        "local_zero": {"enabled": False, "endpoints": [], "model": None, "timeout_ms": 1500},
+        "hydra": {"enabled": True, "embeddings": False},
+        "telemetry": {"enabled": True, "db_path": None},
     },
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],

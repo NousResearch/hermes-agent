@@ -13650,6 +13650,23 @@ def main():
     fallback_parser.set_defaults(func=cmd_fallback)
 
     # =========================================================================
+    # router command — inspect staged model-router decisions
+    # =========================================================================
+    from hermes_cli.router_cmd import cmd_router
+
+    router_parser = subparsers.add_parser(
+        "router",
+        help="Inspect the staged model-router state and telemetry",
+    )
+    router_subparsers = router_parser.add_subparsers(dest="router_action")
+    router_subparsers.add_parser("status", help="Show router mode, fleet, pins, and database")
+    history_parser = router_subparsers.add_parser("history", help="Show recent routing decisions")
+    history_parser.add_argument("--limit", type=int, default=20)
+    history_parser.add_argument("--session", default="")
+    router_subparsers.add_parser("stats", help="Show routing counts and average latency")
+    router_parser.set_defaults(func=cmd_router, router_action="status")
+
+    # =========================================================================
     # worktree command — audit/reclaim accumulated git worktrees + branches
     # =========================================================================
     worktree_parser = subparsers.add_parser(

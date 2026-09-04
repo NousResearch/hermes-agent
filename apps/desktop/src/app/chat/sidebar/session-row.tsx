@@ -28,7 +28,7 @@ import { $sidebarRowMeta } from '@/store/layout'
 import { normalizeProfileKey } from '@/store/profile'
 import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
-import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
+import { $sessionDotStateById, hasActiveWork, showsRunningArc } from '@/store/session-dot-state'
 import { $sessionListDensity } from '@/store/session-list-density'
 import { $openStoredSessionIds } from '@/store/session-states'
 import { sessionCostUsd } from '@/store/sidebar-archive'
@@ -256,7 +256,7 @@ function SidebarSessionRowImpl({
   // contradict each other. A selector, not a plain useStore: the map is rebuilt
   // whenever any session's status changes, but a row only repaints on its own.
   const dotState = useStoreSelector($sessionDotStateById, states => states[session.id] ?? 'idle')
-  const liveTurn = hasLiveTurn(dotState)
+  const activeWork = hasActiveWork(dotState)
 
   // Card header line: the workspace this belongs to — the project when it
   // resolves (same function the session color reads, so name and tint agree;
@@ -362,7 +362,7 @@ function SidebarSessionRowImpl({
           // token rather than row opacity — dimming the whole row would take
           // the title and the status dot down with it.
           openUnfocused && 'bg-(--ui-row-open-background)',
-          liveTurn && 'text-foreground',
+          activeWork && 'text-foreground',
           // Opaque surface while lifted so the dragged row erases what's under
           // it (translucency let the rows below bleed through). data-glass-opaque
           // keeps that true when window glass thins the field.
@@ -370,7 +370,7 @@ function SidebarSessionRowImpl({
           className
         )}
         data-glass-opaque={dragging ? '' : undefined}
-        data-working={liveTurn ? 'true' : undefined}
+        data-working={activeWork ? 'true' : undefined}
         // The row runs BOTH drags off one press, and each declines outside its
         // own region — so no timing/arbitration rule is needed and neither can
         // steal the other's gesture. Over the sidebar only the reorder has a

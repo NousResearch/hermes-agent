@@ -79,6 +79,11 @@ export const showsRunningArc = (state: SessionDotState): boolean => state === 's
  *  answer has not ended. */
 export const hasLiveTurn = (state: SessionDotState): boolean => showsRunningArc(state) || state === 'needs-input'
 
+/** Whether the session still owns any active work. Background processes and
+ * parked delegated children outlive the parent turn, but the session must not
+ * visually collapse to the same muted title as a fully idle conversation. */
+export const hasActiveWork = (state: SessionDotState): boolean => hasLiveTurn(state) || state === 'background'
+
 /** The buckets the sidebar's status filter and ordering work in. `stalled` and
  *  `background` fold into the state a user would name them. */
 export type SessionStatusBucket = 'draft' | 'idle' | 'needs-input' | 'unread' | 'working'

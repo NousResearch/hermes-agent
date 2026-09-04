@@ -137,6 +137,8 @@ gateway:
     picker_title:          "⚡ **优先处理**\\n\\n当前模式：`{mode}`\\n\\n请选择："
     choice_fast:           "fast — 开启优先处理"
     choice_normal:         "normal — 标准处理"
+    choice_auto:           "auto — 每轮的前几秒快速"
+    choice_cold:           "cold — 仅会话的第一轮快速"
 
   footer:
     status:                "📎 运行时页脚：**{state}**\n字段：`{fields}`\n平台：`{platform}`"

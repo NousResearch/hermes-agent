@@ -17,6 +17,8 @@ from pathlib import Path
 import psutil
 import pytest
 
+from tests.install_ps1_fake_uv import compile_fake_uv
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_PS1 = REPO_ROOT / "scripts" / "install.ps1"
@@ -86,7 +88,7 @@ def test_venv_sweep_stops_managed_runtime_children_but_not_unrelated_processes(
     hermes_home = tmp_path / "hermes-home"
     install_dir = hermes_home / "hermes-agent"
     venv_scripts = install_dir / "venv" / "Scripts"
-    runtime_dir = hermes_home / ".hermes-runtime" / "python" / "generation-test"
+    runtime_dir = install_dir / ".hermes-runtime" / "python" / "generation-test"
     unrelated_dir = tmp_path / "unrelated"
     fake_bin = tmp_path / "fake-bin"
     for directory in (venv_scripts, runtime_dir, unrelated_dir, fake_bin):
@@ -119,18 +121,17 @@ def test_venv_sweep_stops_managed_runtime_children_but_not_unrelated_processes(
         "if not errorlevel 1 exit /b 0\n"
         '"%SystemRoot%\\System32\\taskkill.exe" %*\n',
     )
-    _write_cmd(
-        fake_bin / "uv.cmd",
-        "@echo off\n"
-        'if /I "%~1 %~2"=="python find" (\n'
-        "  echo C:\\Windows\\System32\\cmd.exe\n"
-        "  exit /b 0\n"
-        ")\n"
-        'if /I "%~1"=="venv" (\n'
-        '  if not exist "%CD%\\venv\\Scripts" mkdir "%CD%\\venv\\Scripts"\n'
-        "  exit /b 0\n"
-        ")\n"
-        "exit /b 1\n",
+    uv = hermes_home / "bin" / "uv.exe"
+    uv.parent.mkdir(parents=True)
+    compile_fake_uv(POWERSHELL, uv)
+    wrapper = tmp_path / "run-venv-stage.ps1"
+    wrapper.write_text(
+        f"function global:schtasks {{ & '{fake_bin / 'schtasks.cmd'}' @args }}\n"
+        f"function global:taskkill {{ & '{fake_bin / 'taskkill.cmd'}' @args }}\n"
+        f"& '{INSTALL_PS1}' -Stage venv -NonInteractive "
+        f"-InstallDir '{install_dir}' -HermesHome '{hermes_home}'\n"
+        "exit $LASTEXITCODE\n",
+        encoding="utf-8",
     )
 
     creation_flags = subprocess.CREATE_NO_WINDOW
@@ -151,20 +152,16 @@ def test_venv_sweep_stops_managed_runtime_children_but_not_unrelated_processes(
         env = os.environ | {
             "OS": "Windows_NT",
             "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
+            "FAKE_UV_LOG": str(tmp_path / "uv.log"),
+            "FAKE_MANAGED_PYTHON": str(runtime_child_exe),
+            "FAKE_THIRD_PARTY_PYTHON": str(unrelated_exe),
         }
         result = subprocess.run(
             [
                 POWERSHELL,
                 "-NoProfile",
                 "-File",
-                str(INSTALL_PS1),
-                "-Stage",
-                "venv",
-                "-NonInteractive",
-                "-InstallDir",
-                str(install_dir),
-                "-HermesHome",
-                str(hermes_home),
+                str(wrapper),
             ],
             cwd=tmp_path,
             env=env,

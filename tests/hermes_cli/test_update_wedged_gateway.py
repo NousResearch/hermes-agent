@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import socket
+import sys
 import tempfile
 import threading
 import time
@@ -28,6 +29,19 @@ from gateway.shutdown_watchdog import (
     get_loop_tick_socket_path,
     loop_heartbeat_forever,
     write_loop_heartbeat,
+)
+
+# Native Windows exposes neither ``socket.AF_UNIX`` nor an asyncio UNIX
+# server, so the witness cases that create real socket nodes
+# (``_silent_socket_node``) or run the real producer
+# (``loop_heartbeat_forever``) cannot execute there. Only those cases are
+# skipped: the witness-absent contracts (mocked probes, file-only
+# heartbeats) are platform-independent and keep running on Windows, per
+# the Windows behavior pinned alongside the product-side guarantee.
+_NEEDS_UNIX_SOCKETS = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="requires real UNIX-domain sockets "
+    "(socket.AF_UNIX / asyncio.start_unix_server), unavailable on native Windows",
 )
 
 
@@ -482,6 +496,7 @@ class TestLoopTickWitness:
     witnesses agree the loop stopped scheduling.
     """
 
+    @_NEEDS_UNIX_SOCKETS
     def test_stalled_heartbeat_write_never_escalates_a_running_loop(
         self, tmp_path, monkeypatch
     ):
@@ -631,6 +646,7 @@ class TestLoopTickWitness:
             thread.join(timeout=5.0)
             assert not errors, errors
 
+    @_NEEDS_UNIX_SOCKETS
     def test_off_loop_completion_cannot_manufacture_fresh_liveness(self, tmp_path):
         """A write landing after the loop froze must not look alive.
 
@@ -650,6 +666,7 @@ class TestLoopTickWitness:
             == gateway_cli.GATEWAY_LOOP_UNKNOWN
         )
 
+    @_NEEDS_UNIX_SOCKETS
     def test_true_wedge_requires_sustained_witness_silence(self, tmp_path):
         """Stale file + armed socket silent across the whole window: WEDGED.
 
@@ -808,10 +825,16 @@ class TestLoopTickWitness:
             gateway_cli.probe_gateway_loop_liveness(pid, home=tmp_path)
             == gateway_cli.GATEWAY_LOOP_WEDGED
         )
-        # And a fresh legacy file stays safe even if a dead-listener node
-        # exists for the PID (leftover from a newer process): the silent
-        # socket denies ALIVE, and UNKNOWN never escalates — the drain path
-        # keeps the full budget either way.
+
+    @_NEEDS_UNIX_SOCKETS
+    def test_legacy_fresh_file_with_dead_node_is_unknown(self, tmp_path):
+        """A fresh legacy file stays safe under a dead-listener node.
+
+        A dead-listener node for the PID (leftover from a newer process):
+        the silent socket denies ALIVE, and UNKNOWN never escalates — the
+        drain path keeps the full budget either way.
+        """
+        pid = 4242
         _write_heartbeat(tmp_path, pid, age_s=5.0)
         _silent_socket_node(get_loop_tick_socket_path(tmp_path, pid))
         assert (
@@ -821,6 +844,7 @@ class TestLoopTickWitness:
             == gateway_cli.GATEWAY_LOOP_UNKNOWN
         )
 
+    @_NEEDS_UNIX_SOCKETS
     @pytest.mark.asyncio
     async def test_producer_rebinds_over_stale_socket_node(self, tmp_path):
         """A leftover node from a dead process must not disarm the witness.
@@ -862,6 +886,7 @@ class TestLoopTickWitness:
             except asyncio.CancelledError:
                 pass
 
+    @_NEEDS_UNIX_SOCKETS
     def test_transient_stall_below_wedge_budget_never_escalates(
         self, tmp_path, monkeypatch
     ):
@@ -914,6 +939,7 @@ class TestLoopTickWitness:
             state["thread"].join(timeout=5.0)
             assert not errors, errors
 
+    @_NEEDS_UNIX_SOCKETS
     def test_sustained_stop_above_wedge_budget_still_escalates(
         self, tmp_path
     ):
@@ -958,6 +984,113 @@ class TestLoopTickWitness:
         finally:
             state["thread"].join(timeout=5.0)
             assert not errors, errors
+
+
+class TestLoopTickTcpWitness:
+    """Non-POSIX arm: the producer publishes ``loop_tick_tcp_port`` and the
+    consumer probes 127.0.0.1:<port> instead of the AF_UNIX node. The
+    two-witness contract must hold identically over TCP."""
+
+    @staticmethod
+    def _tcp_answerer():
+        """A loopback listener that answers b"1" — the armed, dispatching loop."""
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(8)
+        stop = threading.Event()
+
+        def serve():
+            srv.settimeout(0.1)
+            while not stop.is_set():
+                try:
+                    conn, _ = srv.accept()
+                except socket.timeout:
+                    continue
+                try:
+                    conn.sendall(b"1")
+                finally:
+                    conn.close()
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        return srv.getsockname()[1], stop, srv
+
+    @staticmethod
+    def _write_tcp_heartbeat(home, pid, port, age_s=0.0):
+        write_loop_heartbeat(
+            pid=pid,
+            home=home,
+            extra={"loop_tick_socket": True, "loop_tick_tcp_port": port},
+        )
+        if age_s:
+            path = get_loop_heartbeat_path(home)
+            stamp = time.time() - age_s
+            os.utime(path, (stamp, stamp))
+
+    def test_stale_file_with_answering_tcp_witness_is_alive(self, tmp_path):
+        """#90502 shape over TCP: a stalled write must not kill a live loop."""
+        port, stop, srv = self._tcp_answerer()
+        try:
+            self._write_tcp_heartbeat(tmp_path, 4343, port, age_s=600.0)
+            assert (
+                gateway_cli.probe_gateway_loop_liveness(4343, home=tmp_path)
+                == gateway_cli.GATEWAY_LOOP_ALIVE
+            )
+        finally:
+            stop.set()
+            srv.close()
+
+    def test_stale_file_with_silent_tcp_witness_is_wedged(self, tmp_path):
+        """Armed TCP witness that never answers across the window: WEDGED."""
+        silent = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        silent.bind(("127.0.0.1", 0))
+        silent.listen(1)  # accepts but never sends
+        try:
+            port = silent.getsockname()[1]
+            self._write_tcp_heartbeat(tmp_path, 4344, port, age_s=600.0)
+            assert (
+                gateway_cli.probe_gateway_loop_liveness(
+                    4344, home=tmp_path, tick_timeout=0.2, tick_gap_s=0.05
+                )
+                == gateway_cli.GATEWAY_LOOP_WEDGED
+            )
+        finally:
+            silent.close()
+
+    def test_fresh_file_with_silent_tcp_witness_is_unknown(self, tmp_path):
+        """Fresh file + silent TCP witness: an off-loop write landed after a
+        freeze — not proof of liveness, never destructive authority."""
+        silent = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        silent.bind(("127.0.0.1", 0))
+        silent.listen(1)
+        try:
+            port = silent.getsockname()[1]
+            self._write_tcp_heartbeat(tmp_path, 4345, port)
+            assert (
+                gateway_cli.probe_gateway_loop_liveness(
+                    4345, home=tmp_path, tick_timeout=0.2
+                )
+                == gateway_cli.GATEWAY_LOOP_UNKNOWN
+            )
+        finally:
+            silent.close()
+
+    def test_garbage_tcp_port_falls_back_to_socket_contract(self, tmp_path):
+        """A non-numeric port must not be treated as an armed witness."""
+        write_loop_heartbeat(
+            pid=4346,
+            home=tmp_path,
+            extra={"loop_tick_socket": False, "loop_tick_tcp_port": "nope"},
+        )
+        path = get_loop_heartbeat_path(tmp_path)
+        stamp = time.time() - 600.0
+        os.utime(path, (stamp, stamp))
+        # loop_tick_socket=False + no usable TCP port: witness could not be
+        # armed, staleness is not proof -> UNKNOWN, never WEDGED.
+        assert (
+            gateway_cli.probe_gateway_loop_liveness(4346, home=tmp_path)
+            == gateway_cli.GATEWAY_LOOP_UNKNOWN
+        )
 
 
 def test_default_probe_budget_stays_inside_query_tier():

@@ -673,6 +673,54 @@ Once the gateway is running, use the `/platform` slash command from any connecte
 
 See also the broader status summary command [`/platforms`](../../reference/slash-commands.md#info).
 
+### Disabling a platform whose credentials are still in `.env`
+
+`platforms.<name>.enabled: false` in `~/.hermes/config.yaml` is authoritative.
+Credentials for that platform left in the environment (`TELEGRAM_BOT_TOKEN`,
+`WEIXIN_TOKEN`, `HASS_TOKEN`, `EMAIL_*`, `TWILIO_ACCOUNT_SID`, ...) are still
+wired into the platform's config so send-only tooling keeps working, but they
+no longer start the adapter:
+
+```yaml title="~/.hermes/config.yaml"
+platforms:
+  weixin:
+    enabled: false   # wins over WEIXIN_TOKEN in .env
+```
+
+Earlier releases let the mere presence of credentials re-enable twelve
+platforms (Weixin, WhatsApp Cloud, Home Assistant, Email, SMS, DingTalk, Feishu,
+WeCom, WeCom callback, BlueBubbles, QQ Bot, Yuanbao) regardless of that key. If
+you relied on that, the gateway now logs one WARNING per affected platform at
+startup so it does not just go dark:
+
+```
+Platform 'weixin' is explicitly disabled by platforms.weixin.enabled: false in config.yaml,
+so the credentials found in the environment (WEIXIN_TOKEN, WEIXIN_ACCOUNT_ID) will NOT start
+its adapter. Environment credentials no longer override an explicit disable. Remove the key
+or set platforms.weixin.enabled: true to turn it back on.
+```
+
+Omitting the `enabled` key entirely keeps the env-only behaviour: credentials
+present → adapter starts.
+
+### Ignoring an inherited proxy (`gateway.trust_env`)
+
+By default every platform adapter honors `HTTP_PROXY` / `HTTPS_PROXY` /
+`NO_PROXY` (and `SSL_CERT_FILE`) from the gateway's environment, and
+auto-detects the macOS system proxy. A gateway started by a Windows Scheduled
+Task or a service manager can inherit a proxy the interactive shell never
+sees — a local Clash/V2Ray listener that isn't running yet — and log
+`Cannot connect to host 127.0.0.1:7890` on every poll. Turn the inherited
+proxy off for all adapters at once:
+
+```yaml title="~/.hermes/config.yaml"
+gateway:
+  trust_env: false
+```
+
+Explicit per-platform proxy variables (`DISCORD_PROXY`, `TELEGRAM_PROXY`,
+`MATRIX_PROXY`, ...) are still honored. Restart the gateway after changing it.
+
 ### Automatic circuit breaker
 
 Each adapter is wrapped in a circuit breaker. Repeated retryable failures (network blips, rate-limit replies, 5xx upstream responses, websocket disconnects) cause the breaker to trip — the adapter is auto-paused, an operator notification is sent to the home channel of another live platform when one is configured, and a structured log line is emitted.

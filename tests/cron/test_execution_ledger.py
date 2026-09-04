@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _point_ledger(monkeypatch, tmp_path):
     import cron.executions as executions
@@ -244,6 +246,80 @@ def test_recovery_does_not_mark_live_process_execution_unknown(monkeypatch, tmp_
 
     assert executions.recover_interrupted_executions() == 0
     assert executions.latest_execution("still-live")["status"] == "running"
+
+
+@pytest.mark.macos_only
+def test_recovery_keeps_live_owner_when_psutil_start_time_drifts_one_second(
+    monkeypatch, tmp_path
+):
+    """Wall-clock correction must not make a live macOS owner look recycled."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("clock-skew-live", source="builtin")
+    executions.mark_execution_running(record["id"])
+    recorded_start = record["process_started_at"]
+    assert isinstance(recorded_start, int)
+
+    # A second scheduler process sees this process as an external owner. macOS
+    # psutil create_time is epoch-derived and can shift by a second after NTP
+    # correction even though this PID is still alive.
+    with executions._transaction() as conn:
+        conn.execute(
+            "UPDATE executions SET process_id='other-scheduler' WHERE id=?",
+            (record["id"],),
+        )
+    monkeypatch.setattr(
+        executions, "_process_start_time", lambda _pid: recorded_start - 100
+    )
+
+    assert executions.recover_interrupted_executions() == 0
+    latest = executions.latest_execution("clock-skew-live")
+    assert latest is not None
+    assert latest["status"] == "running"
+
+
+def test_recovery_keeps_live_owner_when_start_fingerprint_is_unavailable(
+    monkeypatch, tmp_path
+):
+    """A transient process-inspection failure is not proof that a PID died."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("unreadable-live", source="builtin")
+    executions.mark_execution_running(record["id"])
+    with executions._transaction() as conn:
+        conn.execute(
+            "UPDATE executions SET process_id='other-scheduler' WHERE id=?",
+            (record["id"],),
+        )
+    monkeypatch.setattr(executions, "_process_start_time", lambda _pid: None)
+
+    assert executions.recover_interrupted_executions() == 0
+    latest = executions.latest_execution("unreadable-live")
+    assert latest is not None
+    assert latest["status"] == "running"
+
+
+def test_recovery_reaps_owner_when_start_identity_differs_outside_tolerance(
+    monkeypatch, tmp_path
+):
+    """The macOS tolerance must not erase the recycled-PID identity guard."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("recycled-pid", source="builtin")
+    executions.mark_execution_running(record["id"])
+    recorded_start = record["process_started_at"]
+    assert isinstance(recorded_start, int)
+
+    with executions._transaction() as conn:
+        conn.execute(
+            "UPDATE executions SET process_id='other-scheduler' WHERE id=?",
+            (record["id"],),
+        )
+    monkeypatch.setattr(
+        executions, "_process_start_time", lambda _pid: recorded_start + 1000
+    )
+
+    assert executions.recover_interrupted_executions() == 1
+    latest = executions.latest_execution("recycled-pid")
+    assert latest is not None
+    assert latest["status"] == "unknown"
 
 
 def test_restart_marks_interrupted_execution_unknown_without_requeue(tmp_path):

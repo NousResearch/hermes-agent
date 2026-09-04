@@ -369,11 +369,22 @@ class _PollingLifecycleAbort(RuntimeError):
 
 
 def _is_stale_telegram_edit_target(error: object) -> bool:
-    """True when Telegram says the edit/delete target message no longer exists."""
-    text = str(error or "").lower()
+    """True when this message_id cannot be edited or deleted again.
+
+    Covers gone ids (deleted / inaccessible) and Bot API permanent refusals
+    to mutate that id. Does not match ``message is not modified`` (success),
+    flood-control, or transient network errors.
+    """
+    text = str(error or "").lower().replace("’", "'")
+    if "not modified" in text:
+        return False
     return (
         "message to edit not found" in text
         or "message to delete not found" in text
+        or "message can't be edited" in text
+        or "message cannot be edited" in text
+        or "message can't be deleted" in text
+        or "message cannot be deleted" in text
         or "message_id_invalid" in text
         or "message identifier is not specified" in text
     )

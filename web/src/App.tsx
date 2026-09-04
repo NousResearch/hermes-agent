@@ -22,6 +22,7 @@ import {
 } from "react-router";
 import {
   Activity,
+  Archive,
   BarChart3,
   Gauge,
   BookOpen,
@@ -82,6 +83,7 @@ const ConfigPage = lazy(() => import("@/pages/ConfigPage"));
 const DocsPage = lazy(() => import("@/pages/DocsPage"));
 const EnvPage = lazy(() => import("@/pages/EnvPage"));
 const FilesPage = lazy(() => import("@/pages/FilesPage"));
+const ArtifactsPage = lazy(() => import("@/pages/ArtifactsPage"));
 const SessionsPage = lazy(() => import("@/pages/SessionsPage"));
 const LogsPage = lazy(() => import("@/pages/LogsPage"));
 const AnalyticsPage = lazy(() => import("@/pages/AnalyticsPage"));
@@ -168,6 +170,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
   "/files": FilesPage,
+  "/artifacts": ArtifactsPage,
   "/analytics": AnalyticsPage,
   "/usage-quota": UsageQuotaPage,
   "/models": ModelsPage,
@@ -203,6 +206,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     icon: MessageSquare,
   },
   { path: "/files", label: "Files", icon: FolderOpen },
+  { path: "/artifacts", label: "Artifacts", icon: Archive },
   {
     path: "/analytics",
     labelKey: "analytics",

@@ -66,6 +66,7 @@ type ApprovalSnapshot = { request_id?: unknown; command?: unknown; description?:
 type ClarifySnapshot = { answers?: Record<string, string>; request_id?: unknown; question?: unknown; choices?: unknown; multi_select?: unknown; questions?: unknown };
 type ResumeResponse = {
   session_id?: string;
+  stored_session_id?: string;
   messages?: ResumeMessage[];
   messages_omitted?: boolean;
   running?: boolean;
@@ -285,6 +286,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
   const gateway = useMemo(() => new GatewayClient(), []);
   const [connectionState, setConnectionState] = useState<ConnectionState>("idle");
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [durableSessionId, setDurableSessionId] = useState<string | null>(resumeParam);
   const sessionIdRef = useRef<string | null>(null);
   const durableSessionIdRef = useRef<string | null>(resumeParam);
   const [freshGeneration, setFreshGeneration] = useState(0);
@@ -526,6 +528,11 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
     const applySessionSnapshot = (snapshot: ResumeResponse): boolean => {
       if (cancelled || !snapshotMatchesSession(snapshot, sessionIdRef.current)) return false;
       const info = snapshot.info ?? snapshot;
+      const storedId = snapshot.stored_session_id ?? info.stored_session_id;
+      if (typeof storedId === "string" && storedId) {
+        durableSessionIdRef.current = storedId;
+        setDurableSessionId(storedId);
+      }
       const running = typeof info.running === "boolean"
         ? info.running
         : typeof snapshot.running === "boolean" ? snapshot.running : undefined;
@@ -692,6 +699,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
       durableSessionIdRef.current = resumeParam;
       assistantIdRef.current = null;
       setSessionId(null);
+      setDurableSessionId(resumeParam);
       setTranscript([]);
       setTranscriptQuery("");
       setEditTarget(null);
@@ -742,9 +750,11 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
         if (!cancelled) {
           const runtimeId = response.session_id;
           if (!runtimeId) throw new Error("Gateway returned no session id");
-          durableSessionIdRef.current = resumeParam;
+          const storedId = response.stored_session_id ?? response.info?.stored_session_id ?? resumeParam ?? null;
+          durableSessionIdRef.current = storedId;
           sessionIdRef.current = runtimeId;
           setSessionId(runtimeId);
+          setDurableSessionId(storedId);
           applySessionSnapshot(response);
           void gateway.request<ModelOptionsCatalog>("model.options", { include_unconfigured: true })
             .then((catalog) => { if (!cancelled) setModelCatalog(catalog); })
@@ -1457,7 +1467,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
                     )}
                     <TranscriptBubble
                       message={message}
-                      sessionId={sessionId ?? undefined}
+                      sessionId={durableSessionId ?? undefined}
                       onUseAsPrompt={applyMessageAsPrompt}
                       onEdit={beginMessageEdit}
                       onRegenerate={message.id === lastAssistantId ? runLastPromptAgain : undefined}

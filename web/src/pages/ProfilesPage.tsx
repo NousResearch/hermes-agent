@@ -45,6 +45,7 @@ import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
+import { forgetArtifactProfileScope, getArtifactStorage } from "@/lib/artifact-storage";
 
 // Mirrors hermes_cli/profiles.py::_PROFILE_ID_RE so we can reject obviously
 // invalid names (uppercase, spaces, …) before round-tripping a doomed POST.
@@ -471,8 +472,9 @@ export default function ProfilesPage() {
 
   const handleRenameSubmit = async () => {
     if (!renamingFrom) return;
+    const source = renamingFrom;
     const target = renameTo.trim();
-    if (!target || target === renamingFrom) {
+    if (!target || target === source) {
       setRenamingFrom(null);
       setRenameTo("");
       return;
@@ -482,8 +484,12 @@ export default function ProfilesPage() {
       return;
     }
     try {
-      await api.renameProfile(renamingFrom, target);
-      showToast(`${t.profiles.renamed}: ${renamingFrom} → ${target}`, "success");
+      await api.renameProfile(source, target);
+      const artifactsRotated = forgetArtifactProfileScope(getArtifactStorage(), source);
+      if (!artifactsRotated) {
+        showToast("Profile renamed, but its old pinned artifacts could not be cleared in this browser.", "error");
+      }
+      showToast(`${t.profiles.renamed}: ${source} → ${target}`, "success");
       setRenamingFrom(null);
       setRenameTo("");
       load();
@@ -722,6 +728,9 @@ export default function ProfilesPage() {
       async (name: string) => {
         try {
           await api.deleteProfile(name);
+          if (!forgetArtifactProfileScope(getArtifactStorage(), name)) {
+            showToast("Profile deleted, but its pinned artifacts could not be cleared in this browser.", "error");
+          }
           showToast(`${t.profiles.deleted}: ${name}`, "success");
           load();
         } catch (e) {

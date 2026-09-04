@@ -21,8 +21,8 @@ export default defineConfig({
     environment: "node",
     include: ["src/**/*.test.{ts,tsx}"],
     // Keep jsdom-heavy suites from starving each other on high-core hosts.
-    // Four workers still parallelizes the suite while avoiding the
-    // UsageQuotaPage dynamic-import timeout seen at the default worker count.
-    maxWorkers: 4,
+    // Two workers still parallelizes the suite while avoiding dynamic-import
+    // timeouts in the dashboard page suites.
+    maxWorkers: 2,
   },
 });

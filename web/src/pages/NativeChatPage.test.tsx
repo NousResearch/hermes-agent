@@ -33,7 +33,7 @@ const gateway = vi.hoisted(() => {
       if (method === "session.branch") return { session_id: "branch-runtime", stored_session_id: "branch-durable", title: "Branch" } as T;
       if (method === "complete.slash") return { items: [{ display: "/help", text: "/help" }], replace_from: 0 } as T;
       if (method === "model.options") return { providers: [{ slug: "openai-codex", models: ["gpt-5.6-luna", "gpt-5.6-sol"] }, { slug: "openrouter", models: ["minimax/minimax-m3:free"] }] } as T;
-      return (method === "session.create" ? { session_id: "session-1" } : { status: "streaming" }) as T;
+      return (method === "session.create" ? { session_id: "session-1", stored_session_id: "stored-1" } : { status: "streaming" }) as T;
     }
     close() {}
     emit(type: string, payload?: unknown, session_id = "session-1", seq?: number) {
@@ -71,6 +71,7 @@ import {
   nativeChatModelChoices,
   nativeChatSessionCreateParams,
 } from "@/lib/native-chat-routing";
+import { getArtifactStorageKey } from "@/lib/artifact-storage";
 
 describe("NativeChatPage", () => {
   let root: Root;
@@ -80,11 +81,13 @@ describe("NativeChatPage", () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     root = createRoot(host);
+    localStorage.clear();
   });
 
   afterEach(() => {
     act(() => root.unmount());
     host.remove();
+    localStorage.clear();
   });
 
   it("keeps one native header and moves navigation controls into it", async () => {
@@ -109,6 +112,27 @@ describe("NativeChatPage", () => {
     expect(sessionsToggle?.getAttribute("aria-expanded")).toBe("true");
     expect(navigator?.getAttribute("data-mobile-open")).toBe("true");
     expect(navigator?.classList.contains("hidden")).toBe(false);
+  });
+
+  it("uses durable stored session identity for artifact pins", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    const html = `<!doctype html><html><head><title>Durable artifact</title></head><body>${"x".repeat(180)}</body></html>`;
+    await act(async () => {
+      gateway.instance?.emit("message.start");
+      gateway.instance?.emit("message.delta", { text: `\`\`\`html\n${html}\n\`\`\`` });
+      gateway.instance?.emit("message.complete");
+    });
+
+    const pin = await vi.waitFor(() => {
+      const button = host.querySelector<HTMLButtonElement>('button[aria-label="Pin artifact"]');
+      expect(button).not.toBeNull();
+      return button!;
+    });
+    await act(async () => pin.click());
+    const stored = JSON.parse(localStorage.getItem(getArtifactStorageKey("thai-profile")) ?? "[]") as Array<{ sessionId: string }>;
+    expect(stored).toHaveLength(1);
+    expect(stored[0]?.sessionId).toBe("stored-1");
+    expect(stored[0]?.sessionId).not.toBe("session-1");
   });
 
   it("keeps chat text controls at a mobile-safe size while staying compact on desktop", async () => {

@@ -1,12 +1,17 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Download, Eye, X } from "lucide-react";
 
+import { useProfileScope } from "@/contexts/useProfileScope";
 import { artifactDownloadName, type ArtifactDetection } from "@/lib/artifact-detect";
+import { sandboxedArtifactDocument } from "@/lib/artifact-preview";
 import {
+  ARTIFACT_STORAGE_CHANGE_EVENT,
   getArtifactStorage,
+  getArtifactStorageKey,
   isArtifactPinned,
   makeArtifactId,
-  setArtifactPinned,
+  setArtifactPinnedWithResult,
+  type ArtifactStorageFailureReason,
   type StoredArtifact,
 } from "@/lib/artifact-storage";
 
@@ -23,7 +28,22 @@ function artifactMime(kind: ArtifactDetection["kind"]): string {
   return "text/plain;charset=utf-8";
 }
 
+function pinFailureMessage(reason: ArtifactStorageFailureReason): string {
+  switch (reason) {
+    case "artifact-too-large":
+      return "This artifact is larger than the 200 KB per-artifact limit";
+    case "storage-limit":
+      return "Pinned artifact storage is full; remove an artifact first";
+    case "storage-quota":
+      return "The browser declined this storage change";
+    case "storage-unavailable":
+      return "Browser storage is unavailable";
+  }
+}
+
 export function ArtifactCard({ code, detection, sessionId, streaming = false }: ArtifactCardProps) {
+  const { profile, currentProfile } = useProfileScope();
+  const artifactProfile = profile || currentProfile || "default";
   const [previewOpen, setPreviewOpen] = useState(false);
   const [pinned, setPinned] = useState(false);
   const [pinError, setPinError] = useState<string | null>(null);
@@ -42,20 +62,40 @@ export function ArtifactCard({ code, detection, sessionId, streaming = false }: 
   const canPreview = detection.kind === "html" || detection.kind === "svg";
   const lineCount = code.trim().split("\n").length;
 
+  const syncPinned = useCallback(() => {
+    setPinned(Boolean(sessionId) && isArtifactPinned(getArtifactStorage(), artifactId, artifactProfile));
+  }, [artifactId, artifactProfile, sessionId]);
+
   useEffect(() => {
-    setPinned(Boolean(sessionId) && isArtifactPinned(getArtifactStorage(), artifactId));
+    syncPinned();
     setPinError(null);
-  }, [artifactId, sessionId]);
+  }, [syncPinned]);
+
+  useEffect(() => {
+    const onArtifactStorageChange = (event: Event) => {
+      const key = event.type === "storage"
+        ? (event as StorageEvent).key ?? undefined
+        : (event as CustomEvent<{ key?: string }>).detail?.key;
+      if (key && key !== getArtifactStorageKey(artifactProfile)) return;
+      syncPinned();
+    };
+    window.addEventListener(ARTIFACT_STORAGE_CHANGE_EVENT, onArtifactStorageChange);
+    window.addEventListener("storage", onArtifactStorageChange);
+    return () => {
+      window.removeEventListener(ARTIFACT_STORAGE_CHANGE_EVENT, onArtifactStorageChange);
+      window.removeEventListener("storage", onArtifactStorageChange);
+    };
+  }, [artifactProfile, syncPinned]);
 
   const togglePin = () => {
     if (!sessionId || streaming) return;
     const nextPinned = !pinned;
-    const saved = setArtifactPinned(getArtifactStorage(), storedArtifact, nextPinned);
-    if (saved) {
+    const result = setArtifactPinnedWithResult(getArtifactStorage(), storedArtifact, nextPinned, artifactProfile);
+    if (result.ok) {
       setPinned(nextPinned);
       setPinError(null);
     } else {
-      setPinError("This artifact could not be saved in browser storage");
+      setPinError(pinFailureMessage(result.reason));
     }
   };
 
@@ -132,8 +172,9 @@ export function ArtifactCard({ code, detection, sessionId, streaming = false }: 
           </div>
           <iframe
             title={`${detection.title} preview`}
-            sandbox="allow-scripts"
-            srcDoc={code}
+            sandbox=""
+            referrerPolicy="no-referrer"
+            srcDoc={sandboxedArtifactDocument(code)}
             className="h-80 w-full rounded border border-border bg-white"
           />
         </div>

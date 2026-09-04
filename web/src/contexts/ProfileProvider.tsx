@@ -8,6 +8,7 @@ import {
 import { useLocation, useSearchParams } from "react-router";
 import { api, setManagementProfile } from "@/lib/api";
 import { ProfileContext } from "@/contexts/profile-context";
+import { getArtifactStorage, pruneArtifactProfileIdentities } from "@/lib/artifact-storage";
 
 /**
  * Machine-level management-profile scope.
@@ -87,6 +88,10 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
         if (cancelled) return;
 
         setProfiles(profilesRes.profiles.map((p) => p.name));
+        pruneArtifactProfileIdentities(
+          getArtifactStorage(),
+          profilesRes.profiles.map((p) => p.name),
+        );
 
         const current = info.current || "default";
         const active = info.active || "default";

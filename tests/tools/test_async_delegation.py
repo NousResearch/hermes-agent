@@ -127,7 +127,7 @@ def test_independent_batch_group_delivers_fast_component_without_waiting():
                 },
             },
         ],
-        max_async_children=2,
+        max_async_children=1,
     )
 
     assert result["status"] == "dispatched"
@@ -193,7 +193,7 @@ def test_batch_group_capacity_rejection_starts_nothing():
         model="m",
         session_key="session",
         runner=blocker_runner,
-        max_async_children=2,
+        max_async_children=1,
     )
     assert blocker["status"] == "dispatched"
 
@@ -208,12 +208,12 @@ def test_batch_group_capacity_rejection_starts_nothing():
                 "runner": lambda: started.append("two") or {"results": []},
             },
         ],
-        max_async_children=2,
+        max_async_children=1,
     )
 
     assert result["status"] == "rejected"
-    assert result["required_slots"] == 2
-    assert result["available_slots"] == 1
+    assert result["required_slots"] == 1
+    assert result["available_slots"] == 0
     assert started == []
 
     blocker_gate.set()

@@ -73,15 +73,26 @@ def build_dependency_plan(
 ) -> tuple[DependencyPlan, Optional[str]]:
     """Validate task dependency metadata and derive independent components.
 
-    Dependency scheduling is opt-in per batch.  If no task contains ``id`` or
-    ``depends_on``, the returned plan is disabled and describes the historical
-    flat batch.  Once either field appears, every task must declare a unique
-    ``id`` so dependency references cannot silently target the wrong child.
+    Dependency scheduling is opt-in through a non-empty ``depends_on`` list.
+    IDs alone are labels; omitted, null, or empty dependency lists keep the
+    historical flat batch. Malformed dependency declarations still fail closed
+    rather than accidentally running work before its prerequisites.
     """
 
     task_count = len(tasks)
-    has_metadata = any("id" in task or "depends_on" in task for task in tasks)
-    if not has_metadata:
+    has_dependencies = False
+    for index, task in enumerate(tasks):
+        raw_dependencies = task.get("depends_on")
+        if raw_dependencies is None:
+            continue
+        if not isinstance(raw_dependencies, list) or any(
+            not isinstance(item, str) for item in raw_dependencies
+        ):
+            return _flat_plan(task_count), (
+                f"Task {index} depends_on must be an array of task-id strings."
+            )
+        has_dependencies = has_dependencies or bool(raw_dependencies)
+    if not has_dependencies:
         return _flat_plan(task_count), None
 
     task_ids: List[str] = []
@@ -92,7 +103,7 @@ def build_dependency_plan(
             return _flat_plan(task_count), (
                 f"Task {index} must define a non-empty 'id' because this batch "
                 "uses dependency-aware scheduling. Add an id to every task, "
-                "or remove id/depends_on from the whole batch."
+                "or remove all dependency edges to use a flat batch."
             )
         task_id = raw_id.strip()
         if not _TASK_ID_RE.fullmatch(task_id):
@@ -113,13 +124,6 @@ def build_dependency_plan(
         raw_dependencies = task.get("depends_on", [])
         if raw_dependencies is None:
             raw_dependencies = []
-        if not isinstance(raw_dependencies, list) or any(
-            not isinstance(item, str) for item in raw_dependencies
-        ):
-            return _flat_plan(task_count), (
-                f"Task {index} depends_on must be an array of task-id strings."
-            )
-
         seen = set()
         resolved: List[int] = []
         for raw_dependency in raw_dependencies:

@@ -3179,7 +3179,7 @@ def _format_async_delegation(evt: dict) -> str:
     """
     import time as _time
 
-    deleg_id = evt.get("delegation_id", "unknown")
+    deleg_id = evt.get("graph_id") or evt.get("delegation_id", "unknown")
     goal = evt.get("goal", "") or ""
     context = evt.get("context")
     toolsets = evt.get("toolsets")

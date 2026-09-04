@@ -2558,7 +2558,9 @@ def _parent_summary_char_budget(parent_agent, n_summaries: int) -> Optional[int]
         return None
 
 
-def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
+def _apply_summary_budget(
+    results: List[Dict[str, Any]], parent_agent, *, batch_size: Optional[int] = None
+) -> None:
     """Trim subagent summaries in-place so the batch can't overflow the
     parent's context window, spilling full text to disk so nothing is lost.
 
@@ -2571,6 +2573,9 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
     addresses issue/PR #9126: batch fan-out returned N full summaries verbatim,
     blowing the parent context and (on rate-limited providers) triggering a
     compression/429 death spiral.
+
+    Independently delivered components pass the original batch size so several
+    completions drained into one parent turn cannot each claim all headroom.
     """
     summaries = [
         r for r in results if isinstance(r, dict) and isinstance(r.get("summary"), str) and r["summary"]
@@ -2584,7 +2589,9 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
     except (TypeError, ValueError):
         static_ceiling = DEFAULT_MAX_SUMMARY_CHARS
 
-    dynamic_budget = _parent_summary_char_budget(parent_agent, len(summaries))
+    dynamic_budget = _parent_summary_char_budget(
+        parent_agent, max(len(summaries), batch_size or 0)
+    )
 
     # Combine the two caps. Either can be absent/disabled.
     candidates = [c for c in (static_ceiling, dynamic_budget) if c and c > 0]
@@ -3730,10 +3737,12 @@ def _finalize_child_results(
     task_list: List[Dict[str, Any]],
     children: List[tuple[int, Dict[str, Any], Any]],
     parent_agent,
+    *,
+    batch_size: Optional[int] = None,
 ) -> None:
     """Apply host-owned summary, memory, hook, and cost contracts once."""
     with _parent_finalization_lock(parent_agent):
-        _apply_summary_budget(results, parent_agent)
+        _apply_summary_budget(results, parent_agent, batch_size=batch_size)
         child_by_index = {index: child for index, _task, child in children}
 
         if parent_agent and getattr(parent_agent, "_memory_manager", None):
@@ -3984,8 +3993,8 @@ def delegate_task(
 
     # Background delegation applies to both single tasks and batches. Flat
     # batches remain one consolidated async unit. A dependency graph may use
-    # one durable unit per disconnected component so unrelated results can
-    # return independently while each component preserves prerequisite order.
+    # one durable completion per disconnected component within its one async
+    # slot, so unrelated results can return without sharing a completion barrier.
     background = is_truthy_value(background, default=False) if background is not None else False
 
     # Depth limit — configurable via delegation.max_spawn_depth,
@@ -4112,7 +4121,7 @@ def delegate_task(
         task_schemas.append(coerced_schema)
 
     # Optional dependency metadata turns the flat fan-out into a validated
-    # DAG.  With no id/depends_on fields this returns a disabled plan and the
+    # DAG. Without dependency edges this returns a disabled plan and the
     # historical parallel-batch path below stays byte-for-byte unchanged.
     from tools.delegation_graph import build_dependency_plan
 
@@ -4134,6 +4143,7 @@ def delegate_task(
     # live_paths is empty and delegation proceeds exactly as before.
     from tools.delegation_live_log import (
         create_live_transcripts,
+        new_live_delegation_id,
         update_manifest_statuses,
         wrap_progress_callback,
     )
@@ -4141,6 +4151,9 @@ def delegate_task(
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
         task_list, context, model=creds.get("model"), provider=creds.get("provider")
     )
+    if dependency_plan.enabled and not live_deleg_id:
+        # The graph's control identity must survive best-effort log failures.
+        live_deleg_id = new_live_delegation_id()
     # Announce the batch tag once so the later ``[tag n/N]`` completion lines
     # (and any nested batch's lines interleaving with them) are attributable.
     if n_tasks > 1 and live_deleg_id:
@@ -4399,7 +4412,8 @@ def delegate_task(
             for index in component_indices
         ]
         _finalize_child_results(
-            component_results, task_list, component_children, parent_agent
+            component_results, task_list, component_children, parent_agent,
+            batch_size=n_tasks,
         )
 
         component_live_paths = []
@@ -4837,8 +4851,8 @@ def delegate_task(
 
     # ----- Background dispatch -----
     # Flat batches and single-component graphs use one durable async unit.
-    # Disconnected graph components use separate units when the whole group
-    # can be reserved atomically, allowing each component to return promptly.
+    # Disconnected components share that slot but have separate durable events,
+    # allowing each component to return promptly under one public graph handle.
     if background:
         from tools.async_delegation import (
             dispatch_async_delegation_batch,
@@ -5007,12 +5021,10 @@ def delegate_task(
         _goals = [t["goal"] for t in task_list]
         _adaptive_split_disabled_reason = None
 
-        # Every disconnected graph component is an independent durable async
-        # unit. A fast component therefore posts its result without awaiting a
-        # slow sibling, while dependencies inside each component still join in
-        # _execute_dependency_component. The group dispatcher reserves every
-        # slot atomically; if it cannot, we automatically disable the split and
-        # use the existing one-unit consolidated delivery below.
+        # Components deliver independently but share one async capacity slot
+        # and one public graph handle. Per-component ledger ids keep delivery
+        # claims/recovery distinct. Atomic admission prevents duplicate work
+        # if we need to fall back to consolidated delivery below.
         if dependency_plan.enabled and len(dependency_plan.components) > 1:
             _component_specs = []
             _component_count = len(dependency_plan.components)
@@ -5069,6 +5081,7 @@ def delegate_task(
             _component_dispatch = dispatch_async_delegation_batches(
                 batches=_component_specs,
                 max_async_children=_get_max_async_children(),
+                graph_id=live_deleg_id,
             )
             if _component_dispatch.get("status") == "dispatched":
                 _delegations = _component_dispatch.get("delegations") or []
@@ -5078,6 +5091,7 @@ def delegate_task(
                     "count": n_tasks,
                     "cluster_count": _component_count,
                     "graph_id": live_deleg_id,
+                    "delegation_id": _component_dispatch["delegation_id"],
                     "delegation_ids": [
                         item.get("delegation_id") for item in _delegations
                     ],
@@ -5688,8 +5702,8 @@ def _build_top_level_description() -> str:
         "For ordered work, give EVERY task an `id` and list prerequisite ids "
         "in `depends_on`. Ready tasks run immediately and receive successful "
         "dependency summaries. Disconnected clusters return independently "
-        "when safe; otherwise they consolidate. Omit these fields for flat "
-        "parallel behavior.\n\n"
+        "when safe; otherwise they consolidate. IDs alone or empty dependencies "
+        "keep flat parallel behavior.\n\n"
         "Runs in the background: dispatch returns immediately with live "
         "transcript paths, and completed result(s) re-enter the conversation "
         "on their own. Flat batches return one consolidated message; dependency "
@@ -5819,7 +5833,8 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "description": (
                                 "Stable task id for dependency-aware scheduling. "
-                                "If used, every task in the batch needs an id."
+                                "Every task needs an id when any depends_on is non-empty. "
+                                "IDs alone do not enable graph scheduling."
                             ),
                         },
                         "depends_on": {
@@ -5827,7 +5842,8 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": (
                                 "Task ids that must succeed before this task "
-                                "starts. Cycles and unknown ids are rejected."
+                                "starts. Non-empty lists enable graph scheduling; "
+                                "empty lists keep flat batches. Cycles and unknown ids are rejected."
                             ),
                         },
                         "context": {

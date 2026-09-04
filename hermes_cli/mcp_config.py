@@ -435,6 +435,23 @@ def _unwrap_exception_group(exc: BaseException) -> Exception:
 
 # ─── hermes mcp add ──────────────────────────────────────────────────────────
 
+def _trailing_env_in_args(cmd_args: List[str]) -> bool:
+    """True when a ``--env KEY=VALUE`` was swallowed by greedy ``--args``.
+
+    ``--args`` uses ``nargs=REMAINDER`` so a ``--env`` typed *after* it is
+    captured into the child argv instead of populating the server's env
+    (issue #68944).  A container runtime's own ``--env`` (e.g. ``docker run
+    --env FOO=bar <image>``) is legitimate, so key on the specific footgun
+    shape: a trailing ``--env`` followed only by ``KEY=VALUE`` tokens.  For
+    ``docker`` the image name (no ``=``) trails the env pair, so it stays quiet.
+    """
+    if "--env" not in cmd_args:
+        return False
+    last = len(cmd_args) - 1 - cmd_args[::-1].index("--env")
+    tail = cmd_args[last + 1:]
+    return bool(tail) and all("=" in token for token in tail)
+
+
 def cmd_mcp_add(args):
     """Add a new MCP server with discovery-first tool selection."""
     name = args.name
@@ -450,6 +467,29 @@ def cmd_mcp_add(args):
     preset_name = getattr(args, "preset", None)
     raw_env = getattr(args, "env", None)
     raw_connect_timeout = getattr(args, "connect_timeout", None)
+
+    # Footgun guard: `--env` typed after `--args` is eaten by REMAINDER and
+    # never reaches the env: block (issue #68944).  `--args` is documented as
+    # "must be the last option", so surface it instead of misfiling it
+    # silently.  Fires even when a correct `--env` precedes `--args`:
+    # appending a second one at the end of the line loses it just the same.
+    #
+    # The wording states only what is observably true — where the token went —
+    # and leaves the intent to the user.  The shape is genuinely ambiguous: a
+    # child command that legitimately ends in `--env KEY=VALUE` is
+    # indistinguishable from the footgun, so asserting the user "meant" a
+    # Hermes env var would be wrong in that case.  Nothing is rewritten
+    # either way; this is a diagnostic, not a correction.
+    if _trailing_env_in_args(cmd_args):
+        _warning(
+            "'--env' after '--args' is passed through to the command, "
+            "not set as a Hermes environment variable."
+        )
+        _info(
+            "If the command takes its own --env, this is fine. If you meant "
+            "to set the server's environment, put --env before --args: "
+            "hermes mcp add NAME --command CMD --env KEY=VALUE --args ..."
+        )
 
     server_config: Dict[str, Any] = {}
     try:

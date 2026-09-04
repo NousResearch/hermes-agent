@@ -5347,6 +5347,55 @@ def _guard_fragile_foreground_gateway(replace: bool = False, force: bool = False
     sys.exit(1)
 
 
+def _guard_fragile_foreground_gateway(replace: bool = False, force: bool = False) -> None:
+    """Refuse an interactive Windows-console-attached foreground ``gateway run``.
+
+    On a Windows desktop the persistent gateway is launched *detached*
+    (``hermes gateway start`` -> a hidden VBS that exports
+    ``HERMES_GATEWAY_DETACHED=1`` and breaks away from the parent job object).
+    A bare interactive ``hermes gateway run`` from a terminal instead produces a
+    gateway that stays bound to that console window and is killed by
+    ``CTRL_CLOSE_EVENT`` the instant the terminal closes. A fleet of sessions
+    that each "start" the gateway that way churns it -- repeated
+    ``previous_unclean_exit`` entries in ``gateway-exit-diag.log`` with a stale
+    ``last_heartbeat_at`` and ``console_window_attached: true``.
+
+    Foreground ``run`` stays the right call under WSL/Docker/Termux and for
+    interactive debugging, so this only fires for the interactive Windows
+    console-attached case and is escapable with ``--force`` (or the
+    ``HERMES_GATEWAY_DETACHED`` marker every service launcher already sets).
+    """
+    if replace or force or _running_under_gateway_supervisor():
+        return
+    if not is_windows():
+        return
+    if _truthy_env(os.getenv("HERMES_GATEWAY_DETACHED")):
+        return
+    try:
+        stdin_is_tty = bool(sys.stdin and sys.stdin.isatty())
+    except (ValueError, OSError):
+        stdin_is_tty = False
+    if not (stdin_is_tty and _windows_console_window_attached()):
+        return
+
+    print_error(
+        "This starts a gateway bound to the current terminal window."
+    )
+    print(
+        "  On Windows it is killed when this terminal closes (CTRL_CLOSE), so it\n"
+        "  is not a persistent gateway. For one that survives a closed terminal\n"
+        "  and restarts on login:"
+    )
+    print()
+    print("    hermes gateway start")
+    print()
+    print(
+        "  Pass --force to run a foreground gateway in this terminal anyway\n"
+        "  (fine for debugging or a session you keep open)."
+    )
+    sys.exit(1)
+
+
 def _guard_official_docker_root_gateway() -> None:
     """Refuse gateway startup when the official Docker privilege drop was bypassed."""
     if not hasattr(os, "geteuid") or os.geteuid() != 0 or _truthy_env(os.getenv("HERMES_ALLOW_ROOT_GATEWAY")):

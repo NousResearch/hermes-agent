@@ -1254,9 +1254,9 @@ DEFAULT_CONFIG = {
         # fallback_model, exactly like the top-level fallback_providers chain
         # but scoped to delegation. Each entry needs provider + model;
         # base_url / api_mode / key_env are optional.
-        # Aliases fallback_chain / fallback_model are also honored (parsed
-        # locally for the delegation block; top-level fallback semantics are
-        # unchanged — see _get_delegation_fallback_chain).
+        # Aliases fallback_chain / fallback_model are also honored (merged via
+        # the shared merge_fallback_keys() helper with delegation's key set;
+        # top-level fallback semantics are unchanged).
         "fallback_providers": [],
         "fallback_chain": [],
         "fallback_model": None,

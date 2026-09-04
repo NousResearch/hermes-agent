@@ -412,28 +412,22 @@ def _get_delegation_fallback_chain(delegation_cfg: dict | None) -> list | None:
     """Resolve the delegation-scoped fallback chain with backward compat.
 
     Merges ``delegation.fallback_providers`` -> ``fallback_chain`` ->
-    ``fallback_model`` (in that priority order) with dedup, reusing the
-    shared entry parser/identity from ``hermes_cli.fallback_config``. Parsed
-    LOCALLY for the delegation block on purpose: the shared top-level
-    ``get_fallback_chain()`` is left untouched so top-level config semantics
-    (which keys activate a fallback) do not change. Empty chain normalizes
-    to None so callers can distinguish "no delegation fallback configured"
-    from "explicit chain".
+    ``fallback_model`` (in that priority order) through the shared public
+    ``merge_fallback_keys()`` helper. Parsed with delegation's key set on
+    purpose: the shared top-level ``get_fallback_chain()`` is left untouched
+    so top-level config semantics (which keys activate a fallback) do not
+    change. Empty chain normalizes to None so callers can distinguish "no
+    delegation fallback configured" from "explicit chain".
     """
     if not isinstance(delegation_cfg, dict):
         return None
     try:
-        from hermes_cli.fallback_config import _entry_identity, _iter_fallback_entries
+        from hermes_cli.fallback_config import merge_fallback_keys
     except Exception:
         return None
-    chain: list = []
-    seen: set = set()
-    for key in ("fallback_providers", "fallback_chain", "fallback_model"):
-        for entry in _iter_fallback_entries(delegation_cfg.get(key)):
-            identity = _entry_identity(entry)
-            if identity not in seen:
-                seen.add(identity)
-                chain.append(entry)
+    chain = merge_fallback_keys(
+        delegation_cfg, ("fallback_providers", "fallback_chain", "fallback_model")
+    )
     return chain or None
 
 def _resolve_child_runtime(

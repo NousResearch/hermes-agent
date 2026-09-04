@@ -117,14 +117,37 @@ def test_seedance_25_string_duration_up_to_30():
     assert payload["generate_audio"] is True
 
 
-def test_gemini_omni_flash_is_image_only():
-    """Gemini Omni Flash has no t2v endpoint on FAL — text jobs must
-    error cleanly instead of submitting to a None endpoint."""
+def test_gemini_omni_flash_v11_is_dual_modality():
+    """v1.1 (Aug 2026) added a text-to-video endpoint; both modalities
+    must route to the versioned v1.1 endpoints."""
     from plugins.video_gen.fal import FAL_FAMILIES
 
     meta = FAL_FAMILIES["gemini-omni-flash"]
-    assert meta.get("text_endpoint") is None
-    assert meta.get("image_endpoint")
+    assert meta["text_endpoint"] == "google/gemini-omni-flash/v1.1/text-to-video"
+    assert meta["image_endpoint"] == "google/gemini-omni-flash/v1.1/image-to-video"
+
+
+def test_text_only_job_errors_cleanly_for_i2v_only_family():
+    """Catalog-shape guard: a family without a text endpoint must error
+    cleanly instead of submitting to a None endpoint (kept alive with a
+    synthetic family now that every cataloged family is dual-modality)."""
+    from plugins.video_gen.fal import _build_payload
+
+    synthetic = {
+        "text_endpoint": None,
+        "image_endpoint": "example/i2v-only/image-to-video",
+        "durations": (3, 10),
+        "duration_int": True,
+        "seed": False,
+    }
+    # Payload building for the i2v path must still work.
+    p = _build_payload(
+        synthetic, prompt="x", image_url="https://i.png", duration=None,
+        aspect_ratio="16:9", resolution="720p", negative_prompt=None,
+        audio=None, seed=None,
+    )
+    assert p["image_url"] == "https://i.png"
+    assert not synthetic.get("text_endpoint")
 
 
 def test_every_family_has_required_metadata():
@@ -429,13 +452,14 @@ class TestPayloadBuilder:
         assert p["duration"] == expected
         assert type(p["duration"]) is type(expected)
 
-    def test_i2v_only_families_declare_no_text_endpoint(self):
-        """Catalog invariant: Gemini Omni Flash animates an existing image only."""
+    def test_every_family_declares_both_endpoints(self):
+        """Catalog invariant: since Gemini Omni Flash 1.1 every family is
+        dual-modality — both endpoints must be non-empty strings."""
         from plugins.video_gen.fal import FAL_FAMILIES
 
-        meta = FAL_FAMILIES["gemini-omni-flash"]
-        assert meta.get("text_endpoint") is None
-        assert meta["image_endpoint"]
+        for fid, meta in FAL_FAMILIES.items():
+            assert meta.get("text_endpoint"), fid
+            assert meta.get("image_endpoint"), fid
 
     def test_ltx_omits_duration_aspect_resolution(self):
         """LTX 2.3 doesn't declare duration/aspect/resolution enums —

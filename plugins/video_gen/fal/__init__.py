@@ -7,7 +7,7 @@ called without ``image_url``, and to its image-to-video endpoint when
 ``image_url`` is provided. The agent never sees the routing — it just
 calls ``video_generate(prompt=..., image_url=...)``.
 
-Model families (most expose both t2v + i2v; gemini-omni-flash is image-to-video only):
+Model families (all expose both t2v + i2v):
 
   Cheap tier:
     ltx-2.3            fal-ai/ltx-2.3-22b/text-to-video           /  fal-ai/ltx-2.3-22b/image-to-video
@@ -24,9 +24,7 @@ Model families (most expose both t2v + i2v; gemini-omni-flash is image-to-video 
     grok-imagine-1.5   xai/grok-imagine-video/v1.5/text-to-video  /  xai/grok-imagine-video/v1.5/image-to-video
     kling-v3-4k        fal-ai/kling-video/v3/4k/text-to-video     /  fal-ai/kling-video/v3/4k/image-to-video
     happy-horse        alibaba/happy-horse/text-to-video          /  alibaba/happy-horse/image-to-video
-
-  Image-to-video only (no text_endpoint):
-    gemini-omni-flash  google/gemini-omni-flash/image-to-video
+    gemini-omni-flash  google/gemini-omni-flash/v1.1/text-to-video /  google/gemini-omni-flash/v1.1/image-to-video
 
 Selection precedence for the active family:
     1. ``model=`` arg from the tool call
@@ -278,17 +276,17 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "seed": False,
     },
     "gemini-omni-flash": {
-        "display": "Gemini Omni Flash (via FAL)",
+        "display": "Gemini Omni Flash 1.1 (via FAL)",
         "speed": "~60-120s",
         "price": "premium",
-        "strengths": "Google. Image-to-video with audio, physics-grounded motion, 3-10s.",
+        "strengths": "Google. Text & image to video with native audio, physics-grounded motion, up to 4K, 3-10s.",
         "tier": "premium",
-        # No text-to-video endpoint on FAL — image/reference only.
-        "text_endpoint": None,
-        "image_endpoint": "google/gemini-omni-flash/image-to-video",
+        # v1.1 (Aug 2026) added text-to-video; v1.0 was image-only.
+        "text_endpoint": "google/gemini-omni-flash/v1.1/text-to-video",
+        "image_endpoint": "google/gemini-omni-flash/v1.1/image-to-video",
         "duration_int": True,
         "aspect_ratios": ("16:9", "9:16"),
-        "resolutions": None,
+        "resolutions": ("360p", "720p", "1080p", "4k"),
         "durations": (3, 10),
         "audio": False,  # no generate_audio TOGGLE — audio is always on
         "audio_native": True,  # native audio in every generation (fal docs)  # audio is native; no generate_audio key

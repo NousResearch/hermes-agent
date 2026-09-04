@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from hermes_constants import VALID_REASONING_EFFORTS
 from hermes_cli.config import load_config, save_config
 from hermes_cli.inventory import build_models_payload, load_picker_context
 from hermes_cli.moa_config import DEFAULT_MOA_PRESET_NAME, normalize_moa_config
@@ -49,7 +50,78 @@ def _model_options() -> list[dict[str, Any]]:
     ]
 
 
-def _pick_slot(current: dict[str, str] | None = None) -> dict[str, str]:
+_REASONING_EFFORTS = ("none", *VALID_REASONING_EFFORTS)
+
+
+def _prompt_positive_int(title: str, current: int | None = None) -> int | None:
+    suffix = f" [{current}]" if current is not None else ""
+    while True:
+        try:
+            raw = input(f"{title}{suffix}: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            return current
+        if not raw:
+            return current
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+        print("Please enter a positive integer, or leave blank to keep the current value.")
+
+
+def _edit_slot_parameters(current: dict[str, Any]) -> dict[str, Any]:
+    slot = dict(current)
+    current_max_tokens = slot.get("max_tokens")
+    max_tokens_label = current_max_tokens if isinstance(current_max_tokens, int) else "preset default"
+    max_tokens_action = _prompt_choice(
+        "Max tokens",
+        [
+            f"Keep current ({max_tokens_label})",
+            "Use preset default (unset override)",
+            "Set custom limit",
+        ],
+    )
+    if max_tokens_action == 1:
+        slot.pop("max_tokens", None)
+    elif max_tokens_action == 2:
+        value = _prompt_positive_int(
+            "Max tokens",
+            current_max_tokens if isinstance(current_max_tokens, int) else None,
+        )
+        if value is not None:
+            slot["max_tokens"] = value
+
+    current_effort = str(slot.get("reasoning_effort") or "").strip().lower()
+    effort_label = current_effort or "provider default"
+    effort_action = _prompt_choice(
+        "Reasoning effort",
+        [
+            f"Keep current ({effort_label})",
+            "Use provider default (unset override)",
+            *_REASONING_EFFORTS,
+        ],
+    )
+    if effort_action == 1:
+        slot.pop("reasoning_effort", None)
+    elif effort_action >= 2:
+        slot["reasoning_effort"] = _REASONING_EFFORTS[effort_action - 2]
+    return slot
+
+
+def _pick_slot(current: dict[str, Any] | None = None) -> dict[str, Any]:
+    if current:
+        action = _prompt_choice(
+            "Edit existing slot",
+            [
+                "Keep provider/model; edit max_tokens / reasoning_effort",
+                "Change provider/model",
+            ],
+        )
+        if action == 0:
+            return _edit_slot_parameters(current)
+
     providers = _model_options()
     if not providers:
         raise RuntimeError("No configured model providers found. Run `hermes model` first.")

@@ -2446,8 +2446,48 @@ def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:
         moa_cfg = normalize_moa_config(load_config().get("moa") or {})
         presets = moa_cfg.get("presets") or {}
         if resolved_preset not in presets:
+            # Distinguish two cases:
+            # 1. The preset EXISTS in the root config but is invisible in the
+            #    effective (profile-scoped) config — a config-scoping bug
+            #    (kanban workers run with HERMES_HOME=<root>/profiles/<name>,
+            #    so load_config() reads the profile config and misses
+            #    root-authored presets, issue #80318). Fail loudly instead of
+            #    silently running the hardcoded default preset, which uses
+            #    unrelated models the user never selected.
+            # 2. The name exists NOWHERE — a drifted model name during fallback
+            #    restore. Keep the historical silent downgrade to the default
+            #    preset for this case (see
+            #    test_build_moa_facade_ignores_fallback_model_name_when_restoring).
+            try:
+                from hermes_constants import get_default_hermes_root
+                import yaml
+
+                root_cfg_path = get_default_hermes_root() / "config.yaml"
+                if root_cfg_path.is_file():
+                    root_raw = yaml.safe_load(root_cfg_path.read_text(encoding="utf-8")) or {}
+                    root_presets = normalize_moa_config(root_raw.get("moa") or {}).get("presets") or {}
+                else:
+                    root_presets = {}
+            except Exception:
+                root_presets = {}
+
+            if resolved_preset in root_presets:
+                from agent.errors import MoAPresetNotFoundError as _NotFound
+
+                available = ", ".join(presets) or "(none)"
+                raise _NotFound(
+                    f"MoA preset '{resolved_preset}' exists in the root config "
+                    f"but is missing from the effective (profile-scoped) config "
+                    f"of this session. Available in this scope: {available}. "
+                    f"Copy the preset into the profile's config.yaml or run the "
+                    f"session with the root HERMES_HOME."
+                )
             resolved_preset = moa_cfg.get("default_preset") or "default"
-    except Exception:
+    except Exception as _exc:
+        from agent.errors import MoAPresetNotFoundError as _NotFoundType
+
+        if isinstance(_exc, _NotFoundType):
+            raise
         resolved_preset = "default"
 
     return MoAClient(

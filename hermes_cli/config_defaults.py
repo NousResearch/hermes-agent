@@ -2498,6 +2498,10 @@ OPTIONAL_ENV_VARS = {
         "Tavily API key for AI-native web search and extract (optional — keyless works when "
         "Tavily is selected)", "Tavily API key", "https://app.tavily.com/home",
         tools=["web_search", "web_extract"]),
+    "PERPLEXITY_API_KEY": _tool(
+        "Perplexity API key for the Search API web backend (ranked results + query-relevant page "
+        "snippets)", "Perplexity API key", "https://www.perplexity.ai/account/api",
+        tools=["web_search", "web_extract"]),
     "KEENABLE_API_KEY": _tool(
         "Keenable API key for fast independent-index web search and page fetch (optional — "
         "keyless free tier works without it)", "Keenable API key", "https://keenable.ai",

@@ -31,6 +31,7 @@ import {
 } from 'electron'
 
 import { classifyActiveRuntime } from './active-runtime-state'
+import { isAnnotateFlushEnvelope } from './annotate-flush'
 import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
@@ -14900,6 +14901,31 @@ ipcMain.handle('hermes:window:openBrowser', async (_event, tabId) => {
   }
 
   createBrowserWindow(tabId.trim())
+
+  return { ok: true }
+})
+
+// Pop-out annotate flush: a popped-out Browser has no composer in its
+// renderer, so it posts its packaged comment pins here for the primary
+// window, whose receiver attaches them to the real composer. Fail closed —
+// the pop-out keeps its pins when there is nowhere to deliver them.
+ipcMain.handle('hermes:annotate:flush', async (_event, payload) => {
+  if (!isAnnotateFlushEnvelope(payload)) {
+    return { ok: false, error: 'invalid-payload' }
+  }
+
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return { ok: false, error: 'no-main-window' }
+  }
+
+  mainWindow.webContents.send('hermes:annotate:flushed', payload)
+
+  try {
+    mainWindow.focus()
+  } catch {
+    // Focusing is a courtesy so the user sees where the comments landed —
+    // delivery already happened above.
+  }
 
   return { ok: true }
 })

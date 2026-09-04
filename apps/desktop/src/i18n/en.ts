@@ -3276,6 +3276,7 @@ export const en: Translations = {
       annotateOn: 'Stop annotating',
       annotateNeedPage: 'Open a page in the in-app browser first.',
       annotateFailed: 'Could not start annotation mode',
+      annotateFlushUnavailable: 'Could not reach the main window — keep this window open with the app and try again.',
       commenting: 'Commenting',
       addComments: count => (count === 1 ? 'Add 1 comment' : `Add ${count} comments`),
       commentPlaceholder: 'Add a comment...',

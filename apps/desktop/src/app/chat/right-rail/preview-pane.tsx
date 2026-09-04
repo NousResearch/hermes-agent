@@ -23,7 +23,8 @@ import {
   emptyAnnotateSession,
   emptyAnnotateStack,
   endAnnotateMode,
-  flushAnnotateStack
+  flushAnnotateStack,
+  postPopoutAnnotateFlush
 } from '@/lib/preview-annotate'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { rafCoalesce } from '@/lib/raf-coalesce'
@@ -517,6 +518,37 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
     const guest = annotateGuest()
 
+    // The popped-out Browser has no composer in its renderer — the
+    // same-window composer bus has no subscriber there, so hand the packaged
+    // stack to the primary window instead of flushing it into the void.
+    if (isBrowserWindow()) {
+      let delivered = false
+
+      try {
+        delivered = (await postPopoutAnnotateFlush(pins, currentUrl)).delivered
+      } catch (error) {
+        notifyError(error, copy.annotateFailed)
+
+        return
+      }
+
+      if (!delivered) {
+        notify({ kind: 'warning', title: copy.annotate, message: copy.annotateFlushUnavailable })
+
+        return
+      }
+
+      setAnnotate(session => ({ ...session, draft: null, stack: clearAnnotatePins(session.stack) }))
+      setDraftNote('')
+
+      if (guest) {
+        await hideAnnotateDraft(guest).catch(() => undefined)
+        await syncAnnotatePins(guest, []).catch(() => undefined)
+      }
+
+      return
+    }
+
     await flushAnnotateStack(
       pins,
       {
@@ -535,7 +567,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       await hideAnnotateDraft(guest).catch(() => undefined)
       await syncAnnotatePins(guest, []).catch(() => undefined)
     }
-  }, [annotateGuest, currentUrl])
+  }, [annotateGuest, copy.annotate, copy.annotateFailed, copy.annotateFlushUnavailable, currentUrl])
 
   const startAnnotate = useCallback(async () => {
     const guest = annotateGuest()

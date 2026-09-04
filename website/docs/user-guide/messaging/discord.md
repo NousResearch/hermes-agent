@@ -303,6 +303,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
 | `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
+| `DISCORD_THREAD_ACTIVITY_INDICATOR` | No | `false` | Compatibility override for `discord.thread_activity_indicator`. Prefer `config.yaml`. When enabled, active thread titles receive a temporary ⏳ prefix and failed turns leave a ⛔ prefix. |
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_ALLOWED_CHANNELS` | No | — | Comma-separated channel IDs. When set, the bot **only** responds in these channels (plus DMs if allowed). Overrides `config.yaml` `discord.allowed_channels`. Combine with `DISCORD_IGNORED_CHANNELS` to express allow/deny rules. |
 | `DISCORD_NO_THREAD_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds directly in the channel instead of creating a thread. Only relevant when `DISCORD_AUTO_THREAD` is `true`. |
@@ -337,6 +338,7 @@ discord:
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
   reactions: true                 # Add emoji reactions during processing
+  thread_activity_indicator: false # Temporarily mark active/failed thread titles
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
@@ -420,6 +422,22 @@ Controls whether the bot adds emoji reactions to messages as visual feedback:
 - ❌ added if an error occurs during processing
 
 Disable this if you find the reactions distracting or if the bot's role doesn't have the **Add Reactions** permission.
+
+#### `discord.thread_activity_indicator`
+
+**Type:** boolean — **Default:** `false`
+
+When enabled, processing a message inside a Discord thread temporarily changes
+its title to `⏳ <title>`. Successful and cancelled turns restore the current
+base title; failed turns leave `⛔ <title>` so blocked work remains visible in
+the thread list. Concurrent turns share one indicator, and the title is not
+restored until the final active turn completes. Semantic or human title changes
+made during processing are preserved.
+
+This is best-effort and never fails the agent turn. The bot needs Discord's
+**Manage Threads** permission to edit thread titles; without it, Hermes logs the
+rename failure and continues without the indicator. No status message is posted
+and no notification sound is triggered.
 
 #### `discord.ignored_channels`
 

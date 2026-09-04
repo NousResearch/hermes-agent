@@ -36,6 +36,7 @@ GATE_VARS = [
     "DISCORD_NO_THREAD_CHANNELS",
     "DISCORD_FREE_RESPONSE_CHANNELS",
     "DISCORD_ALLOW_BOTS",
+    "DISCORD_THREAD_ACTIVITY_INDICATOR",
 ]
 
 
@@ -372,6 +373,121 @@ class TestYamlBridgeSeeding:
 
         assert a._get_allowed_channels() == {"111"}
         assert b._get_allowed_channels() == {"222"}
+
+
+class TestThreadActivityIndicatorIsolation:
+    @staticmethod
+    def _load_adapter(
+        tmp_path, monkeypatch, name: str, setting: str | None = None
+    ):
+        from gateway.config import load_gateway_config
+
+        hermes_home = tmp_path / name
+        hermes_home.mkdir()
+        lines = ["discord:", "  enabled: true"]
+        if setting is not None:
+            lines.append(f"  thread_activity_indicator: {setting}")
+        (hermes_home / "config.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        config = load_gateway_config()
+        return DiscordAdapter(config.platforms[Platform.DISCORD])
+
+    def test_profile_false_and_scoped_profile_true_stay_independent(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import secret_scope
+
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+        disabled = self._load_adapter(tmp_path, monkeypatch, "disabled", "false")
+        assert os.environ["DISCORD_THREAD_ACTIVITY_INDICATOR"] == "false"
+
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        token = secret_scope.set_secret_scope({})
+        try:
+            enabled = self._load_adapter(tmp_path, monkeypatch, "enabled", "true")
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+        assert disabled._thread_activity_indicator_enabled() is False
+        assert enabled._thread_activity_indicator_enabled() is True
+
+    def test_scoped_true_does_not_enable_unconfigured_adapter_or_pollute_env(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import secret_scope
+
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+        unconfigured = self._load_adapter(tmp_path, monkeypatch, "unconfigured")
+        assert os.getenv("DISCORD_THREAD_ACTIVITY_INDICATOR") is None
+
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        token = secret_scope.set_secret_scope({})
+        try:
+            enabled = self._load_adapter(tmp_path, monkeypatch, "scoped", "true")
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+        assert os.getenv("DISCORD_THREAD_ACTIVITY_INDICATOR") is None
+        assert unconfigured._thread_activity_indicator_enabled() is False
+        assert enabled._thread_activity_indicator_enabled() is True
+
+    def test_default_true_does_not_enable_scoped_unconfigured_adapter(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import secret_scope
+
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+        enabled = self._load_adapter(tmp_path, monkeypatch, "default-enabled", "true")
+        assert os.environ["DISCORD_THREAD_ACTIVITY_INDICATOR"] == "true"
+
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        token = secret_scope.set_secret_scope({})
+        try:
+            unconfigured = self._load_adapter(
+                tmp_path, monkeypatch, "scoped-unconfigured"
+            )
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+        assert enabled._thread_activity_indicator_enabled() is True
+        assert unconfigured._thread_activity_indicator_enabled() is False
+        assert os.environ["DISCORD_THREAD_ACTIVITY_INDICATOR"] == "true"
+
+    def test_scoped_env_only_adapter_snapshots_missing_value_as_false(
+        self, monkeypatch
+    ):
+        from agent import secret_scope
+
+        monkeypatch.setenv("DISCORD_THREAD_ACTIVITY_INDICATOR", "true")
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        token = secret_scope.set_secret_scope({})
+        try:
+            adapter = DiscordAdapter(PlatformConfig(enabled=True, token="scoped"))
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+        assert adapter._thread_activity_indicator_enabled() is False
+
+    def test_single_profile_env_override_and_bridge_remain_supported(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import secret_scope
+
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+        monkeypatch.setenv("DISCORD_THREAD_ACTIVITY_INDICATOR", "yes")
+        overridden = self._load_adapter(tmp_path, monkeypatch, "override", "false")
+        assert overridden._thread_activity_indicator_enabled() is True
+
+        monkeypatch.delenv("DISCORD_THREAD_ACTIVITY_INDICATOR")
+        bridged = self._load_adapter(tmp_path, monkeypatch, "bridge", "true")
+        assert os.environ["DISCORD_THREAD_ACTIVITY_INDICATOR"] == "true"
+        assert bridged._thread_activity_indicator_enabled() is True
+
+    @pytest.mark.parametrize("malformed", ["sometimes", [], {}, None])
+    def test_malformed_adapter_local_boolean_fails_closed(self, malformed):
+        adapter = _adapter({"thread_activity_indicator": malformed})
+
+        assert adapter._thread_activity_indicator_enabled() is False
 
 
 class TestTelegramGateIsolation:

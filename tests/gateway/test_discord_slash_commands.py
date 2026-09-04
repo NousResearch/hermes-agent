@@ -435,6 +435,7 @@ async def test_rename_thread_edits_only_when_current_name_matches(adapter):
         edit=AsyncMock(),
     )
     adapter._client.get_channel = lambda _id: thread
+    adapter._client.fetch_channel = AsyncMock(return_value=thread)
 
     result = await adapter.rename_thread(
         "999",

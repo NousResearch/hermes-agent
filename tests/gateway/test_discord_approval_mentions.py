@@ -81,3 +81,14 @@ def test_yaml_config_seeds_websocket_health_with_primary_precedence(monkeypatch)
     }
 
 
+def test_yaml_config_bridges_thread_activity_indicator_without_overriding_env(monkeypatch):
+    monkeypatch.delenv("DISCORD_THREAD_ACTIVITY_INDICATOR", raising=False)
+
+    _apply_yaml_config({}, {"thread_activity_indicator": True})
+    assert os.environ["DISCORD_THREAD_ACTIVITY_INDICATOR"] == "true"
+
+    monkeypatch.setenv("DISCORD_THREAD_ACTIVITY_INDICATOR", "false")
+    _apply_yaml_config({}, {"thread_activity_indicator": True})
+    assert os.environ["DISCORD_THREAD_ACTIVITY_INDICATOR"] == "false"
+
+

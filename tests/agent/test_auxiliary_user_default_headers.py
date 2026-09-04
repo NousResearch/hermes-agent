@@ -95,6 +95,32 @@ class TestAuxClientHonorsUserDefaultHeaders:
         headers = mock_openai.call_args.kwargs.get("default_headers", {}) or {}
         assert "User-Agent" not in headers
 
+    def test_gemini_native_fallback_honors_override(self, tmp_path, monkeypatch):
+        """Gemini-native early return (#102788) must also honor model.default_headers.
+
+        The gemini-native branch builds ``GeminiNativeClient`` directly instead
+        of going through ``_create_openai_client``, so it has its own
+        (previously missing) call to ``_apply_user_default_headers``. Without
+        it, a referer-restricted API key makes the fallback chain fail with
+        ``403 PERMISSION_DENIED: Requests from referer <empty> are blocked``
+        even though the primary path (which does apply the override) works.
+        """
+        monkeypatch.setenv("GEMINI_API_KEY", "AIzaSy_TEST_KEY")
+        _write_config(tmp_path, {
+            "model": {
+                "default": "test-model",
+                "default_headers": {"Referer": "https://example.com/"},
+            },
+        })
+        with patch("agent.gemini_native_adapter.GeminiNativeClient") as mock_client:
+            mock_client.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+            resolve_provider_client("gemini")
+
+        assert mock_client.called
+        headers = mock_client.call_args.kwargs.get("default_headers", {}) or {}
+        assert headers.get("Referer") == "https://example.com/"
+
     def test_named_custom_provider_honors_override(self, tmp_path):
         """A `custom_providers:` entry's aux calls also honor model.default_headers.
 

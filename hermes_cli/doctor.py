@@ -249,7 +249,7 @@ def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
     if not node_installed:
         steps.append(f"{step}) pkg install nodejs")
         step += 1
-    steps.append(f"{step}) npm install -g agent-browser")
+    steps.append(f"{step}) npm install -g --ignore-scripts agent-browser@0.27.0")
     steps.append(f"{step + 1}) agent-browser install")
     return steps
 
@@ -2562,11 +2562,11 @@ def run_doctor(args):
             # `hermes update` wiped node_modules (issue #48521).
             check_warn(
                 "agent-browser found but not runnable",
-                f"(broken symlink at {_resolved_ab}? run: npx agent-browser --version)",
+                f"(broken symlink at {_resolved_ab}? reinstall exact agent-browser@0.27.0)",
             )
         elif _is_termux():
             check_info("agent-browser is not installed (expected in the tested Termux path)")
-            check_info("Install it manually later with: npm install -g agent-browser && agent-browser install")
+            check_info("Install it manually later with: npm install -g --ignore-scripts agent-browser@0.27.0 && agent-browser install")
             check_info("Termux browser setup:")
             for step in _termux_browser_setup_steps(node_installed=True):
                 check_info(step)
@@ -2615,12 +2615,12 @@ def run_doctor(args):
                         if sys.platform == "win32":
                             check_info(
                                 f"Install with: cd {PROJECT_ROOT} && "
-                                "npx playwright install chromium"
+                                "npx --no-install playwright install chromium"
                             )
                         else:
                             check_info(
                                 f"Install with: cd {PROJECT_ROOT} && "
-                                "npx playwright install --with-deps chromium"
+                                "npx --no-install playwright install --with-deps chromium"
                             )
     elif _is_termux():
         check_info("Node.js not found (browser tools are optional in the tested Termux path)")

@@ -81,6 +81,12 @@ from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 
+# Keep the browser CLI on the exact version shipped by Hermes. A bare npx
+# fallback must never turn a missing local install into an implicit download
+# of whatever happens to be latest in the public registry.
+_AGENT_BROWSER_VERSION = "0.27.0"
+
+
 def __getattr__(name: str):
     """Lazy module attributes (PEP 562) — import diet for cold start.
 
@@ -470,7 +476,7 @@ def _format_browser_timeout_error(
         hints.append(
             "Chromium sandbox launch failed. Set AGENT_BROWSER_ARGS="
             "'--no-sandbox,--disable-dev-shm-usage' in your environment, "
-            "or run: npx agent-browser install --with-deps"
+            "or run: agent-browser install --with-deps after installing the pinned package"
         )
     elif command == "open" and _is_local_mode():
         if _running_in_docker():
@@ -483,8 +489,8 @@ def _format_browser_timeout_error(
             hints.append(
                 "The browser daemon may still be starting, or Chromium may be "
                 "missing system libraries. Install/repair with: "
-                "npx agent-browser install --with-deps "
-                "(or: npx playwright install --with-deps chromium)"
+                "agent-browser install --with-deps after installing the pinned package "
+                "(or: npx --no-install playwright install --with-deps chromium)"
             )
     if hints:
         parts.extend(hints)
@@ -959,9 +965,10 @@ from hermes_constants import is_termux as _is_termux_environment
 
 
 def _browser_install_hint() -> str:
+    install = f"npm install -g --ignore-scripts agent-browser@{_AGENT_BROWSER_VERSION}"
     if _is_termux_environment():
-        return "npm install -g agent-browser && agent-browser install"
-    return "npm install -g agent-browser && agent-browser install --with-deps"
+        return f"{install} && agent-browser install"
+    return f"{install} && agent-browser install --with-deps"
 
 
 # Sentinel _find_agent_browser returns/caches to mean "resolve via npx" rather
@@ -972,10 +979,10 @@ def _browser_install_hint() -> str:
 NPX_AGENT_BROWSER_SENTINEL = "npx agent-browser"
 
 # Pinned to match scripts/install.sh / scripts/install.ps1's
-# "agent-browser@^0.26.0" managed install so a git-clone install resolving
+# "agent-browser@0.27.0" managed install so a git-clone install resolving
 # agent-browser via bare npx gets the same version as a managed install,
 # instead of floating latest with no integrity check. Update both together.
-AGENT_BROWSER_NPX_SPEC = "agent-browser@^0.26.0"
+AGENT_BROWSER_NPX_SPEC = "agent-browser@0.27.0"
 
 
 def _is_npx_agent_browser_sentinel(browser_cmd: str) -> bool:
@@ -1340,24 +1347,17 @@ def _run_chrome_fallback_command(
         else:
             hint = (
                 "Chrome fallback requires Chromium, but it is missing. Install it with: "
-                "npx agent-browser install --with-deps "
-                "(or: npx playwright install --with-deps chromium)"
+                "agent-browser install --with-deps after installing the pinned package "
+                "(or: npx --no-install playwright install --with-deps chromium)"
             )
         return {"success": False, "error": hint}
 
-    # Resolve npx via the same PATH + extended-PATH cascade _find_agent_browser
-    # uses, not a bare shutil.which("npx") — Hermes-managed-Node-only setups
-    # resolve npx only through the extended fallback path, and a bare lookup
-    # would let a broken system npx shadow a healthy managed one. If npx isn't
-    # found at all (Termux, bare container), fall back to the bare name and
-    # let Popen raise with a readable "FileNotFoundError: 'npx'" rather than
-    # WinError 193.
     if _is_npx_agent_browser_sentinel(browser_cmd):
         _npx_bin = _resolve_npx_bin() or "npx"
-        # --ignore-scripts: AGENT_BROWSER_NPX_SPEC is a floating ^0.26.0 range,
-        # not an exact pin — a compromised future 0.26.x patch must not get to
-        # run its own install-time lifecycle scripts on this machine.
-        cmd_prefix = [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC]
+        # --no-install: only the already-installed pinned agent-browser
+        # (AGENT_BROWSER_NPX_SPEC) may be invoked; npx must never fetch
+        # anything from the registry here. A missing install fails closed.
+        cmd_prefix = [_npx_bin, "--no-install", "agent-browser"]
     else:
         cmd_prefix = [browser_cmd]
     base_args = cmd_prefix + ["--engine", "chrome", "--session", tmp_session, "--json"]
@@ -3555,17 +3555,11 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
 
     cmd = [
         npx_bin,
-        # --ignore-scripts: AGENT_BROWSER_NPX_SPEC is a floating ^0.26.0
-        # range, not an exact pin — a compromised future 0.26.x patch must
-        # not get to run its own install-time lifecycle scripts here.
-        "--ignore-scripts",
-        # --prefer-offline: once cached, repeat `hermes update`/`doctor
-        # --fix` runs shouldn't hit the registry just to re-confirm
-        # "latest" is still latest — that would defeat the point of
-        # warming the cache in the first place.
-        "--prefer-offline",
-        "-y",
-        AGENT_BROWSER_NPX_SPEC,
+        # --no-install: only verify the already-installed pinned agent-browser
+        # (AGENT_BROWSER_NPX_SPEC). Never download anything from the registry;
+        # a missing local install fails the warm check closed.
+        "--no-install",
+        "agent-browser",
         "--version",
     ]
     try:
@@ -3842,8 +3836,8 @@ def _run_browser_command(
         else:
             hint = (
                 "Chromium browser is missing. Install it with: "
-                "npx agent-browser install --with-deps "
-                "(or: npx playwright install --with-deps chromium)"
+                "agent-browser install --with-deps after installing the pinned package "
+                "(or: npx --no-install playwright install --with-deps chromium)"
             )
         logger.warning("browser command blocked: %s", hint)
         return {"success": False, "error": hint}
@@ -3892,8 +3886,8 @@ def _run_browser_command(
     # shutil.which("npx") is wrong here).
     if _is_npx_agent_browser_sentinel(browser_cmd):
         _npx_bin = _resolve_npx_bin() or "npx"
-        # --ignore-scripts: see _run_chrome_fallback_command's identical comment.
-        cmd_prefix = [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC]
+        # --no-install: see _run_chrome_fallback_command's identical comment.
+        cmd_prefix = [_npx_bin, "--no-install", "agent-browser"]
     else:
         cmd_prefix = [browser_cmd]
 
@@ -6258,7 +6252,7 @@ def _maybe_autoinstall_chromium() -> bool:
 
     if _is_npx_agent_browser_sentinel(browser_cmd):
         install_cmd = [
-            _resolve_npx_bin() or "npx", "--ignore-scripts", "-y", AGENT_BROWSER_NPX_SPEC, "install",
+            _resolve_npx_bin() or "npx", "--no-install", "agent-browser", "install",
         ]
     else:
         install_cmd = [browser_cmd, "install"]
@@ -6427,8 +6421,8 @@ if __name__ == "__main__":
                     print("       docker pull ghcr.io/nousresearch/hermes-agent:latest")
                 else:
                     print("     Install it with:")
-                    print("       npx agent-browser install --with-deps")
-                    print("     Or:  npx playwright install --with-deps chromium")
+                    print("       agent-browser install --with-deps (after installing the pinned package)")
+                    print("     Or:  npx --no-install playwright install --with-deps chromium")
         except FileNotFoundError:
             print("   - agent-browser CLI not found")
             print(f"     Install: {_browser_install_hint()}")

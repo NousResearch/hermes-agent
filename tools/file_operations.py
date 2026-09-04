@@ -716,7 +716,7 @@ IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico'}
 LINTERS = {
     '.py': 'python -m py_compile {file} 2>&1',
     '.js': 'node --check {file} 2>&1',
-    '.ts': 'npx tsc --noEmit {file} 2>&1',
+    '.ts': 'npx --no-install tsc --noEmit {file} 2>&1',
     '.go': 'go vet {file} 2>&1',
     '.rs': 'rustfmt --check {file} 2>&1',
 }
@@ -761,7 +761,7 @@ _SHELL_LINTER_LSP_REDUNDANT = frozenset({'.ts', '.go', '.rs'})
 
 
 # Patterns that indicate the linter base command exists on PATH but
-# couldn't actually run — e.g. ``npx tsc`` when tsc isn't installed in
+# couldn't actually run — e.g. ``npx --no-install tsc`` when tsc isn't installed in
 # node_modules, or rustfmt complaining there's no Cargo project.  When
 # any of these substrings appears in the linter output, ``_check_lint``
 # returns ``skipped`` instead of ``error`` so:
@@ -3125,7 +3125,7 @@ class ShellFileOperations(FileOperations):
 
         if result.exit_code != 0 and _looks_like_linter_unusable(base_cmd, result.stdout):
             # The linter command exists on PATH but couldn't actually run
-            # (e.g. ``npx tsc`` when tsc isn't in node_modules; ``rustfmt
+            # (e.g. ``npx --no-install tsc`` when tsc isn't in node_modules; ``rustfmt
             # --check`` without a Cargo project).  This is a tooling gap,
             # not a real lint failure — surface it as ``skipped`` so the
             # write doesn't get flagged AND so the LSP tier still runs.

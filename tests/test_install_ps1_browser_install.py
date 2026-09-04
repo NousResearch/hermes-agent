@@ -33,7 +33,7 @@ def test_install_agent_browser_no_longer_npm_installs_agent_browser() -> None:
     assert "agent-browser@" not in body
     assert "Installing Chromium via agent-browser install" not in body
     # camofox is unrelated to this change and must still be installed here.
-    assert "@askjo/camofox-browser@^1.5.2" in body
+    assert "@askjo/camofox-browser@1.5.2" in body
     # System-browser detection is still cheap/valuable without agent-browser.
     assert "Find-SystemBrowser" in body
     assert "Write-BrowserEnv" in body

@@ -128,14 +128,31 @@ def _find_install_script(
 def ensure_dependency(
     dep: str,
     interactive: bool = True,
+    *,
+    explicit: bool = False,
 ) -> bool:
-    """Ensure a non-Python dependency is available. Returns True if available."""
+    """Ensure a non-Python dependency is available.
+
+    Browser installation is a supply-chain boundary.  A missing browser may be
+    discovered while Hermes is running as a non-interactive gateway, where a
+    prompt cannot be answered.  Refuse that implicit npm install unless the
+    caller is an explicit setup command; the user can then inspect and approve
+    the pinned installer deliberately.
+    """
     check = _DEP_CHECKS.get(dep)
     if check is None:
         # Unknown dep — don't silently forward to install script.
         return False
     if check():
         return True
+
+    if dep == "browser" and not explicit and not sys.stdin.isatty():
+        if interactive:
+            print(
+                "  Browser tools are not installed; refusing a non-interactive npm install."
+            )
+            print("  Run `hermes acp --setup-browser` explicitly to install the pinned package.")
+        return False
 
     script, shell = _find_install_script()
     if script is None:

@@ -26,7 +26,11 @@ def test_install_sh_redirects_bundled_npm_global_prefix_to_link_dir() -> None:
     # <parent>/bin == the command link dir (node/npm/npx live there and it is
     # guaranteed on PATH by the installer's PATH setup).
     assert "configure_managed_node_npm_prefix()" in text
-    assert 'printf \'prefix=%s\\n\' "$(dirname "$link_dir")" > "$HERMES_HOME/node/etc/npmrc"' in text
+    assert 'prefix=$(dirname "$link_dir")' in text
+    assert "package-lock=true" in text
+    assert "save-exact=true" in text
+    assert "audit=true" in text
+    assert "min-release-age=14" in text
 
 
 def test_install_sh_repairs_existing_managed_node_on_rerun() -> None:
@@ -46,7 +50,11 @@ def test_node_bootstrap_redirects_bundled_npm_global_prefix_to_link_dir() -> Non
     text = NODE_BOOTSTRAP.read_text()
 
     assert "_nb_configure_npm_prefix()" in text
-    assert 'printf \'prefix=%s\\n\' "$(dirname "$_link_dir")" > "$HERMES_HOME/node/etc/npmrc"' in text
+    assert 'prefix=$(dirname "$_link_dir")' in text
+    assert "package-lock=true" in text
+    assert "save-exact=true" in text
+    assert "audit=true" in text
+    assert "min-release-age=14" in text
 
     # Runs at the top of ensure_node so existing managed installs are repaired
     # even when a modern Node is already present (early return path).

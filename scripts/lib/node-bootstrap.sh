@@ -67,7 +67,13 @@ _nb_configure_npm_prefix() {
     local _link_dir
     _link_dir="$(_nb_get_link_dir)"
     mkdir -p "$HERMES_HOME/node/etc"
-    printf 'prefix=%s\n' "$(dirname "$_link_dir")" > "$HERMES_HOME/node/etc/npmrc"
+    cat > "$HERMES_HOME/node/etc/npmrc" <<EOF
+prefix=$(dirname "$_link_dir")
+package-lock=true
+save-exact=true
+audit=true
+min-release-age=14
+EOF
 }
 
 _nb_node_major() {

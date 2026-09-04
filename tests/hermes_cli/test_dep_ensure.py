@@ -20,6 +20,19 @@ def test_find_install_script_from_checkout(tmp_path):
     assert shell == "bash"
 
 
+def test_browser_lazy_install_fails_closed_without_tty():
+    """A gateway must not start an implicit browser npm install."""
+    from hermes_cli.dep_ensure import ensure_dependency
+
+    with patch("hermes_cli.dep_ensure._DEP_CHECKS", {"browser": lambda: False}), \
+         patch("hermes_cli.dep_ensure._find_install_script") as find_script, \
+         patch("sys.stdin") as mock_stdin:
+        mock_stdin.isatty.return_value = False
+
+        assert ensure_dependency("browser", interactive=True) is False
+        find_script.assert_not_called()
+
+
 
 
 

@@ -80,7 +80,8 @@ def test_main_setup_offers_browser_install_when_tty(monkeypatch):
 
 def test_main_setup_browser_propagates_browser_failure(monkeypatch):
     """If browser install fails, exit code is 1."""
-    def fake_ensure(dep, interactive=True):
+    def fake_ensure(dep, interactive=True, *, explicit=False):
+        assert explicit is True
         return dep != "browser"  # browser fails
 
     monkeypatch.setattr("hermes_cli.dep_ensure.ensure_dependency", fake_ensure)

@@ -682,10 +682,18 @@ function Install-AgentBrowser {
     if (-not (Test-Path $prefixDir)) {
         New-Item -ItemType Directory -Path $prefixDir -Force | Out-Null
     }
+    $npmRcDir = Join-Path $prefixDir "etc"
+    New-Item -ItemType Directory -Path $npmRcDir -Force | Out-Null
+    @(
+        "package-lock=true"
+        "save-exact=true"
+        "audit=true"
+        "min-release-age=14"
+    ) | Set-Content -Path (Join-Path $npmRcDir "npmrc") -Encoding UTF8
     $npmLog = [System.IO.Path]::GetTempFileName()
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & $npm install -g --prefix $prefixDir --silent --ignore-scripts "@askjo/camofox-browser@^1.5.2" 2>&1 | Tee-Object -FilePath $npmLog | Out-Null
+    & $npm install -g --prefix $prefixDir --silent --ignore-scripts "@askjo/camofox-browser@1.5.2" 2>&1 | Tee-Object -FilePath $npmLog | Out-Null
     $npmExit = $LASTEXITCODE
     $ErrorActionPreference = $prevEAP
     if ($npmExit -ne 0) {
@@ -3633,7 +3641,7 @@ function Install-NodeDeps {
             }
             if (-not $npxExe) {
                 Write-Warn "npx not found -- cannot install Playwright Chromium."
-                Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
+                Write-Info "Run manually later: cd `"$InstallDir`"; npx --no-install playwright install chromium"
             } else {
                 $pwLog = "$env:TEMP\hermes-playwright-install-$(Get-Random).log"
                 Push-Location $InstallDir
@@ -3650,13 +3658,9 @@ function Install-NodeDeps {
                     # _Run-NpmInstall above for the same pattern and
                     # the rationale behind 2>&1 before the pipe.
                     Write-Info "(this can take several minutes -- streaming progress below)"
-                    # --yes auto-accepts npx's "Need to install playwright@X.Y.Z"
-                    # confirmation prompt.  Without it, npx 7+ blocks on stdin
-                    # waiting for a y/N answer that never comes when this is
-                    # invoked through a pipeline (Tee-Object disconnects stdin
-                    # from the user's TTY), and the install hangs indefinitely
-                    # after printing "Need to install the following packages:
-                    # playwright@X.Y.Z".
+                    # --no-install is intentional: a missing local Playwright
+                    # must fail visibly rather than trigger an implicit latest
+                    # download through npx.
                     #
                     # Relax EAP around the playwright invocation: playwright
                     # emits a "Chromium downloaded to ..." success banner to
@@ -3674,7 +3678,7 @@ function Install-NodeDeps {
                     # the same 600s guard via run_playwright_install since
                     # #39219.
                     $ErrorActionPreference = "Continue"
-                    $pwCode = _Invoke-NativeWithTimeout $npxExe "--yes playwright install chromium" `
+                    $pwCode = _Invoke-NativeWithTimeout $npxExe "--no-install playwright install chromium" `
                         $InstallDir $pwLog $nodeDepsTimeoutSec
                     $ErrorActionPreference = $prevEAP
                     if ($pwCode -eq 0) {
@@ -3685,7 +3689,7 @@ function Install-NodeDeps {
                         Write-Warn "This usually means a stalled download or a wedged archive extraction (a locked previous browser version can also cause it)."
                         Write-Warn "Browser tools will not work until Chromium is installed."
                         if (Test-Path $pwLog) { Write-Info "  Partial log: $pwLog" }
-                        Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
+                        Write-Info "Run manually later: cd `"$InstallDir`"; npx --no-install playwright install chromium"
                     } else {
                         Write-Warn "Playwright Chromium install failed -- exit code $pwCode"
                         Write-Warn "Browser tools will not work until Chromium is installed."
@@ -3700,12 +3704,12 @@ function Install-NodeDeps {
                                 Write-Info "  Full log: $pwLog"
                             }
                         }
-                        Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
+                        Write-Info "Run manually later: cd `"$InstallDir`"; npx --no-install playwright install chromium"
                     }
                 } catch {
                     if ($prevEAP) { $ErrorActionPreference = $prevEAP }
                     Write-Warn "Playwright Chromium install could not be launched: $_"
-                    Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
+                    Write-Info "Run manually later: cd `"$InstallDir`"; npx --no-install playwright install chromium"
                 } finally {
                     Pop-Location
                 }

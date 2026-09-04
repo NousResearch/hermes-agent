@@ -398,7 +398,7 @@ def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkey
     assert "Install Node.js on Termux with: pkg install nodejs" in out
     assert "Termux browser setup:" in out
     assert "1) pkg install nodejs" in out
-    assert "2) npm install -g agent-browser" in out
+    assert "2) npm install -g --ignore-scripts agent-browser@0.27.0" in out
     assert "3) agent-browser install" in out
     assert "Termux compatibility fallbacks:" in out
     assert "use .[termux-all] for broad compatibility" in out
@@ -774,7 +774,7 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
     assert "browser" in out
     assert "system dependency not met" in out
     assert "agent-browser is not installed (expected in the tested Termux path)" in out
-    assert "npm install -g agent-browser && agent-browser install" in out
+    assert "npm install -g --ignore-scripts agent-browser@0.27.0 && agent-browser install" in out
 
 
 def _doctor_env_for_agent_browser(monkeypatch, tmp_path):

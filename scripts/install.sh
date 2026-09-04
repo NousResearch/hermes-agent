@@ -489,7 +489,13 @@ configure_managed_node_npm_prefix() {
     local link_dir
     link_dir="$(get_command_link_dir)"
     mkdir -p "$HERMES_HOME/node/etc"
-    printf 'prefix=%s\n' "$(dirname "$link_dir")" > "$HERMES_HOME/node/etc/npmrc"
+    cat > "$HERMES_HOME/node/etc/npmrc" <<EOF
+prefix=$(dirname "$link_dir")
+package-lock=true
+save-exact=true
+audit=true
+min-release-age=14
+EOF
 }
 
 get_hermes_command_path() {
@@ -2554,7 +2560,7 @@ playwright_fallback_platform() {
 # An operator-provided PLAYWRIGHT_HOST_PLATFORM_OVERRIDE is always respected:
 # it is inherited by the first attempt, and the retry is skipped.
 #
-# Usage: run_playwright_install <timeout_seconds> npx playwright install [args...]
+# Usage: run_playwright_install <timeout_seconds> npx --no-install playwright install [args...]
 run_playwright_install() {
     local timeout_seconds="$1"
     shift
@@ -2697,9 +2703,9 @@ install_node_deps() {
         if [ "$SKIP_BROWSER" = true ]; then
             log_info "Skipping Playwright/Chromium install (--skip-browser)"
             log_info "Browser tools will be unavailable until you run manually:"
-            log_info "  cd $INSTALL_DIR && npx playwright install chromium"
+            log_info "  cd $INSTALL_DIR && npx --no-install playwright install chromium"
             log_info "On apt-based systems, an admin also needs to run:"
-            log_info "  sudo npx playwright install-deps chromium"
+            log_info "  sudo npx --no-install playwright install-deps chromium"
         else
         log_info "Installing browser engine (Playwright Chromium)..."
         strip_snap_browser_override
@@ -2719,19 +2725,19 @@ install_node_deps() {
                     # exact command the admin needs to run separately.
                     if [ "$(id -u)" -eq 0 ] || (command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null); then
                         log_info "Installing Playwright Chromium with system dependencies..."
-                        cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install --with-deps chromium || {
+                        cd "$INSTALL_DIR" && run_playwright_install 600 npx --no-install playwright install --with-deps chromium || {
                             log_warn "Playwright browser installation failed — browser tools will not work."
-                            log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install --with-deps chromium"
+                            log_warn "Try running manually: cd $INSTALL_DIR && npx --no-install playwright install --with-deps chromium"
                         }
                     else
                         log_warn "No sudo available — skipping system-library install (--with-deps)."
                         log_info "Ask an administrator to run, one time, as root:"
-                        log_info "  sudo npx playwright install-deps chromium"
+                        log_info "  sudo npx --no-install playwright install-deps chromium"
                         log_info "  (from $INSTALL_DIR, after Node.js deps are installed)"
                         log_info "Installing Chromium binary into this user's Playwright cache..."
-                        cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || {
+                        cd "$INSTALL_DIR" && run_playwright_install 600 npx --no-install playwright install chromium || {
                             log_warn "Playwright browser installation failed — browser tools will not work."
-                            log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install chromium"
+                            log_warn "Try running manually: cd $INSTALL_DIR && npx --no-install playwright install chromium"
                         }
                     fi
                     ;;
@@ -2749,7 +2755,7 @@ install_node_deps() {
                             log_warn "  sudo pacman -S nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib"
                         fi
                     fi
-                    cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || {
+                    cd "$INSTALL_DIR" && run_playwright_install 600 npx --no-install playwright install chromium || {
                         log_warn "Playwright browser installation failed — browser tools will not work."
                     }
                     ;;
@@ -2757,7 +2763,7 @@ install_node_deps() {
                     log_warn "Playwright does not support automatic dependency installation on RPM-based systems."
                     log_info "Install Chromium system dependencies manually before using browser tools:"
                     log_info "  sudo dnf install nss atk at-spi2-core cups-libs libdrm libxkbcommon mesa-libgbm pango cairo alsa-lib"
-                    cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || {
+                    cd "$INSTALL_DIR" && run_playwright_install 600 npx --no-install playwright install chromium || {
                         log_warn "Playwright browser installation failed — install dependencies above and retry."
                     }
                     ;;
@@ -2765,16 +2771,16 @@ install_node_deps() {
                     log_warn "Playwright does not support automatic dependency installation on zypper-based systems."
                     log_info "Install Chromium system dependencies manually before using browser tools:"
                     log_info "  sudo zypper install mozilla-nss libatk-1_0-0 at-spi2-core cups-libs libdrm2 libxkbcommon0 Mesa-libgbm1 pango cairo libasound2"
-                    cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || {
+                    cd "$INSTALL_DIR" && run_playwright_install 600 npx --no-install playwright install chromium || {
                         log_warn "Playwright browser installation failed — install dependencies above and retry."
                     }
                     ;;
                 *)
                     log_warn "Playwright does not support automatic dependency installation on $DISTRO."
                     log_info "Install Chromium/browser system dependencies for your distribution, then run:"
-                    log_info "  cd $INSTALL_DIR && npx playwright install chromium"
+                    log_info "  cd $INSTALL_DIR && npx --no-install playwright install chromium"
                     log_info "Browser tools will not work until dependencies are installed."
-                    cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || true
+                    cd "$INSTALL_DIR" && run_playwright_install 600 npx --no-install playwright install chromium || true
                     ;;
             esac
         fi
@@ -3216,7 +3222,7 @@ ensure_browser() {
     # Time-boxed (#39219): a stalled npm registry fetch here would otherwise
     # hang the installer with no progress, same class as the desktop build.
     if ! run_with_timeout "$NODE_DEPS_TIMEOUT" "$npm_bin" install -g --prefix "$HERMES_HOME/node" --silent --ignore-scripts \
-        "@askjo/camofox-browser@^1.5.2" \
+        "@askjo/camofox-browser@1.5.2" \
         >"$log_file" 2>&1; then
         log_error "npm install failed or timed out:"
         cat "$log_file" >&2

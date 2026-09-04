@@ -34,12 +34,12 @@ def test_playwright_installs_are_timeout_guarded() -> None:
     # Playwright installs now go through run_playwright_install(), which wraps
     # run_browser_install_with_timeout (timeout-guarded) and adds an
     # unrecognized-platform fallback retry.
-    assert "run_playwright_install 600 npx playwright install chromium" in text
+    assert "run_playwright_install 600 npx --no-install playwright install chromium" in text
     # --with-deps is still invoked on apt-based systems, but only when sudo
     # is available non-interactively (root or passwordless sudo). Non-sudo
     # service users fall back to the browser-only install — see
     # install_node_deps() in install.sh.
-    assert "run_playwright_install 600 npx playwright install --with-deps chromium" in text
+    assert "run_playwright_install 600 npx --no-install playwright install --with-deps chromium" in text
     # The wrapper still bounds the download with the timeout helper.
     assert 'run_browser_install_with_timeout "$timeout_seconds" "$@"' in text
 
@@ -148,7 +148,7 @@ npx() {{
 
 {body}
 
-run_playwright_install 600 npx playwright install --with-deps chromium
+run_playwright_install 600 npx --no-install playwright install --with-deps chromium
 echo "FINAL_RC=$?"
 """
     import tempfile, os
@@ -218,7 +218,7 @@ def test_ensure_browser_no_longer_npm_installs_agent_browser() -> None:
     assert "agent-browser@" not in body
     assert "Installing Chromium via agent-browser install" not in body
     # camofox is unrelated to this change and must still be installed here.
-    assert "@askjo/camofox-browser@^1.5.2" in body
+    assert "@askjo/camofox-browser@1.5.2" in body
     # System-browser detection is still cheap/valuable without agent-browser.
     assert "find_system_browser" in body
     assert "configure_browser_env_from_system_browser" in body
@@ -242,7 +242,6 @@ def test_ensure_browser_no_longer_references_agent_browser_binary_path() -> None
     body = _extract_function_body(INSTALL_SH.read_text(), "ensure_browser")
 
     assert "$HERMES_HOME/node/bin/agent-browser" not in body
-
 
 
 

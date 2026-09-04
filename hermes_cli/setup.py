@@ -534,21 +534,21 @@ def _print_setup_summary(config: dict, hermes_home):
             label = f"Browser Automation ({browser_provider})"
         tool_status.append((label, True, None))
     else:
-        missing_browser_hint = "npm install -g agent-browser, set CAMOFOX_URL, or configure Browser Use or Browserbase"
+        missing_browser_hint = "npm install -g --ignore-scripts agent-browser@0.27.0, set CAMOFOX_URL, or configure Browser Use or Browserbase"
         if browser_provider == "Browserbase":
             missing_browser_hint = (
-                "npm install -g agent-browser and set "
+                "npm install -g --ignore-scripts agent-browser@0.27.0 and set "
                 "BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID"
             )
         elif browser_provider == "Browser Use":
             missing_browser_hint = (
-                "npm install -g agent-browser and set BROWSER_USE_API_KEY"
+                "npm install -g --ignore-scripts agent-browser@0.27.0 and set BROWSER_USE_API_KEY"
             )
         elif browser_provider == "Camofox":
             missing_browser_hint = "CAMOFOX_URL"
         elif browser_provider == "Local browser":
             missing_browser_hint = (
-                "npm install -g agent-browser && agent-browser install --with-deps"
+                "npm install -g --ignore-scripts agent-browser@0.27.0 && agent-browser install --with-deps"
             )
         tool_status.append(
             ("Browser Automation", False, missing_browser_hint)

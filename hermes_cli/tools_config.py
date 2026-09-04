@@ -2111,9 +2111,6 @@ def _run_post_setup(post_setup_key: str):
             )
             return
 
-        # browser_cmd was already resolved above (same PATH -> Homebrew ->
-        # Hermes-managed-node -> npx cascade _find_agent_browser uses at
-        # runtime), so this can't diverge from what actually gets invoked.
         if _is_npx_agent_browser_sentinel(browser_cmd):
             # Re-resolve via the same PATH + extended-PATH cascade
             # _find_agent_browser used, rather than a bare shutil.which("npx")
@@ -2123,10 +2120,10 @@ def _run_post_setup(post_setup_key: str):
             npx_bin = _resolve_npx_bin()
             if not npx_bin:
                 _print_warning(
-                    "    npx not found - install Chromium manually: npx agent-browser install --with-deps"
+                    "    npx not found - install the pinned agent-browser first, then run: agent-browser install --with-deps"
                 )
                 return
-            install_cmd = [npx_bin, "--ignore-scripts", "-y", AGENT_BROWSER_NPX_SPEC, "install", "--with-deps"]
+            install_cmd = [npx_bin, "--no-install", "agent-browser", "install", "--with-deps"]
         else:
             install_cmd = [browser_cmd, "install", "--with-deps"]
 
@@ -2149,13 +2146,13 @@ def _run_post_setup(post_setup_key: str):
                 tail = (result.stderr or result.stdout or "").strip().splitlines()[-3:]
                 for line in tail:
                     _print_info(f"      {line[:200]}")
-                _print_info("    Run manually: npx agent-browser install --with-deps")
+                _print_info("    Run manually after installing the pinned package: agent-browser install --with-deps")
         except subprocess.TimeoutExpired:
             _print_warning("    Chromium install timed out (>10min)")
-            _print_info("    Run manually: npx agent-browser install --with-deps")
+            _print_info("    Run manually after installing the pinned package: agent-browser install --with-deps")
         except Exception as exc:
             _print_warning(f"    Chromium install failed: {exc}")
-            _print_info("    Run manually: npx agent-browser install --with-deps")
+            _print_info("    Run manually after installing the pinned package: agent-browser install --with-deps")
 
     elif post_setup_key == "browser_use_cli":
         _ensure_browser_use_cli(verbose_hints=True)

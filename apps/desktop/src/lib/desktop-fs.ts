@@ -1,3 +1,4 @@
+import { hermesApi } from '@/api/client'
 import type {
   HermesConnection,
   HermesReadDirResult,
@@ -19,6 +20,13 @@ export function setDesktopFsRemotePicker(next: DesktopFsRemotePicker | null) {
 function connectionCacheKey(connection: HermesConnection | null) {
   if (!connection) {
     return 'local:'
+  }
+
+  // A profile belongs to a registry connection, not the whole Desktop. The
+  // registry id is the isolation boundary, including for SSH connections; the
+  // stable host identity below is only the fallback for legacy connections.
+  if (connection.connectionId) {
+    return `connection:${connection.connectionId}:${connection.profile || ''}`
   }
 
   const target =
@@ -58,7 +66,7 @@ function bridge() {
 }
 
 function remoteFsApi<T>(path: string, body?: Record<string, unknown>): Promise<T> {
-  return bridge().api<T>(
+  return hermesApi<T>(
     body ? { body, method: 'POST', path, profile: desktopFsProfile() } : { path, profile: desktopFsProfile() }
   )
 }

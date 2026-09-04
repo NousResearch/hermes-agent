@@ -25,6 +25,47 @@ class TestNvidiaProfile:
         assert "nvidia.com" in p.base_url
 
 
+    def test_prepare_messages_strips_tool_result_names(self):
+        p = get_provider_profile("nvidia")
+        msgs = [
+            {"role": "user", "content": "run a command"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "name": "terminal",
+                "tool_name": "terminal",
+                "tool_call_id": "call_1",
+                "content": "ok",
+            },
+        ]
+
+        result = p.prepare_messages(msgs)
+
+        assert "name" not in result[2]
+        assert "tool_name" not in result[2]
+        assert result[2] == {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "ok",
+        }
+        assert msgs[2]["name"] == "terminal"
+        assert msgs[2]["tool_name"] == "terminal"
+
+    def test_prepare_messages_passthrough_without_tool_result_names(self):
+        p = get_provider_profile("nvidia")
+        msgs = [{"role": "tool", "tool_call_id": "call_1", "content": "ok"}]
+        assert p.prepare_messages(msgs) is msgs
+
 
 class TestKimiProfile:
     def test_temperature_omit(self):
@@ -219,5 +260,54 @@ class TestQwenProfile:
         assert "metadata" not in eb
 
 
+class TestAlibabaRegionalAndTokenPlanProfiles:
+    """#73265: the models.dev catalog advertises alibaba-cn /
+    alibaba-token-plan(-cn) / alibaba-coding-plan-cn, but none were registered
+    at runtime — `model.provider: alibaba-coding-plan-cn` failed with
+    "Unknown provider" and users were forced onto the `custom` escape hatch.
+    Profile names intentionally match the catalog keys exactly so model
+    metadata lines up."""
 
+    def test_alibaba_cn_registered(self):
+        p = get_provider_profile("alibaba-cn")
+        assert p is not None and p.name == "alibaba-cn"
+        assert p.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        assert "DASHSCOPE_API_KEY" in p.env_vars
+        assert "DASHSCOPE_CN_BASE_URL" in p.env_vars
 
+    def test_alibaba_coding_plan_cn_registered(self):
+        p = get_provider_profile("alibaba-coding-plan-cn")
+        assert p is not None and p.name == "alibaba-coding-plan-cn"
+        assert p.base_url == "https://coding.dashscope.aliyuncs.com/v1"
+        assert "ALIBABA_CODING_PLAN_API_KEY" in p.env_vars
+
+    def test_alibaba_token_plan_registered(self):
+        p = get_provider_profile("alibaba-token-plan")
+        assert p is not None and p.name == "alibaba-token-plan"
+        assert p.base_url == "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+        assert "ALIBABA_TOKEN_PLAN_API_KEY" in p.env_vars
+
+    def test_alibaba_token_plan_cn_registered(self):
+        p = get_provider_profile("alibaba-token-plan-cn")
+        assert p is not None and p.name == "alibaba-token-plan-cn"
+        assert p.base_url == "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+        assert "ALIBABA_TOKEN_PLAN_API_KEY" in p.env_vars
+
+    def test_cn_variants_resolve_in_auth_registry(self, monkeypatch):
+        """The reporter's exact failure site: ``auth.resolve_provider()`` only
+        consults PROVIDER_REGISTRY (auto-extended from provider profiles,
+        hermes_cli/auth.py:461-490) and raised
+        "Unknown provider 'alibaba-coding-plan-cn'" (hermes_cli/auth.py:1937)
+        even though the models.dev catalog advertised the id — the
+        resolve_provider_full() catalog chain covers only the CLI --provider
+        path, not the credential/runtime path."""
+        from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test")
+        monkeypatch.setenv("ALIBABA_CODING_PLAN_API_KEY", "sk-test")
+        monkeypatch.setenv("ALIBABA_TOKEN_PLAN_API_KEY", "sk-test")
+        for pid in ("alibaba-cn", "alibaba-coding-plan-cn",
+                    "alibaba-token-plan", "alibaba-token-plan-cn"):
+            assert pid in PROVIDER_REGISTRY, f"{pid} missing from PROVIDER_REGISTRY"
+            assert resolve_provider(pid) == pid
+        assert (PROVIDER_REGISTRY["alibaba-token-plan-cn"].inference_base_url
+                == "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1")

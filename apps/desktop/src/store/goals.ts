@@ -3,6 +3,9 @@ import { atom } from 'nanostores'
 import { keyedTimeouts } from '@/lib/keyed-timeouts'
 
 import { $gateway } from './gateway'
+import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
+import { ambientRequestFor } from './session-gone-latch'
+import { requestForOwnedSession } from './session-states'
 
 export type GoalStatus = 'active' | 'done' | 'paused' | 'waiting'
 
@@ -134,7 +137,7 @@ function nextGoalFromText(text: string, previous?: SessionGoal): SessionGoal | n
   return undefined
 }
 
-export function applyGoalStatusText(sid: string, text: string) {
+export function applyGoalStatusText(sid: string, text: string, opts?: { hydrate?: boolean }) {
   if (!sid) {
     return
   }
@@ -144,6 +147,18 @@ export function applyGoalStatusText(sid: string, text: string) {
   if (next === null) {
     clearSessionGoal(sid)
   } else if (next) {
+    // A done goal is terminal state in the backend DB — it stays "done"
+    // forever (only /goal clear or a new goal replaces it). The 8s linger is
+    // for the LIVE completion moment; re-hydrating "✓ Goal done" on every
+    // mount would resurrect the chip indefinitely. Bot Mode is the worst
+    // case: one endless session means the completed layover would never go
+    // away. On hydration, a terminal goal is the same as no goal.
+    if (opts?.hydrate && next.status === 'done') {
+      clearSessionGoal(sid)
+
+      return
+    }
+
     setSessionGoal(sid, next)
   }
 }
@@ -151,14 +166,24 @@ export function applyGoalStatusText(sid: string, text: string) {
 export async function refreshSessionGoal(sid: string): Promise<void> {
   const gateway = $gateway.get()
 
-  if (!sid || !gateway) {
+  if (!sid || !gateway || isSessionGone(sid)) {
     return
   }
 
   try {
-    const result = await gateway.request<{ output?: string }>('slash.exec', { command: 'goal status', session_id: sid })
-    applyGoalStatusText(sid, result?.output ?? '')
-  } catch {
-    // Best-effort: older gateways or detached sessions simply won't hydrate it.
+    const result = await requestForOwnedSession<{ output?: string }>(sid, ambientRequestFor(gateway), 'slash.exec', {
+      command: 'goal status',
+      session_id: sid
+    })
+
+    applyGoalStatusText(sid, result?.output ?? '', { hydrate: true })
+  } catch (error) {
+    if (isSessionGoneForBackgroundPolling(error)) {
+      markSessionGone(sid)
+
+      return
+    }
+
+    // Best-effort: older gateways or a transport blip simply won't hydrate it.
   }
 }

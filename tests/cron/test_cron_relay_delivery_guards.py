@@ -21,17 +21,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from cron import scheduler as sched
-from cron.scheduler import (
-    _preflight_check_delivery,
-    _resolve_single_delivery_target,
-    cron_delivery_targets,
-)
+from cron import scheduler_delivery as sched_delivery
+from cron.scheduler_preflight import _preflight_check_delivery
+from cron.scheduler_delivery import _resolve_single_delivery_target, cron_delivery_targets
 
 
 def _slack_home(monkeypatch, chat_id="D0BJTDCSR7C", thread_id=None):
-    monkeypatch.setattr(sched, "_get_home_target_chat_id",
+    monkeypatch.setattr(sched_delivery, "_get_home_target_chat_id",
                         lambda p: chat_id if p == "slack" else None)
-    monkeypatch.setattr(sched, "_get_home_target_thread_id",
+    monkeypatch.setattr(sched_delivery, "_get_home_target_thread_id",
                         lambda p: thread_id if p == "slack" else None)
 
 
@@ -46,7 +44,7 @@ class TestOriginThreadStaleGuard:
                           "thread_id": SYNTH}}
         target = _resolve_single_delivery_target(job, "origin")
         assert target == {"platform": "slack", "chat_id": "D0BJTDCSR7C",
-                          "thread_id": None}
+                          "thread_id": None, "_resolved_from": "origin"}
 
     def test_origin_thread_kept_when_chat_not_home(self, monkeypatch):
         """A non-home Slack origin thread may be a genuine working thread: keep it."""
@@ -139,7 +137,7 @@ class TestPreflightRelayFronted:
         """The UI dropdown source offers relay-fronted platforms."""
         monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "slack")
         _slack_home(monkeypatch)
-        monkeypatch.setattr(sched, "_iter_home_target_platforms",
+        monkeypatch.setattr(sched_delivery, "_iter_home_target_platforms",
                             lambda: ["slack", "telegram"])
         with patch("gateway.config.load_gateway_config",
                    return_value=_gateway_config({"relay"})):

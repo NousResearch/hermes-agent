@@ -70,7 +70,7 @@
       "author": "dalemugford",
       "tags": ["tools", "tokens", "prompt-caching", "cost"],
       "repo": "dalemugford/hermes-tool-belt",
-      "ref": "ad220afa814cb8c2e4c5977c30b594a65257dcb2",
+      "ref": "171f29a4b4a2d04810c128b7eaa4e359a0cd2219",
       "homepage": "https://github.com/dalemugford/hermes-tool-belt",
       "capabilities": ["tools"],
       "api_version": 1,

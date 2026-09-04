@@ -10,6 +10,8 @@ import { ipcMain, shell } from 'electron'
 import { installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'
 import { readDirForIpc } from './fs-read-dir'
 import { gitRootForIpc } from './git-root'
+import { isUnsafeRevealPath } from './reveal-path-guard'
+import { wslPosixToWindowsAccessible } from './wsl-path-bridge'
 
 export interface FsIpcDeps {
   hermesHome: string
@@ -36,12 +38,20 @@ export function registerFsIpc({
   ipcMain.handle('hermes:fs:reveal', async (_event, targetPath) => {
     const target = String(targetPath || '').trim()
 
-    if (!target) {
+    // Do this at the IPC boundary, not merely at a chat surface: Windows
+    // resolves slash- and backslash-UNC paths through SMB when revealing them.
+    if (!target || isUnsafeRevealPath(target)) {
       return false
     }
 
     try {
-      shell.showItemInFolder(target)
+      // A local WSL backend reports POSIX paths. Translate only after rejecting
+      // attacker-controlled UNC input; the bridge may intentionally produce a
+      // trusted local `\\wsl.localhost` path for Explorer to open.
+      const accessibleTarget =
+        process.platform === 'win32' && target.startsWith('/') ? wslPosixToWindowsAccessible(target) : target
+
+      shell.showItemInFolder(accessibleTarget)
 
       return true
     } catch {

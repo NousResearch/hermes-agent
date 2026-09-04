@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { extractPreviewTargets, previewTargetFromMarkdownHref, stripPreviewTargets } from './preview-targets'
+import {
+  extractPreviewTargets,
+  previewName,
+  previewTargetFromMarkdownHref,
+  stripPreviewTargets
+} from './preview-targets'
 
 describe('preview target detection', () => {
   it('does not infer preview targets from raw paths or URLs', () => {
@@ -12,6 +17,11 @@ describe('preview target detection', () => {
     expect(previewTargetFromMarkdownHref('#preview/%2Ftmp%2Fdemo.html')).toBe('/tmp/demo.html')
     expect(previewTargetFromMarkdownHref('#preview:%2Ftmp%2Fdemo.html')).toBe('/tmp/demo.html')
     expect(previewTargetFromMarkdownHref('#media:%2Ftmp%2Fdemo.mp4')).toBeNull()
+  })
+
+  it('extracts filenames from Windows paths without treating the drive as a URL scheme', () => {
+    expect(previewName('C:\\Users\\a\\report.pdf')).toBe('report.pdf')
+    expect(previewName('C:/Users/a/report.pdf')).toBe('report.pdf')
   })
 
   it('extracts preview targets from already-rendered preview markers', () => {

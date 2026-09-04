@@ -2,6 +2,7 @@
 
 import { type ComponentProps, useState } from 'react'
 
+import { RevealInFolderTrigger } from '@/components/chat/reveal-in-folder'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
@@ -11,6 +12,10 @@ import { cn } from '@/lib/utils'
 export interface ZoomableImageProps extends ComponentProps<'img'> {
   containerClassName?: string
   slot?: string
+  /** Local file path this image was rendered from. When set (and the backend
+   *  is local), right-clicking the image offers Reveal-in-file-manager +
+   *  Copy Path — the transcript's "where is that file?" door. */
+  revealPath?: string
 }
 
 export interface ImageActionCopy {
@@ -18,43 +23,68 @@ export interface ImageActionCopy {
   savingImage: string
 }
 
-export function ZoomableImage({ className, containerClassName, src, alt, slot, ...props }: ZoomableImageProps) {
+export function ZoomableImage({
+  className,
+  containerClassName,
+  src,
+  alt,
+  slot,
+  revealPath,
+  ...props
+}: ZoomableImageProps) {
   const { t } = useI18n()
   const copy = t.desktop
   const { download, saving } = useImageDownload(src)
   const [lightboxOpen, setLightboxOpen] = useState(false)
   const canOpen = Boolean(src)
 
+  const image = (
+    <span
+      className={cn('group/image relative inline-block max-w-full align-top', containerClassName)}
+      data-slot={slot ?? 'aui_zoomable-image'}
+    >
+      <button
+        className="contents"
+        disabled={!canOpen}
+        onClick={() => canOpen && setLightboxOpen(true)}
+        title={canOpen ? copy.openImage : undefined}
+        type="button"
+      >
+        <img alt={alt ?? ''} className={className} src={src} {...props} />
+      </button>
+      {src && (
+        <ImageActionButton className="group-hover/image:opacity-100" copy={copy} onClick={download} saving={saving} />
+      )}
+    </span>
+  )
+
+  const lightbox = src && (
+    <ImageLightbox
+      alt={alt}
+      copy={copy}
+      onClick={download}
+      onOpenChange={setLightboxOpen}
+      open={lightboxOpen}
+      saving={saving}
+      src={src}
+    />
+  )
+
+  if (!revealPath) {
+    return (
+      <>
+        {image}
+        {lightbox}
+      </>
+    )
+  }
+
+  // `asChild` merges into a single element, so only the visual span goes under
+  // the trigger; the lightbox (a portaled dialog) stays a sibling.
   return (
     <>
-      <span
-        className={cn('group/image relative inline-block max-w-full align-top', containerClassName)}
-        data-slot={slot ?? 'aui_zoomable-image'}
-      >
-        <button
-          className="contents"
-          disabled={!canOpen}
-          onClick={() => canOpen && setLightboxOpen(true)}
-          title={canOpen ? copy.openImage : undefined}
-          type="button"
-        >
-          <img alt={alt ?? ''} className={className} src={src} {...props} />
-        </button>
-        {src && (
-          <ImageActionButton className="group-hover/image:opacity-100" copy={copy} onClick={download} saving={saving} />
-        )}
-      </span>
-      {src && (
-        <ImageLightbox
-          alt={alt}
-          copy={copy}
-          onClick={download}
-          onOpenChange={setLightboxOpen}
-          open={lightboxOpen}
-          saving={saving}
-          src={src}
-        />
-      )}
+      <RevealInFolderTrigger path={revealPath}>{image}</RevealInFolderTrigger>
+      {lightbox}
     </>
   )
 }

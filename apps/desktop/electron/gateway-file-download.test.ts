@@ -400,6 +400,7 @@ test('filenameFromContentDisposition prefers filename* and reduces to a basename
 test('gatewayFilePath normalizes bare paths and file:// URLs', () => {
   assert.equal(gatewayFilePath('/Users/me/report.md'), '/Users/me/report.md')
   assert.equal(gatewayFilePath('file:///Users/me/a%20b.md'), '/Users/me/a b.md')
+  assert.equal(gatewayFilePath('file:///C:/Users/me/a%20b.md'), 'C:/Users/me/a b.md')
   assert.equal(gatewayFilePath(''), '')
   assert.equal(gatewayFilePath(null), '')
 })
@@ -413,6 +414,20 @@ test('gatewayFileRequestPaths keeps streaming and fallback requests on the same 
     dataUrl: '/api/fs/read-data-url?path=%2Fsrv%2Foutput%2Fimage+one.png&profile=research',
     download: '/api/fs/download?path=%2Fsrv%2Foutput%2Fimage+one.png&profile=research'
   })
+})
+
+test('gatewayFilePath rejects network and device paths before any download request', () => {
+  for (const value of ['\\\\server\\share\\report.pdf', '//server/share/report.pdf', '\\\\?\\C:\\report.pdf']) {
+    assert.equal(gatewayFilePath(value), '', value)
+  }
+})
+
+test('gatewayFilePath matches the main file guard for credential dotfiles', () => {
+  for (const value of ['/tmp/.env', '/home/me/.netrc', 'C:\\Users\\me\\.npmrc', 'file:///tmp/.pypirc']) {
+    assert.equal(gatewayFilePath(value), '', value)
+  }
+
+  assert.equal(gatewayFilePath('/tmp/.env.example'), '/tmp/.env.example')
 })
 
 test('isNotFoundError matches only HTTP 404', () => {

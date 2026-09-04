@@ -41,6 +41,10 @@ export function previewTargetFromMarkdownHref(href?: string): string | null {
 }
 
 export function previewName(target: string): string {
+  if (/^[a-z]:[\\/]/i.test(target) || target.startsWith('\\\\')) {
+    return target.split(/[\\/]/).filter(Boolean).pop() || target
+  }
+
   try {
     const url = new URL(target)
 
@@ -48,7 +52,7 @@ export function previewName(target: string): string {
       return decodeURIComponent(url.pathname).split(/[\\/]/).filter(Boolean).pop() || target
     }
 
-    const file = url.pathname.split('/').filter(Boolean).pop()
+    const file = decodeURIComponent(url.pathname).split(/[\\/]/).filter(Boolean).pop()
 
     return file || url.host
   } catch {

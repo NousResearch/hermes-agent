@@ -85,11 +85,12 @@ _HERMES_CORE_TOOLS = [
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
-    # Local HERMES stack on the operator's own machine: offline Ollama
-    # inference, semantic search over their own indexed documents, and live
-    # OKX market data. Gated by check_fn on HERMES_LOCAL_DIR existing, so
-    # these are invisible on machines without the local stack installed.
-    "hermes_local_ask", "hermes_knowledge", "hermes_market", "hermes_status",
+    # NOTE: the local-stack tools (hermes_local_ask, hermes_knowledge,
+    # hermes_market, hermes_status) are deliberately NOT here. They live in the
+    # `hermes_local` toolset, which is listed in CONFIGURABLE_TOOLSETS so the
+    # operator can turn it on or off from `hermes tools`. Putting them in the
+    # core list too would make that switch a lie: disabling the toolset would
+    # leave the tools loaded anyway.
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,

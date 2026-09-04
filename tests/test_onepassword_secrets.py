@@ -75,6 +75,14 @@ def test_validate_references_filters_bad_names_and_refs():
     assert len(warnings) == 3
 
 
+def test_op_child_env_forwards_biometric_unlock_switch(monkeypatch):
+    monkeypatch.setenv("OP_BIOMETRIC_UNLOCK_ENABLED", "false")
+
+    child_env = op._op_child_env("")
+
+    assert child_env["OP_BIOMETRIC_UNLOCK_ENABLED"] == "false"
+
+
 # ---------------------------------------------------------------------------
 # fetch_onepassword_secrets
 # ---------------------------------------------------------------------------

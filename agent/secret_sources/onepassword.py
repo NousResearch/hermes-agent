@@ -43,6 +43,8 @@ _OP_ENV_ALLOWLIST = (
     # Lets a user skip op's desktop-app integration probe (which can hang with
     # no timeout on a wedged desktop container) and go straight to token auth.
     "OP_LOAD_DESKTOP_APP_SETTINGS",
+    # 1Password's documented switch for toggling desktop-app integration.
+    "OP_BIOMETRIC_UNLOCK_ENABLED",
 )
 
 # L1 key folds in str(home_path) so a HERMES_HOME switch inside one long-lived

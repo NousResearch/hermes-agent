@@ -685,6 +685,10 @@ const wrapForFrac = (expr: string) => {
 export function texToUnicode(input: string): string {
   let s = input
 
+  // In TeX math, `\$` emits a literal dollar. Resolve it before the command
+  // passes below so the escape cannot leak into terminal output.
+  s = s.replace(/\\\$/g, '$')
+
   s = s.replace(/\\mathbb\s*\{([A-Za-z])\}/g, (raw, c: string) => BB[c] ?? raw)
   s = s.replace(/\\mathcal\s*\{([A-Za-z])\}/g, (raw, c: string) => CAL[c] ?? raw)
   s = s.replace(/\\mathfrak\s*\{([A-Za-z])\}/g, (raw, c: string) => FRAK[c] ?? raw)

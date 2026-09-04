@@ -262,6 +262,10 @@ describe('texToUnicode — labelled arrows', () => {
 })
 
 describe('texToUnicode — punctuation commands without lookahead', () => {
+  it('renders an escaped dollar as a literal dollar', () => {
+    expect(texToUnicode('x + \\$5')).toBe('x + $5')
+  })
+
   it('substitutes \\{ even when immediately followed by a letter', () => {
     // Regression: with a global `(?![A-Za-z])` lookahead, `\{p` refused
     // to substitute (because `p` is a letter) and rendered as `\{p`.

@@ -967,7 +967,13 @@ def _execute_job_now(
     claimed_job = None
     try:
         # At-most-once claim: bail without running if a tick/other fire owns it.
-        claimed_job = claim_job_for_fire(job_id, return_job=True)
+        # Manual intent authorizes bypassing provider backoff. The locked claim
+        # still evaluates current pause/disable state and duplicate ownership.
+        claimed_job = claim_job_for_fire(
+            job_id,
+            return_job=True,
+            allow_provider_backoff=True,
+        )
         if not isinstance(claimed_job, dict):
             # claim_job_for_fire returns False for paused/disabled/missing
             # jobs too — don't mislabel those as "already being fired"
@@ -1331,7 +1337,13 @@ def _try_dispatch_background_run(
 
         # Same snapshot claim as _execute_job_now: carry the owner-bearing
         # record into the run so terminal writes stay fenced by this owner.
-        claimed_job = claim_job_for_fire(job_id, return_job=True)
+        # Manual intent authorizes bypassing provider backoff. The locked claim
+        # still evaluates current pause/disable state and duplicate ownership.
+        claimed_job = claim_job_for_fire(
+            job_id,
+            return_job=True,
+            allow_provider_backoff=True,
+        )
         if not isinstance(claimed_job, dict):
             refreshed = get_job(job_id)
             if refreshed is None:
@@ -1392,6 +1404,9 @@ def _try_dispatch_background_run(
 
     def _runner() -> Dict[str, Any]:
         res = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
+        # The detached run may persist provider_backoff after the initial
+        # dispatch reconciliation. Re-arm providers from the final job state.
+        _notify_provider_jobs_changed_safe()
         duration = round(time.time() - started_at, 2)
         refreshed = get_job(job_id) or {}
         lines = [

@@ -7904,7 +7904,22 @@ def _run_one_job_body(
             )
             return True
 
-        mark_kwargs = {"delivery_error": delivery_error}
+        mark_kwargs: dict[str, Any] = {"delivery_error": delivery_error}
+        if not success:
+            from cron.rate_limit_backoff import plan_provider_backoff
+
+            provider_backoff = plan_provider_backoff(
+                job, error, now=_hermes_now()
+            )
+            if provider_backoff is not None:
+                mark_kwargs["provider_backoff"] = provider_backoff
+                logger.warning(
+                    "Job '%s': provider rate limit suppresses unattended fires "
+                    "until %s (%s)",
+                    job["id"],
+                    provider_backoff["until"],
+                    provider_backoff["source"],
+                )
         if fire_owner is not None:
             mark_kwargs["expected_fire_owner"] = fire_owner
         if blocked_config:
@@ -8769,7 +8784,10 @@ def tick(
             # Acquire the durable claim only when this worker actually starts,
             # not while it may wait behind other work in an executor queue.
             # This prevents a queued lease from expiring before execution.
-            claimed = claim_job_for_fire(job["id"], return_job=True)
+            claim_kwargs: dict[str, Any] = {"return_job": True}
+            if job.get("manual_run_at"):
+                claim_kwargs["allow_provider_backoff"] = True
+            claimed = claim_job_for_fire(job["id"], **claim_kwargs)
             if not claimed:
                 finish_execution(
                     job["execution_id"],

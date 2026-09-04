@@ -180,6 +180,7 @@ class CronScheduler(ABC):
         adapters: Any = None,
         loop: Any = None,
         force: bool = False,
+        allow_provider_backoff: bool = False,
     ) -> bool:
         """Run a single job NOW via the shared orchestrator. Called by the
         inbound fire webhook when an external scheduler signals a job is due.
@@ -193,12 +194,29 @@ class CronScheduler(ABC):
         the job itself failed. Returns False only if the claim was lost
         (another machine/retry won it) or the job no longer exists.
         """
-        claimed_job = self.claim_fire(job_id, force=force)
+        claim_kwargs = {"force": force}
+        if allow_provider_backoff:
+            if not _callable_supports_keyword(
+                self.claim_fire,
+                "allow_provider_backoff",
+            ):
+                raise TypeError(
+                    f"Cron provider '{self.name}' does not support "
+                    "provider-backoff override in claim_fire"
+                )
+            claim_kwargs["allow_provider_backoff"] = True
+        claimed_job = self.claim_fire(job_id, **claim_kwargs)
         if claimed_job is None:
             return False
         return self.fire_claimed(claimed_job, adapters=adapters, loop=loop)
 
-    def claim_fire(self, job_id: str, *, force: bool = False) -> dict | None:
+    def claim_fire(
+        self,
+        job_id: str,
+        *,
+        force: bool = False,
+        allow_provider_backoff: bool = False,
+    ) -> dict | None:
         """Durably claim one fire and create its audit attempt before dispatch.
 
         Webhook transports call this synchronously before acknowledging the
@@ -212,6 +230,8 @@ class CronScheduler(ABC):
         claim_kwargs = {"return_job": True}
         if force:
             claim_kwargs["force"] = True
+        if allow_provider_backoff:
+            claim_kwargs["allow_provider_backoff"] = True
         try:
             claimed_job = claim_job_for_fire(job_id, **claim_kwargs)
         except BaseException as exc:
@@ -263,21 +283,37 @@ class CronScheduler(ABC):
         return None
 
 
-def provider_supports_force_fire(provider: Any) -> bool:
-    """Return whether a provider can safely receive ``fire_due(force=...)``."""
+def _callable_supports_keyword(callback: Any, name: str) -> bool:
     try:
-        parameters = inspect.signature(provider.fire_due).parameters.values()
+        parameters = inspect.signature(callback).parameters.values()
     except (TypeError, ValueError):
         return False
     return any(
         parameter.kind is inspect.Parameter.VAR_KEYWORD
         or (
-            parameter.name == "force"
+            parameter.name == name
             and parameter.kind
             in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
         )
         for parameter in parameters
     )
+
+
+def provider_supports_force_fire(provider: Any) -> bool:
+    """Return whether a provider can safely receive ``fire_due(force=...)``."""
+    return _callable_supports_keyword(provider.fire_due, "force")
+
+
+def provider_supports_backoff_override(provider: Any) -> bool:
+    """Return whether a provider can safely bypass only provider backoff."""
+    if not _callable_supports_keyword(provider.fire_due, "allow_provider_backoff"):
+        return False
+    if type(provider).fire_due is CronScheduler.fire_due:
+        return _callable_supports_keyword(
+            provider.claim_fire,
+            "allow_provider_backoff",
+        )
+    return True
 
 
 def provider_supports_split_fire(provider: Any) -> bool:

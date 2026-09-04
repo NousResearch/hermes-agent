@@ -943,6 +943,72 @@ class TestShouldSendMediaAsAudio:
 # ---------------------------------------------------------------------------
 
 
+class TestIsSenderAuthorized:
+    """``_is_sender_authorized`` is a tri-state: True / False / unknown.
+
+    Callers gate credentialed side effects on an explicit ``is True``, so a
+    truthy non-boolean must resolve to unknown rather than being coerced
+    into an authorization by ``bool()``.
+    """
+
+    def _adapter(self):
+        class StubAdapter(BasePlatformAdapter):
+            async def connect(self, *, is_reconnect: bool = False):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def send(self, *a, **kw):
+                pass
+
+            async def get_chat_info(self, *a):
+                return {}
+
+        from gateway.config import Platform, PlatformConfig
+
+        return StubAdapter(config=PlatformConfig(enabled=True, token="test"),
+                           platform=Platform.TELEGRAM)
+
+    def test_no_check_registered_is_unknown(self):
+        assert self._adapter()._is_sender_authorized("user") is None
+
+    def test_empty_user_id_is_unknown(self):
+        adapter = self._adapter()
+        adapter.set_authorization_check(lambda *_a: True)
+        assert adapter._is_sender_authorized("") is None
+
+    def test_true_and_false_propagate(self):
+        adapter = self._adapter()
+        adapter.set_authorization_check(lambda *_a: True)
+        assert adapter._is_sender_authorized("user") is True
+        adapter.set_authorization_check(lambda *_a: False)
+        assert adapter._is_sender_authorized("user") is False
+
+    @pytest.mark.parametrize("result", ["allowed", 1, object(), [1]])
+    def test_truthy_non_boolean_is_unknown(self, result):
+        adapter = self._adapter()
+        adapter.set_authorization_check(lambda *_a: result)
+        assert adapter._is_sender_authorized("user") is None
+
+    def test_raising_check_is_unknown(self):
+        def boom(*_a):
+            raise RuntimeError("auth backend down")
+
+        adapter = self._adapter()
+        adapter.set_authorization_check(boom)
+        assert adapter._is_sender_authorized("user") is None
+
+    def test_check_receives_chat_context(self):
+        seen = []
+        adapter = self._adapter()
+        adapter.set_authorization_check(
+            lambda user_id, chat_type, chat_id: seen.append((user_id, chat_type, chat_id)) or True
+        )
+        adapter._is_sender_authorized("user", "group", "chan")
+        assert seen == [("user", "group", "chan")]
+
+
 class TestTruncateMessage:
     def _adapter(self):
         """Create a minimal adapter instance for testing static/instance methods."""
@@ -1270,7 +1336,8 @@ class TestDockerProfileSandboxMediaTranslation:
 
     @staticmethod
     def _sandbox_dir(task_id: str = "default"):
-        from tools.environments.base import get_sandbox_dir, sanitize_task_id_for_path
+        from tools.environments.base import get_sandbox_dir
+        from tools.environments.path_utils import sanitize_task_id_for_path
 
         name = task_id if task_id == "default" else sanitize_task_id_for_path(task_id)
         return get_sandbox_dir() / "docker" / name

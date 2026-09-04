@@ -194,6 +194,40 @@ describe('createGatewayEventHandler', () => {
     } as any)
 
     expect(ctx.system.sys).toHaveBeenCalledWith('compressing 968 messages (~123,400 tok)…')
+    expect(getUiState().compacting).toBe(true)
+  })
+
+  it('keeps auto-compaction status visible until compaction finishes (#97239)', () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+    const idleLine = '💤 Resumed after 747s idle — compacting ~44,579 tokens before continuing.'
+
+    vi.useFakeTimers()
+    patchUiState({ busy: true, status: 'running…' })
+
+    try {
+      onEvent({
+        payload: { kind: 'compacting', text: idleLine },
+        type: 'status.update'
+      } as any)
+
+      expect(ctx.system.sys).toHaveBeenCalledWith(idleLine)
+      expect(getUiState().compacting).toBe(true)
+      expect(getUiState().status).toBe(idleLine)
+
+      vi.advanceTimersByTime(4001)
+      expect(getUiState().status).toBe(idleLine)
+      expect(getUiState().compacting).toBe(true)
+
+      onEvent({
+        payload: { kind: 'compacted', text: '✓ Context compaction complete — continuing turn...' },
+        type: 'status.update'
+      } as any)
+
+      expect(getUiState().compacting).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('keeps goal verdict text in transcript but shows a brief idle status (#goal statusbar)', () => {

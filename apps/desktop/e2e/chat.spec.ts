@@ -106,7 +106,10 @@ test.describe('chat interaction with mock backend', () => {
 
     await composer.click()
     await composer.type('please answer tersely')
-    await expect(primary).toHaveAttribute('aria-label', /Steer/)
+    // Since "running is not busy" (3bc52fb9df) the primary keeps the Send
+    // affordance mid-turn — steer is routed through the submit engine, not a
+    // separate labeled button. Queue remains the explicit secondary action.
+    await expect(primary).toHaveAttribute('aria-label', 'Send')
     await expect(dictation).toBeVisible()
     await expect(speakReplies).toBeVisible()
     await expect(queue).toBeVisible()
@@ -119,11 +122,9 @@ test.describe('chat interaction with mock backend', () => {
     )
     expect(controlLabels.indexOf('Voice dictation')).toBeLessThan(speakRepliesIndex)
     expect(speakRepliesIndex).toBeLessThan(controlLabels.indexOf('Queue message'))
-    expect(controlLabels.indexOf('Queue message')).toBeLessThan(
-      controlLabels.findIndex(label => label?.startsWith('Steer'))
-    )
+    expect(controlLabels.indexOf('Queue message')).toBeLessThan(controlLabels.indexOf('Send'))
     await page.screenshot({ path: testInfo.outputPath('busy-composer-steer.png') })
-    await expect(primary.locator('svg.tabler-icon-steering-wheel')).toBeVisible()
+    await expect(primary.locator('.codicon-arrow-up')).toBeVisible()
 
     await queue.click()
     await expect(primary).toHaveAttribute('aria-label', 'Stop')

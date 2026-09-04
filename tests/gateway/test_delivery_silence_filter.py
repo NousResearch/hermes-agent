@@ -124,6 +124,50 @@ async def test_env_override_enables_filter_over_config(tmp_path, monkeypatch):
     assert result["filtered"] == "silence_narration"
 
 
+# --- Cron artifacts are exempt ----------------------------------------------
+#
+# The filter exists to stop bot-to-bot mirror loops of *model chatter*. Cron
+# output is an artifact: a job that legitimately emits "..." (a quiet script,
+# a terse digest) has no loop partner, and dropping it while returning
+# {"success": True} produced a cron the scheduler logged as delivered and the
+# user never received (#77763). Cron sends carry job_id in metadata.
+
+
+@pytest.mark.asyncio
+async def test_cron_job_id_metadata_bypasses_the_filter(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.delenv("HERMES_FILTER_SILENCE_NARRATION", raising=False)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
+    target = DeliveryTarget.parse("discord:99887766")
+
+    result = await router._deliver_to_platform(
+        target, "*(silent)*", metadata={"job_id": "92e639af907f"},
+    )
+
+    assert len(adapter.calls) == 1
+    assert adapter.calls[0]["content"] == "*(silent)*"
+    assert result.get("filtered") is None
+    assert result.get("delivered") is not False
+
+
+@pytest.mark.asyncio
+async def test_non_cron_metadata_still_filters(tmp_path, monkeypatch):
+    """The exemption keys on job_id alone — everything else is unchanged."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.delenv("HERMES_FILTER_SILENCE_NARRATION", raising=False)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
+    target = DeliveryTarget.parse("discord:99887766")
+
+    result = await router._deliver_to_platform(
+        target, "*(silent)*", metadata={"thread_id": "42", "user_id": "u1"},
+    )
+
+    assert adapter.calls == []
+    assert result["filtered"] == "silence_narration"
+
+
 # --- Config round-trip ------------------------------------------------------
 
 

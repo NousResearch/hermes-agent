@@ -68,8 +68,11 @@ def read_available(fd: int, timeout: float) -> bytes:
 
 def terminate_pid(pid: int) -> None:
     try:
-        os.kill(pid, signal.SIGTERM)
-        for _ in range(20):
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            os.kill(pid, signal.SIGTERM)
+        for _ in range(30):
             try:
                 done, _ = os.waitpid(pid, os.WNOHANG)
             except ChildProcessError:
@@ -77,7 +80,10 @@ def terminate_pid(pid: int) -> None:
             if done == pid:
                 return
             time.sleep(0.1)
-        os.kill(pid, signal.SIGKILL)
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            os.kill(pid, signal.SIGKILL)
         os.waitpid(pid, 0)
     except ProcessLookupError:
         pass
@@ -212,7 +218,7 @@ def _print_launch_hint(captured: bytes, text: str) -> None:
             "      hermes --tui can block 2–3 min on npm install/build before Ink paints.\n"
             "      Run:  python3 scripts/e2e-omp-tui.py bootstrap\n"
             "      Then: hermes --tui   (in kitty/foot, not the IDE panel)\n"
-            "      Live E2E needs --timeout 240 (or wait longer on first cold launch).\n"
+            "      Live E2E needs --timeout 360+ (Node may load dist/entry.js silently for 1–3 min).\n"
             "      Kill stuck npm:  pkill -f 'npm install'",
             file=sys.stderr,
         )
@@ -247,6 +253,8 @@ def cmd_test(args: argparse.Namespace) -> int:
     captured = b""
     try:
         deadline = time.monotonic() + args.timeout
+        started = time.monotonic()
+        last_progress = 0.0
         while time.monotonic() < deadline:
             chunk = read_available(fd, min(2.0, deadline - time.monotonic()))
             if chunk:
@@ -259,6 +267,13 @@ def cmd_test(args: argparse.Namespace) -> int:
                     os.kill(pid, 0)
                 except OSError:
                     break
+                elapsed = time.monotonic() - started
+                if elapsed - last_progress >= 30 and len(captured) <= len(MOUSE_CSI) + 20:
+                    print(
+                        f"… still waiting for Ink ({int(elapsed)}s; npm/build or Node load can be silent)",
+                        file=sys.stderr,
+                    )
+                    last_progress = elapsed
                 time.sleep(0.1)
     finally:
         terminate_pid(pid)
@@ -365,7 +380,7 @@ def main() -> int:
     t = sub.add_parser("test", help="run component + live PTY acceptance")
     t.add_argument("--cols", type=int, default=100)
     t.add_argument("--rows", type=int, default=32)
-    t.add_argument("--timeout", type=float, default=240.0)
+    t.add_argument("--timeout", type=float, default=360.0)
     t.add_argument("--live", action="store_true", help="also spawn hermes --tui in a PTY smoke test")
     t.add_argument("--dev", action="store_true", help="force tsx dev mode for --live (default when dist/ is missing)")
     t.add_argument(

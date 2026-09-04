@@ -424,16 +424,10 @@ def test_build_api_kwargs_azure_foundry_non_tool_preserves_reasoning(monkeypatch
     assert kwargs.get("include") == ["reasoning.encrypted_content"]
 
 
-def test_build_api_kwargs_azure_foundry_user_turn_after_tool_call_keeps_reasoning(
+def test_build_api_kwargs_azure_foundry_user_turn_after_tool_call_suppresses_reasoning(
     monkeypatch,
 ):
-    """Suppression does not stick once the tool call is answered.
-
-    Regression guard for the sticky-history shape: after the assistant has
-    replied to the tool result, a plain user follow-up is a payload Foundry
-    accepts, so reasoning replay must come back on rather than stay off for
-    the remainder of the conversation.
-    """
+    """A later follow-up suppresses replay for persisted tool history."""
     agent = _build_azure_foundry_agent(monkeypatch)
 
     messages = _azure_post_tool_messages() + [
@@ -448,10 +442,10 @@ def test_build_api_kwargs_azure_foundry_user_turn_after_tool_call_keeps_reasonin
     kwargs = agent._build_api_kwargs(messages)
 
     item_types = [item.get("type") for item in kwargs["input"] if isinstance(item, dict)]
-    assert "reasoning" in item_types
+    assert "reasoning" not in item_types
     assert "function_call" in item_types
     assert "function_call_output" in item_types
-    assert kwargs.get("include") == ["reasoning.encrypted_content"]
+    assert kwargs.get("include") == []
 
 
 

@@ -774,12 +774,11 @@ class TestWriteRefusesUnparseableStore:
         honcho_cli._write_config({"apiKey": "k"})
         assert json.loads(cfg_path.read_text(encoding="utf-8")) == {"apiKey": "k"}
 
-    def test_enable_prints_one_sentence_and_writes_nothing(self, monkeypatch, tmp_path, capsys):
+    def test_command_prints_one_sentence_and_writes_nothing(self, monkeypatch, tmp_path, capsys):
         cfg_path = tmp_path / "honcho.json"
         cfg_path.write_text("{not json", encoding="utf-8")
         honcho_cli = self._point_at(monkeypatch, cfg_path)
-        monkeypatch.setenv("HONCHO_API_KEY", "env-key")
-        honcho_cli.honcho_command(SimpleNamespace(honcho_command="enable", target_profile=None))
+        honcho_cli.honcho_command(SimpleNamespace(honcho_command="mode", mode="tools", target_profile=None))
         out = capsys.readouterr().out
         assert "could not be read as JSON" in out
         assert "Nothing was written" in out
@@ -904,6 +903,7 @@ class TestEnabledRequiresACredential:
         assert honcho_cli.clone_honcho_for_profile("dreamer") is True
         assert written["cfg"]["hosts"]["hermes_dreamer"]["enabled"] is True
 
+
     def test_clone_with_self_hosted_url_is_enabled(self, monkeypatch, tmp_path):
         cfg = {"baseUrl": "http://localhost:8000", "hosts": {"hermes": {"workspace": "hermes"}}}
         honcho_cli, written = self._env(monkeypatch, tmp_path, cfg)
@@ -942,3 +942,82 @@ class TestEnabledRequiresACredential:
         out = capsys.readouterr().out
         assert "Run 'hermes honcho setup' to sign in" in out
         assert written == {}
+
+
+class TestWriteConfigMergesOntoDisk:
+    """A command reads honcho.json, works, then writes. A refresh in another process may have rotated
+    the token in between; the write must keep that rotation and apply only the command's own edits."""
+
+    def _paths(self, monkeypatch, tmp_path, disk):
+        import plugins.memory.honcho.cli as honcho_cli
+        cfg_path = tmp_path / "honcho.json"
+        cfg_path.write_text(json.dumps(disk))
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
+        return honcho_cli, cfg_path
+
+    def _rotated(self, cfg_path, disk):
+        disk["hosts"]["hermes"]["apiKey"] = "hch-at-new"
+        disk["hosts"]["hermes"]["oauth"] = {"refreshToken": "hch-rt-new"}
+        cfg_path.write_text(json.dumps(disk))
+
+    def test_rotation_between_read_and_write_survives(self, monkeypatch, tmp_path):
+        disk = {"apiKey": "root", "hosts": {"hermes": {"apiKey": "hch-at-old", "oauth": {"refreshToken": "hch-rt-old"},
+                                                     "recallMode": "hybrid"}}}
+        honcho_cli, cfg_path = self._paths(monkeypatch, tmp_path, disk)
+        cfg = honcho_cli._read_config()
+        self._rotated(cfg_path, json.loads(cfg_path.read_text()))
+        cfg["hosts"]["hermes"]["recallMode"] = "tools"
+        cfg["dialecticCadence"] = 3
+        honcho_cli._write_config(cfg)
+        out = json.loads(cfg_path.read_text())
+        assert out["hosts"]["hermes"]["apiKey"] == "hch-at-new"
+        assert out["hosts"]["hermes"]["oauth"] == {"refreshToken": "hch-rt-new"}
+        assert out["hosts"]["hermes"]["recallMode"] == "tools" and out["dialecticCadence"] == 3
+
+    def test_a_credential_the_command_set_wins(self, monkeypatch, tmp_path):
+        disk = {"hosts": {"hermes": {"apiKey": "hch-at-old", "oauth": {"refreshToken": "hch-rt-old"}}}}
+        honcho_cli, cfg_path = self._paths(monkeypatch, tmp_path, disk)
+        cfg = honcho_cli._read_config()
+        self._rotated(cfg_path, json.loads(cfg_path.read_text()))
+        cfg["hosts"]["hermes"]["apiKey"] = "hch-v3-pasted"
+        cfg["hosts"]["hermes"].pop("oauth")
+        honcho_cli._write_config(cfg)
+        out = json.loads(cfg_path.read_text())
+        assert out["hosts"]["hermes"]["apiKey"] == "hch-v3-pasted" and "oauth" not in out["hosts"]["hermes"]
+
+    def test_a_key_the_command_removed_is_removed(self, monkeypatch, tmp_path):
+        disk = {"hosts": {"hermes": {"apiKey": "k", "runtimePeerPrefix": "tg_"}}}
+        honcho_cli, cfg_path = self._paths(monkeypatch, tmp_path, disk)
+        cfg = honcho_cli._read_config()
+        cfg["hosts"]["hermes"].pop("runtimePeerPrefix")
+        honcho_cli._write_config(cfg)
+        assert "runtimePeerPrefix" not in json.loads(cfg_path.read_text())["hosts"]["hermes"]
+
+    def test_write_without_a_prior_read_writes_the_whole_config(self, monkeypatch, tmp_path):
+        honcho_cli, cfg_path = self._paths(monkeypatch, tmp_path, {"hosts": {"hermes": {"apiKey": "k"}}})
+        honcho_cli._write_config({"hosts": {"other": {"apiKey": "o"}}})
+        assert json.loads(cfg_path.read_text()) == {"hosts": {"other": {"apiKey": "o"}}}
+
+    def test_a_rebuilt_plain_dict_is_written_whole(self, monkeypatch, tmp_path):
+        disk = {"hosts": {"hermes": {"apiKey": "hch-at-old", "recallMode": "hybrid"}}}
+        honcho_cli, cfg_path = self._paths(monkeypatch, tmp_path, disk)
+        cfg = dict(honcho_cli._read_config())
+        self._rotated(cfg_path, json.loads(cfg_path.read_text()))
+        honcho_cli._write_config(cfg)
+        assert json.loads(cfg_path.read_text())["hosts"]["hermes"]["apiKey"] == "hch-at-old"
+
+    def test_write_holds_the_refresh_file_lock(self, monkeypatch, tmp_path):
+        import contextlib
+        import plugins.memory.honcho.oauth as oauth
+        honcho_cli, cfg_path = self._paths(monkeypatch, tmp_path, {})
+        locked = []
+
+        @contextlib.contextmanager
+        def _lock(path):
+            locked.append(path)
+            yield
+
+        monkeypatch.setattr(oauth, "_config_refresh_lock", _lock)
+        honcho_cli._write_config({"apiKey": "k"})
+        assert locked == [cfg_path]

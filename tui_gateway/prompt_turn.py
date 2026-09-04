@@ -299,6 +299,7 @@ def _goal_followup_after_turn(
                 _bg_procs = None
             decision = goal_mgr.evaluate_after_turn(
                 raw, user_initiated=True, background_processes=_bg_procs)
+            _runtime_trace(session, sid, "FIRST_NATIVE_TURN_PERSISTED", success=True)
             if verdict_msg := decision.get("message") or "":
                 _emit("status.update", sid, {"kind": "goal", "text": verdict_msg})
             if decision.get("should_continue") and (
@@ -511,6 +512,9 @@ def _invoke_agent(
     agent = st.agent
 
     def _stream(delta):
+        if not getattr(agent, "_runtime_trace_first_activity_emitted", False):
+            agent._runtime_trace_first_activity_emitted = True
+            _runtime_trace(session, sid, "MODEL_FIRST_ACTIVITY", success=True)
         with session["history_lock"]:
             _append_inflight_delta(session, delta)
         payload = {"text": delta}
@@ -619,7 +623,7 @@ def _absorb_turn_result(
     return status_note
 
 
-def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None, cols: int):
+def _complete_turn_payload(sid: str, session: dict, st: _TurnRun, status_note: str | None, cols: int):
     """``(payload, raw, status)`` for message.complete; retains/clears the inflight turn and
     settles the hosted-room terminal receipt."""
     result, agent = st.result, st.agent
@@ -648,6 +652,7 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
                 model=str(getattr(agent, "model", "") or ""))
         except Exception:
             _error_surface = None
+        _pause_unstarted_goal_for_runtime_failure(session, sid, _error_surface)
     error_value = result.get("error")
     with session["history_lock"]:
         if status == "error":
@@ -795,7 +800,7 @@ def _run_prompt_submit(
                 display_metadata)
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
-            payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
+            payload, raw, status = _complete_turn_payload(sid, session, st, status_note, cols)
             _emit("message.complete", sid, payload)
             goal_followup = _goal_followup_after_turn(sid, session, st.result, status, raw)
             if status == "complete":

@@ -16,6 +16,20 @@ describe('model-status-label', () => {
     expect(displayModelName('openai/gpt-5.5')).toBe('GPT-5.5')
   })
 
+  it('keeps an inference-router route prefix ahead of the vendor path', () => {
+    // Router-provided ids carry the route in the id itself; the vendor path
+    // after it is still noise, but the route must not be swallowed with it.
+    expect(displayModelName('CC : deepseek/deepseek-v4-pro')).toBe('CC : Deepseek V4 Pro')
+    expect(displayModelName('CC : moonshotai/Kimi-K3')).toBe('CC : Kimi K3')
+    expect(displayModelName('CC : z-ai/glm-5.3-flash')).toBe('CC : Glm 5.3 Flash')
+    expect(modelDisplayParts('CC : tencent/hy4-preview')).toEqual({ name: 'CC : Hy4', tag: 'Preview' })
+    expect(displayModelName('OC : deepseek-v4-pro')).toBe('OC : Deepseek V4 Pro')
+    expect(displayModelName('oMLX : Qwen3.8-27B-8bit')).toBe('OMLX : Qwen3.8 27B 8bit')
+    // Ollama-style tags use a bare colon and are not a route prefix.
+    expect(displayModelName('deepseek-v4-flash:0731')).toBe('Deepseek V4 Flash:0731')
+    expect(displayModelName('OL : deepseek-v4-flash:0731')).toBe('OL : Deepseek V4 Flash:0731')
+  })
+
   it('strips trailing date-pin snapshots from the display name', () => {
     expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4 5')
     expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4 5')

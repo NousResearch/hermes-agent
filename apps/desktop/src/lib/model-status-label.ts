@@ -33,12 +33,23 @@ export function currentPickerSelection(
   }
 }
 
-/** Strip provider prefix and normalize for display. */
+// Route prefix some user-defined providers (an inference router) bake into the
+// model id itself: `CC : deepseek/deepseek-v4-pro`, `oMLX : Qwen3.8-27B-8bit`.
+// The token before ` : ` names the upstream route and must survive display
+// normalization, otherwise two routes serving the same model collapse to one
+// indistinguishable label.
+const ROUTE_PREFIX = /^([^/:\s]+) : (.+)$/
+
+/** Strip the vendor path (`anthropic/…`) and normalize for display, keeping a
+ *  leading `ROUTE : ` prefix intact. */
 export function modelBaseId(model: string): string {
   const trimmed = model.trim()
-  const slash = trimmed.lastIndexOf('/')
+  const routed = ROUTE_PREFIX.exec(trimmed)
+  const prefix = routed ? `${routed[1]} : ` : ''
+  const rest = routed ? routed[2].trim() : trimmed
+  const slash = rest.lastIndexOf('/')
 
-  return slash >= 0 ? trimmed.slice(slash + 1) : trimmed
+  return prefix + (slash >= 0 ? rest.slice(slash + 1) : rest)
 }
 
 // Trailing model-id variants that should render as a grayed tag beside the

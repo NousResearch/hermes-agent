@@ -1,3 +1,4 @@
+import { modelBaseId } from '@/lib/model-status-label'
 import type { SessionListDensity } from '@/store/session-list-density'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -11,7 +12,7 @@ export interface SessionRowFormatters {
   toolCallCount: (count: number) => string
 }
 
-const modelLabel = (model: null | string) => model?.split('/').pop()?.trim() || null
+const modelLabel = (model: null | string) => (model ? modelBaseId(model) : null) || null
 const oneLine = (value: null | string) => value?.replace(/\s+/g, ' ').trim() || null
 
 export const sessionRowEstimate = (density: SessionListDensity) =>

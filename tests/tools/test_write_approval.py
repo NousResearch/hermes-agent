@@ -9,8 +9,10 @@ subcommand dispatch.
 
 import json
 import os
+import stat
 import tempfile
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -155,6 +157,83 @@ _SKILL = (
 # ---------------------------------------------------------------------------
 # Pending store CRUD
 # ---------------------------------------------------------------------------
+
+
+def _assert_stage_write_creates_private_pending_record(
+    hermes_home, subsystem, precreate_broad_directories
+):
+    from tools import write_approval as wa
+
+    pending_root = Path(hermes_home) / "pending"
+    subsystem_root = pending_root / subsystem
+    if precreate_broad_directories:
+        subsystem_root.mkdir(parents=True)
+        pending_root.chmod(0o755)
+        subsystem_root.chmod(0o755)
+
+    previous_umask = os.umask(0o022)
+    try:
+        record = wa.stage_write(
+            subsystem,
+            {"action": "add", "content": "fixture"},
+            summary="fixture",
+            origin="foreground",
+        )
+    finally:
+        os.umask(previous_umask)
+
+    pending_path = subsystem_root / f"{record['id']}.json"
+    assert stat.S_IMODE(pending_root.stat().st_mode) == 0o700
+    assert stat.S_IMODE(subsystem_root.stat().st_mode) == 0o700
+    assert stat.S_IMODE(pending_path.stat().st_mode) == 0o600
+
+
+@pytest.mark.macos_only
+@pytest.mark.parametrize("subsystem", ("memory", "skills"))
+@pytest.mark.parametrize("precreate_broad_directories", (False, True))
+def test_stage_write_creates_private_pending_record_macos(
+    hermes_home, subsystem, precreate_broad_directories
+):
+    """macOS pending payloads stay owner-only under a common 0o022 umask."""
+    _assert_stage_write_creates_private_pending_record(
+        hermes_home, subsystem, precreate_broad_directories
+    )
+
+
+@pytest.mark.linux_only
+@pytest.mark.parametrize("subsystem", ("memory", "skills"))
+@pytest.mark.parametrize("precreate_broad_directories", (False, True))
+def test_stage_write_creates_private_pending_record_linux(
+    hermes_home, subsystem, precreate_broad_directories
+):
+    """Linux pending payloads stay owner-only under a common 0o022 umask."""
+    _assert_stage_write_creates_private_pending_record(
+        hermes_home, subsystem, precreate_broad_directories
+    )
+
+
+def _assert_private_directory_rejects_leaf_symlink(tmp_path):
+    from tools import write_approval as wa
+
+    real_directory = tmp_path / "real"
+    real_directory.mkdir(mode=0o755)
+    linked_directory = tmp_path / "linked"
+    linked_directory.symlink_to(real_directory, target_is_directory=True)
+
+    with pytest.raises(OSError):
+        wa._ensure_private_directory(linked_directory)
+
+    assert stat.S_IMODE(real_directory.stat().st_mode) == 0o755
+
+
+@pytest.mark.macos_only
+def test_private_pending_directory_rejects_leaf_symlink_macos(tmp_path):
+    _assert_private_directory_rejects_leaf_symlink(tmp_path)
+
+
+@pytest.mark.linux_only
+def test_private_pending_directory_rejects_leaf_symlink_linux(tmp_path):
+    _assert_private_directory_rejects_leaf_symlink(tmp_path)
 
 
 # ---------------------------------------------------------------------------

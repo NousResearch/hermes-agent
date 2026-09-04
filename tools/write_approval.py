@@ -45,12 +45,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +113,23 @@ def _pending_dir(subsystem: str) -> Path:
     return get_hermes_home() / "pending" / subsystem
 
 
+def _ensure_private_directory(path: Path) -> None:
+    """Create or tighten one pending directory without following a leaf symlink."""
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if os.name != "posix":
+        return
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        expected_uid = os.geteuid()  # windows-footgun: ok -- POSIX branch above
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != expected_uid:
+            raise OSError("pending path is not an owner-local directory")
+        os.fchmod(descriptor, 0o700)
+    finally:
+        os.close(descriptor)
+
+
 def stage_write(subsystem: str, payload: Dict[str, Any],
                 *, summary: str, origin: str) -> Dict[str, Any]:
     """Persist a pending write and return a short record describing it.
@@ -141,11 +160,10 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
     }
     try:
         d = _pending_dir(subsystem)
-        d.mkdir(parents=True, exist_ok=True)
+        _ensure_private_directory(d.parent)
+        _ensure_private_directory(d)
         path = d / f"{pid}.json"
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        atomic_json_write(path, record, indent=2, mode=0o600)
     except Exception as e:  # pragma: no cover - disk failure path
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
     return record

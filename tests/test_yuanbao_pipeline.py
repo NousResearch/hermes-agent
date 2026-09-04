@@ -641,6 +641,61 @@ class TestGroupAtGuardMiddleware:
         next_fn.assert_awaited_once()
 
 
+class TestDispatchMiddleware:
+    @pytest.mark.asyncio
+    async def test_addressed_group_message_bypasses_serial_queue(self):
+        """A second @bot turn must reach busy-input handling immediately."""
+        adapter = make_adapter()
+        adapter._bot_id = "bot_123"
+        first_started = asyncio.Event()
+        second_started = asyncio.Event()
+        release_first = asyncio.Event()
+
+        async def handle_message(event):
+            if event.message_id == "first":
+                first_started.set()
+                await release_first.wait()
+            elif event.message_id == "second":
+                second_started.set()
+
+        adapter.handle_message = handle_message
+        source = adapter.build_source(
+            chat_id="group:grp-1",
+            chat_type="group",
+            user_id="alice",
+            user_name="Alice",
+            thread_id="main",
+        )
+        mention = {
+            "msg_type": "TIMCustomElem",
+            "msg_content": {
+                "data": json.dumps({"elem_type": 1002, "text": "@bot", "user_id": "bot_123"})
+            },
+        }
+
+        def addressed_context(message_id):
+            return make_ctx(
+                adapter=adapter,
+                chat_type="group",
+                chat_id="group:grp-1",
+                msg_body=[mention],
+                msg_id=message_id,
+                raw_text=f"message {message_id}",
+                source=source,
+            )
+
+        middleware = DispatchMiddleware()
+        await middleware(addressed_context("first"), AsyncMock())
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+
+        await middleware(addressed_context("second"), AsyncMock())
+        await asyncio.wait_for(second_started.wait(), timeout=1)
+
+        assert not adapter._group_queues
+        release_first.set()
+        await asyncio.gather(*list(adapter._inbound_tasks))
+
+
 class TestAutoSetHomeAfterGroupAtGuard:
     @pytest.mark.asyncio
     async def test_unaddressed_group_does_not_set_home(self, monkeypatch, tmp_path):

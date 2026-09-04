@@ -876,15 +876,8 @@ def _generate_command_tts(
                 f"TTS provider '{provider_name}' timed out after {timeout:g}s"
             ) from exc
         except subprocess.CalledProcessError as exc:
-            detail_parts = []
-            if exc.stderr:
-                detail_parts.append(f"stderr: {exc.stderr.strip()}")
-            if exc.stdout:
-                detail_parts.append(f"stdout: {exc.stdout.strip()}")
-            detail = "; ".join(detail_parts) or "no command output"
             raise RuntimeError(
-                f"TTS provider '{provider_name}' exited with code "
-                f"{exc.returncode}: {detail}"
+                f"TTS provider '{provider_name}' exited with code {exc.returncode}"
             ) from exc
 
     if not output.exists() or output.stat().st_size <= 0:
@@ -2288,6 +2281,225 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 # ===========================================================================
 # Main tool function
 # ===========================================================================
+def _is_known_tts_provider(provider: str, tts_config: Dict[str, Any]) -> bool:
+    """Return whether *provider* names a built-in, command, or plugin backend.
+
+    Unknown primary providers retain the historical Edge fallback.  An unknown
+    fallback, however, must not silently become Edge: a fallback is an
+    explicit reliability contract and a typo must leave the primary error
+    intact rather than route audio somewhere unexpected.
+    """
+    if provider in BUILTIN_TTS_PROVIDERS:
+        return True
+    if _resolve_command_provider_config(provider, tts_config) is not None:
+        return True
+    try:
+        from agent.tts_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        return get_provider(provider) is not None
+    except Exception:
+        return False
+
+
+def _get_tts_fallback_provider(
+    primary_provider: str,
+    tts_config: Dict[str, Any],
+) -> Optional[str]:
+    """Resolve the opt-in fallback provider, rejecting invalid/self loops."""
+    raw = tts_config.get("fallback_provider") if isinstance(tts_config, dict) else None
+    if not isinstance(raw, str):
+        return None
+    fallback = raw.lower().strip()
+    if not fallback or fallback == primary_provider.lower().strip():
+        return None
+    return fallback if _is_known_tts_provider(fallback, tts_config) else None
+
+
+def _safe_tts_error(exc: BaseException) -> str:
+    """Return concise provider evidence without leaking configured secrets."""
+    message = str(exc).strip() or exc.__class__.__name__
+    # Exception messages from HTTP libraries occasionally echo request headers.
+    # Remove values from the supported credential environment variables first,
+    # then redact common token-shaped header fragments as a second line of
+    # defense.  This evidence is returned to the tool caller and logged.
+    for env_name in (
+        "ELEVENLABS_API_KEY", "OPENAI_API_KEY", "VOICE_TOOLS_OPENAI_KEY",
+        "MINIMAX_API_KEY", "MISTRAL_API_KEY", "GEMINI_API_KEY",
+        "GOOGLE_API_KEY", "XAI_API_KEY", "DEEPINFRA_API_KEY",
+    ):
+        secret = get_env_value(env_name)
+        if secret:
+            message = message.replace(str(secret), "[REDACTED]")
+    message = re.sub(
+        r"(?i)(authorization\s*[:=]\s*)[^\r\n,;]+",
+        r"\1[REDACTED]",
+        message,
+    )
+    message = re.sub(
+        r"(?i)(bearer\s+|api[_ -]?key\s*[:=]\s*)([^\s,;]+)",
+        r"\1[REDACTED]",
+        message,
+    )
+    return message[:500]
+
+
+def _ensure_tts_output(path: str, provider: str) -> None:
+    """Raise when a provider returned without producing usable audio."""
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        raise RuntimeError(f"TTS generation produced no output (provider: {provider})")
+
+
+def _tts_attempt_path(destination: str, attempt: str) -> str:
+    """Return an isolated sibling path so failed providers cannot leak audio."""
+    path = Path(destination)
+    suffix = path.suffix or ".mp3"
+    return str(path.with_name(f".{path.stem}.{attempt}.{uuid.uuid4().hex}{suffix}"))
+
+
+class _TTSProviderUnavailableError(RuntimeError):
+    """A configured provider cannot start; preserve its established tool error."""
+
+
+def _generate_tts_with_provider(
+    text: str,
+    output_path: str,
+    provider: str,
+    tts_config: Dict[str, Any],
+) -> tuple[str, str]:
+    """Generate one complete artifact and return ``(path, effective_provider)``.
+
+    This deliberately performs no fallback itself.  The caller can therefore
+    discard a failed primary artifact and retry the entire text with a single
+    fallback provider, never returning a mixed-provider audio file.
+    """
+    command_provider_config = _resolve_command_provider_config(provider, tts_config)
+    if command_provider_config is not None:
+        logger.info("Generating speech with command TTS provider '%s'...", provider)
+        return (
+            _generate_command_tts(
+                text, output_path, provider, command_provider_config, tts_config,
+            ),
+            provider,
+        )
+
+    if provider not in BUILTIN_TTS_PROVIDERS:
+        plugin_path = _dispatch_to_plugin_provider(text, output_path, provider, tts_config)
+        if plugin_path is not None:
+            return plugin_path, provider
+
+    if provider == "elevenlabs":
+        try:
+            _import_elevenlabs()
+        except ImportError as exc:
+            raise _TTSProviderUnavailableError(
+                "ElevenLabs provider selected but 'elevenlabs' package not installed. "
+                "Run: pip install elevenlabs"
+            ) from exc
+        logger.info("Generating speech with ElevenLabs...")
+        return _generate_elevenlabs(text, output_path, tts_config), provider
+
+    if provider == "openai":
+        try:
+            _import_openai_client()
+        except ImportError as exc:
+            raise _TTSProviderUnavailableError(
+                "OpenAI provider selected but 'openai' package not installed."
+            ) from exc
+        logger.info("Generating speech with OpenAI TTS...")
+        return _generate_openai_tts(text, output_path, tts_config), provider
+
+    if provider == "deepinfra":
+        try:
+            _import_openai_client()
+        except ImportError as exc:
+            raise _TTSProviderUnavailableError(
+                "DeepInfra TTS uses the 'openai' SDK but it isn't installed."
+            ) from exc
+        logger.info("Generating speech with DeepInfra TTS...")
+        return _generate_deepinfra_tts(text, output_path, tts_config), provider
+
+    if provider == "minimax":
+        logger.info("Generating speech with MiniMax TTS...")
+        return _generate_minimax_tts(text, output_path, tts_config), provider
+
+    if provider == "xai":
+        logger.info("Generating speech with xAI TTS...")
+        return _generate_xai_tts(text, output_path, tts_config), provider
+
+    if provider == "mistral":
+        try:
+            _import_mistral_client()
+        except ImportError as exc:
+            raise _TTSProviderUnavailableError(
+                "Mistral provider selected but 'mistralai' package not installed. "
+                "Run `hermes setup` to install Mistral support."
+            ) from exc
+        logger.info("Generating speech with Mistral Voxtral TTS...")
+        return _generate_mistral_tts(text, output_path, tts_config), provider
+
+    if provider == "gemini":
+        logger.info("Generating speech with Google Gemini TTS...")
+        return _generate_gemini_tts(text, output_path, tts_config), provider
+
+    if provider == "neutts":
+        if not _check_neutts_available():
+            raise _TTSProviderUnavailableError(
+                "NeuTTS provider selected but neutts is not installed. Run hermes setup "
+                "and choose NeuTTS, or install espeak-ng and run python -m pip install -U neutts[all]."
+            )
+        logger.info("Generating speech with NeuTTS (local)...")
+        return _generate_neutts(text, output_path, tts_config), provider
+
+    if provider == "kittentts":
+        try:
+            _import_kittentts()
+        except ImportError as exc:
+            raise _TTSProviderUnavailableError(
+                "KittenTTS provider selected but 'kittentts' package not installed. "
+                "Run 'hermes setup tts' and choose KittenTTS, or install manually: "
+                "pip install https://github.com/KittenML/KittenTTS/releases/download/0.8.1/"
+                "kittentts-0.8.1-py3-none-any.whl"
+            ) from exc
+        logger.info("Generating speech with KittenTTS (local, ~25MB)...")
+        return _generate_kittentts(text, output_path, tts_config), provider
+
+    if provider == "piper":
+        try:
+            _import_piper()
+        except ImportError as exc:
+            raise _TTSProviderUnavailableError(
+                "Piper provider selected but 'piper-tts' package not installed. "
+                "Run 'hermes tools' and select Piper under TTS, or install manually: pip install piper-tts"
+            ) from exc
+        logger.info("Generating speech with Piper (local)...")
+        return _generate_piper_tts(text, output_path, tts_config), provider
+
+    # Historical default: unknown provider names use Edge, then local NeuTTS.
+    try:
+        _import_edge_tts()
+    except ImportError:
+        if _check_neutts_available():
+            logger.info("Edge TTS not available, falling back to NeuTTS (local)...")
+            return _generate_neutts(text, output_path, tts_config), "neutts"
+        raise _TTSProviderUnavailableError(
+            "No TTS provider available. Install edge-tts (pip install edge-tts) "
+            "or set up NeuTTS for local synthesis."
+        )
+
+    logger.info("Generating speech with Edge TTS...")
+    try:
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(
+                lambda: asyncio.run(_generate_edge_tts(text, output_path, tts_config))
+            ).result(timeout=60)
+    except RuntimeError:
+        asyncio.run(_generate_edge_tts(text, output_path, tts_config))
+    return output_path, provider
+
+
 def text_to_speech_tool(
     text: str,
     output_path: Optional[str] = None,
@@ -2314,6 +2526,7 @@ def text_to_speech_tool(
 
     tts_config = _load_tts_config()
     provider = _get_provider(tts_config)
+    fallback_provider = _get_tts_fallback_provider(provider, tts_config)
 
     # User-declared command provider (type: command under tts.providers.<name>)
     # resolves BEFORE the built-in dispatch. Built-in names short-circuit here
@@ -2321,14 +2534,28 @@ def text_to_speech_tool(
     # OpenAI handler.
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
 
-    # Truncate very long text with a warning. The cap is per-provider
-    # (OpenAI 4096, xAI 15k, MiniMax 10k, ElevenLabs model-aware, etc.).
+    # A fallback must receive the same complete script as the primary. Cap the
+    # script to the smaller provider limit before either attempt, rather than
+    # letting a long-primary/short-fallback pair fail only after the primary
+    # has already consumed or produced partial audio.
     max_len = _resolve_max_text_length(provider, tts_config)
-    if len(text) > max_len:
-        logger.warning(
-            "TTS text too long for provider %s (%d chars), truncating to %d",
-            provider, len(text), max_len,
+    if fallback_provider is not None:
+        max_len = min(
+            max_len,
+            _resolve_max_text_length(fallback_provider, tts_config),
         )
+    if len(text) > max_len:
+        if fallback_provider is None:
+            logger.warning(
+                "TTS text too long for provider %s (%d chars), truncating to %d",
+                provider, len(text), max_len,
+            )
+        else:
+            logger.warning(
+                "TTS text too long for primary %s/fallback %s (%d chars), "
+                "truncating shared script to %d",
+                provider, fallback_provider, len(text), max_len,
+            )
         text = text[:max_len]
 
     # Detect platform from gateway env var to choose the best output format.
@@ -2384,153 +2611,78 @@ def text_to_speech_tool(
     # Ensure parent directory exists
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_str = str(file_path)
+    fallback_used = False
+    primary_error: Optional[str] = None
 
     try:
-        # Generate audio with the configured provider
-        if command_provider_config is not None:
-            logger.info(
-                "Generating speech with command TTS provider '%s'...", provider,
+        if fallback_provider is not None:
+            # Render each whole message into a private sibling first.  A
+            # provider that starts yielding audio then fails cannot leave a
+            # partial primary artifact for the fallback to append to.
+            primary_destination = file_str
+            fallback_command_config = _resolve_command_provider_config(
+                fallback_provider, tts_config,
             )
-            file_str = _generate_command_tts(
-                text, file_str, provider, command_provider_config, tts_config,
+            fallback_destination = (
+                str(_configured_command_tts_output_path(
+                    Path(primary_destination), fallback_command_config,
+                ))
+                if fallback_command_config is not None
+                else primary_destination
             )
+            primary_attempt = _tts_attempt_path(primary_destination, "primary")
+            fallback_attempt = _tts_attempt_path(fallback_destination, "fallback")
+            try:
+                try:
+                    generated_path, effective_provider = _generate_tts_with_provider(
+                        text, primary_attempt, provider, tts_config,
+                    )
+                    _ensure_tts_output(generated_path, effective_provider)
+                except Exception as exc:
+                    primary_error = _safe_tts_error(exc)
+                    logger.warning(
+                        "TTS primary provider %s failed; retrying complete message with %s: %s",
+                        provider, fallback_provider, primary_error,
+                    )
+                    try:
+                        if os.path.exists(primary_attempt):
+                            os.unlink(primary_attempt)
+                    except OSError:
+                        logger.warning(
+                            "Could not remove failed primary TTS artifact: %s", primary_attempt,
+                        )
+                    try:
+                        generated_path, effective_provider = _generate_tts_with_provider(
+                            text, fallback_attempt, fallback_provider, tts_config,
+                        )
+                        _ensure_tts_output(generated_path, effective_provider)
+                    except Exception as fallback_exc:
+                        fallback_error = _safe_tts_error(fallback_exc)
+                        error_msg = (
+                            f"TTS generation failed ({provider}; fallback {fallback_provider}): "
+                            f"primary: {primary_error}; fallback: {fallback_error}"
+                        )
+                        logger.error("%s", error_msg)
+                        return tool_error(error_msg, success=False)
+                    fallback_used = True
 
-        # Plugin-registered TTS backend (issue #30398). Fires when the
-        # configured provider is neither a built-in nor a command-type
-        # entry, AND a plugin is registered under that name. The walrus
-        # binds `_plugin_path` only when the dispatcher returns a path
-        # (i.e. a plugin was actually found); a None return falls
-        # through to the built-in elif chain so unknown names hit the
-        # Edge TTS default at the bottom. The dispatcher itself enforces
-        # built-ins-always-win + command-wins-over-plugin defensively.
-        elif provider not in BUILTIN_TTS_PROVIDERS and (
-            _plugin_path := _dispatch_to_plugin_provider(
+                destination = fallback_destination if fallback_used else primary_destination
+                os.replace(generated_path, destination)
+                file_str = destination
+                provider = effective_provider
+                command_provider_config = _resolve_command_provider_config(provider, tts_config)
+            finally:
+                for attempt_path in (primary_attempt, fallback_attempt):
+                    try:
+                        if os.path.exists(attempt_path):
+                            os.unlink(attempt_path)
+                    except OSError:
+                        logger.warning("Could not remove temporary TTS artifact: %s", attempt_path)
+        else:
+            file_str, provider = _generate_tts_with_provider(
                 text, file_str, provider, tts_config,
             )
-        ) is not None:
-            file_str = _plugin_path
-
-        elif provider == "elevenlabs":
-            try:
-                _import_elevenlabs()
-            except ImportError:
-                return json.dumps({
-                    "success": False,
-                    "error": "ElevenLabs provider selected but 'elevenlabs' package not installed. Run: pip install elevenlabs"
-                }, ensure_ascii=False)
-            logger.info("Generating speech with ElevenLabs...")
-            _generate_elevenlabs(text, file_str, tts_config)
-
-        elif provider == "openai":
-            try:
-                _import_openai_client()
-            except ImportError:
-                return json.dumps({
-                    "success": False,
-                    "error": "OpenAI provider selected but 'openai' package not installed."
-                }, ensure_ascii=False)
-            logger.info("Generating speech with OpenAI TTS...")
-            _generate_openai_tts(text, file_str, tts_config)
-
-        elif provider == "deepinfra":
-            try:
-                _import_openai_client()
-            except ImportError:
-                return json.dumps({
-                    "success": False,
-                    "error": "DeepInfra TTS uses the 'openai' SDK but it isn't installed."
-                }, ensure_ascii=False)
-            logger.info("Generating speech with DeepInfra TTS...")
-            _generate_deepinfra_tts(text, file_str, tts_config)
-
-        elif provider == "minimax":
-            logger.info("Generating speech with MiniMax TTS...")
-            _generate_minimax_tts(text, file_str, tts_config)
-
-        elif provider == "xai":
-            logger.info("Generating speech with xAI TTS...")
-            _generate_xai_tts(text, file_str, tts_config)
-
-        elif provider == "mistral":
-            try:
-                _import_mistral_client()
-            except ImportError:
-                return json.dumps({
-                    "success": False,
-                    "error": "Mistral provider selected but 'mistralai' package not installed. "
-                             "Run `hermes setup` to install Mistral support."
-                }, ensure_ascii=False)
-            logger.info("Generating speech with Mistral Voxtral TTS...")
-            _generate_mistral_tts(text, file_str, tts_config)
-
-        elif provider == "gemini":
-            logger.info("Generating speech with Google Gemini TTS...")
-            _generate_gemini_tts(text, file_str, tts_config)
-
-        elif provider == "neutts":
-            if not _check_neutts_available():
-                return json.dumps({
-                    "success": False,
-                    "error": "NeuTTS provider selected but neutts is not installed. "
-                             "Run hermes setup and choose NeuTTS, or install espeak-ng and run python -m pip install -U neutts[all]."
-                }, ensure_ascii=False)
-            logger.info("Generating speech with NeuTTS (local)...")
-            _generate_neutts(text, file_str, tts_config)
-
-        elif provider == "kittentts":
-            try:
-                _import_kittentts()
-            except ImportError:
-                return json.dumps({
-                    "success": False,
-                    "error": "KittenTTS provider selected but 'kittentts' package not installed. "
-                             "Run 'hermes setup tts' and choose KittenTTS, or install manually: "
-                             "pip install https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl"
-                }, ensure_ascii=False)
-            logger.info("Generating speech with KittenTTS (local, ~25MB)...")
-            _generate_kittentts(text, file_str, tts_config)
-
-        elif provider == "piper":
-            try:
-                _import_piper()
-            except ImportError:
-                return json.dumps({
-                    "success": False,
-                    "error": "Piper provider selected but 'piper-tts' package not installed. "
-                             "Run 'hermes tools' and select Piper under TTS, or install manually: "
-                             "pip install piper-tts",
-                }, ensure_ascii=False)
-            logger.info("Generating speech with Piper (local)...")
-            _generate_piper_tts(text, file_str, tts_config)
-
-        else:
-            # Default: Edge TTS (free), with NeuTTS as local fallback
-            edge_available = True
-            try:
-                _import_edge_tts()
-            except ImportError:
-                edge_available = False
-
-            if edge_available:
-                logger.info("Generating speech with Edge TTS...")
-                try:
-                    import concurrent.futures
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                        pool.submit(
-                            lambda: asyncio.run(_generate_edge_tts(text, file_str, tts_config))
-                        ).result(timeout=60)
-                except RuntimeError:
-                    asyncio.run(_generate_edge_tts(text, file_str, tts_config))
-            elif _check_neutts_available():
-                logger.info("Edge TTS not available, falling back to NeuTTS (local)...")
-                provider = "neutts"
-                _generate_neutts(text, file_str, tts_config)
-            else:
-                return json.dumps({
-                    "success": False,
-                    "error": "No TTS provider available. Install edge-tts (pip install edge-tts) "
-                             "or set up NeuTTS for local synthesis."
-                }, ensure_ascii=False)
+            command_provider_config = _resolve_command_provider_config(provider, tts_config)
 
         # Check the file was actually created
         if not os.path.exists(file_str) or os.path.getsize(file_str) == 0:
@@ -2586,14 +2738,20 @@ def text_to_speech_tool(
         if voice_compatible:
             media_tag = f"[[audio_as_voice]]\n{media_tag}"
 
-        return json.dumps({
+        result = {
             "success": True,
             "file_path": file_str,
             "media_tag": media_tag,
             "provider": provider,
             "voice_compatible": voice_compatible,
-        }, ensure_ascii=False)
+        }
+        if fallback_used:
+            result["fallback_from"] = _get_provider(tts_config)
+            result["fallback_error"] = primary_error
+        return json.dumps(result, ensure_ascii=False)
 
+    except _TTSProviderUnavailableError as e:
+        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
     except ValueError as e:
         # Configuration errors (missing API keys, etc.)
         error_msg = f"TTS configuration error ({provider}): {e}"
@@ -2611,18 +2769,16 @@ def text_to_speech_tool(
         return tool_error(error_msg, success=False)
 
 
+
+
 # ===========================================================================
 # Requirements check
 # ===========================================================================
-def check_tts_requirements() -> bool:
-    """Return whether the explicitly resolved TTS provider can run.
-
-    Availability must mirror :func:`text_to_speech_tool` dispatch. Unrelated
-    cloud credentials do not make the default Edge backend usable, and an
-    explicitly selected backend is checked on its own requirements.
-    """
-    tts_config = _load_tts_config()
-    provider = _get_provider(tts_config)
+def _check_tts_provider_requirements(
+    provider: str,
+    tts_config: Dict[str, Any],
+) -> bool:
+    """Return whether one already-resolved provider can run."""
     command_config = _resolve_command_provider_config(provider, tts_config)
     if command_config is not None:
         return True
@@ -2684,6 +2840,25 @@ def check_tts_requirements() -> bool:
         return bool(plugin and plugin.is_available())
     except Exception:
         return False
+
+
+def check_tts_requirements() -> bool:
+    """Return whether the primary or its valid configured fallback can run.
+
+    The fallback is considered only after the primary is unavailable.  This
+    keeps it opt-in and avoids making unrelated credentials expose the TTS
+    tool, while allowing an ElevenLabs package/key outage to leave OpenAI TTS
+    available to the agent.
+    """
+    tts_config = _load_tts_config()
+    primary_provider = _get_provider(tts_config)
+    if _check_tts_provider_requirements(primary_provider, tts_config):
+        return True
+    fallback_provider = _get_tts_fallback_provider(primary_provider, tts_config)
+    return bool(
+        fallback_provider
+        and _check_tts_provider_requirements(fallback_provider, tts_config)
+    )
 
 
 def _resolve_openai_audio_client_config() -> tuple[str, str, bool]:

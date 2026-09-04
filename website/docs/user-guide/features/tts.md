@@ -44,6 +44,7 @@ Convert text to speech with ten providers:
 # In ~/.hermes/config.yaml
 tts:
   provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper"
+  fallback_provider: "openai"   # Optional: retry the whole reply once if the primary fails
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -98,6 +99,8 @@ tts:
 ```
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
+
+**Provider fallback**: Set `tts.fallback_provider` to a different built-in, command, or registered plugin provider, for example `openai` when `provider: elevenlabs`. Hermes retries the complete reply once only after the primary fails; it never loops back to the primary and never mixes partial audio from two providers. When the providers have different input limits, Hermes uses the lower limit for the shared script. Leave it empty (the default) for single-provider behavior.
 
 ### Gemini Persona Prompts
 

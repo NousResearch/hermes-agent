@@ -2240,6 +2240,11 @@ DEFAULT_CONFIG = {
         # Set explicitly to pin a backend:
         # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "provider": "edge",
+        # Optional one-shot whole-message retry when the selected provider
+        # fails. Leave empty to preserve single-provider behaviour. A fallback
+        # must name a different built-in, command, or registered plugin provider
+        # (e.g. "openai").
+        "fallback_provider": "",
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural

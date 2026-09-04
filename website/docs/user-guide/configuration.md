@@ -1475,6 +1475,7 @@ This mirrors Claude Code's per-session WebSearch and subagent caps (v2.1.212), w
 ```yaml
 tts:
   provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts"
+  fallback_provider: "openai"   # Optional: retry the whole reply once if the primary fails
   speed: 1.0                    # Global speed multiplier (fallback for all providers)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -1514,6 +1515,8 @@ tts:
 This controls both the `text_to_speech` tool and spoken replies in voice mode (`/voice tts` in the CLI or messaging gateway).
 
 **Speed fallback hierarchy:** provider-specific speed (e.g. `tts.edge.speed`) → global `tts.speed` → `1.0` default. Set the global `tts.speed` to apply a uniform speed across all providers, or override per-provider for fine-grained control.
+
+**Provider fallback:** set `tts.fallback_provider` to a different built-in, command, or registered plugin provider, such as `openai` for an ElevenLabs primary. Hermes retries the complete reply once after a primary failure, with no retry loop and no mixed-provider audio. If their input limits differ, it uses the lower limit for the shared script. The default empty value keeps single-provider behavior.
 
 ## Display Settings
 

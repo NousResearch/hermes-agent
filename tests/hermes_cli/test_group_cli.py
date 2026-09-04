@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import multiprocessing
+import sys
 
 import pytest
 
@@ -514,6 +516,10 @@ def test_bindings_file_is_bounded_and_survives_corruption(home, monkeypatch):
     assert g.bound_thread(ref, "s9") is None
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32" or "fork" not in multiprocessing.get_all_start_methods(),
+    reason="fork start method required; the flock is a no-op without fcntl anyway",
+)
 def test_bind_thread_is_safe_under_concurrent_writers(home):
     """Many writers, each binding its own session: no binding may be lost."""
     import multiprocessing as mp

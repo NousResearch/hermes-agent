@@ -16,6 +16,14 @@ matter what any other number says. Only when the driver API is
 unreachable does the engine's --list-devices view apply, and then only
 behind two independent conditions no discrete card can meet.
 
+AMD (Linux): amdgpu publishes the device's memory bar via sysfs
+(mem_info_vram_*), which reads like a discrete device query — honest
+for discrete cards and for APUs with a large BIOS-dedicated carve
+(Strix Halo), misleading for small-carve APUs whose real pool is
+system RAM. The RAM-sized-carve gate (the NVIDIA quirk's
+_POOL_RAM_FRACTION) picks the former; everything else keeps the
+RAM-as-UMA budget below.
+
 Every probe here must work under a stripped PATH — gateway and service
 sessions don't inherit the interactive environment. nvcuda/libcuda load
 through the system loader (PATH plays no part), so classification never
@@ -238,6 +246,33 @@ def _cuda_driver_pool() -> "tuple[int, bool | None] | None":
         return None
 
 
+def _amd_sysfs_vram() -> tuple[int, int] | None:
+    """(total, free) bytes for an AMD GPU via Linux sysfs, or None.
+
+    amdgpu exposes the device's memory bar as mem_info_vram_total/used
+    under /sys/class/drm/card*/device. On APUs with a large BIOS carve
+    (Strix Halo and friends) that bar IS the dedicated pool: the kernel
+    removed it from system RAM, the OS cannot reclaim it, and placement
+    inside it runs at full bandwidth — the honest equivalent of a
+    discrete card's device query. Only the amdgpu bind point carries
+    these files, so a vendor check is redundant but cheap insurance.
+    """
+    if sys.platform != "linux":
+        return None
+    best: tuple[int, int] | None = None
+    for device in Path("/sys/class/drm").glob("card*/device"):
+        try:
+            if (device / "vendor").read_text().strip().lower() != "0x1002":
+                continue
+            total = int((device / "mem_info_vram_total").read_text())
+            used = int((device / "mem_info_vram_used").read_text())
+        except (OSError, ValueError):
+            continue
+        if total > 0 and (best is None or total > best[0]):
+            best = (total, max(0, total - used))
+    return best
+
+
 def _engine_device_pool() -> "tuple[int, bool | None] | None":
     """(engine_total_bytes, None) from the installed runtime's own
     --list-devices, or None. The fallback truth source when the driver
@@ -327,6 +362,18 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
     """
     ram_total, ram_avail = _ram_bytes()
     vram = _nvidia_vram()
+    if vram is None:
+        # AMD (Linux): amdgpu's sysfs bar answers like a discrete device
+        # query. Trust it only when the carve is RAM-sized — the
+        # signature of a BIOS-dedicated pool (Strix Halo, framed APUs).
+        # A small-carve APU (0.5-4 GiB of a shared pool) fails the gate
+        # and keeps today's RAM-as-UMA budget; a real discrete card
+        # passes because its bar is a large fraction of any box it
+        # ships in. Mirrors the NVIDIA quirk's _POOL_RAM_FRACTION gate.
+        amd = _amd_sysfs_vram()
+        if (amd is not None and ram_total > 0
+                and amd[0] >= int(ram_total * _POOL_RAM_FRACTION)):
+            vram = amd
 
     # Unified-memory NVIDIA: the CUDA allocator pool is the real
     # capacity. Classification comes from the driver API/engine — it
@@ -362,8 +409,9 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
 
     if vram is None:
         # No NVIDIA device visible: Metal/Vulkan/CPU paths budget from RAM
-        # as UMA (Apple Silicon) — conservative for discrete AMD until a
-        # vendor probe lands (E3 hardware).
+        # as UMA (Apple Silicon), and small-carve AMD APUs stay here too —
+        # conservative for those pools, whose device queries have been
+        # observed off by 3x.
         base = ram_total if planning else ram_avail
         usable = max(0, int(base * (1 - _UMA_HEADROOM_FRACTION)))
         return HardwareBudget(usable_vram_bytes=usable,

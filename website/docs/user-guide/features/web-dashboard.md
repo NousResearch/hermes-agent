@@ -800,6 +800,50 @@ curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'
 
 `basic` is just one implementation of an extension point. Any plugin can register a password provider: set `supports_password = True` on your `DashboardAuthProvider` subclass and implement `complete_password_login(*, username, password) -> Session` (raise `InvalidCredentialsError` on rejection, `ProviderError` if your backing store is down). The OAuth `start_login` / `complete_login` methods can be left as `NotImplementedError` stubs for a pure-password provider. This is the path for LDAP-bind, a credentials database, or any other non-redirect auth scheme — the framework handles the form, the route, the cookies, and refresh for you.
 
+### LDAP / Active Directory provider
+
+The bundled `plugins/dashboard_auth/ldap` plugin authenticates the dashboard against an LDAP directory (OpenLDAP, Active Directory, FreeIPA, 389-ds, …) with an **LDAP bind** — passwords are never stored or hashed by Hermes. Like every bundled provider it auto-loads and only registers once configured, so it's a no-op for everyone else. The `ldap3` dependency (pure Python) is lazy-installed at first configured startup.
+
+Two bind modes, mutually exclusive:
+
+* **Direct bind** — you know the DN shape. Simplest; no service account:
+
+```yaml
+dashboard:
+  ldap_auth:
+    server_url: ldaps://ldap.example.com
+    user_dn_template: "uid={username},ou=people,dc=example,dc=com"
+    secret: "<32+ random bytes, base64>"   # openssl rand -base64 32
+```
+
+* **Search-then-bind** — a service account finds the user first. Required for Active Directory (`sAMAccountName` logins) and whenever you want email / display-name in the session:
+
+```yaml
+dashboard:
+  ldap_auth:
+    server_url: ldaps://dc01.corp.example.com
+    bind_dn: "CN=svc-hermes,OU=Service Accounts,DC=corp,DC=example,DC=com"
+    bind_password: "..."                     # or HERMES_DASHBOARD_LDAP_BIND_PASSWORD
+    user_search_base: "OU=Staff,DC=corp,DC=example,DC=com"
+    user_search_filter: "(sAMAccountName={username})"
+    require_group: "CN=hermes-users,OU=Groups,DC=corp,DC=example,DC=com"
+    secret: "<32+ random bytes, base64>"
+```
+
+Optional keys: `require_group` (group DN — covers `member`, `uniqueMember`, and `memberUid` schemas; non-members get the same generic 401 as a wrong password), `start_tls: true` (upgrade a plain `ldap://` connection), `allow_insecure: true` (explicitly permit cleartext `ldap://` — don't), `ca_certs_file` (private CA bundle), `email_attribute` / `display_name_attribute` (defaults `mail` / `cn`), `display_name` (login-form label), `session_ttl_seconds` (default 12h), `refresh_ttl_seconds` (default 30d), `timeout_seconds` (default 5), `verify_user_on_refresh` (default true).
+
+Environment overrides (env wins over `config.yaml` when set non-empty): `HERMES_DASHBOARD_LDAP_SERVER_URL`, `_USER_DN_TEMPLATE`, `_BIND_DN`, `_BIND_PASSWORD`, `_USER_SEARCH_BASE`, `_USER_SEARCH_FILTER`, `_REQUIRE_GROUP`, `_START_TLS`, `_ALLOW_INSECURE`, `_CA_CERTS_FILE`, `_SECRET`, `_TTL_SECONDS` (all prefixed `HERMES_DASHBOARD_LDAP`).
+
+:::note Session freshness
+Sessions are stateless signed tokens; the directory is consulted at **login** and — in search-then-bind mode — at each **token refresh**, where a **deleted or moved** account is rejected. That bounds a deleted or moved account's residual access to `session_ttl_seconds` (12h default). The refresh probe is an existence check on the stored DN, so an account that is merely **disabled** (AD `userAccountControl`, OpenLDAP `pwdAccountLockedTime`, an expired account) still exists at its DN and is **not** detected — its session keeps refreshing until the refresh token expires. If disable-means-lockout matters to you, delete or move the entry instead, or shorten `refresh_ttl_seconds`. Direct-bind mode has no service credentials to check with, so there nothing is re-checked at all: sessions live until the refresh token expires, whatever became of the account. Prefer search-then-bind (or a short `refresh_ttl_seconds`) if that matters to you. Setting `verify_user_on_refresh: false` turns the refresh-time check off entirely.
+:::
+
+Security posture: cleartext `ldap://` without StartTLS is refused unless `allow_insecure` is set; empty passwords are rejected before any bind (an empty password is an *anonymous* bind in LDAP — accepting it would be an auth bypass); usernames are escaped against LDAP filter/DN injection; the shared `/auth/password-login` rate limit (10/min/IP) and generic-401 behaviour apply as with the `basic` provider.
+
+:::note Group-restriction caveats
+`require_group` matches **direct** membership only — the group entry's own `member`, `uniqueMember`, or `memberUid` values — so Active Directory *nested* groups and `primaryGroupID`-based membership read as non-members. The check runs on the user's own connection, so directory ACLs must let authenticated users read the group entry; if ACLs hide it, every login fails with the same generic 401. And in direct-bind mode the check compares the templated DN against the group's `member` values, so any difference in DN form (spacing, attribute case) rejects otherwise-valid logins — search-then-bind is immune, since there the DN comes from the directory itself.
+:::
+
 ### Self-hosted OIDC provider
 
 If you run your own identity provider, the bundled `plugins/dashboard_auth/self_hosted` plugin authenticates the dashboard against it using **standard OpenID Connect** — no per-IDP code, no Nous Portal involved. It's verified against and works with any conformant OIDC server:

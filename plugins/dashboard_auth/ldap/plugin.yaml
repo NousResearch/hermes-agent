@@ -1,0 +1,7 @@
+name: ldap
+version: 1.0.0
+description: "Dashboard auth provider — LDAP / Active Directory (password login via LDAP bind). Activates when dashboard.ldap_auth.server_url plus a bind mode (user_dn_template for direct bind, or user_search_base for search-then-bind) are configured via config.yaml (canonical surface) or the HERMES_DASHBOARD_LDAP_* env vars. Sessions are stateless HMAC-signed tokens minted by the provider; the directory is only contacted at login and (search mode) refresh. Requires ldaps:// or start_tls unless allow_insecure is set. ldap3 is lazy-installed at first use (tools/lazy_deps.py 'auth.ldap'). Set dashboard.ldap_auth.secret for restart-surviving / multi-worker sessions."
+author: NousResearch
+kind: backend
+requires_env:
+  - HERMES_DASHBOARD_LDAP_SERVER_URL

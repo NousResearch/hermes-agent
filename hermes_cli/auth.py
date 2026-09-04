@@ -576,7 +576,7 @@ def _file_lock(
                     lock_path.write_text(" ", encoding="utf-8")
                 except (OSError, PermissionError):
                     pass
-            lock_file = stack.enter_context(lock_path.open("r+" if msvcrt else "a+", encoding="utf-8-sig"))
+            lock_file = stack.enter_context(lock_path.open("r+" if msvcrt else "a+", encoding="utf-8"))
             deadline = time.monotonic() + max(1.0, timeout_seconds)
             while True:
                 try:

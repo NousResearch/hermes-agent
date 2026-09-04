@@ -3482,7 +3482,7 @@ def _append_launchd_reload_log(message: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         from datetime import datetime as _dt
         stamp = _dt.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
-        with path.open("a", encoding="utf-8-sig") as fh:
+        with path.open("a", encoding="utf-8") as fh:
             fh.write(f"[{stamp}] {message}\n")
     except OSError:
         pass

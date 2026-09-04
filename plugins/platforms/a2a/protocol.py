@@ -445,7 +445,7 @@ def persist_message(context_id: str, role: str, text: str, task_id: str = "") ->
     try:
         path = _conv_path(context_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8-sig") as fh:
+        with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps({"ts": time.time(), "role": role, "text": text, "task_id": task_id}, ensure_ascii=False) + "\n")
     except Exception:
         pass

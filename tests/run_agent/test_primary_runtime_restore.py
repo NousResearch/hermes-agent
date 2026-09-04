@@ -194,6 +194,11 @@ class TestRestorePrimaryRuntime:
             "fallback anthropic/claude-sonnet-4 via openrouter is no longer active."
         ]
 
+    def test_emit_status_tolerates_minimal_agent_without_status_callback(self):
+        agent = object.__new__(AIAgent)
+
+        AIAgent._emit_status(agent, "restored")
+
     def test_does_not_label_temporary_model_restore_as_fallback_recovery(self):
         """`/model --once` reuses restore with no provider fallback lifecycle."""
         agent = _make_agent()

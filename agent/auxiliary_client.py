@@ -6732,6 +6732,35 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         "api_key": sync_client.api_key,
         "base_url": str(sync_client.base_url),
     }
+    # A sync client built from a per-request credential source (``key_cmd``,
+    # Azure Entra bearer providers) stores a callable in ``_api_key_provider``
+    # and leaves ``api_key`` EMPTY until the first request. OpenAI SDK 2.x
+    # (_client.py:144-147 sync / 499-504 async): passing a plain string here
+    # would silently drop that source, so every async auxiliary leg
+    # (vision, titles, compression) sends a placeholder key and 401s while the
+    # identical sync path succeeds. AsyncOpenAI accepts an *awaitable* api_key
+    # and awaits it in ``_refresh_api_key`` before each request — so bridge the
+    # sync callable into an awaitable wrapper, running it in an executor when
+    # it is a plain sync callable (key_cmd sources shell out via subprocess and
+    # must not block the event loop). Static-key clients are untouched: the
+    # guard only fires when a provider is actually present.
+    _sync_key_provider = getattr(sync_client, "_api_key_provider", None)
+    if callable(_sync_key_provider) and not isinstance(_sync_key_provider, str):
+        import asyncio as _asyncio
+
+        async def _await_key_provider():
+            # Run the sync callable itself off the loop — key_cmd sources shell
+            # out via subprocess and must not block the event loop. An
+            # awaitable-returning provider comes back as a coroutine from the
+            # executor call and is awaited here on the loop.
+            result = await _asyncio.get_running_loop().run_in_executor(
+                None, _sync_key_provider
+            )
+            if inspect.isawaitable(result):
+                return await result
+            return result
+
+        async_kwargs["api_key"] = _await_key_provider
     sync_base_url = str(sync_client.base_url)
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         async_kwargs["default_headers"] = build_or_headers()

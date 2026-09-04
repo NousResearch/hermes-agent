@@ -174,6 +174,14 @@ that live on one gateway.
   returns to its default profile and the layers pill shows **All profiles on
   this gateway**. **Cmd/Ctrl+1–9** continue to switch profiles within the
   active gateway.
+- In **All profiles on this gateway** every chat in the sidebar leads with
+  the profile it belongs to — `inbox › Draft the release notes` — so the
+  merged list still says who made what. The name sits in the same grey as
+  the row's age until you hover or select the row, when it takes that
+  profile's colour (the colour of its rail square). Chats on the default
+  profile carry no mark, and the name steps aside when the list is grouped
+  by profile or narrowed to a single profile from the filter menu, where a
+  header already says so.
 - With several gateways the profile rail is a **fleet rail**: every registered
   gateway's profiles sit on the one strip, each group headed by that gateway's
   kind glyph (device, network, terminal, cloud) — the same glyph the gateway

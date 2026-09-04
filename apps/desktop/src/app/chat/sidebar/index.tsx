@@ -1878,6 +1878,9 @@ export function ChatSidebar({
                   !recentsVirtualizes && 'compact:min-h-0 compact:flex-none compact:overflow-visible'
                 )}
                 sessions={displayAgentSessions}
+                // Every row in the merged list names its owner — unless a profile
+                // group header or a single-profile narrowing already does.
+                showProfileTags={showAllProfiles && !profileGrouped && profileFilter.length !== 1}
                 sortable={!showAllProfiles && agentSessions.length > 1}
               />
             )}

@@ -50,7 +50,7 @@ vi.mock('@/i18n', () => ({
   })
 }))
 
-vi.mock('@/app/chat/profile-tag', () => ({ ProfileTag: () => null }))
+vi.mock('@/app/chat/profile-tag', () => ({ ProfileTag: () => <span data-testid="profile-tag" /> }))
 vi.mock('@/app/chat/session-drag', () => ({ startSessionDrag: vi.fn() }))
 // PlatformAvatar is intentionally NOT mocked (do not reintroduce this — see
 // #67500, Gille's third pass): it's a forwardRef component that spreads its
@@ -437,5 +437,74 @@ describe('Inbox-style session card', () => {
 
     expect(workspace.className).toMatch(/\btruncate\b/)
     expect(screen.getByText('133 messages')).toBeTruthy()
+  })
+})
+
+// The All-profiles view (`showProfile`): the one-line row names its owner in
+// the title line, the card keeps the trailing chip, and the default profile
+// is never marked. Colour states are pinned in profile-lead.test.tsx.
+describe('SidebarSessionRow profile lead', () => {
+  const renderTagged = (
+    session: SessionInfo,
+    extra?: { card?: boolean; isSelected?: boolean; showProfile?: boolean }
+  ) =>
+    render(
+      <SidebarSessionRow
+        card={extra?.card}
+        isPinned={false}
+        isSelected={extra?.isSelected ?? false}
+        onArchive={noop}
+        onDelete={noop}
+        onPin={noop}
+        onResume={noop}
+        onToggleUnread={noop}
+        session={session}
+        showProfile={extra?.showProfile ?? true}
+        unread={false}
+      />
+    )
+
+  const lead = (container: HTMLElement) => container.querySelector<HTMLElement>('[data-profile-lead]')
+
+  it('leads the one-line title with the owning profile instead of a trailing chip', () => {
+    const { container } = renderTagged(makeSession({ profile: 'inbox', title: 'Draft the release notes' }))
+    const mark = lead(container) as HTMLElement
+
+    expect(mark.dataset.profileLead).toBe('inbox')
+    // Part of the title line itself — ahead of the title, scrolling with it
+    // on hover — not a column of its own.
+    const line = container.querySelector<HTMLElement>('.hover-marquee-inner') as HTMLElement
+
+    expect(line.contains(mark)).toBe(true)
+    expect(line.textContent?.startsWith('inbox')).toBe(true)
+    expect(line.textContent?.endsWith('Draft the release notes')).toBe(true)
+    expect(screen.queryByTestId('profile-tag')).toBeNull()
+  })
+
+  it('paints the lead in the profile colour once the row is selected', () => {
+    const { container } = renderTagged(makeSession({ profile: 'inbox', title: 'Draft' }), { isSelected: true })
+
+    expect((lead(container) as HTMLElement).className).toContain('font-medium')
+  })
+
+  it('carries no mark for the default profile', () => {
+    const { container } = renderTagged(makeSession({ profile: 'default', title: 'Plain' }))
+
+    expect(lead(container)).toBeNull()
+    expect(screen.queryByTestId('profile-tag')).toBeNull()
+  })
+
+  it('marks nothing outside a mixed-profile list', () => {
+    const { container } = renderTagged(makeSession({ profile: 'inbox', title: 'Plain' }), { showProfile: false })
+
+    expect(lead(container)).toBeNull()
+    expect(screen.queryByTestId('profile-tag')).toBeNull()
+  })
+
+  it('keeps the chip on the card and adds no lead', () => {
+    const { container } = renderTagged(makeSession({ profile: 'inbox', title: 'Plain' }), { card: true })
+
+    expect(lead(container)).toBeNull()
+    expect(screen.queryByTestId('profile-tag')).not.toBeNull()
   })
 })

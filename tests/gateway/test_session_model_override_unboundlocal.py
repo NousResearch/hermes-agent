@@ -5,7 +5,7 @@ session-override block) before its first assignment in the same method.  Because
 ``model`` is assigned later in the method, Python treats it as function-local for
 the whole scope, so any read before the first assignment raised
 ``UnboundLocalError``.  The caller's broad ``except Exception`` then mislabeled
-the failure as "Provider authentication failed" (e.g. ``/model qwen3.8:27b`` on
+the failure as "Provider authentication failed" (e.g. ``/model qwen3.5-4b`` on
 a platform with no ``model_platforms`` entry).
 
 The fix initializes ``model = _resolve_gateway_model(user_config)`` at the top of
@@ -77,10 +77,10 @@ def test_session_override_without_platform_entry_does_not_raise(monkeypatch):
     runner = _make_runner()
     session_key = "agent:main:telegram:dm:123"
     override = {
-        "model": "qwen3.8:27b",
-        "provider": "custom:ollama-cte700air",
+        "model": "qwen3.5-4b",
+        "provider": "custom:my-ollama",
         "api_key": "sk-test",
-        "base_url": "http://cte700air:11434/v1",
+        "base_url": "http://localhost:11434/v1",
         "api_mode": "chat_completions",
     }
     _set_session_override(runner, session_key, override)
@@ -98,8 +98,8 @@ def test_session_override_without_platform_entry_does_not_raise(monkeypatch):
         user_config=user_config,
     )
 
-    assert model == "qwen3.8:27b"
-    assert runtime.get("provider") == "custom:ollama-cte700air"
+    assert model == "qwen3.5-4b"
+    assert runtime.get("provider") == "custom:my-ollama"
     assert runtime.get("api_key") == "sk-test"
 
 

@@ -124,6 +124,8 @@ interface RelayAgentRow {
 interface RelayEnvelope {
   id?: string
   message?: string
+  from_profile?: string
+  from_handle?: string
   target_connection?: string
   target_profile?: string
 }
@@ -398,7 +400,10 @@ async function drainRelayOutboxes() {
             'bot_relay.deliver',
             {
               profile: String(envelope?.target_profile || ''),
-              message: String(envelope?.message || '')
+              message: String(envelope?.message || ''),
+              // The target gateway sets HERMES_TURN_AUTHOR on the delivery turn from these two.
+              from_profile: String(envelope?.from_profile || ''),
+              from_handle: String(envelope?.from_handle || '')
             },
             RELAY_DELIVER_TIMEOUT_MS
           )

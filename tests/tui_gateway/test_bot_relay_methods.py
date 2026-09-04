@@ -193,3 +193,43 @@ def test_deliver_write_failure_still_removes_tempfile(home, monkeypatch, tmp_pat
     assert "error" in err
     assert made, "mkstemp was never reached"
     assert not glob.glob(str(tmp_path / "hermes-relay-dm-*")), "tempfile leaked"
+
+
+@pytest.fixture
+def fake_runs(monkeypatch):
+    """Fake ``subprocess.run`` that records each call's kwargs; ``outcomes`` holds (returncode, stderr) per call."""
+    calls, outcomes = [], []
+
+    def _fake_run(argv, **kwargs):
+        calls.append(kwargs)
+        code, err = outcomes.pop(0) if outcomes else (0, "")
+
+        class _Proc:
+            returncode, stdout, stderr = code, "ok" if code == 0 else "", err
+
+        return _Proc()
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    return calls, outcomes
+
+
+@pytest.mark.parametrize("sender, expected", [
+    ({"from_profile": "scout", "from_handle": "scout"}, {"id": "bot:scout", "name": "scout", "is_bot": True}),
+    ({}, None),
+], ids=["sender fields", "no sender fields"])
+def test_deliver_child_env_carries_the_envelope_sender_on_every_attempt(home, monkeypatch, fake_runs, sender, expected):
+    """HERMES_TURN_AUTHOR on the child comes from the envelope's sender fields alone: the retry gets the same
+    author, and without sender fields a stale author on the gateway's own environment never reaches the child."""
+    from agent.turn_author import TURN_AUTHOR_ENV
+
+    calls, outcomes = fake_runs
+    outcomes.extend([(1, "HTTP 429 rate limit"), (0, "")])
+    monkeypatch.setenv("HERMES_RELAY_TEST_MARKER", "kept")
+    monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps({"id": "bot:stale", "name": "stale", "is_bot": True}))
+
+    _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping", **sender}))
+
+    envs = [c["env"] for c in calls]
+    assert len(envs) == 2
+    assert [json.loads(e[TURN_AUTHOR_ENV]) if TURN_AUTHOR_ENV in e else None for e in envs] == [expected, expected]
+    assert all(e["HERMES_RELAY_TEST_MARKER"] == "kept" for e in envs)

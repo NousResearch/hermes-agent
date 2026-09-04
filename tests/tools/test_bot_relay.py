@@ -560,3 +560,28 @@ def test_message_agent_surfaces_runtime_offline_refusal(tmp_path, monkeypatch):
     assert "offline" in out.get("error", "")
     # fail-fast means no envelope was queued
     assert bot_relay.claim_pending_envelopes(home) == []
+
+
+# ── delivery turn author (HERMES_TURN_AUTHOR on the recipient turn) ──────────
+
+
+def test_delivery_turn_author_from_envelope_sender_fields():
+    author = bot_relay.delivery_turn_author("ops", "ops-bot")
+    assert author == {"id": "bot:ops", "name": "ops-bot", "is_bot": True}
+    # The display name falls back to the profile; the id never comes from the handle.
+    assert bot_relay.delivery_turn_author("ops", "") == {"id": "bot:ops", "name": "ops", "is_bot": True}
+    assert bot_relay.delivery_turn_author("", "ops-bot") is None
+    assert bot_relay.delivery_turn_author(None, None) is None
+
+
+def test_delivery_env_carries_only_the_given_author(monkeypatch):
+    """The dispatcher's own HERMES_TURN_AUTHOR never reaches the child: dropped without an author, replaced with one."""
+    from agent.turn_author import TURN_AUTHOR_ENV
+
+    monkeypatch.setenv("HERMES_RELAY_TEST_MARKER", "kept")
+    monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps({"id": "bot:previous", "name": "previous", "is_bot": True}))
+
+    assert TURN_AUTHOR_ENV not in bot_relay.delivery_env(None)
+    env = bot_relay.delivery_env(bot_relay.delivery_turn_author("ops", "ops"))
+    assert json.loads(env[TURN_AUTHOR_ENV]) == {"id": "bot:ops", "name": "ops", "is_bot": True}
+    assert env["HERMES_RELAY_TEST_MARKER"] == "kept"

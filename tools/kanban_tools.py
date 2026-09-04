@@ -1380,6 +1380,7 @@ def _handle_create(args: dict, **kw) -> str:
         )
     body = args.get("body")
     parents = args.get("parents") or []
+    required_parent_results = args.get("required_parent_results") or {}
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
     # Stamp the originating session id when the agent loop runs under
     # ACP (which sets HERMES_SESSION_ID before invoking tools). NULL on
@@ -1439,6 +1440,11 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(
             f"parents must be a list of task ids, got {type(parents).__name__}"
         )
+    if not isinstance(required_parent_results, dict):
+        return tool_error(
+            "required_parent_results must be an object mapping parent ids "
+            "to exact result strings"
+        )
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -1459,6 +1465,7 @@ def _handle_create(args: dict, **kw) -> str:
                 body=body,
                 assignee=str(assignee),
                 parents=tuple(parents),
+                required_parent_results=required_parent_results,
                 tenant=tenant,
                 priority=int(priority) if priority is not None else 0,
                 workspace_kind=str(workspace_kind),
@@ -1668,13 +1675,19 @@ def _handle_link(args: dict, **kw) -> str:
         return delegated_err
     parent_id = args.get("parent_id")
     child_id = args.get("child_id")
+    required_parent_result = args.get("required_parent_result")
     if not parent_id or not child_id:
         return tool_error("both parent_id and child_id are required")
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
         try:
-            kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
+            kb.link_tasks(
+                conn,
+                parent_id=parent_id,
+                child_id=child_id,
+                required_parent_result=required_parent_result,
+            )
             return _ok(parent_id=parent_id, child_id=child_id)
         finally:
             conn.close()
@@ -2188,10 +2201,20 @@ KANBAN_CREATE_SCHEMA = {
                 "items": {"type": "string"},
                 "description": (
                     "Parent task ids. The new task stays in 'todo' "
-                    "until every parent reaches 'done'; then it "
+                    "until every parent dependency is satisfied; then it "
                     "auto-promotes to 'ready'. Typical fan-in: list "
                     "all the researcher task ids when creating a "
                     "synthesizer task."
+                ),
+            },
+            "required_parent_results": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "description": (
+                    "Optional map of parent task id to the exact "
+                    "machine-readable tasks.result required while that "
+                    "parent is done. Omitted parents retain ordinary "
+                    "done/archived dependency behavior."
                 ),
             },
             "tenant": {
@@ -2354,14 +2377,21 @@ KANBAN_LINK_SCHEMA = {
     "name": "kanban_link",
     "description": (
         "Add a parent→child dependency edge after both tasks already "
-        "exist. The child won't promote to 'ready' until all parents "
-        "are 'done'. Cycles and self-links are rejected."
+        "exist. The child won't promote to 'ready' until all dependency "
+        "edges are satisfied. Cycles and self-links are rejected."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "parent_id": {"type": "string", "description": "Parent task id."},
             "child_id":  {"type": "string", "description": "Child task id."},
+            "required_parent_result": {
+                "type": "string",
+                "description": (
+                    "Optional exact machine-readable result required from "
+                    "the parent while it is done."
+                ),
+            },
             "board": _board_schema_prop(),
         },
         "required": ["parent_id", "child_id"],

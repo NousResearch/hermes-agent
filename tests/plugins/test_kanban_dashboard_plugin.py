@@ -1226,7 +1226,64 @@ def test_specify_happy_path(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Final result visibility for Done cards
+# Result-aware dependency edges
 # ---------------------------------------------------------------------------
 
+
+def test_dashboard_create_and_manual_ready_share_result_gate(client):
+    with kb.connect_closing() as conn:
+        parent_id = kb.create_task(conn, title="QA", assignee="reviewer")
+        assert kb.complete_task(conn, parent_id, result="qa_failed")
+
+    response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "Deploy",
+            "parents": [parent_id],
+            "required_parent_results": {parent_id: "ready_to_deploy"},
+        },
+    )
+    assert response.status_code == 200, response.text
+    child = response.json()["task"]
+    assert child["status"] == "todo"
+
+    promote = client.patch(
+        f"/api/plugins/kanban/tasks/{child['id']}",
+        json={"status": "ready"},
+    )
+    assert promote.status_code == 409
+    detail = promote.json()["detail"]
+    assert "required_parent_result=ready_to_deploy" in detail
+    assert "result=qa_failed" in detail
+
+
+def test_dashboard_link_api_persists_result_gate(client):
+    with kb.connect_closing() as conn:
+        parent_id = kb.create_task(conn, title="QA", assignee="reviewer")
+        assert kb.complete_task(conn, parent_id, result="qa_failed")
+        child_id = kb.create_task(conn, title="Deploy")
+
+    response = client.post(
+        "/api/plugins/kanban/links",
+        json={
+            "parent_id": parent_id,
+            "child_id": child_id,
+            "required_parent_result": "ready_to_deploy",
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, child_id).status == "todo"
+        edge = conn.execute(
+            "SELECT required_parent_result FROM task_links "
+            "WHERE parent_id = ? AND child_id = ?",
+            (parent_id, child_id),
+        ).fetchone()
+        assert edge["required_parent_result"] == "ready_to_deploy"
+
+
+# ---------------------------------------------------------------------------
+# Final result visibility for Done cards
+# ---------------------------------------------------------------------------
 

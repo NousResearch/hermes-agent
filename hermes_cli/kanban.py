@@ -22,7 +22,7 @@ import shlex
 import sys
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
@@ -371,6 +371,18 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("--assignee", default=None, help="Profile name to assign")
     p_create.add_argument("--parent", action="append", default=[],
                           help="Parent task id (repeatable)")
+    p_create.add_argument(
+        "--require-parent-result",
+        action="append",
+        default=[],
+        dest="required_parent_results",
+        metavar="PARENT=RESULT",
+        help=(
+            "Require one parent edge to have an exact machine-readable result "
+            "while done (repeatable), e.g. "
+            "--require-parent-result t_qa=ready_to_deploy"
+        ),
+    )
     p_create.add_argument("--workspace", default="scratch",
                           help="scratch | worktree | worktree:<path> | dir:<path> "
                                "(default: scratch)")
@@ -588,6 +600,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
     p_link.add_argument("parent_id")
     p_link.add_argument("child_id")
+    p_link.add_argument(
+        "--required-parent-result",
+        default=None,
+        help=(
+            "Require the parent to be done with this exact machine-readable "
+            "result before releasing the child"
+        ),
+    )
     p_unlink = sub.add_parser("unlink", help="Remove a parent->child dependency")
     p_unlink.add_argument("parent_id")
     p_unlink.add_argument("child_id")
@@ -1639,6 +1659,21 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_required_parent_results(values: Iterable[str]) -> dict[str, str]:
+    """Parse repeatable ``PARENT=RESULT`` CLI values into an edge map."""
+    parsed: dict[str, str] = {}
+    for raw_value in values:
+        parent_id, separator, required_result = str(raw_value).partition("=")
+        parent_id = parent_id.strip()
+        required_result = required_result.strip()
+        if not separator or not parent_id or not required_result:
+            raise ValueError(
+                f"expected PARENT=RESULT, got {raw_value!r}"
+            )
+        parsed[parent_id] = required_result
+    return parsed
+
+
 def _cmd_create(args: argparse.Namespace) -> int:
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
@@ -1662,6 +1697,13 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    try:
+        required_parent_results = _parse_required_parent_results(
+            getattr(args, "required_parent_results", None) or []
+        )
+    except ValueError as exc:
+        print(f"kanban: --require-parent-result: {exc}", file=sys.stderr)
+        return 2
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
@@ -1676,6 +1718,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             tenant=args.tenant,
             priority=args.priority,
             parents=tuple(args.parent or ()),
+            required_parent_results=required_parent_results,
             triage=bool(getattr(args, "triage", False)),
             idempotency_key=getattr(args, "idempotency_key", None),
             max_runtime_seconds=max_runtime,
@@ -2168,7 +2211,14 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
 
 def _cmd_link(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
-        kb.link_tasks(conn, args.parent_id, args.child_id)
+        kb.link_tasks(
+            conn,
+            args.parent_id,
+            args.child_id,
+            required_parent_result=getattr(
+                args, "required_parent_result", None
+            ),
+        )
     print(f"Linked {args.parent_id} -> {args.child_id}")
     return 0
 

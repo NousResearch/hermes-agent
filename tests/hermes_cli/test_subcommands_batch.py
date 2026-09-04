@@ -95,6 +95,35 @@ def test_config_get_unset_subcommands_parse():
     assert ns.key == "terminal.backend"
 
 
+def test_config_set_quiet_flag_parses():
+    """#96764: `hermes config set --quiet` must parse (previously
+    `unrecognized arguments: --quiet`, exit code 2, no write)."""
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    handler = _h("config")
+    build_config_parser(sub, cmd_config=handler)
+
+    ns = parser.parse_args(
+        ["config", "set", "model.default", "glm-5.3-flash", "--quiet"]
+    )
+    assert ns.func is handler
+    assert ns.config_command == "set"
+    assert ns.key == "model.default"
+    assert ns.value == "glm-5.3-flash"
+    assert ns.quiet is True
+    assert ns.force is False
+
+    # Default is False, and --quiet composes with --force.
+    ns = parser.parse_args(["config", "set", "model.default", "x"])
+    assert ns.quiet is False
+
+    ns = parser.parse_args(
+        ["config", "set", "model.default", "x", "--force", "--quiet"]
+    )
+    assert ns.quiet is True
+    assert ns.force is True
+
+
 
 
 # ── deprecated `hermes login` fails gracefully, not with argparse error ────

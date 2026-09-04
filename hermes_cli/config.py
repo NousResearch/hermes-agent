@@ -5950,7 +5950,7 @@ def _redirect_platform_display_key(key: str) -> tuple[str, Optional[str]]:
     return canonical, f"  (note: per-platform display setting — saved as {canonical})"
 
 
-def set_config_value(key: str, value: str, force: bool = False):
+def set_config_value(key: str, value: str, force: bool = False, quiet: bool = False):
     """Set a configuration value.
 
     Args:
@@ -5963,6 +5963,12 @@ def set_config_value(key: str, value: str, force: bool = False):
             mapping). Without --force, scalar writes over mapping sections are
             refused (bare ``model`` is redirected to ``model.default``). The
             CLI exposes this via ``hermes config set --force``.
+        quiet: When True, suppress the success confirmation line and the
+            post-write unknown-key notice so a script can trust "nothing on
+            stdout + exit 0" as the success signal (#96764). Real failures
+            still raise/exit non-zero and still print to stderr — --quiet
+            only mutes the human-oriented notes printed on the success path.
+            The CLI exposes this via ``hermes config set --quiet``.
     """
     if is_managed():
         managed_error("set configuration values")
@@ -6005,7 +6011,8 @@ def set_config_value(key: str, value: str, force: bool = False):
         from hermes_cli.credential_lifecycle import save_provider_env_credential
 
         save_provider_env_credential(key.upper(), value)
-        print(f"✓ Set {key} in {get_env_path()}")
+        if not quiet:
+            print(f"✓ Set {key} in {get_env_path()}")
         return
 
     # Unknown-key notice (#34067): the key is still written (arbitrary keys
@@ -6209,12 +6216,13 @@ def set_config_value(key: str, value: str, force: bool = False):
         _display_value = mask_secret(value)
     else:
         _display_value = value
-    print(f"✓ Set {key} = {_display_value} in {config_path}")
+    if not quiet:
+        print(f"✓ Set {key} = {_display_value} in {config_path}")
     warn_unpinned_cron_jobs_after_model_config_change(key, value, user_config)
 
     # Post-write unknown-key notice (#34067): value IS saved, but tell the
     # user the runtime may never read it and suggest the likely-intended path.
-    if not is_known and not force:
+    if not is_known and not force and not quiet:
         print(color(
             f"⚠ '{key}' is not a recognized config key — it was saved anyway, "
             "but Hermes may not read it.",
@@ -6335,8 +6343,9 @@ def config_command(args):
         key = getattr(args, 'key', None)
         value = getattr(args, 'value', None)
         force = bool(getattr(args, 'force', False))
+        quiet = bool(getattr(args, 'quiet', False))
         if not key or value is None:
-            print("Usage: hermes config set [--force] <key> <value>")
+            print("Usage: hermes config set [--force] [--quiet] <key> <value>")
             print()
             print("Examples:")
             print("  hermes config set model anthropic/claude-sonnet-4")
@@ -6345,9 +6354,12 @@ def config_command(args):
             print()
             print("  --force: skip the unknown-key notice for unrecognized keys,")
             print("           and allow a scalar to replace a whole mapping section")
+            print("  --quiet: suppress the success confirmation and unknown-key")
+            print("           notice — for scripted use where only the exit code")
+            print("           matters")
             sys.exit(1)
         try:
-            set_config_value(key, value, force=force)
+            set_config_value(key, value, force=force, quiet=quiet)
         except RuntimeError as exc:
             # Fail-closed write guard (unparseable / non-mapping / unreadable
             # config.yaml). Surface a clean CLI error instead of a traceback.

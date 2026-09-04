@@ -46,6 +46,13 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
         help="Skip the unknown-key notice printed after writing a key the "
         "running version doesn't recognize (the value is saved either way).",
     )
+    config_set.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress the success confirmation line and the unknown-key "
+        "notice, for scripted/non-interactive use — exit code alone signals "
+        "success (0) or failure (non-zero); real errors still print.",
+    )
 
     # config unset
     config_unset = config_subparsers.add_parser(

@@ -14,7 +14,10 @@ import pytest
 import hermes_cli.doctor as doctor
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import doctor as doctor_mod
-from hermes_cli.doctor import _has_provider_env_config
+from hermes_cli.doctor import (
+    _has_provider_config_key_command,
+    _has_provider_env_config,
+)
 
 
 class TestDoctorPlatformHints:
@@ -64,6 +67,18 @@ class TestProviderEnvDetection:
     def test_returns_false_when_no_provider_settings(self):
         content = "TERMINAL_ENV=local\n"
         assert not _has_provider_env_config(content)
+
+    def test_detects_command_minted_provider_credential(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "providers:\n"
+            "  relay:\n"
+            "    api: https://gateway.example/v1\n"
+            "    key_cmd: credential-helper print-token\n",
+            encoding="utf-8",
+        )
+
+        assert _has_provider_config_key_command(config_path)
 
 
 class TestDoctorToolAvailabilitySummary:

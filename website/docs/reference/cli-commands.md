@@ -522,8 +522,10 @@ Threads follow the **relaying session**: the first `send` from a session
 starts a new room thread, later sends from the same session
 (`$HERMES_SESSION_ID`, which Hermes sets for every tool an agent spawns, or
 `--session`) continue it, and a different session gets its own thread.
-`--new-thread` starts over; `--thread` overrides for that send only. A room
-keeps only the latest pending user message per thread.
+`--new-thread` starts over; `--thread` overrides for that send only. Desktop
+rooms mint their thread on delivery, so continuity there needs `--wait` on
+the session's first send. A hosted room keeps only the latest pending user
+message per thread.
 
 **Desktop-coordinated rooms (interim).** `hermes group list` also shows the
 Group Chats the Desktop app coordinates, tagged `[desktop]`. Sending to one

@@ -60,6 +60,7 @@ def home(tmp_path, monkeypatch):
     (root / "profile.yaml").write_text(PROJECTION, encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
     return root
 
 
@@ -257,3 +258,92 @@ def test_wait_with_event_id_skips_the_receipt_line(home):
     got = []
     rc, summary = t.wait(sent, timeout=5, poll_seconds=0.01, on_reply=lambda s, x: got.append(x))
     assert rc == 0 and got == ["ok"] and summary["thread"] == "t"
+
+
+def test_desktop_thread_binds_on_accept_and_continues_per_session(home, capsys, monkeypatch):
+    """First send from a session mints (thread None); --wait learns the minted id
+    from the accepted line and binds it; the next send from the same session
+    continues it; another session mints again; --new-thread mints again."""
+    monkeypatch.setenv("HERMES_SESSION_ID", "sess-A")
+    ref = g.resolve_room("Launchpad", kind="desktop")
+    t = gd.DesktopTransport()
+
+    # Drive the transport directly for the --wait leg (no capsys/thread mixing).
+    sent = t.send(ref, text="first", thread=g.DEFAULT_THREAD, label="Ada", event_key=None)
+    assert sent.raw["thread"] is None
+    gr.claim_pending(home)
+    gr.append_reply_line(home, sent.message_id, {"kind": "accepted", "thread": "tmtm-minted-1", "group": "Launchpad"})
+    gr.append_reply_line(home, sent.message_id, {"kind": "done", "status": "settled", "replies": 0})
+    rc, summary = t.wait(sent, timeout=5, poll_seconds=0.01, on_reply=lambda *a: None)
+    assert rc == 0 and summary["thread"] == "tmtm-minted-1"
+    g.bind_thread(ref, "sess-A", summary["thread"])  # what _cmd_send does after wait
+
+    # Same session: the CLI now requests the minted thread.
+    assert _run(["send", "Launchpad", "second", "--json"]) == 0
+    assert _out_json(capsys)["raw"]["thread"] == "tmtm-minted-1"
+
+    # Different session: mints again.
+    monkeypatch.setenv("HERMES_SESSION_ID", "sess-B")
+    assert _run(["send", "Launchpad", "other", "--json"]) == 0
+    assert _out_json(capsys)["raw"]["thread"] is None
+
+    # Back to A with --new-thread: binding dropped, mints again.
+    monkeypatch.setenv("HERMES_SESSION_ID", "sess-A")
+    assert _run(["send", "Launchpad", "restart", "--new-thread", "--json"]) == 0
+    assert _out_json(capsys)["raw"]["thread"] is None
+    assert g.bound_thread(ref, "sess-A") is None
+
+
+def test_desktop_cli_wait_binds_thread_end_to_end(home, capsys, monkeypatch):
+    monkeypatch.setenv("HERMES_SESSION_ID", "sess-E2E")
+    result = {}
+
+    def cli():
+        result["rc"] = _run(["send", "Launchpad", "first", "--wait", "--poll", "0.01", "--timeout", "5"])
+
+    w = threading.Thread(target=cli)
+    w.start()
+    deadline = time.time() + 3
+    env = None
+    while time.time() < deadline and env is None:
+        pending = list((gr.relay_root(home) / gr.OUTBOX_DIR).glob("*.json"))
+        if pending:
+            env = json.loads(pending[0].read_text())
+        else:
+            time.sleep(0.01)
+    assert env is not None and env["thread"] is None
+    gr.claim_pending(home)
+    gr.append_reply_line(home, env["id"], {"kind": "accepted", "thread": "tmtm-e2e", "group": "Launchpad"})
+    gr.append_reply_line(home, env["id"], {"kind": "done", "status": "settled", "replies": 0})
+    w.join(5)
+    assert result["rc"] == 0
+    capsys.readouterr()
+    assert g.bound_thread(g.resolve_room("Launchpad", kind="desktop"), "sess-E2E") == "tmtm-e2e"
+
+
+def test_desktop_explicit_thread_wait_does_not_rebind_session(home, monkeypatch):
+    monkeypatch.setenv("HERMES_SESSION_ID", "S")
+    ref = g.resolve_room("Launchpad", kind="desktop")
+    g.bind_thread(ref, "S", "tmtm-own")
+    result = {}
+
+    def cli():
+        result["rc"] = _run(["send", "Launchpad", "one-off", "--thread", "tmtm-a1", "--wait", "--poll", "0.01", "--timeout", "5"])
+
+    w = threading.Thread(target=cli)
+    w.start()
+    deadline = time.time() + 3
+    env = None
+    while time.time() < deadline and env is None:
+        pending = list((gr.relay_root(home) / gr.OUTBOX_DIR).glob("*.json"))
+        if pending:
+            env = json.loads(pending[0].read_text())
+        else:
+            time.sleep(0.01)
+    assert env["thread"] == "tmtm-a1"
+    gr.claim_pending(home)
+    gr.append_reply_line(home, env["id"], {"kind": "accepted", "thread": "tmtm-a1", "group": "Launchpad"})
+    gr.append_reply_line(home, env["id"], {"kind": "done", "status": "settled", "replies": 0})
+    w.join(5)
+    assert result["rc"] == 0
+    assert g.bound_thread(ref, "S") == "tmtm-own"

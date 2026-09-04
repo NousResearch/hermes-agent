@@ -117,7 +117,8 @@ class DesktopTransport:
                 f"{int(_STALE_OUTBOX_MIN_AGE_SECONDS)}s — the Hermes Desktop does not "
                 "appear to be open. Open it (Bots pane) and retry."
             )
-        # 'cli' is the hosted default; for Desktop rooms it means "new thread".
+        # The hosted default thread means "no explicit thread" here → the
+        # Desktop mints a new one; a bound/explicit Desktop thread id continues.
         requested = None if thread == base.DEFAULT_THREAD else thread
         try:
             envelope = group_relay.enqueue(

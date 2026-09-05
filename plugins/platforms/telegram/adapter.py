@@ -11,7 +11,7 @@ import html as _html
 import re
 import time
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
 from hermes_cli import setup_platforms
 
@@ -162,6 +162,45 @@ _FLOOD_INLINE_WAIT_CAP_SECS = 5.0
 def _flood_cap_result(wait: float) -> "SendResult":
     """The shared fail-closed SendResult for an over-cap flood wait."""
     return SendResult(success=False, error=f"flood_control:{wait}", retry_after=float(wait))
+
+
+_FLOOD_WAIT_RE = re.compile(r"retry (?:after|in)\s+([0-9]+(?:\.[0-9]+)?)")
+
+
+def _looks_like_flood_error(error: object) -> bool:
+    """True for a Telegram rate-limit refusal, whatever raised it.
+
+    PTB's ``RetryAfter`` carries ``retry_after``. Telegram's own text says ``Flood control exceeded.
+    Retry in Ns``, which a bare "retry after" test does not match, so both are checked. Flood control
+    says nothing about the markup, so it must never be answered with a plain-text downgrade."""
+    if getattr(error, "retry_after", None) is not None:
+        return True
+    text = str(error).lower()
+    return "retry after" in text or "flood control" in text
+
+
+def _flood_wait_seconds(error: object, default: float = 1.0) -> float:
+    """How long a flood refusal says to wait, normalised to seconds.
+
+    python-telegram-bot 22.x exposes ``retry_after`` as a float normally and as a ``datetime.timedelta``
+    under ``PTB_TIMEDELTA=1`` (its migration mode for the 23.x default). Comparing a timedelta against the
+    inline wait cap raises TypeError from inside an exception handler, so it is converted here first. When
+    the attribute is absent the delay is read out of the message, so a text-matched refusal still fails
+    closed on a long wait instead of retrying blind inside a window it cannot see."""
+    value = getattr(error, "retry_after", None)
+    if isinstance(value, timedelta):
+        return value.total_seconds()
+    if value is not None:
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            seconds = 0.0
+        if seconds:
+            return seconds
+    match = _FLOOD_WAIT_RE.search(str(error).lower())
+    if match:
+        return float(match.group(1))
+    return default
 
 
 _TELEGRAM_IMAGE_MIME_TO_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
@@ -3413,15 +3452,30 @@ class TelegramAdapter(BasePlatformAdapter):
             kwargs["parse_mode"] = parse_mode
         await self._bot.edit_message_text(**kwargs)
 
-    async def _edit_markdown_or_plain(self, chat_id: str, message_id: str, formatted: str, plain: str, warn_fmt: str) -> bool:
+    async def _edit_markdown_or_plain(
+        self, chat_id: str, message_id: str, formatted: str, plain: str, warn_fmt: str,
+        retry_state: Optional[Dict[str, Any]] = None) -> bool:
         """MarkdownV2 edit with plain-text fallback. Returns True on a "not modified" no-op (caller may
-        skip further work); the fallback edit's exceptions propagate."""
+        skip further work); the fallback edit's exceptions propagate.
+
+        Flood control is re-raised untouched: a rate-limit refusal says
+        nothing about the markup, and while this catch-all swallowed it a perfectly valid MarkdownV2 reply
+        was rewritten as plain text, showing the user literal ``##`` headings and ``[text](url)`` links.
+        The caller's flood handling owns it instead. ``retry_state`` (when given) tracks the ``text`` and
+        ``parse_mode`` of the attempt in flight, so an inline flood retry re-sends that same payload: the
+        MarkdownV2 render when the markup was fine, the stripped text when the markup was the problem."""
+        if retry_state is not None:
+            retry_state.update(text=formatted, parse_mode=ParseMode.MARKDOWN_V2)
         try:
             await self._edit_text(chat_id, message_id, formatted, ParseMode.MARKDOWN_V2)
         except Exception as fmt_err:
             if "not modified" in str(fmt_err).lower():
                 return True
+            if _looks_like_flood_error(fmt_err):
+                raise
             logger.warning(warn_fmt, self.name, _redact_telegram_error_text(fmt_err))
+            if retry_state is not None:
+                retry_state.update(text=plain, parse_mode=None)
             await self._edit_text(chat_id, message_id, plain)
         return False
 
@@ -3471,6 +3525,11 @@ class TelegramAdapter(BasePlatformAdapter):
         elif not finalize:
             # Content shrank back under the cap — clear stale saturation state so dedup can't mask an edit.
             self._last_overflow_preview.pop(_preview_key, None)
+        # What an inline flood retry below re-sends. Mid-stream previews go out unformatted, so raw content
+        # is right until the finalize helper swaps in the MarkdownV2 render (or the stripped text, when the
+        # markup itself was rejected). Retrying raw content after a finalize edit showed the user the heading
+        # and link syntax the render had just escaped.
+        _retry_state: Dict[str, Any] = {"text": content, "parse_mode": None}
         try:
             if not finalize:
                 await self._edit_text(chat_id, message_id, content)
@@ -3479,7 +3538,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=True, message_id=message_id)
             await self._edit_markdown_or_plain(
                 chat_id, message_id, self.format_message(content), _strip_mdv2(content) if content else content,
-                "[%s] MarkdownV2 edit failed, falling back to plain text: %s")
+                "[%s] MarkdownV2 edit failed, falling back to plain text: %s", retry_state=_retry_state)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
@@ -3500,18 +3559,33 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._last_overflow_preview[_preview_key] = truncated
                 return SendResult(success=True, message_id=message_id)
             # Flood control: short waits retry inline; long waits fail immediately so streaming falls back
-            # to a normal final send instead of a clipped partial.
-            retry_after = getattr(e, "retry_after", None)
-            if retry_after is not None or "retry after" in err_str:
-                wait = retry_after if retry_after else 1.0
+            # to a normal final send instead of a clipped partial. Detection and the wait come from the
+            # shared helpers so a text-only refusal and a timedelta retry_after both behave.
+            if _looks_like_flood_error(e):
+                wait = _flood_wait_seconds(e)
                 logger.warning("[%s] Telegram flood control, waiting %.1fs", self.name, wait)
                 if wait > _FLOOD_INLINE_WAIT_CAP_SECS:
                     return _flood_cap_result(wait)
                 await asyncio.sleep(wait)
                 try:
-                    await self._edit_text(chat_id, message_id, content)
+                    await self._edit_text(chat_id, message_id, _retry_state["text"], _retry_state["parse_mode"])
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:
+                    if "not modified" in str(retry_err).lower():
+                        return SendResult(success=True, message_id=message_id)
+                    # The retry now carries the MarkdownV2 render, so it can meet the parse rejection the
+                    # flood-refused first attempt never reached. Give it the same plain-text rescue the
+                    # helper gives a first attempt (bounded: a second flood refusal is not waited on).
+                    if _retry_state["parse_mode"] is not None and not _looks_like_flood_error(retry_err):
+                        logger.warning("[%s] MarkdownV2 edit failed after flood wait, falling back to plain text: %s",
+                                       self.name, _redact_telegram_error_text(retry_err))
+                        try:
+                            await self._edit_text(chat_id, message_id, _strip_mdv2(content) if content else content)
+                            return SendResult(success=True, message_id=message_id)
+                        except Exception as plain_err:
+                            if "not modified" in str(plain_err).lower():
+                                return SendResult(success=True, message_id=message_id)
+                            retry_err = plain_err
                     safe_retry_error = _redact_telegram_error_text(retry_err)
                     logger.error("[%s] Edit retry failed after flood wait: %s", self.name, safe_retry_error)
                     return SendResult(success=False, error=safe_retry_error)
@@ -3566,6 +3640,14 @@ class TelegramAdapter(BasePlatformAdapter):
                         logger.warning(
                             "[%s] Overflow continuation no-reply retry failed: %s", self.name, _redact_telegram_error_text(_retry_err))
                         return None
+                if use_markdown and _looks_like_flood_error(send_err):
+                    # Flood control says nothing about the markup: resending the chunk unformatted would
+                    # spend a second request inside the flood window and degrade a chunk that was never
+                    # malformed. Report the failure so the caller's partial-delivery path owns the retry.
+                    logger.warning(
+                        "[%s] Overflow continuation hit flood control; not downgrading to plain text: %s",
+                        self.name, _redact_telegram_error_text(send_err))
+                    return None
                 if use_markdown:
                     continue  # try plain text on next loop iteration
                 logger.warning("[%s] Overflow continuation send failed: %s", self.name, _redact_telegram_error_text(send_err))
@@ -3589,6 +3671,15 @@ class TelegramAdapter(BasePlatformAdapter):
             else:
                 await self._edit_text(chat_id, message_id, first_chunk)
         except Exception as e:
+            if _looks_like_flood_error(e):
+                # Same rule as the non-overflow finalize edit: a flood refusal is not a markup problem, so
+                # fail closed with the shared flood result instead of spending another request on a
+                # plain-text downgrade the user did not need.
+                wait = _flood_wait_seconds(e)
+                logger.warning(
+                    "[%s] Overflow split: first-chunk edit hit flood control (%.1fs); failing closed: %s",
+                    self.name, wait, _redact_telegram_error_text(e))
+                return _flood_cap_result(wait)
             if "not modified" not in str(e).lower():  # identical first chunk still sends continuations
                 logger.error("[%s] Overflow split: first-chunk edit failed: %s", self.name, _redact_telegram_error_text(e), exc_info=True)
                 return SendResult(success=False, error=_redact_telegram_error_text(e))

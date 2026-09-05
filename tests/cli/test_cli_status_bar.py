@@ -715,3 +715,52 @@ class TestCacheHitBaselineReset:
         with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "duration"]}}}):
             text = cli_obj._build_status_bar_text(width=80)
         assert "weekly-digest" not in text
+
+
+class TestSessionUsageSegment:
+    """📊 session-usage status-bar segment (opt-in via display.status_bar.fields)."""
+
+    def _wide_cli(self, **agent_kwargs):
+        kwargs = dict(
+            prompt_tokens=10_000,
+            completion_tokens=3_000,
+            total_tokens=515_000,
+            api_calls=13,
+            context_tokens=65_100,
+            context_length=256_000,
+        )
+        kwargs.update(agent_kwargs)
+        return _attach_agent(_make_cli(), **kwargs)
+
+    def test_segment_empty_without_tokens(self):
+        cli_obj = _make_cli()
+        assert cli_obj._format_session_usage_segment({}) == ""
+
+    def test_segment_buckets_are_disjoint_and_add_up(self):
+        """I, C and O are disjoint buckets that add up to T: input puro +
+        cache + output = total (no redundancia entre I y T)."""
+        cli_obj = self._wide_cli(
+            input_tokens=109_000,
+            output_tokens=6_000,
+            cache_read_tokens=400_000,
+            total_tokens=515_000,
+        )
+        label = cli_obj._format_session_usage_segment(cli_obj._get_status_bar_snapshot())
+        assert label == "📊 13r · I 109K · O 6K · C 400K · T 515K"
+
+    def test_segment_hidden_by_default(self):
+        cli_obj = self._wide_cli()
+        with patch.object(cli_mod, "CLI_CONFIG", {}):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "📊" not in text
+
+    def test_segment_when_explicitly_requested(self):
+        cli_obj = self._wide_cli(
+            input_tokens=109_000,
+            output_tokens=6_000,
+            cache_read_tokens=400_000,
+            total_tokens=515_000,
+        )
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["session_usage"]}}}):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "📊 13r · I 109K · O 6K · C 400K · T 515K" in text

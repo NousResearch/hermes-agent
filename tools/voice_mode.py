@@ -1041,16 +1041,32 @@ def _wsl_powershell_player_cmd(file_path: str) -> Optional[List[str]]:
         return None  # WSL path resolution failed; fall through to ffplay/aplay
 
 
+# CoreAudio (afplay) demuxes these containers; everything else (Ogg/Opus, Flac, ...)
+# exits rc=0 after ~1s playing NOTHING — a silent truncation. afplay must not be
+# offered for formats it cannot decode; ffplay handles those. See afplay 2.0.
+_COREAUDIO_CONTAINERS = frozenset({".wav", ".mp3", ".m4a", ".aac", ".aif", ".aiff", ".caf"})
+
+
 def _system_player_candidates(file_path: str) -> List[List[str]]:
-    """Ordered system-player commands for this platform."""
+    """Ordered system-player commands for this platform.
+
+    macOS: afplay leads only for CoreAudio-decodable containers; a silent-fail rc=0
+    on an Ogg/Opus path would otherwise cut the clip to ~1s and short-circuit the
+    ffplay fallback (see _play_audio_file_impl)."""
     system = platform.system()
-    players: List[List[str]] = [["afplay", file_path]] if system == "Darwin" else []
+    players: List[List[str]] = []
+    if system == "Darwin" and os.path.splitext(file_path)[1].lower() in _COREAUDIO_CONTAINERS:
+        players.append(["afplay", file_path])
     ps_cmd = _wsl_powershell_player_cmd(file_path) if system == "Linux" else None
     if ps_cmd:
         players.append(ps_cmd)
     players.append(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", file_path])
     if system == "Linux":
         players.append(["aplay", "-q", file_path])
+    if not players:
+        # Unknown container on a platform without a fallback player: keep afplay as the
+        # last resort rather than returning nothing (better a truncated clip than none).
+        players.append(["afplay", file_path])
     return players
 
 

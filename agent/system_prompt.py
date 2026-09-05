@@ -590,8 +590,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     """Assemble the system prompt as three ordered cache tiers: ``stable`` (through
     the coding operating brief when a workspace snapshot follows), ``context``
     (snapshot, remaining session-stable guidance, caller ``system_message``,
-    context files) and ``volatile`` (skills index, memory, user profile, external
-    memory block, timestamp line).  Never re-rendered mid-session."""
+    context files) and ``volatile`` (skills index, plugin sections, timestamp line,
+    memory, user profile, external memory block).  Never re-rendered mid-session."""
     # Model context window scales the context-file caps; stable per conversation.
     _cc_len = getattr(getattr(agent, "context_compressor", None), "context_length", None)
     _ctx_len = _cc_len if isinstance(_cc_len, int) and _cc_len > 0 else None
@@ -631,6 +631,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     volatile_parts: List[str] = [skills_prompt]
     # Plugin sections are confined to one coarse anchor in the volatile tail so
     # a resumed process can reconstruct the stable prefix without re-running plugins.
+    # "after_memory" is the persisted plugin API anchor name; retain it for replay
+    # compatibility even though memory now renders after the timestamp.
     volatile_parts.extend(_plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory"))
     volatile_parts.append(_timestamp_line(agent))
     # Built-in memory (MEMORY.md / USER.md) plus the external-memory provider block are

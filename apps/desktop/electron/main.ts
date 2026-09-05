@@ -73,6 +73,7 @@ import {
   shouldLatchHostKeyChangedFailure,
   shouldLatchRemoteReauthFailure
 } from './backend-start-failure'
+import { formatBootTransitionLog, trySendBootProgress } from './boot-transition-log'
 import {
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
@@ -1937,18 +1938,22 @@ function clampBootProgress(value) {
   return Math.max(0, Math.min(100, Math.round(numeric)))
 }
 
-function broadcastBootProgress() {
+function broadcastBootProgress(): boolean {
   if (!mainWindow || mainWindow.isDestroyed()) {
-    return
+    return false
   }
 
-  const { webContents } = mainWindow
+  const webContents = mainWindow.webContents
 
   if (!webContents || webContents.isDestroyed()) {
-    return
+    return false
   }
 
-  webContents.send('hermes:boot-progress', bootProgressState)
+  // webContents.send() can still throw if the window dies between the
+  // destroyed checks above and the call itself. trySendBootProgress swallows
+  // it and reports not-delivered so the boot transition log line is still
+  // written — that log is the whole point when the renderer is gone (#96743).
+  return trySendBootProgress(webContents, 'hermes:boot-progress', bootProgressState)
 }
 
 // Bootstrap-event broadcast channel + state. The bootstrap runner emits a
@@ -2156,6 +2161,8 @@ function abandonFirstRunSetupChoiceForRemoteApply() {
 }
 
 function updateBootProgress(update, options: { allowDecrease?: boolean } = {}) {
+  const previous = bootProgressState
+
   const nextProgressRaw =
     typeof update.progress === 'number' ? clampBootProgress(update.progress) : bootProgressState.progress
 
@@ -2180,7 +2187,18 @@ function updateBootProgress(update, options: { allowDecrease?: boolean } = {}) {
     rememberLog(`[boot] ${update.message}`)
   }
 
-  broadcastBootProgress()
+  const delivered = broadcastBootProgress()
+
+  // #96743 item 3: log every main→renderer boot *transition*, not just the
+  // free-form message lines. Without this the "main ready, renderer stuck"
+  // window leaves zero evidence in desktop.log — the user's only option was a
+  // manual relaunch with no post-mortem. Log AFTER broadcast so "delivered"
+  // reflects whether the renderer actually saw the transition.
+  const transitionLine = formatBootTransitionLog(previous, bootProgressState, { delivered })
+
+  if (transitionLine) {
+    rememberLog(transitionLine)
+  }
 }
 
 async function advanceBootProgress(phase, message, progress) {

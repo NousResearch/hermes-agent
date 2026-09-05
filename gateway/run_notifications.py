@@ -459,12 +459,16 @@ class GatewayNotificationsMixin:
             state.persistent.update_prompt_pending = False
 
     async def _watch_update_progress(
-        self, poll_interval: float = 2.0, stream_interval: float = 4.0, timeout: float = 1800.0
+        self, poll_interval: float = 2.0, stream_interval: float = 4.0, timeout: float = 3600.0
     ) -> None:
         """Watch ``hermes update --gateway``, streaming output + forwarding prompts.
 
         Polls ``.update_output.txt`` for new content and sends chunks to the user periodically;
         detects ``.update_prompt.json`` (written when the update process needs input) and forwards it.
+
+        Default timeout matches ``gateway/slash_commands.py`` ``wait(timeout=3600)``. A full
+        npm/Electron update routinely exceeds 30 minutes; the previous 1800s ceiling wrote
+        exit 124 while the updater was still running.
         """
         paths = self._update_paths()
         loop = asyncio.get_running_loop()
@@ -527,7 +531,7 @@ class GatewayNotificationsMixin:
             paths.exit_code.write_text("124", encoding="utf-8")
             await _flush_buffer()
             with suppress(Exception):
-                await target.send("❌ Hermes update timed out after 30 minutes.")
+                await target.send("❌ Hermes update timed out after 60 minutes.")
             self._clear_update_markers(paths, session_key)
 
     async def _send_update_notification(self) -> bool:

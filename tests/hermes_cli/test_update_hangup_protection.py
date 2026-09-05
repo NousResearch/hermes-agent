@@ -1,7 +1,7 @@
 """Tests for SIGHUP protection and stdout mirroring in ``hermes update``.
 
 Covers ``_UpdateOutputStream``, ``_install_hangup_protection``, and
-``_finalize_update_output`` in ``hermes_cli/main.py``.  These exist so
+``_finalize_update_output`` in ``hermes_cli/main_dashboard.py``.  These exist so
 that ``hermes update`` survives a terminal disconnect mid-install
 (SSH drop, shell close) without leaving the venv half-installed.
 """
@@ -14,8 +14,16 @@ import sys
 
 import pytest
 
-from hermes_cli.main_dashboard import _UpdateOutputStream, _finalize_update_output, _install_hangup_protection
-from hermes_cli.update_cmd import _log_only_write, _print_update_completion, _run_logged_subprocess
+from hermes_cli.main_dashboard import (
+    _UpdateOutputStream,
+    _finalize_update_output,
+    _install_hangup_protection,
+)
+from hermes_cli.update_cmd import (
+    _log_only_write,
+    _print_update_completion,
+    _run_logged_subprocess,
+)
 
 
 def test_update_completion_includes_bounded_action_identity(monkeypatch, capsys):
@@ -98,7 +106,6 @@ class TestUpdateOutputStream:
 
 
 class TestInstallHangupProtection:
-
 
     def test_wraps_stdout_and_stderr_with_mirror(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -199,13 +206,16 @@ class TestFinalizeUpdateOutput:
 
 class TestLogOnlyWrite:
 
-    def test_noop_without_update_stream(self, monkeypatch):
-        """When stdout isn't the mirroring update stream (no ``_log``), it must
-        be a silent no-op rather than crash."""
+    def test_unwrapped_stdout_still_appends_update_log(self, monkeypatch):
+        """Unwrapped stdout must still grow logs/update.log (Desktop watchdog)."""
+        from hermes_constants import get_hermes_home
+
         plain = io.StringIO()
         monkeypatch.setattr(sys, "stdout", plain)
-        _log_only_write("something")  # should not raise
+        _log_only_write("something")
         assert plain.getvalue() == ""
+        log_path = get_hermes_home() / "logs" / "update.log"
+        assert "something" in log_path.read_text(encoding="utf-8")
 
     def test_empty_text_is_noop(self, monkeypatch):
         terminal = io.StringIO()
@@ -229,4 +239,90 @@ class TestRunLoggedSubprocess:
         assert "LOUD BUILD OUTPUT" in (result.stdout or "")
         assert terminal.getvalue() == ""  # not echoed to terminal
         assert "LOUD BUILD OUTPUT" in log.getvalue()  # but kept in the log
+
+    def test_streams_to_log_before_child_exits(self, monkeypatch, tmp_path):
+        """Electron/vite output must hit update.log while the child is alive.
+
+        Buffering until subprocess.run returns made a 40-minute Desktop
+        rebuild look stalled to the Windows idle watchdog (exit 124).
+        """
+        import threading
+        import time
+
+        terminal = io.StringIO()
+        log_path = tmp_path / "update.log"
+        log = log_path.open("w+", encoding="utf-8")
+        monkeypatch.setattr(sys, "stdout", _UpdateOutputStream(terminal, log))
+
+        script = (
+            "import sys, time\n"
+            "print('FIRST', flush=True)\n"
+            "time.sleep(4)\n"
+            "print('SECOND', flush=True)\n"
+        )
+        seen_first = threading.Event()
+
+        def watch() -> None:
+            deadline = time.time() + 2.5
+            while time.time() < deadline:
+                try:
+                    if "FIRST" in log_path.read_text(encoding="utf-8"):
+                        seen_first.set()
+                        return
+                except OSError:
+                    pass
+                time.sleep(0.05)
+
+        holder: dict = {}
+
+        def run() -> None:
+            holder["r"] = _run_logged_subprocess([sys.executable, "-c", script])
+
+        watcher = threading.Thread(target=watch, daemon=True)
+        runner = threading.Thread(target=run)
+        watcher.start()
+        runner.start()
+        assert seen_first.wait(timeout=2.5), (
+            "FIRST must land in update.log before the child exits"
+        )
+        assert runner.is_alive(), (
+            "child should still be in the 4s sleep when FIRST is logged"
+        )
+        runner.join(timeout=10)
+        result = holder["r"]
+        assert result.returncode == 0
+        assert "SECOND" in (result.stdout or "")
+        assert terminal.getvalue() == ""
+        log.close()
+
+
+class TestUpdateProgressHeartbeat:
+    def test_emits_elapsed_line_while_work_runs(self, capsys):
+        import time
+
+        from hermes_cli.update_cmd import _update_progress_heartbeat
+
+        with _update_progress_heartbeat(
+            "still ({elapsed}s)", interval_seconds=0.12
+        ):
+            time.sleep(0.4)
+        out = capsys.readouterr().out
+        assert "still (" in out
+
+    def test_unwrapped_stdout_still_grows_update_log(self, capsys):
+        """Unwrapped stdout must still grow logs/update.log (Desktop watchdog)."""
+        import time
+
+        from hermes_constants import get_hermes_home
+        from hermes_cli.update_cmd import _update_progress_heartbeat
+
+        log_path = get_hermes_home() / "logs" / "update.log"
+        before = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+        with _update_progress_heartbeat(
+            "still ({elapsed}s)", interval_seconds=0.12
+        ):
+            time.sleep(0.4)
+        after = log_path.read_text(encoding="utf-8")
+        assert "still (" in after[len(before):]
+        assert "still (" in capsys.readouterr().out
 

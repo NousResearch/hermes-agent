@@ -609,8 +609,16 @@ def _update_node_dependencies() -> list[str]:
     # capturing makes a long download look hung.
     # The chatty npm-deprecation noise during `hermes update` comes from the *desktop* build, not this step;
     # that one is captured to update.log. See #18840.
-    result = _m()._run_npm_install_deterministic(
-        npm, _m().PROJECT_ROOT, extra_args=tuple(install_args), capture_output=False, env=nixos_env)
+    # `--progress=false` still leaves npm silent for 8–10 minutes on a
+    # cold workspace install. Heartbeat so the Desktop idle watchdog (600s
+    # of no stdout AND no update.log growth → exit 124) does not kill a
+    # healthy update.
+    from hermes_cli.update_cmd import _update_progress_heartbeat
+    with _update_progress_heartbeat(
+        "  … still installing Node.js dependencies ({elapsed}s elapsed)"
+    ):
+        result = _m()._run_npm_install_deterministic(
+            npm, _m().PROJECT_ROOT, extra_args=tuple(install_args), capture_output=False, env=nixos_env)
     if result.returncode == 0:
         _record_npm_lockfile_hash(shared_hermes_root)
         print("  ✓ ui-tui, web workspaces installed (desktop skipped)")
@@ -843,12 +851,17 @@ def _rebuild_desktop_after_update(
     # rebuild window), then surface the tail. Put Hermes-managed Node on PATH: the desktop
     # updater chain loses shell PATH customizations, so a bare-PATH child hits `node: not found`.
     from hermes_constants import with_hermes_node_path
+    from hermes_cli.update_cmd import _update_progress_heartbeat
     build_env = with_hermes_node_path()
-    for _attempt in range(2):
-        build_result = _m()._run_logged_subprocess(
-            desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=build_env)
-        if build_result.returncode == 0:
-            break
+    with _update_progress_heartbeat(
+        "  … still building desktop app ({elapsed}s elapsed) — "
+        "Electron/vite can take several minutes"
+    ):
+        for _attempt in range(2):
+            build_result = _m()._run_logged_subprocess(
+                desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=build_env)
+            if build_result.returncode == 0:
+                break
     if build_result.returncode != 0:
         print("  ⚠ Desktop build failed (run `hermes desktop` to retry)")
         tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])

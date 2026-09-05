@@ -1658,6 +1658,9 @@ class SendResult:
     # SEND_ERROR_KINDS member (failures only) via :func:`classify_send_error`, so consumers
     # branch without substring-matching ``error``.
     error_kind: Optional[str] = None
+    # Email review-first outcome: "sent" (SMTP) or "drafted" (stored for review, not transmitted).
+    # None on platforms without a review policy.
+    disposition: Optional[str] = None
 
 
 # Platform-neutral send-failure kinds for ``SendResult.error_kind``: too_long (size cap),

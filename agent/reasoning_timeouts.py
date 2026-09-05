@@ -45,6 +45,14 @@ _REASONING_STALE_TIMEOUT_FLOORS: dict[int, tuple[str, ...]] = {
         # MiniMax M2.x (m2.5/m2.7): reasoning_content before first content token; 240s
         # mid-think stalls observed (#62353).
         "minimax-m2",
+        # Kimi / Moonshot: K2.x and K3 emit a thinking phase before the first content
+        # token. K3 (1M ctx) can spend 80+s reasoning before the first token at long
+        # context, exceeding the 180s default and surfacing as BrokenPipeError/
+        # RemoteProtocolError mid-think. ``kimi`` matches the slug after aggregator-prefix
+        # strip (e.g. ``accounts/fireworks/models/kimi-k3``, ``kimi-k2p6``); ``k3`` catches
+        # the bare Kimi Coding Plan slug. Both are start-of-slug anchored, so ``k3`` never
+        # over-matches ``k3s`` or an embedded ``...-k3``.
+        "kimi", "k3",
     ),
     # Anthropic Claude 4.x+ thinking variants (anchored so 3.x never matches).
     240: ("claude-opus-4", "claude-opus-5"),

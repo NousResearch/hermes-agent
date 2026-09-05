@@ -260,6 +260,20 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
         interrupt_for_session(
             session_key=str(session_key or "") if _tui_owns_lifecycle else "",
             origin_ui_session_id=_lifecycle_own_sid(session), reason=end_reason)
+    # A session's in-flight background memory/skill review ends WITH the session too (#102895): the
+    # review fork is a SEPARATE AIAgent instance tracked only on the parent's
+    # _background_review_agent/_active_children (agent/background_review.py) — never on
+    # session["running"] or session["_run_thread"] — so it is invisible both to the run_thread join
+    # in _teardown_popped_session and to session.interrupt's running-gated request_hard_interrupt in
+    # _interrupt_session_turn. Every finalize path (explicit close, idle-timeout reap, ws-orphan
+    # reap, shutdown) funnels through here, so cancelling here closes the gap for all of them at
+    # once. Without it, a review whose provider degraded into a failed-tool retry loop keeps calling
+    # the model forever after the session is gone: nothing ever sets its _interrupt_requested.
+    if agent is not None:
+        with contextlib.suppress(Exception):
+            from agent.background_review import cancel_background_review_for_live_turn
+            cancel_background_review_for_live_turn(
+                agent, message=f"session ended ({end_reason})", tool_reason="session ended")
     # Close the slash-worker in this single ``_finalized``-guarded chokepoint (a direct caller can't leak it); idempotent.
     with contextlib.suppress(Exception):
         if worker := session.get("slash_worker"):
@@ -390,6 +404,18 @@ def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None =
                 if session.get("running"):
                     session["running"] = False
                     _clear_inflight_turn(session)
+    # Sibling of the #102895 finalize-path fix above: an explicit /stop (or the WS-orphan reaper's
+    # interrupt-at-grace) must also reach a background memory/skill review, not just the foreground
+    # turn. The review fork is invisible to `should_interrupt`/`run_thread_alive` above (both gated
+    # on the FOREGROUND turn's session["running"]/_run_thread) — a user hitting Stop while only the
+    # post-turn review is still running (the common case: the main turn already finished) would see
+    # "stopped" while the review keeps calling the model. Fires unconditionally (both compute-host
+    # and in-process turns) since the review is always local to this process.
+    if (agent_for_review := session.get("agent")) is not None:
+        with contextlib.suppress(Exception):
+            from agent.background_review import cancel_background_review_for_live_turn
+            cancel_background_review_for_live_turn(
+                agent_for_review, message="session interrupted", tool_reason="session interrupted")
     _clear_pending(sid)
     with contextlib.suppress(Exception):
         from tools.approval import resolve_gateway_approval

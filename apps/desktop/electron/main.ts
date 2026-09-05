@@ -30,6 +30,7 @@ import {
   systemPreferences
 } from 'electron'
 
+import { buildAboutPanelVersionOptions } from './about-version'
 import { classifyActiveRuntime } from './active-runtime-state'
 import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
@@ -381,10 +382,12 @@ import {
   windowOpacityOptions
 } from './translucency'
 import {
+  commitRangeRevision,
   compareApiUrl,
   parseCompareBehindCount,
   resolveBehindCount,
   resolveCommitLogSelection,
+  resolveRunningClientSha,
   shouldCountCommits
 } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
@@ -1321,15 +1324,9 @@ if (IS_WINDOWS) {
   app.setAppUserModelId('com.nousresearch.hermes')
 }
 
-// Seed the native About panel with the live Hermes version. This is refreshed
-// on every open via the explicit "About" menu handler (refreshAboutPanel), so
-// an in-place `hermes update` mid-session is reflected without an app restart;
-// the seed here just covers the first open and any non-menu invocation path.
-app.setAboutPanelOptions({
-  applicationName: APP_NAME,
-  applicationVersion: resolveHermesVersion(),
-  copyright: 'Copyright © 2026 Nous Research'
-})
+// Seed the native About panel before app readiness. The menu handler refreshes
+// the live runtime version and renderer-skew warning before every open.
+app.setAboutPanelOptions(currentAboutPanelOptions())
 
 // Custom scheme for streaming audio/video into the renderer. Local paths read
 // from this machine; remote paths are proxied through the configured gateway
@@ -3087,12 +3084,14 @@ async function checkUpdates() {
   if (isOfficialSshRemote(originUrl)) {
     const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
 
-    const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
+    const [checkoutSha, target, dirtyStr, currentBranch] = await Promise.all([
       git(['rev-parse', 'HEAD']),
       runGit(['ls-remote', OFFICIAL_REPO_HTTPS_URL, `refs/heads/${branch}`], { cwd: updateRoot }),
       git(['status', '--porcelain']),
       git(['rev-parse', '--abbrev-ref', 'HEAD'])
     ])
+
+    const currentSha = resolveRunningClientSha({ checkoutSha, installStamp: INSTALL_STAMP, isPackaged: IS_PACKAGED })
 
     const targetSha = firstLine(target.stdout).split(/\s+/)[0] || ''
 
@@ -3112,7 +3111,7 @@ async function checkUpdates() {
     // compare API when possible; otherwise behind stays null ("update
     // available, count unknown") and updateAvailable carries the signal.
     // ahead_by === 0 with differing tips means the remote tip is reachable
-    // from our HEAD — a local carried commit sitting AHEAD, not behind:
+    // from the running client — a locally carried commit sitting AHEAD, not behind:
     // flagging that as an update nudges the user into wiping their work.
     const tipsEqual = Boolean(currentSha && currentSha === targetSha)
 
@@ -3158,7 +3157,7 @@ async function checkUpdates() {
 
   const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
 
-  const [currentSha, targetSha, dirtyStr, currentBranch, shallowStr] = await Promise.all([
+  const [checkoutSha, targetSha, dirtyStr, currentBranch, shallowStr] = await Promise.all([
     git(['rev-parse', 'HEAD']),
     git(['rev-parse', `origin/${branch}`]),
     git(['status', '--porcelain']),
@@ -3166,25 +3165,34 @@ async function checkUpdates() {
     git(['rev-parse', '--is-shallow-repository'])
   ])
 
+  const currentSha = resolveRunningClientSha({ checkoutSha, installStamp: INSTALL_STAMP, isPackaged: IS_PACKAGED })
+
   const isShallow = shallowStr === 'true'
 
-  // A shallow graph cannot provide a trustworthy exact count, even when it has
-  // a visible merge-base. Skip the ancestry walk and use the SHA fallback.
-  const countStr = shouldCountCommits({ isShallow }) ? await git(['rev-list', `HEAD..origin/${branch}`, '--count']) : ''
+  // Count from the code this packaged app is actually running, not from the
+  // checkout that happens to stage its next update. A shallow graph cannot
+  // provide a trustworthy exact count even when it has a visible merge-base.
+  const countResult = shouldCountCommits({ isShallow })
+    ? await runGit(['rev-list', commitRangeRevision({ currentSha, branch }), '--count'], { cwd: updateRoot })
+    : null
+
+  const countAvailable = countResult?.code === 0
+  const countStr = countAvailable ? countResult.stdout.trim() : ''
 
   // A positive directional ancestry result remains trustworthy in a shallow
   // graph and prevents a local commit on top of origin from looking outdated.
-  const targetIsAncestorOfHead =
+  const targetIsAncestorOfCurrent =
     isShallow &&
     currentSha !== targetSha &&
-    (await runGit(['merge-base', '--is-ancestor', `origin/${branch}`, 'HEAD'], { cwd: updateRoot })).code === 0
+    (await runGit(['merge-base', '--is-ancestor', `origin/${branch}`, currentSha], { cwd: updateRoot })).code === 0
 
   let behind = resolveBehindCount({
     countStr,
     currentSha,
     targetSha,
     isShallow,
-    targetIsAncestorOfHead
+    countAvailable,
+    targetIsAncestorOfCurrent
   })
 
   // Recover the exact count a shallow clone can't compute: the GitHub compare
@@ -3199,7 +3207,7 @@ async function checkUpdates() {
   // clone): still list what origin offers — resolveCommitLogSelection keeps
   // the shallow log to the fetched tip so the range walk can't enumerate the
   // contaminated ancestry — so "See what's new" stays useful and honest.
-  const commits = behind !== 0 ? await readCommitLog(updateRoot, branch, isShallow) : []
+  const commits = behind !== 0 ? await readCommitLog(updateRoot, branch, isShallow, currentSha) : []
 
   return {
     supported: true,
@@ -3270,10 +3278,10 @@ async function fetchCompareBehindCount({ currentSha, originUrl, targetSha }) {
   }
 }
 
-async function readCommitLog(cwd, branch, isShallow) {
+async function readCommitLog(cwd, branch, isShallow, currentSha) {
   const SEP = '\x1f'
   const REC = '\x1e'
-  const { limit, revision } = resolveCommitLogSelection({ branch, isShallow })
+  const { limit, revision } = resolveCommitLogSelection({ branch, isShallow, currentSha })
 
   const { stdout } = await runGit(
     ['log', revision, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', String(limit)],
@@ -17489,19 +17497,24 @@ async function detectRendererSkew() {
   return detectBundleSkew(INSTALL_STAMP, runGit, resolveUpdateRoot())
 }
 
-// Re-resolve the live Hermes version and push it into the native About panel
-// just before showing it, so an in-place `hermes update` is reflected without
-// an app restart. macOS only — `showAboutPanel()` is a no-op elsewhere, and the
-// other platforms don't use this menu item.
+function currentAboutPanelOptions(bundleOutOfSync = false) {
+  return {
+    applicationName: APP_NAME,
+    ...buildAboutPanelVersionOptions({
+      applicationVersion: resolveHermesVersion(),
+      installCommit: INSTALL_STAMP?.commit,
+      installDirty: INSTALL_STAMP?.dirty,
+      bundleOutOfSync
+    }),
+    copyright: 'Copyright © 2026 Nous Research'
+  }
+}
+
+// Refresh the live Hermes version and renderer-skew warning before opening.
+// macOS only — `showAboutPanel()` is a no-op elsewhere.
 function showAboutPanelFresh() {
   void detectRendererSkew().then(skew => {
-    app.setAboutPanelOptions({
-      applicationName: APP_NAME,
-      applicationVersion: skew.outOfSync
-        ? `${resolveHermesVersion()} — app build out of date, update the desktop app`
-        : resolveHermesVersion(),
-      copyright: 'Copyright © 2026 Nous Research'
-    })
+    app.setAboutPanelOptions(currentAboutPanelOptions(skew.outOfSync))
     app.showAboutPanel()
   })
 }

@@ -7,10 +7,12 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 import {
+  commitRangeRevision,
   compareApiUrl,
   parseCompareBehindCount,
   resolveBehindCount,
   resolveCommitLogSelection,
+  resolveRunningClientSha,
   shouldCountCommits
 } from './update-count'
 
@@ -31,6 +33,72 @@ function createTempGitRepo() {
     throw error
   }
 }
+
+test('packaged clients report the commit recorded in their install stamp', () => {
+  assert.equal(
+    resolveRunningClientSha({
+      checkoutSha: 'a'.repeat(40),
+      installStamp: { commit: 'b'.repeat(40) },
+      isPackaged: true
+    }),
+    'b'.repeat(40)
+  )
+})
+
+test('commit ranges start from the running client instead of the update checkout', () => {
+  assert.equal(commitRangeRevision({ currentSha: 'b'.repeat(40), branch: 'main' }), `${'b'.repeat(40)}..origin/main`)
+})
+
+test('packaged revision drives both count and changelog when the update checkout is stale', () => {
+  const { cwd, git } = createTempGitRepo()
+
+  try {
+    git('commit', '--allow-empty', '-m', 'stale checkout')
+
+    const checkoutSha = git('rev-parse', 'HEAD')
+
+    git('commit', '--allow-empty', '-m', 'packaged client')
+
+    const packagedSha = git('rev-parse', 'HEAD')
+
+    git('commit', '--allow-empty', '-m', 'available update')
+
+    const targetSha = git('rev-parse', 'HEAD')
+
+    git('update-ref', 'refs/remotes/origin/main', targetSha)
+    git('checkout', '--quiet', '--detach', checkoutSha)
+
+    const revision = commitRangeRevision({ currentSha: packagedSha, branch: 'main' })
+    const logSelection = resolveCommitLogSelection({ branch: 'main', isShallow: false, currentSha: packagedSha })
+
+    assert.equal(git('rev-list', 'HEAD..origin/main', '--count'), '2')
+    assert.equal(git('rev-list', revision, '--count'), '1')
+    assert.equal(logSelection.revision, revision)
+    assert.equal(git('log', logSelection.revision, '--format=%H'), targetSha)
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('dev clients keep reporting the live checkout commit', () => {
+  assert.equal(
+    resolveRunningClientSha({
+      checkoutSha: 'a'.repeat(40),
+      installStamp: { commit: 'b'.repeat(40) },
+      isPackaged: false
+    }),
+    'a'.repeat(40)
+  )
+})
+
+test('packaged clients fall back to the checkout when the stamp is unusable', () => {
+  for (const installStamp of [null, {}, { commit: 'not-a-sha' }, { commit: '0'.repeat(40) }]) {
+    assert.equal(
+      resolveRunningClientSha({ checkoutSha: 'a'.repeat(40), installStamp, isPackaged: true }),
+      'a'.repeat(40)
+    )
+  }
+})
 
 // FAIL-BEFORE: pre-fix the function did `Number.parseInt(countStr) || 0`
 // unconditionally, so a shallow checkout with no merge-base surfaced the bogus
@@ -70,7 +138,7 @@ test('shallow local-ahead checkout reports up-to-date when origin is a known anc
       currentSha: 'local-child',
       targetSha: 'origin-parent',
       isShallow: true,
-      targetIsAncestorOfHead: true
+      targetIsAncestorOfCurrent: true
     }),
     0
   )
@@ -98,7 +166,7 @@ test('shallow Git graph proves the remote tip is an ancestor of a local commit',
         currentSha,
         targetSha,
         isShallow: true,
-        targetIsAncestorOfHead: true
+        targetIsAncestorOfCurrent: true
       }),
       0
     )
@@ -163,6 +231,19 @@ test('shallow checkout with a merge-base still uses presence-only status', () =>
       currentSha: 'aaa',
       targetSha: 'bbb',
       isShallow: true
+    }),
+    null
+  )
+})
+
+test('full checkout reports unknown when the packaged commit is absent from its graph', () => {
+  assert.equal(
+    resolveBehindCount({
+      countStr: '',
+      currentSha: 'a'.repeat(40),
+      targetSha: 'b'.repeat(40),
+      isShallow: false,
+      countAvailable: false
     }),
     null
   )

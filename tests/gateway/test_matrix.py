@@ -3342,3 +3342,46 @@ class TestCryptoPickleKeyMigration:
         # start still sees a legacy-key account and retries the migration.
         store.put_account.assert_not_awaited()
         assert "retried on the next start" in caplog.text
+
+
+class TestMatrixEncryptedEventE2EEOff:
+    """E2EE-off adapters must surface dropped m.room.encrypted events instead of
+    discarding them silently — the "bot joins an encrypted room but never responds"
+    failure mode left no log line at all (#84693)."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    @pytest.mark.asyncio
+    async def test_encrypted_event_warns_once_per_room(self, caplog):
+        import logging
+        evt = types.SimpleNamespace(room_id="!secret:example.org", sender="@alice:example.org")
+        with caplog.at_level(logging.WARNING, logger="plugins.platforms.matrix.adapter"):
+            await self.adapter._on_encrypted_event_e2ee_off(evt)
+            await self.adapter._on_encrypted_event_e2ee_off(evt)
+        warns = [r for r in caplog.records if "encrypted event" in r.getMessage()]
+        assert len(warns) == 1  # de-duplicated per room
+        assert "!secret:example.org" in warns[0].getMessage()
+        assert "MATRIX_E2EE_MODE" in warns[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_encrypted_event_second_room_warns_again(self, caplog):
+        import logging
+        first = types.SimpleNamespace(room_id="!a:example.org", sender="@alice:example.org")
+        second = types.SimpleNamespace(room_id="!b:example.org", sender="@bob:example.org")
+        with caplog.at_level(logging.WARNING, logger="plugins.platforms.matrix.adapter"):
+            await self.adapter._on_encrypted_event_e2ee_off(first)
+            await self.adapter._on_encrypted_event_e2ee_off(second)
+        warns = [r for r in caplog.records if "encrypted event" in r.getMessage()]
+        assert len(warns) == 2
+
+    @pytest.mark.asyncio
+    async def test_encrypted_event_optional_mode_carries_install_hint(self, caplog):
+        import logging
+        self.adapter._e2ee_mode = "optional"  # connect() degraded it: deps were missing
+        evt = types.SimpleNamespace(room_id="!secret:example.org", sender="@alice:example.org")
+        with caplog.at_level(logging.WARNING, logger="plugins.platforms.matrix.adapter"):
+            await self.adapter._on_encrypted_event_e2ee_off(evt)
+        msg = next(r.getMessage() for r in caplog.records if "encrypted event" in r.getMessage())
+        assert "dependencies are missing" in msg
+        assert "pip install" in msg  # _E2EE_INSTALL_HINT

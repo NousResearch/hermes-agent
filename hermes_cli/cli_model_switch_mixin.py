@@ -334,6 +334,12 @@ class CLIModelSwitchMixin:
         ``_stored_session_runtime_overrides``) both restore the switched provider instead of recombining the
         model with the ambient default (#79536). Mirrors the gateway's ``update_session_model()`` call.
         getattr: tests drive the switch paths with ``object.__new__`` stubs.
+
+        The resolved provider goes to ``update_session_model`` as well as into
+        ``model_config``: a /model switch is a new explicit model REQUEST, and
+        the row's ``requested_model``/``requested_provider`` audit pair has to
+        name this route (or no provider at all) rather than keep a provider
+        from the request this switch just replaced.
         """
         from cli import logger
         db = getattr(self, "_session_db", None)
@@ -353,7 +359,11 @@ class CLIModelSwitchMixin:
             "base_url": result.base_url or None,
             "api_mode": result.api_mode or None}
         try:
-            db.update_session_model(sid, result.new_model)
+            # Pass the same healed provider the route below carries: it also
+            # lands in the row's requested_provider audit column, so a /model
+            # switch records the route it is asking for instead of leaving the
+            # previous request's provider beside the new model.
+            db.update_session_model(sid, result.new_model, provider=route["provider"])
             db.patch_session_model_config(sid, {"gateway_runtime": route, **route})
         except Exception:
             logger.debug("Failed to persist model switch to session DB", exc_info=True)

@@ -270,6 +270,7 @@ class AIAgent(
         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False, requested_provider: str = None,
         capabilities: Dict[str, bool] | None = None,
+        requested_model: str = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
         init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}
@@ -336,6 +337,12 @@ class AIAgent(
             # state.db) this lazy create is the ONLY durable write, and an identity-less row is unrecoverable.
             self._session_db.create_session(
                 session_id=self.session_id, source=source, model=self.model,
+                # The requested route, recorded beside the served one. The row
+                # is created lazily on the first turn, which can already be
+                # AFTER a fallback swap replaced self.model/self.provider — so
+                # read the immutable init snapshot, never the live runtime.
+                requested_model=getattr(self, "origin_requested_model", "") or None,
+                requested_provider=getattr(self, "origin_requested_provider", "") or None,
                 model_config=self._session_row_model_config(), system_prompt=self._cached_system_prompt,
                 user_id=getattr(self, "_user_id", None), session_key=getattr(self, "_gateway_session_key", None),
                 chat_id=getattr(self, "_chat_id", None), chat_type=getattr(self, "_chat_type", None),
@@ -345,6 +352,32 @@ class AIAgent(
                 cwd=_launch_cwd_for_session(source), profile_name=profile_for_session,
             )
             self._session_db_created = True
+            # The row is created lazily, so the turn that creates it may have
+            # ALREADY fallen back — in which case try_activate_fallback's
+            # record_session_fallback() UPDATE hit a row that did not exist and
+            # silently did nothing. Re-apply the flag now that there is a row.
+            if getattr(self, "_fallback_activated", False):
+                try:
+                    # Same request the swap itself would have recorded: the
+                    # route it ABANDONED, not this process's start-of-run
+                    # snapshot (which a /model switch can have superseded).
+                    # One helper so both call sites can never disagree about
+                    # what the flag's pair means.
+                    from agent.chat_completion_helpers import (
+                        abandoned_route_for_audit,
+                    )
+
+                    _req_model, _req_provider = abandoned_route_for_audit(self)
+                    self._session_db.record_session_fallback(
+                        self.session_id,
+                        requested_model=_req_model,
+                        requested_provider=_req_provider,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not re-apply the fallback flag after session "
+                        "row creation", exc_info=True,
+                    )
         except Exception as e:
             # Transient failure (e.g. SQLite lock): _session_db_created stays False so the next turn retries.
             logger.warning("Session DB creation failed (will retry next turn): %s", e)

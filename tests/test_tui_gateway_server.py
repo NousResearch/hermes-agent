@@ -4138,6 +4138,40 @@ def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
     )
 
 
+def test_persist_live_session_runtime_passes_provider_without_update_session_meta():
+    """The meta-less fallback rewrites the row's request audit — pair it right.
+
+    ``update_session_model`` resets ``requested_model``/``requested_provider``
+    as one statement, so this branch must hand over the provider it just
+    resolved; model-only would leave the new model beside whatever provider an
+    earlier request had named.
+    """
+    calls = {}
+
+    class MetaLessDB:
+        def get_session(self, _session_id):
+            return {"model_config": "{}"}
+
+        def update_session_model(self, session_id, model, provider=None):
+            calls["args"] = (session_id, model, provider)
+
+    agent = types.SimpleNamespace(
+        model="gpt-5.4",
+        provider="openai-codex",
+        base_url=None,
+        api_mode=None,
+        reasoning_config=None,
+        service_tier=None,
+        _session_db=MetaLessDB(),
+    )
+
+    server._persist_live_session_runtime(
+        {"agent": agent, "session_key": "stored-session"}
+    )
+
+    assert calls["args"] == ("stored-session", "gpt-5.4", "openai-codex")
+
+
 def test_persist_live_session_runtime_preserves_explicit_normal_tier():
     updates = {}
 

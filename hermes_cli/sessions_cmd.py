@@ -42,6 +42,42 @@ def _confirm_prompt(prompt: str) -> bool:
     except (EOFError, KeyboardInterrupt):
         return False
 
+def _format_route(model, provider) -> str:
+    """Render a ``model (provider)`` label, tolerating a missing half."""
+    model_s = str(model or "").strip()
+    provider_s = str(provider or "").strip()
+    if model_s and provider_s:
+        return f"{model_s} ({provider_s})"
+    return model_s or provider_s or "unknown"
+
+
+def _print_fallback_warnings(sessions) -> None:
+    """Name every listed session that ran a model nobody asked for.
+
+    The listing columns are model-free, so the divergence gets its own block
+    under the table instead of a column nobody would notice. Only rows carrying
+    the sticky ``fallback_activated`` flag are reported: comparing requested vs
+    served strings would both cry wolf (an alias rewrite makes them differ with
+    no fallback) and stay silent (a fallback chain whose entry equals the
+    primary makes them match despite one).
+    """
+    flagged = [s for s in sessions if s.get("fallback_activated")]
+    if not flagged:
+        return
+    noun = "session" if len(flagged) == 1 else "sessions"
+    print()
+    print(
+        f"⚠ {len(flagged)} {noun} ran a model other than the one requested "
+        "(provider fallback):"
+    )
+    for s in flagged:
+        requested = _format_route(
+            s.get("requested_model"), s.get("requested_provider")
+        )
+        served = _format_route(s.get("model"), s.get("billing_provider"))
+        print(f"   {s['id']}  requested {requested} → served {served}")
+
+
 
 def _not_found(session_id) -> int:
     print(f"Session '{session_id}' not found.")
@@ -288,6 +324,7 @@ def _cmd_list(db, args):
     print(header + "\n" + "─" * rule)
     for s in sessions:
         print(fmt(s))
+    _print_fallback_warnings(sessions)
 
 
 # -- export -----------------------------------------------------------------

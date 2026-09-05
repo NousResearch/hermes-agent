@@ -1105,15 +1105,6 @@ class TestWebServerEndpoints:
         )
         assert resp.status_code == 401
 
-    # ── POST /api/chat/image-upload (browser clipboard/drop images) ─────
-
-
-
-
-
-    # ── Dashboard font override ─────────────────────────────────────────
-
-
 
 
     def _create_session_with_heavy_fields(self, session_id: str) -> None:
@@ -1134,6 +1125,275 @@ class TestWebServerEndpoints:
 
 
 
+        self._create_session_with_private_fields("allowlisted-full-row")
+
+        ordinary = sessions_router.get_sessions(limit=20, offset=0)
+        full = sessions_router.get_sessions(limit=20, offset=0, full=True)
+        ordinary_rows = [
+            s
+            for s in ordinary["sessions"]
+            if s["id"] == "allowlisted-full-row"
+        ]
+        rows = [
+            s
+            for s in full["sessions"]
+            if s["id"] == "allowlisted-full-row"
+        ]
+        assert ordinary_rows and rows, "created session missing from list"
+        row = rows[0]
+        assert row.keys() == ordinary_rows[0].keys()
+        assert not (self._private_session_fields() & row.keys())
+
+    @staticmethod
+    def _private_session_fields() -> set[str]:
+        return {
+            "user_id",
+            "session_key",
+            "chat_id",
+            "chat_type",
+            "thread_id",
+            "display_name",
+            "origin_json",
+            "expiry_finalized",
+            "model_config",
+            "system_prompt",
+            "billing_provider",
+            "billing_base_url",
+            "billing_mode",
+            "cost_source",
+            "pricing_version",
+            "handoff_error",
+            "compression_failure_cooldown_until",
+            "compression_failure_error",
+            "compression_fallback_streak",
+            "future_private_field",
+        }
+
+    def _create_session_with_private_fields(self, session_id: str) -> None:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id=session_id,
+                source="discord",
+                model="example-model",
+                system_prompt="# SOUL.md\n" + ("prompt body " * 500),
+                model_config={"temperature": 0.7, "notes": "x" * 200},
+                user_id="example-user",
+                session_key="discord:example-route",
+                chat_id="example-chat",
+                chat_type="guild",
+                thread_id="example-thread",
+                cwd="/workspace/example",
+            )
+            db.record_gateway_session_peer(
+                session_id,
+                source="discord",
+                user_id="example-user",
+                session_key="discord:example-route",
+                chat_id="example-chat",
+                chat_type="guild",
+                thread_id="example-thread",
+                display_name="Example route label",
+                origin_json=json.dumps({"platform": "discord", "peer": "example"}),
+            )
+
+            def _write_private_fields(conn):
+                columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
+                }
+                if "future_private_field" not in columns:
+                    conn.execute(
+                        "ALTER TABLE sessions ADD COLUMN future_private_field TEXT"
+                    )
+                conn.execute(
+                    """UPDATE sessions
+                       SET title = ?, git_branch = ?, git_repo_root = ?,
+                           billing_provider = ?, billing_base_url = ?,
+                           api_call_count = ?, handoff_platform = ?,
+                           handoff_state = ?, handoff_error = ?,
+                           compression_failure_error = ?, future_private_field = ?
+                       WHERE id = ?""",
+                    (
+                        "Example session title",
+                        "feature/example",
+                        "/workspace/example",
+                        "example-provider",
+                        "https://backend.invalid/v1",
+                        7,
+                        "discord",
+                        "failed",
+                        "raw handoff diagnostic",
+                        "private compression diagnostic",
+                        "future private value",
+                        session_id,
+                    ),
+                )
+
+            db._execute_write(_write_private_fields)
+        finally:
+            db.close()
+
+
+    def test_profiles_sessions_uses_same_public_allowlists(self):
+        """The cross-profile aggregate applies the same list projection."""
+        from hermes_cli import web_server
+        from hermes_cli.web_routers import profiles as profiles_router
+        from hermes_cli.web_routers import sessions as sessions_router
+
+        self._create_session_with_private_fields("allowlisted-profiles-row")
+
+        response = profiles_router.get_profiles_sessions(limit=20, offset=0)
+        rows = [
+            s
+            for s in response["sessions"]
+            if s["id"] == "allowlisted-profiles-row"
+        ]
+        assert rows, "created session missing from profiles list"
+        row = rows[0]
+        assert not (self._private_session_fields() & row.keys())
+        assert row["profile"] == "default"
+        assert row["is_default_profile"] is True
+
+        full = profiles_router.get_profiles_sessions(limit=20, offset=0, full=True)
+        full_rows = [
+            s
+            for s in full["sessions"]
+            if s["id"] == "allowlisted-profiles-row"
+        ]
+        assert full_rows
+        assert full_rows[0].keys() == row.keys()
+        assert not (self._private_session_fields() & full_rows[0].keys())
+
+    def test_sidebar_projection_bridge_uses_explicit_public_allowlist(self):
+        """Sidebar windows are replaced in place with fresh public DTOs."""
+        from hermes_cli import web_server
+
+        raw_row = {
+            "id": "allowlisted-sidebar-row",
+            "source": "desktop",
+            "profile": "default",
+            "is_default_profile": True,
+            "system_prompt": "private rendered prompt",
+            "future_private_field": "private future value",
+        }
+        rows = [raw_row]
+
+        projected = web_server._strip_session_list_rows(rows)
+
+        assert projected is rows
+        assert rows == [
+            {
+                "id": "allowlisted-sidebar-row",
+                "source": "desktop",
+                "profile": "default",
+                "is_default_profile": True,
+            }
+        ]
+        assert rows[0] is not raw_row
+
+    def test_get_session_detail_uses_explicit_public_allowlist(self):
+        """Detail cannot expose routing data or a future database column."""
+        from hermes_cli import web_server
+        from hermes_cli.web_routers import profiles as profiles_router
+        from hermes_cli.web_routers import sessions as sessions_router
+
+        self._create_session_with_private_fields("allowlisted-detail-row")
+
+        row = asyncio.run(sessions_router.get_session_detail("allowlisted-detail-row"))
+        assert row["id"] == "allowlisted-detail-row"
+        assert row["model"] == "example-model"
+        assert row["title"] == "Example session title"
+        assert row["cwd"] == "/workspace/example"
+        assert row["git_branch"] == "feature/example"
+        assert row["handoff_platform"] == "discord"
+        assert row["handoff_state"] == "failed"
+        assert row["api_call_count"] == 7
+        assert isinstance(row["archived"], bool)
+        assert not (self._private_session_fields() & row.keys())
+
+    def test_get_session_detail_uses_recent_message_for_active_state(self, monkeypatch):
+        """A recent message keeps a long-lived session active in detail."""
+        from hermes_cli import web_server
+        from hermes_cli.web_routers import profiles as profiles_router
+        from hermes_cli.web_routers import sessions as sessions_router
+        from hermes_state import SessionDB
+
+        now = 2_000_000_000.0
+        session_id = "recently-active-detail"
+        db = SessionDB()
+        try:
+            db.create_session(session_id=session_id, source="cli")
+            db.append_message(session_id, role="user", content="still working")
+
+            def _set_timestamps(conn):
+                conn.execute(
+                    "UPDATE sessions SET started_at = ? WHERE id = ?",
+                    (now - 3_600, session_id),
+                )
+                conn.execute(
+                    "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+                    (now - 60, session_id),
+                )
+
+            db._execute_write(_set_timestamps)
+        finally:
+            db.close()
+
+        monkeypatch.setattr(web_server.time, "time", lambda: now)
+
+        row = asyncio.run(sessions_router.get_session_detail(session_id))
+
+        assert row["started_at"] == now - 3_600
+        assert row["last_active"] == now - 60
+        assert row["is_active"] is True
+
+    def test_rename_session_updates_title(self):
+        """PATCH /api/sessions/{id} renames a session (regression: the route
+        was missing entirely, so the desktop rename dialog got a 405)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="rename-me", source="cli")
+        finally:
+            db.close()
+
+        resp = self.client.patch("/api/sessions/rename-me", json={"title": "My Chat"})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "title": "My Chat"}
+
+        db = SessionDB()
+        try:
+            assert db.get_session_title("rename-me") == "My Chat"
+        finally:
+            db.close()
+
+    def test_rename_session_clears_title_when_empty(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="clear-me", source="cli")
+            db.set_session_title("clear-me", "Has A Title")
+        finally:
+            db.close()
+
+        resp = self.client.patch("/api/sessions/clear-me", json={"title": ""})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "title": ""}
+
+        db = SessionDB()
+        try:
+            assert db.get_session_title("clear-me") is None
+        finally:
+            db.close()
+
+    def test_rename_session_not_found(self):
+        resp = self.client.patch("/api/sessions/does-not-exist", json={"title": "x"})
+        assert resp.status_code == 404
 
     def test_import_sessions_endpoint_imports_exported_json(self):
         from hermes_state import SessionDB
@@ -5406,7 +5666,7 @@ def test_mount_spa_dynamic_web_dist_recheck(tmp_path, monkeypatch):
 
     # 2. build created dynamically -> 200
     dist.mkdir(parents=True, exist_ok=True)
-    (dist / "index.html").write_text("<html><body>Test</body></html>")
+    (dist / "index.html").write_text("<html><body>Test</body></html>", encoding="utf-8")
     res2 = client.get("/")
     assert res2.status_code == 200
     assert "Test" in res2.text

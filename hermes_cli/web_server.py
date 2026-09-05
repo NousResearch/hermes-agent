@@ -1551,6 +1551,7 @@ _PLUGIN_COMPAT_LAZY = {
     'approve_pairing': ('hermes_cli.web_routers.ops', 'approve_pairing'),
     'auth_mcp_server': ('hermes_cli.web_routers.mcp', 'auth_mcp_server'),
     'build_cron_model_impact': ('hermes_cli.config', 'build_cron_model_impact'),
+    '_strip_session_list_rows': ('hermes_cli.web_server_gateway', '_strip_session_list_rows'),
     'bulk_delete_sessions_endpoint': ('hermes_cli.web_routers.sessions', 'bulk_delete_sessions_endpoint'),
     'cancel_oauth_session': ('hermes_cli.web_routers.oauth', 'cancel_oauth_session'),
     'cancel_telegram_onboarding': ('hermes_cli.web_routers.messaging', 'cancel_telegram_onboarding'),

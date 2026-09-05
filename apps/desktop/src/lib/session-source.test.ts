@@ -33,3 +33,17 @@ describe('photon messaging source registration', () => {
     expect(isMessagingSource(undefined)).toBe(false)
   })
 })
+
+describe('zulip messaging source registration', () => {
+  it('treats zulip as a messaging source (own sidebar section)', () => {
+    expect(isMessagingSource('zulip')).toBe(true)
+  })
+
+  it('is registered in the messaging source id list', () => {
+    expect(MESSAGING_SESSION_SOURCE_IDS).toContain('zulip')
+  })
+
+  it('exposes a Zulip search label', () => {
+    expect(sessionSourceSearchTerms('zulip')).toContain('Zulip')
+  })
+})

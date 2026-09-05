@@ -10,7 +10,8 @@ import {
   SiSignal,
   SiTelegram,
   SiWechat,
-  SiWhatsapp
+  SiWhatsapp,
+  SiZulip
 } from '@icons-pack/react-simple-icons'
 import type { ComponentPropsWithoutRef, ComponentType, SVGProps } from 'react'
 import { forwardRef, memo } from 'react'
@@ -69,7 +70,8 @@ const PLATFORM_ICONS: Record<string, PlatformIconSpec> = {
   api_server: { Icon: Globe, color: '#64748B', kind: 'generic' },
   weixin: { Icon: SiWechat, color: '#07C160', kind: 'brand' },
   qqbot: { Icon: SiQq, color: '#EB1923', kind: 'brand' },
-  yuanbao: { Icon: SiBilibili, color: '#FB7299', kind: 'brand' }
+  yuanbao: { Icon: SiBilibili, color: '#FB7299', kind: 'brand' },
+  zulip: { Icon: SiZulip, color: '#6492FE', kind: 'brand' }
 }
 
 interface PlatformAvatarProps extends Omit<ComponentPropsWithoutRef<'span'>, 'children'> {

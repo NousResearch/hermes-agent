@@ -114,13 +114,27 @@ def test_web_extract_registry_routes_github_blob_without_provider(monkeypatch):
     ]
 
 
-def test_web_extract_routes_github_raw_path_without_reconstructing_the_ref(monkeypatch):
-    """A GitHub raw URL is fetched as supplied, so slash refs stay unambiguous."""
+def test_web_extract_follows_github_raw_path_redirect_without_provider_fallback(
+    monkeypatch,
+):
+    """A GitHub raw view redirects to raw content without reparsing it as HTML."""
     requested = "https://github.com/octo/repo/raw/feature/foo/README.md"
+    raw_url = "https://raw.githubusercontent.com/octo/repo/feature/foo/README.md"
     seen = []
 
     def fake_safe_client(**_kwargs):
-        return _SafeClient([_StreamResponse(requested, "# Raw README\n")], seen)
+        return _SafeClient(
+            [
+                _StreamResponse(
+                    requested,
+                    headers={"location": raw_url},
+                    is_redirect=True,
+                    status_code=302,
+                ),
+                _StreamResponse(raw_url, "# Raw README\n"),
+            ],
+            seen,
+        )
 
     async def safe_url(_url):
         return True
@@ -135,7 +149,8 @@ def test_web_extract_routes_github_raw_path_without_reconstructing_the_ref(monke
 
     result = _dispatch_extract([requested])
 
-    assert [call[1] for call in seen] == [requested]
+    assert [call[1] for call in seen] == [requested, raw_url]
+    assert result["results"][0]["url"] == raw_url
     assert result["results"][0]["content"] == "# Raw README\n"
 
 

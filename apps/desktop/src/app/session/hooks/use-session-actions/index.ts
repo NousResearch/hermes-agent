@@ -31,6 +31,7 @@ import {
   codingWorkspaceCreatedSession,
   codingWorkspaceDraftKey,
   codingWorkspaceDraftRequestId,
+  enableCodingWorkspaceControls,
   failCodingWorkspace,
   prepareCodingWorkspace,
   rememberCodingWorkspaceSession,
@@ -342,6 +343,7 @@ async function desktopSessionCreateParams(
 }
 
 interface FreshSessionDraftOptions {
+  codingWorkspaceControls?: boolean
   preserveRoute?: boolean
   replaceRoute?: boolean
   workspaceTarget?: NewChatWorkspaceTarget
@@ -471,6 +473,11 @@ export function useSessionActions({
 
       const codingOwner = resolveNewChatBackendOwner()
       resetCodingWorkspaceDraft({ ...codingOwner, draftKey: codingWorkspaceDraftKey() })
+
+      if (draftOptions.codingWorkspaceControls) {
+        enableCodingWorkspaceControls({ ...codingOwner, draftKey: codingWorkspaceDraftKey() })
+      }
+
       resetViewSync()
       busyRef.current = false
       setBusy(false)

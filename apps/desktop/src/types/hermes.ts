@@ -713,7 +713,19 @@ export interface SessionResumeResponse {
   turn_started_at?: number | null
 }
 
+export interface CodingWorkspaceBinding {
+  requestId: string
+  sourcePath: string
+  cwd: string
+  projectId: string
+  branch: string | null
+  repoRoot: string | null
+  projectName?: string
+  mode?: 'worktree' | 'existing' | 'current' | 'folder'
+}
+
 export interface SessionRuntimeInfo {
+  coding_workspace?: CodingWorkspaceBinding | null
   approval_mode?: 'manual' | 'off' | 'smart'
   branch?: string
   config_warning?: string

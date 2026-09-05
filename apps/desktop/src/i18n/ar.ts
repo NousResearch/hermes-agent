@@ -57,6 +57,9 @@ export const ar = defineLocale({
     }
   },
   codingWorkspace: {
+    openFailed: "تعذر فتح مجلد مساحة العمل",
+    worktree: "شجرة العمل",
+    folder: "مجلد",
     inUse: "قيد الاستخدام",
     project: "المشروع",
     workIn: "العمل في",

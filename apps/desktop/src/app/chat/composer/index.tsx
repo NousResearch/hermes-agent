@@ -1339,6 +1339,7 @@ export function ChatBar({
                   // and stops probing git / GitHub for a surface that has no
                   // branch to show. Cheaper than a second composer.
                   repoPath={botChat ? undefined : cwd}
+                  sessionId={botChat ? undefined : sessionId}
                 />
                 <div
                   className={cn(

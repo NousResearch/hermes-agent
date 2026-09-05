@@ -38,6 +38,9 @@ export const en: Translations = {
     importError: 'Could not import this conversation.'
   },
   codingWorkspace: {
+    openFailed: "Could not open workspace folder",
+    worktree: "Worktree",
+    folder: "Folder",
     inUse: "In use",
     project: "Project",
     workIn: "Work in",

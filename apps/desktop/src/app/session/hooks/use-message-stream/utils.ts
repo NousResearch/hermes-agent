@@ -6,12 +6,16 @@ import type { ClientSessionState } from '../../../types'
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
+    'branch' | 'codingWorkspace' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
   >
 >
 
 export function sessionInfoStatePatch(payload: GatewayEventPayload | undefined): SessionRuntimeStatePatch {
   const patch: SessionRuntimeStatePatch = {}
+
+  if (payload?.coding_workspace !== undefined) {
+    patch.codingWorkspace = payload.coding_workspace
+  }
 
   if (typeof payload?.model === 'string') {
     patch.model = payload.model || ''
@@ -65,6 +69,7 @@ export function applySessionInfoStatePatch(
 ): ClientSessionState {
   if (
     (patch.branch === undefined || patch.branch === state.branch) &&
+    (patch.codingWorkspace === undefined || JSON.stringify(patch.codingWorkspace) === JSON.stringify(state.codingWorkspace)) &&
     (patch.cwd === undefined || patch.cwd === state.cwd) &&
     (patch.fast === undefined || patch.fast === state.fast) &&
     (patch.model === undefined || patch.model === state.model) &&

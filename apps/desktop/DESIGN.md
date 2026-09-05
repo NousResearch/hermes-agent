@@ -66,9 +66,13 @@ one-off at the call site.
   also available without changing profile settings. Browsing registers a Project
   without entering it or changing sidebar grouping, ordering, filtering, or scope.
   These controls record owner-bound draft intent only: a worktree is prepared on
-  first nonblank Send, never on selection or cancellation. Existing chats keep
-  their original workspace; another target requires a new chat. Folder attachments
-  remain references unless explicitly promoted with “Use as project”.
+  first nonblank Send, never on selection or cancellation. After Send, the existing
+  composer status strip shows the bound project, checkout kind, and branch (when
+  applicable). Its disclosure holds the full path and workspace actions; do not
+  add another toolbar or keep target selectors editable on a bound chat. Existing
+  chats keep their original workspace; “New chat in another workspace” starts a
+  draft, not a checkout. Folder attachments remain references unless explicitly
+  promoted with “Use as project”.
 
 Navigation must preserve context. A background session finishing, a tool result
 arriving, or a project refresh may update badges and cached data; it must not

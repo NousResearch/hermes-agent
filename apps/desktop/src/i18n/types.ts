@@ -85,6 +85,9 @@ export interface Translations {
     importError: string
   },
   codingWorkspace: {
+    openFailed: string
+    worktree: string
+    folder: string
     project: string
     workIn: string
     noProject: string

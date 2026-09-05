@@ -332,6 +332,7 @@ export function useSessionTileDelegate({
             ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
             ...(typeof info?.reasoning_effort === 'string' ? { reasoningEffort: info.reasoning_effort } : {}),
             ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
+            ...(info && 'coding_workspace' in info ? { codingWorkspace: info.coding_workspace } : {}),
             messages:
               state.messages.length > 0 ? state.messages : toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
           }),

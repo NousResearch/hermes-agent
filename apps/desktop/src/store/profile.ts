@@ -373,7 +373,14 @@ export function resolveNewChatBackendOwner(): NewChatBackendOwner {
 // resets to the intro draft, so we never strand the user in an orphaned view.
 export const $freshSessionRequest = atom(0)
 
-export function requestFreshSession(): void {
+export interface FreshSessionRequestOptions {
+  codingWorkspaceControls?: boolean
+  workspaceTarget?: null
+}
+export const $freshSessionRequestOptions = atom<FreshSessionRequestOptions>({})
+
+export function requestFreshSession(options: FreshSessionRequestOptions = {}): void {
+  $freshSessionRequestOptions.set(options)
   $freshSessionRequest.set($freshSessionRequest.get() + 1)
 }
 
@@ -914,9 +921,9 @@ export function pinNewChatProfile(name: string): string {
 // session list, where switching scope would throw away the browse state the user
 // is in. Points new chats at the profile and opens its backend so the next
 // message lands in the right place.
-export function newSessionInProfile(name: string): void {
+export function newSessionInProfile(name: string, options?: FreshSessionRequestOptions): void {
   const target = pinNewChatProfile(name)
-  requestFreshSession()
+  requestFreshSession(options)
   // #81094: surface the failed dial instead of failing silently.
   void activateOnCurrentSource(target).catch((error: unknown) => {
     if (!notifyRemoteOverrideAuthFailure(target, error)) {
@@ -928,7 +935,7 @@ export function newSessionInProfile(name: string): void {
 /** Start a draft owned by a specific registry agent. Foreground activation is
  * only a presentation step; the route stays attached to the draft for the
  * eventual session.create request. */
-export function newSessionInAgent(route: AgentProfileRoute): void {
+export function newSessionInAgent(route: AgentProfileRoute, options?: FreshSessionRequestOptions): void {
   const captured = {
     ...route,
     connectionId: route.connectionId.trim(),
@@ -943,7 +950,7 @@ export function newSessionInAgent(route: AgentProfileRoute): void {
   $newChatProfile.set(captured.profile)
   $newChatRoute.set(captured)
   $newChatConnectionId.set(captured.connectionId)
-  requestFreshSession()
+  requestFreshSession(options)
   // #81094: surface the failed dial instead of failing silently.
   void ensureGatewayAgent(captured.connectionId, captured.profile).catch((error: unknown) => {
     notifyError(error, `Failed to open profile "${captured.profile}"`)

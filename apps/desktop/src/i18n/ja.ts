@@ -37,6 +37,9 @@ export const ja = defineLocale({
     importError: '会話を取り込めませんでした。'
   },
   codingWorkspace: {
+    openFailed: "ワークスペースのフォルダーを開けませんでした",
+    worktree: "ワークツリー",
+    folder: "フォルダー",
     inUse: "使用中",
     project: "プロジェクト",
     workIn: "作業場所",

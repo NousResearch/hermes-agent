@@ -3864,7 +3864,10 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
         {"id": "1", "method": "session.resume", "params": {"session_id": "stored-session", "eager_build": True}}
     )
 
-    assert resp["result"]["info"] == {"model": "gpt-5.4", "provider": "openai-codex"}
+    assert resp is not None
+    assert resp["result"]["info"] == {
+        "model": "gpt-5.4", "provider": "openai-codex", "coding_workspace": None,
+    }
     assert captured["model_override"] == {
         "model": "gpt-5.4",
         "provider": "openai-codex",

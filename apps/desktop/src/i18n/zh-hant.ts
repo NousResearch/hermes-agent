@@ -37,6 +37,9 @@ export const zhHant = defineLocale({
     importError: '無法匯入此對話。'
   },
   codingWorkspace: {
+    openFailed: "無法開啟工作區資料夾",
+    worktree: "工作樹",
+    folder: "資料夾",
     inUse: "使用中",
     project: "專案",
     workIn: "工作位置",

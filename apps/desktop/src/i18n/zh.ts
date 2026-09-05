@@ -37,6 +37,9 @@ export const zh: Translations = {
     importError: '无法导入此对话。'
   },
   codingWorkspace: {
+    openFailed: "无法打开工作区文件夹",
+    worktree: "工作树",
+    folder: "文件夹",
     inUse: "使用中",
     project: "项目",
     workIn: "工作位置",

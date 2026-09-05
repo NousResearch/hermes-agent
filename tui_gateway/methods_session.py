@@ -375,6 +375,7 @@ def _create_session(rid, params: dict, *, workspace_key: str | None = None) -> d
         "info": {"model": override.get("model") if override else _resolve_model(),
                  **({"provider": override["provider"]} if override.get("provider") else {}),
                  "tools": {}, "skills": {}, "cwd": cwd, "branch": git_probe.branch(cwd),
+                 "coding_workspace": _sessions[sid].get("coding_workspace"),
                  "project": _project_info_for_cwd(cwd), "lazy": True, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                  "profile_name": _response_profile_name(profile)}})
 
@@ -683,7 +684,8 @@ def _resume_response(
         message_count = len(count_source) if ctx.omit_messages else len(messages)
     payload = {"session_id": sid, "resumed": ctx.target, "message_count": message_count, "messages": messages,
                **({"messages_omitted": ctx.omit_messages} if hydrating is None else {"hydrating": hydrating}),
-               "info": info, "inflight": None, "running": running, "session_key": ctx.target,
+               "info": {**info, "coding_workspace": record.get("coding_workspace")},
+               "inflight": None, "running": running, "session_key": ctx.target,
                "started_at": record["created_at"] if started_at is None else started_at, "status": status}
     if auto_continue is not None:
         payload["auto_continue"] = auto_continue

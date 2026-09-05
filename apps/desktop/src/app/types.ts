@@ -1,7 +1,7 @@
 import type * as React from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
-import type { SessionMessage, UsageStats } from '@/types/hermes'
+import type { CodingWorkspaceBinding, SessionMessage, UsageStats } from '@/types/hermes'
 
 export interface ContextSuggestion {
   text: string
@@ -186,6 +186,7 @@ export interface PersistedDisplayTranscriptProvenance {
 }
 
 export interface ClientSessionState {
+  codingWorkspace?: CodingWorkspaceBinding | null
   storedSessionId: string | null
   transcriptAuthorityEpoch?: number
   transcriptProvenance?: PersistedDisplayTranscriptProvenance

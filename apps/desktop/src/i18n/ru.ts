@@ -59,6 +59,9 @@ export const ru = defineLocale({
     importError: 'Не удалось импортировать разговор.'
   },
   codingWorkspace: {
+    openFailed: "Не удалось открыть папку рабочего пространства",
+    worktree: "Рабочее дерево",
+    folder: "Папка",
     inUse: "Используется",
     project: "Проект",
     workIn: "Работать в",

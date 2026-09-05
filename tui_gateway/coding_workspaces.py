@@ -317,5 +317,5 @@ def prepare_workspace(pdb, conn, params: dict) -> dict:
         source = _git_output(path, ["rev-parse", "--show-toplevel"]).strip() if root else path
         project = project or register_folder(pdb, conn, root or path)
         return {"cwd": actual["path"], "projectId": project.id, "requestId": request_id,
-                "sourcePath": source,
+                "sourcePath": source, "projectName": project.name, "mode": mode,
                 "branch": actual["branch"], "repoRoot": actual["repoRoot"]}

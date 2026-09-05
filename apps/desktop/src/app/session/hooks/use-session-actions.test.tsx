@@ -4534,6 +4534,26 @@ describe('routed fresh chat keeps its exact owner across turns', () => {
 })
 
 describe('coding workspace first send', () => {
+  it('opens fresh coding selectors without provisioning or changing the old session binding', async () => {
+    const owner = { connectionId: 'local', profile: 'coder', draftKey: '__new__' }
+    $newChatRoute.set({ connectionId: owner.connectionId, profile: owner.profile })
+    const oldKey = codingWorkspaceKey({ ...owner, draftKey: 'old-chat' })
+    const old = { owner: { ...owner, draftKey: 'old-chat' }, status: 'bound' as const, requestId: 'old', intent: null, sessionId: 'old-chat' }
+    $codingWorkspaceDrafts.set({ [oldKey]: old })
+    let handle: HarnessHandle | null = null
+    const ambient = vi.fn()
+    render(<Harness onReady={h => (handle = h)} requestGateway={ambient} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+    vi.mocked(requestGatewayForAgent).mockClear()
+    act(() => handle!.startFreshSessionDraft({ codingWorkspaceControls: true, workspaceTarget: null }))
+    expect($codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)]).toMatchObject({ controlsEnabled: true, intent: null, status: 'idle' })
+    expect($codingWorkspaceDrafts.get()[oldKey]).toBe(old)
+    expect(requestGatewayForAgent).not.toHaveBeenCalled()
+    expect(ambient).not.toHaveBeenCalled()
+    act(() => handle!.startFreshSessionDraft())
+    expect($codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)].controlsEnabled).not.toBe(true)
+  })
+
   it('creates and leases a legacy named-profile workspace on the same owner used by the controls', async () => {
     const owner = { connectionId: null, profile: 'coder', draftKey: '__new__' }
     $newChatRoute.set(null)

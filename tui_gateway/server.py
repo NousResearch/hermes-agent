@@ -2068,6 +2068,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "tools": dict(mirror.get("tools") or {}) if isinstance(mirror.get("tools"), dict) else {},
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd),
+        "coding_workspace": sess.get("coding_workspace"),
         "terminal_backend": _effective_terminal_backend(), "personality": str(personality or ""),
         "running": bool(sess.get("running")), "turn_started_at": _turn_started_at(session),
         "title": _session_live_title(sess, session_key) if session_key else "",
@@ -2656,6 +2657,7 @@ def _fallback_session_info(session: dict) -> dict:
     cwd = _session_cwd(session)
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True,
+        "coding_workspace": session.get("coding_workspace"),
         "model": _resolve_model(), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
     }
 

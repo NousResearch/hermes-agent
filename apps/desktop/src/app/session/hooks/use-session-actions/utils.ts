@@ -1577,7 +1577,7 @@ export async function resolveSessionOwner(storedSessionId: null | string): Promi
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
+    'branch' | 'codingWorkspace' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
   >
 >
 
@@ -1667,6 +1667,10 @@ export function applyRuntimeInfo(
   reportInstallMethodWarning(info.install_warning)
 
   const sessionState: SessionRuntimeStatePatch = {}
+
+  if (info.coding_workspace !== undefined) {
+    sessionState.codingWorkspace = info.coding_workspace
+  }
 
   if (typeof info.model === 'string') {
     sessionState.model = info.model

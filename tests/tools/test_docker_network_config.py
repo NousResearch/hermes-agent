@@ -59,7 +59,9 @@ def test_sibling_container_config_sites_carry_docker_network():
         assert sites >= 1, f"expected at least one container_config site in {module.__name__}"
 
 
-def _reuse_guard_harness(monkeypatch, *, existing_mode: str, network: bool):
+def _reuse_guard_harness(
+    monkeypatch, *, existing_mode: str, network: bool, extra_args=None
+):
     """Drive DockerEnvironment through the cross-process reuse path with a
     fake existing container whose NetworkMode is *existing_mode*.
 
@@ -96,6 +98,7 @@ def _reuse_guard_harness(monkeypatch, *, existing_mode: str, network: bool):
         timeout=60,
         task_id="reuse-guard-test",
         network=network,
+        extra_args=extra_args,
         persist_across_processes=True,
     )
     return commands
@@ -126,3 +129,25 @@ def test_reuse_skips_inspect_when_network_enabled(monkeypatch):
     assert not any(cmd[1] == "inspect" for cmd in commands)
     assert not any(cmd[1] == "rm" for cmd in commands)
     assert not any(cmd[1] == "run" for cmd in commands)
+
+
+def test_extra_args_network_none_emits_flag_once(monkeypatch):
+    """docker_network=false plus an operator ``--network none`` (either spelling) must emit the
+    flag ONCE: Docker rejects a repeated --network with exit 125, so both together made every
+    container start fail (#100248). Without an operator flag the implicit lockdown still applies."""
+    for extra in (["--network=none", "--user", "1009:1009"], ["--network", "none"], ["--user", "1009:1009"]):
+        commands = _reuse_guard_harness(monkeypatch, existing_mode="bridge", network=False, extra_args=list(extra))
+        run_cmd = next(cmd for cmd in commands if len(cmd) > 2 and cmd[1:3] == ["run", "-d"])
+        network_flags = [a for a in run_cmd if a in ("--network", "--net") or a.startswith(("--network=", "--net="))]
+        assert len(network_flags) == 1, (extra, run_cmd)
+        assert "--user" not in extra or "1009:1009" in run_cmd
+
+
+def test_contradictory_network_request_fails_closed(monkeypatch):
+    """docker_network=false with --network=host is contradictory: honouring the extra arg would
+    defeat the lockdown and the reuse guard (NetworkMode == "none") would churn the container
+    every startup. Fail loudly, naming both keys."""
+    import pytest
+
+    with pytest.raises(RuntimeError, match="docker_network"):
+        _reuse_guard_harness(monkeypatch, existing_mode="bridge", network=False, extra_args=["--network=host"])

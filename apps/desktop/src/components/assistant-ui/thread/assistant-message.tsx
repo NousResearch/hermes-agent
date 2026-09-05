@@ -64,6 +64,24 @@ const EMPTY_PARTS: readonly unknown[] = []
 // constant MESSAGE_PARTS_COMPONENTS, so nothing per-message is captured here.
 const MESSAGE_PARTS = <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
 
+const COMPLETION_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  hour: 'numeric',
+  minute: '2-digit'
+})
+
+const validUnixSeconds = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0
+
+const completionDate = (value: unknown): Date | null => {
+  if (!validUnixSeconds(value)) {
+    return null
+  }
+
+  const date = new Date(value * 1000)
+
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
 interface MessageActionProps {
   messageId: string
   /** Lazy accessor — reads the live message text at action time. Passing the
@@ -191,9 +209,14 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
   // ChatMessage.interim).
   const isInterim = useAuiState(s => s.message.metadata?.custom?.interim === true)
 
-  // Whole-turn wall-clock seconds (set once at completion — referentially
-  // stable across the 30 Hz delta stream, so this adds no per-token renders).
+  // Whole-turn duration and completion timestamp are set once at settlement,
+  // so these selectors stay stable across the 30 Hz delta stream.
   const turnDurationS = useAuiState(s => s.message.metadata?.custom?.durationS as number | undefined)
+  const turnCompletedAt = useAuiState(s => {
+    const value = s.message.metadata?.custom?.timelineCompletedAt
+
+    return completionDate(value) ? (value as number) : undefined
+  })
 
   const getMessageText = useCallback(() => messageContentText(messageRuntime.getState().content), [messageRuntime])
 
@@ -264,12 +287,20 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
           <MessageTimelineTimestamp className="px-(--message-text-indent) pt-0.5" suppressIfDuplicatePart />
           {hasVisibleText && !isInterim && (
             <AssistantFooter
+              completedAt={turnCompletedAt}
               durationS={turnDurationS}
               getMessageText={getMessageText}
               messageId={messageId}
               onBranchInNewChat={onBranchInNewChat}
             />
           )}
+          {!hasVisibleText &&
+            !isInterim &&
+            (turnDurationS !== undefined || turnCompletedAt !== undefined) && (
+              <div className="flex min-h-6 items-center px-(--message-text-indent)">
+                <TurnCompletionMeta completedAt={turnCompletedAt} durationS={turnDurationS} />
+              </div>
+            )}
           {/* Last thing in the turn — under the action bar, the way Cursor ends a
           turn on its summary rather than burying it above the controls. */}
           <SettledChangedFiles />
@@ -578,7 +609,42 @@ const ErrorRecoveryActions: FC = () => {
   )
 }
 
-const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
+interface TurnCompletionMetaProps {
+  className?: string
+  completedAt?: number
+  durationS?: number
+}
+
+const TurnCompletionMeta: FC<TurnCompletionMetaProps> = ({ className, completedAt, durationS }) => {
+  const { t } = useI18n()
+  const finished = completionDate(completedAt)
+
+  if (durationS === undefined && !finished) {
+    return null
+  }
+
+  return (
+    <span
+      className={cn('select-none text-[0.6875rem] leading-5 tabular-nums text-muted-foreground', className)}
+      data-slot="aui_turn-completion"
+    >
+      {durationS !== undefined && (
+        <span data-slot="aui_turn-duration" title={t.assistant.thread.turnDuration(formatElapsed(durationS))}>
+          ⏱ {formatElapsed(durationS)}
+        </span>
+      )}
+      {durationS !== undefined && finished && ' · '}
+      {finished && (
+        <time data-slot="aui_turn-finished-at" dateTime={finished.toISOString()}>
+          {COMPLETION_TIME_FORMATTER.format(finished)}
+        </time>
+      )}
+    </span>
+  )
+}
+
+const AssistantActionBar: FC<MessageActionProps & { completedAt?: number; durationS?: number }> = ({
+  completedAt,
   durationS,
   messageId,
   getMessageText,
@@ -600,15 +666,7 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
 
   return (
     <div className="relative flex w-full shrink-0 items-center justify-end gap-1.5">
-      {durationS !== undefined && (
-        <span
-          className="mr-auto select-none px-0.5 text-[0.6875rem] leading-5 tabular-nums text-muted-foreground"
-          data-slot="aui_turn-duration"
-          title={t.assistant.thread.turnDuration(formatElapsed(durationS))}
-        >
-          ⏱ {formatElapsed(durationS)}
-        </span>
-      )}
+      <TurnCompletionMeta className="mr-auto px-0.5" completedAt={completedAt} durationS={durationS} />
       <ActionBarPrimitive.Root
         className={
           // NOTE: intentionally NOT `hideWhenRunning`. That prop unmounts the
@@ -726,7 +784,11 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
   )
 }
 
-const AssistantFooter: FC<MessageActionProps & { durationS?: number }> = ({ durationS, ...props }) => {
+const AssistantFooter: FC<MessageActionProps & { completedAt?: number; durationS?: number }> = ({
+  completedAt,
+  durationS,
+  ...props
+}) => {
   return (
     <div className="flex min-h-6 flex-col items-end gap-1 pr-(--message-text-indent) pl-(--message-text-indent)">
       <BranchPickerPrimitive.Root
@@ -743,7 +805,7 @@ const AssistantFooter: FC<MessageActionProps & { durationS?: number }> = ({ dura
           <Codicon name="chevron-right" size="0.875rem" />
         </BranchPickerPrimitive.Next>
       </BranchPickerPrimitive.Root>
-      <AssistantActionBar durationS={durationS} {...props} />
+      <AssistantActionBar completedAt={completedAt} durationS={durationS} {...props} />
     </div>
   )
 }

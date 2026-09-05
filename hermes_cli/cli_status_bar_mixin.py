@@ -11,6 +11,7 @@ import errno
 import shutil
 import threading
 import time
+from datetime import datetime
 
 from agent.pet import render as pet_render
 from hermes_cli.banner import _format_context_length
@@ -595,10 +596,13 @@ class CLIStatusBarMixin:
         if collector is None or not self._turn_summary_is_active():
             return
         try:
+            from agent.turn_summary import format_completion_time
+
             started = getattr(self, "_turn_summary_start", 0.0) or 0.0
             line = collector.render(max(0.0, time.monotonic() - started) if started else 0.0)
             if line:
-                _cprint(f"  {_D}{line}{_RST}")
+                finished_at = format_completion_time(datetime.now().astimezone())
+                _cprint(f"  {_D}{line} · finished at {finished_at}{_RST}")
         except Exception:
             logger.debug("Turn summary render failed", exc_info=True)
 

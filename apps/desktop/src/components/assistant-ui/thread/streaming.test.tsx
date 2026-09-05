@@ -10,6 +10,8 @@ import { stubThreadEnvironment, stubThreadViewportSize, ThreadRuntime } from '..
 import { Thread } from '.'
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
+const completedAt = Date.parse('2026-08-31T16:06:00.000Z') / 1000
+const completedIso = new Date(completedAt * 1000).toISOString()
 
 const resizeObservers = new Set<TestResizeObserver>()
 
@@ -71,7 +73,11 @@ function userMessage(): ThreadMessage {
   } as ThreadMessage
 }
 
-function assistantMessage(text: string, running = true): ThreadMessage {
+function assistantMessage(
+  text: string,
+  running = true,
+  custom: Record<string, unknown> = {}
+): ThreadMessage {
   return {
     id: 'assistant-1',
     role: 'assistant',
@@ -83,12 +89,12 @@ function assistantMessage(text: string, running = true): ThreadMessage {
       unstable_annotations: [],
       unstable_data: [],
       steps: [],
-      custom: {}
+      custom
     }
   } as ThreadMessage
 }
 
-function assistantErrorMessage(error: string): ThreadMessage {
+function assistantErrorMessage(error: string, custom: Record<string, unknown> = {}): ThreadMessage {
   return {
     id: 'assistant-error-1',
     role: 'assistant',
@@ -100,7 +106,7 @@ function assistantErrorMessage(error: string): ThreadMessage {
       unstable_annotations: [],
       unstable_data: [],
       steps: [],
-      custom: {}
+      custom
     }
   } as ThreadMessage
 }
@@ -266,7 +272,13 @@ function StreamingHarness({ onControls }: { onControls?: (controls: StreamingCon
           setMessages([userMessage(), assistantMessage('first chunk second chunk')])
         },
         complete: () => {
-          setMessages([userMessage(), assistantMessage('first chunk second chunk', false)])
+          setMessages([
+            userMessage(),
+            assistantMessage('first chunk second chunk', false, {
+              durationS: 8,
+              timelineCompletedAt: completedAt
+            })
+          ])
           setIsRunning(false)
         }
       })
@@ -279,7 +291,13 @@ function StreamingHarness({ onControls }: { onControls?: (controls: StreamingCon
     }, 500)
 
     const complete = window.setTimeout(() => {
-      setMessages([userMessage(), assistantMessage('first chunk second chunk', false)])
+      setMessages([
+        userMessage(),
+        assistantMessage('first chunk second chunk', false, {
+          durationS: 8,
+          timelineCompletedAt: completedAt
+        })
+      ])
       setIsRunning(false)
     }, 700)
 
@@ -498,9 +516,14 @@ describe('assistant-ui streaming renderer', () => {
       expect(container.textContent).toContain('first chunk second chunk')
     })
 
+    expect(container.querySelector('[data-slot="aui_turn-finished-at"]')).toBeNull()
+
     act(() => controls?.complete())
     await waitFor(() => {
       expect(container.textContent).toContain('first chunk second chunk')
+      expect(container.querySelector('[data-slot="aui_turn-finished-at"]')?.getAttribute('datetime')).toBe(
+        completedIso
+      )
     })
   })
 
@@ -538,28 +561,44 @@ describe('assistant-ui streaming renderer', () => {
     expect(finalRoot?.querySelector('[data-slot="aui_msg-actions"]')).toBeTruthy()
   })
 
-  it('puts the turn duration on the action bar row instead of a line of its own', () => {
-    const settled = {
-      ...assistantMessage('All done.', false),
-      metadata: {
-        unstable_state: null,
-        unstable_annotations: [],
-        unstable_data: [],
-        steps: [],
-        custom: { durationS: 12 }
-      }
-    } as ThreadMessage
+  it('puts turn duration and completion time on the action bar row', () => {
+    const settled = assistantMessage('All done.', false, {
+      durationS: 12,
+      timelineCompletedAt: completedAt
+    })
 
     const { container } = render(<TranscriptHarness messages={[userMessage(), settled]} />)
 
-    const duration = container.querySelector('[data-slot="aui_turn-duration"]')
+    const completion = container.querySelector('[data-slot="aui_turn-completion"]')
     const actions = container.querySelector('[data-slot="aui_msg-actions"]')
+    const finished = container.querySelector('[data-slot="aui_turn-finished-at"]')
 
-    // Same row as the (always-mounted) action bar: the footer's height is
-    // already reserved while the turn streams, so landing the duration there
-    // adds no height when the turn settles.
-    expect(duration).toBeTruthy()
-    expect(duration?.parentElement).toBe(actions?.parentElement)
+    expect(completion).toBeTruthy()
+    expect(completion?.parentElement).toBe(actions?.parentElement)
+    expect(container.querySelector('[data-slot="aui_turn-duration"]')?.textContent).toContain('12s')
+    expect(finished?.getAttribute('datetime')).toBe(completedIso)
+  })
+
+  it('keeps the duration-only badge when completion metadata is absent', () => {
+    const settled = assistantMessage('All done.', false, { durationS: 12 })
+
+    const { container } = render(<TranscriptHarness messages={[userMessage(), settled]} />)
+
+    expect(container.querySelector('[data-slot="aui_turn-duration"]')).toBeTruthy()
+    expect(container.querySelector('[data-slot="aui_turn-finished-at"]')).toBeNull()
+  })
+
+  it('shows completion metadata for an error-only message with no text', () => {
+    const message = assistantErrorMessage('OpenRouter rejected the request (403).', {
+      durationS: 4,
+      timelineCompletedAt: completedAt
+    })
+
+    const { container } = render(<MessageHarness message={message} />)
+
+    expect(container.querySelector('[data-slot="aui_turn-completion"]')).toBeTruthy()
+    expect(container.querySelector('[data-slot="aui_turn-finished-at"]')?.getAttribute('datetime')).toBe(completedIso)
+    expect(container.querySelector('[data-slot="aui_msg-actions"]')).toBeNull()
   })
 
   it('renders assistant provider errors inline', () => {

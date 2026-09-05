@@ -7064,6 +7064,24 @@ class TestMemoryNudgeCounterPersistence:
 
 
 class TestSupportsReasoningExtraBody:
+    @pytest.fixture(autouse=True)
+    def _cold_openrouter_catalog(self, monkeypatch):
+        """Exercise the static fallback, independent of ambient catalog state.
+
+        Current main consults cached OpenRouter metadata first.  These cases
+        protect the offline/first-turn path this allowlist exists for, so a
+        model-picker run or a disk cache from another test must not make the
+        assertions pass through the live-catalog branch instead.
+        """
+        monkeypatch.setattr(
+            "hermes_cli.models_reasoning_caps.openrouter_model_reasoning_capabilities",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models_reasoning_caps.warm_openrouter_reasoning_caps_async",
+            lambda: None,
+        )
+
     def _make_agent(self):
         agent = object.__new__(AIAgent)
         agent.provider = "openrouter"
@@ -7083,6 +7101,59 @@ class TestSupportsReasoningExtraBody:
         ):
             agent.model = model
             assert agent._supports_reasoning_extra_body() is True, model
+
+    def test_verified_nemotron_reasoning_model_is_allowlisted(self):
+        """#75386: this Nemotron model defaults reasoning ON; without an
+        allowlist entry, `agent.reasoning_effort: none` never reached
+        OpenRouter's reasoning extra_body and reasoning could not be
+        disabled. Reporter verified OpenRouter accepts
+        reasoning {"enabled": false} for exactly this model (0 reasoning
+        tokens)."""
+        agent = self._make_agent()
+        for model in (
+            "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+            "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        ):
+            agent.model = model
+            assert agent._supports_reasoning_extra_body() is True, model
+
+    def test_unverified_nvidia_models_stay_gated(self):
+        """The gate exists because NVIDIA-via-OpenRouter 400'd on reasoning
+        extra_body (3f0f4a04a). Only individually verified NVIDIA models may
+        pass; the rest of the nvidia/ namespace stays excluded."""
+        agent = self._make_agent()
+        for model in (
+            "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+            "nvidia/nemotron-nano-9b-v2",
+        ):
+            agent.model = model
+            assert agent._supports_reasoning_extra_body() is False, model
+
+    def test_verified_nemotron_emits_disabled_reasoning_payload(self):
+        """Transport-level assertion (#75386): with the gate open for the
+        verified model, reasoning_effort: none ({"enabled": False} via
+        parse_reasoning_effort) must reach OpenRouter as
+        extra_body.reasoning == {"enabled": false} — the exact payload the
+        reporter verified yields 0 reasoning tokens."""
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("openrouter")
+        extra_body, _top_level = profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            supports_reasoning=True,
+            model="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+        )
+        assert extra_body.get("reasoning") == {"enabled": False}
+
+        # Negative: an unverified NVIDIA model (gate closed →
+        # supports_reasoning=False) must emit no reasoning field at all,
+        # preserving the 3f0f4a04a 400-avoidance behavior.
+        extra_body, _top_level = profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            supports_reasoning=False,
+            model="nvidia/llama-3.3-nemotron-super-49b-v1.5",
+        )
+        assert "reasoning" not in extra_body
 
 
 class TestMemoryContextSanitization:

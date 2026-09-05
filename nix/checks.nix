@@ -3,7 +3,7 @@
 # Checks are Linux-only: the full Python venv (via uv2nix) includes
 # transitive deps like onnxruntime that lack compatible wheels on
 # aarch64-darwin. The package and devShell still work on macOS.
-{ inputs, ... }: {
+{ inputs, config, ... }: {
   perSystem = { pkgs, lib, self', ... }:
     let
       hermes-agent = self'.packages.default;
@@ -132,20 +132,28 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         # errors (e.g. sphinx dropping python311) without needing a darwin builder.
         # Evaluation is pure and instant; it doesn't build anything.
         cross-eval = let
-          targetSystems = builtins.filter
-            (s: inputs.self.packages ? ${s})
-            [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
-          tryEvalPkg = sys:
-            let pkg = inputs.self.packages.${sys}.default;
-            in builtins.tryEval (builtins.seq pkg.drvPath true);
-          results = map (sys: { inherit sys; result = tryEvalPkg sys; }) targetSystems;
+          targetSystems = config.systems;
+          tryEvalSystem = sys:
+            let
+              hasPackage = (inputs.self.packages or {}) ? ${sys}.default;
+              hasDevShell = (inputs.self.devShells or {}) ? ${sys}.default;
+            in
+            if !(hasPackage && hasDevShell) then
+              { success = false; value = false; }
+            else
+              let
+                pkg = inputs.self.packages.${sys}.default;
+                devShell = inputs.self.devShells.${sys}.default;
+              in
+              builtins.tryEval (builtins.deepSeq [ pkg.drvPath devShell.drvPath ] true);
+          results = map (sys: { inherit sys; result = tryEvalSystem sys; }) targetSystems;
           failures = builtins.filter (r: !r.result.success) results;
           failMsg = lib.concatMapStringsSep "\n" (r: "  - ${r.sys}") failures;
         in pkgs.runCommand "hermes-cross-eval" { } (
           if failures != [] then
-            throw "Package fails to evaluate on:\n${failMsg}"
+            throw "Package or devShell fails to evaluate on:\n${failMsg}"
           else ''
-            echo "PASS: package evaluates on all ${toString (builtins.length targetSystems)} platforms"
+            echo "PASS: package and devShell evaluate on all ${toString (builtins.length targetSystems)} platforms"
             mkdir -p $out
             echo "ok" > $out/result
           ''
@@ -645,6 +653,31 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               ''
           );
       } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        # Preserve the Linux-only development and visual-capture tools while
+        # keeping them out of Darwin devShell evaluation.
+        linux-devshell-tools =
+          let
+            expectedTools = {
+              sandbox = self'.packages.sandbox;
+              cage = pkgs.cage;
+              libglvnd = lib.getDev pkgs.libglvnd;
+              ghostty = pkgs.ghostty;
+              grim = pkgs.grim;
+            };
+            inputPaths = map (input: input.outPath) self'.devShells.default.nativeBuildInputs;
+            missingTools = lib.filterAttrs (_: tool: !(builtins.elem tool.outPath inputPaths)) expectedTools;
+          in
+          pkgs.runCommand "hermes-linux-devshell-tools" { } (
+            if missingTools != { } then
+              throw "Linux devShell is missing required tools: ${lib.concatStringsSep ", " (lib.attrNames missingTools)}"
+            else
+              ''
+                echo "PASS: Linux devShell preserves its platform-specific tools"
+                mkdir -p $out
+                echo "ok" > $out/result
+              ''
+          );
+
         # ── The NixOS module ─────────────────────────────────────────────
         # This check runs on Linux only. The evaluation of a NixOS module
         # needs a Linux hostPlatform.

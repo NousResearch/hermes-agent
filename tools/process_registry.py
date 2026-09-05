@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shlex
 import signal
 import subprocess
@@ -127,13 +128,28 @@ def _worker_memory_max_bytes() -> int:
 def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
     """``systemd-run --user --scope`` argv shared by the probe and real spawns.
     ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl."""
-    return [
+    cmd = [
         binary, "--user", "--scope", "--quiet", "--unit", unit_name, "--collect",
         "--property", "MemoryAccounting=yes",
         "--property", f"MemoryMax={_worker_memory_max_bytes()}",
-        "--property", "OOMPolicy=kill",
-        "--", *argv,
     ]
+    if _systemd_supports_oom_policy():
+        cmd.append("--property")
+        cmd.append("OOMPolicy=kill")
+    cmd.extend(["--", *argv])
+    return cmd
+
+
+def _systemd_supports_oom_policy() -> bool:
+    """Return True if systemd version >= 243 (OOMPolicy support added in 243)."""
+    try:
+        out = subprocess.run(["systemctl", "--version"], capture_output=True, text=True, timeout=5).stdout
+        m = re.search(r"systemd\s+(\d+)", out)
+        if m:
+            return int(m.group(1)) >= 243
+    except Exception:
+        pass
+    return False
 
 
 def _systemd_scope_cached() -> Optional[bool]:

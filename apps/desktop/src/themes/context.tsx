@@ -49,6 +49,13 @@ const INJECTED_FONT_URLS = new Set<string>()
 const resolveMode = (mode: ThemeMode, systemDark = matchesQuery('(prefers-color-scheme: dark)')): 'light' | 'dark' =>
   mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
 
+// Persisted names are intentionally late-bound: backend/YAML and runtime SDK
+// themes register after the first paint. Keep the stored name so it can resolve
+// reactively once its registry arrives, while retired/empty values still migrate
+// to the default. Live selections remain strict through normalizeSkin().
+const normalizeStoredSkin = (name: string | null): string =>
+  name && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
+
 const normalizeSkin = (name: string | null): string =>
   name && resolveTheme(name) && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
 
@@ -85,7 +92,7 @@ const profilePref = <T extends string>(record: string, legacy: string, normalize
   }
 }
 
-export const skinPref = profilePref(PROFILE_SKINS_KEY, SKIN_KEY, normalizeSkin)
+export const skinPref = profilePref(PROFILE_SKINS_KEY, SKIN_KEY, normalizeStoredSkin)
 export const modePref = profilePref(PROFILE_MODES_KEY, MODE_KEY, normalizeMode)
 
 // Provider state keeps the raw pick so a name nothing resolves YET (a backend

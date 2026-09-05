@@ -10,12 +10,14 @@ import types
 import pytest
 
 import tools.delegate_tool as dt
+import tools.delegate_tool_progress as dt_progress
 from tools.delegate_tool import _batch_prefix, _build_child_progress_callback, format_batch_tag
 
 
 @pytest.fixture(autouse=True)
 def _fresh_ordinals(monkeypatch):
-    monkeypatch.setattr(dt, "_BATCH_ORDINALS", {})
+    # The ordinal table is bound in delegate_tool_progress (format_batch_tag's home).
+    monkeypatch.setattr(dt_progress, "_BATCH_ORDINALS", {})
 
 
 def test_format_batch_tag_assigns_stable_ordinals_per_batch():

@@ -51,8 +51,8 @@ def _agent(monkeypatch, base_url: str, **kwargs):
     from run_agent import AIAgent
 
     client = _FakeClient()
-    monkeypatch.setattr("run_agent.OpenAI", lambda **_kw: client)
-    monkeypatch.setattr("run_agent.get_tool_definitions", lambda *a, **k: [])
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI", lambda **_kw: client)
+    monkeypatch.setattr("model_tools.get_tool_definitions", lambda *a, **k: [])
     agent = AIAgent(
         model="gpt-5",  # a model that would normally trigger the Responses upgrade
         api_key="test-key",

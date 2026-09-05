@@ -279,7 +279,7 @@ class TestDispatchersTriggerPluginDiscovery:
     even when the user has both the config key set AND the API key
     exported.
 
-    Mirrors :func:`tools.browser_tool._ensure_browser_plugins_loaded` —
+    Mirrors :func:`tools.browser_tool_cloud._ensure_browser_plugins_loaded` —
     every other plugin-backed dispatcher (image_gen, video_gen, browser,
     skills) already does this.
     """

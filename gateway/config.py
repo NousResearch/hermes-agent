@@ -138,6 +138,37 @@ def _coerce_optional_positive_int(value: Any, key: str) -> Optional[int]:
 _SYSTEMD_WATCHDOG_MAX_SECONDS = 2_147_483_647
 
 
+def _coerce_non_negative_int(value: Any, key: str, default: int) -> int:
+    """Coerce a config value to a non-negative int, falling back to *default*.
+
+    Zero is meaningful (it disables the setting), so it is preserved rather
+    than treated as unset. Malformed values are ignored with a warning so a
+    typo never prevents the gateway from starting.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        logger.warning("Ignoring invalid %s=%r (expected a non-negative integer)", key, value)
+        return default
+    try:
+        if isinstance(value, float):
+            if not value.is_integer():
+                raise ValueError(value)
+            parsed = int(value)
+        elif isinstance(value, str):
+            parsed = int(value.strip(), 10)
+        else:
+            parsed = int(value)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring invalid %s=%r (expected a non-negative integer)", key, value)
+        return default
+    if parsed < 0:
+        logger.warning("Ignoring invalid %s=%r (expected a non-negative integer)", key, value)
+        return default
+    return parsed
+
+
+
 def coerce_systemd_watchdog_seconds(
     value: Any, key: str = "gateway.systemd_watchdog_seconds"
 ) -> int:
@@ -582,6 +613,20 @@ class GatewayConfig:
     loop_watchdog_probe_interval_s: float = DEFAULT_LOOP_WATCHDOG_INTERVAL_S
     loop_watchdog_probe_timeout_s: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
     loop_watchdog_max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
+    # Minimum seconds between two home-channel "gateway shutting down"
+    # broadcasts to the SAME destination, enforced DURABLY across gateway
+    # processes (gateway/shutdown_notice.py).
+    #
+    # The in-process dedup set only suppresses duplicates within one shutdown,
+    # so a host that repeatedly cycles the gateway re-announces every time: a
+    # WSL host under Windows Modern Standby produced 240 home-channel notices,
+    # 19 inside one 10-minute window, against 1 active-session notice. This
+    # window collapses such a burst to one message while leaving a genuine
+    # restart hours later fully visible.
+    #
+    # Applies ONLY to the home-channel broadcast; per-active-session interrupt
+    # pings are never suppressed. 0 disables the guard (always broadcast).
+    shutdown_notification_cooldown_seconds: int = 300
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
     # Prune SessionEntry records older than this (a resumed chat gets a fresh session). 0 = off.
@@ -595,7 +640,8 @@ class GatewayConfig:
         "max_concurrent_sessions", "multiplex_profiles", "multiplex_profile_allowlist",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
-        "loop_watchdog_max_strikes", "unauthorized_dm_behavior",
+        "loop_watchdog_max_strikes", "shutdown_notification_cooldown_seconds",
+        "unauthorized_dm_behavior",
     )
 
     def __post_init__(self) -> None:
@@ -717,6 +763,11 @@ class GatewayConfig:
         systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
             pick("systemd_watchdog_seconds"), key_label("systemd_watchdog_seconds")
         )
+        shutdown_notification_cooldown_seconds = _coerce_non_negative_int(
+            pick("shutdown_notification_cooldown_seconds"),
+            key_label("shutdown_notification_cooldown_seconds"),
+            300,
+        )
         # env > config.yaml > False: a recognized GATEWAY_MULTIPLEX_PROFILES wins (hosted deployments
         # stamp it on the container); blank/unrecognized falls through to the top-level VALUE when
         # not None, else ``gateway.multiplex_profiles``.
@@ -761,6 +812,7 @@ class GatewayConfig:
             loop_watchdog_probe_interval_s=bounded_float("loop_watchdog_probe_interval_s", DEFAULT_LOOP_WATCHDOG_INTERVAL_S, 1.0, 3600.0),
             loop_watchdog_probe_timeout_s=bounded_float("loop_watchdog_probe_timeout_s", DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, 1.0, 600.0),
             loop_watchdog_max_strikes=max_strikes,
+            shutdown_notification_cooldown_seconds=shutdown_notification_cooldown_seconds,
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=_normalize_choice(data.get("unauthorized_dm_behavior"), {"pair", "ignore"}, "pair"),
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),

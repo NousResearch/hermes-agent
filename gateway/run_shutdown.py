@@ -20,6 +20,7 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from gateway import shutdown_notice
 from gateway.config import Platform
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE, resolve_cron_drain_budget
@@ -960,19 +961,44 @@ class GatewayShutdownMixin:
             dedup_key = _notice_target_key(platform.value, home.chat_id, home.thread_id)
             if dedup_key in notified:
                 continue
-            try:
-                metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=adapter)
-            except Exception as e:
-                logger.debug(
-                    "Failed to send shutdown notification to home channel %s:%s: %s", platform.value, home.chat_id, e,
-                )
-                continue
-            # Home channels omit ``metadata=`` when empty (adapter doubles may not accept the kwarg).
-            if await self._send_shutdown_notice(
-                adapter, str(home.chat_id), msg, "home channel", platform.value,
-                **({"metadata": metadata} if metadata else {}),
-            ):
-                notified.add(dedup_key)
+            # Durable cross-process cooldown. The ``notified`` set above only dedupes within THIS
+            # process, so a host that repeatedly cycles the gateway (WSL under Windows Modern
+            # Standby, a crash-looping supervisor) re-broadcasts on every fresh start. Gate only
+            # the home-channel broadcast; the per-active-session pings above stay ungated, exactly
+            # like the drain suppress flag.
+            cooldown_seconds = getattr(self.config, "shutdown_notification_cooldown_seconds", 0)
+            cooldown_key = shutdown_notice.destination_key(
+                platform.value, home.chat_id, home.thread_id
+            )
+            # The admission holds the cross-process lock through the await, so two gateways
+            # shutting down together cannot both pass the check for one destination.
+            with shutdown_notice.home_notice_admission(
+                cooldown_key, cooldown_seconds=cooldown_seconds
+            ) as admission:
+                if not admission.allowed:
+                    logger.info(
+                        "Home-channel shutdown notification suppressed for %s:%s "
+                        "(sent within the last %ss)",
+                        platform.value, home.chat_id, cooldown_seconds,
+                    )
+                    continue
+                try:
+                    metadata = self._thread_metadata_for_target(
+                        platform, home.chat_id, home.thread_id, adapter=adapter
+                    )
+                except Exception as e:
+                    logger.debug(
+                        "Failed to send shutdown notification to home channel %s:%s: %s",
+                        platform.value, home.chat_id, e,
+                    )
+                    continue
+                # Home channels omit ``metadata=`` when empty (adapter doubles may not accept the kwarg).
+                if await self._send_shutdown_notice(
+                    adapter, str(home.chat_id), msg, "home channel", platform.value,
+                    **({"metadata": metadata} if metadata else {}),
+                ):
+                    notified.add(dedup_key)
+                    admission.record_success()
 
     # Agent finalization / resource cleanup
     @staticmethod

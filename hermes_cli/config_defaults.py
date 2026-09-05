@@ -1897,6 +1897,11 @@ DEFAULT_CONFIG = {
         # and re-arms the live handle; explicit env wins.
         "startup_watchdog": True,
         "startup_watchdog_timeout_seconds": 300,
+        # Minimum seconds between home-channel shutdown broadcasts to the same
+        # destination. The guard is durable across gateway processes; 0 disables
+        # it and restores the original always-send behaviour.
+        "shutdown_notification_cooldown_seconds": 300,
+
         # Keep writing the legacy ~/.hermes/sessions/sessions.json mirror of the routing index
         # (primary copy: state.db gateway_routing table). True for external tooling and downgrade
         # safety; False stops producing the file.

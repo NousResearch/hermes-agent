@@ -628,6 +628,19 @@ def _localhost_to_ipv4(url: str) -> str:
     return re.sub(r"^(https?://)localhost(?=[:/]|$)", r"\g<1>127.0.0.1", url, count=1)
 
 
+def _is_lmstudio_models_payload(response: Any) -> bool:
+    """True only when the response has the native envelope our LM Studio parsers consume."""
+    try:
+        data = response.json()
+    except Exception:
+        return False
+    if not isinstance(data, dict) or data.get("object") == "list":
+        return False
+    # Both LM Studio consumers read payload["models"]. An empty list is a
+    # valid idle server response, while data-keyed OpenAI listings are not.
+    return isinstance(data.get("models"), list)
+
+
 def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     """Probe known endpoints: "ollama", "lm-studio", "vllm", "llamacpp", or None (TTL-cached)."""
     import httpx
@@ -649,7 +662,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     # Most specific first: (name, paths tried until one answers 200, body check). LM Studio answers /api/tags
     # with {"error": ...} and 200, so Ollama's body must carry "models"; older llama.cpp builds have no /v1 prefix.
     waterfall = (
-        ("lm-studio", (f"{lmstudio_url}/api/v1/models",), lambda r: True),
+        ("lm-studio", (f"{lmstudio_url}/api/v1/models",), _is_lmstudio_models_payload),
         ("ollama", (f"{server_url}/api/tags",), lambda r: "models" in r.json()),
         ("llamacpp", (f"{server_url}/v1/props", f"{server_url}/props"), lambda r: "default_generation_settings" in r.text),
         ("vllm", (f"{server_url}/version",), lambda r: "version" in r.json()),
@@ -757,9 +770,11 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
         pricing: Dict[str, Any] = {}
         for target, aliases in alias_map.items():
             for alias in aliases:
-                if alias in normalized and normalized[alias] not in {None, ""}:
-                    pricing[target] = normalized[alias]
-                    break
+                value = normalized.get(alias)
+                if value is None or value == "" or isinstance(value, (list, dict)):
+                    continue
+                pricing[target] = value
+                break
         if pricing:
             return pricing
     return {}

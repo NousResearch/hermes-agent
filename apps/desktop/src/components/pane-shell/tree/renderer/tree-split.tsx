@@ -648,14 +648,15 @@ function Sash({
     <div
       className={cn(
         'group absolute z-20 [-webkit-app-region:no-drag]',
-        // Asymmetric grab band: only 1px reaches into the leading pane so its
-        // edge-hugging 4px scrollbar stays clickable (the old centered 9px band
-        // swallowed it entirely — the pointer got col-resize instead of the
-        // thumb). The trailing side keeps a generous 7px reach; total grab
-        // width stays ~8px so the sash is no harder to hit.
-        horizontal ? 'inset-y-0 left-0 w-[8px] -translate-x-[1px]' : 'inset-x-0 top-0 h-[8px] -translate-y-[1px]',
+        // Grab band lives entirely in the trailing pane. A 1px overlap into
+        // the leading pane (the previous asymmetric band) still stole the
+        // Windows overlay-scrollbar hit target on the chat — only ~3px of
+        // thumb remained clickable (#99867). The sash stays 8px wide, all
+        // on the sidebar/tool side of the seam.
+        horizontal ? 'inset-y-0 left-0 w-[8px]' : 'inset-x-0 top-0 h-[8px]',
         disabled ? 'pointer-events-none' : horizontal ? 'cursor-col-resize' : 'cursor-row-resize'
       )}
+      data-sash-overlap="trailing"
       onDoubleClick={disabled ? undefined : onDoubleClick}
       onPointerDown={disabled ? undefined : onPointerDown}
       role="separator"

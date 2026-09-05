@@ -73,6 +73,20 @@ SEVERITY_REMAP = {
 # their critical severity, as do separate credential-read/exfiltration findings.
 JS_CAPABILITY_REMAP = {"dns_exfil": "high", "ssh_backdoor": "high"}
 
+# Plugin scans gate a HOST install: what matters is what executes on the host. Two critical
+# families describe the author's own dev workflow when they appear in documentation files, so
+# they are demoted one tier (critical -> high) there instead of hard-blocking an otherwise
+# auditable plugin; the same content in runtime code keeps its critical severity.
+DOC_PROSE_EXTENSIONS = {".md", ".txt", ".rst", ".html"}
+DOC_PROSE_DEMOTIONS = {
+    # Prose modification bullets ("- Modify: `CLAUDE.md`") in plan/design docs describe the
+    # repo's own files; only executable intent (shell writes, code) stays critical.
+    "agent_config_mod": "high",
+    # Example/demo credentials quoted in docs (placeholder hex, test tokens). Real token-shaped
+    # literals (sk-, ghp_, AKIA, glpat-, private keys) keep their own critical patterns.
+    "hardcoded_secret": "high",
+}
+
 # Structural limits — plugins are real codebases, far larger than skills.
 MAX_PLUGIN_FILE_COUNT = 400
 MAX_PLUGIN_TOTAL_SIZE_KB = 10 * 1024   # 10MB of scannable tree
@@ -99,6 +113,7 @@ def _filter_findings(findings: List[Finding], rel_path: str) -> List[Finding]:
     is_code = Path(rel_path).suffix.lower() in CODE_FILE_EXTENSIONS
     in_test_tree = Path(rel_path).parts[0] in TEST_TREE_DIRS
     is_js = Path(rel_path).suffix.lower() in {".js", ".ts"}
+    is_doc_prose = Path(rel_path).suffix.lower() in DOC_PROSE_EXTENSIONS
     out: List[Finding] = []
     for f in findings:
         if is_code and f.pattern_id in CODE_EXEMPT_PATTERN_IDS:
@@ -107,6 +122,8 @@ def _filter_findings(findings: List[Finding], rel_path: str) -> List[Finding]:
             (JS_CAPABILITY_REMAP.get(f.pattern_id) if is_js else None)
             or SEVERITY_REMAP.get(f.pattern_id) or f.severity
         )
+        if is_doc_prose and f.pattern_id in DOC_PROSE_DEMOTIONS:
+            f.severity = DOC_PROSE_DEMOTIONS[f.pattern_id]
         if in_test_tree and f.severity == "critical":
             f.severity = "high"
         if (

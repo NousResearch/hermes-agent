@@ -216,6 +216,46 @@ it('published bytes survive deletion of the original producer session', async ()
   expect(room.gateway.rpcFor('session.close')).toHaveLength(1)
 })
 
+it('an unrelated offline third member cannot block healthy classic text turns', async () => {
+  const room = await setup()
+  const roster = [...members, { name: 'offline', connectionId: 'offline', remoteSource: true }]
+  room.chat.updateGroupChat('Workshop', current => ({ ...current, members: roster }))
+  const original = host.requestProfile
+
+  host.requestProfile = async (route: any, method: string, params: any) => {
+    if (route.connectionId === 'offline') {
+      throw new Error('unrelated source offline')
+    }
+
+    return original(route, method, params)
+  }
+
+  room.chat.appendGroupChatEntry('Workshop', { kind: 'user', name: 'You' }, 'discuss the welcome message', 'thread')
+  await room.rounds.runGroupChatRounds('Workshop', roster, 'thread')
+  expect(room.gateway.calls.some(call => call.profile === 'writer')).toBe(true)
+  expect(room.gateway.calls.some(call => call.profile === 'reviewer')).toBe(true)
+  expect(room.gateway.rpcFor('prompt.submit').every(call => call.params.classic_export === undefined)).toBe(true)
+  expect(room.chat.$groupChats.get().Workshop.log.some(entry => entry.images?.some(image => image.classicExport))).toBe(
+    false
+  )
+})
+
+it('no-file classic disband adds no export capability prerequisite for offline members', async () => {
+  const room = await setup()
+
+  const request = vi.fn(async () => {
+    throw new Error('offline')
+  })
+
+  host.requestProfile = request
+  await room.output.retireClassicGroup(room.chat.$groupChats.get().Workshop)
+  expect(request).not.toHaveBeenCalled()
+  const view = await import('./group-chat-view')
+  await view.disbandGroupChat('Workshop', [])
+  expect(room.chat.$groupChats.get().Workshop).toBeUndefined()
+  expect(request.mock.calls).not.toContainEqual(expect.arrayContaining(['gateway.capabilities']))
+})
+
 it('late harvest projects one deterministic ref and does not consume newer unseen peer messages', async () => {
   const room = await setup()
   room.chat.appendGroupChatEntry('Workshop', { kind: 'user', name: 'You' }, 'create', 'thread')

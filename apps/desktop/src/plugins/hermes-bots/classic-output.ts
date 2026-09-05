@@ -64,7 +64,7 @@ export async function beginClassicTurn(group: string, member: GroupMember, sessi
     return null
   }
 
-  const sourceCapability = await capability(member)
+  const sourceCapability = await capability(member).catch(() => null)
 
   if (!sourceCapability) {
     return null
@@ -73,7 +73,7 @@ export async function beginClassicTurn(group: string, member: GroupMember, sessi
   const recipients: Recipient[] = []
 
   for (const target of room.members || []) {
-    const supported = await capability(target)
+    const supported = await capability(target).catch(() => null)
 
     if (!supported) {
       return null
@@ -291,7 +291,7 @@ export async function retireClassicGroup(room: GroupChat) {
     return
   }
 
-  const sources = new Map((room.members || []).map(member => [groupMemberKey(member), member]))
+  const sources = new Map<string, GroupMember>()
   const references = new Map<string, { session: string; installation: string }>()
 
   for (const entry of room.log || []) {

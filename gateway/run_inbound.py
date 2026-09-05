@@ -922,9 +922,15 @@ class GatewayInboundMixin:
             return await getattr(self, f"_hm_cmd_{canonical}")(event, source, _quick_key)
         return False, None
 
-    async def _hm_run_exec_quick_command(self, command: str, exec_cmd: str) -> str:
+    async def _hm_run_exec_quick_command(self, command: Optional[str], exec_cmd: str, user_args: str = "") -> str:
         """Run a ``type: exec`` quick command in the gateway process (30 s cap, sanitized env — the
         gateway process has every API key in os.environ; output is redacted too)."""
+        # Forward user arguments (e.g. `/poly white sox`): split-then-quote per
+        # token so boundaries survive (see hermes_cli._subprocess_compat.quote_args).
+        args = (user_args or "").strip()
+        if args:
+            from hermes_cli._subprocess_compat import quote_args
+            exec_cmd = f"{exec_cmd} {quote_args(args)}"
         try:
             from tools.environments.local import build_subprocess_env
             proc = await asyncio.create_subprocess_shell(
@@ -966,7 +972,9 @@ class GatewayInboundMixin:
                 exec_cmd = qcmd.get("command", "")
                 if not exec_cmd:
                     return True, f"Quick command '/{command}' has no command defined.", command
-                return True, await self._hm_run_exec_quick_command(command, exec_cmd), command
+                return True, await self._hm_run_exec_quick_command(
+                    command, exec_cmd, event.get_command_args().strip()
+                ), command
             if qtype != "alias":
                 return True, f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias').", command
             new_command = self._hm_expand_alias_quick_command(event, qcmd)

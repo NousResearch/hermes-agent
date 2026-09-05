@@ -33,6 +33,197 @@ describe('createSlashHandler', () => {
     envState.dashboardTuiMode = false
   })
 
+  it('hands off natively and detaches without closing the gateway-owned session', async () => {
+    vi.useFakeTimers()
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+    ctx.gateway.gw.request
+      .mockResolvedValueOnce({ queued: true, platform: 'slack', home_name: 'test home' })
+      .mockResolvedValueOnce({ state: 'pending' })
+      .mockResolvedValueOnce({ state: 'running' })
+      .mockResolvedValueOnce({ state: 'completed' })
+
+    try {
+      expect(createSlashHandler(ctx)('/handoff slack')).toBe(true)
+      expect(ctx.gateway.gw.request).toHaveBeenCalledWith('handoff.request', {
+        session_id: 'sid-abc',
+        platform: 'slack'
+      })
+      await vi.runAllTimersAsync()
+      expect(ctx.gateway.gw.request.mock.calls.map(call => call[0])).toEqual([
+        'handoff.request',
+        'handoff.state',
+        'handoff.state',
+        'handoff.state'
+      ])
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('completed'))
+      expect(getUiState().sid).toBeNull()
+      expect(ctx.session.closeSession).not.toHaveBeenCalled()
+      expect(ctx.session.die).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([
+    ['/handoff', 'sid-abc', false, 'usage: /handoff <platform>'],
+    ['/handoff slack extra', 'sid-abc', false, 'usage: /handoff <platform>'],
+    ['/handoff slack', null, false, 'no active session'],
+    ['/handoff slack', 'sid-abc', true, 'current turn']
+  ] as const)('guards native handoff %s (%s, busy=%s)', (command, sid, busy, notice) => {
+    patchUiState({ sid, busy })
+    const ctx = buildCtx()
+    ctx.gateway.gw.request.mockImplementation(() => new Promise(() => {}))
+    expect(createSlashHandler(ctx)(command)).toBe(true)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining(notice))
+  })
+
+  it('locks the source session synchronously while handoff is pending', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+    let reject!: (error: Error) => void
+    ctx.gateway.gw.request.mockImplementation(
+      () =>
+        new Promise((_resolve, fail) => {
+          reject = fail
+        })
+    )
+    const slash = createSlashHandler(ctx)
+    slash('/handoff slack')
+    slash('/handoff slack')
+    slash('/new')
+    expect(ctx.gateway.gw.request).toHaveBeenCalledTimes(1)
+    expect(ctx.session.newSession).not.toHaveBeenCalled()
+    expect(getUiState().handoffSessionId).toBe('sid-abc')
+    expect(getUiState().sid).toBeNull()
+    reject(Object.assign(new Error('no home channel'), { code: 4026 }))
+    await new Promise<void>(resolve => queueMicrotask(resolve))
+    expect(getUiState().handoffSessionId).toBeNull()
+    expect(getUiState().sid).toBe('sid-abc')
+  })
+
+  it.each([
+    [4009, true],
+    [4023, true],
+    [4024, true],
+    [4025, true],
+    [4026, true],
+    [5021, true],
+    [4027, false],
+    [5007, false],
+    [undefined, false],
+    [4010, false],
+    [4011, false],
+    [4012, false]
+  ])('restores only proven pre-DB rejection code %s (safe=%s)', async (code, safe) => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+    ctx.gateway.gw.request.mockRejectedValue(Object.assign(new Error('handoff rejected'), { code }))
+    createSlashHandler(ctx)('/handoff slack')
+    await new Promise<void>(resolve => setTimeout(resolve, 0))
+    expect(getUiState().sid).toBe(safe ? 'sid-abc' : null)
+    expect(getUiState().handoffSessionId).toBeNull()
+    expect(ctx.session.closeSession).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request.mock.calls.map(call => call[0])).toEqual(['handoff.request'])
+  })
+
+  it.each(['failed', 'none', 'unexpected'])(
+    'stops polling a %s handoff without reclaiming its session',
+    async state => {
+      vi.useFakeTimers()
+      patchUiState({ sid: 'sid-abc' })
+      const ctx = buildCtx()
+      ctx.gateway.gw.request
+        .mockResolvedValue({ state, error: 'destination unavailable' })
+        .mockResolvedValueOnce({ queued: true, platform: 'slack', home_name: 'test home' })
+
+      try {
+        createSlashHandler(ctx)('/handoff slack')
+        await vi.advanceTimersByTimeAsync(1500)
+        expect(ctx.gateway.gw.request).toHaveBeenCalledTimes(2)
+        expect(getUiState().handoffSessionId).toBeNull()
+        expect(getUiState().sid).toBeNull()
+        expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringMatching(/failed|unknown/))
+        expect(ctx.session.closeSession).not.toHaveBeenCalled()
+      } finally {
+        vi.clearAllTimers()
+        vi.useRealTimers()
+      }
+    }
+  )
+
+  it.each(['request', 'state'])('keeps the source detached after an uncertain %s RPC failure', async stage => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+    ctx.gateway.gw.request.mockRejectedValue(new Error('gateway request timed out'))
+
+    if (stage === 'state') {
+      ctx.gateway.gw.request.mockResolvedValueOnce({ queued: true, platform: 'slack', home_name: 'test home' })
+    }
+
+    createSlashHandler(ctx)('/handoff slack')
+    await new Promise<void>(resolve => setTimeout(resolve, 0))
+    expect(getUiState().sid).toBeNull()
+    expect(getUiState().handoffSessionId).toBeNull()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('outcome unknown'))
+    expect(ctx.session.closeSession).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request.mock.calls.map(call => call[0])).not.toContain('handoff.fail')
+  })
+
+  it('bounds handoff polling without cancelling a possibly delivered request', async () => {
+    vi.useFakeTimers()
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+    ctx.gateway.gw.request
+      .mockResolvedValue({ state: 'running' })
+      .mockResolvedValueOnce({ queued: true, platform: 'slack', home_name: 'test home' })
+
+    try {
+      createSlashHandler(ctx)('/handoff slack')
+      await vi.advanceTimersByTimeAsync(181_000)
+      expect(getUiState().handoffSessionId).toBeNull()
+      expect(getUiState().sid).toBeNull()
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('timed out'))
+      expect(ctx.gateway.gw.request.mock.calls.map(call => call[0])).not.toContain('handoff.fail')
+    } finally {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops an old handoff poll after the UI switches sessions', async () => {
+    vi.useFakeTimers()
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+    ctx.gateway.gw.request
+      .mockResolvedValue({ state: 'pending' })
+      .mockResolvedValueOnce({ queued: true, platform: 'slack', home_name: 'test home' })
+
+    try {
+      createSlashHandler(ctx)('/handoff slack')
+      await vi.advanceTimersByTimeAsync(0)
+      patchUiState({ sid: 'new-session', status: 'new status' })
+      await vi.advanceTimersByTimeAsync(1500)
+      expect(ctx.gateway.gw.request).toHaveBeenCalledTimes(2)
+      expect(getUiState()).toMatchObject({ sid: 'new-session', status: 'new status', handoffSessionId: null })
+    } finally {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not mistake a malformed handoff acknowledgement for acceptance', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+    ctx.gateway.gw.request.mockResolvedValueOnce({ queued: false }).mockResolvedValue({ state: 'completed' })
+    createSlashHandler(ctx)('/handoff slack')
+    await new Promise<void>(resolve => setTimeout(resolve, 0))
+    expect(ctx.gateway.gw.request).toHaveBeenCalledTimes(1)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('outcome unknown'))
+    expect(getUiState().sid).toBeNull()
+  })
+
   it('opens the unified sessions overlay for /resume', () => {
     const ctx = buildCtx()
 

@@ -25,7 +25,7 @@ import { patchOverlayState } from './overlayStore.js'
 import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
-import { getUiState, patchUiState } from './uiStore.js'
+import { $uiState, getUiState, patchUiState } from './uiStore.js'
 
 export { refreshSessionView, scheduleResumeScrollToBottom } from './sessionResumeView.js'
 
@@ -134,10 +134,35 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     sys
   } = opts
 
+  // A transfer permanently retires callbacks that started before it, even if
+  // the transfer settles before those RPC responses arrive.
+  const handoffEpoch = useRef(0)
+  useEffect(
+    () =>
+      $uiState.listen((state, previous) => {
+        if (state.handoffSessionId && state.handoffSessionId !== previous?.handoffSessionId) {
+          handoffEpoch.current += 1
+        }
+      }),
+    []
+  )
+
+  const guardHandoff = useCallback(() => {
+    if (!getUiState().handoffSessionId) {
+      return false
+    }
+
+    sys('handoff pending — wait for it to settle before changing sessions')
+
+    return true
+  }, [sys])
+
   const closeSession = useCallback(
     (targetSid?: null | string) =>
-      targetSid ? rpc<SessionCloseResponse>('session.close', { session_id: targetSid }) : Promise.resolve(null),
-    [rpc]
+      targetSid && !guardHandoff()
+        ? rpc<SessionCloseResponse>('session.close', { session_id: targetSid })
+        : Promise.resolve(null),
+    [guardHandoff, rpc]
   )
 
   const cancelResumeScrollRef = useRef<null | (() => void)>(null)
@@ -185,7 +210,17 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const startNewSession = useCallback(
     async (msg?: string, title?: string, keepCurrent = false) => {
+      if (guardHandoff()) {
+        return null
+      }
+
+      const epoch = handoffEpoch.current
+      const stale = () => epoch !== handoffEpoch.current || Boolean(getUiState().handoffSessionId)
       const setup = await rpc<SetupStatusResponse>('setup.status', {})
+
+      if (stale()) {
+        return null
+      }
 
       if (setup?.provider_configured === false) {
         panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
@@ -200,7 +235,15 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         await closeSession(previousSid)
       }
 
+      if (stale()) {
+        return null
+      }
+
       const r = await rpc<SessionCreateResponse>('session.create', { cols: colsRef.current })
+
+      if (stale()) {
+        return null
+      }
 
       if (!r) {
         patchUiState({ status: 'ready' })
@@ -267,7 +310,18 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
       return r.session_id
     },
-    [closeSession, colsRef, onFreshSessionStarted, panel, resetSession, rpc, setHistoryItems, setSessionStartedAt, sys]
+    [
+      closeSession,
+      colsRef,
+      guardHandoff,
+      onFreshSessionStarted,
+      panel,
+      resetSession,
+      rpc,
+      setHistoryItems,
+      setSessionStartedAt,
+      sys
+    ]
   )
 
   const newSession = useCallback(
@@ -286,11 +340,21 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const activateLiveSession = useCallback(
     (id: string) => {
+      if (guardHandoff()) {
+        return
+      }
+
+      const epoch = handoffEpoch.current
+      const stale = () => epoch !== handoffEpoch.current || Boolean(getUiState().handoffSessionId)
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'switching session…' })
 
       gw.request<SessionActivateResponse>('session.activate', { session_id: id })
         .then(raw => {
+          if (stale()) {
+            return
+          }
+
           const r = asRpcResult<SessionActivateResponse>(raw)
 
           if (!r) {
@@ -319,19 +383,33 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
         })
         .catch((e: Error) => {
+          if (stale()) {
+            return
+          }
+
           sys(`error: ${e.message}`)
           patchUiState({ status: 'ready' })
         })
     },
-    [gw, resetSession, scrollRef, setHistoryItems, setSessionStartedAt, sys]
+    [guardHandoff, gw, resetSession, scrollRef, setHistoryItems, setSessionStartedAt, sys]
   )
 
   const resumeById = useCallback(
     (id: string) => {
+      if (guardHandoff()) {
+        return
+      }
+
+      const epoch = handoffEpoch.current
+      const stale = () => epoch !== handoffEpoch.current || Boolean(getUiState().handoffSessionId)
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'resuming…' })
 
       rpc<SetupStatusResponse>('setup.status', {}).then(setup => {
+        if (stale()) {
+          return
+        }
+
         if (setup?.provider_configured === false) {
           panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
           patchUiState({ status: 'setup required' })
@@ -343,6 +421,10 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
           .then(raw => {
+            if (stale()) {
+              return
+            }
+
             const r = asRpcResult<SessionResumeResponse>(raw)
 
             if (!r) {
@@ -377,12 +459,28 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             }
           })
           .catch((e: Error) => {
+            if (stale()) {
+              return
+            }
+
             sys(`error: ${e.message}`)
             patchUiState({ status: 'ready' })
           })
       })
     },
-    [closeSession, colsRef, gw, panel, resetSession, rpc, scrollRef, setHistoryItems, setSessionStartedAt, sys]
+    [
+      closeSession,
+      colsRef,
+      guardHandoff,
+      gw,
+      panel,
+      resetSession,
+      rpc,
+      scrollRef,
+      setHistoryItems,
+      setSessionStartedAt,
+      sys
+    ]
   )
 
   const guardBusySessionSwitch = useCallback(

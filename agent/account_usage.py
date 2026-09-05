@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import math
+from decimal import Decimal, InvalidOperation
+from urllib.parse import urlparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, Optional
@@ -292,6 +294,21 @@ def _codex_backend_urls(base_url: str) -> tuple[str, str, str]:
     return (prefix + "/usage", prefix + "/rate-limit-reset-credits", prefix + "/rate-limit-reset-credits/consume")
 
 
+def _codex_window_label(window: dict[str, Any], fallback: str) -> str:
+    """Label a Codex quota window from its declared duration when available."""
+    raw_seconds = window.get("limit_window_seconds")
+    if isinstance(raw_seconds, (int, float)) and not isinstance(raw_seconds, bool):
+        seconds = int(raw_seconds)
+        if seconds > 0:
+            if seconds % 86400 == 0:
+                return f"{seconds // 86400}d"
+            if seconds % 3600 == 0:
+                return f"{seconds // 3600}h"
+            if seconds % 60 == 0:
+                return f"{seconds // 60}m"
+    return fallback
+
+
 def _resolve_codex_usage_credentials(
     base_url: Optional[str], api_key: Optional[str],
 ) -> tuple[str, str, Optional[str]]:
@@ -346,7 +363,8 @@ def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
 
 
 def _usage_windows(
-    source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *, fraction: bool = False
+    source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *, fraction: bool = False,
+    label_fn: Optional[Callable[[dict, str], str]] = None,
 ) -> list[AccountUsageWindow]:
     """Build windows from ``source[key][used_key]``; ``fraction`` scales values <= 1 to percent."""
     windows: list[AccountUsageWindow] = []
@@ -358,7 +376,7 @@ def _usage_windows(
         used = float(used)
         if fraction and used <= 1:
             used *= 100
-        windows.append(AccountUsageWindow(label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key))))
+        windows.append(AccountUsageWindow(label=label_fn(window, label) if label_fn else label, used_percent=used, reset_at=_parse_dt(window.get(reset_key))))
     return windows
 
 
@@ -372,7 +390,7 @@ def _fetch_codex_account_usage(
     token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
     payload = _get_json(_codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0)
     windows = _usage_windows(payload.get("rate_limit") or {}, (("primary_window", "Session"), ("secondary_window", "Weekly")),
-                             "used_percent", "reset_at")
+                             "used_percent", "reset_at", label_fn=_codex_window_label)
     details: list[str] = []
     count = _codex_banked_resets(payload)
     if count > 0:
@@ -499,7 +517,7 @@ def redeem_codex_reset_credit(
 def _fetch_anthropic_account_usage(
     base_url: Optional[str] = None, api_key: Optional[str] = None
 ) -> Optional[AccountUsageSnapshot]:
-    token = (resolve_anthropic_token() or "").strip()
+    token = (str(api_key or "").strip() or (resolve_anthropic_token() or "").strip())
     if not token:
         return None
     if not _is_oauth_token(token):
@@ -557,16 +575,116 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     return _snapshot("openrouter", "credits_api", windows, details)
 
 
+def _money_symbol(currency: str) -> str:
+    normalized = currency.strip().upper()
+    if normalized == "CNY":
+        return "¥"
+    if normalized == "USD":
+        return "$"
+    return f"{normalized} " if normalized else ""
+
+
+def _decimal_or_none(value: Any) -> Optional[Decimal]:
+    try:
+        parsed = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    return parsed if parsed.is_finite() else None
+
+
+def _format_money(value: Decimal, currency: str) -> str:
+    return f"{_money_symbol(currency)}{value:.2f}"
+
+
+def _is_deepseek_base_url(base_url: Optional[str]) -> bool:
+    try:
+        host = urlparse(str(base_url or "")).hostname or ""
+    except Exception:
+        return False
+    host = host.lower().strip(".")
+    return host == "deepseek.com" or host.endswith(".deepseek.com")
+
+
+def _resolve_deepseek_balance_url(base_url: Optional[str]) -> str:
+    parsed = urlparse(str(base_url or "").strip() or "https://api.deepseek.com")
+    scheme = parsed.scheme or "https"
+    netloc = parsed.netloc or parsed.path or "api.deepseek.com"
+    return f"{scheme}://{netloc.rstrip('/')}/user/balance"
+
+
+def _fetch_deepseek_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
+    if api_key:
+        runtime = {
+            "base_url": (base_url or "https://api.deepseek.com").strip(),
+            "api_key": str(api_key).strip(),
+        }
+    else:
+        runtime = resolve_runtime_provider(
+            requested="deepseek",
+            explicit_base_url=base_url,
+            explicit_api_key=api_key,
+        )
+    token = str(runtime.get("api_key", "") or "").strip()
+    if not token:
+        return None
+    resolved_base_url = str(runtime.get("base_url", "") or base_url or "https://api.deepseek.com")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    with httpx.Client(timeout=10.0) as client:
+        response = client.get(_resolve_deepseek_balance_url(resolved_base_url), headers=headers)
+        response.raise_for_status()
+    payload = response.json() or {}
+    details: list[str] = []
+    for info in payload.get("balance_infos") or []:
+        if not isinstance(info, dict):
+            continue
+        currency = str(info.get("currency") or "").strip().upper()
+        total = _decimal_or_none(info.get("total_balance"))
+        if total is None:
+            continue
+        parts = [f"Balance: {_format_money(total, currency)}"]
+        if currency:
+            parts[0] += f" {currency}"
+        subparts: list[str] = []
+        granted = _decimal_or_none(info.get("granted_balance"))
+        topped_up = _decimal_or_none(info.get("topped_up_balance"))
+        if granted is not None and granted > 0:
+            subparts.append(f"granted {_format_money(granted, currency)}")
+        if topped_up is not None and topped_up > 0:
+            subparts.append(f"topped up {_format_money(topped_up, currency)}")
+        if subparts:
+            parts.append(f"({', '.join(subparts)})")
+        details.append(" ".join(parts))
+    unavailable_reason = None
+    if payload.get("is_available") is False and not details:
+        unavailable_reason = "DeepSeek API balance is insufficient."
+    return AccountUsageSnapshot(
+        provider="deepseek",
+        source="balance_api",
+        fetched_at=_utc_now(),
+        title="Account balance",
+        details=tuple(details),
+        unavailable_reason=unavailable_reason,
+    )
+
+
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage, "anthropic": _fetch_anthropic_account_usage,
-    "openrouter": _fetch_openrouter_account_usage,
+    "openrouter": _fetch_openrouter_account_usage, "deepseek": _fetch_deepseek_account_usage,
 }
 
 
 def fetch_account_usage(
     provider: Optional[str], *, base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
-    fetcher = _USAGE_FETCHERS.get(str(provider or "").strip().lower())
+    normalized = str(provider or "").strip().lower()
+    if normalized in {"", "auto", "custom"} and not _is_deepseek_base_url(base_url):
+        return None
+    fetcher = _USAGE_FETCHERS.get(normalized)
+    if fetcher is None and _is_deepseek_base_url(base_url):
+        fetcher = _fetch_deepseek_account_usage
     try:
         return fetcher(base_url, api_key) if fetcher else None
     except Exception:

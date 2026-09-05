@@ -18,6 +18,73 @@ _COMMANDCODE_MODELS_URL = f"{_COMMANDCODE_BASE}/models"
 class CommandCodeProfile(ProviderProfile):
     """CommandCode — OpenAI-compatible chat completions endpoint."""
 
+    def build_api_kwargs_extras(
+        self,
+        *,
+        reasoning_config: dict | None = None,
+        model: str | None = None,
+        **context,
+    ):
+        """Forward DeepSeek thinking controls through CommandCode.
+
+        CommandCode uses vendor-prefixed model IDs such as
+        ``deepseek/deepseek-v4-flash``. Hermes' native DeepSeek provider
+        explicitly sends ``thinking.type`` because DeepSeek V4+ otherwise
+        defaults to thinking mode.
+        """
+        extra_body = {}
+        top_level = {}
+
+        m = (model or "").strip().lower()
+        if m.startswith("deepseek/"):
+            m = m.split("/", 1)[1]
+
+        # Apply only to DeepSeek V4+ families; leave V3/other models untouched.
+        if not (
+            m.startswith("deepseek-v")
+            and not m.startswith("deepseek-v3")
+        ):
+            return extra_body, top_level
+
+        # DeepSeek V4+ defaults to thinking enabled unless explicitly disabled.
+        enabled = True
+        if (
+            isinstance(reasoning_config, dict)
+            and reasoning_config.get("enabled") is False
+        ):
+            enabled = False
+
+        extra_body["thinking"] = {
+            "type": "enabled" if enabled else "disabled"
+        }
+
+        if not enabled:
+            return extra_body, top_level
+
+        # Match Hermes' native DeepSeek effort mapping.
+        if isinstance(reasoning_config, dict):
+            from agent.reasoning_effort import (
+                DEEPSEEK_V4_EFFORTS,
+                DEEPSEEK_V4_OVERRIDES,
+                clamp_effort,
+            )
+
+            effort = (
+                reasoning_config.get("effort") or ""
+            ).strip().lower()
+
+            if effort and effort != "none":
+                clamped = clamp_effort(
+                    effort,
+                    DEEPSEEK_V4_EFFORTS,
+                    DEEPSEEK_V4_OVERRIDES,
+                )
+
+                if clamped in DEEPSEEK_V4_EFFORTS:
+                    top_level["reasoning_effort"] = clamped
+
+        return extra_body, top_level
+
     def fetch_models(
         self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 8.0
     ) -> list[str] | None:

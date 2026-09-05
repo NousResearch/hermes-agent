@@ -85,29 +85,155 @@ class TestCommandCodeProfileIdentity:
         assert commandcode_profile.get_hostname() == "api.commandcode.ai"
 
 
-class TestCommandCodeProfileNoThinkingInterference:
-    """Chat completions profile is a no-op for thinking config — it delegates
-    to the underlying model's provider (DeepSeek, Qwen, etc.) for wire format.
+class TestCommandCodeDeepSeekThinkingControl:
+    """DeepSeek V4+ routed through CommandCode gets explicit ``thinking``.
+
+    Design change (#95232): this profile previously inherited the default
+    no-op ``build_api_kwargs_extras``, on the assumption that "the underlying
+    model API handles it".  That premise is wrong for DeepSeek V4+, which
+    defaults to thinking-mode ON when ``extra_body.thinking`` is unset — so
+    ``/reasoning none`` changed only the TUI/session state, never the wire
+    request, leaving V4 models stuck in ``reflecting...`` /
+    ``brainstorming...``.
+
+    The chat-completions profile now emits the same wire shape the native
+    DeepSeek profile sends (``extra_body.thinking`` + top-level
+    ``reasoning_effort`` via the shared ``agent.reasoning_effort``
+    vocabulary), while every other CommandCode family stays a strict no-op.
     """
 
-    def test_passthrough_no_reasoning_config(self, commandcode_profile):
+    def test_v4_disabled_yields_thinking_disabled(self, commandcode_profile):
+        """``/reasoning none`` → ``({"thinking": {"type": "disabled"}}, {})``."""
+        extra_body, top_level = commandcode_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False}, model="deepseek/deepseek-v4-flash"
+        )
+        assert extra_body == {"thinking": {"type": "disabled"}}
+        assert top_level == {}
+
+    def test_v4_disabled_ignores_effort_field(self, commandcode_profile):
+        """Effort is silently dropped when thinking is off (native parity)."""
+        extra_body, top_level = commandcode_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False, "effort": "high"},
+            model="deepseek/deepseek-v4-flash",
+        )
+        assert extra_body == {"thinking": {"type": "disabled"}}
+        assert top_level == {}
+
+    def test_v4_no_config_defaults_to_enabled_without_effort(
+        self, commandcode_profile
+    ):
+        """No reasoning_config → thinking enabled, server picks the effort."""
         extra_body, top_level = commandcode_profile.build_api_kwargs_extras(
             reasoning_config=None, model="deepseek/deepseek-v4-pro"
         )
-        # Chat completions profile doesn't inject thinking params — that's
-        # the DeepSeek provider's job when routed through DeepSeek's own profile.
-        # When routed through CommandCode, the underlying model API handles it.
-        assert isinstance(extra_body, dict)
-        assert isinstance(top_level, dict)
-        # Default ProviderProfile returns ({}, {}).
+        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert top_level == {}
 
-    def test_passthrough_with_reasoning_config(self, commandcode_profile):
+    @pytest.mark.parametrize("effort", ["low", "medium", "high"])
+    def test_v4_standard_efforts_pass_through(self, commandcode_profile, effort):
+        _, top_level = commandcode_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort},
+            model="deepseek/deepseek-v4-flash",
+        )
+        assert top_level == {"reasoning_effort": effort}
+
+    def test_v4_enabled_high_effort(self, commandcode_profile):
         extra_body, top_level = commandcode_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "high"},
-            model="deepseek/deepseek-v4-pro",
+            model="deepseek/deepseek-v4-flash-vision-exp",
         )
-        assert isinstance(extra_body, dict)
-        assert isinstance(top_level, dict)
+        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert top_level == {"reasoning_effort": "high"}
+
+    @pytest.mark.parametrize("effort", ["xhigh", "max", "MAX", "  Max  "])
+    def test_v4_xhigh_and_max_normalize_to_max(self, commandcode_profile, effort):
+        """Effort mapping matches the native DeepSeek provider (xhigh→max)."""
+        extra_body, top_level = commandcode_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort},
+            model="deepseek/deepseek-v4-flash",
+        )
+        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert top_level == {"reasoning_effort": "max"}
+
+    def test_v4_unknown_effort_omits_reasoning_effort(self, commandcode_profile):
+        """Garbage effort → omit reasoning_effort so the server default applies."""
+        _, top_level = commandcode_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "garbage"},
+            model="deepseek/deepseek-v4-flash",
+        )
+        assert top_level == {}
+
+    def test_matches_native_deepseek_profile_wire_shape(self, commandcode_profile):
+        """The two routes must agree, model-for-model and config-for-config.
+
+        CommandCode IDs are vendor-prefixed (``deepseek/deepseek-v4-flash``)
+        while the native profile speaks bare IDs — same request either way.
+        """
+        import model_tools  # noqa: F401 — triggers discovery
+        import providers
+
+        native = providers.get_provider_profile("deepseek")
+        assert native is not None
+
+        for config in (
+            None,
+            {"enabled": False},
+            {"enabled": False, "effort": "high"},
+            {"enabled": True, "effort": "low"},
+            {"enabled": True, "effort": "medium"},
+            {"enabled": True, "effort": "high"},
+            {"enabled": True, "effort": "xhigh"},
+            {"enabled": True, "effort": "max"},
+        ):
+            cc = commandcode_profile.build_api_kwargs_extras(
+                reasoning_config=config, model="deepseek/deepseek-v4-flash"
+            )
+            native_result = native.build_api_kwargs_extras(
+                reasoning_config=config, model="deepseek-v4-flash"
+            )
+            assert cc == native_result, (
+                f"CommandCode and native DeepSeek disagree for {config}: "
+                f"{cc} != {native_result}"
+            )
+
+
+class TestCommandCodeNonDeepSeekNoOp:
+    """Everything that isn't DeepSeek V4+ stays a strict no-op."""
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            # DeepSeek V3 — explicitly excluded (wire format untouched)
+            "deepseek/deepseek-v3-chat",
+            "deepseek/deepseek-v3-base",
+            "deepseek/deepseek-v3-0324",
+            # Other CommandCode vendors
+            "Qwen/Qwen3.7-Max",
+            "Qwen/Qwen3.6-Plus",
+            "moonshotai/Kimi-K2.6",
+            "zai-org/GLM-5.1",
+            "MiniMaxAI/MiniMax-M2.7",
+            "stepfun/Step-3.5-Flash",
+            "xiaomi/mimo-v2.5-pro",
+            "google/gemini-3.5-flash",
+            "gpt-5.5",
+            # Degenerate inputs
+            "",
+            None,
+            "deepseek/",
+        ],
+    )
+    def test_no_op_regardless_of_reasoning_config(self, commandcode_profile, model):
+        for config in (
+            None,
+            {"enabled": False},
+            {"enabled": True, "effort": "high"},
+        ):
+            extra_body, top_level = commandcode_profile.build_api_kwargs_extras(
+                reasoning_config=config, model=model
+            )
+            assert extra_body == {}
+            assert top_level == {}
 
 
 # ── Anthropic Messages profile ────────────────────────────────────────────────

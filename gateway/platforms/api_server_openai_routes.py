@@ -148,6 +148,7 @@ class _ResponsesStream:
         self._batch_buf: List[str] = []
         self._batch_timer: Optional[asyncio.Task] = None
         self._batch_lock = asyncio.Lock()
+        self._outbound = adapter._new_media_response_processor()
 
     async def write_event(self, event_type: str, data: Dict[str, Any]) -> None:
         if "sequence_number" not in data:
@@ -275,9 +276,11 @@ class _ResponsesStream:
             elif tag == "__tool_completed__":
                 await self.emit_tool_completed(payload)
         elif isinstance(item, str):
-            self._batch_buf.append(item)
-            if self._batch_timer is None:
-                self._batch_timer = asyncio.create_task(self._batch_flush_after(0.05))
+            content = await self._outbound.feed(item)
+            if content:
+                self._batch_buf.append(content)
+                if self._batch_timer is None:
+                    self._batch_timer = asyncio.create_task(self._batch_flush_after(0.05))
 
     async def _batch_flush_after(self, delay: float) -> None:
         try:
@@ -311,12 +314,13 @@ class _ResponsesStream:
             self.result = result
             self.usage = agent_usage or self.usage
             agent_final = result.get("final_response", "") if isinstance(result, dict) else ""
-            if agent_final and not self.final_text_parts:
-                await self.emit_text_delta(agent_final)
             if agent_final and not self.final_response_text:
                 self.final_response_text = agent_final
             if isinstance(result, dict) and result.get("error") and not self.final_response_text:
                 self.agent_error = self._api._redact_api_error_text(result["error"])
+            media_tail = await self._outbound.finish(agent_final)
+            if media_tail:
+                await self.emit_text_delta(media_tail)
         except Exception as e:  # noqa: BLE001
             logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
             self.agent_error = self._api._redact_api_error_text(e)
@@ -412,7 +416,7 @@ class OpenAICompatRoutesMixin:
             ThreadSafeAsyncQueue, _chat_usage_payload, _coerce_request_bool,
             _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
             _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content,
-            _openai_error, _redact_api_error_text, _resolve_media_to_data_urls)
+            _openai_error, _redact_api_error_text)
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
         if limited is not None:
@@ -538,7 +542,7 @@ class OpenAICompatRoutesMixin:
         if err is not None:
             return err
         result, usage = outcome
-        final_response = _resolve_media_to_data_urls(result.get("final_response") or "")
+        final_response = await self._render_outbound_text(result.get("final_response") or "")
         completed, is_partial, is_failed, err_msg = _result_flags(result)
         if err_msg:
             err_msg = _redact_api_error_text(err_msg)
@@ -619,6 +623,7 @@ class OpenAICompatRoutesMixin:
         from gateway.platforms.api_server import (
             _abandon_agent_task, _chat_usage_payload, _sse_frame)
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)
+        outbound = self._new_media_response_processor()
 
         def _chunk(delta: Dict[str, Any], finish_reason=None, **extra) -> Dict[str, Any]:
             return {"id": completion_id, "object": "chat.completion.chunk", "created": created,
@@ -633,7 +638,9 @@ class OpenAICompatRoutesMixin:
                     # Custom event: tool lifecycle for frontends without markers in history.
                     await response.write(_sse_frame(delta[1], event="hermes.tool.progress"))
                 else:
-                    await response.write(_sse_frame(_chunk({"content": delta})))
+                    content = await outbound.feed(delta)
+                    if content:
+                        await response.write(_sse_frame(_chunk({"content": content})))
             # The agent can fail after the queue drains (task raises / result flagged failed or
             # partial): surface a non-"stop" finish_reason like the non-streaming path.
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
@@ -644,6 +651,12 @@ class OpenAICompatRoutesMixin:
             except Exception as exc:
                 agent_error = exc
                 logger.error("Agent task %s failed during SSE streaming: %s", completion_id, exc)
+            authoritative_text = (
+                result.get("final_response", "") if isinstance(result, dict) else ""
+            )
+            media_tail = await outbound.finish(authoritative_text)
+            if media_tail:
+                await response.write(_sse_frame(_chunk({"content": media_tail})))
             completed, is_partial, is_failed, err_msg = _result_flags(result)
             if agent_error is not None:
                 is_failed = True
@@ -733,7 +746,7 @@ class OpenAICompatRoutesMixin:
             ThreadSafeAsyncQueue, _auto_truncate_response_history, _coerce_request_bool,
             _content_has_visible_payload, _error_response, _invalid_request,
             _multimodal_validation_error, _normalize_multimodal_content, _redact_api_error_text,
-            _resolve_media_to_data_urls, _responses_usage_payload)
+            _responses_usage_payload)
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
         if limited is not None:
@@ -862,7 +875,7 @@ class OpenAICompatRoutesMixin:
         if err is not None:
             return err
         result, usage = outcome
-        final_response = _resolve_media_to_data_urls(result.get("final_response", ""))
+        final_response = await self._render_outbound_text(result.get("final_response", ""))
         if not final_response:
             final_response = _redact_api_error_text(result.get("error", "(No response generated)"))
         response_id = f"resp_{uuid.uuid4().hex[:28]}"
@@ -881,7 +894,8 @@ class OpenAICompatRoutesMixin:
         response_data = {
             "id": response_id, "object": "response", "status": "completed",
             "created_at": created_at, "model": body.get("model", self._model_name),
-            "output": self._extract_output_items(result, start_index=output_start_index),
+            "output": self._extract_output_items(
+                result, start_index=output_start_index, final_response=final_response),
             "usage": _responses_usage_payload(usage)}
         if store:
             self._response_store.put(response_id, {
@@ -983,7 +997,11 @@ class OpenAICompatRoutesMixin:
         return out
 
     @staticmethod
-    def _extract_output_items(result: Dict[str, Any], start_index: int = 0) -> List[Dict[str, Any]]:
+    def _extract_output_items(
+        result: Dict[str, Any],
+        start_index: int = 0,
+        final_response: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """Output items from ``result["messages"][start_index:]``: ``function_call`` per assistant
         tool_call, ``function_call_output`` per tool message, then the final ``message``."""
         from gateway.platforms.api_server import _redact_api_error_text
@@ -1008,7 +1026,9 @@ class OpenAICompatRoutesMixin:
                     "id": f"fco_{uuid.uuid4().hex[:24]}", "type": "function_call_output",
                     "status": "completed", "call_id": msg.get("tool_call_id", ""),
                     "output": msg.get("content", "")})
-        final = result.get("final_response", "") or _redact_api_error_text(
-            result.get("error", "(No response generated)"))
+        final = final_response
+        if final is None:
+            final = result.get("final_response", "") or _redact_api_error_text(
+                result.get("error", "(No response generated)"))
         items.append(_message_item(final))
         return items

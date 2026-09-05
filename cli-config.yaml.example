@@ -1023,6 +1023,15 @@ group_sessions_per_user: true
 #       enabled: true
 #       extra:
 #         key: "your-api-server-secret"
+#         # MEDIA: images are inlined as data URLs by default. The explicit
+#         # form below also shows the default 5 MiB per-image limit.
+#         outbound_files:
+#           provider: base64
+#           provider_options:
+#             max_image_size_bytes: 5242880
+#         # Alternatively, disable delivery without exposing local paths:
+#         # outbound_files:
+#         #   provider: none  # YAML null is also accepted
 #         model_routes:
 #           # Xiaozhi clients send model="minimax-m2" → routed to MiniMax via OpenRouter
 #           minimax-m2:

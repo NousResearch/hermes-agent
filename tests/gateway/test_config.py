@@ -542,7 +542,11 @@ class TestLoadGatewayConfig:
             "    port: 8642\n"
             "    host: 0.0.0.0\n"
             "    key: sekrit\n"
-            "    model_name: my-hermes\n",
+            "    model_name: my-hermes\n"
+            "    outbound_files:\n"
+            "      provider: base64\n"
+            "      provider_options:\n"
+            "        max_image_size_bytes: 1024\n",
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -554,6 +558,12 @@ class TestLoadGatewayConfig:
         assert extra["host"] == "0.0.0.0"
         assert extra["key"] == "sekrit"
         assert extra["model_name"] == "my-hermes"
+        assert extra["outbound_files"] == {
+            "provider": "base64",
+            "provider_options": {
+                "max_image_size_bytes": 1024,
+            },
+        }
 
     def test_room_link_url_from_nested_gateway_section(self, tmp_path, monkeypatch):
         """The supported config path advertises no endpoint until restart."""

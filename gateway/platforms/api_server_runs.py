@@ -543,12 +543,23 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
     """Drive one admitted run, publish its terminal event/status, release live state."""
     _redact_api_error_text = _api_server._redact_api_error_text
     run_id, loop = run.run_id, asyncio.get_running_loop()
+    outbound = self._new_media_response_processor()
+    media_delta_queue: "asyncio.Queue[Optional[str]]" = asyncio.Queue()
 
     def _text_cb(delta: Optional[str]) -> None:
         if delta is None or run_id not in self._run_streams:
             return
         with suppress(Exception):
-            loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "message.delta", delta=delta))
+            loop.call_soon_threadsafe(media_delta_queue.put_nowait, delta)
+
+    async def _stream_media_deltas() -> None:
+        while True:
+            delta = await media_delta_queue.get()
+            if delta is None:
+                return
+            content = await outbound.feed(delta)
+            if content:
+                run.put_event(_run_event(run_id, "message.delta", delta=content))
 
     def _finish(status: str, extra: Optional[dict] = None, **fields: Any) -> None:
         """Terminal status, then best-effort ``run.<status>`` event; key order is wire shape."""
@@ -557,6 +568,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         with suppress(Exception):
             run.put_event(_run_event(run_id, f"run.{status}", **fields, **extra))
 
+    media_delta_task = asyncio.create_task(_stream_media_deltas())
     try:
         self._set_run_status(run_id, "running")
         if run_id in self._stopping_run_ids:
@@ -572,6 +584,12 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             None, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
         if not isinstance(result, dict):
             result = {}
+        raw_final_response = result.get("final_response", "")
+        await media_delta_queue.put(None)
+        await media_delta_task
+        rendered_tail = await outbound.finish(raw_final_response)
+        if rendered_tail:
+            run.put_event(_run_event(run_id, "message.delta", delta=rendered_tail))
         if run_id in self._stopping_run_ids and result.get("interrupted") is True:
             _finish("cancelled")
         elif result.get("failed"):
@@ -580,7 +598,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         else:
             # Undelivered steer text rides on the terminal event/status for client replay.
             extra = {"pending_steer": result["pending_steer"]} if result.get("pending_steer") else {}
-            _finish("completed", extra, output=result.get("final_response", ""), usage=usage)
+            final_response = await outbound.render(raw_final_response)
+            _finish("completed", extra, output=final_response, usage=usage)
     except asyncio.CancelledError:
         _finish("cancelled")
         raise
@@ -592,6 +611,9 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         logger.exception("[api_server] run %s failed", run_id)
         _finish("failed", error=_redact_api_error_text(exc))
     finally:
+        if not media_delta_task.done():
+            await media_delta_queue.put(None)
+            await media_delta_task
         # On cancellation (/stop) the executor thread may still block on an approval
         # Event; unregistering releases it. Idempotent on normal completion.
         _unregister_approval_notify(run.approval_session_key)

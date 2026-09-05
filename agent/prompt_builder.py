@@ -725,13 +725,10 @@ PLATFORM_HINTS = {
         "draw sticker-like PNGs and send them as images, and bare Unicode emoji is not a substitute."
     ),
     "api_server": (
-        "You're responding through an API server. The rendering layer is unknown — assume plain text. No markdown "
-        "formatting (no asterisks, bullets, headers, code fences). Treat this like a conversation, not a document. "
-        "Keep responses brief and natural. File/media delivery: images referenced as MEDIA:/absolute/path tags "
-        "(.png/.jpg/.jpeg/.gif/.webp/.bmp, up to 5MB) are inlined as base64 data URLs in responses on the chat, "
-        "completions, and responses endpoints. Non-image files are NOT intercepted anywhere, and the runs endpoint "
-        "intercepts nothing — a MEDIA: tag there renders as literal text exposing a raw host filesystem path. For "
-        "those cases, state the plain file path in your response text instead of a MEDIA: tag."
+        "You're responding through an API server. The rendering layer is unknown — "
+        "assume plain text. No markdown formatting (no asterisks, bullets, headers, "
+        "code fences). Treat this like a conversation, not a document. Keep responses "
+        "brief and natural."
     ),
     # No "webui" hint on purpose: nothing constructs platform="webui" (the dashboard chat resolves to
     # 'desktop' or 'tui'). If a real WebUI chat surface ships, write a hint from its actual renderer.

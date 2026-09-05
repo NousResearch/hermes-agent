@@ -120,9 +120,10 @@ from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
-from gateway.platforms.base import (
-    MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, is_network_accessible, validate_media_delivery_path)
+from gateway.platforms.base import BasePlatformAdapter, SendResult, is_network_accessible
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+from gateway.media_response_processor import MediaResponseProcessor
+from gateway.outbound_files import OutboundFileExporter
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
 from gateway.readiness import collect_runtime_readiness
@@ -829,44 +830,6 @@ if AIOHTTP_AVAILABLE:
 else:
     cors_middleware = body_limit_middleware = security_headers_middleware = None  # type: ignore
 
-_MEDIA_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
-               ".webp": "image/webp", ".bmp": "image/bmp"}
-_MEDIA_IMG_EXT = set(_MEDIA_MIME)
-_MEDIA_DATA_URL_MAX_BYTES = 5 * 1024 * 1024  # skip images larger than 5MB
-
-
-def _resolve_media_to_data_urls(text: str) -> str:
-    """Replace ``MEDIA:<path>`` tags with inline base64 data URLs (remote frontends can't read
-    server paths); non-image/unreadable paths stay untouched. Security: the shared
-    ``MEDIA_TAG_CLEANUP_RE`` anchor + ``validate_media_delivery_path`` denylist — a bare-token
-    match would let a traversal path in the reply exfiltrate any readable image."""
-    if not text or "MEDIA:" not in text:
-        return text
-    import base64
-
-    def _to_data_url(path_str: str) -> Optional[str]:
-        # validate_media_delivery_path() strips wrapping quotes/trailing punctuation itself.
-        safe_path = validate_media_delivery_path(path_str)
-        p = Path(safe_path) if safe_path else None
-        suffix = p.suffix.lower() if p else ""
-        if suffix not in _MEDIA_IMG_EXT:
-            return None
-        try:
-            if p.stat().st_size > _MEDIA_DATA_URL_MAX_BYTES:
-                return None
-            b64 = base64.b64encode(p.read_bytes()).decode()
-        except OSError:
-            return None
-        return f"![image](data:{_MEDIA_MIME[suffix]};base64,{b64})"
-
-    def _repl(m: "re.Match[str]") -> str:
-        return _to_data_url(m.group("path")) or m.group(0)
-    try:
-        return MEDIA_TAG_CLEANUP_RE.sub(_repl, text)
-    except Exception:
-        return text
-
-
 def _redact_api_error_text(value: Any, *, limit: int | None = None) -> str:
     """Redact API-bound error text before it crosses the HTTP boundary."""
     redacted = redact_sensitive_text(str(value), force=True)
@@ -1138,6 +1101,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # @mssteuer.)
         self._direct_model_requests: bool = _coerce_request_bool(
             extra.get("direct_model_requests"), default=False)
+        self._outbound_files = OutboundFileExporter.from_dict(extra.get("outbound_files"))
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -1163,6 +1127,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self.gateway_runner: Optional[Any] = None  # set by gateway/run.py
         # Admitted requests not yet in agent bookkeeping, so shutdown drain counts them.
         self._pending_agent_requests: int = 0
+
+    def _new_media_response_processor(self) -> MediaResponseProcessor:
+        """Create a per-response processor with an isolated replacement cache."""
+        return MediaResponseProcessor(self._outbound_files.export_media_path)
+
+    async def _render_outbound_text(self, text: str) -> str:
+        return await self._new_media_response_processor().render(text)
+
+    def _with_outbound_files_prompt(self, prompt: Optional[str]) -> str:
+        parts = [prompt.strip()] if isinstance(prompt, str) and prompt.strip() else []
+        parts.append(self._outbound_files.system_prompt_hint())
+        return "\n\n".join(parts)
         # Shared broker; this adapter maps HTTP registration + controller WS onto it.
         self._browser_control_broker = get_browser_control_broker()
         # One-shot artifact transport: lazy per-profile stores + limiter (tests inject).
@@ -2145,7 +2121,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         agent_kwargs = {
             "model": model, **runtime_kwargs, **_checkpoint_agent_kwargs(user_config),
             "max_iterations": max_iterations, "quiet_mode": True, "verbose_logging": False,
-            "ephemeral_system_prompt": ephemeral_system_prompt or None,
+            "ephemeral_system_prompt": self._with_outbound_files_prompt(
+                ephemeral_system_prompt
+            ),
             "enabled_toolsets": enabled_toolsets, "session_id": session_id,
             "platform": "api_server",
             "stream_delta_callback": stream_delta_callback,
@@ -3090,7 +3068,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         result, usage = await self._run_agent(conversation_history=history, **ctx["run_kwargs"])
         is_dict = isinstance(result, dict)
         effective_session_id = result.get("session_id") if is_dict else session_id
-        final_response = _resolve_media_to_data_urls(
+        final_response = await self._render_outbound_text(
             result.get("final_response", "") if is_dict else "")
         headers = self._session_headers(effective_session_id or session_id, gateway_session_key)
         return web.json_response(
@@ -3123,9 +3101,23 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._set_run_status(
             run_id, "queued", session_id=session_id, model=ctx["body"].get("model", self._model_name))
 
+        outbound = self._new_media_response_processor()
+        media_delta_queue: "asyncio.Queue[Optional[str]]" = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
         def _delta(delta: str) -> None:
             if delta:
-                events.enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
+                loop.call_soon_threadsafe(media_delta_queue.put_nowait, delta)
+
+        async def _stream_media_deltas() -> None:
+            while True:
+                delta = await media_delta_queue.get()
+                if delta is None:
+                    return
+                content = await outbound.feed(delta)
+                if content:
+                    events.enqueue(
+                        "assistant.delta", {"message_id": message_id, "delta": content})
 
         def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
             if event_type == "reasoning.available":
@@ -3134,6 +3126,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 events.enqueue(event_type, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
 
         async def _run_and_signal() -> None:
+            media_delta_task = asyncio.create_task(_stream_media_deltas())
             try:
                 await queue.put(_event_payload("run.started", {
                     "user_message": {"role": "user", "content": user_message},
@@ -3145,7 +3138,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     conversation_history=history, stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress, active_run_id=run_id, **ctx["run_kwargs"])
                 is_dict = isinstance(result, dict)
-                final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")
+                raw_final_response = result.get("final_response", "") if is_dict else ""
+                await media_delta_queue.put(None)
+                await media_delta_task
+                rendered_tail = await outbound.finish(raw_final_response)
+                if rendered_tail:
+                    events.enqueue(
+                        "assistant.delta",
+                        {"message_id": message_id, "delta": rendered_tail},
+                    )
+                final_response = await outbound.render(raw_final_response)
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if is_dict else []
                 effective_runtime = self._effective_turn_runtime(runtime_request, result, usage)
@@ -3176,6 +3178,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     run_id, "failed", error=_redact_api_error_text(exc), last_event="run.failed")
                 await queue.put(_event_payload("error", {"message": _redact_api_error_text(exc)}))
             finally:
+                if not media_delta_task.done():
+                    await media_delta_queue.put(None)
+                    await media_delta_task
                 self._active_run_agents.pop(run_id, None)
                 self._release_run_owner_if_forgotten(run_id)
                 await queue.put(_event_payload("done", {}))

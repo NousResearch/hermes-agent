@@ -15,7 +15,12 @@ export const MIME_MAP = {
 
 export function normalizeWhatsAppId(value) {
   if (!value) return '';
-  return String(value).replace(':', '@');
+  // Keep in sync with bridge.js's normalizeWhatsAppId — strip the whole
+  // ":<device>" segment rather than swapping the colon for "@", which
+  // otherwise mangles ids like "447397235771:12@s.whatsapp.net" into
+  // "447397235771@12@s.whatsapp.net" and breaks id equality checks
+  // (quotedParticipant vs botIds) used for reply-to-bot detection.
+  return String(value).replace(/:[^@]*@/, '@');
 }
 
 export function getMessageContent(msg) {

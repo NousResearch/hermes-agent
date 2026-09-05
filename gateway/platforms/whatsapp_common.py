@@ -141,7 +141,15 @@ class WhatsAppBehaviorMixin:
             return ""
         normalized = str(value).strip()
         if ":" in normalized and "@" in normalized:
-            normalized = normalized.replace(":", "@", 1)
+            # Baileys JIDs can carry a device suffix before the domain, e.g.
+            # "447397235771:12@s.whatsapp.net". A naive colon->@ swap produces
+            # a second "@" ("447397235771@12@s.whatsapp.net") that never
+            # matches the plain "447397235771@s.whatsapp.net" form used
+            # elsewhere (quotedParticipant, botIds), silently breaking
+            # reply-to-bot detection. Strip the whole ":<device>" segment
+            # instead, keeping only the bare id + domain. Mirrors the fix in
+            # scripts/whatsapp-bridge/bridge.js and bridge_helpers.js.
+            normalized = re.sub(r":[^@]*@", "@", normalized, count=1)
         return normalized
 
     @staticmethod

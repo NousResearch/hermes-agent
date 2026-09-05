@@ -1797,8 +1797,10 @@ def _fallback_reason_text(reason: "FailoverReason | None") -> str:
 
 
 def _is_anthropic_wire_url(url: str) -> bool:
-    """Same host match as determine_api_mode() / _detect_api_mode_for_url()."""
-    return url.rstrip("/").lower().endswith("/anthropic") or base_url_hostname(url) == "api.anthropic.com"
+    """Same Messages-only host match as determine_api_mode() / _detect_api_mode_for_url(): api.anthropic.com,
+    a /anthropic suffix, or Kimi Code's api.kimi.com/coding (its /chat/completions 404s — #77256)."""
+    from hermes_cli.providers import host_mandated_api_mode
+    return host_mandated_api_mode(url) == "anthropic_messages"
 
 
 def _fallback_api_mode_hint(fb: dict, fb_provider: str, fb_base_url_hint: Optional[str]) -> tuple[bool, str]:

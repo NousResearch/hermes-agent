@@ -1246,6 +1246,10 @@ DEFAULT_CONFIG = {
         # notifications to the PARENT; false suppresses them (the child's result is the
         # deliverable). Async-delegation results are NEVER suppressed.
         "surface_child_process_notifications": False,
+        # Each child gets its own git worktree off the parent's HEAD so parallel children
+        # never contend for one working copy (local backend + git repos only; otherwise
+        # silently ignored). See tools/subagent_worktree.py.
+        "worktree_isolation": False,
     },
     # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of
     # every API call for few-shot priming. Never saved to sessions/logs/trajectories.

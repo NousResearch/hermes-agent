@@ -980,6 +980,153 @@ def _report_gateway_start(via: str) -> None:
         _print_task_run_hint("  Recovery: schtasks /Run /TN {}   (starts the gateway outside any Job Object)")
 
 
+def _task_action_matches_expected() -> bool:
+    """True when the registered task's action points at OUR .vbs launcher.
+
+    Reads the task definition via ``schtasks /Query /XML`` and compares the
+    action command against the launcher path this install would generate.
+    Never raises; any failure returns False (caller falls back to
+    re-registering).
+    """
+    try:
+        code, out, _err = _exec_schtasks(["/Query", "/TN", get_task_name(), "/XML"])
+        if code != 0 or not out:
+            return False
+        expected = str(get_task_script_path().with_suffix(".vbs"))
+        return expected.lower() in out.lower()
+    except Exception:
+        return False
+
+
+def _launcher_is_ours() -> bool:
+    """True when the on-disk .vbs launcher matches our generated template.
+
+    The Scheduled Task action runs the ``.vbs`` (which embeds the python
+    path), so only the ``.vbs`` matters for spawn correctness — the ``.cmd``
+    is a manual-run artifact and may legitimately be a user-customized
+    supervisor wrapper; overwriting it would silently remove their setup.
+    We refresh scripts only when the current ``.vbs`` is byte-identical to
+    our template or absent.
+    """
+    try:
+        vbs_path = get_task_script_path().with_suffix(".vbs")
+        if not vbs_path.exists():
+            return True
+        current = vbs_path.read_text(encoding="utf-8")
+        from hermes_cli.gateway import (
+            PROJECT_ROOT,
+            _profile_arg,
+            get_python_path,
+        )
+
+        from hermes_cli.config import get_hermes_home
+
+        hermes_home = str(Path(get_hermes_home()))
+        expected = _build_gateway_vbs_script(
+            _preserve_hermes_home_path(get_python_path()),
+            _stable_gateway_working_dir(PROJECT_ROOT),
+            hermes_home,
+            _profile_arg(hermes_home),
+        )
+        # _write_task_script writes CRLF line endings; normalize both sides so
+        # a checkout/transfer that flipped EOLs does not force a rewrite.
+        return current.replace("\r\n", "\n") == expected.replace("\r\n", "\n")
+    except Exception:
+        return False
+
+
+def _spawn_via_scheduled_task(timeout_s: float = 30.0) -> bool:
+    """Trigger the gateway's own Scheduled Task and confirm a process comes up.
+
+    ``subprocess.Popen`` with ``CREATE_BREAKAWAY_FROM_JOB`` cannot reliably
+    escape a restrictive parent job object: ``CreateProcess`` accepts the flag
+    silently even when the job denies breakaway, so the child lands inside the
+    job and is hard-killed when the updater exits (issue #84185). The Task
+    Scheduler runs the task outside any job holding the calling updater, so
+    ``schtasks /Run`` is the only spawn path guaranteed to survive the
+    parent-job teardown.
+
+    Before triggering, the Scheduled Task is refreshed ONLY when the on-disk
+    ``.vbs`` launcher does not match our generated template (or is absent):
+    the task action points at a stable ``.vbs`` path and ``/Run`` executes
+    whatever content is currently on disk, so refreshing the embedded Python
+    path after an update is a plain file write — never a delete+create of
+    the task (which can hit UAC "Access is denied" and would clobber
+    user-customized launchers).  The check afterwards confirms that a *new*
+    gateway process appeared that was not already running before the trigger
+    — a pre-update gateway that is still draining connections does not
+    satisfy the check on its own.
+
+    Returns ``True`` when the task accepted ``/Run`` and a *new* gateway PID
+    appeared within ``timeout_s``, or when the task accepted ``/Run`` and no
+    pre-existing gateway was running (the spawn is asynchronous and may take
+    longer than the poll window on cold starts; liveness is confirmed later by
+    the caller/watchdog). ``False`` when the task cannot be triggered or the
+    scripts could not be refreshed. Best-effort and Windows-only; safe to call
+    from any post-update spawn point.
+    """
+    _assert_windows()
+    if not is_task_registered():
+        return False
+
+    from hermes_cli.gateway import find_gateway_pids
+
+    # Snapshot BEFORE triggering so a task-spawned python that becomes visible
+    # before /Run returns can never land in pre_pids (a pre-update gateway
+    # still draining must also not satisfy the check on its own).
+    try:
+        pre_pids = set(find_gateway_pids())
+    except Exception:
+        pre_pids = set()
+
+    # Refresh the task scripts ONLY when the .vbs launcher is ours. The task's
+    # registered action points at the stable .vbs path and /Run executes the
+    # file content CURRENTLY on disk — so refreshing the embedded python path
+    # after an update is a plain file write, never a delete+create of the task
+    # (delete+create can hit UAC "Access is denied" on live hosts where /Run
+    # alone works, and re-registering clobbers user-customized launchers).
+    # The .cmd is a manual-run artifact: if a user replaced it with their own
+    # supervisor wrapper we leave it untouched either way.
+    try:
+        if not _launcher_is_ours():
+            script_path = _write_task_script()
+            ok, _detail = _install_scheduled_task(get_task_name(), script_path)
+            if not ok:
+                return False
+        elif _task_action_matches_expected() is False:
+            # Task action points somewhere else than our .vbs (user-edited in
+            # taskschd.msc): respect it and just trigger what is registered.
+            pass
+    except Exception:
+        return False
+
+    code, _, _ = _exec_schtasks(["/Run", "/TN", get_task_name()])
+    if code != 0:
+        return False
+
+    ready = _wait_for_gateway_ready(timeout_s=timeout_s)
+    new_pids = set(ready) - pre_pids
+    if new_pids:
+        return True
+    if not pre_pids:
+        # /Run accepted + no gateway was running before: treat as success even
+        # if the poll window expired — cold starts (Telegram connect etc.) can
+        # exceed it, and falling back to direct spawn here would race with the
+        # task-spawned process still importing.
+        return True
+    # A gateway was already running and IgnoreNew may have silently suppressed
+    # the start. End the in-flight instance and retry ONCE via the task so we
+    # preserve the job-escape guarantee instead of falling back to direct
+    # spawn inside the dying parent job (#84185).
+    _exec_schtasks(["/End", "/TN", get_task_name()])
+    code, _, _ = _exec_schtasks(["/Run", "/TN", get_task_name()])
+    if code != 0:
+        return False
+    ready = _wait_for_gateway_ready(timeout_s=timeout_s)
+    return bool(set(ready) - {p for p in pre_pids})
+
+
+
 def _print_next_steps() -> None:
     print("\nNext steps:\n  hermes gateway status                      # Check status")
     print(f"  type {_hermes_home()}\\logs\\gateway.log       # View logs")

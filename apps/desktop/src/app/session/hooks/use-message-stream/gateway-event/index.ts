@@ -5,7 +5,8 @@ import type { GatewayEventPayload } from '@/lib/chat-messages'
 import {
   approvalReplaySessionId,
   resolveGatewayEventSessionId,
-  UNSCOPED_STREAM_EVENT_TYPES
+  UNSCOPED_STREAM_EVENT_TYPES,
+  userInputReplaySessionId
 } from '@/lib/gateway-events'
 import { reconcileSessionCompacting } from '@/store/compaction'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
@@ -14,6 +15,7 @@ import { replayPendingApproval } from '@/store/prompts'
 import { setSessionProviderWait } from '@/store/provider-wait'
 import { isSessionGone } from '@/store/session-gone-latch'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
+import { replayPendingUserInput } from '@/store/user-input'
 import type { RpcEvent } from '@/types/hermes'
 
 import { handleDesktopBridgeEvent } from './desktop-bridge'
@@ -203,6 +205,15 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
       if (replaySessionId) {
         void replayPendingApproval($gateway.get(), replaySessionId).catch(() => undefined)
+      }
+
+      const userInputSessionId = userInputReplaySessionId(event.type, activeSessionIdRef.current, sessionId, {
+        explicit: Boolean(explicitSid),
+        isGone: isSessionGone
+      })
+
+      if (userInputSessionId) {
+        void replayPendingUserInput($gateway.get(), userInputSessionId).catch(() => undefined)
       }
 
       // Mid-turn compaction does not emit another message.start. The first

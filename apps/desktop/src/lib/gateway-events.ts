@@ -41,7 +41,8 @@ export const UNSCOPED_STREAM_EVENT_TYPES = new Set([
   'tool.complete',
   'tool.generating',
   'tool.progress',
-  'tool.start'
+  'tool.start',
+  'user_input.request'
 ])
 
 const UNSCOPED_STREAM_END_EVENT_TYPES = new Set(['error', 'message.complete'])
@@ -90,6 +91,29 @@ export interface GatewayEventSessionRoute {
  *  on every fan-out tick (#100639), so return null. A frame that names the
  *  session explicitly is the runtime speaking for itself and is never gone. */
 export function approvalReplaySessionId(
+  eventType: string | undefined,
+  activeSessionId: null | string,
+  routedSessionId: null | string,
+  options?: { explicit?: boolean; isGone?: (sessionId: string) => boolean }
+): null | string {
+  let target: null | string = null
+
+  if (eventType === 'gateway.ready') {
+    target = activeSessionId
+  } else if (eventType === 'session.info') {
+    target = routedSessionId
+  }
+
+  if (target && !options?.explicit && options?.isGone?.(target)) {
+    return null
+  }
+
+  return target
+}
+
+/** Which session (if any) to re-pull `user_input.pending` for after a
+ * reconnect or resumed session announcement. */
+export function userInputReplaySessionId(
   eventType: string | undefined,
   activeSessionId: null | string,
   routedSessionId: null | string,

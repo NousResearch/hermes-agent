@@ -7,21 +7,28 @@ import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/ui/tooltip'
 import {
   activateLocalModel,
+  applyLocalAdvancedLaunch,
   deleteLocalModel,
   downloadBrowsedModel,
   downloadLocalModel,
   ejectLocalModel,
   getLocalCatalog,
+  getLocalGatewayRoutes,
   getLocalHardware,
   getLocalModelsStatus,
   type HFFileGroup,
   type HFSearchHit,
   installLocalRuntime,
   listHFRepoFiles,
+  type LocalAdvancedLaunchPlan,
+  type LocalGatewayRoute,
+  previewLocalAdvancedLaunch,
+  publishLocalGatewayRoute,
   quickstartLocalModels,
   searchHFModels,
   setLocalServer,
-  sideloadLocalModel
+  sideloadLocalModel,
+  unpublishLocalGatewayRoute
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import {
@@ -93,6 +100,16 @@ export function LocalModelsSettings() {
   const [catalog, setCatalog] = useState<LocalCatalogModel[] | null>(null)
   const [deleting, setDeleting] = useState<null | string>(null)
   const [serverBusy, setServerBusy] = useState(false)
+  const [advancedModelId, setAdvancedModelId] = useState('')
+  const [advancedSlots, setAdvancedSlots] = useState(1)
+  const [advancedContext, setAdvancedContext] = useState('')
+  const [advancedSpeculation, setAdvancedSpeculation] = useState<'auto' | 'off' | 'mtp'>('auto')
+  const [advancedKvCache, setAdvancedKvCache] = useState<'q8_0' | 'f16'>('q8_0')
+  const [advancedPlan, setAdvancedPlan] = useState<LocalAdvancedLaunchPlan | null>(null)
+  const [advancedBusy, setAdvancedBusy] = useState(false)
+  const [gatewayAlias, setGatewayAlias] = useState('')
+  const [gatewayMode, setGatewayMode] = useState<'agent' | 'raw'>('agent')
+  const [gatewayRoutes, setGatewayRoutes] = useState<LocalGatewayRoute[]>([])
   // Quickstart escape hatch: true once the user asks for the full pane
   // (model list, HF browser) instead of the one-button setup card.
   const [configure, setConfigure] = useState(false)
@@ -119,6 +136,18 @@ export function LocalModelsSettings() {
       .then(setHardware)
       .catch(() => setHardware(null))
   }, [refresh])
+
+  useEffect(() => {
+    if (!advancedModelId && status?.models[0]?.id) {
+      setAdvancedModelId(status.active_model_id ?? status.models[0].id)
+    }
+  }, [advancedModelId, status])
+
+  const refreshGatewayRoutes = useCallback(() => {
+    void getLocalGatewayRoutes().then(data => setGatewayRoutes(data.routes)).catch(() => setGatewayRoutes([]))
+  }, [])
+
+  useEffect(() => { refreshGatewayRoutes() }, [refreshGatewayRoutes])
 
   // The pane is LIVE while visible: residency changes without user action
   // (boot warm finishing, idle sweep unloading, another surface ejecting),
@@ -255,6 +284,57 @@ export function LocalModelsSettings() {
     } finally {
       setDeleting(null)
     }
+  }
+
+  const advancedRequest = () => ({
+    context_tokens: advancedContext ? Number(advancedContext) * 1024 : null,
+    slots: advancedSlots,
+    kv_cache: advancedKvCache,
+    mtp_draft_depth: null,
+    speculation: advancedSpeculation
+  })
+
+  async function handlePreviewAdvanced() {
+    if (!advancedModelId) {return}
+    setAdvancedBusy(true)
+
+    try {
+      setAdvancedPlan(await previewLocalAdvancedLaunch(advancedModelId, advancedRequest()))
+    } catch (err) {
+      setAdvancedPlan(null)
+      notifyError(err, 'Could not validate these local-model settings.')
+    } finally { setAdvancedBusy(false) }
+  }
+
+  async function handleApplyAdvanced() {
+    if (!advancedModelId) {return}
+    setAdvancedBusy(true)
+
+    try {
+      const result = await applyLocalAdvancedLaunch(advancedModelId, advancedRequest())
+      setAdvancedPlan(result.plan)
+      notify({ durationMs: 3_500, kind: 'success', message: result.restarted ? 'Applied and restarted the local runtime.' : 'Settings apply on the next local-runtime start.', title: copy.title })
+      refresh()
+    } catch (err) { notifyError(err, 'Could not apply these local-model settings.') } finally { setAdvancedBusy(false) }
+  }
+
+  async function handlePublishGateway() {
+    if (!gatewayAlias.trim() || !advancedModelId) {return}
+
+    try {
+      await publishLocalGatewayRoute(gatewayAlias.trim(), advancedModelId, gatewayMode)
+      setGatewayAlias('')
+      refreshGatewayRoutes()
+      notify({ durationMs: 4_000, kind: 'success', message: 'Gateway route saved. Restart the gateway to activate it.', title: copy.title })
+    } catch (err) { notifyError(err, 'Could not save the gateway route.') }
+  }
+
+  async function handleUnpublishGateway(alias: string) {
+    try {
+      await unpublishLocalGatewayRoute(alias)
+      refreshGatewayRoutes()
+      notify({ durationMs: 4_000, kind: 'success', message: 'Gateway route removed. Restart the gateway to apply the change.', title: copy.title })
+    } catch (err) { notifyError(err, 'Could not remove the gateway route.') }
   }
 
   // Setup flows end at the action, not the settings pane: when quickstart
@@ -548,6 +628,67 @@ export function LocalModelsSettings() {
           </p>
         )}
       </SettingsSection>
+
+      {status.runtime_installed && status.models.length > 0 && (
+        <SettingsSection icon={Zap} title="Advanced local runtime">
+          <div className="grid gap-3 py-1 text-[0.8rem]">
+            <p className="text-muted-foreground">
+              Choose an exact staged model, its per-request context, slots, and speculative mode. Hermes validates
+              the aggregate allocation before it writes configuration or restarts the runtime.
+            </p>
+            <div className="grid gap-2 sm:grid-cols-5">
+              <label className="grid gap-1">
+                <span className="text-muted-foreground">Model</span>
+                <select className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2" onChange={event => { setAdvancedModelId(event.target.value); setAdvancedPlan(null) }} value={advancedModelId}>
+                  {status.models.map(model => <option key={model.id} value={model.id}>{model.id}</option>)}
+                </select>
+              </label>
+              <label className="grid gap-1">
+                <span className="text-muted-foreground">Context per request (K)</span>
+                <input className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2" min="1" onChange={event => { setAdvancedContext(event.target.value); setAdvancedPlan(null) }} placeholder="Automatic" type="number" value={advancedContext} />
+              </label>
+              <label className="grid gap-1">
+                <span className="text-muted-foreground">Inference slots</span>
+                <input className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2" max="16" min="1" onChange={event => { setAdvancedSlots(Number(event.target.value)); setAdvancedPlan(null) }} type="number" value={advancedSlots} />
+              </label>
+              <label className="grid gap-1">
+                <span className="text-muted-foreground">Speculation</span>
+                <select className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2" onChange={event => { setAdvancedSpeculation(event.target.value as 'auto' | 'off' | 'mtp'); setAdvancedPlan(null) }} value={advancedSpeculation}>
+                  <option value="auto">Automatic</option><option value="off">Off</option><option value="mtp">MTP</option>
+                </select>
+              </label>
+              <label className="grid gap-1">
+                <span className="text-muted-foreground">KV cache</span>
+                <select className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2" onChange={event => { setAdvancedKvCache(event.target.value as 'q8_0' | 'f16'); setAdvancedPlan(null) }} value={advancedKvCache}>
+                  <option value="q8_0">Q8_0</option><option value="f16">F16</option>
+                </select>
+              </label>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button disabled={advancedBusy} onClick={() => void handlePreviewAdvanced()} size="sm" variant="outline">{advancedBusy ? <Loader2 className="animate-spin" /> : <Search />} Preview capacity</Button>
+              <Button disabled={advancedBusy || advancedPlan?.fits === false} onClick={() => void handleApplyAdvanced()} size="sm">Apply settings</Button>
+              {advancedPlan && <span className={cn('text-[0.75rem]', advancedPlan.fits ? 'text-muted-foreground' : 'text-destructive')}>
+                {advancedPlan.fits ? `${gbLabel(advancedPlan.estimated_bytes)} of ${gbLabel(advancedPlan.available_bytes)} planned · ${advancedPlan.effective_context_tokens / 1024}K × ${advancedPlan.request.slots} slots` : advancedPlan.reasons.join('; ')}
+              </span>}
+            </div>
+          </div>
+        </SettingsSection>
+      )}
+
+      {status.runtime_installed && status.models.length > 0 && (
+        <SettingsSection icon={Package} title="Gateway endpoints">
+          <div className="grid gap-3 py-1 text-[0.8rem]">
+            <p className="text-muted-foreground">Agent routes use Hermes sessions and tools. Raw routes forward only chat completions to the registered local runtime.</p>
+            <div className="flex flex-wrap items-end gap-2">
+              <label className="grid gap-1"><span className="text-muted-foreground">Alias</span><input className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2" onChange={event => setGatewayAlias(event.target.value)} placeholder="my-local-model" value={gatewayAlias} /></label>
+              <label className="grid gap-1"><span className="text-muted-foreground">Endpoint</span><select className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2" onChange={event => setGatewayMode(event.target.value as 'agent' | 'raw')} value={gatewayMode}><option value="agent">Hermes agent</option><option value="raw">Raw model</option></select></label>
+              <Button disabled={!gatewayAlias.trim() || !advancedModelId} onClick={() => void handlePublishGateway()} size="sm">Publish</Button>
+            </div>
+            {gatewayRoutes.length > 0 && <div className="flex flex-wrap gap-2">{gatewayRoutes.map(route => <span className="inline-flex items-center gap-1" key={`${route.mode}:${route.alias}`}><Pill>{route.alias} · {route.mode} · {route.model_id}</Pill><Button aria-label={`Remove ${route.alias} gateway route`} onClick={() => void handleUnpublishGateway(route.alias)} size="icon" variant="ghost"><Trash2 className="size-3.5" /></Button></span>)}</div>}
+            <p className="text-[0.72rem] text-muted-foreground">Saving a route does not restart the gateway or change your default/fallback model. Restart the selected gateway when you are ready to activate it.</p>
+          </div>
+        </SettingsSection>
+      )}
 
       {/* ── Models ── */}
       <SettingsSection icon={Download} meta={`${catalog.length}`} title={copy.modelsTitle}>

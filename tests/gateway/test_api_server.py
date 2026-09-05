@@ -2508,6 +2508,58 @@ class TestModelRoutesParsing:
         assert adapter._model_routes == {}
 
 
+class TestRawLocalModelRoutes:
+    def test_raw_route_accepts_only_llamacpp_and_never_a_configured_url(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"raw_model_routes": {
+            "local": {"model": "Qwen-Local", "provider": "llamacpp", "base_url": "https://bad.example"},
+            "bad": {"model": "other", "provider": "openrouter"},
+        }}))
+        assert adapter._raw_model_routes == {"local": {"model": "Qwen-Local", "provider": "llamacpp"}}
+
+    @pytest.mark.asyncio
+    async def test_models_endpoint_advertises_raw_alias_without_credentials(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"raw_model_routes": {
+            "local": {"model": "Qwen-Local", "provider": "llamacpp"},
+        }}))
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.get("/v1/models")
+            data = await response.json()
+            raw = next(item for item in data["data"] if item["id"] == "local")
+            assert raw["root"] == "Qwen-Local"
+
+    @pytest.mark.asyncio
+    async def test_raw_alias_bypasses_agent_concurrency_and_dispatches_proxy(self, monkeypatch):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"raw_model_routes": {
+            "local": {"model": "Qwen-Local", "provider": "llamacpp"},
+        }}))
+        captured = {}
+
+        async def proxy(request, body, route):
+            captured.update(body=body, route=route)
+            return web.json_response({"proxied": True})
+
+        monkeypatch.setattr(adapter, "_proxy_raw_chat_completion", proxy)
+        monkeypatch.setattr(adapter, "_concurrency_limited_response", lambda: pytest.fail("agent limiter called"))
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post("/v1/chat/completions", json={
+                "model": "local", "messages": [{"role": "user", "content": "hello"}]})
+            assert response.status == 200
+        assert captured["route"]["model"] == "Qwen-Local"
+
+    def test_raw_proxy_accepts_only_a_bare_ipv4_loopback_origin(self):
+        from gateway.platforms.api_server import _is_managed_loopback_url
+
+        assert _is_managed_loopback_url("http://127.0.0.1:18434")
+        assert _is_managed_loopback_url("http://127.0.0.1:18434/")
+        assert not _is_managed_loopback_url("http://127.0.0.1:18434@remote.example")
+        assert not _is_managed_loopback_url("http://localhost:18434")
+        assert not _is_managed_loopback_url("https://127.0.0.1:18434")
+        assert not _is_managed_loopback_url("http://127.0.0.1:18434/v1")
+
+
+
 class TestModelRoutesModelsEndpoint:
 
     @pytest.mark.asyncio

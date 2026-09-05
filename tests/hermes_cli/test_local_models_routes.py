@@ -206,6 +206,33 @@ def test_delete_model(client):
     assert client.delete("/api/local-models/models/Doomed").status_code == 404
 
 
+def test_gateway_route_publish_and_unpublish_is_profile_config_only(client):
+    """Publishing records a typed alias but never restarts a gateway from a settings request."""
+    from hermes_cli.local_runtime.bootstrap import models_dir
+
+    _write_fake_gguf(models_dir() / "Gateway-Model.gguf")
+    created = client.post("/api/local-models/gateway-routes", json={
+        "alias": "my-local", "model_id": "Gateway-Model", "mode": "raw"})
+    assert created.status_code == 200
+    assert created.json()["restart_required"] is True
+    listed = client.get("/api/local-models/gateway-routes")
+    assert listed.status_code == 200
+    assert listed.json()["routes"] == [{"alias": "my-local", "model_id": "Gateway-Model", "mode": "raw"}]
+    assert client.delete("/api/local-models/gateway-routes/my-local").status_code == 200
+    assert client.get("/api/local-models/gateway-routes").json()["routes"] == []
+
+
+def test_gateway_route_rejects_alias_collision_between_agent_and_raw(client):
+    from hermes_cli.local_runtime.bootstrap import models_dir
+
+    _write_fake_gguf(models_dir() / "Gateway-Model.gguf")
+    assert client.post("/api/local-models/gateway-routes", json={
+        "alias": "shared", "model_id": "Gateway-Model", "mode": "agent"}).status_code == 200
+    duplicate = client.post("/api/local-models/gateway-routes", json={
+        "alias": "shared", "model_id": "Gateway-Model", "mode": "raw"})
+    assert duplicate.status_code == 409
+
+
 # ── runtime install ──────────────────────────────────────────
 
 

@@ -163,11 +163,13 @@ def spill_overrides(profile: ModelProfile) -> list[str]:
 
 def launch_args(profile: ModelProfile, decision: WindowDecision, *, flash_attention: bool = True,
                 mtp_capable: bool = False, mtp_draft_depth: int = 3, uma: bool = False,
-                mtp_prefill: bool = False) -> list[str]:
+                mtp_prefill: bool = False, slots: int = 1, kv_cache: str = "q8_0") -> list[str]:
     """Per-model launch flags from a window decision. Explicit -c puts fit into
     spill-weights-and-hold-ctx; q8 KV cache wherever flash attention exists; -ot placement on
     spilled configs — DISCRETE cards only."""
-    args = ["-c", str(decision.window)]
+    # llama-server divides aggregate context across --parallel slots. ``decision.window`` is
+    # the per-request promise, so reserve context for every requested slot here.
+    args = ["-c", str(decision.window * slots), "--parallel", str(slots)]
     if mtp_capable:
         args += ["--spec-type", "draft-mtp", "--spec-draft-n-max", str(mtp_draft_depth),
                  "--backend-sampling", "--spec-draft-backend-sampling"]
@@ -176,7 +178,7 @@ def launch_args(profile: ModelProfile, decision: WindowDecision, *, flash_attent
     else:
         args += ["-b", "2048", "-ub", "2048"]
     if flash_attention:
-        args += ["-ctk", "q8_0", "-ctv", "q8_0", "-fa", "on"]
+        args += ["-ctk", kv_cache, "-ctv", kv_cache, "-fa", "on"]
     if decision.spilled and not uma:
         args += spill_overrides(profile)
     return args

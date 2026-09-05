@@ -40,8 +40,8 @@ import {
 import { isWebUrl, resolveDomTarget } from './target'
 
 /** Marks a surface that owns PLAIN right-clicks itself (the user-message
- *  reaction bubble). Owned targets inside it — links, images, editables,
- *  selections — still get the app menu. */
+ *  reaction bubble and the Star Map canvas). Owned targets inside it — links,
+ *  images, editables, selections — still get the app menu. */
 export const CONTEXT_MENU_SKIP_ATTR = 'data-context-menu-skip'
 
 const LOOPBACK_HOST_RE = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)$/i
@@ -648,8 +648,8 @@ export function AppContextMenu() {
       const target = resolveDomTarget(element)
       const owned = Boolean(target.linkUrl || target.onImage || target.editable || target.selectionText)
 
-      // The reaction bubble owns bare right-clicks; a link inside it still
-      // opens the link menu.
+      // Skip-marked surfaces own bare right-clicks; owned DOM targets inside
+      // them still open the corresponding app menu.
       if (!owned && element?.closest(`[${CONTEXT_MENU_SKIP_ATTR}]`)) {
         return
       }

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import gateway.run as gateway_run
+from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
 from agent.i18n import t
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.restart import (
@@ -280,6 +281,7 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
     monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
     monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
     monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, "1")
     monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
 
     import hermes_cli._subprocess_compat as subprocess_compat
@@ -302,6 +304,7 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
     cmd, kwargs = popen_calls[0]
     assert cmd[-3:] == ["hermes", "gateway", "restart"]
     assert kwargs["env"].get("_HERMES_GATEWAY") is None
+    assert kwargs["env"].get(DELEGATED_CHILD_ENV_MARKER) is None
     assert kwargs["env"]["VIRTUAL_ENV"] == str(venv_dir)
     assert str(site_packages) in kwargs["env"]["PYTHONPATH"].split(gateway_run.os.pathsep)
     assert kwargs["stdout"] is subprocess.DEVNULL
@@ -351,6 +354,37 @@ async def test_windows_detached_restart_watcher_keeps_console_python(monkeypatch
     assert cmd[0] == r"C:\venv\Scripts\python.exe"
     assert cmd[-3:] == ["hermes", "gateway", "restart"]
     assert kwargs["creationflags"] == 0x08000200
+
+
+@pytest.mark.skipif(gateway_run.sys.platform == "win32", reason="POSIX watcher path")
+@pytest.mark.asyncio
+async def test_posix_detached_restart_scrubs_process_role_markers(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, "1")
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name: "/usr/bin/setsid" if name == "setsid" else None,
+    )
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return MagicMock()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    cmd, kwargs = popen_calls[0]
+    assert cmd[:2] == ["/usr/bin/setsid", "bash"]
+    assert kwargs["env"].get("_HERMES_GATEWAY") is None
+    assert kwargs["env"].get(DELEGATED_CHILD_ENV_MARKER) is None
 
 
 # ── Shutdown notification tests ──────────────────────────────────────

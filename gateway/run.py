@@ -5158,6 +5158,13 @@ async def _start_gateway_shutdown_tail(
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """Start the gateway and run until interrupted; False if it failed to start (non-zero exit so
     systemd can auto-restart). ``replace`` kills any existing instance first (avoids restart-loop deadlocks)."""
+    # A gateway is an authoritative long-lived role. It must not inherit stale
+    # delegate_task lineage from the shell, a terminal snapshot, or a restart
+    # watcher. Real delegated subprocesses retain the marker for their full
+    # lifetime so repeated mutation guards remain fail-closed.
+    from agent.delegation_context import clear_delegated_child_process_context
+    clear_delegated_child_process_context()
+
     # Set here (not at import) so incidental gateway.run imports from CLI code don't poison it.
     os.environ["HERMES_EXEC_ASK"] = "1"
 

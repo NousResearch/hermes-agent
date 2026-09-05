@@ -28,6 +28,7 @@ _WORKTREE = Path(__file__).resolve().parents[2]
 if str(_WORKTREE) not in sys.path:
     sys.path.insert(0, str(_WORKTREE))
 
+from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
@@ -258,6 +259,7 @@ class TestWorkerSpawnEnv:
 
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
         kb.create_board("spawntest")
+        monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, "1")
 
         task = kb.Task(
             id="t_abc",
@@ -282,6 +284,7 @@ class TestWorkerSpawnEnv:
         env = captured["env"]
         assert env["HERMES_KANBAN_BOARD"] == "spawntest"
         assert env["HERMES_KANBAN_TASK"] == "t_abc"
+        assert DELEGATED_CHILD_ENV_MARKER not in env
         # DB path should match the per-board DB, not the legacy default.
         expected_db = fresh_home / "kanban" / "boards" / "spawntest" / "kanban.db"
         assert env["HERMES_KANBAN_DB"] == str(expected_db)
@@ -343,6 +346,3 @@ class TestCLI:
         assert titlesA == ["Task A"]
         assert titlesB == ["Task B"]
         assert titlesD == []
-
-
-

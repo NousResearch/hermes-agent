@@ -2189,6 +2189,12 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     for key in _VAR_MAP:
         env.pop(key, None)
 
+    # Dispatcher workers own the task identity injected below; they are not
+    # descendants of whichever conversation launched the dispatcher.
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+
+    env.pop(DELEGATED_CHILD_ENV_MARKER, None)
+
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml:
     # without it the child's get_hermes_home() falls back to the DEFAULT
     # profile root because `hermes -p` applies its override before

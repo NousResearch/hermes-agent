@@ -85,6 +85,46 @@ class _SuccessfulAdapter(BasePlatformAdapter):
 
 
 @pytest.mark.asyncio
+async def test_start_gateway_clears_stale_delegated_child_marker_before_boot(
+    monkeypatch,
+):
+    """Gateway startup is a role boundary, while importing its module is not."""
+    import os
+
+    from agent.delegation_context import (
+        DELEGATED_CHILD_ENV_MARKER,
+        delegated_child_context,
+        is_delegated_child_process_context,
+    )
+    from gateway.run import start_gateway
+
+    class BootObserved(RuntimeError):
+        pass
+
+    monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, "1")
+
+    def observe_first_boot_step():
+        assert DELEGATED_CHILD_ENV_MARKER not in os.environ
+        raise BootObserved
+
+    monkeypatch.setattr(
+        "gateway.code_skew.record_boot_fingerprint",
+        observe_first_boot_step,
+    )
+
+    with delegated_child_context():
+        assert is_delegated_child_process_context() is True
+
+        with pytest.raises(BootObserved):
+            await start_gateway(config=GatewayConfig(), replace=False, verbosity=None)
+
+        assert is_delegated_child_process_context() is False
+
+    assert DELEGATED_CHILD_ENV_MARKER not in os.environ
+    assert is_delegated_child_process_context() is False
+
+
+@pytest.mark.asyncio
 async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, tmp_path):
     """Verbosity != None must not crash with NameError on RedactingFormatter (#8044)."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -463,8 +503,6 @@ async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_
         await start_gateway(config=GatewayConfig(), replace=False, verbosity=0)
 
     assert exc_info.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
-
-
 class _ForeignTokenLockAdapter(BasePlatformAdapter):
     """Connects exactly like telegram/discord do: production
     ``_acquire_platform_lock`` first, which emits ``{scope}_lock`` with

@@ -24,7 +24,7 @@ logger = logging.getLogger("tools.approval")
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("acknowledged", "cancelled", "data", "event", "reason", "result", "settle")
+    __slots__ = ("acknowledged", "cancelled", "created_at_ns", "data", "event", "reason", "result", "settle")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
@@ -35,6 +35,8 @@ class _ApprovalEntry:
         # another client): the tui_gateway withdraws its open server→client request through it.
         self.settle = None
         self.result: str | None = None  # "once"|"session"|"always"|"deny"
+        # FIFO across a session's task-isolated queues: plain ``/approve`` resolves the oldest of all.
+        self.created_at_ns = time.monotonic_ns()
         # Free-text reason from ``/deny <reason>`` so the agent can adapt, not just hear "denied".
         self.reason: str | None = None
         # Why the prompt was withdrawn with nobody answering (interrupt cause, session teardown);
@@ -169,7 +171,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         register_prepared_approval(session_key, entry)
         _approval._gateway_queues.setdefault(session_key, []).append(entry)
 
-    def _drop_entry(state: str) -> str | None:
+    def _drop_entry(state: str, outcome: str | None = None) -> str | None:
         """Leave the queue and return the choice committed so far. Reading ``entry.result`` and
         removing the entry are one critical section under the approval lock: ``resolve_gateway_approval``
         commits under the same lock, so a choice that landed after the deadline check but before this
@@ -182,6 +184,10 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
                 queue.remove(entry)
             if not queue:
                 _approval._gateway_queues.pop(session_key, None)
+            if outcome:
+                resolution_key = (session_key, entry.data["request_id"])
+                if resolution_key not in _approval._gateway_resolution_outcomes:
+                    _approval._record_gateway_resolution_locked(session_key, entry, outcome)
             settle, entry.settle = entry.settle, None
         if settle is not None:
             # ``request.cancel`` carries a RequestCancelReason: a choice committed from another surface is
@@ -207,7 +213,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             approval_published()
         except Exception as exc:
             logger.warning("Gateway approval notify failed: %s", exc)
-            _drop_entry("notify_failed")
+            _drop_entry("notify_failed", "notify_failed")
             _ctx._fire_approval_hook("post_approval_response", **payload, choice="notify_failed")
             human.outcome = "notify_failed"
             return {"resolved": False, "choice": None, "notify_failed": True}
@@ -219,7 +225,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             # Coalesced followers wake with the cause instead of a deny nobody issued.
             entry.cancelled = cancelled
             entry.event.set()
-        choice = _drop_entry(state)
+        choice = _drop_entry(state, entry.result or ("expired" if state == "timeout" else None))
         if state == "interrupted":
             # Our own decision stays a fail-closed deny.
             choice = "deny"

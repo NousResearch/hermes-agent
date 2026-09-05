@@ -330,6 +330,18 @@ class GatewaySessionCommandsMixin:
             # A no-chat_id DM is keyed PURELY on the participant (alt-keyed caller fails closed).
             if caller_keys_on_alt and not (row_chat and caller_chat):
                 return False
+            # A DM WITH a chat_id is keyed purely on chat_id (build_session_key appends chat_id, never
+            # the participant, for DMs that carry one) and thread equality is proven by origin above.
+            # A p2p DM is 1:1, so an equal non-blank chat_id proves the same owner even when the
+            # persisted user_id is a stale snapshot from a DIFFERENT id namespace — Feishu flips
+            # source.user_id from the app-scoped open_id to the tenant-scoped user_id once the contacts
+            # scope is granted, and reset_session persists the pre-grant open_id, so row_uid never
+            # equals the runtime caller_uid (#89123). This mirrors the live-origin _same_origin_chat
+            # branch, which already treats an equal non-empty DM chat_id as sufficient.
+            if row_chat and caller_chat and row_chat == caller_chat:
+                return True
+            # No chat_id on one/both sides: keyed on the participant; require the same owner AND the
+            # same (possibly-blank) chat_id, exactly as before.
             return bool(row_uid) and row_uid == caller_uid and row_chat == caller_chat
         # Non-DM: both sides must carry chat_id and match (legacy NULL-chat rows fail closed).
         if not (row_chat and caller_chat and row_chat == caller_chat):

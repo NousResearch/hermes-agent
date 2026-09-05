@@ -15,7 +15,7 @@ def _settled(payload) -> bool:
 
 
 CORRUPTING = [
-    {"cmd": "psql; export MY_TOKEN=xyz"},
+    {"cmd": "psql; export DB_PASSWORD=xyz"},
     {"hdr": "x-api-key: abc123"},
     {"backslash": "path\\to\\OPENAI_API_KEY=sk-abcdefghijklmnopqrst"},
 ]
@@ -37,10 +37,7 @@ def test_result_is_a_fixed_point_of_the_authoritative_redactor(payload):
 
 
 @pytest.mark.parametrize("payload", CORRUPTING)
-def test_secret_is_removed_when_whole_document_redaction_corrupts_json(payload):
-    with pytest.raises(json.JSONDecodeError):
-        json.loads(redact_sensitive_text(json.dumps(payload), force=True))
-
+def test_secret_is_removed_for_delimiter_sensitive_payloads(payload):
     out = redact_structured(payload)
 
     for key, raw in payload.items():
@@ -79,6 +76,15 @@ def test_benign_values_pass_through_verbatim():
     }
 
     assert redact_structured(payload) == payload
+
+
+def test_nested_secret_fields_keep_parent_credential_context():
+    payload = {"password": ["hunter2horse", {"value": "another-password"}],
+               "safe": {"value": "keep"}}
+    out = redact_structured(payload)
+    assert "hunter2horse" not in json.dumps(out)
+    assert "another-password" not in json.dumps(out)
+    assert out["safe"] == payload["safe"]
 
 
 def test_scalar_types_are_preserved():

@@ -81,6 +81,34 @@ def test_reads_do_not_take_writer_lock(db):
 
 
 
+@pytest.mark.requires_wal
+def test_background_state_reads_never_touch_shared_writer(db):
+    """Background pollers must not race transcript writes on ``_conn``."""
+    db.try_acquire_compression_lock("s1", "holder", ttl_seconds=60)
+    assert db.request_handoff("s1", "telegram") is True
+    # Open this thread's read connection before poisoning the shared writer.
+    assert db._get_read_conn() is not None
+
+    writer = db._conn
+
+    class PoisonWriter:
+        def execute(self, *_args, **_kwargs):
+            raise AssertionError("read touched shared writer connection")
+
+    db._conn = PoisonWriter()
+    try:
+        assert db.get_compression_lock_holder("s1") == "holder"
+        db.clear_session_activity_labels("s1")
+        assert db.get_handoff_state("s1") == {
+            "state": "pending",
+            "platform": "telegram",
+            "error": None,
+        }
+        assert [row["id"] for row in db.list_pending_handoffs()] == ["s1"]
+    finally:
+        db._conn = writer
+
+
 def test_read_your_writes(db):
     """A fresh committed write must be visible to the read connection."""
     db.append_message("s1", role="user", content="zanzibar checkpoint")

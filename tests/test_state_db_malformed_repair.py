@@ -23,11 +23,10 @@ from pathlib import Path
 import pytest
 
 import hermes_state
-from hermes_state import (
-    SessionDB,
-    is_malformed_db_error,
-    repair_state_db_schema,
-)
+import hermes_state_repair
+import hermes_state_wal
+from hermes_state import SessionDB, is_malformed_db_error
+from hermes_state_repair import repair_state_db_schema
 
 
 def _build_healthy_db(db_path: Path) -> str:
@@ -70,6 +69,26 @@ def test_duplicate_fts_makes_every_statement_fail(tmp_path):
     assert is_malformed_db_error(exc_info.value)
 
 
+def test_generic_malformed_open_does_not_attempt_schema_surgery(
+    tmp_path, monkeypatch
+):
+    """A generic SQLITE_CORRUPT error has no schema/FTS provenance."""
+    db_path = tmp_path / "state.db"
+    repair_calls = []
+
+    def _generic_corruption(*_args, **_kwargs):
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    monkeypatch.setattr(hermes_state, "apply_wal_with_fallback", _generic_corruption)  # SessionDB open path
+    monkeypatch.setattr(
+        hermes_state, "repair_state_db_schema",
+        lambda *args, **kwargs: repair_calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(sqlite3.DatabaseError, match="disk image is malformed"):
+        SessionDB(db_path=db_path)
+
+    assert repair_calls == []
 
 
 def test_repaired_db_search_works(tmp_path):
@@ -167,7 +186,7 @@ def _corrupt_fts_shadow_segments(db_path: Path) -> None:
 
 def test_fts_read_corruption_repaired_in_place(tmp_path):
     """``repair_state_db_schema`` rebuilds the FTS index so reads resume."""
-    from hermes_state import _db_opens_cleanly
+    from hermes_state_repair import _db_opens_cleanly
 
     db_path = tmp_path / "state.db"
     _build_healthy_db(db_path)
@@ -254,7 +273,7 @@ def _corrupt_fts_index_data(db_path: Path) -> None:
 
 def test_fts_write_corruption_detected_by_write_probe(tmp_path):
     """_db_opens_cleanly's rolled-back write probe flags FTS write corruption."""
-    from hermes_state import _db_opens_cleanly
+    from hermes_state_repair import _db_opens_cleanly
 
     db_path = tmp_path / "state.db"
     _build_healthy_db(db_path)
@@ -275,7 +294,7 @@ def test_fts_write_corruption_detected_by_write_probe(tmp_path):
 
 def test_fts_write_corruption_repaired_in_place(tmp_path):
     """repair_state_db_schema rebuilds the FTS index; reads + writes resume."""
-    from hermes_state import _db_opens_cleanly
+    from hermes_state_repair import _db_opens_cleanly
 
     db_path = tmp_path / "state.db"
     _build_healthy_db(db_path)
@@ -359,7 +378,7 @@ def test_repair_rebuilds_stale_btree_indexes(tmp_path):
     _corrupt_btree_index(db_path, "idx_messages_session")
 
     # The real detector must see the real corruption...
-    reason = hermes_state._db_opens_cleanly(db_path)
+    reason = hermes_state_repair._db_opens_cleanly(db_path)
     assert reason is not None
     assert "wrong # of entries in index idx_messages_session" in reason
 
@@ -370,7 +389,7 @@ def test_repair_rebuilds_stale_btree_indexes(tmp_path):
 
     # Post-repair the DB is genuinely healthy: detector and raw
     # integrity_check both agree, and the repaired index answers queries.
-    assert hermes_state._db_opens_cleanly(db_path) is None
+    assert hermes_state_repair._db_opens_cleanly(db_path) is None
     raw = sqlite3.connect(str(db_path))
     assert raw.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     n = raw.execute(
@@ -460,7 +479,7 @@ def test_repair_skips_surgery_while_another_process_holds_the_lock(
     # No surgery ran: no backup was taken and the DB is still malformed.
     assert report["backup_path"] is None
     assert not list(tmp_path.glob("state.db.malformed-backup-*"))
-    assert hermes_state._db_opens_cleanly(db_path) is not None
+    assert hermes_state_repair._db_opens_cleanly(db_path) is not None
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock test")
@@ -482,7 +501,7 @@ def test_repair_reports_success_when_the_holder_already_healed_the_db(
 _REPAIR_SCRIPT = """
 import sys, json
 sys.path.insert(0, {root!r})
-from hermes_state import repair_state_db_schema
+from hermes_state_repair import repair_state_db_schema
 print(json.dumps(repair_state_db_schema({db!r})), flush=True)
 """
 
@@ -576,8 +595,7 @@ def test_backup_refusal_hard_stops_the_repair(tmp_path, monkeypatch):
     original_bytes = db_path.read_bytes()
 
     monkeypatch.setattr(
-        hermes_state,
-        "_backup_db_file",
+        hermes_state_repair, "_backup_db_file",
         lambda p: (None, "a connection to it is still open in this process"),
     )
 
@@ -589,7 +607,7 @@ def test_backup_refusal_hard_stops_the_repair(tmp_path, monkeypatch):
     assert "still open" in report["error"]
     # No mutating strategy ran: the damaged source bytes are untouched.
     assert db_path.read_bytes() == original_bytes
-    assert hermes_state._db_opens_cleanly(db_path) is not None
+    assert hermes_state_repair._db_opens_cleanly(db_path) is not None
 
 
 def test_backup_copy_failure_hard_stops_the_repair(tmp_path, monkeypatch):
@@ -599,8 +617,7 @@ def test_backup_copy_failure_hard_stops_the_repair(tmp_path, monkeypatch):
     _corrupt_duplicate_fts(db_path)
 
     monkeypatch.setattr(
-        hermes_state,
-        "_backup_db_file",
+        hermes_state_repair, "_backup_db_file",
         lambda p: (None, "backup copy failed: [Errno 28] No space left on device"),
     )
 
@@ -622,3 +639,239 @@ def test_backup_false_still_skips_backup_and_repairs(tmp_path):
     assert report["repaired"] is True
     assert report["backup_path"] is None
     assert not list(tmp_path.glob("state.db.malformed-backup-*"))
+
+
+# ---------------------------------------------------------------------------
+# Journal-mode restore after surgery (#89674): corruption drops the WAL bit
+# from the header, the repair strategies rebuild the file in the default
+# (delete) mode, and nothing used to record the flip. The configured
+# database.journal_mode must be re-applied, with a WARNING naming it.
+# ---------------------------------------------------------------------------
+
+
+def _mode_of(db_path) -> str:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        return str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+    finally:
+        conn.close()
+
+
+def _configure_journal_mode(monkeypatch, tmp_path, mode) -> None:
+    import yaml
+
+    home = tmp_path / "hermes-home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text(
+        yaml.safe_dump({"database": {"journal_mode": mode}}), encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda **kwargs: False,
+    )
+
+
+def test_repair_restores_configured_wal_after_surgery(
+    tmp_path, caplog, monkeypatch
+):
+    """A repaired file left in delete mode must return to the configured WAL.
+
+    Simulates the reported sequence: corruption drops the WAL bit (the file
+    reads back as delete), surgery heals the schema, and the restore — now
+    resolved through the canonical apply_wal_with_fallback — brings the
+    store back to database.journal_mode. The duplicate-FTS damage makes the
+    pre-surgery probe fail, so no before/after comparison WARNING fires;
+    the canonical path's own logging covers the restore."""
+    import logging
+
+    db_path = tmp_path / "state.db"
+    _configure_journal_mode(monkeypatch, tmp_path, "wal")
+    _build_healthy_db(db_path)
+    assert _mode_of(db_path) == "wal"
+    # Downgrade while the file is still healthy (the damaged file rejects
+    # every statement — see test_duplicate_fts_makes_every_statement_fail),
+    # simulating the header state the reporter's corruption storm left: the
+    # WAL bit is gone and the file reads back as delete.
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.close()
+    assert _mode_of(db_path) == "delete"
+    _corrupt_duplicate_fts(db_path)
+
+    with caplog.at_level(logging.WARNING, logger="hermes_state"):
+        report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is True
+    assert _mode_of(db_path) == "wal"
+
+
+def test_repair_restore_matches_canonical_on_vulnerable_sqlite(
+    tmp_path, monkeypatch
+):
+    """The restore must go through the WAL-reset gate, not around it.
+
+    On a WAL-reset-vulnerable SQLite (the reporter ran 3.50.4), the
+    canonical open path keeps a rebuilt non-WAL file in DELETE — a freshly
+    repaired file IS a new database. The restore used to switch WAL
+    directly and diverged from the front door; going through
+    apply_wal_with_fallback must converge with the canonical behaviour."""
+    db_path = tmp_path / "state.db"
+    _configure_journal_mode(monkeypatch, tmp_path, "wal")
+    monkeypatch.setattr(
+        hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda **kwargs: True
+    )
+    _build_healthy_db(db_path)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.close()
+    _corrupt_duplicate_fts(db_path)
+
+    report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is True
+    # Same outcome as the canonical open path on this runtime: DELETE.
+    assert _mode_of(db_path) == "delete"
+
+
+def test_repair_logs_mode_change_when_probe_succeeded(
+    tmp_path, caplog, monkeypatch
+):
+    """When the pre-surgery probe read the file (header intact), the
+    post-restore WARNING names the before/after modes — the #89393 signal,
+    arriving through the repair door instead of the open door."""
+    import logging
+    from unittest.mock import patch
+
+    db_path = tmp_path / "state.db"
+    _configure_journal_mode(monkeypatch, tmp_path, "wal")
+    _build_healthy_db(db_path)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.close()
+    _corrupt_duplicate_fts(db_path)
+
+    with (
+        patch.object(
+            hermes_state_repair, "_probe_journal_mode_for_repair", return_value="delete"
+        ),
+        caplog.at_level(logging.WARNING, logger="hermes_state"),
+    ):
+        report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is True
+    assert report["journal_mode_before"] == "delete"
+    assert _mode_of(db_path) == "wal"
+    assert any(
+        "changed journal_mode" in r.getMessage() for r in caplog.records
+    ), f"expected the mode flip to be logged; got: {[r.getMessage() for r in caplog.records]}"
+
+
+def test_repair_logs_nothing_when_mode_already_matches(
+    tmp_path, caplog, monkeypatch
+):
+    """FTS-only corruption keeps the WAL bit; the restore is then a no-op and
+    must not emit a mode-flip WARNING."""
+    import logging
+
+    db_path = tmp_path / "state.db"
+    _configure_journal_mode(monkeypatch, tmp_path, "wal")
+    _build_healthy_db(db_path)
+    _corrupt_duplicate_fts(db_path)
+
+    with caplog.at_level(logging.WARNING, logger="hermes_state"):
+        report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is True
+    assert _mode_of(db_path) == "wal"
+    assert not any(
+        "changed journal_mode" in r.getMessage() for r in caplog.records
+    )
+
+
+def test_repair_restore_failure_is_nonfatal_and_logged(
+    tmp_path, caplog, monkeypatch
+):
+    """When the canonical restore path raises (locked/unsupported fs), the
+    repair result stands and a WARNING is logged — never an exception out
+    of the repair path."""
+    import logging
+    from unittest.mock import patch
+
+    db_path = tmp_path / "state.db"
+    _configure_journal_mode(monkeypatch, tmp_path, "wal")
+    _build_healthy_db(db_path)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.close()
+    _corrupt_duplicate_fts(db_path)
+
+    def _refused(conn, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    with (
+        patch.object(hermes_state_wal, "apply_wal_with_fallback", _refused),
+        caplog.at_level(logging.WARNING, logger="hermes_state"),
+    ):
+        report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is True
+    assert _mode_of(db_path) == "delete"
+    assert any(
+        "journal-mode restore failed" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_repair_honors_configured_delete_mode(tmp_path, monkeypatch):
+    """An explicit database.journal_mode=delete store stays delete after
+    repair — the restore applies the operator's setting, not a hard-coded
+    WAL."""
+    db_path = tmp_path / "state.db"
+    _configure_journal_mode(monkeypatch, tmp_path, "delete")
+    _build_healthy_db(db_path)
+    assert _mode_of(db_path) == "delete"
+    _corrupt_duplicate_fts(db_path)
+
+    report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is True
+    assert _mode_of(db_path) == "delete"
+
+
+# ── #98924 companion: recovery surface beyond the probe fix (#98935) ───────
+
+# The probe itself is fixed in #98935; this test must not depend on it.
+def test_fts_recovery_includes_vtables_that_raise_decode_errors(tmp_path):
+    """Drop-and-recreate recovery must include corrupt vtables whose probe
+    raises UnicodeDecodeError, not only sqlite3.DatabaseError (#98924)."""
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    sid = db.create_session(session_id=str(uuid.uuid4()), source="cli")
+    db.append_message(sid, role="user", content="searchable needle")
+    cursor = db._conn.cursor()
+
+    original_probe = db._fts_table_probe
+
+    def _decode_boom(probe_cursor, table_name):
+        if table_name == "messages_fts_trigram":
+            raise UnicodeDecodeError("utf-8", b"\x81", 0, 1, "invalid start byte")
+        return original_probe(probe_cursor, table_name)
+
+    db._fts_table_probe = _decode_boom
+    try:
+        assert db._recover_stale_fts(cursor, legacy=False) is True
+    finally:
+        db.close()
+
+    check = sqlite3.connect(str(db_path))
+    try:
+        names = {
+            row[0]
+            for row in check.execute(
+                "SELECT name FROM sqlite_master WHERE name LIKE 'messages_fts%'"
+            )
+        }
+    finally:
+        check.close()
+    assert "messages_fts" in names
+    assert "messages_fts_trigram" in names

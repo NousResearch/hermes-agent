@@ -139,7 +139,7 @@ describe('truncateSubmitParams', () => {
   })
 
   it('drops renderer-synthetic message ids but keeps durable row ids', () => {
-    // chat-messages.ts: `${timestamp}-${index}-${role}`
+    // chat-messages/hydration.ts: `${timestamp}-${index}-${role}`
     expect(truncateSubmitParams(1, '1723456789-0-user', 456)).toEqual({
       confirm_truncate: true,
       truncate_before_user_ordinal: 1,
@@ -162,6 +162,21 @@ describe('survivorRowIdsFrom', () => {
 
   it('keeps integer ids and nulls anything else', () => {
     expect(survivorRowIdsFrom({ survivor_user_row_ids: [7, null, 9.5, '11', 12] })).toEqual([7, null, null, null, 12])
+  })
+
+  it('prefers the explicit old-to-new row id map', () => {
+    const parsed = survivorRowIdsFrom({
+      survivor_user_row_ids: [100, 200],
+      survivor_row_id_map: { '11': 101, '21': 201, '31': null }
+    })
+
+    expect(parsed).toEqual(
+      new Map([
+        [11, 101],
+        [21, 201],
+        [31, null]
+      ])
+    )
   })
 })
 
@@ -216,6 +231,30 @@ describe('rebindSurvivorRowIds', () => {
     const messages = [user('u0', 7)]
 
     expect(rebindSurvivorRowIds(messages, [7])[0]).toBe(messages[0])
+  })
+
+  it('rebinds a paged tail by previous row id instead of global position', () => {
+    const messages = [
+      user('archived-u250', 800),
+      user('tail-u298', 901),
+      assistant('tail-a298', 902),
+      user('edited', 903)
+    ]
+
+    const rebound = rebindSurvivorRowIds(
+      messages,
+      new Map([
+        [901, 1001],
+        [902, 1002],
+        [903, null]
+      ])
+    )
+
+    expect(rebound[0]).toBe(messages[0])
+    expect(rebound[0].rowId).toBe(800)
+    expect(rebound[1].rowId).toBe(1001)
+    expect(rebound[2].rowId).toBe(1002)
+    expect(rebound[3].rowId).toBeUndefined()
   })
 })
 
@@ -475,22 +514,105 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
     expect(submit?.params?.confirm_truncate).toBeUndefined()
   })
 
-  it('leaves a bound durable rowId untouched (no extra history call)', async () => {
+  it('leaves a bound durable rowId untouched (no extra history call) and drops the client ordinal', async () => {
     const calls: Call[] = []
 
-    await runRewindSubmit(makeGateway(calls), 'sid', 'fixed prompt', 1, undefined, false, undefined, 13, 'typo prompt')
+    await runRewindSubmit(
+      makeGateway(calls),
+      'sid',
+      'fixed prompt',
+      1,
+      undefined,
+      false,
+      undefined,
+      13,
+      'typo prompt',
+      [11, 12, 13]
+    )
 
     expect(calls.some(call => call.method === 'session.history')).toBe(false)
 
     const submit = calls.find(call => call.method === 'prompt.submit')
 
     expect(submit?.params?.truncate_before_row_id).toBe(13)
-    expect(submit?.params?.truncate_before_user_ordinal).toBe(1)
+    expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
+    expect(submit?.params?.confirm_empty_truncate).toBe(true)
+    expect(submit?.params?.rebind_survivor_row_ids).toEqual([11, 12, 13])
+  })
+
+  it('drops the client ordinal whenever a durable row id is present, including a complete live transcript (#88082, #89244)', async () => {
+    const calls: Call[] = []
+
+    await runRewindSubmit(
+      makeGateway(calls),
+      'sid',
+      'fixed prompt',
+      1, // display-lineage / window-relative — not the gateway tip
+      undefined,
+      false,
+      undefined,
+      13,
+      'typo prompt'
+    )
+
+    // No content-resolution read needed — the bubble already holds a durable id.
+    expect(calls.some(call => call.method === 'session.history')).toBe(false)
+
+    const submit = calls.find(call => call.method === 'prompt.submit')
+
+    expect(submit?.params?.confirm_truncate).toBe(true)
+    expect(submit?.params?.truncate_before_row_id).toBe(13)
+    expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
+  })
+
+  it('drops the client ordinal when the cut is addressed by durable message id alone', async () => {
+    const calls: Call[] = []
+
+    await runRewindSubmit(
+      makeGateway(calls),
+      'sid',
+      'fixed prompt',
+      1,
+      'durable-platform-msg-1',
+      false,
+      undefined,
+      undefined,
+      'typo prompt'
+    )
+
+    const submit = calls.find(call => call.method === 'prompt.submit')
+
+    expect(submit?.params?.confirm_truncate).toBe(true)
+    expect(submit?.params?.truncate_before_message_id).toBe('durable-platform-msg-1')
+    expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
+  })
+
+  it('still confirms an empty truncate when the dropped ordinal was 0', async () => {
+    const calls: Call[] = []
+
+    await runRewindSubmit(
+      makeGateway(calls),
+      'sid',
+      'fixed prompt',
+      0,
+      'durable-platform-msg-1',
+      false,
+      undefined,
+      13,
+      'typo prompt'
+    )
+
+    const submit = calls.find(call => call.method === 'prompt.submit')
+
+    expect(submit?.params?.confirm_truncate).toBe(true)
+    expect(submit?.params?.confirm_empty_truncate).toBe(true)
+    expect(submit?.params?.truncate_before_row_id).toBe(13)
+    expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
   })
 })
 
 describe('optimistic rewind/reload turn-clock seeding (#86795)', () => {
-  // The no-payload settle gate in gateway-event.ts holds a running=false
+  // The no-payload settle gate in gateway-event/session-info.ts holds a running=false
   // heartbeat off while an optimistically armed turn waits for the backend —
   // but only for a bounded grace window measured from turnStartedAt. These
   // transforms are the arm sites for restore/edit/regenerate, so they must

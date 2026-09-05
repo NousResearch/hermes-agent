@@ -1,0 +1,7 @@
+name: web-keenable
+version: 1.0.0
+description: "Keenable web search + page fetch (independent web index for AI apps). Works keyless on Keenable's free tier as part of the default rotation; set KEENABLE_API_KEY for higher limits — https://keenable.ai."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - keenable

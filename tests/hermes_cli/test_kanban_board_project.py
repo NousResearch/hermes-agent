@@ -17,6 +17,7 @@ if str(_WORKTREE) not in sys.path:
     sys.path.insert(0, str(_WORKTREE))
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import projects_db as pdb
 
 
@@ -63,7 +64,7 @@ def test_create_task_inherits_board_project(fresh_home, tmp_path):
         proj_id = pdb.create_project(pconn, name="Widget", primary_path=str(repo))
 
     kb.create_board("scoped", name="Scoped", project_id=proj_id)
-    conn = kb.connect(board="scoped")
+    conn = kbc.connect(board="scoped")
     try:
         tid = kb.create_task(conn, title="inherit me", board="scoped")
         assert kb.get_task(conn, tid).project_id == proj_id
@@ -79,7 +80,7 @@ def test_create_task_explicit_project_beats_board(fresh_home, tmp_path):
         task_proj = pdb.create_project(pconn, name="TaskProj", primary_path=str(tmp_path / "b"))
 
     kb.create_board("scoped2", name="Scoped2", project_id=board_proj)
-    conn = kb.connect(board="scoped2")
+    conn = kbc.connect(board="scoped2")
     try:
         tid = kb.create_task(conn, title="explicit", board="scoped2", project_id=task_proj)
         assert kb.get_task(conn, tid).project_id == task_proj

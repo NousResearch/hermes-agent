@@ -134,9 +134,58 @@ function gatewayTicketFailure(error, authMessage, transportMessage) {
     ;(err as any).needsOauthLogin = true
   }
 
+  // Preserve structured HTTP context when the source error carried an integer
+  // statusCode (the fetch layer attaches err.statusCode). Downstream Cloud
+  // classification (isServerSideHttpError / makeNousCloudBackendDownError) and
+  // the renderer overlay depend on it surviving the ticket-error wrapper. Auth
+  // semantics are unchanged: 401/403 route to reauth, 5xx stays a transport
+  // failure, everything else keeps current behavior.
+  const sourceStatus = Number(error && typeof error === 'object' ? (error as any).statusCode : NaN)
+
+  if (Number.isInteger(sourceStatus)) {
+    ;(err as any).statusCode = sourceStatus
+  }
+
   err.cause = error
 
   return err
+}
+
+/**
+ * Retry a one-shot mint/fetch that can flap on brief network blips.
+ * Auth rejections (401/403 / needsOauthLogin) fail immediately — retrying those
+ * just hammers a dead session. Transport/server failures retry with short delays.
+ */
+async function withTransientRetries(run, options: any = {}) {
+  const attempts = Number.isInteger(options.attempts) && options.attempts > 0 ? options.attempts : 3
+  const delaysMs = Array.isArray(options.delaysMs) && options.delaysMs.length > 0 ? options.delaysMs : [250, 750]
+
+  const sleep =
+    typeof options.sleep === 'function'
+      ? options.sleep
+      : (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+  const isRetryable =
+    typeof options.isRetryable === 'function' ? options.isRetryable : (error: unknown) => !isGatewayAuthRejection(error)
+
+  let lastError: unknown
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await run()
+    } catch (error) {
+      lastError = error
+
+      if (!isRetryable(error) || attempt >= attempts - 1) {
+        throw error
+      }
+
+      const delay = delaysMs[Math.min(attempt, delaysMs.length - 1)]
+      await sleep(delay)
+    }
+  }
+
+  throw lastError
 }
 
 /** Serialize a fresh-WS-URL attempt across Electron's IPC boundary. */
@@ -543,12 +592,17 @@ const LOCAL_PRIMARY_SCOPED_ROUTES = new Set([
   'GET /api/skills/content',
   'PUT /api/skills/toggle',
   'POST /api/skills/hub/install',
+  'GET /api/skills/hub/official',
   'GET /api/skills/hub/preview',
   'GET /api/skills/hub/scan',
   'GET /api/skills/hub/search',
   'GET /api/skills/hub/sources',
   'POST /api/skills/hub/uninstall',
-  'POST /api/skills/hub/update'
+  'POST /api/skills/hub/update',
+  // Spawns a background action polled via /api/actions/{name}/status — must
+  // live on the SAME backend as that poll family (below), or the poll asks a
+  // backend that never registered the dynamic action name and 404s.
+  'POST /api/mcp/catalog/install'
 ])
 
 function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
@@ -572,6 +626,16 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
     return true
   }
 
+  // Action-status polls MUST land on the same backend as the endpoints that
+  // spawned them: `_spawn_hermes_action` registers the (often dynamic, e.g.
+  // `skills-install-<slug>-<hash>`) action name only in the spawning
+  // process's memory. Every action-spawning route above scopes to the
+  // primary, so the poll family follows — a pooled-backend poll 404s with
+  // "Unknown action" even though the install itself succeeded (#89xxx).
+  if (pathname.startsWith('/api/actions/')) {
+    return true
+  }
+
   // Every current /api/tools handler accepts `profile`; every /api/profiles
   // handler either aggregates profiles or names its target in the path/body.
   // These are the only whole families safe to route through the primary.
@@ -590,7 +654,9 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
  * The one place that answers "which backend serves profile P, and does its
  * REST path need a profile scope?". Six routes, in precedence order:
  *
- *  1. The primary profile owns the window backend outright.
+ *  1. The primary profile owns a local/window backend outright; on a global
+ *     remote its label is still carried per request because launch home can
+ *     differ from the selected profile.
  *  2. A profile with its own remote override gets a pooled descriptor for that
  *     host, which is already scoped to it.
  *  3. A profile inheriting the app-global remote shares the primary backend —
@@ -610,8 +676,18 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
   const scopedProfile = connectionScopeKey(profile)
   const primaryProfile = connectionScopeKey(opts.primaryProfile) || 'default'
 
-  if (!scopedProfile || scopedProfile === primaryProfile) {
+  if (!scopedProfile) {
     return { backend: 'primary', descriptorProfile: null, scopePath: false }
+  }
+
+  if (scopedProfile === primaryProfile) {
+    // A global remote is a multi-profile dashboard, not a backend process
+    // launched for this Desktop label. Even its "primary" label must travel on
+    // the wire: the dashboard's process HERMES_HOME can belong to a different
+    // launch profile, so a bare request silently reads that profile instead.
+    return opts.globalRemote
+      ? { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
+      : { backend: 'primary', descriptorProfile: null, scopePath: false }
   }
 
   if (opts.profileRemoteOverride) {
@@ -672,14 +748,23 @@ function pathWithGlobalRemoteProfile(path, profile, opts: ProfileRouteOptions = 
   return pathWithProfileScope(path, profile)
 }
 
+/** Extra profile-valued query keys, beyond `profile`, that name the same
+ *  self-scope on a given path. The sidebar batches recents/cron/messaging
+ *  behind `recents_profile` instead of `profile`, so an SSH alias rewrite
+ *  that only looks at `?profile=` leaves those reads on the remote default. */
+const SELF_PROFILE_QUERY_KEYS_BY_PATH: Record<string, string[]> = {
+  '/api/profiles/sessions/sidebar': ['recents_profile']
+}
+
 /**
  * Translate an explicit self-profile query from a Desktop routing alias to the
  * backend's own profile namespace (a managed SSH `remoteProfile` can map local
- * `mara` to remote `default`). Only a `?profile=` equal to the alias itself is
- * rewritten; cross-profile selectors (`all`, another concrete profile) and
- * unfiltered paths pass through untouched. Used by the v1 profile route above
- * and by the registry SSH branch of the `hermes:api` handler — both routes
- * reach a backend whose namespace is the remote profile, not the alias.
+ * `mara` to remote `default`). Only endpoint-declared profile-valued params
+ * equal to the alias itself are rewritten; cross-profile selectors (`all`,
+ * another concrete profile) and unfiltered paths pass through untouched. Used
+ * by the v1 profile route above and by the registry SSH branch of the
+ * `hermes:api` handler — both routes reach a backend whose namespace is the
+ * remote profile, not the alias.
  */
 function translateSelfProfileQuery(path, profile, backendProfile) {
   const scopedProfile = connectionScopeKey(profile)
@@ -703,11 +788,21 @@ function translateSelfProfileQuery(path, profile, backendProfile) {
     return path
   }
 
-  if (connectionScopeKey(parsed.searchParams.get('profile')) !== scopedProfile) {
-    return path
+  const profileQueryKeys = ['profile', ...(SELF_PROFILE_QUERY_KEYS_BY_PATH[parsed.pathname] || [])]
+  let changed = false
+
+  for (const key of profileQueryKeys) {
+    if (connectionScopeKey(parsed.searchParams.get(key)) !== scopedProfile) {
+      continue
+    }
+
+    parsed.searchParams.set(key, backend)
+    changed = true
   }
 
-  parsed.searchParams.set('profile', backend)
+  if (!changed) {
+    return path
+  }
 
   return `${parsed.pathname}${parsed.search}${parsed.hash}`
 }
@@ -746,6 +841,23 @@ function pathWithProfileScope(path, profile) {
   parsed.searchParams.set('profile', scopedProfile)
 
   return `${parsed.pathname}${parsed.search}${parsed.hash}`
+}
+
+export interface RegistryBackendRequestScope {
+  remoteProfile?: null | string
+  sharedRemote?: boolean
+}
+
+/**
+ * Scope a REST path for a resolved registry backend. Shared remotes serve
+ * multiple profiles from one process and need an explicit profile query;
+ * isolated SSH backends already own one profile but may translate a Desktop
+ * alias in an existing self-profile filter.
+ */
+function pathForRegistryBackendRequest(path, profile, backend: RegistryBackendRequestScope) {
+  return backend.sharedRemote
+    ? pathWithProfileScope(path, profile)
+    : translateSelfProfileQuery(path, profile, backend.remoteProfile)
 }
 
 /**
@@ -922,6 +1034,7 @@ export {
   normalizeRemoteHeaders,
   normalizeSshConfig,
   normAuthMode,
+  pathForRegistryBackendRequest,
   pathWithGlobalRemoteProfile,
   pathWithProfileScope,
   PRIVY_ACCESS_COOKIE_VARIANTS,
@@ -938,5 +1051,6 @@ export {
   RT_COOKIE_VARIANTS,
   savedProfileSsh,
   tokenPreview,
-  translateSelfProfileQuery
+  translateSelfProfileQuery,
+  withTransientRetries
 }

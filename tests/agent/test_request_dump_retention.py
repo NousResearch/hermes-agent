@@ -27,8 +27,8 @@ def hermes_home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def agent(hermes_home, monkeypatch):
-    monkeypatch.setattr(run_agent, "get_tool_definitions", lambda **kwargs: [])
-    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("model_tools.get_tool_definitions", lambda **kwargs: [])
+    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
     built = run_agent.AIAgent(
         model="gpt-4o",
         base_url="http://127.0.0.1:9208/v1",

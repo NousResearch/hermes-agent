@@ -1,238 +1,154 @@
 #!/usr/bin/env python3
-"""
-Batch Agent Runner
+"""Batch Agent Runner — run the agent over a JSONL prompt dataset in parallel.
 
-This module provides parallel batch processing capabilities for running the agent
-across multiple prompts from a dataset. It includes:
-- Dataset loading and batching
-- Parallel batch processing with multiprocessing
-- Checkpointing for fault tolerance and resumption
-- Trajectory saving in the proper format (from/value pairs)
-- Tool usage statistics aggregation across all batches
-
-Usage:
-    python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run
-    
-    # Resume an interrupted run
-    python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run --resume
-    
-    # Use a specific toolset distribution
-    python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run --distribution=image_gen
+Batches are processed by a multiprocessing pool with per-batch ``batch_N.jsonl`` output,
+checkpointing for ``--resume``, trajectories in from/value format, and tool-usage
+statistics aggregated across all batches. See ``main`` (fire CLI) for usage.
 """
 
-# IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio
-# on Windows.  No-op on POSIX.  See hermes_bootstrap.py for full rationale.
+# hermes_bootstrap must be the very first import — UTF-8 stdio on Windows, no-op on POSIX.
 try:
     import hermes_bootstrap  # noqa: F401
 except ModuleNotFoundError:
-    # Graceful fallback when hermes_bootstrap isn't registered in the venv
-    # yet — happens during partial ``hermes update`` where git-reset landed
-    # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
-    # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
+    # Partial ``hermes update`` (git reset landed, ``uv pip install -e .`` did not):
+    # only Windows UTF-8 stdio setup is skipped.
     pass
 
 import json
 import logging
 import os
 import time
-from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime
-from multiprocessing import Pool, Lock
 import traceback
-from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRemainingColumn, MofNCompleteColumn
-from rich.console import Console
+from datetime import datetime
+from multiprocessing import Lock, Pool
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
-logger = logging.getLogger(__name__)
 import fire
+from rich.console import Console
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
+from model_tools import TOOL_TO_TOOLSET_MAP
 from run_agent import AIAgent
 from toolset_distributions import (
-    list_distributions, 
+    list_distributions,
     sample_toolsets_from_distribution,
-    validate_distribution
+    validate_distribution,
 )
-from model_tools import TOOL_TO_TOOLSET_MAP
 
+logger = logging.getLogger(__name__)
 
-# Global configuration for worker processes
-_WORKER_CONFIG = {}
-
-# All possible tools - auto-derived from the master mapping in model_tools.py.
-# This stays in sync automatically when new tools are added to TOOL_TO_TOOLSET_MAP.
-# Used for consistent schema in Arrow/Parquet (HuggingFace datasets) and for
-# filtering corrupted entries during trajectory combination.
+# Auto-derived from model_tools so it stays in sync as tools are added. Gives every
+# trajectory a consistent tool_stats schema (Arrow/Parquet for HF datasets) and filters
+# corrupted entries (hallucinated tool names) when combining trajectories.
 ALL_POSSIBLE_TOOLS = set(TOOL_TO_TOOLSET_MAP.keys())
 
-# Default stats for tools that weren't used
 DEFAULT_TOOL_STATS = {'count': 0, 'success': 0, 'failure': 0}
+_REASONING_KEYS = ("total_assistant_turns", "turns_with_reasoning", "turns_without_reasoning")
+
+# BatchRunner.__init__ parameters stored as same-named attributes.
+_RUNNER_FIELDS = (
+    "batch_size", "run_name", "distribution", "max_iterations", "base_url", "api_key", "model",
+    "num_workers", "verbose", "ephemeral_system_prompt", "log_prefix_chars", "providers_allowed",
+    "providers_ignored", "providers_order", "provider_sort", "openrouter_min_coding_score",
+    "max_tokens", "reasoning_config", "prefill_messages", "max_samples",
+)
+# BatchRunner attributes forwarded verbatim to every AIAgent in the worker config.
+_AGENT_PASSTHROUGH = (
+    "base_url", "api_key", "ephemeral_system_prompt", "providers_allowed", "providers_ignored",
+    "providers_order", "provider_sort", "openrouter_min_coding_score", "max_tokens",
+    "reasoning_config", "prefill_messages",
+)
 
 
 def _normalize_tool_stats(tool_stats: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
-    """
-    Normalize tool_stats to include all possible tools with consistent schema.
-    
-    This ensures HuggingFace datasets can load the JSONL without schema mismatch errors.
-    Tools that weren't used get zero counts.
-    
-    Args:
-        tool_stats (Dict): Raw tool statistics from extraction
-        
-    Returns:
-        Dict: Normalized tool statistics with all tools present
-    """
-    normalized = {}
-    
-    # Add all possible tools with defaults
-    for tool in ALL_POSSIBLE_TOOLS:
-        if tool in tool_stats:
-            normalized[tool] = tool_stats[tool].copy()
-        else:
-            normalized[tool] = DEFAULT_TOOL_STATS.copy()
-    
-    # Also include any unexpected tools (in case new tools are added)
+    """All possible tools with zero defaults (consistent HF schema), plus any unexpected tools."""
+    normalized = {
+        tool: tool_stats[tool].copy() if tool in tool_stats else DEFAULT_TOOL_STATS.copy()
+        for tool in ALL_POSSIBLE_TOOLS
+    }
     for tool, stats in tool_stats.items():
         if tool not in normalized:
             normalized[tool] = stats.copy()
-    
     return normalized
 
 
 def _normalize_tool_error_counts(tool_error_counts: Dict[str, int]) -> Dict[str, int]:
-    """
-    Normalize tool_error_counts to include all possible tools.
-    
-    Args:
-        tool_error_counts (Dict): Raw error counts mapping
-        
-    Returns:
-        Dict: Normalized error counts with all tools present
-    """
-    normalized = {}
-    
-    # Add all possible tools with zero defaults
-    for tool in ALL_POSSIBLE_TOOLS:
-        normalized[tool] = tool_error_counts.get(tool, 0)
-    
-    # Also include any unexpected tools
+    """All possible tools with zero defaults, plus any unexpected tools."""
+    normalized = {tool: tool_error_counts.get(tool, 0) for tool in ALL_POSSIBLE_TOOLS}
     for tool, count in tool_error_counts.items():
         if tool not in normalized:
             normalized[tool] = count
-    
     return normalized
 
 
+def _merge_tool_stats(total: Dict[str, Dict[str, int]], tool_stats: Dict[str, Dict[str, int]]) -> None:
+    """Add per-tool count/success/failure from *tool_stats* into *total* in place."""
+    for tool_name, stats in tool_stats.items():
+        agg = total.setdefault(tool_name, DEFAULT_TOOL_STATS.copy())
+        agg["count"] += stats["count"]
+        agg["success"] += stats["success"]
+        agg["failure"] += stats["failure"]
+
+
+def _merge_reasoning_stats(total: Dict[str, int], reasoning_stats: Dict[str, Any]) -> None:
+    """Add the turn counters from *reasoning_stats* into *total* in place."""
+    for key in total:
+        total[key] += reasoning_stats.get(key, 0)
+
+
+def _tool_call_succeeded(content) -> bool:
+    """Judge a tool response: JSON with a non-null ``error`` / ``success: false`` fails;
+    non-JSON fails only when empty or starting with ``Error:`` (no substring matching, to
+    avoid false positives). Non-zero exit codes are NOT failures — the model self-corrects."""
+    try:
+        content_json = json.loads(content) if isinstance(content, str) else content
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return bool(content) and not content.strip().lower().startswith("error:")
+    if not isinstance(content_json, dict):
+        return True
+    if content_json.get("error") is not None:
+        return False
+    # Terminal wraps its response in a "content" field.
+    inner_content = content_json.get("content")
+    if isinstance(inner_content, dict) and inner_content.get("error") is not None:
+        return False
+    return content_json.get("success") is not False
+
+
 def _extract_tool_stats(messages: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
-    """
-    Extract tool usage statistics from message history.
-    
-    Args:
-        messages (List[Dict]): Message history
-        
-    Returns:
-        Dict: Tool statistics with counts and success/failure rates
-    """
+    """Per-tool call counts and success/failure tallies from a message history."""
     tool_stats = {}
-    
-    # Track tool calls and their results
-    tool_calls_map = {}  # Map tool_call_id to tool name
-    
+    tool_calls_map = {}  # tool_call_id -> tool name
+
     for msg in messages:
-        # Track tool calls from assistant messages
         if msg["role"] == "assistant" and "tool_calls" in msg and msg["tool_calls"]:
             for tool_call in msg["tool_calls"]:
                 if not tool_call or not isinstance(tool_call, dict): continue
                 tool_name = tool_call["function"]["name"]
-                tool_call_id = tool_call["id"]
-                
-                # Initialize stats for this tool if not exists
-                if tool_name not in tool_stats:
-                    tool_stats[tool_name] = {
-                        "count": 0,
-                        "success": 0,
-                        "failure": 0
-                    }
-                
-                tool_stats[tool_name]["count"] += 1
-                tool_calls_map[tool_call_id] = tool_name
-        
-        # Track tool responses
+                tool_stats.setdefault(tool_name, DEFAULT_TOOL_STATS.copy())["count"] += 1
+                tool_calls_map[tool_call["id"]] = tool_name
         elif msg["role"] == "tool":
             tool_call_id = msg.get("tool_call_id", "")
-            content = msg.get("content", "")
-            
-            # Determine if tool call was successful
-            is_success = True
-            try:
-                # Try to parse as JSON and check for actual error values
-                content_json = json.loads(content) if isinstance(content, str) else content
-                
-                if isinstance(content_json, dict):
-                    # Check if error field exists AND has a non-null value
-                    if "error" in content_json and content_json["error"] is not None:
-                        is_success = False
-                    
-                    # Special handling for terminal tool responses
-                    # Terminal wraps its response in a "content" field
-                    if "content" in content_json and isinstance(content_json["content"], dict):
-                        inner_content = content_json["content"]
-                        # Check for actual error (non-null error field)
-                        # Note: non-zero exit codes are not failures - the model can self-correct
-                        if inner_content.get("error") is not None:
-                            is_success = False
-                    
-                    # Check for "success": false pattern used by some tools
-                    if content_json.get("success") is False:
-                        is_success = False
-                        
-            except (json.JSONDecodeError, ValueError, TypeError):
-                # If not JSON, check if content is empty or explicitly states an error
-                # Note: We avoid simple substring matching to prevent false positives
-                if not content:
-                    is_success = False
-                # Only mark as failure if it explicitly starts with "Error:" or "ERROR:"
-                elif content.strip().lower().startswith("error:"):
-                    is_success = False
-            
-            # Update success/failure count
+            is_success = _tool_call_succeeded(msg.get("content", ""))
             if tool_call_id in tool_calls_map:
-                tool_name = tool_calls_map[tool_call_id]
-                if is_success:
-                    tool_stats[tool_name]["success"] += 1
-                else:
-                    tool_stats[tool_name]["failure"] += 1
-    
+                tool_stats[tool_calls_map[tool_call_id]]["success" if is_success else "failure"] += 1
+
     return tool_stats
 
 
+def _turn_has_reasoning(msg: Dict[str, Any]) -> bool:
+    """``<REASONING_SCRATCHPAD>`` in content, or a non-empty native ``reasoning`` field."""
+    if "<REASONING_SCRATCHPAD>" in (msg.get("content", "") or ""):
+        return True
+    return bool(msg.get("reasoning", "").strip()) if msg.get("reasoning") else False
+
+
 def _extract_reasoning_stats(messages: List[Dict[str, Any]]) -> Dict[str, int]:
-    """
-    Count how many assistant turns have reasoning vs no reasoning.
-    
-    Checks for <REASONING_SCRATCHPAD> in content or a non-empty 'reasoning' field
-    (native thinking tokens). Returns counts for tracking reasoning coverage.
-    
-    Args:
-        messages: Message history
-        
-    Returns:
-        Dict with 'total_assistant_turns', 'turns_with_reasoning', 'turns_without_reasoning'
-    """
-    total = 0
-    with_reasoning = 0
-    
-    for msg in messages:
-        if msg.get("role") != "assistant":
-            continue
-        total += 1
-        
-        content = msg.get("content", "") or ""
-        has_scratchpad = "<REASONING_SCRATCHPAD>" in content
-        has_native_reasoning = bool(msg.get("reasoning", "").strip()) if msg.get("reasoning") else False
-        
-        if has_scratchpad or has_native_reasoning:
-            with_reasoning += 1
-    
+    """Count assistant turns with reasoning vs without."""
+    assistant_turns = [msg for msg in messages if msg.get("role") == "assistant"]
+    total = len(assistant_turns)
+    with_reasoning = sum(1 for msg in assistant_turns if _turn_has_reasoning(msg))
     return {
         "total_assistant_turns": total,
         "turns_with_reasoning": with_reasoning,
@@ -241,126 +157,111 @@ def _extract_reasoning_stats(messages: List[Dict[str, Any]]) -> Dict[str, int]:
     }
 
 
+def _failure_result(prompt_index: int, batch_num: int, error: str) -> Dict[str, Any]:
+    """Result dict for a prompt that produced no trajectory."""
+    return {
+        "success": False,
+        "prompt_index": prompt_index,
+        "error": error,
+        "trajectory": None,
+        "tool_stats": {},
+        "toolsets_used": [],
+        "metadata": {"batch_num": batch_num, "timestamp": datetime.now().isoformat()},
+    }
+
+
+def _prepare_container_image(
+    prompt_index: int, prompt_data: Dict[str, Any], batch_num: int, task_id: str, config: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Register the dataset row's per-prompt container image (``image``/``docker_image``)
+    for this task's sandbox (Docker, Modal, Singularity, Daytona).
+
+    For Docker the image is verified (local cache, then pull) before spending tokens on the
+    agent loop; Modal pulls server-side so no local check. Returns a failure result when the
+    pull fails, else ``None``.
+    """
+    container_image = prompt_data.get("image") or prompt_data.get("docker_image")
+    if not container_image:
+        return None
+    env_type = os.getenv("TERMINAL_ENV", "local")
+    if env_type == "docker":
+        import subprocess as _sp
+        try:
+            probe = _sp.run(
+                ["docker", "image", "inspect", container_image],
+                capture_output=True, timeout=10,
+            )
+            if probe.returncode != 0:
+                if config.get("verbose"):
+                    print(f"   Prompt {prompt_index}: Pulling docker image {container_image}...", flush=True)
+                pull = _sp.run(
+                    ["docker", "pull", container_image],
+                    capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600,
+                )
+                if pull.returncode != 0:
+                    return _failure_result(
+                        prompt_index, batch_num,
+                        f"Docker image not available: {container_image}\n{pull.stderr[:500]}",
+                    )
+        except FileNotFoundError:
+            pass  # Docker CLI not installed — skip check (e.g., Modal backend)
+        except Exception as img_err:
+            if config.get("verbose"):
+                print(f"   Prompt {prompt_index}: Docker image check failed: {img_err}", flush=True)
+    from tools.terminal_tool import register_task_env_overrides
+    overrides = {
+        "docker_image": container_image,
+        "modal_image": container_image,
+        "singularity_image": f"docker://{container_image}",
+        "daytona_image": container_image,
+    }
+    if prompt_data.get("cwd"):
+        overrides["cwd"] = prompt_data["cwd"]
+    register_task_env_overrides(task_id, overrides)
+    if config.get("verbose"):
+        print(f"   Prompt {prompt_index}: Using container image {container_image}")
+    return None
+
+
 def _process_single_prompt(
     prompt_index: int,
     prompt_data: Dict[str, Any],
     batch_num: int,
     config: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """
-    Process a single prompt with the agent.
-    
-    Args:
-        prompt_index (int): Index of prompt in dataset
-        prompt_data (Dict): Prompt data containing 'prompt' field and optional 'image' field
-        batch_num (int): Batch number
-        config (Dict): Configuration dict with agent parameters
-        
-    Returns:
-        Dict: Result containing trajectory, stats, and metadata
-    """
+    """Run the agent on one prompt; returns trajectory, stats and metadata (or a failure result)."""
     prompt = prompt_data["prompt"]
     task_id = f"task_{prompt_index}"
-    
-    # Per-prompt container image override: if the dataset row has an 'image' field,
-    # register it for this task's sandbox. Works with Docker, Modal, Singularity, and Daytona.
-    container_image = prompt_data.get("image") or prompt_data.get("docker_image")
-    if container_image:
-        # Verify the image is accessible before spending tokens on the agent loop.
-        # For Docker: check local cache, then try pulling.
-        # For Modal: skip local check (Modal pulls server-side).
-        env_type = os.getenv("TERMINAL_ENV", "local")
-        if env_type == "docker":
-            import subprocess as _sp
-            try:
-                probe = _sp.run(
-                    ["docker", "image", "inspect", container_image],
-                    capture_output=True, timeout=10,
-                )
-                if probe.returncode != 0:
-                    if config.get("verbose"):
-                        print(f"   Prompt {prompt_index}: Pulling docker image {container_image}...", flush=True)
-                    pull = _sp.run(
-                        ["docker", "pull", container_image],
-                        capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600,
-                    )
-                    if pull.returncode != 0:
-                        return {
-                            "success": False,
-                            "prompt_index": prompt_index,
-                            "error": f"Docker image not available: {container_image}\n{pull.stderr[:500]}",
-                            "trajectory": None,
-                            "tool_stats": {},
-                            "toolsets_used": [],
-                            "metadata": {"batch_num": batch_num, "timestamp": datetime.now().isoformat()},
-                        }
-            except FileNotFoundError:
-                pass  # Docker CLI not installed — skip check (e.g., Modal backend)
-            except Exception as img_err:
-                if config.get("verbose"):
-                    print(f"   Prompt {prompt_index}: Docker image check failed: {img_err}", flush=True)
+    failure = _prepare_container_image(prompt_index, prompt_data, batch_num, task_id, config)
+    if failure is not None:
+        return failure
 
-        from tools.terminal_tool import register_task_env_overrides
-        overrides = {
-            "docker_image": container_image,
-            "modal_image": container_image,
-            "singularity_image": f"docker://{container_image}",
-            "daytona_image": container_image,
-        }
-        if prompt_data.get("cwd"):
-            overrides["cwd"] = prompt_data["cwd"]
-        register_task_env_overrides(task_id, overrides)
-        if config.get("verbose"):
-            print(f"   Prompt {prompt_index}: Using container image {container_image}")
-    
     try:
-        # Sample toolsets from distribution for this prompt
         selected_toolsets = sample_toolsets_from_distribution(config["distribution"])
-        
+
         if config.get("verbose"):
             print(f"   Prompt {prompt_index}: Using toolsets {selected_toolsets}")
-        
-        # Initialize agent with sampled toolsets and log prefix for identification
-        log_prefix = f"[B{batch_num}:P{prompt_index}]"
         agent = AIAgent(
-            base_url=config.get("base_url"),
-            api_key=config.get("api_key"),
             model=config["model"],
             max_iterations=config["max_iterations"],
             enabled_toolsets=selected_toolsets,
             save_trajectories=False,  # We handle saving ourselves
             verbose_logging=config.get("verbose", False),
-            ephemeral_system_prompt=config.get("ephemeral_system_prompt"),
             log_prefix_chars=config.get("log_prefix_chars", 100),
-            log_prefix=log_prefix,
-            providers_allowed=config.get("providers_allowed"),
-            providers_ignored=config.get("providers_ignored"),
-            providers_order=config.get("providers_order"),
-            provider_sort=config.get("provider_sort"),
-            openrouter_min_coding_score=config.get("openrouter_min_coding_score"),
-            max_tokens=config.get("max_tokens"),
-            reasoning_config=config.get("reasoning_config"),
-            prefill_messages=config.get("prefill_messages"),
+            log_prefix=f"[B{batch_num}:P{prompt_index}]",
             skip_context_files=True,  # Don't pollute trajectories with SOUL.md/AGENTS.md
             skip_memory=True,  # Don't use persistent memory in batch runs
+            **{key: config.get(key) for key in _AGENT_PASSTHROUGH},
         )
 
-        # Run the agent with task_id to ensure each task gets its own isolated VM
+        # task_id ensures each task gets its own isolated VM
         result = agent.run_conversation(prompt, task_id=task_id)
-        
-        # Extract tool usage statistics
+
+        # Stats before conversion — keep the original evaluation order.
         tool_stats = _extract_tool_stats(result["messages"])
-        
-        # Extract reasoning coverage stats
         reasoning_stats = _extract_reasoning_stats(result["messages"])
-        
-        # Convert to trajectory format (using existing method)
-        trajectory = agent._convert_to_trajectory_format(
-            result["messages"],
-            prompt,
-            result["completed"]
-        )
-        
+        trajectory = agent._convert_to_trajectory_format(result["messages"], prompt, result["completed"])
+
         return {
             "success": True,
             "prompt_index": prompt_index,
@@ -368,109 +269,80 @@ def _process_single_prompt(
             "tool_stats": tool_stats,
             "reasoning_stats": reasoning_stats,
             "completed": result["completed"],
+            # Sibling of the non-empty-response return below (#64686): the classifier's failure_reason must
+            # survive the empty-response normalization path too, or downstream consumers (TUI billing
+            # surface, transient-failure persistence) lose the structured reason exactly when the run
+            # produced no text.
             "partial": result.get("partial", False),
             "api_calls": result["api_calls"],
             "toolsets_used": selected_toolsets,
-            "metadata": {
-                "batch_num": batch_num,
-                "timestamp": datetime.now().isoformat(),
-                "model": config["model"]
-            }
+            "metadata": {"batch_num": batch_num, "timestamp": datetime.now().isoformat(), "model": config["model"]},
         }
-    
     except Exception as e:
         print(f"❌ Error processing prompt {prompt_index}: {e}")
         if config.get("verbose"):
             traceback.print_exc()
-        
-        return {
-            "success": False,
-            "prompt_index": prompt_index,
-            "error": str(e),
-            "trajectory": None,
-            "tool_stats": {},
-            "toolsets_used": [],
-            "metadata": {
-                "batch_num": batch_num,
-                "timestamp": datetime.now().isoformat()
-            }
-        }
+        return _failure_result(prompt_index, batch_num, str(e))
+
+
+def _append_jsonl(path: Path, row: Dict[str, Any]) -> None:
+    """Append one JSON row and fsync so a crash never loses an acknowledged prompt."""
+    from hermes_cli.config import artifact_file_mode
+    from utils import open_private_append
+
+    with open_private_append(path, mode=artifact_file_mode()) as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
-    """
-    Worker function to process a single batch of prompts.
-    
-    Args:
-        args (Tuple): (batch_num, batch_data, output_dir, completed_prompts, config)
-        
-    Returns:
-        Dict: Batch results with statistics
+    """Pool worker: process one batch of ``(index, prompt_data)`` sequentially.
+
+    ``args`` is ``(batch_num, batch_data, output_dir, completed_prompts, config)``.
     """
     batch_num, batch_data, output_dir, completed_prompts_set, config = args
-    
     output_dir = Path(output_dir)
     print(f"\n🔄 Batch {batch_num}: Starting ({len(batch_data)} prompts)")
-    
-    # Output file for this batch
     batch_output_file = output_dir / f"batch_{batch_num}.jsonl"
-    
-    # Filter out already completed prompts
-    prompts_to_process = [
-        (idx, data) for idx, data in batch_data
-        if idx not in completed_prompts_set
-    ]
-    
+    prompts_to_process = [(idx, data) for idx, data in batch_data if idx not in completed_prompts_set]
+
     if not prompts_to_process:
         print(f"✅ Batch {batch_num}: Already completed (skipping)")
-        return {
-            "batch_num": batch_num,
-            "processed": 0,
-            "skipped": len(batch_data),
-            "tool_stats": {},
-            "completed_prompts": []
-        }
-    
+        return {"batch_num": batch_num, "processed": 0, "skipped": len(batch_data), "tool_stats": {}, "completed_prompts": []}
     print(f"   Processing {len(prompts_to_process)} prompts (skipping {len(batch_data) - len(prompts_to_process)} already completed)")
-    
-    # Initialize aggregated stats for this batch
     batch_tool_stats = {}
-    batch_reasoning_stats = {"total_assistant_turns": 0, "turns_with_reasoning": 0, "turns_without_reasoning": 0}
+    batch_reasoning_stats = dict.fromkeys(_REASONING_KEYS, 0)
     completed_in_batch = []
     discarded_no_reasoning = 0
-    
-    # Process each prompt sequentially in this batch
+
     for prompt_index, prompt_data in prompts_to_process:
-        # Process the prompt
-        result = _process_single_prompt(
-            prompt_index,
-            prompt_data,
-            batch_num,
-            config
-        )
-        
-        # Save trajectory if successful
+        result = _process_single_prompt(prompt_index, prompt_data, batch_num, config)
+
         if result["success"] and result["trajectory"]:
-            # Discard samples with zero reasoning across all turns
             reasoning = result.get("reasoning_stats", {})
             if not reasoning.get("has_any_reasoning", True):
                 print(f"   🚫 Prompt {prompt_index} discarded (no reasoning in any turn)")
                 discarded_no_reasoning += 1
                 completed_in_batch.append(prompt_index)
+                # Tombstone row (#93527): resume filters by scanning batch_*.jsonl
+                # rows for prompt content, so a discarded sample without a row would
+                # be re-run at full cost on every restart. The merge step excludes
+                # tombstones from trajectories.jsonl.
+                _append_jsonl(batch_output_file, {
+                    "prompt_index": prompt_index,
+                    "discarded": "no_reasoning",
+                    "prompt": _entry_prompt_text(prompt_data),
+                })
                 continue
-            
-            # Get and normalize tool stats for consistent schema across all entries
+
+            # Normalize for a consistent schema across all entries.
             raw_tool_stats = result.get("tool_stats", {})
-            tool_stats = _normalize_tool_stats(raw_tool_stats)
-            
-            # Create normalized tool_error_counts mapping tool names to their failure counts
             raw_error_counts = {
-                tool_name: stats.get("failure", 0) 
+                tool_name: stats.get("failure", 0)
                 for tool_name, stats in raw_tool_stats.items()
             }
-            tool_error_counts = _normalize_tool_error_counts(raw_error_counts)
-            
-            trajectory_entry = {
+            _append_jsonl(batch_output_file, {
                 "prompt_index": prompt_index,
                 "conversations": result["trajectory"],
                 "metadata": result["metadata"],
@@ -478,36 +350,12 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
                 "partial": result.get("partial", False),  # True if stopped due to invalid tool calls
                 "api_calls": result["api_calls"],
                 "toolsets_used": result["toolsets_used"],
-                "tool_stats": tool_stats,  # Full stats: {tool: {count, success, failure}} - normalized
-                "tool_error_counts": tool_error_counts  # Simple: {tool: failure_count} - normalized
-            }
-            
-            # Append to batch output file
-            from hermes_cli.config import artifact_file_mode
-            from utils import open_private_append
+                "tool_stats": _normalize_tool_stats(raw_tool_stats),  # {tool: {count, success, failure}}
+                "tool_error_counts": _normalize_tool_error_counts(raw_error_counts)  # {tool: failure_count}
+            })
+        _merge_tool_stats(batch_tool_stats, result.get("tool_stats", {}))
+        _merge_reasoning_stats(batch_reasoning_stats, result.get("reasoning_stats", {}))
 
-            with open_private_append(batch_output_file, mode=artifact_file_mode()) as f:
-                f.write(json.dumps(trajectory_entry, ensure_ascii=False) + "\n")
-                f.flush()
-                os.fsync(f.fileno())
-        
-        # Aggregate tool statistics
-        for tool_name, stats in result.get("tool_stats", {}).items():
-            if tool_name not in batch_tool_stats:
-                batch_tool_stats[tool_name] = {
-                    "count": 0,
-                    "success": 0,
-                    "failure": 0
-                }
-            
-            batch_tool_stats[tool_name]["count"] += stats["count"]
-            batch_tool_stats[tool_name]["success"] += stats["success"]
-            batch_tool_stats[tool_name]["failure"] += stats["failure"]
-        
-        # Aggregate reasoning stats
-        for key in batch_reasoning_stats:
-            batch_reasoning_stats[key] += result.get("reasoning_stats", {}).get(key, 0)
-        
         # Only mark as completed if successfully saved (failed prompts can be retried on resume)
         if result["success"] and result["trajectory"]:
             completed_in_batch.append(prompt_index)
@@ -515,9 +363,8 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
             print(f"   {status} Prompt {prompt_index} completed")
         else:
             print(f"   ❌ Prompt {prompt_index} failed (will retry on resume)")
-    
     print(f"✅ Batch {batch_num}: Completed ({len(prompts_to_process)} prompts processed)")
-    
+
     return {
         "batch_num": batch_num,
         "processed": len(prompts_to_process),
@@ -529,11 +376,41 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
     }
 
 
+def _entry_prompt_text(entry: Dict) -> str:
+    """Human prompt text from a dataset/trajectory entry: flat ``prompt``, ShareGPT
+    ``conversations`` (from/value), chat ``conversations``/``messages`` (role/content),
+    or a no-reasoning discard tombstone."""
+    if not isinstance(entry, dict):
+        return ""
+    text = str(entry.get("prompt") or "").strip()
+    if text:
+        return text
+    for key in ("conversations", "messages"):
+        for msg in entry.get(key, []) or []:
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role") or msg.get("from")
+            if role in {"user", "human"}:
+                text = str(msg.get("content") or msg.get("value") or "").strip()
+                if text:
+                    return text
+    return ""
+
+
+def _banner(title: str) -> None:
+    print("\n" + "=" * 70)
+    print(title)
+    print("=" * 70)
+
+
+def _chunk(entries: List[Tuple[int, Dict[str, Any]]], size: int) -> List[List[Tuple[int, Dict[str, Any]]]]:
+    """Split ``(index, entry)`` tuples into batches of *size*, preserving original indices."""
+    return [entries[i:i + size] for i in range(0, len(entries), size)]
+
+
 class BatchRunner:
-    """
-    Manages batch processing of agent prompts with checkpointing and statistics.
-    """
-    
+    """Manages batch processing of agent prompts with checkpointing and statistics."""
+
     def __init__(
         self,
         dataset_file: str,
@@ -558,80 +435,29 @@ class BatchRunner:
         prefill_messages: List[Dict[str, Any]] = None,
         max_samples: int = None,
     ):
-        """
-        Initialize the batch runner.
+        """Load the dataset (truncated to *max_samples*), validate *distribution*, create batches.
 
-        Args:
-            dataset_file (str): Path to the dataset JSONL file with 'prompt' field
-            batch_size (int): Number of prompts per batch
-            run_name (str): Name for this run (used for checkpointing and output)
-            distribution (str): Toolset distribution to use (default: "default")
-            max_iterations (int): Max iterations per agent run
-            base_url (str): Base URL for model API
-            api_key (str): API key for model
-            model (str): Model name to use
-            num_workers (int): Number of parallel workers
-            verbose (bool): Enable verbose logging
-            ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
-            log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 20)
-            providers_allowed (List[str]): OpenRouter providers to allow (optional)
-            providers_ignored (List[str]): OpenRouter providers to ignore (optional)
-            providers_order (List[str]): OpenRouter providers to try in order (optional)
-            provider_sort (str): Sort providers by price/throughput/latency (optional)
-            max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
-            reasoning_config (Dict): OpenRouter reasoning config override (e.g. {"effort": "none"} to disable thinking)
-            prefill_messages (List[Dict]): Messages to prepend as prefilled conversation context (few-shot priming).
-                NOTE: Anthropic Sonnet 4.6+ and Opus 4.6+ reject a trailing assistant-role prefill
-                (400 error).  For those models use output_config.format or structured-output
-                schemas instead.  Safe here for user-role priming and for older Claude / non-Claude models.
-            max_samples (int): Only process the first N samples from the dataset (optional, processes all if not set)
+        ``ephemeral_system_prompt`` is used during execution but NOT saved to trajectories.
+        ``prefill_messages`` are prepended as few-shot context; Anthropic Sonnet/Opus 4.6+
+        reject a trailing assistant-role prefill (400) — use user-role priming for those.
         """
+        params = dict(locals())
         self.dataset_file = Path(dataset_file)
-        self.batch_size = batch_size
-        self.run_name = run_name
-        self.distribution = distribution
-        self.max_iterations = max_iterations
-        self.base_url = base_url
-        self.api_key = api_key
-        self.model = model
-        self.num_workers = num_workers
-        self.verbose = verbose
-        self.ephemeral_system_prompt = ephemeral_system_prompt
-        self.log_prefix_chars = log_prefix_chars
-        self.providers_allowed = providers_allowed
-        self.providers_ignored = providers_ignored
-        self.providers_order = providers_order
-        self.provider_sort = provider_sort
-        self.openrouter_min_coding_score = openrouter_min_coding_score
-        self.max_tokens = max_tokens
-        self.reasoning_config = reasoning_config
-        self.prefill_messages = prefill_messages
-        self.max_samples = max_samples
-        
-        # Validate distribution
+        for name in _RUNNER_FIELDS:
+            setattr(self, name, params[name])
+
         if not validate_distribution(distribution):
             raise ValueError(f"Unknown distribution: {distribution}. Available: {list(list_distributions().keys())}")
-        
-        # Setup output directory
         self.output_dir = Path("data") / run_name
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Checkpoint file
         self.checkpoint_file = self.output_dir / "checkpoint.json"
-        
-        # Statistics file
         self.stats_file = self.output_dir / "statistics.json"
-        
-        # Load dataset (and optionally truncate to max_samples)
         self.dataset = self._load_dataset()
         if self.max_samples and self.max_samples < len(self.dataset):
             full_count = len(self.dataset)
             self.dataset = self.dataset[:self.max_samples]
             print(f"✂️  Truncated dataset from {full_count} to {self.max_samples} samples (--max_samples)")
-        
-        # Create batches
         self.batches = self._create_batches()
-        
         print("📊 Batch Runner Initialized")
         print(f"   Dataset: {self.dataset_file} ({len(self.dataset)} prompts)")
         print(f"   Batch size: {self.batch_size}")
@@ -643,24 +469,18 @@ class BatchRunner:
         if self.ephemeral_system_prompt:
             prompt_preview = self.ephemeral_system_prompt[:60] + "..." if len(self.ephemeral_system_prompt) > 60 else self.ephemeral_system_prompt
             print(f"   🔒 Ephemeral system prompt: '{prompt_preview}'")
-    
+
     def _load_dataset(self) -> List[Dict[str, Any]]:
-        """
-        Load dataset from JSONL file.
-        
-        Returns:
-            List[Dict]: List of dataset entries
-        """
+        """Load JSONL entries that have a ``prompt`` field; skip blank/invalid lines."""
         if not self.dataset_file.exists():
             raise FileNotFoundError(f"Dataset file not found: {self.dataset_file}")
-        
         dataset = []
         with open(self.dataset_file, 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
                 if not line:
                     continue
-                
+
                 try:
                     entry = json.loads(line)
                     if 'prompt' not in entry:
@@ -670,131 +490,81 @@ class BatchRunner:
                 except json.JSONDecodeError as e:
                     print(f"⚠️  Warning: Invalid JSON on line {line_num}: {e}")
                     continue
-        
+
         if not dataset:
             raise ValueError(f"No valid entries found in dataset file: {self.dataset_file}")
-        
+
         return dataset
-    
+
     def _create_batches(self) -> List[List[Tuple[int, Dict[str, Any]]]]:
-        """
-        Split dataset into batches with indices.
-        
-        Returns:
-            List of batches, where each batch is a list of (index, entry) tuples
-        """
-        batches = []
-        for i in range(0, len(self.dataset), self.batch_size):
-            batch = [(idx, entry) for idx, entry in enumerate(self.dataset[i:i + self.batch_size], start=i)]
-            batches.append(batch)
-        
-        return batches
-    
+        """Split the dataset into batches of ``(index, entry)`` tuples."""
+        return _chunk(list(enumerate(self.dataset)), self.batch_size)
+
+    def _empty_checkpoint(self) -> Dict[str, Any]:
+        return {"run_name": self.run_name, "completed_prompts": [], "batch_stats": {}, "last_updated": None}
+
     def _load_checkpoint(self) -> Dict[str, Any]:
-        """
-        Load checkpoint data if it exists.
-        
-        Returns:
-            Dict: Checkpoint data with completed prompt indices
-        """
+        """Checkpoint data (completed prompt indices), or an empty one if missing/unreadable."""
         if not self.checkpoint_file.exists():
-            return {
-                "run_name": self.run_name,
-                "completed_prompts": [],
-                "batch_stats": {},
-                "last_updated": None
-            }
-        
+            return self._empty_checkpoint()
+
         try:
             with open(self.checkpoint_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception as e:
             print(f"⚠️  Warning: Failed to load checkpoint: {e}")
-            return {
-                "run_name": self.run_name,
-                "completed_prompts": [],
-                "batch_stats": {},
-                "last_updated": None
-            }
-    
-    def _save_checkpoint(self, checkpoint_data: Dict[str, Any], lock: Optional[Lock] = None):
-        """
-        Save checkpoint data.
-        
-        Args:
-            checkpoint_data (Dict): Checkpoint data to save
-            lock (Lock): Optional lock for thread-safe access
-        """
-        checkpoint_data["last_updated"] = datetime.now().isoformat()
+            return self._empty_checkpoint()
 
+    def _save_checkpoint(self, checkpoint_data: Dict[str, Any], lock: Optional[Lock] = None):
+        """Atomically write *checkpoint_data* (stamped ``last_updated``), under *lock* if given."""
+        checkpoint_data["last_updated"] = datetime.now().isoformat()
         from utils import atomic_json_write
         if lock:
             with lock:
                 atomic_json_write(self.checkpoint_file, checkpoint_data)
         else:
             atomic_json_write(self.checkpoint_file, checkpoint_data)
-    
+
     def _scan_completed_prompts_by_content(self) -> set:
-        """
-        Scan all batch files and extract completed prompts by their actual content.
-        
-        This provides a more robust resume mechanism that matches on prompt text
-        rather than indices, allowing recovery even if indices don't match.
-        
-        Returns:
-            set: Set of prompt texts that have been successfully processed
+        """Prompt texts already processed, scanned from every ``batch_*.jsonl``.
+
+        Matching on content rather than index lets resume recover even when indices
+        don't line up. Failed entries are skipped (retried); discard tombstones count
+        as completed (#93527) — re-running would just re-discard.
         """
         completed_prompts = set()
         batch_files = sorted(self.output_dir.glob("batch_*.jsonl"))
-        
+
         if not batch_files:
             return completed_prompts
-        
         print(f"📂 Scanning {len(batch_files)} batch files for completed prompts...")
-        
+
         for batch_file in batch_files:
             try:
                 with open(batch_file, 'r', encoding='utf-8') as f:
                     for line in f:
                         try:
                             entry = json.loads(line.strip())
-                            
-                            # Skip failed entries - we want to retry these
                             if entry.get("failed", False):
                                 continue
-                            
-                            # Extract the human/user prompt from conversations
-                            conversations = entry.get("conversations", [])
-                            for msg in conversations:
-                                if msg.get("from") == "human":
-                                    prompt_text = msg.get("value", "").strip()
-                                    if prompt_text:
-                                        completed_prompts.add(prompt_text)
-                                    break  # Only need the first human message
+                            prompt_text = _entry_prompt_text(entry)
+                            if prompt_text:
+                                completed_prompts.add(prompt_text)
                         except json.JSONDecodeError:
                             continue
             except Exception as e:
                 print(f"  ⚠️  Warning: Error reading {batch_file.name}: {e}")
-        
+
         return completed_prompts
-    
+
     def _filter_dataset_by_completed(self, completed_prompts: set) -> Tuple[List[Dict], List[int]]:
-        """
-        Filter the dataset to exclude prompts that have already been completed.
-        
-        Args:
-            completed_prompts: Set of prompt texts that have been completed
-            
-        Returns:
-            Tuple of (filtered_dataset, skipped_indices)
-        """
+        """Return ``([(index, entry)] not yet completed, [skipped indices])``."""
         filtered_dataset = []
         skipped_indices = []
-        
+
         for idx, entry in enumerate(self.dataset):
-            # Extract prompt from the dataset entry
             prompt_text = entry.get("prompt", "").strip()
-            
+
             # Also check conversations format
             if not prompt_text:
                 conversations = entry.get("conversations", [])
@@ -803,80 +573,44 @@ class BatchRunner:
                     if role in {"user", "human"}:
                         prompt_text = (msg.get("content") or msg.get("value", "")).strip()
                         break
-            
+
             if prompt_text in completed_prompts:
                 skipped_indices.append(idx)
             else:
-                # Keep original index for tracking
                 filtered_dataset.append((idx, entry))
-        
+
         return filtered_dataset, skipped_indices
-    
-    def run(self, resume: bool = False):
+
+    def _apply_resume(self) -> bool:
+        """Rebuild ``self.batches`` from unprocessed prompts. False when nothing is left to run."""
+        completed_prompt_texts = self._scan_completed_prompts_by_content()
+        if not completed_prompt_texts:
+            return True
+        print(f"   Found {len(completed_prompt_texts)} already-completed prompts by content matching")
+        filtered_entries, skipped_indices = self._filter_dataset_by_completed(completed_prompt_texts)
+
+        if not filtered_entries:
+            print("\n✅ All prompts have already been processed!")
+            return False
+        self.batches = _chunk(filtered_entries, self.batch_size)
+        _banner("📊 RESUME SUMMARY")
+        print(f"   Original dataset size:     {len(self.dataset):,} prompts")
+        print(f"   Already completed:         {len(skipped_indices):,} prompts")
+        print("   ─────────────────────────────────────────")
+        print(f"   🎯 RESUMING WITH:          {len(filtered_entries):,} prompts")
+        print(f"   New batches created:       {len(self.batches)}")
+        print("=" * 70 + "\n")
+        return True
+
+    def _worker_config(self) -> Dict[str, Any]:
+        """Picklable agent configuration for worker processes.
+
+        ``self.api_key`` may be a zero-arg callable (Azure Foundry Entra ID bearer provider
+        from ``agent.azure_identity_adapter``), which is not safely picklable across the
+        Pool boundary. Drop it and let each worker rebuild its own provider via
+        ``resolve_runtime_provider()`` from ``model.auth_mode`` in config.yaml
+        (azure-identity caches in-process, so each worker gets its own short-lived cache).
         """
-        Run the batch processing pipeline.
-        
-        Args:
-            resume (bool): Whether to resume from checkpoint
-        """
-        print("\n" + "=" * 70)
-        print("🚀 Starting Batch Processing")
-        print("=" * 70)
-        
-        # Smart resume: scan batch files by content to find completed prompts
-        completed_prompt_texts = set()
-        if resume:
-            completed_prompt_texts = self._scan_completed_prompts_by_content()
-            if completed_prompt_texts:
-                print(f"   Found {len(completed_prompt_texts)} already-completed prompts by content matching")
-        
-        # Filter dataset to only include unprocessed prompts
-        if resume and completed_prompt_texts:
-            filtered_entries, skipped_indices = self._filter_dataset_by_completed(completed_prompt_texts)
-            
-            if not filtered_entries:
-                print("\n✅ All prompts have already been processed!")
-                return
-            
-            # Recreate batches from filtered entries (keeping original indices for tracking)
-            batches_to_process = []
-            for i in range(0, len(filtered_entries), self.batch_size):
-                batch = filtered_entries[i:i + self.batch_size]
-                batches_to_process.append(batch)
-            
-            self.batches = batches_to_process
-            
-            # Print prominent resume summary
-            print("\n" + "=" * 70)
-            print("📊 RESUME SUMMARY")
-            print("=" * 70)
-            print(f"   Original dataset size:     {len(self.dataset):,} prompts")
-            print(f"   Already completed:         {len(skipped_indices):,} prompts")
-            print("   ─────────────────────────────────────────")
-            print(f"   🎯 RESUMING WITH:          {len(filtered_entries):,} prompts")
-            print(f"   New batches created:       {len(batches_to_process)}")
-            print("=" * 70 + "\n")
-        
-        # Load existing checkpoint (so resume doesn't clobber prior progress)
-        checkpoint_data = self._load_checkpoint()
-        if checkpoint_data.get("run_name") != self.run_name:
-            checkpoint_data = {
-                "run_name": self.run_name,
-                "completed_prompts": [],
-                "batch_stats": {},
-                "last_updated": None
-            }
-        
-        # Prepare configuration for workers.
-        #
-        # ``self.api_key`` may be a zero-arg callable (Azure Foundry Entra ID
-        # bearer provider returned by ``agent.azure_identity_adapter``). Such
-        # closures are not safely picklable across the multiprocessing.Pool
-        # boundary. Drop the callable here and let each worker rebuild its
-        # own provider via ``resolve_runtime_provider()``, which reads
-        # ``model.auth_mode`` from ``config.yaml`` and constructs a fresh
-        # token provider in the worker process (azure-identity caches
-        # in-process so each worker gets its own short-lived cache).
         if callable(self.api_key) and not isinstance(self.api_key, str):
             worker_api_key = None
             print(
@@ -886,80 +620,42 @@ class BatchRunner:
             )
         else:
             worker_api_key = self.api_key
+        config = {key: getattr(self, key) for key in _AGENT_PASSTHROUGH}
+        config["api_key"] = worker_api_key
+        for key in ("distribution", "model", "max_iterations", "verbose", "log_prefix_chars"):
+            config[key] = getattr(self, key)
+        return config
 
-        config = {
-            "distribution": self.distribution,
-            "model": self.model,
-            "max_iterations": self.max_iterations,
-            "base_url": self.base_url,
-            "api_key": worker_api_key,
-            "verbose": self.verbose,
-            "ephemeral_system_prompt": self.ephemeral_system_prompt,
-            "log_prefix_chars": self.log_prefix_chars,
-            "providers_allowed": self.providers_allowed,
-            "providers_ignored": self.providers_ignored,
-            "providers_order": self.providers_order,
-            "provider_sort": self.provider_sort,
-            "openrouter_min_coding_score": self.openrouter_min_coding_score,
-            "max_tokens": self.max_tokens,
-            "reasoning_config": self.reasoning_config,
-            "prefill_messages": self.prefill_messages,
-        }
-        
-        # For backward compatibility, still track by index (but this is secondary to content matching)
-        completed_prompts_set = set(checkpoint_data.get("completed_prompts", []))
-        
-        # Aggregate statistics across all batches
-        total_tool_stats = {}
-        
-        start_time = time.time()
-        
+    def _run_pool(self, config, checkpoint_data, completed_prompts_set, checkpoint_lock) -> List[Dict[str, Any]]:
+        """Process all batches in a worker pool, checkpointing after each result."""
         print(f"\n🔧 Initializing {self.num_workers} worker processes...")
-        
-        # Checkpoint writes happen in the parent process; keep a lock for safety.
-        checkpoint_lock = Lock()
 
-        # Process batches in parallel
         with Pool(processes=self.num_workers) as pool:
-            # Create tasks for each batch
+            # output_dir as str for pickling
             tasks = [
-                (
-                    batch_num,
-                    batch_data,
-                    str(self.output_dir),  # Convert Path to string for pickling
-                    completed_prompts_set,
-                    config
-                )
+                (batch_num, batch_data, str(self.output_dir), completed_prompts_set, config)
                 for batch_num, batch_data in enumerate(self.batches)
             ]
-            
             print(f"✅ Created {len(tasks)} batch tasks")
             print("🚀 Starting parallel batch processing...\n")
-            
-            # Use rich Progress for better visual tracking with persistent bottom bar
-            # redirect_stdout/stderr lets rich manage all output so progress bar stays clean
+
+            # rich Progress gives a persistent bottom bar; stdout/stderr are NOT
+            # redirected so worker prints stay visible.
             results = []
             console = Console(force_terminal=True)
             with Progress(
-                SpinnerColumn(),
-                TextColumn("[bold blue]📦 Batches"),
-                BarColumn(bar_width=40),
-                MofNCompleteColumn(),
-                TextColumn("•"),
-                TimeRemainingColumn(),
-                console=console,
-                refresh_per_second=2,
-                transient=False,
-                redirect_stdout=False,
-                redirect_stderr=False,
+                SpinnerColumn(), TextColumn("[bold blue]📦 Batches"), BarColumn(bar_width=40),
+                MofNCompleteColumn(), TextColumn("•"), TimeRemainingColumn(),
+                console=console, refresh_per_second=2, transient=False,
+                redirect_stdout=False, redirect_stderr=False,
             ) as progress:
                 task = progress.add_task("Processing", total=len(tasks))
-                
+
                 # Temporarily suppress DEBUG logging to avoid bar interference
                 root_logger = logging.getLogger()
                 original_level = root_logger.level
                 root_logger.setLevel(logging.WARNING)
-                
+
                 try:
                     for result in pool.imap_unordered(_process_batch_worker, tasks):
                         results.append(result)
@@ -973,11 +669,8 @@ class BatchRunner:
 
                             if isinstance(batch_num, int):
                                 checkpoint_data.setdefault('batch_stats', {})[str(batch_num)] = {
-                                    'processed': result.get('processed', 0),
-                                    'skipped': result.get('skipped', 0),
-                                    'discarded_no_reasoning': result.get('discarded_no_reasoning', 0),
+                                    key: result.get(key, 0) for key in ('processed', 'skipped', 'discarded_no_reasoning')
                                 }
-
                             checkpoint_data['completed_prompts'] = sorted(completed_prompts_set)
                             self._save_checkpoint(checkpoint_data, lock=checkpoint_lock)
                         except Exception as ckpt_err:
@@ -995,144 +688,78 @@ class BatchRunner:
                     raise
                 finally:
                     root_logger.setLevel(original_level)
-        
-        # Aggregate all batch statistics and update checkpoint
-        total_reasoning_stats = {"total_assistant_turns": 0, "turns_with_reasoning": 0, "turns_without_reasoning": 0}
+        return results
 
-        for batch_result in results:
-            # Aggregate tool stats
-            for tool_name, stats in batch_result.get("tool_stats", {}).items():
-                if tool_name not in total_tool_stats:
-                    total_tool_stats[tool_name] = {
-                        "count": 0,
-                        "success": 0,
-                        "failure": 0
-                    }
-                
-                total_tool_stats[tool_name]["count"] += stats["count"]
-                total_tool_stats[tool_name]["success"] += stats["success"]
-                total_tool_stats[tool_name]["failure"] += stats["failure"]
-            
-            # Aggregate reasoning stats
-            for key in total_reasoning_stats:
-                total_reasoning_stats[key] += batch_result.get("reasoning_stats", {}).get(key, 0)
-        
-        # Save final checkpoint (best-effort; incremental writes already happened)
-        try:
-            checkpoint_data["completed_prompts"] = sorted(completed_prompts_set)
-            self._save_checkpoint(checkpoint_data, lock=checkpoint_lock)
-        except Exception as ckpt_err:
-            print(f"⚠️  Warning: Failed to save final checkpoint: {ckpt_err}")
-        
-        # Calculate success rates
-        for tool_name in total_tool_stats:
-            stats = total_tool_stats[tool_name]
-            total_calls = stats["success"] + stats["failure"]
-            if total_calls > 0:
-                stats["success_rate"] = round(stats["success"] / total_calls * 100, 2)
-                stats["failure_rate"] = round(stats["failure"] / total_calls * 100, 2)
-            else:
-                stats["success_rate"] = 0.0
-                stats["failure_rate"] = 0.0
-        
-        # Combine ALL batch files in directory into a single trajectories.jsonl file
-        # This includes both old batches (from previous runs) and new batches (from resume)
-        # Also filter out corrupted entries (where model generated invalid tool names)
+    def _combine_batch_files(self) -> Tuple[int, int]:
+        """Merge ALL ``batch_*.jsonl`` (old runs + resume) into ``trajectories.jsonl``.
+
+        Drops corrupted entries (hallucinated tool names, invalid JSON) and discard
+        tombstones (#93527, resume bookkeeping only). Returns ``(kept, files_found)``.
+        """
         combined_file = self.output_dir / "trajectories.jsonl"
         print(f"\n📦 Combining ALL batch files into {combined_file.name}...")
-        
-        # Valid tools auto-derived from model_tools.py — no manual updates needed
-        VALID_TOOLS = ALL_POSSIBLE_TOOLS
-        
         total_entries = 0
         filtered_entries = 0
+        tombstone_entries = 0
         batch_files_found = 0
-        
-        # Find ALL batch files in the output directory (handles resume merging old + new)
         all_batch_files = sorted(self.output_dir.glob("batch_*.jsonl"))
-        
-        with open(combined_file, 'w', encoding='utf-8') as outfile:
+
+        from hermes_cli.config import artifact_file_mode
+        from utils import open_private_append
+
+        with open_private_append(combined_file, mode=artifact_file_mode()) as outfile:
+            outfile.truncate(0)
             for batch_file in all_batch_files:
                 batch_files_found += 1
                 batch_num = batch_file.stem.split("_")[1]  # Extract batch number for logging
-                
+
                 with open(batch_file, 'r', encoding='utf-8') as infile:
                     for line in infile:
                         total_entries += 1
                         try:
                             data = json.loads(line)
+
+                            if data.get("discarded"):
+                                tombstone_entries += 1
+                                continue
                             tool_stats = data.get('tool_stats', {})
-                            
-                            # Check for invalid tool names (model hallucinations)
-                            invalid_tools = [k for k in tool_stats if k not in VALID_TOOLS]
-                            
+                            invalid_tools = [k for k in tool_stats if k not in ALL_POSSIBLE_TOOLS]
+
                             if invalid_tools:
                                 filtered_entries += 1
                                 invalid_preview = invalid_tools[0][:50] + "..." if len(invalid_tools[0]) > 50 else invalid_tools[0]
                                 print(f"   ⚠️  Filtering corrupted entry (batch {batch_num}): invalid tool '{invalid_preview}'")
                                 continue
-                            
                             outfile.write(line)
                         except json.JSONDecodeError:
                             filtered_entries += 1
                             print(f"   ⚠️  Filtering invalid JSON entry (batch {batch_num})")
-        
+
         if filtered_entries > 0:
             print(f"⚠️  Filtered {filtered_entries} corrupted entries out of {total_entries} total")
-        print(f"✅ Combined {batch_files_found} batch files into trajectories.jsonl ({total_entries - filtered_entries} entries)")
-        
-        # Save final statistics
-        final_stats = {
-            "run_name": self.run_name,
-            "distribution": self.distribution,
-            "total_prompts": len(self.dataset),
-            "total_batches": len(self.batches),
-            "batch_size": self.batch_size,
-            "model": self.model,
-            "completed_at": datetime.now().isoformat(),
-            "duration_seconds": round(time.time() - start_time, 2),
-            "tool_statistics": total_tool_stats,
-            "reasoning_statistics": total_reasoning_stats,
-        }
-        
-        with open(self.stats_file, 'w', encoding='utf-8') as f:
-            json.dump(final_stats, f, indent=2, ensure_ascii=False)
-        
-        # Print summary
-        print("\n" + "=" * 70)
-        print("📊 BATCH PROCESSING COMPLETE")
-        print("=" * 70)
+        kept = total_entries - filtered_entries - tombstone_entries
+        print(f"✅ Combined {batch_files_found} batch files into trajectories.jsonl ({kept} entries)")
+        return kept, batch_files_found
+
+    def _print_summary(self, results, total_tool_stats, total_reasoning_stats, kept, batch_files_found, start_time) -> None:
+        _banner("📊 BATCH PROCESSING COMPLETE")
         print(f"✅ Prompts processed this run: {sum(r.get('processed', 0) for r in results)}")
-        print(f"✅ Total trajectories in merged file: {total_entries - filtered_entries}")
+        print(f"✅ Total trajectories in merged file: {kept}")
         print(f"✅ Total batch files merged: {batch_files_found}")
         print(f"⏱️  Total duration: {round(time.time() - start_time, 2)}s")
         print("\n📈 Tool Usage Statistics:")
         print("-" * 70)
-        
+
         if total_tool_stats:
-            # Sort by count descending
-            sorted_tools = sorted(
-                total_tool_stats.items(),
-                key=lambda x: x[1]["count"],
-                reverse=True
-            )
-            
+            sorted_tools = sorted(total_tool_stats.items(), key=lambda x: x[1]["count"], reverse=True)
             print(f"{'Tool Name':<25} {'Count':<10} {'Success':<10} {'Failure':<10} {'Success Rate':<12}")
             print("-" * 70)
             for tool_name, stats in sorted_tools:
-                print(
-                    f"{tool_name:<25} "
-                    f"{stats['count']:<10} "
-                    f"{stats['success']:<10} "
-                    f"{stats['failure']:<10} "
-                    f"{stats['success_rate']:.1f}%"
-                )
+                print(f"{tool_name:<25} {stats['count']:<10} {stats['success']:<10} {stats['failure']:<10} {stats['success_rate']:.1f}%")
         else:
             print("No tool calls were made during this run.")
-        
-        # Print reasoning coverage stats
         total_discarded = sum(r.get("discarded_no_reasoning", 0) for r in results)
-        
+
         print("\n🧠 Reasoning Coverage:")
         print("-" * 70)
         total_turns = total_reasoning_stats["total_assistant_turns"]
@@ -1148,12 +775,78 @@ class BatchRunner:
             print("   No assistant turns recorded.")
         if total_discarded > 0:
             print(f"   🚫 Samples discarded (zero reasoning): {total_discarded:,}")
-        
         print(f"\n💾 Results saved to: {self.output_dir}")
         print("   - Trajectories: trajectories.jsonl (combined)")
         print("   - Individual batches: batch_*.jsonl (for debugging)")
         print(f"   - Statistics: {self.stats_file.name}")
         print(f"   - Checkpoint: {self.checkpoint_file.name}")
+
+    def run(self, resume: bool = False):
+        """Run the batch pipeline; with *resume*, skip prompts already present in batch files."""
+        _banner("🚀 Starting Batch Processing")
+
+        if resume and not self._apply_resume():
+            return
+
+        # Load existing checkpoint (so resume doesn't clobber prior progress)
+        checkpoint_data = self._load_checkpoint()
+        if checkpoint_data.get("run_name") != self.run_name:
+            checkpoint_data = self._empty_checkpoint()
+        config = self._worker_config()
+
+        # Index tracking is secondary to content matching (backward compatibility).
+        completed_prompts_set = set(checkpoint_data.get("completed_prompts", []))
+        start_time = time.time()
+
+        # Checkpoint writes happen in the parent process; keep a lock for safety.
+        checkpoint_lock = Lock()
+        results = self._run_pool(config, checkpoint_data, completed_prompts_set, checkpoint_lock)
+        total_tool_stats = {}
+        total_reasoning_stats = dict.fromkeys(_REASONING_KEYS, 0)
+        for batch_result in results:
+            _merge_tool_stats(total_tool_stats, batch_result.get("tool_stats", {}))
+            _merge_reasoning_stats(total_reasoning_stats, batch_result.get("reasoning_stats", {}))
+
+        # Final checkpoint is best-effort; incremental writes already happened.
+        try:
+            checkpoint_data["completed_prompts"] = sorted(completed_prompts_set)
+            self._save_checkpoint(checkpoint_data, lock=checkpoint_lock)
+        except Exception as ckpt_err:
+            print(f"⚠️  Warning: Failed to save final checkpoint: {ckpt_err}")
+
+        for stats in total_tool_stats.values():
+            total_calls = stats["success"] + stats["failure"]
+            stats["success_rate"] = round(stats["success"] / total_calls * 100, 2) if total_calls > 0 else 0.0
+            stats["failure_rate"] = round(stats["failure"] / total_calls * 100, 2) if total_calls > 0 else 0.0
+        kept, batch_files_found = self._combine_batch_files()
+        final_stats = {
+            "run_name": self.run_name,
+            "distribution": self.distribution,
+            "total_prompts": len(self.dataset),
+            "total_batches": len(self.batches),
+            "batch_size": self.batch_size,
+            # Snapshot the CLI-level credential/runtime fields BEFORE mutating them so a failed in-place
+            # agent swap can roll the whole CLI back to the old working model. Otherwise the broken
+            # credentials staged below leak into the next turn's resolution even though the agent itself
+            # rolled back (#50163).
+            # Snapshot CLI-level fields before mutation so a failed in-place swap rolls the whole CLI back
+            # to the old working model (#50163).
+            "model": self.model,
+            "completed_at": datetime.now().isoformat(),
+            "duration_seconds": round(time.time() - start_time, 2),
+            "tool_statistics": total_tool_stats,
+            "reasoning_statistics": total_reasoning_stats,
+            "discarded_no_reasoning": sum(r.get("discarded_no_reasoning", 0) for r in results),
+        }
+
+        with open(self.stats_file, 'w', encoding='utf-8') as f:
+            json.dump(final_stats, f, indent=2, ensure_ascii=False)
+        self._print_summary(results, total_tool_stats, total_reasoning_stats, kept, batch_files_found, start_time)
+
+
+def _split_csv(value: Optional[str]) -> Optional[List[str]]:
+    """Comma-separated CLI string to a list of stripped items; ``None`` when empty."""
+    return [p.strip() for p in value.split(",")] if value else None
 
 
 def main(
@@ -1230,57 +923,40 @@ def main(
         # List available distributions
         python batch_runner.py --list_distributions
     """
-    # Handle list distributions
     if list_distributions:
         from toolset_distributions import print_distribution_info
-
         print("📊 Available Toolset Distributions")
         print("=" * 70)
-
         all_dists = list_distributions()
         for dist_name in sorted(all_dists.keys()):
             print_distribution_info(dist_name)
-        
+
         print("\n💡 Usage:")
         print("  python batch_runner.py --dataset_file=data.jsonl --batch_size=10 \\")
         print("                         --run_name=my_run --distribution=<name>")
         return
-    
-    # Validate required arguments
-    if not dataset_file:
-        print("❌ Error: --dataset_file is required")
-        raise SystemExit(1)
 
-    if not batch_size or batch_size < 1:
-        print("❌ Error: --batch_size must be a positive integer")
-        raise SystemExit(1)
+    for invalid, message in (
+        (not dataset_file, "--dataset_file is required"),
+        (not batch_size or batch_size < 1, "--batch_size must be a positive integer"),
+        (not run_name, "--run_name is required"),
+    ):
+        if invalid:
+            print(f"❌ Error: {message}")
+            raise SystemExit(1)
 
-    if not run_name:
-        print("❌ Error: --run_name is required")
-        raise SystemExit(1)
-
-    # Parse provider preferences (comma-separated strings to lists)
-    providers_allowed_list = [p.strip() for p in providers_allowed.split(",")] if providers_allowed else None
-    providers_ignored_list = [p.strip() for p in providers_ignored.split(",")] if providers_ignored else None
-    providers_order_list = [p.strip() for p in providers_order.split(",")] if providers_order else None
-
-    # Build reasoning_config from CLI flags
     # --reasoning_disabled takes priority, then --reasoning_effort, then default (medium)
     reasoning_config = None
     if reasoning_disabled:
-        # Completely disable reasoning/thinking tokens
         reasoning_config = {"effort": "none"}
         print("🧠 Reasoning: DISABLED (effort=none)")
     elif reasoning_effort:
-        # Use specified effort level
         valid_efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
         if reasoning_effort not in valid_efforts:
             print(f"❌ Error: --reasoning_effort must be one of: {', '.join(valid_efforts)}")
             raise SystemExit(1)
         reasoning_config = {"enabled": True, "effort": reasoning_effort}
         print(f"🧠 Reasoning effort: {reasoning_effort}")
-
-    # Load prefill messages from JSON file if provided
     prefill_messages = None
     if prefill_messages_file:
         try:
@@ -1294,7 +970,6 @@ def main(
             print(f"❌ Error loading prefill messages: {e}")
             raise SystemExit(1)
 
-    # Initialize and run batch runner
     try:
         runner = BatchRunner(
             dataset_file=dataset_file,
@@ -1309,18 +984,16 @@ def main(
             verbose=verbose,
             ephemeral_system_prompt=ephemeral_system_prompt,
             log_prefix_chars=log_prefix_chars,
-            providers_allowed=providers_allowed_list,
-            providers_ignored=providers_ignored_list,
-            providers_order=providers_order_list,
+            providers_allowed=_split_csv(providers_allowed),
+            providers_ignored=_split_csv(providers_ignored),
+            providers_order=_split_csv(providers_order),
             provider_sort=provider_sort,
             max_tokens=max_tokens,
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,
             max_samples=max_samples,
         )
-
         runner.run(resume=resume)
-
     except Exception as e:
         print(f"\n❌ Fatal error: {e}")
         if verbose:

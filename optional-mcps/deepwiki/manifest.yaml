@@ -1,0 +1,30 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: deepwiki
+description: Ask questions about any public GitHub repo (Devin's DeepWiki).
+source: https://docs.devin.ai/work-with-devin/deepwiki-mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). No authentication required (verified live:
+# initialize succeeds anonymously).
+
+transport:
+  type: http
+  url: https://mcp.deepwiki.com/mcp
+
+auth:
+  type: none
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - deepwiki
+    - repo wiki
+  hosts:
+    - deepwiki.com
+
+post_install: |
+  No account or credentials needed — tools are available as soon as the
+  session restarts.

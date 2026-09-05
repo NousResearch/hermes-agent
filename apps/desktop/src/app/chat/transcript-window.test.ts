@@ -4,8 +4,10 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { RENDER_WEIGHT_CHARS } from '@/lib/render-weight'
 
 import {
+  advanceSessionTranscriptWindow,
   advanceTranscriptWindow,
   alignToBranchGroup,
+  MAX_SESSION_WINDOWS,
   selectTranscriptWindow,
   TRANSCRIPT_WINDOW_BUDGET,
   TRANSCRIPT_WINDOW_MIN_MESSAGES,
@@ -211,6 +213,87 @@ describe('advanceTranscriptWindow', () => {
     // Still uncut: identity of the full array is preserved for the runtime.
     expect(next.window.messages).toBe(grown)
     expect(next.window.windowed).toBe(false)
+  })
+})
+
+describe('advanceSessionTranscriptWindow', () => {
+  const heavyChars = RENDER_WEIGHT_CHARS * 40
+
+  it('matches a fresh walk on first visit', () => {
+    const memos = new Map()
+    const messages = transcript(400, heavyChars)
+
+    const state = advanceSessionTranscriptWindow(memos, 'session-a', messages)
+
+    expect(state.window).toEqual(selectTranscriptWindow(messages))
+    expect(state.anchorId).toBe(state.window.messages[0].id)
+  })
+
+  it('returns the SAME windowed slice by reference on a warm re-visit with an unchanged transcript', () => {
+    const memos = new Map()
+    const sessionA = transcript(400, heavyChars)
+    const sessionB = transcript(300, heavyChars).map(m => ({ ...m, id: `b-${m.id}` }))
+
+    // Visit B, then A, then B again — the exact warm-switch shape of #95595.
+    const firstB = advanceSessionTranscriptWindow(memos, 'session-b', sessionB)
+    advanceSessionTranscriptWindow(memos, 'session-a', sessionA)
+    const secondB = advanceSessionTranscriptWindow(memos, 'session-b', sessionB)
+
+    expect(secondB.window.windowed).toBe(true)
+    // THE perf guard: same transcript array => same windowed slice reference,
+    // so the runtime repository and every row keep their identity.
+    expect(secondB.window.messages).toBe(firstB.window.messages)
+    expect(secondB.anchorId).toBe(firstB.anchorId)
+  })
+
+  it('holds the sticky cut when a re-visited session grew while away', () => {
+    const memos = new Map()
+    const messages = transcript(400, heavyChars)
+    const state = advanceSessionTranscriptWindow(memos, 'session-a', messages)
+
+    // While away, the session streamed a few light turns (within slack).
+    const grown = [...messages, ...transcript(10, 100)]
+    const next = advanceSessionTranscriptWindow(memos, 'session-a', grown)
+
+    // Sticky cut survived the switch-away: same anchor, no fresh re-walk.
+    expect(next.anchorId).toBe(state.anchorId)
+    expect(next.window.messages[0].id).toBe(state.window.messages[0].id)
+    // The anchored slice now simply includes the 10 new light turns.
+    expect(next.window.messages.length).toBe(state.window.messages.length + 10)
+  })
+
+  it('falls back to a fresh walk when the anchor vanished while away', () => {
+    const memos = new Map()
+    const messages = transcript(400, heavyChars)
+    advanceSessionTranscriptWindow(memos, 'session-a', messages)
+
+    // Compression rewrite: disjoint ids while the user was elsewhere.
+    const rewritten = transcript(300, heavyChars).map(m => ({ ...m, id: `compressed-${m.id}` }))
+    const next = advanceSessionTranscriptWindow(memos, 'session-a', rewritten)
+
+    expect(next.window).toEqual(selectTranscriptWindow(rewritten))
+  })
+
+  it('re-walks when pages change on re-entry', () => {
+    const memos = new Map()
+    const messages = transcript(400, heavyChars)
+
+    const one = advanceSessionTranscriptWindow(memos, 'session-a', messages, 1)
+    const two = advanceSessionTranscriptWindow(memos, 'session-a', messages, 2)
+
+    expect(two.window.messages.length).toBeGreaterThan(one.window.messages.length)
+  })
+
+  it('keeps sessions independent and evicts the oldest memo past the cap', () => {
+    const memos = new Map()
+
+    for (let i = 0; i < MAX_SESSION_WINDOWS + 5; i++) {
+      advanceSessionTranscriptWindow(memos, `session-${i}`, transcript(400, heavyChars))
+    }
+
+    expect(memos.size).toBeLessThanOrEqual(MAX_SESSION_WINDOWS)
+    expect(memos.has('session-0')).toBe(false)
+    expect(memos.has(`session-${MAX_SESSION_WINDOWS + 4}`)).toBe(true)
   })
 })
 

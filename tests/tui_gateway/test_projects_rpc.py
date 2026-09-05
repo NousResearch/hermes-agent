@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
+import threading
+from pathlib import Path
 
 import pytest
 
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 import tui_gateway.server as server
 
 
@@ -336,6 +340,139 @@ def test_scan_time_is_not_treated_as_session_activity(tmp_path):
     assert active["last_active"] > idle["last_active"]
 
 
+def test_remote_scan_failure_merges_instead_of_replacing_cache(tmp_path, monkeypatch):
+    """A backend scan that can't fully walk its roots must NOT wipe the cache.
+
+    `projects.discover_repos` with `scan:true` asks the remote host to scan its
+    own discovery roots. When one root fails to walk, the scan result is not the
+    authoritative full universe — the previously cached repos must survive so a
+    failed remote refresh can't blank the sidebar back to the silent, empty
+    state of #81723 (regression for MEDIUM: `replace=True` was wiping on every
+    call regardless of success).
+    """
+    from hermes_cli import projects_db as pdb
+    import tui_gateway.server as server
+
+    def _git_repo(path):
+        repo = path
+        repo.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        return str(repo)
+
+    # A cached repo the partial scan never visits, parked OUTSIDE the scan roots.
+    seed = _git_repo(tmp_path / "elsewhere" / "seed-repo")
+    with pdb.connect_closing() as conn:
+        pdb.record_discovered_repos(conn, [(seed, "seed-repo")])
+        seeded = [r["root"] for r in pdb.list_discovered_repos(conn)]
+    assert seed in seeded
+
+    good = _git_repo(tmp_path / "good-repo")
+
+    # Force one root to fail to walk: the scan becomes non-authoritative, so it
+    # must merge into the cache, never wipe it.
+    real_walk = os.walk
+    bad_root = str(tmp_path / "unwalkable")
+
+    def _flaky_walk(top, *a, **k):
+        if top == bad_root:
+            raise OSError("boom")
+        yield from real_walk(top, *a, **k)
+
+    monkeypatch.setattr(server.os, "walk", _flaky_walk)
+
+    policy = {"enabled": True, "roots": [good, bad_root], "exclude_paths": []}
+
+    with pdb.connect_closing() as conn:
+        authoritative = server._scan_discovered_repos_remote(conn, policy)
+        joined = [r["root"] for r in pdb.list_discovered_repos(conn)]
+
+    # The scan found the good repo and merged it, but the failed root means the
+    # result is not authoritative, so it must NOT have replaced the cache.
+    assert not authoritative
+    assert good in joined
+    # The seeded repo that the partial scan never saw is still cached.
+    assert seed in joined
+
+
+def test_remote_scan_missing_root_does_not_wipe_cache(tmp_path):
+    """A configured discovery root missing on disk must NOT wipe the cache.
+
+    ``os.walk`` on a non-existent root silently yields nothing instead of
+    raising, so a temporarily unavailable root (unmounted volume, moved path)
+    would otherwise make the scan look like a genuinely empty authoritative
+    set and DELETE-replace every cached repo that lived under it. The missing
+    root must contribute nothing, and the scan must merge — never wipe.
+    """
+    from hermes_cli import projects_db as pdb
+    import tui_gateway.server as server
+
+    def _git_repo(path):
+        repo = path
+        repo.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        return str(repo)
+
+    # A cached repo the scan never visits, parked OUTSIDE the scan roots.
+    seed = _git_repo(tmp_path / "elsewhere" / "seed-repo")
+    with pdb.connect_closing() as conn:
+        pdb.record_discovered_repos(conn, [(seed, "seed-repo")])
+        seeded = [r["root"] for r in pdb.list_discovered_repos(conn)]
+    assert seed in seeded
+
+    good = _git_repo(tmp_path / "good-repo")
+
+    # This root is configured but does NOT exist on disk. os.walk on it yields
+    # nothing silently — without the guard the scan would stay authoritative
+    # and wipe the cache.
+    missing_root = str(tmp_path / "missing-root")
+
+    policy = {"enabled": True, "roots": [good, missing_root], "exclude_paths": []}
+
+    with pdb.connect_closing() as conn:
+        authoritative = server._scan_discovered_repos_remote(conn, policy)
+        joined = [r["root"] for r in pdb.list_discovered_repos(conn)]
+
+    # The missing root is not authoritative, so the scan must merge, not wipe.
+    assert not authoritative
+    assert good in joined
+    # The seeded repo the missing root would have wiped is still cached.
+    assert seed in joined
+
+
+def test_remote_scan_full_authoritative_replaces_cache(tmp_path):
+    """Only a fully-walked scan may replace the stale cache."""
+    from hermes_cli import projects_db as pdb
+    import tui_gateway.server as server
+
+    def _git_repo(path):
+        repo = path
+        repo.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        return str(repo)
+
+    # Park the stale repo OUTSIDE the scan root so the authoritative scan no
+    # longer sees it, and the fresh repo inside the root it walks.
+    stale = _git_repo(tmp_path / "outside" / "stale-repo")
+    scandir = tmp_path / "scandir"
+    scandir.mkdir()
+    fresh = _git_repo(scandir / "fresh-repo")
+
+    with pdb.connect_closing() as conn:
+        pdb.record_discovered_repos(conn, [(stale, "stale-repo")])
+
+    policy = {"enabled": True, "roots": [str(scandir)], "exclude_paths": []}
+
+    with pdb.connect_closing() as conn:
+        authoritative = server._scan_discovered_repos_remote(conn, policy)
+        joined = [r["root"] for r in pdb.list_discovered_repos(conn)]
+
+    assert authoritative
+    assert fresh in joined
+    # A full, authoritative scan replaced the stale cache: the old repo the
+    # scan no longer saw is gone from the authoritative set.
+    assert stale not in joined
+
+
 def test_terminal_session_persists_its_launch_cwd():
     """A terminal session's cwd IS its workspace, so the row must record it.
 
@@ -358,6 +495,66 @@ def test_desktop_launch_cwd_is_not_persisted_as_a_workspace():
     assert server._persisted_session_cwd(
         {"source": "desktop", "cwd": "/picked/repo", "explicit_cwd": True}
     ) == "/picked/repo"
+
+
+def test_desktop_launch_cwd_is_marked_as_context_artifact():
+    assert server._context_cwd_is_launch_artifact(
+        {"source": "desktop", "cwd": "/opt/hermes"}
+    ) is True
+
+
+def test_explicit_desktop_and_terminal_cwds_are_context_workspaces():
+    assert server._context_cwd_is_launch_artifact(
+        {"source": "desktop", "cwd": "/picked/repo", "explicit_cwd": True}
+    ) is False
+    assert server._context_cwd_is_launch_artifact(
+        {"source": "tui", "cwd": "/opt/hermes"}
+    ) is False
+
+
+@pytest.mark.parametrize(
+    ("explicit_cwd", "launch_artifact"),
+    [(True, False), (False, True)],
+)
+def test_desktop_agent_rebuild_preserves_workspace_provenance(
+    monkeypatch, explicit_cwd, launch_artifact
+):
+    captured = {}
+    session = {
+        "agent": object(),
+        "attached_images": [],
+        "cwd": "/picked/repo" if explicit_cwd else "/opt/hermes",
+        "edit_snapshots": {},
+        "explicit_cwd": explicit_cwd,
+        "history": ["old"],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "image_counter": 0,
+        "running": False,
+        "session_key": "stored-session",
+        "show_reasoning": False,
+        "source": "desktop",
+        "tool_progress_mode": "off",
+        "tool_started_at": {},
+    }
+
+    def _make_agent(*_args, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(server, "_set_session_context", lambda _key: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
+    monkeypatch.setattr(server, "_make_agent", _make_agent)
+    monkeypatch.setattr(server, "_config_model_target", lambda: None)
+    monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
+    monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "off")
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {})
+    monkeypatch.setattr(server, "_emit", lambda *_args: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args: None)
+
+    server._reset_session_agent("live-session", session)
+
+    assert captured["context_cwd_is_launch_artifact"] is launch_artifact
 
 
 def test_home_container_dirs_are_never_a_workspace(tmp_path):
@@ -458,5 +655,233 @@ def test_nondefault_policy_rejects_stale_or_legacy_results(monkeypatch, tmp_path
     assert stale["accepted"] is False
     assert accepted["accepted"] is True
     assert any(item["root"] == str(root) for item in accepted["repos"])
+
+
+def _profile_dir(tmp_path: Path, name: str) -> Path:
+    home = tmp_path / "homes" / name
+    home.mkdir(parents=True, exist_ok=True)
+    return home
+
+
+def _bind_profiles(monkeypatch, tmp_path: Path, homes: dict[str, Path]) -> None:
+    """Resolve profile names to this test's throwaway homes.
+
+    Unmapped names resolve to a path that does not exist, which is how the
+    gateway detects "not a real profile on this host" and stays on launch.
+    """
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_profile_dir",
+        lambda name: homes.get(name, tmp_path / "homes" / "missing" / name),
+    )
+
+
+def _create_project(home: Path, name: str, folder: Path, *, use: bool = False) -> dict:
+    """Create a project in ``home``'s projects.db via the real RPC."""
+    token = set_hermes_home_override(home)
+    try:
+        return _call(
+            "projects.create", {"name": name, "folders": [str(folder)], "use": use}
+        )["project"]
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _create_session(home: Path, session_id: str, cwd: Path) -> None:
+    """Seed one message-bearing session in ``home``'s state.db."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=home / "state.db")
+    try:
+        db.create_session(session_id, "cli", cwd=str(cwd))
+        db.append_message(session_id, "user", f"hello from {session_id}")
+    finally:
+        db.close()
+
+
+@contextlib.contextmanager
+def _serving_launch_profile(launch_home: Path):
+    """Run the handlers as a backend launched under ``launch_home``."""
+    from hermes_state import SessionDB
+
+    token = set_hermes_home_override(launch_home)
+    prev_db, prev_error = server._db, server._db_error
+    server._db = SessionDB(db_path=launch_home / "state.db")
+    server._db_error = None
+    try:
+        yield
+    finally:
+        server._db.close()
+        server._db, server._db_error = prev_db, prev_error
+        reset_hermes_home_override(token)
+
+
+def _cached_repo_labels(home: Path) -> list[str]:
+    """Labels in ``home``'s discovered-repo cache, read straight off disk."""
+    from hermes_cli import projects_db as pdb
+
+    with pdb.connect_closing(home / "projects.db") as conn:
+        return sorted(str(entry.get("label") or "") for entry in pdb.list_discovered_repos(conn))
+
+
+def test_projects_reads_are_scoped_to_the_requested_profile(monkeypatch, tmp_path):
+    """A ``profile`` param reads that profile's projects.db AND its state.db."""
+    launch_home = _profile_dir(tmp_path, "launch")
+    coder_home = _profile_dir(tmp_path, "coder")
+    launch_repo = tmp_path / "repos" / "launch-repo"
+    coder_repo = tmp_path / "repos" / "coder-repo"
+    launch_repo.mkdir(parents=True)
+    coder_repo.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home, "coder": coder_home})
+
+    launch_project = _create_project(launch_home, "Launch", launch_repo, use=True)
+    coder_project = _create_project(coder_home, "Coder", coder_repo, use=True)
+    _create_session(launch_home, "launch-session", launch_repo)
+    _create_session(coder_home, "coder-session", coder_repo)
+
+    with _serving_launch_profile(launch_home):
+        launch_listing = _call("projects.list")
+        coder_listing = _call("projects.list", {"profile": "coder"})
+        launch_tree = _call("projects.tree")
+        coder_tree = _call("projects.tree", {"profile": "coder"})
+        coder_sessions = _call(
+            "projects.project_sessions",
+            {"profile": "coder", "project_id": coder_project["id"]},
+        )
+        # The override must not leak: the very next unscoped read is launch again.
+        launch_again = _call("projects.list")
+
+    assert [p["name"] for p in launch_listing["projects"]] == ["Launch"]
+    assert [p["name"] for p in coder_listing["projects"]] == ["Coder"]
+    assert launch_listing["active_id"] == launch_project["id"]
+    assert coder_listing["active_id"] == coder_project["id"]
+    assert launch_again == launch_listing
+
+    assert [p["label"] for p in launch_tree["projects"]] == ["Launch"]
+    assert [p["label"] for p in coder_tree["projects"]] == ["Coder"]
+    # Session counts prove the SESSION db was swapped too, not just projects.db.
+    assert launch_tree["projects"][0]["sessionCount"] == 1
+    assert coder_tree["projects"][0]["sessionCount"] == 1
+    assert launch_tree["scoped_session_ids"] == ["launch-session"]
+    assert coder_tree["scoped_session_ids"] == ["coder-session"]
+    assert [s["profile"] for s in coder_tree["projects"][0]["previewSessions"]] == ["coder"]
+
+    assert coder_sessions["project"]["id"] == coder_project["id"]
+    assert coder_sessions["project"]["sessionCount"] == 1
+    lane = coder_sessions["project"]["repos"][0]["groups"][0]
+    assert [s["id"] for s in lane["sessions"]] == ["coder-session"]
+    assert [s["profile"] for s in lane["sessions"]] == ["coder"]
+
+
+def test_projects_tree_is_scoped_to_the_requested_profile(monkeypatch, tmp_path):
+    """``projects.tree`` on its own reads the requested profile's stores."""
+    launch_home = _profile_dir(tmp_path, "launch")
+    coder_home = _profile_dir(tmp_path, "coder")
+    launch_repo = tmp_path / "repos" / "tree-launch"
+    coder_repo = tmp_path / "repos" / "tree-coder"
+    launch_repo.mkdir(parents=True)
+    coder_repo.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home, "coder": coder_home})
+
+    _create_project(launch_home, "Launch", launch_repo, use=True)
+    _create_project(coder_home, "Coder", coder_repo, use=True)
+    _create_session(launch_home, "tree-launch-session", launch_repo)
+    _create_session(coder_home, "tree-coder-session", coder_repo)
+
+    with _serving_launch_profile(launch_home):
+        coder_tree = _call("projects.tree", {"profile": "coder"})
+        launch_tree = _call("projects.tree")
+
+    assert [p["label"] for p in coder_tree["projects"]] == ["Coder"]
+    assert coder_tree["scoped_session_ids"] == ["tree-coder-session"]
+    assert [p["label"] for p in launch_tree["projects"]] == ["Launch"]
+    assert launch_tree["scoped_session_ids"] == ["tree-launch-session"]
+
+
+def test_project_sessions_is_scoped_to_the_requested_profile(monkeypatch, tmp_path):
+    """``projects.project_sessions`` on its own hydrates from the requested profile."""
+    launch_home = _profile_dir(tmp_path, "launch")
+    coder_home = _profile_dir(tmp_path, "coder")
+    launch_repo = tmp_path / "repos" / "drill-launch"
+    coder_repo = tmp_path / "repos" / "drill-coder"
+    launch_repo.mkdir(parents=True)
+    coder_repo.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home, "coder": coder_home})
+
+    launch_project = _create_project(launch_home, "Launch", launch_repo, use=True)
+    coder_project = _create_project(coder_home, "Coder", coder_repo, use=True)
+    _create_session(launch_home, "drill-launch-session", launch_repo)
+    _create_session(coder_home, "drill-coder-session", coder_repo)
+
+    with _serving_launch_profile(launch_home):
+        coder_drill = _call(
+            "projects.project_sessions",
+            {"profile": "coder", "project_id": coder_project["id"]},
+        )
+        launch_drill = _call(
+            "projects.project_sessions", {"project_id": launch_project["id"]}
+        )
+
+    assert coder_drill["project"] is not None
+    assert coder_drill["project"]["id"] == coder_project["id"]
+    coder_lane = coder_drill["project"]["repos"][0]["groups"][0]
+    assert [s["id"] for s in coder_lane["sessions"]] == ["drill-coder-session"]
+
+    assert launch_drill["project"]["id"] == launch_project["id"]
+    launch_lane = launch_drill["project"]["repos"][0]["groups"][0]
+    assert [s["id"] for s in launch_lane["sessions"]] == ["drill-launch-session"]
+
+
+def test_record_repos_writes_to_the_requested_profiles_projects_db(monkeypatch, tmp_path):
+    """The scan cache is per-profile: a scoped write must not land on launch."""
+    launch_home = _profile_dir(tmp_path, "launch")
+    coder_home = _profile_dir(tmp_path, "coder")
+    launch_repo = tmp_path / "repos" / "launch-scan"
+    coder_repo = tmp_path / "repos" / "coder-scan"
+    launch_repo.mkdir(parents=True)
+    coder_repo.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home, "coder": coder_home})
+
+    with _serving_launch_profile(launch_home):
+        _call("projects.record_repos", {"repos": [{"root": str(launch_repo), "label": "launch"}]})
+        _call(
+            "projects.record_repos",
+            {"profile": "coder", "repos": [{"root": str(coder_repo), "label": "coder"}]},
+        )
+
+        launch_repos = _call("projects.discover_repos")["repos"]
+        coder_repos = _call("projects.discover_repos", {"profile": "coder"})["repos"]
+
+    assert [repo["label"] for repo in launch_repos] == ["launch"]
+    assert [repo["label"] for repo in coder_repos] == ["coder"]
+    assert _cached_repo_labels(launch_home) == ["launch"]
+    assert _cached_repo_labels(coder_home) == ["coder"]
+
+
+def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_path):
+    """Omitted/blank/unknown profile is a no-op — the pre-scoping behavior."""
+    launch_home = _profile_dir(tmp_path, "launch")
+    coder_home = _profile_dir(tmp_path, "coder")
+    repo = tmp_path / "repos" / "launch-only"
+    repo.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home, "coder": coder_home})
+
+    with _serving_launch_profile(launch_home):
+        created = _call(
+            "projects.create", {"name": "Launch only", "folders": [str(repo)], "use": True}
+        )["project"]
+        _call("projects.record_repos", {"repos": [{"root": str(repo), "label": "only"}]})
+
+        omitted = _call("projects.list")
+        blank = _call("projects.list", {"profile": ""})
+        unknown = _call("projects.list", {"profile": "not-a-profile"})
+
+    assert [p["name"] for p in omitted["projects"]] == ["Launch only"]
+    assert blank == omitted
+    assert unknown == omitted
+    assert omitted["active_id"] == created["id"]
+
+    assert _cached_repo_labels(launch_home) == ["only"]
+    assert not (coder_home / "projects.db").exists()
+    assert not (Path(os.environ["HERMES_HOME"]) / "projects.db").exists()
 
 

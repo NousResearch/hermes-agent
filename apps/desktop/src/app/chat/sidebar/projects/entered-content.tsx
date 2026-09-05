@@ -2,16 +2,9 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useMemo, useState } from 'react'
 
-import { Button } from '@/components/ui/button'
+import { type NewSessionSplitHandler, startNewSessionDrag } from '@/app/chat/new-session-drag'
 import { Codicon } from '@/components/ui/codicon'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -41,6 +34,7 @@ export function EnteredProjectContent({
   project,
   renderRows,
   onNewSession,
+  onNewSessionSplit,
   repoWorktrees,
   liveSessions,
   removedSessionIds
@@ -48,6 +42,7 @@ export function EnteredProjectContent({
   project: SidebarProjectTree
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
+  onNewSessionSplit?: NewSessionSplitHandler
   repoWorktrees?: Record<string, HermesGitWorktree[]>
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
@@ -72,6 +67,7 @@ export function EnteredProjectContent({
           key={repo.id}
           liveSessions={liveSessions}
           onNewSession={onNewSession}
+          onNewSessionSplit={onNewSessionSplit}
           removedSessionIds={removedSessionIds}
           renderRows={renderRows}
           repo={repo}
@@ -87,6 +83,7 @@ function RepoFlatSection({
   showHeader,
   renderRows,
   onNewSession,
+  onNewSessionSplit,
   discoveredWorktrees,
   liveSessions,
   removedSessionIds
@@ -95,6 +92,7 @@ function RepoFlatSection({
   showHeader: boolean
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
+  onNewSessionSplit?: NewSessionSplitHandler
   discoveredWorktrees?: HermesGitWorktree[]
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
@@ -174,6 +172,7 @@ function RepoFlatSection({
           // The kanban bucket is read-only: it aggregates many task worktrees, so
           // "new session here" and "remove worktree" have no single target.
           onNewSession={group.isKanban ? undefined : onNewSession}
+          onNewSessionSplit={group.isKanban ? undefined : onNewSessionSplit}
           onRemove={group.isMain || group.isKanban ? undefined : () => setRemoveTarget(group)}
           renderRows={renderRows}
         />
@@ -190,43 +189,26 @@ function RepoFlatSection({
     destructiveLabel: string,
     onDestructive: (group: SidebarSessionGroup) => void
   ) => (
-    <Dialog onOpenChange={isOpen => !isOpen && setTarget(null)} open={Boolean(target)}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{`${s.projects.removeWorktree} "${target?.label ?? ''}"?`}</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button onClick={() => setTarget(null)} variant="ghost">
-            {t.common.cancel}
-          </Button>
-          <Button
-            onClick={() => {
-              if (target) {
-                dismissWorktree(target.id)
-              }
-
-              setTarget(null)
-            }}
-            variant="secondary"
-          >
-            {s.projects.removeFromSidebar}
-          </Button>
-          <Button
-            onClick={() => {
-              setTarget(null)
-
-              if (target) {
-                onDestructive(target)
-              }
-            }}
-            variant="destructive"
-          >
-            {destructiveLabel}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <ConfirmDialog
+      confirmLabel={destructiveLabel}
+      description={description}
+      destructive
+      // removeViaGit finishes on its own: it either dismisses the lane, escalates
+      // to the force prompt, or toasts. Nothing left for the dialog to wait on.
+      dismissOnConfirm
+      onClose={() => setTarget(null)}
+      onConfirm={() => {
+        if (target) {
+          onDestructive(target)
+        }
+      }}
+      open={Boolean(target)}
+      secondaryAction={{
+        label: s.projects.removeFromSidebar,
+        onClick: () => target && dismissWorktree(target.id)
+      }}
+      title={`${s.projects.removeWorktree} "${target?.label ?? ''}"?`}
+    />
   )
 
   const removeDialog = (
@@ -270,6 +252,24 @@ function RepoFlatSection({
                 setWorkspaceNodeOpen(repo.id, true)
                 onNewSession(repo.path)
               }}
+              onPointerDown={
+                onNewSessionSplit
+                  ? event => {
+                      startNewSessionDrag(
+                        placement => {
+                          setWorkspaceNodeOpen(repo.id, true)
+                          onNewSessionSplit(placement.dir, {
+                            anchor: placement.anchor,
+                            before: placement.before,
+                            cwd: repo.path
+                          })
+                        },
+                        event,
+                        { cwd: repo.path, label: s.newSessionIn(repo.label) }
+                      )
+                    }
+                  : undefined
+              }
             />
           )
         }

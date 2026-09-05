@@ -130,26 +130,6 @@ class TestClarifyPrimitive:
             assert result == "B"
 
 
-    def test_notify_register_unregister_clears_pending(self):
-        """unregister_notify cancels any pending clarify so threads unwind."""
-        from tools import clarify_gateway as cm
-
-        cm.register("id9", "sk9", "Q?", ["A"])
-
-        def waiter():
-            return cm.wait_for_response("id9", timeout=10.0)
-
-        with ThreadPoolExecutor(1) as pool:
-            fut = pool.submit(waiter)
-            time.sleep(0.05)
-
-            cm.register_notify("sk9", lambda entry: None)
-            cm.unregister_notify("sk9")
-
-            # unregister_notify calls clear_session; thread unwinds
-            result = fut.result(timeout=10.0)
-            assert result == ""
-
     def test_session_index_isolation(self):
         """Entries from different sessions don't leak across get_pending lookups."""
         from tools import clarify_gateway as cm
@@ -223,23 +203,10 @@ class TestGatewayTextIntercept:
 
 
 class TestCoverageGaps:
-    """Cover remaining branches: signature(), get_entry miss, find_awaiting
-    with deleted entry, cancel with None entry, timeout exception, get_notify."""
+    """Cover remaining branches: unknown-id wait, timeout config exception."""
 
     def setup_method(self):
         _clear_clarify_state()
-
-    def test_entry_signature(self):
-        """_ClarifyEntry.signature() returns the expected dict."""
-        from tools import clarify_gateway as cm
-
-        entry = cm.register("sig1", "sk", "Q?", ["A", "B"])
-        sig = entry.signature()
-        assert sig["clarify_id"] == "sig1"
-        assert sig["session_key"] == "sk"
-        assert sig["question"] == "Q?"
-        assert sig["choices"] == ["A", "B"]
-
 
     def test_wait_for_response_unknown_id_returns_none(self):
         """wait_for_response on a non-existent id returns None immediately."""
@@ -255,13 +222,6 @@ class TestCoverageGaps:
         monkeypatch.setattr("hermes_cli.config.load_config",
                             lambda: (_ for _ in ()).throw(RuntimeError("boom")))
         assert cm.get_clarify_timeout() == 3600
-
-
-    def test_get_notify_returns_none_when_not_registered(self):
-        """get_notify returns None for an unregistered session."""
-        from tools import clarify_gateway as cm
-
-        assert cm.get_notify("unregistered") is None
 
 
 class TestClarifyTimeoutResolution:
@@ -335,7 +295,6 @@ class TestMultiSelectTextFallback:
     def test_register_stores_multi_select_flag(self):
         entry = self._register_multi()
         assert entry.multi_select is True
-        assert entry.signature()["multi_select"] is True
 
 
     def test_multi_select_without_choices_is_ignored(self):

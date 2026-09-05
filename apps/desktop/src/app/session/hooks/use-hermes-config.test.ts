@@ -18,6 +18,8 @@ import {
   setDefaultReasoningEffort
 } from '@/store/session'
 
+import { deferred } from '../../../test/deferred'
+
 import { useHermesConfig } from './use-hermes-config'
 
 vi.mock('@/hermes', () => ({
@@ -26,16 +28,6 @@ vi.mock('@/hermes', () => ({
 }))
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void
-
-  const promise = new Promise<T>(done => {
-    resolve = done
-  })
-
-  return { promise, resolve }
-}
 
 const mockConfig = (config: Record<string, unknown>) =>
   vi.mocked(getHermesConfig).mockResolvedValue(config as Awaited<ReturnType<typeof getHermesConfig>>)
@@ -126,6 +118,33 @@ describe('useHermesConfig refreshHermesConfig', () => {
 
     expect($currentReasoningEffort.get()).toBe('high')
     expect($currentFastMode.get()).toBe(false)
+  })
+
+  it('does not publish config after its switch loses ownership', async () => {
+    const staleConfig = deferred<Awaited<ReturnType<typeof getHermesConfig>>>()
+    vi.mocked(getHermesConfig).mockReturnValueOnce(staleConfig.promise)
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+    let ownsSwitch = true
+
+    let refresh!: Promise<void>
+    act(() => {
+      refresh = result.current.refreshHermesConfig(false, () => ownsSwitch)
+    })
+
+    ownsSwitch = false
+    staleConfig.resolve({
+      agent: { reasoning_effort: 'high', service_tier: 'priority' },
+      terminal: { font_family: 'MesloLGS NF' }
+    } as Awaited<ReturnType<typeof getHermesConfig>>)
+
+    await act(async () => {
+      await refresh
+    })
+
+    expect($defaultReasoningEffort.get()).toBe('')
+    expect($currentReasoningEffort.get()).toBe('')
+    expect($currentFastMode.get()).toBe(false)
+    expect($terminalFontFamily.get()).toBe('')
   })
 
   it('does not let an older profile config overwrite a newer profile', async () => {

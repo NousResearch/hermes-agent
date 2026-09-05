@@ -6,6 +6,8 @@ import { reachablePreviewUrl } from '@/lib/preview-reach'
 import {
   $previewTabs,
   beginPreviewServerRestart,
+  closePreviewMatching,
+  closeRightRail,
   completePreviewServerRestart,
   openPreview,
   progressPreviewServerRestart,
@@ -25,6 +27,14 @@ interface PreviewRoutingOptions {
 
 function asRecord(payload: unknown): Record<string, unknown> {
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+}
+
+function sessionIsOnScreen(sessionId: string): boolean {
+  return (
+    sessionId === $focusedRuntimeId.get() ||
+    sessionId === $activeSessionId.get() ||
+    $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
+  )
 }
 
 export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestGateway }: PreviewRoutingOptions) {
@@ -76,12 +86,7 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
         const { url, label } = asRecord(event.payload)
         const target = typeof url === 'string' ? url.trim() : ''
 
-        const onScreen = (sid: string) =>
-          sid === $focusedRuntimeId.get() ||
-          sid === $activeSessionId.get() ||
-          $sessionTiles.get().some(tile => tile.runtimeId === sid)
-
-        if (target && (!event.session_id || onScreen(event.session_id))) {
+        if (target && (!event.session_id || sessionIsOnScreen(event.session_id))) {
           void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(
             async resolved => {
               if (!resolved) {
@@ -99,6 +104,46 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
             }
           )
         }
+
+        return
+      }
+
+      if (event.type === 'preview.close') {
+        // Agent-driven close via close_preview. Same on-screen gate as open:
+        // a session the user can see may tidy the pane it opened; a hidden
+        // background turn must not dismiss the user's preview.
+        const { url } = asRecord(event.payload)
+        const target = typeof url === 'string' ? url.trim() : ''
+
+        if (event.session_id && !sessionIsOnScreen(event.session_id)) {
+          return
+        }
+
+        if (!target) {
+          closeRightRail()
+
+          return
+        }
+
+        if (closePreviewMatching(target)) {
+          return
+        }
+
+        void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(
+          async resolved => {
+            const candidates = [target]
+
+            if (resolved) {
+              candidates.push(resolved.source, resolved.url)
+
+              if (resolved.kind === 'url') {
+                candidates.push(await reachablePreviewUrl(resolved.url))
+              }
+            }
+
+            closePreviewMatching(...candidates)
+          }
+        )
 
         return
       }

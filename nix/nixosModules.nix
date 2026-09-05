@@ -381,6 +381,10 @@
                 opt = options.services.hermes-agent.workingDirectory;
                 optionPath = "services.hermes-agent";
               }
+              ++ common.backendBindAssertions {
+                inherit cfg;
+                optionPath = "services.hermes-agent";
+              }
               ++ [
                 {
                   # Container mode runs one command in one container. A second
@@ -574,7 +578,7 @@
               environment = commonUnitEnvironment;
 
               serviceConfig = commonServiceConfig // {
-                ExecStart = lib.escapeShellArgs (common.backendArgv cfg);
+                ExecStart = lib.escapeShellArgs (common.backendArgv { inherit pkgs cfg; });
               };
 
               path = unitPath;

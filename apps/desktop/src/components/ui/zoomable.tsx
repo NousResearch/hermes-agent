@@ -1,6 +1,6 @@
 'use client'
 
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { Tip } from '@/components/ui/tooltip'
@@ -80,7 +80,7 @@ function ZoomPanViewer({
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent
-        bodyClassName="flex min-h-0 flex-col gap-0 overflow-hidden p-0"
+        bodyClassName="flex min-h-0 flex-1 flex-col gap-0 overflow-hidden p-0"
         className="h-[85vh] w-[90vw] max-w-[90vw]"
         showCloseButton={false}
       >
@@ -117,6 +117,22 @@ function Toolbar({
   zoomOut: () => void
 }) {
   const [copied, setCopied] = useState(false)
+  const resetRef = useRef<null | number>(null)
+
+  // Same reason as the close timer of ConfirmDialog. An unmount inside the
+  // 1500ms window used to leave this armed. The callback then called setState
+  // on a tree that is gone.
+  // The write below is a timer handle, and not a mirror of a reactive value.
+  // It happens on unmount only, and it clears the handle this component owns.
+  // eslint-disable-next-line no-restricted-syntax
+  useEffect(() => {
+    return () => {
+      if (resetRef.current !== null) {
+        window.clearTimeout(resetRef.current)
+        resetRef.current = null
+      }
+    }
+  }, [])
 
   const copy = async () => {
     if (!onCopy) {
@@ -125,7 +141,15 @@ function Toolbar({
 
     await onCopy()
     setCopied(true)
-    window.setTimeout(() => setCopied(false), 1500)
+
+    if (resetRef.current !== null) {
+      window.clearTimeout(resetRef.current)
+    }
+
+    resetRef.current = window.setTimeout(() => {
+      resetRef.current = null
+      setCopied(false)
+    }, 1500)
   }
 
   return (

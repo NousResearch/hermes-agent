@@ -1,16 +1,7 @@
 """Map agent activity → a :class:`PetState`.
 
-This is the one place the "what is the agent doing right now?" → "which
-animation row?" decision lives.  Each surface feeds it the signals it already
-tracks:
-
-- CLI    — ``KawaiiSpinner`` waiting/thinking state + tool outcomes.
-- TUI    — gateway ``tool.start/complete`` + ``message.delta/complete`` events.
-- Desktop — the ``$busy``/``$awaitingResponse``/tool-event nanostores
-            (re-implemented in TS, but mirroring this priority order).
-
-Keeping the priority order here (and documenting it) lets the TypeScript
-mirror stay faithful without a second design.
+The one place the "what is the agent doing?" → "which row?" decision lives; CLI,
+TUI and Desktop (TS mirror of this priority order) feed it the signals they track.
 """
 
 from __future__ import annotations
@@ -22,20 +13,11 @@ from agent.pet.constants import PetState
 
 
 def todos_all_done(todos: Iterable[Any] | None) -> bool:
-    """True iff there's ≥1 todo and every one is completed/cancelled.
-
-    The "celebrate" beat (``JUMP``) fires when a plan finishes; this mirrors
-    the TUI's ``isTodoDone`` so the trigger is defined once across surfaces.
-    Accepts dicts (``{"status": ...}``) or objects with a ``status`` attr.
-    """
+    """True iff ≥1 todo and all completed/cancelled (the ``JUMP`` celebrate beat; mirrors the TUI's ``isTodoDone``)."""
     items = list(todos or [])
-    if not items:
-        return False
-
-    def _status(t: Any) -> Any:
-        return t.get("status") if isinstance(t, dict) else getattr(t, "status", None)
-
-    return all(_status(t) in ("completed", "cancelled") for t in items)
+    return bool(items) and all(
+        (t.get("status") if isinstance(t, dict) else getattr(t, "status", None)) in ("completed", "cancelled") for t in items
+    )
 
 
 def derive_pet_state(
@@ -56,26 +38,20 @@ def derive_pet_state(
     1. ``error``          → ``FAILED``  (a tool/turn just failed)
     2. ``celebrate``      → ``JUMP``    (explicit success beat, e.g. todos done)
     3. ``just_completed`` → ``WAVE``    (turn finished cleanly / greeting)
-    4. ``awaiting_input`` → ``WAITING`` (blocked on the user — a clarify/approval
-       prompt is open; this outranks the in-flight signals below because the turn
-       is paused on *you*, even though a tool is technically mid-call)
-    5. ``tool_running``   → ``RUN``     (a tool is executing)
-    6. ``reasoning``      → ``REVIEW``  (model is thinking / reading)
+    4. ``awaiting_input`` → ``WAITING`` (blocked on the user — outranks the in-flight
+       signals below because the turn is paused on *you*, even mid tool call)
+    5. ``tool_running``   → ``RUN``
+    6. ``reasoning``      → ``REVIEW``
     7. ``busy``           → ``RUN``     (turn in flight, unspecified work)
     8. otherwise          → ``IDLE``
     """
-    if error:
-        return PetState.FAILED
-    if celebrate:
-        return PetState.JUMP
-    if just_completed:
-        return PetState.WAVE
-    if awaiting_input:
-        return PetState.WAITING
-    if tool_running:
-        return PetState.RUN
-    if reasoning:
-        return PetState.REVIEW
-    if busy:
-        return PetState.RUN
-    return PetState.IDLE
+    ranked = (
+        (error, PetState.FAILED),
+        (celebrate, PetState.JUMP),
+        (just_completed, PetState.WAVE),
+        (awaiting_input, PetState.WAITING),
+        (tool_running, PetState.RUN),
+        (reasoning, PetState.REVIEW),
+        (busy, PetState.RUN),
+    )
+    return next((state for flag, state in ranked if flag), PetState.IDLE)

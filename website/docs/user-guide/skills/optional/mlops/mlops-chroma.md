@@ -15,7 +15,7 @@ Embedding database for RAG and semantic search.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/chroma` |
-| Path | `optional-skills/mlops/chroma` |
+| Path | `optional-skills/mlops\chroma` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
 | License | MIT |

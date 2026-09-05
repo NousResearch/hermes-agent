@@ -1,9 +1,4 @@
-"""Trajectory saving utilities and static helpers.
-
-_convert_to_trajectory_format stays as an AIAgent method (batch_runner.py
-calls agent._convert_to_trajectory_format). Only the static helpers and
-the file-write logic live here.
-"""
+"""Trajectory saving + scratchpad helpers (``_convert_to_trajectory_format`` stays an AIAgent method — batch_runner.py calls it)."""
 
 import hashlib
 import json
@@ -38,35 +33,19 @@ def convert_scratchpad_to_think(content: str) -> str:
 
 
 def has_incomplete_scratchpad(content: str) -> bool:
-    """Check if content has an opening <REASONING_SCRATCHPAD> without a closing tag."""
-    if not content:
-        return False
-    return "<REASONING_SCRATCHPAD>" in content and "</REASONING_SCRATCHPAD>" not in content
+    """Whether content has an opening <REASONING_SCRATCHPAD> without a closing tag."""
+    return bool(content) and "<REASONING_SCRATCHPAD>" in content and "</REASONING_SCRATCHPAD>" not in content
 
 
-def save_trajectory(trajectory: List[Dict[str, Any]], model: str,
-                    completed: bool, filename: str = None):
-    """Append a trajectory entry to a JSONL file.
-
-    Args:
-        trajectory: The ShareGPT-format conversation list.
-        model: Model name for metadata.
-        completed: Whether the conversation completed successfully.
-        filename: Override output filename. The implicit default is stored in a
-                  current-working-directory bucket under the active Hermes home.
-    """
-    entry = {
-        "conversations": trajectory,
-        "timestamp": datetime.now().isoformat(),
-        "model": model,
-        "completed": completed,
-    }
-
+def save_trajectory(trajectory: List[Dict[str, Any]], model: str, completed: bool, filename: str = None):
+    """Append a ShareGPT entry; implicit exports live under the active Hermes home."""
+    entry = {"conversations": trajectory, "timestamp": datetime.now().isoformat(), "model": model, "completed": completed}
+    implicit = filename is None
     try:
-        if filename is None:
+        if implicit:
             filename = default_trajectory_path(completed)
-            secure_artifact_dir(filename.parent)
-        with open_private_append(filename, mode=artifact_file_mode()) as f:
+            secure_artifact_dir(filename.parent, tighten_existing=True)
+        with open_private_append(filename, mode=artifact_file_mode(), tighten_existing=implicit) as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         logger.info("Trajectory saved to %s", filename)
     except Exception as e:

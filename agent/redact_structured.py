@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 _MASK = "***"
 _SENTINEL = "[redaction-unverified]"
+_CREDENTIAL_FIELD = re.compile(r"(?:password|passwd|passphrase|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|credential)s?", re.I)
 
 __all__ = ["redact_structured"]
 
@@ -35,6 +37,9 @@ def redact_structured(payload: Any) -> Any:
 
 
 def _walk(value: Any, key: Any, *, hard: bool) -> Any:
+    # Credential containers (password: [..] or api_key: {value: ..}) carry
+    # their sensitivity to every descendant, not only immediate string leaves.
+    hard = hard or (isinstance(key, str) and bool(_CREDENTIAL_FIELD.fullmatch(key)))
     if isinstance(value, dict):
         return {
             item_key: _walk(item, item_key, hard=hard)
@@ -47,7 +52,7 @@ def _walk(value: Any, key: Any, *, hard: bool) -> Any:
     if isinstance(value, str):
         return _MASK if hard else _redact_leaf(value, key)
     if value is None or isinstance(value, (bool, int, float)):
-        return value
+        return _MASK if hard else value
     return _MASK if hard else _redact_leaf(str(value), key)
 
 

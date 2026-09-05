@@ -303,6 +303,21 @@ class TestDefaultContextLengths:
                         model, provider="kimi-coding", base_url=base_url
                     ) == 1_048_576
 
+    @pytest.mark.parametrize("model, provider, base_url", [
+        ("muse-spark-1.3-contributor-free", "opencode-free", "https://opencode.ai/zen/v1"),
+        ("muse-spark-1.3-contributor", "opencode-go", "https://opencode.ai/zen/go/v1"),
+        ("muse-spark-1.3", "meta-ai", "https://api.meta.ai/v1"),
+        ("meta/muse-spark-1.3", "commandcode", "https://api.commandcode.ai/provider/v1"),
+    ])
+    def test_muse_spark_resolves_1m_without_network(self, model, provider, base_url):
+        """Muse Spark is 1,048,576 on every host even when models.dev and the
+        live /models probe are unavailable (fresh HERMES_HOME, offline)."""
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            assert get_model_context_length(model, provider=provider, base_url=base_url) == 1_048_576
+
     def test_empty_model_uses_fallback_context(self):
         assert get_model_context_length("") == DEFAULT_FALLBACK_CONTEXT
         assert get_model_context_length(None) == DEFAULT_FALLBACK_CONTEXT  # type: ignore[arg-type]
@@ -518,13 +533,14 @@ class TestCodexOAuthContextLength:
             "gpt-5.6-luna",
             "gpt-5.6-sol-2026-07-09",  # dated snapshot via gpt-5.6 family prefix
             "gpt-5.4",
+            "gpt-daybreak-blue-latest",  # Sol alias; exact verified slug
         ],
     )
-    def test_stale_272k_advertisement_bumped_to_live_verified_900k(self, slug):
-        """Codex advertises 272K for these slugs but the backend accepts ~911K
-        (verified live Aug 2026, after OpenAI enabled the large-context window
-        for ChatGPT-subscription accounts); the resolver lifts exactly-272K
-        to 900K."""
+    def test_900k_variant_slug_bumped_to_live_verified_900k(self, slug):
+        """The backend accepts ~911K for these slugs (verified live Aug 2026),
+        but the large window is OPT-IN: only the explicit ``-900k`` picker
+        variant resolves to 900K. The catalog only knows the base slug, so
+        the resolver strips the suffix for the lookup, then applies the bump."""
         from agent.model_metadata import get_model_context_length
 
         fake_response = MagicMock()
@@ -536,16 +552,50 @@ class TestCodexOAuthContextLength:
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
-                model=slug,
+                model=slug + "-900k",
                 base_url="https://chatgpt.com/backend-api/codex",
                 api_key="fake-token",
                 provider="openai-codex",
             )
         assert ctx == 900_000
 
+    @pytest.mark.parametrize(
+        "slug",
+        [
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.4",
+            "gpt-daybreak-blue-latest",
+        ],
+    )
+    def test_base_slug_keeps_advertised_272k(self, slug):
+        """Base slugs (no ``-900k`` suffix) keep the advertised 272K — the
+        cheaper default limit. The verified-above bump is opt-in only."""
+        from agent.model_metadata import get_model_context_length
+
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "models": [{"slug": slug, "context_window": 272_000}]
+        }
+        import agent.model_metadata as mm
+        mm._codex_oauth_context_cache = {}
+        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            ctx = get_model_context_length(
+                model=slug,
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="fake-token",
+                provider="openai-codex",
+            )
+        assert ctx == 272_000
+
     def test_non_272k_advertisement_is_trusted_verbatim(self):
         """Any advertised value other than the known-stale 272,000 — higher or
-        lower — is a real server-side change and must NOT be overridden."""
+        lower — is a real server-side change and must NOT be overridden, even
+        for an explicit ``-900k`` opt-in variant."""
         from agent.model_metadata import get_model_context_length
 
         for advertised in (372_000, 200_000, 1_050_000):
@@ -560,7 +610,7 @@ class TestCodexOAuthContextLength:
                  patch("agent.model_metadata.get_cached_context_length", return_value=None), \
                  patch("agent.model_metadata.save_context_length"):
                 ctx = get_model_context_length(
-                    model="gpt-5.6-sol",
+                    model="gpt-5.6-sol-900k",
                     base_url="https://chatgpt.com/backend-api/codex",
                     api_key="fake-token",
                     provider="openai-codex",
@@ -590,9 +640,11 @@ class TestCodexOAuthContextLength:
             )
         assert ctx == 272_000
 
-    def test_fallback_table_resolution_also_bumped(self):
-        """When the live probe fails, the 272K fallback-table value for a
-        verified slug is bumped the same way (same enforcement applies)."""
+    @pytest.mark.parametrize("slug", ["gpt-5.6-sol-900k", "gpt-daybreak-blue-latest-900k"])
+    def test_fallback_table_resolution_also_bumped(self, slug):
+        """When the live probe fails, the 272K fallback-table value for an
+        opted-in ``-900k`` variant is bumped the same way (same enforcement
+        applies — the fallback lookup strips the suffix first)."""
         from agent.model_metadata import get_model_context_length
 
         fake_response = MagicMock()
@@ -602,12 +654,90 @@ class TestCodexOAuthContextLength:
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
-                model="gpt-5.6-sol",
+                model=slug,
                 base_url="https://chatgpt.com/backend-api/codex",
                 api_key="expired-token",
                 provider="openai-codex",
             )
         assert ctx == 900_000
+
+    @pytest.mark.parametrize("slug", ["gpt-5.6-sol", "gpt-daybreak-blue-latest"])
+    def test_fallback_table_base_slug_stays_272k(self, slug):
+        """Fallback-table resolution for BASE slugs stays at the advertised
+        272K — the opt-in rule applies on the offline path too."""
+        from agent.model_metadata import get_model_context_length
+
+        fake_response = MagicMock()
+        fake_response.status_code = 401
+        fake_response.json.return_value = {}
+        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            ctx = get_model_context_length(
+                model=slug,
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="expired-token",
+                provider="openai-codex",
+            )
+        assert ctx == 272_000
+
+    # Table-driven eligibility contract (#92797 review): one predicate
+    # (is_codex_900k_base) drives picker synthesis, context resolution,
+    # validation, and wire stripping — this table pins all of them.
+    # (model_id, is_valid_variant, expected_ctx, expected_wire_model)
+    _900K_TABLE = [
+        ("gpt-5.6-sol-900k",              True,  900_000, "gpt-5.6-sol"),
+        ("gpt-5.6-terra-900k",            True,  900_000, "gpt-5.6-terra"),
+        ("gpt-5.6-luna-900k",             True,  900_000, "gpt-5.6-luna"),
+        ("gpt-5.4-900k",                  True,  900_000, "gpt-5.4"),
+        ("gpt-daybreak-blue-latest-900k", True,  900_000, "gpt-daybreak-blue-latest"),
+        # dated snapshot of a routable 5.6 base
+        ("gpt-5.6-sol-2026-07-09-900k",   True,  900_000, "gpt-5.6-sol-2026-07-09"),
+        # vendor-namespaced variant (display/aux callers) resolves too
+        ("openai/gpt-5.6-sol-900k",       True,  900_000, "openai/gpt-5.6-sol"),
+        # -pro slugs are not routable on Codex OAuth: never a valid variant,
+        # never stripped (fails honestly at the API instead)
+        ("gpt-5.6-sol-pro-900k",          False, 272_000, "gpt-5.6-sol-pro-900k"),
+        # genuine 272K enforcers get no variant
+        ("gpt-5.5-900k",                  False, 272_000, "gpt-5.5-900k"),
+        ("gpt-5.4-mini-900k",             False, 272_000, "gpt-5.4-mini-900k"),
+        # arbitrary future family descendants are not auto-eligible
+        ("gpt-5.6-nova-900k",             False, 272_000, "gpt-5.6-nova-900k"),
+    ]
+
+    @pytest.mark.parametrize("model_id,valid,expected_ctx,wire", _900K_TABLE)
+    def test_900k_eligibility_table(self, model_id, valid, expected_ctx, wire):
+        from agent.model_metadata import (
+            get_model_context_length,
+            is_codex_context_variant,
+            strip_codex_context_variant_suffix,
+        )
+
+        assert is_codex_context_variant(model_id) is valid
+        assert strip_codex_context_variant_suffix(model_id) == wire
+
+        bare = model_id.rsplit("/", 1)[-1]
+        catalog_slug = strip_codex_context_variant_suffix(bare)
+        if catalog_slug.endswith("-900k"):
+            # invalid alias — catalog advertises the underlying family slug
+            catalog_slug = catalog_slug[: -len("-900k")]
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "models": [{"slug": catalog_slug, "context_window": 272_000}]
+        }
+        import agent.model_metadata as mm
+        mm._codex_oauth_context_cache = {}
+        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            ctx = get_model_context_length(
+                model=model_id,
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="fake-token",
+                provider="openai-codex",
+            )
+        assert ctx == expected_ctx
 
 
 
@@ -683,6 +813,36 @@ class TestFetchEndpointModelMetadata:
         not_found.json.assert_not_called()
         not_found.close.assert_called_once()
         success.close.assert_called_once()
+
+    def test_remote_probe_is_memoized_on_disk_across_processes(self, tmp_path, monkeypatch):
+        """A fresh process (cleared in-memory cache) must answer from the disk
+        memo within the TTL instead of re-probing the endpoint — the cost every
+        one-shot Bot Mode DM hop paid on startup. Expired memos re-probe."""
+        import agent.model_metadata as mm
+
+        monkeypatch.setattr(
+            mm, "_get_endpoint_metadata_cache_path", lambda: tmp_path / "endpoint_model_metadata.json"
+        )
+        success = MagicMock()
+        success.status_code = 200
+        success.json.return_value = {"data": [{"id": "test/model", "context_length": 32768}]}
+
+        with patch("agent.model_metadata.requests.get", return_value=success) as mock_get:
+            assert mm.fetch_endpoint_model_metadata("https://custom.example/v1")["test/model"]["context_length"] == 32768
+            # "New process": drop the in-memory cache only.
+            mm._endpoint_model_metadata_cache.clear()
+            mm._endpoint_model_metadata_cache_time.clear()
+            assert mm.fetch_endpoint_model_metadata("https://custom.example/v1")["test/model"]["context_length"] == 32768
+        mock_get.assert_called_once()
+
+        # Past the TTL the memo is stale and the endpoint is probed again.
+        mm._endpoint_model_metadata_cache.clear()
+        mm._endpoint_model_metadata_cache_time.clear()
+        with patch("agent.model_metadata.time.time", return_value=time.time() + mm._ENDPOINT_MODEL_CACHE_TTL + 1), patch(
+            "agent.model_metadata.requests.get", return_value=success
+        ) as mock_get:
+            mm.fetch_endpoint_model_metadata("https://custom.example/v1")
+        mock_get.assert_called_once()
 
 
 # =========================================================================
@@ -1102,7 +1262,7 @@ class TestStripProviderPrefix:
 
     def test_registered_profile_name_and_alias_are_stripped(self, monkeypatch):
         import providers
-        from providers import ProviderProfile
+        from providers.base import ProviderProfile
 
         monkeypatch.setattr(providers, "_REGISTRY", {})
         monkeypatch.setattr(providers, "_ALIASES", {})
@@ -1298,6 +1458,29 @@ class TestParseContextLimitFromError:
         fell through to None."""
         assert parse_context_limit_from_error(msg) == expected
 
+    @pytest.mark.parametrize("msg,expected", [
+        # Google Gemini/Gemma overflow phrasing (#57275): the limit follows
+        # "supports up to"; the larger input count before it must NOT win.
+        ("Unable to submit request because the input token count is 32825 "
+         "but model only supports up to 32768. Reduce the input token count "
+         "and try again.", 32768),
+        ("input token count is 140000 but model only supports up to 131072", 131072),
+        ("model supports up to 65536 tokens", 65536),
+    ])
+    def test_google_supports_up_to_variants(self, msg, expected):
+        """Google's overflow error was previously unparseable — recovery kept
+        the wrong window and burned its attempts (#57275, residual claim 5)."""
+        assert parse_context_limit_from_error(msg) == expected
+
+    def test_google_supports_up_to_recalibrates_window(self):
+        from agent.model_metadata import get_context_length_from_provider_error
+
+        msg = ("Unable to submit request because the input token count is "
+               "32825 but model only supports up to 32768.")
+        assert get_context_length_from_provider_error(msg, 131072) == 32768
+        # Parsed limit not below current window → no recalibration.
+        assert get_context_length_from_provider_error(msg, 32768) is None
+
     def test_get_context_length_from_vllm_max_model_len_error(self):
         from agent.model_metadata import get_context_length_from_provider_error
 
@@ -1461,6 +1644,18 @@ class TestGrok43StaleCacheGuard:
                 slug, base_url=base, api_key="", provider="xai"
             )
             assert ctx == 256_000, f"{slug} should stay 256000, got {ctx}"
+
+
+class TestMuseSparkStaleCacheGuard:
+    """Muse Spark (1M window per OpenRouter live metadata) had no catalog
+    entry, so older builds persisted the 256K default fallback. The cache
+    guard must flag that stale value and keep correct/probed values."""
+
+    def test_stale_muse_spark_detected_by_generic_guard(self):
+        from agent.model_metadata import _stale_pre_catalog_cache_entry
+        for slug in ("muse-spark-1.3", "meta/muse-spark-1.3-contributor", "muse-spark-1.2-contributor"):
+            assert _stale_pre_catalog_cache_entry(slug, 256_000), slug
+            assert not _stale_pre_catalog_cache_entry(slug, 1_048_576), slug
 
 
 class TestGrok46StaleCacheGuard:

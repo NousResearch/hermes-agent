@@ -1,49 +1,48 @@
 """Mixture-of-Agents runtime helpers for /moa turns.
 
-The slash command is deliberately not a model tool. It marks one user turn as
-MoA-enabled; the normal Hermes agent loop still owns tool calling and turn
-termination, while this module gathers reference-model context before each model
-iteration.
+The slash command marks one user turn as MoA-enabled; the normal agent loop still
+owns tool calling and turn termination, while this module gathers reference-model
+context before each model iteration.
 """
 
 from __future__ import annotations
 
+import contextlib
+import functools
 import hashlib
+import json
 import logging
 import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait as _futures_wait
+from dataclasses import KW_ONLY, dataclass, replace
 from types import SimpleNamespace
 from typing import Any
 
 from agent.auxiliary_client import call_llm
 from agent.message_content import flatten_message_text
 from agent.transports import get_transport
+from agent.usage_pricing import CanonicalUsage
 
 logger = logging.getLogger(__name__)
 
-# --- MoA privacy filter (config: moa.privacy_filter — '' | display | full) ---
-#
-# Advisor (reference) outputs can echo PII from the conversation — emails,
-# phone numbers, credentials pasted by the user — into surfaces the user may
-# not expect: the labelled reference blocks rendered in the UI, saved MoA
-# trace files, and (in `full` mode) the guidance block injected into the
-# aggregator prompt (issue #59959). Secret/credential shapes (API-key
-# prefixes, JWTs, private keys, DB connection strings, E.164 phone numbers)
-# are handled by the repo's central redactor, ``agent.redact
-# .redact_sensitive_text`` — the MoA filter never re-implements those. The
-# two patterns below cover the PII classes the central redactor deliberately
-# leaves alone for log/tool output (emails and formatted phone numbers).
-#
-# Pattern safety: advisory text is frequently code-review-shaped — line
-# numbers, timestamps, git SHAs, IDs, IP addresses. A bare 10-digit match
-# would mangle all of those, so the phone pattern requires clearly delimited
-# formatting: a parenthesized area code and/or explicit `-`/`.` separators
-# between groups ((555) 123-4567, 555-123-4567, 555.123.4567, +1 555-123-4567).
-# Undelimited digit runs (5551234567), dates (2026-07-12), times (12:34:56),
-# hex IDs, and dotted quads never match. International numbers in E.164 form
-# (+14155551234) are already masked by the central redactor.
+# Privacy filter (moa.privacy_filter: '' | display | full): PII classes agent.redact
+# leaves alone. The phone pattern requires explicit delimiters so line numbers,
+# dates, times, SHAs, IPs and versions never match.
+# Advisor (reference) outputs can echo PII from the conversation — emails, phone numbers, credentials pasted
+# by the user — into surfaces the user may not expect: the labelled reference blocks rendered in the UI,
+# saved MoA trace files, and (in `full` mode) the guidance block injected into the aggregator prompt (issue
+# #59959). Secret/credential shapes (API-key prefixes, JWTs, private keys, DB connection strings, E.164
+# phone numbers) are handled by the repo's central redactor, ``agent.redact .redact_sensitive_text`` — the
+# MoA filter never re-implements those. The two patterns below cover the PII classes the central redactor
+# deliberately leaves alone for log/tool output (emails and formatted phone numbers). Pattern safety:
+# advisory text is frequently code-review-shaped — line numbers, timestamps, git SHAs, IDs, IP addresses. A
+# bare 10-digit match would mangle all of those, so the phone pattern requires clearly delimited formatting:
+# a parenthesized area code and/or explicit `-`/`.` separators between groups ((555) 123-4567, 555-123-4567,
+# 555.123.4567, +1 555-123-4567). Undelimited digit runs (5551234567), dates (2026-07-12), times (12:34:56),
+# hex IDs, and dotted quads never match. International numbers in E.164 form (+14155551234) are already
+# masked by the central redactor.
 _MOA_EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 _MOA_PHONE_RE = re.compile(
     r"(?<![\w.+-])"                    # no leading word char / dot / + / - (kills IPs, IDs, versions)
@@ -55,201 +54,130 @@ _MOA_PHONE_RE = re.compile(
 
 
 def _redact_reference_text(text: Any) -> Any:
-    """Redact secrets + PII from one advisor/reference text surface.
+    """Redact secrets (central redactor) then MoA PII patterns.
 
-    Centralized secret shapes first (force=True: the MoA privacy filter is
-    its own explicit opt-in, independent of the global log-redaction toggle;
-    code_file=True: advisory text is prose/code, so the ENV/JSON assignment
-    heuristics that mangle source snippets stay off), then the MoA-specific
-    email/formatted-phone patterns. Non-string inputs pass through unchanged.
+    force=True: the privacy filter is its own opt-in, independent of the global
+    log-redaction toggle. code_file=True: keeps the ENV/JSON assignment heuristics
+    (which mangle source snippets) off advisory prose/code.
     """
     if not isinstance(text, str) or not text:
         return text
     from agent.redact import redact_sensitive_text
-
     text = redact_sensitive_text(text, force=True, code_file=True)
     text = _MOA_EMAIL_RE.sub("[redacted email]", text)
-    text = _MOA_PHONE_RE.sub("[redacted phone]", text)
-    return text
+    return _MOA_PHONE_RE.sub("[redacted phone]", text)
 
 
 def _moa_privacy_mode(moa_raw: Any) -> str:
-    """Resolve the normalized privacy-filter mode from a raw ``moa`` config."""
+    """Normalized privacy-filter mode from a raw ``moa`` config."""
     from hermes_cli.moa_config import coerce_privacy_filter
-
     raw = moa_raw if isinstance(moa_raw, dict) else {}
     return coerce_privacy_filter(raw.get("privacy_filter"))
 
 
-def _redact_reference_outputs(
-    reference_outputs: list[tuple[str, str, Any]],
-) -> list[tuple[str, str, Any]]:
-    """Return reference-output tuples with their advisor text redacted.
+def _redact_reference_outputs(reference_outputs: list[tuple[str, str, Any]]) -> list[tuple[str, str, Any]]:
+    """Redact advisor text in reference-output tuples; accounting slot untouched."""
+    return [(label, _redact_reference_text(text), acct) for label, text, acct in reference_outputs]
 
-    The ``_RefAccounting`` third slot is left as-is — accounting fields carry
-    no advisor text; the full-output/input trace fields are redacted
-    separately at trace-stash time (see create()) so the LIVE cache keeps raw
-    accounting objects untouched.
-    """
-    return [
-        (label, _redact_reference_text(text), acct)
-        for label, text, acct in reference_outputs
-    ]
+
+def _redact_message_content(content: Any) -> Any:
+    """Redact a message's content: a string, or the text parts of a content-part list."""
+    if isinstance(content, str):
+        return _redact_reference_text(content)
+    if isinstance(content, list):
+        return [
+            {**p, "text": _redact_reference_text(p.get("text"))}
+            if isinstance(p, dict) and isinstance(p.get("text"), str)
+            else p
+            for p in content
+        ]
+    return content
 
 
 def _redact_trace_messages(messages: Any) -> Any:
-    """Redact message copies destined for trace persistence.
-
-    Handles both string content and structured content-part lists (e.g.
-    cache_control-decorated text parts). Unknown shapes pass through.
-    """
+    """Redact message copies for trace persistence (string or content-part lists)."""
     if not isinstance(messages, list):
         return messages
-    out: list[Any] = []
-    for m in messages:
-        if not isinstance(m, dict):
-            out.append(m)
-            continue
-        content = m.get("content")
-        if isinstance(content, str):
-            out.append({**m, "content": _redact_reference_text(content)})
-        elif isinstance(content, list):
-            out.append(
-                {
-                    **m,
-                    "content": [
-                        {**p, "text": _redact_reference_text(p.get("text"))}
-                        if isinstance(p, dict) and isinstance(p.get("text"), str)
-                        else p
-                        for p in content
-                    ],
-                }
-            )
-        else:
-            out.append(m)
-    return out
+    return [
+        {**m, "content": _redact_message_content(m.get("content"))} if isinstance(m, dict) else m
+        for m in messages
+    ]
 
 
 def _redact_trace_accounting(acct: Any) -> Any:
-    """Return a copy of a ``_RefAccounting`` with its trace text redacted.
-
-    Traces persist the advisor's FULL input messages and output to disk, so a
-    privacy-filtered run must not write raw PII there. Usage/cost fields are
-    copied verbatim (numbers, no text). Non-accounting objects pass through.
-    """
+    """Copy a ``_RefAccounting`` with its trace text (messages/output) redacted."""
     if not isinstance(acct, _RefAccounting):
         return acct
-    return _RefAccounting(
-        acct.usage,
-        acct.cost_usd,
-        acct.cost_status,
-        acct.cost_source,
-        messages=_redact_trace_messages(acct.messages),
-        output=_redact_reference_text(acct.output),
-        model=acct.model,
-        provider=acct.provider,
-        temperature=acct.temperature,
-    )
+    return replace(acct, messages=_redact_trace_messages(acct.messages), output=_redact_reference_text(acct.output))
 
 
-# Cold-start caches. A MoA preset switch used to re-resolve the full
-# config + preset + every slot's provider runtime on EACH create() call
-# (once per tool-loop iteration), serially before the parallel fan-out could
-# start — adding 5-30s of "frozen" latency on complex presets
-# (#66793). The preset structure is immutable for the life of a turn, so
-# cache both the resolved preset and each (provider, model) runtime.
+# Cold-start caches: preset and per-(provider, model) runtime are immutable for a turn.
+# A MoA preset switch used to re-resolve the full config + preset + every slot's provider runtime on EACH
+# create() call (once per tool-loop iteration), serially before the parallel fan-out could start — adding
+# 5-30s of "frozen" latency on complex presets (#66793).
 _preset_cache_lock = threading.Lock()
 _preset_cache: dict[tuple, Any] = {}
+
+
+def _resolve_preset_cached(preset_name: str) -> tuple[dict[str, Any], Any]:
+    """``(preset, raw moa config)``; the resolved preset is cached per config mtime
+    (skips resolve_moa_preset's full validation of the moa block on every create())."""
+    from hermes_cli.config import get_config_path, load_config
+    from hermes_cli.moa_config import resolve_moa_preset
+    try:
+        cfg_stamp = get_config_path().stat().st_mtime_ns
+    except OSError:
+        cfg_stamp = None
+    moa_raw = load_config().get("moa") or {}
+    key = (cfg_stamp, preset_name)
+    with _preset_cache_lock:
+        preset = _preset_cache.get(key) if cfg_stamp is not None else None
+    if preset is None:
+        preset = resolve_moa_preset(moa_raw, preset_name)
+        if cfg_stamp is not None:
+            with _preset_cache_lock:
+                _preset_cache.clear()  # one live config stamp at a time
+                _preset_cache[key] = preset
+    return preset, moa_raw
+
 
 _runtime_cache_lock = threading.Lock()
 _runtime_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 
-# Runtime entries go stale when providers/credentials change (key rotation,
-# base_url edits). Deliberately short-lived: 300s collapses the per-iteration
-# re-resolution inside a turn while bounding credential staleness between
-# turns — the non-MoA path picks up rotated keys immediately, this path
-# within 5 minutes.
+# Short TTL so rotated keys / base_url edits are picked up within 5 minutes.
 _RUNTIME_CACHE_TTL_SECONDS = 300.0
 
-# Upper bound on concurrent reference-model calls. References are independent
-# advisory calls (no tools, no inter-dependence), so we fan them out the same
-# way delegate_task runs a batch: all in flight at once, results collected when
-# every reference finishes. Presets rarely list more than a handful of
-# references; this cap just protects against a pathologically large preset
-# opening dozens of sockets at once.
+# Cap on concurrent reference calls (guards pathologically large presets).
 _MAX_REFERENCE_WORKERS = 8
 
 
+@dataclass(slots=True)
 class _RefAccounting:
-    """Per-reference token usage + estimated cost + full trace, carried as the
-    third slot of a reference-output tuple.
+    """Per-reference usage, cost and full trace (third slot of a reference-output tuple).
 
-    Kept as a tiny object (not a bare CanonicalUsage) because an advisor may
-    run on a different model/provider than the aggregator, so its cost MUST be
-    priced at its OWN model's rate — folding advisor tokens into the
-    aggregator's usage and pricing the sum at the aggregator's rate would
-    misprice every advisor. ``usage`` feeds accurate token counts;
-    ``cost_usd`` feeds accurate cost.
-
-    ``messages`` / ``output`` / ``model`` / ``provider`` / ``temperature``
-    carry the FULL reference input and output for trace persistence (the
-    display ``text`` is a truncated preview and is not enough to audit what an
-    advisor actually saw). They are only populated when tracing is on; they add
-    negligible cost otherwise.
+    Cost is priced at the advisor's OWN rate and summed in dollars (advisors may run
+    on a different model than the aggregator). Trace fields are only populated when
+    tracing is on.
     """
 
-    __slots__ = (
-        "usage",
-        "cost_usd",
-        "cost_status",
-        "cost_source",
-        "messages",
-        "output",
-        "model",
-        "provider",
-        "temperature",
-    )
+    usage: Any
+    cost_usd: Any = None
+    cost_status: str | None = None
+    cost_source: str | None = None
+    _: KW_ONLY
+    messages: Any = None
+    output: str | None = None
+    model: str | None = None
+    provider: str | None = None
+    temperature: Any = None
 
-    def __init__(
-        self,
-        usage: Any,
-        cost_usd: Any = None,
-        cost_status: str | None = None,
-        cost_source: str | None = None,
-        *,
-        messages: Any = None,
-        output: str | None = None,
-        model: str | None = None,
-        provider: str | None = None,
-        temperature: Any = None,
-    ):
-        self.usage = usage
-        self.cost_usd = cost_usd
-        self.cost_status = cost_status
-        self.cost_source = cost_source
-        self.messages = messages
-        self.output = output
-        self.model = model
-        self.provider = provider
-        self.temperature = temperature
 
-# Per-tool-result character budget for the advisory reference view. Tool
-# results can be huge (a full diff, a 5000-line file dump); replaying them
-# verbatim per reference per tool-loop step would blow the reference model's
-# context window and cost. We keep the agent's *actions* (tool calls) in full —
-# they are cheap, high-signal, and tell the reference what the agent did — but
-# preview each tool *result* head+tail so the reference still sees what came
-# back without replaying megabytes. The acting aggregator always gets the full,
-# untrimmed transcript; this budget only shapes the advisory copy.
+# Per-tool-result char budget for the advisory view: tool CALLS are kept in full,
+# tool RESULTS are head+tail previewed. The aggregator always gets the full transcript.
 _REFERENCE_TOOL_RESULT_BUDGET = 4000
 
-# System prompt prepended to every reference-model call. References are
-# advisory — they do NOT act, call tools, or own the task. Without this
-# framing a reference receives the bare trimmed conversation and assumes it is
-# the acting agent: it then refuses ("I can't access repositories / URLs from
-# here") or tries to call tools it doesn't have. The prompt reframes the model
-# as an analyst whose job is to reason about the presented state and hand its
-# best thinking to the aggregator/orchestrator that will actually act.
+# Reference system prompt: without this framing a reference assumes it is the acting
+# agent and refuses ("I can't access repositories") or tries to call tools.
 _REFERENCE_SYSTEM_PROMPT = (
     "You are a reference advisor in a Mixture of Agents (MoA) process. You are "
     "NOT the acting agent and you do NOT execute anything: you cannot call "
@@ -282,7 +210,6 @@ _REFERENCE_SYSTEM_PROMPT = (
 )
 
 
-
 def _slot_label(slot: dict[str, Any]) -> str:
     label = f"{(slot.get('provider') or '').strip()}:{(slot.get('model') or '').strip()}"
     effort = str(slot.get("reasoning_effort") or "").strip()
@@ -291,30 +218,18 @@ def _slot_label(slot: dict[str, Any]) -> str:
 
 def _slot_reasoning_config(slot: dict[str, Any]) -> dict[str, Any] | None:
     """Translate optional per-MoA-slot reasoning_effort into runtime config."""
-    effort = slot.get("reasoning_effort")
     try:
         from hermes_constants import parse_reasoning_effort
-
-        return parse_reasoning_effort(effort)
-    except Exception:  # pragma: no cover - defensive; bad config must not break MoA
+        return parse_reasoning_effort(slot.get("reasoning_effort"))
+    except Exception:  # pragma: no cover - bad config must not break MoA
         return None
 
 
 def _aggregator_reasoning_config(aggregator: dict[str, Any]) -> dict[str, Any] | None:
-    """Resolve the aggregator's reasoning config: slot > per-model > global.
+    """Aggregator reasoning config: slot > per-model > global (shared chokepoint).
 
-    The aggregator is MoA's ACTING model, so when its slot doesn't pin a
-    reasoning_effort it must resolve exactly like any other acting model:
-    through the shared chokepoint (``resolve_reasoning_config``), which
-    applies ``agent.reasoning_overrides`` for the slot's model first, then
-    the global ``agent.reasoning_effort``. Without this the main loop's
-    reasoning gates (keyed to the virtual ``moa://local`` identity) never
-    fire, so the aggregator silently ran at the backend default (#64187).
-
-    Reference advisors intentionally do NOT get this fallback: they are side
-    calls (like auxiliary tasks), and inheriting a global ``xhigh`` into every
-    advisor fan-out would silently multiply cost. Their depth is slot-or-
-    provider-default only.
+    References deliberately do NOT fall back: inheriting a global ``xhigh`` into
+    every advisor would multiply cost.
     """
     cfg = _slot_reasoning_config(aggregator)
     if cfg is not None:
@@ -322,36 +237,16 @@ def _aggregator_reasoning_config(aggregator: dict[str, Any]) -> dict[str, Any] |
     try:
         from hermes_cli.config import load_config
         from hermes_constants import resolve_reasoning_config
-
-        return resolve_reasoning_config(
-            load_config() or {}, str(aggregator.get("model") or "")
-        )
-    except Exception:  # pragma: no cover - defensive; bad config must not break MoA
+        return resolve_reasoning_config(load_config() or {}, str(aggregator.get("model") or ""))
+    except Exception:  # pragma: no cover - bad config must not break MoA
         return None
 
 
 def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
-    """Resolve a reference/aggregator slot to real runtime call kwargs.
+    """Slot → ``call_llm`` kwargs with the provider's real api_mode/base_url/api_key.
 
-    A MoA slot is just a model selection — it must be called the same way any
-    model is called elsewhere, not through a bare ``call_llm(provider=...,
-    model=...)`` that leaves base_url/api_key/api_mode unresolved and lets the
-    auxiliary auto-detector guess. We route the slot's provider through
-    ``resolve_runtime_provider`` (the canonical provider→api_mode/base_url/
-    api_key resolver the CLI, gateway, and delegate_task all use), so the slot
-    gets its provider's real API surface — e.g. MiniMax → anthropic_messages,
-    GPT-5/o-series → max_completion_tokens, custom endpoints → their base_url.
-    Returns the kwargs to pass through to ``call_llm`` (provider/model plus the
-    resolved base_url/api_key when available). Falls back to the bare
-    provider/model on any resolution error so a misconfigured slot still
-    attempts the call rather than aborting the whole MoA turn.
-
-    The resolved runtime is cached per (provider, model) with a short TTL
-    (``_RUNTIME_CACHE_TTL_SECONDS``): the resolution does real I/O (catalog
-    query + config read) that used to run serially per create() call before
-    the parallel fan-out could start — the dominant source of MoA cold-start
-    latency (#66793). The TTL bounds credential staleness (key rotation,
-    base_url edits) instead of caching for the process lifetime.
+    Cached per (provider, model) with a short TTL. Falls back to bare provider/model
+    on error — never cached, or a transient error would pin bare kwargs for a TTL.
     """
     provider = str(slot.get("provider") or "").strip()
     model = str(slot.get("model") or "").strip()
@@ -359,412 +254,226 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     now = time.monotonic()
     with _runtime_cache_lock:
         entry = _runtime_cache.get(cache_key)
-    if entry is not None:
-        stamped_at, cached = entry
-        if now - stamped_at < _RUNTIME_CACHE_TTL_SECONDS:
-            return cached
+    if entry is not None and now - entry[0] < _RUNTIME_CACHE_TTL_SECONDS:
+        return entry[1]
     out: dict[str, Any] = {"provider": provider, "model": model}
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
-
         rt = resolve_runtime_provider(requested=provider, target_model=model)
-        if rt.get("base_url"):
-            out["base_url"] = rt["base_url"]
-        if rt.get("api_key"):
-            out["api_key"] = rt["api_key"]
-        if rt.get("api_mode"):
-            out["api_mode"] = rt["api_mode"]
-        request_overrides = rt.get("request_overrides")
-        if isinstance(request_overrides, dict):
-            extra_body = request_overrides.get("extra_body")
-            if isinstance(extra_body, dict) and extra_body:
-                out["extra_body"] = dict(extra_body)
+        out.update({k: rt[k] for k in ("base_url", "api_key", "api_mode") if rt.get(k)})
+        overrides = rt.get("request_overrides")
+        extra_body = overrides.get("extra_body") if isinstance(overrides, dict) else None
+        if isinstance(extra_body, dict) and extra_body:
+            out["extra_body"] = dict(extra_body)
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("MoA slot runtime resolution failed for %s: %s",
-                     _slot_label(slot), exc)
-        # Never cache a fallback-shaped result: a transient resolution error
-        # (config mid-write, catalog hiccup) would otherwise pin the bare
-        # provider/model kwargs for a full TTL.
+        logger.debug("MoA slot runtime resolution failed for %s: %s", _slot_label(slot), exc)
         return out
     with _runtime_cache_lock:
         _runtime_cache[cache_key] = (now, out)
     return out
 
 
-def _merge_slot_extra_body(
-    slot_extra_body: Any,
-    caller_extra_body: Any,
-) -> Any:
-    """Merge slot defaults with a caller override for ``call_llm``."""
-    if isinstance(slot_extra_body, dict) and slot_extra_body:
-        if isinstance(caller_extra_body, dict):
-            return {**slot_extra_body, **caller_extra_body}
-        if caller_extra_body:
-            return caller_extra_body
-        return dict(slot_extra_body)
-    return caller_extra_body
+def _merge_slot_extra_body(slot_extra_body: Any, caller_extra_body: Any) -> Any:
+    """Merge slot defaults with a caller override (caller wins) for ``call_llm``."""
+    if not (isinstance(slot_extra_body, dict) and slot_extra_body):
+        return caller_extra_body
+    if isinstance(caller_extra_body, dict):
+        return {**slot_extra_body, **caller_extra_body}
+    return caller_extra_body or dict(slot_extra_body)
+
+
+def _agent_cache_opts(agent: Any) -> tuple[Any, Any]:
+    """The live agent's ``(_cache_disabled, _cache_ttl)``; ``(None, None)`` without an agent."""
+    return (None, None) if agent is None else (getattr(agent, "_cache_disabled", None), getattr(agent, "_cache_ttl", None))
+
+
+def _with_cache_disabled(runtime: dict[str, Any], cache_disabled: Any) -> dict[str, Any]:
+    """Pin the live agent's cache disable onto a runtime snapshot (None is a no-op)."""
+    return runtime if cache_disabled is None else {**runtime, "_cache_disabled": cache_disabled}
 
 
 def _maybe_apply_moa_cache_control(
-    messages: list[dict[str, Any]],
-    runtime: dict[str, Any],
-    *,
-    cache_disabled: bool | None = None,
+    messages: list[dict[str, Any]], runtime: dict[str, Any], *, cache_disabled: bool | None = None,
     cache_ttl: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Decorate an advisor or aggregator request with cache_control when its
-    route honors it.
+    """Apply cache_control to an advisor/aggregator request when its route honors it.
 
-    Reuses the SAME policy function as the main agent loop
-    (``anthropic_prompt_cache_policy``) resolved against the slot's own
-    provider/base_url/api_mode/model and shared marker helper
-    (``apply_anthropic_cache_control``). MoA has no per-session static prefix,
-    so it uses the helper's legacy system-and-3 fallback without carrying a
-    separate caching strategy.
+    Same policy/marker helpers as the main loop; MoA has no static prefix so the
+    legacy system-and-3 fallback is used. ``cache_disabled`` is stamped onto the
+    stub so ``cache_ttl: off`` is honored; ``cache_ttl`` is clamped per destination.
+    Returns the messages unchanged on any error.
 
-    Returns the messages unchanged on any resolution error or when the
-    policy says the route doesn't honor markers.
-
-    ``cache_disabled`` (or the live config when omitted) is stamped onto the
-    policy stub so ``prompt_caching.cache_ttl: off`` is not bypassed by the
-    blank-agent pattern (#76085).
-
-    ``cache_ttl`` threads the agent's configured tier (default ``5m``) so
-    advisor/synthesis requests stop regressing 1h → 5m; it is clamped
-    per-destination by :func:`effective_cache_ttl` (Qwen → 5m, #84733).
+    ``cache_disabled`` (or the live config when omitted) is stamped onto the policy stub so
+    ``prompt_caching.cache_ttl: off`` is not bypassed by the blank-agent pattern (#76085).
     """
     try:
-        from agent.agent_runtime_helpers import (
-            anthropic_prompt_cache_policy,
-            blank_cache_policy_stub,
-        )
+        from agent.agent_runtime_helpers import anthropic_prompt_cache_policy, blank_cache_policy_stub
         from agent.prompt_caching import (
-            apply_anthropic_cache_control,
-            effective_cache_ttl,
+            apply_anthropic_cache_control, effective_cache_ttl, envelope_tool_part_cache_markers_supported,
         )
 
-        # Prefer an explicit kwarg, then a snapshot on the runtime dict
-        # (threaded from the live agent), else config via the stub factory.
+        # Explicit kwarg > runtime snapshot (threaded from the live agent) > config.
         if cache_disabled is None and "_cache_disabled" in runtime:
             cache_disabled = runtime.get("_cache_disabled")
-
-        # The policy function reads agent.* only as fallbacks for kwargs we
-        # don't pass; blank_cache_policy_stub is the only sanctioned stub
-        # so _cache_disabled cannot be left off again (#76085).
-        stub = blank_cache_policy_stub(cache_disabled)
+        provider, model, base_url = runtime.get("provider") or "", runtime.get("model") or "", runtime.get("base_url") or ""
+        # blank_cache_policy_stub is the only sanctioned stub (carries _cache_disabled).
         should_cache, native_layout = anthropic_prompt_cache_policy(
-            stub,
-            provider=runtime.get("provider") or "",
-            base_url=runtime.get("base_url") or "",
-            api_mode=runtime.get("api_mode") or "",
-            model=runtime.get("model") or "",
+            blank_cache_policy_stub(cache_disabled), provider=provider, base_url=base_url,
+            api_mode=runtime.get("api_mode") or "", model=model,
         )
         if not should_cache:
             return messages
+        # None → "5m"; cache-disabled routes already returned above. Envelope routes
+        # reject part-level markers in tool_result.content[].
         return apply_anthropic_cache_control(
-            messages,
-            cache_ttl=effective_cache_ttl(
-                # effective_cache_ttl resolves None → "5m"; the should_cache
-                # gate above already returned for cache-disabled routes.
-                cache_ttl,
-                provider=runtime.get("provider") or "",
-                model=runtime.get("model") or "",
-            ),
+            messages, cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model),
             native_anthropic=native_layout,
+            tool_part_markers=envelope_tool_part_cache_markers_supported(provider, base_url),
         )
     except Exception as exc:  # pragma: no cover - decoration must never break a call
         logger.debug("MoA cache_control decoration skipped: %s", exc)
         return messages
 
 
+def _price_reference_response(
+    response: Any, slot: dict[str, Any], runtime: dict[str, Any]
+) -> tuple[Any, Any, str | None, str | None]:
+    """Normalize a reference's usage with the slot's OWN provider/api_mode and price it
+    at its own rate (hence fan-out cost is summed in dollars). Never raises."""
+    from agent.usage_pricing import estimate_usage_cost, normalize_usage
+    usage = CanonicalUsage()
+    raw_usage = getattr(response, "usage", None)
+    if raw_usage:
+        with contextlib.suppress(Exception):  # pragma: no cover - defensive
+            usage = normalize_usage(raw_usage, provider=runtime.get("provider"), api_mode=runtime.get("api_mode"))
+    try:
+        cost = estimate_usage_cost(
+            slot.get("model") or "", usage, provider=runtime.get("provider"),
+            base_url=runtime.get("base_url"), api_key=runtime.get("api_key"),
+        )
+        return usage, cost.amount_usd, cost.status, cost.source
+    except Exception:  # pragma: no cover - defensive
+        return usage, None, None, None
+
+
 def _run_reference(
-    slot: dict[str, Any],
-    ref_messages: list[dict[str, Any]],
-    *,
-    temperature: float | None = None,
-    max_tokens: int | None = None,
-    reference_timeout: float | None = None,
-    context_length_cache: Any = None,
-    cache_disabled: bool | None = None,
-    cache_ttl: str | None = None,
+    slot: dict[str, Any], ref_messages: list[dict[str, Any]], *, temperature: float | None = None,
+    max_tokens: int | None = None, reference_timeout: float | None = None, context_length_cache: Any = None,
+    cache_disabled: bool | None = None, cache_ttl: str | None = None,
 ) -> tuple[str, str, Any]:
-    """Call one reference model and return ``(label, text, accounting)``.
-
-    The slot is resolved to its provider's real runtime (via ``_slot_runtime``)
-    and called through the same ``call_llm`` request-building path any model
-    uses, so per-model wire-format handling (anthropic_messages,
-    max_completion_tokens, fixed/forbidden temperature) applies identically to
-    a reference as it would if that model were the acting model. MoA imposes no
-    cap of its own (``max_tokens`` defaults to ``None`` → omitted → the model's
-    real maximum); ``temperature`` is only the user's configured preset value,
-    which call_llm may still override per model.
-
-    The reference's token usage is normalized with the slot's OWN resolved
-    provider/api_mode (advisors may run on a different provider than the
-    aggregator, with different usage wire shapes) and returned as a
-    ``CanonicalUsage`` so the caller can fold advisor spend into session
-    accounting. Without this, the entire reference fan-out — often the bulk of
-    a MoA turn's token spend — is invisible to cost tracking, which only ever
-    saw the aggregator's usage.
-
-    Never raises: a failed reference becomes a labelled note so the aggregator
-    can still act with partial context. Designed to run inside a thread pool —
-    ``call_llm`` is synchronous/blocking, so threads (not asyncio) are the right
-    concurrency primitive, mirroring ``delegate_task``'s batch fan-out.
-    """
-    from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, normalize_usage
-
+    """Call one reference model; return ``(label, text, accounting)``. Never raises:
+    a failed reference becomes a labelled ``[failed: …]`` note. Runs in a thread pool."""
     label = _slot_label(slot)
     runtime = _slot_runtime(slot)
+    trace_fields = {"model": slot.get("model"), "provider": runtime.get("provider") or slot.get("provider"), "temperature": temperature}
+    # The advisory view already stripped the agent's system prompt; this is the only one.
+    messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages]
     try:
-        # Prepend the advisory-role system prompt so the reference understands
-        # it is analyzing state for an aggregator, not acting on the task. The
-        # trimmed view (_reference_messages) already strips the agent's own
-        # system prompt, so this is the only system message the reference sees.
-        messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages]
-        # Trim to fit THIS reference model's context window. Reference models
-        # may have a smaller window than the aggregator (e.g. kimi-k2.7-code
-        # @ 262K advising a glm-5.2 @ 1M conversation); without this trim the
-        # provider returns a hard HTTP 400 which the except below silently
-        # converts to a [failed: …] note (issue #60345). Estimated AFTER the
-        # advisory system prompt is prepended so its tokens count against the
-        # budget too.
-        messages = _trim_messages_for_reference(
-            messages,
-            slot,
-            runtime,
-            reserve_output_tokens=max_tokens,
-            context_length_cache=context_length_cache,
+        # Trim to THIS model's window (advisors may be smaller than the aggregator); the
+        # advisory view is append-only across iterations, so cache_control lets
+        # iteration N+1 replay N's cached prefix.
+        # Reference models may have a smaller window than the aggregator (e.g. kimi-k2.7-code @ 262K
+        # advising a glm-5.2 @ 1M conversation); without this trim the provider returns a hard HTTP 400
+        # which the except below silently converts to a [failed: …] note (issue #60345). Estimated AFTER the
+        # advisory system prompt is prepended so its tokens count against the budget too.
+        trimmed = _trim_messages_for_reference(
+            messages, slot, runtime, reserve_output_tokens=max_tokens, context_length_cache=context_length_cache,
         )
-        # Apply the Anthropic-style prompt-caching decoration used by the main
-        # agent loop. This fixed reference prompt has no session-specific
-        # prefix split, so the helper uses its legacy system-and-3 fallback.
-        # The advisory view is append-only across iterations (new turns append
-        # before the trailing synthetic marker), so on cache-honoring routes (Claude via
-        # OpenRouter/native, MiniMax, Qwen/DashScope) iteration N+1's prefix
-        # replays iteration N's cached prefix. Without this, Claude advisors
-        # served ZERO cache reads across an entire benchmark run (measured:
-        # 0/1227 calls, 11.5M re-billed input tokens) because Anthropic
-        # caching is opt-in per request. OpenAI-family advisors are untouched
-        # (their caching is automatic; markers are ignored harmlessly, but we
-        # only decorate when the policy says the route honors them).
-        # Pin the live agent disable onto the runtime so advisor decoration
-        # tracks conversation state, not a fresh config re-read (#76085).
-        cache_runtime = runtime
-        if cache_disabled is not None:
-            cache_runtime = {**runtime, "_cache_disabled": cache_disabled}
-        messages = _maybe_apply_moa_cache_control(
-            messages, cache_runtime, cache_ttl=cache_ttl
-        )
-        # Per-slot max_tokens takes precedence over the preset-level
-        # reference_max_tokens passed in by the caller. This lets each
-        # reference model have its own output cap independently.
-        _slot_max_tokens: int | None = slot.get("max_tokens")
-        _effective_max_tokens = _slot_max_tokens if _slot_max_tokens is not None else max_tokens
-        extra_headers = None
-        # Normalize provider aliases (github, github-copilot, github-models,
-        # ...) through the auxiliary client's canonical alias table so slot
-        # configs that spell Copilot differently still get the header.
+        trimmed = _maybe_apply_moa_cache_control(trimmed, _with_cache_disabled(runtime, cache_disabled), cache_ttl=cache_ttl)
+        # Per-slot max_tokens beats the preset-level reference_max_tokens.
+        slot_max_tokens = slot.get("max_tokens")
+        # Copilot gates premium models on request attribution; MoA fan-out serves the
+        # user's current turn, so mirror the main agent's x-initiator header.
         from agent.auxiliary_client import _normalize_aux_provider
-
-        if _normalize_aux_provider(str(runtime.get("provider") or "")) in (
-            "copilot",
-            "copilot-acp",
-        ):
-            # Copilot Pro/Pro+ gates some premium chat models on request
-            # attribution. The main agent marks the first API request of a
-            # user turn as ``x-initiator: user``; MoA reference fan-out is also
-            # directly serving the user's current turn, not a background agent
-            # task, so mirror that header here. Without it, Claude/Gemini
-            # Copilot advisors can be rejected as unavailable to the
-            # ``copilot-language-server`` integrator even though standalone
-            # Copilot calls work.
-            extra_headers = {"x-initiator": "user"}
+        is_copilot = _normalize_aux_provider(str(runtime.get("provider") or "")) in ("copilot", "copilot-acp")
         response = call_llm(
-            task="moa_reference",
-            messages=messages,
-            temperature=temperature,
-            max_tokens=_effective_max_tokens,
-            timeout=reference_timeout,
-            reasoning_config=_slot_reasoning_config(slot),
-            extra_headers=extra_headers,
-            **runtime,
+            task="moa_reference", messages=trimmed, temperature=temperature,
+            max_tokens=slot_max_tokens if slot_max_tokens is not None else max_tokens,
+            timeout=reference_timeout, reasoning_config=_slot_reasoning_config(slot),
+            extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
         )
-        usage = CanonicalUsage()
-        raw_usage = getattr(response, "usage", None)
-        if raw_usage:
-            try:
-                usage = normalize_usage(
-                    raw_usage,
-                    provider=runtime.get("provider"),
-                    api_mode=runtime.get("api_mode"),
-                )
-            except Exception:  # pragma: no cover - defensive
-                usage = CanonicalUsage()
-        # Price this advisor at ITS OWN model/provider rate (with correct
-        # cache-read/cache-write split), not the aggregator's. This is why
-        # advisor cost is summed as dollars rather than by folding tokens into
-        # the aggregator's usage.
-        cost_usd = None
-        cost_status = None
-        cost_source = None
-        try:
-            cost = estimate_usage_cost(
-                slot.get("model") or "",
-                usage,
-                provider=runtime.get("provider"),
-                base_url=runtime.get("base_url"),
-                api_key=runtime.get("api_key"),
-            )
-            cost_usd = cost.amount_usd
-            cost_status = cost.status
-            cost_source = cost.source
-        except Exception:  # pragma: no cover - defensive
-            pass
-        _output_text = _extract_text(response) or "(empty response)"
-        acct = _RefAccounting(
-            usage,
-            cost_usd,
-            cost_status,
-            cost_source,
-            messages=messages,
-            output=_output_text,
-            model=slot.get("model"),
-            provider=runtime.get("provider") or slot.get("provider"),
-            temperature=temperature,
-        )
-        return label, _output_text, acct
+        output_text = _extract_text(response) or "(empty response)"
+        acct = _RefAccounting(*_price_reference_response(response, slot, runtime), messages=trimmed, output=output_text, **trace_fields)
+        return label, output_text, acct
     except Exception as exc:
         logger.warning("MoA reference model %s failed: %s", label, exc)
-        return label, f"[failed: {exc}]", _RefAccounting(
-            CanonicalUsage(),
-            messages=[{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages],
-            output=f"[failed: {exc}]",
-            model=slot.get("model"),
-            provider=runtime.get("provider") or slot.get("provider"),
-            temperature=temperature,
-        )
+        note = f"[failed: {exc}]"
+        return label, note, _RefAccounting(CanonicalUsage(), messages=messages, output=note, **trace_fields)
 
 
-# Output-token headroom reserved inside the reference's context window when
-# the preset does not cap advisor output (reference_max_tokens=None). Roughly
-# one long-form advisory answer; generous enough for thinking models' visible
-# output without starving the input budget.
+# Output headroom reserved in the reference window when reference_max_tokens is unset.
 _REFERENCE_DEFAULT_OUTPUT_RESERVE = 8192
 
-# Additional estimation slack: estimate_messages_tokens_rough is a rough
-# chars/4 heuristic and providers tokenize less favorably on code/JSON-heavy
-# transcripts, so keep a safety fraction of the window unbudgeted.
+# Estimator slack: estimate_messages_tokens_rough is a rough chars/4 heuristic.
 _REFERENCE_TRIM_SAFETY_FRACTION = 0.10
 
 
-def _trim_messages_for_reference(
-    messages: list[dict[str, Any]],
-    slot: dict[str, str],
-    runtime: dict[str, Any],
-    *,
-    reserve_output_tokens: int | None = None,
-    context_length_cache: Any = None,
-) -> list[dict[str, Any]]:
-    """Trim an advisory request to fit within a reference model's context window.
+def _reference_context_length(slot: dict[str, Any], runtime: dict[str, Any], cache: Any) -> int | None:
+    """Context window for a slot, memoized in ``cache`` per (provider, model) when given.
 
-    Reference models may have a smaller context window than the aggregator or
-    the main conversation. Without this trim, a reference whose window is
-    exceeded gets a hard HTTP 400 from the provider, which ``_run_reference``'s
-    try/except silently converts to a ``[failed: …]`` note — the MoA turn
-    silently degrades to fewer references (issue #60345).
-
-    ``messages`` is the FULL request as it will be sent — the advisory system
-    prompt already prepended — so the estimate covers everything the provider
-    will count. The budget reserves ``reserve_output_tokens`` (the preset's
-    ``reference_max_tokens`` when set, else a sane constant) for the model's
-    response plus a safety fraction for estimator error.
-
-    Trimming drops the OLDEST conversation frames (right after the system
-    prompt) and preserves two invariants of the advisory view, which is
-    text-only user/assistant turns (``_reference_messages`` renders tool
-    calls/results inline, so there are no tool-result frames to orphan):
-
-      - the system prompt (index 0) is always kept;
-      - the first non-system message stays ``user``-first — after each pop,
-        any now-leading assistant turns are popped too, so no provider ever
-        sees an assistant-first conversation;
-      - the trailing user turn (the synthetic judge-the-state marker) and at
-        least one preceding turn are always kept, even if still over budget —
-        a too-long-but-recent view beats an empty request.
-
-    ``context_length_cache`` is an optional per-turn dict keyed by
-    ``(provider, model)`` so one fan-out (and every iteration reusing the
-    cache) resolves each model's window at most once instead of re-probing
-    metadata sources per-reference-per-iteration. When the window cannot be
-    resolved, messages are returned unchanged.
+    Failures are cached too so a flaky metadata source is not re-probed per reference.
     """
-    if not messages:
-        return messages
-
-    from agent.model_metadata import (
-        estimate_messages_tokens_rough,
-        get_model_context_length,
-    )
+    from agent.model_metadata import get_model_context_length
 
     model = str(slot.get("model") or "")
     provider = str(runtime.get("provider") or slot.get("provider") or "")
-    if not model:
+    key = (provider, model)
+    has_cache = isinstance(cache, dict)
+    if has_cache and key in cache:
+        return cache[key]
+    try:
+        context_length = get_model_context_length(
+            model=model, base_url=str(runtime.get("base_url") or ""), api_key=str(runtime.get("api_key") or ""), provider=provider,
+        )
+    except Exception:
+        logger.debug("MoA reference context-length resolution failed for %s", _slot_label(slot))
+        context_length = None
+    if has_cache:
+        cache[key] = context_length
+    return context_length
+
+
+def _trim_messages_for_reference(
+    messages: list[dict[str, Any]], slot: dict[str, str], runtime: dict[str, Any], *,
+    reserve_output_tokens: int | None = None, context_length_cache: Any = None,
+) -> list[dict[str, Any]]:
+    """Trim an advisory request to fit a reference model's context window.
+
+    Budget = window − ``reserve_output_tokens`` (or a default) − a safety fraction.
+    Drops the OLDEST frames after the system prompt, always keeping a user-first
+    body and the trailing user turn plus one preceding turn (even if still over
+    budget). ``context_length_cache`` memoizes the window per (provider, model);
+    unresolvable windows leave messages unchanged.
+
+    Reference models may have a smaller context window than the aggregator or the main conversation. Without
+    this trim, a reference whose window is exceeded gets a hard HTTP 400 from the provider, which
+    ``_run_reference``'s try/except silently converts to a ``[failed: …]`` note — the MoA turn silently
+    degrades to fewer references (issue #60345).
+    """
+    if not messages or not slot.get("model"):
         return messages
+    from agent.model_metadata import estimate_messages_tokens_rough
 
-    cache_key = (provider, model)
-    context_length: int | None = None
-    if isinstance(context_length_cache, dict) and cache_key in context_length_cache:
-        context_length = context_length_cache[cache_key]
-    else:
-        try:
-            context_length = get_model_context_length(
-                model=model,
-                base_url=str(runtime.get("base_url") or ""),
-                api_key=str(runtime.get("api_key") or ""),
-                provider=provider,
-            )
-        except Exception:
-            logger.debug(
-                "MoA reference context-length resolution failed for %s",
-                _slot_label(slot),
-            )
-            context_length = None
-        if isinstance(context_length_cache, dict):
-            # Cache failures too (as None) — a flaky metadata source should
-            # not be re-probed for every reference of every iteration.
-            context_length_cache[cache_key] = context_length
-
+    context_length = _reference_context_length(slot, runtime, context_length_cache)
     if not isinstance(context_length, int) or context_length <= 0:
         return messages
-
-    reserve = (
-        int(reserve_output_tokens)
-        if isinstance(reserve_output_tokens, int) and reserve_output_tokens > 0
-        else _REFERENCE_DEFAULT_OUTPUT_RESERVE
-    )
+    reserve = reserve_output_tokens if isinstance(reserve_output_tokens, int) and reserve_output_tokens > 0 else _REFERENCE_DEFAULT_OUTPUT_RESERVE
     budget = int(context_length * (1.0 - _REFERENCE_TRIM_SAFETY_FRACTION)) - reserve
-    if budget <= 0:
-        return messages
-
     estimated = estimate_messages_tokens_rough(messages)
-    if estimated <= budget:
+    if budget <= 0 or estimated <= budget:
         return messages
 
-    has_system = bool(messages) and messages[0].get("role") == "system"
+    has_system = messages[0].get("role") == "system"
     head = [messages[0]] if has_system else []
     body = list(messages[1:] if has_system else messages)
 
     # Keep the trailing user turn plus at least one preceding turn.
     while len(body) > 2 and estimate_messages_tokens_rough(head + body) > budget:
         body.pop(0)
-        # Preserve the user-first invariant: never leave the advisory
-        # conversation starting on an assistant turn after a pop.
+        # Preserve the user-first invariant after each pop.
         while len(body) > 2 and body[0].get("role") == "assistant":
             body.pop(0)
-    # The loop can stop with two frames left where the first is an
-    # assistant turn — enforce user-first even then (a lone trailing user
-    # turn is a valid request; an assistant-first one is not).
+    # Two frames left with an assistant first: still enforce user-first.
     while len(body) > 1 and body[0].get("role") == "assistant":
         body.pop(0)
 
@@ -774,125 +483,94 @@ def _trim_messages_for_reference(
         logger.info(
             "MoA reference %s: estimated %d tokens exceeds budget %d "
             "(window %d, output reserve %d); dropped %d oldest message(s).",
-            _slot_label(slot),
-            estimated,
-            budget,
-            context_length,
-            reserve,
-            dropped,
+            _slot_label(slot), estimated, budget, context_length, reserve, dropped,
         )
     return trimmed
 
 
 _REFERENCE_POLL_INTERVAL_S = 5.0
 
-# Sentinel text for a reference slot whose wait was aborted by a user
-# interrupt. Shared by _run_references_parallel (which writes it) and the
-# facade cache logic (which must never cache it as real advice).
+# Sentinel for a reference aborted by user interrupt; the facade must never cache it.
 _INTERRUPTED_REFERENCE_NOTE = "[skipped: interrupted by user]"
 
 
+def _placeholder_output(slot: dict[str, Any], note: str) -> tuple[str, str, Any]:
+    """A reference-output tuple for a slot that was not (fully) run: zero accounting."""
+    return _slot_label(slot), note, _RefAccounting(CanonicalUsage())
+
+
+def _settle_interrupted(
+    futures: dict[Any, int], results: list, reference_models: list[dict[str, Any]], late_accounting_sink: Any,
+) -> None:
+    """Fill every unfinished slot after a user interrupt: cancel never-dispatched
+    futures (nothing billed), keep real output of ones that just finished, and hand
+    running ones (cannot be killed, WILL bill) to ``late_accounting_sink``."""
+    for future, idx in futures.items():
+        if results[idx] is not None:
+            continue
+        # #38922: a slow confirmation does NOT necessarily mean the send failed — but we must distinguish
+        # two cases via future.cancel()'s return value: cancel() == False -> the coroutine was already
+        # running on the gateway loop when the timeout fired; the request is in flight on the wire and
+        # cannot be un-sent. Re-sending via standalone would be a guaranteed DUPLICATE, so treat it as
+        # delivered (assume-delivered). cancel() == True -> the scheduled callback never started executing
+        # (loop wedged/backlogged for the full 60s), so nothing was sent. We MUST fall through to the
+        # standalone path or the message is silently dropped (worse than a duplicate).
+        cancelled = future.cancel()
+        if not cancelled and future.done():
+            results[idx] = future.result()
+            continue
+        results[idx] = _placeholder_output(reference_models[idx], _INTERRUPTED_REFERENCE_NOTE)
+        if not cancelled and late_accounting_sink is not None:
+            future.add_done_callback(functools.partial(_record_late, late_accounting_sink, results[idx][0]))
+
+
+def _record_late(sink: Any, label: str, future: Any) -> None:
+    """Done-callback for an abandoned reference future: forward its real accounting."""
+    try:
+        sink(label, future.result()[2])
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("MoA: late accounting sink failed for %s", label)
+
+
 def _run_references_parallel(
-    reference_models: list[dict[str, Any]],
-    ref_messages: list[dict[str, Any]],
-    *,
-    temperature: float | None = None,
-    max_tokens: int | None = None,
-    progress_callback: Any = None,
-    reference_timeout: float | None = None,
-    agent: Any = None,
-    late_accounting_sink: Any = None,
+    reference_models: list[dict[str, Any]], ref_messages: list[dict[str, Any]], *,
+    temperature: float | None = None, max_tokens: int | None = None, progress_callback: Any = None,
+    reference_timeout: float | None = None, agent: Any = None, late_accounting_sink: Any = None,
 ) -> list[tuple[str, str, Any]]:
-    """Fan out all reference models in parallel, returning outputs in order.
+    """Fan out all reference models in parallel; ``(label, text, _RefAccounting)`` per
+    slot in ``reference_models`` order.
 
-    Like ``delegate_task``'s batch mode, every reference is dispatched at once
-    and we block until all of them finish before handing the joined results to
-    the aggregator. Output order matches ``reference_models`` so the
-    ``Reference {idx}`` labelling stays stable. MoA presets that reference
-    another MoA preset are skipped here (recursion guard) with a labelled note.
-
-    If ``progress_callback`` is provided it is invoked as each reference
-    completes: ``progress_callback(refs_done, refs_total, label)``. The total
-    matches ``len(reference_models)`` so listeners can render a status-bar
-    progress like ``MOA: 2/3 refs done``. Best-effort — failures are logged
-    but never break the fan-out (display must never block a turn).
-
-    Each element is ``(label, text, accounting)`` where accounting is a
-    ``_RefAccounting`` object (zeroed for skipped/failed/interrupted
-    references).
-
-    When *agent* is given, the fan-out is interruptible: waiting for the
-    batch is broken into ``_REFERENCE_POLL_INTERVAL_S``-second polls (instead
-    of one blocking ``future.result()`` per reference) so a user interrupt
-    mid-turn can abort the wait — mirroring the same interrupt check
-    ``agent.tool_executor`` already applies to its own concurrent tool
-    batch. This does not add or change any per-reference *timeout* (that is
-    ``reference_timeout`` / ``auxiliary.moa_reference.timeout``, resolved
-    elsewhere) — it only lets the caller stop waiting early. References
-    already in flight cannot be forcibly killed (``call_llm`` is a blocking
-    HTTP call with no interrupt hook of its own, same limitation
-    tool_executor has for tools without an interrupt check); an interrupted
-    reference's own timeout still reaps its thread independently. *agent* is
-    optional and defaults to ``None``, preserving the uninterruptible
-    blocking behavior for any caller that doesn't pass it.
+    ``provider == "moa"`` slots are skipped with a note (recursion guard).
+    ``progress_callback(refs_done, refs_total, label)`` fires per completion. With
+    *agent*, the wait polls every ``_REFERENCE_POLL_INTERVAL_S`` so a user interrupt
+    can abort it; in-flight calls cannot be killed and bill via ``late_accounting_sink``.
     """
-    from agent.usage_pricing import CanonicalUsage
-
     if not reference_models:
         return []
 
-    results: list[tuple[str, str, Any] | None] = [None] * len(reference_models)
-    futures: dict[Any, int] = {}
-    workers = min(_MAX_REFERENCE_WORKERS, len(reference_models))
-    # Reference slots run on bare executor threads, which start with an empty
-    # contextvars.Context — propagate the parent turn's context (approval
-    # callbacks + the Nous Portal conversation tag) into each worker so
-    # advisor calls attribute to the same conversation as the acting turn.
-    from tools.thread_context import propagate_context_to_thread
-
     total = len(reference_models)
+    results: list[tuple[str, str, Any] | None] = [None] * total
+    futures: dict[Any, int] = {}
+    # Propagate the turn's contextvars (approval callbacks, Nous conversation tag).
+    from tools.thread_context import propagate_context_to_thread
     completed = 0
-    executor = ThreadPoolExecutor(max_workers=workers)
+    executor = ThreadPoolExecutor(max_workers=min(_MAX_REFERENCE_WORKERS, total))
     interrupted = False
-    # Per-fan-out context-length cache shared by every reference worker, so
-    # duplicate (provider, model) slots resolve their window once per turn
-    # instead of re-probing metadata sources per reference (dict get/set is
-    # GIL-atomic; a rare duplicate probe on a first-use race is harmless).
-    _ctx_len_cache: dict[tuple[str, str], int | None] = {}
-    cache_disabled = (
-        getattr(agent, "_cache_disabled", None) if agent is not None else None
-    )
-    # Thread the agent's configured cache TTL into every advisor request so
-    # the fan-out stops regressing 1h → 5m (#84733); the destination-aware
-    # clamp (Qwen → 5m) runs inside _maybe_apply_moa_cache_control.
-    cache_ttl = getattr(agent, "_cache_ttl", None) if agent is not None else None
+    # Shared per-fan-out context-length cache (dict get/set is GIL-atomic).
+    ctx_len_cache: dict[tuple[str, str], int | None] = {}
+    cache_disabled, cache_ttl = _agent_cache_opts(agent)
     try:
         for idx, slot in enumerate(reference_models):
             if slot.get("provider") == "moa":
-                results[idx] = (
-                    _slot_label(slot),
-                    "[skipped: MoA presets cannot recursively reference MoA]",
-                    _RefAccounting(CanonicalUsage()),
-                )
+                results[idx] = _placeholder_output(slot, "[skipped: MoA presets cannot recursively reference MoA]")
                 continue
-            futures[
-                executor.submit(
-                    propagate_context_to_thread(_run_reference),
-                    slot,
-                    ref_messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    reference_timeout=reference_timeout,
-                    context_length_cache=_ctx_len_cache,
-                    cache_disabled=cache_disabled,
-                    cache_ttl=cache_ttl,
-                )
-            ] = idx
+            futures[executor.submit(
+                propagate_context_to_thread(_run_reference), slot, ref_messages, temperature=temperature,
+                max_tokens=max_tokens, reference_timeout=reference_timeout, context_length_cache=ctx_len_cache,
+                cache_disabled=cache_disabled, cache_ttl=cache_ttl,
+            )] = idx
 
-        # Collect every reference before returning — the aggregator needs the
-        # complete set, so there is no early-exit / first-completed path
-        # here, other than a user interrupt. Progress callbacks fire as each
-        # reference completes so frontends can render "MOA: k/n refs done".
+        # Collect every reference (no early exit except a user interrupt).
         pending = set(futures)
         while pending:
             done, pending = _futures_wait(pending, timeout=_REFERENCE_POLL_INTERVAL_S)
@@ -902,59 +580,13 @@ def _run_references_parallel(
                 completed += 1
                 if progress_callback is not None:
                     try:
-                        label = _slot_label(reference_models[idx])
-                        progress_callback(completed, total, label)
+                        progress_callback(completed, total, _slot_label(reference_models[idx]))
                     except Exception as exc:  # pragma: no cover - display must never break
                         logger.debug("MoA progress_callback failed: %s", exc)
-            if not pending:
-                break
-            if agent is not None and getattr(agent, "_interrupt_requested", False):
+            if pending and agent is not None and getattr(agent, "_interrupt_requested", False):
                 interrupted = True
+                _settle_interrupted(futures, results, reference_models, late_accounting_sink)
                 break
-
-        if interrupted:
-            for future, idx in futures.items():
-                if results[idx] is not None:
-                    continue
-                if future.cancel():
-                    # Never dispatched — genuinely nothing was billed.
-                    results[idx] = (
-                        _slot_label(reference_models[idx]),
-                        _INTERRUPTED_REFERENCE_NOTE,
-                        _RefAccounting(CanonicalUsage()),
-                    )
-                elif future.done():
-                    # Finished between the interrupt check and now — the call
-                    # completed and billed, so keep its REAL output and
-                    # accounting rather than zeroing it with a placeholder.
-                    results[idx] = future.result()
-                else:
-                    # Already running — cannot be force-killed (see
-                    # docstring); leave it be so the caller isn't blocked,
-                    # and note that its output was abandoned. The provider
-                    # call is still in flight and WILL bill when it
-                    # completes, so hand its eventual accounting to the
-                    # caller's sink instead of silently dropping it.
-                    label = _slot_label(reference_models[idx])
-                    results[idx] = (
-                        label,
-                        _INTERRUPTED_REFERENCE_NOTE,
-                        _RefAccounting(CanonicalUsage()),
-                    )
-                    if late_accounting_sink is not None:
-                        def _record_late(f: Any, _label: str = label) -> None:
-                            try:
-                                _lbl, _txt, _acct = f.result()
-                            except Exception:  # pragma: no cover - defensive
-                                return
-                            try:
-                                late_accounting_sink(_label, _acct)
-                            except Exception:  # pragma: no cover - defensive
-                                logger.debug(
-                                    "MoA: late accounting sink failed for %s",
-                                    _label,
-                                )
-                        future.add_done_callback(_record_late)
     finally:
         executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
 
@@ -962,12 +594,7 @@ def _run_references_parallel(
 
 
 def _truncate_tool_result(text: str, budget: int = _REFERENCE_TOOL_RESULT_BUDGET) -> str:
-    """Head+tail preview of a tool result for the advisory view.
-
-    Keeps the first and last halves of the budget with a ``[... N chars
-    omitted ...]`` marker between them, so a reference sees both how the result
-    started and how it ended without replaying the whole payload.
-    """
+    """Head+tail preview of a tool result with an ``[... N chars omitted ...]`` marker."""
     if not text or len(text) <= budget:
         return text
     half = budget // 2
@@ -975,43 +602,30 @@ def _truncate_tool_result(text: str, budget: int = _REFERENCE_TOOL_RESULT_BUDGET
     return f"{text[:half]}\n[... {omitted} chars omitted ...]\n{text[-half:]}"
 
 
+def _field(obj: Any, name: str) -> Any:
+    """Read ``name`` from a dict or an attribute object (tool calls arrive as either)."""
+    if obj is None:
+        return None
+    return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+
+
 def _render_tool_calls(tool_calls: Any) -> str:
-    """Render an assistant turn's tool_calls as readable text lines.
+    """Render an assistant turn's tool_calls as ``[called tool: name(args)]`` lines.
 
-    The advisory view cannot carry real ``tool_calls`` payloads (strict
-    providers reject tool_calls the reference never produced), so the agent's
-    actions are flattened to text the reference can read and reason about.
-
-    Tolerates both dict-shaped and ``SimpleNamespace``-shaped entries (with a
-    nested ``function`` of either kind), so the helper works uniformly against
-    an OpenAI-style transport and against SDK-style stream-stitched responses.
-    Without this shape tolerance, a SimpleNamespace-sourced entry rendered as
-    ``[called tool: tool]`` and silently lost the function name.
+    Tolerates dict- and SimpleNamespace-shaped entries (and nested ``function``).
     """
     lines: list[str] = []
     for tc in tool_calls or []:
-        if isinstance(tc, dict):
-            fn = tc.get("function") or {}
-            fn_name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
-            fn_args = fn.get("arguments") if isinstance(fn, dict) else getattr(fn, "arguments", None)
-            top_name = tc.get("name")
+        fn = _field(tc, "function")
+        name = _field(fn, "name") or _field(tc, "name") or "tool"
+        fn_args = _field(fn, "arguments")
+        if isinstance(fn_args, str) or fn_args is None:
+            args_text = fn_args or ""
         else:
-            fn = getattr(tc, "function", None)
-            fn_name = getattr(fn, "name", None) if fn is not None else None
-            fn_args = getattr(fn, "arguments", None) if fn is not None else None
-            top_name = getattr(tc, "name", None)
-        name = fn_name or top_name or "tool"
-        if isinstance(fn_args, str):
-            args_text = fn_args
-        elif fn_args is not None:
             try:
-                import json
-
                 args_text = json.dumps(fn_args, ensure_ascii=False)
             except Exception:
                 args_text = str(fn_args)
-        else:
-            args_text = ""
         lines.append(f"[called tool: {name}({args_text})]" if args_text else f"[called tool: {name}]")
     return "\n".join(lines)
 
@@ -1025,152 +639,71 @@ _ADVISORY_INSTRUCTION = (
 
 
 def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Build an advisory view of the conversation for reference models.
+    """Build the advisory (reference-model) view of the conversation.
 
-    A reference gives an INFORMED judgement on the current state, so it must
-    see what the agent actually did — its tool calls AND the tool results that
-    came back — not just the agent's narration. We therefore preserve the whole
-    conversation flow, but flatten it into clean user/assistant *text* turns:
-
-      - system prompt: dropped (8K of Hermes boilerplate, not advisory signal).
-      - assistant turns: kept; any ``tool_calls`` are rendered inline as
-        ``[called tool: name(args)]`` text lines appended to the turn's text.
-      - ``tool``-role results: NOT dropped. Each is folded (head+tail preview,
-        see ``_truncate_tool_result``) into the *preceding* assistant turn as a
-        ``[tool result: ...]`` block, so the reference sees what came back.
-
-    This emits ZERO ``tool``-role messages and ZERO ``tool_calls`` arrays — only
-    plain user/assistant text — so strict providers (Mistral, Fireworks) that
-    reject orphan tool messages / unproduced tool_calls don't 400, while the
-    reference still has the full picture.
-
-    The view MUST end with a ``user`` turn. Anthropic (and OpenRouter→Anthropic)
-    interpret a trailing assistant turn as an assistant *prefill* to continue,
-    and no-prefill models (e.g. Claude Opus 4.8) reject it with
-    ``400 ... must end with a user message``. Rather than DELETE the agent's
-    latest context to satisfy that (which would blind the reference to the
-    current state), we APPEND a synthetic user turn asking the reference to
-    judge the state above. End-on-user is satisfied and no context is lost.
-
-    The acting aggregator always receives the full, untrimmed transcript; this
-    function only shapes the disposable advisory copy.
+    Plain user/assistant TEXT turns only: system prompt dropped, tool_calls rendered
+    inline, tool results folded into the preceding assistant turn as previews (no
+    tool-role messages / tool_calls arrays, so strict providers do not 400). Always
+    ends on a ``user`` turn (Anthropic treats a trailing assistant turn as prefill)
+    by APPENDING a synthetic request. The aggregator always gets the full transcript.
     """
     rendered: list[dict[str, Any]] = []
     last_user_content: str | None = None
     for msg in messages:
         role = msg.get("role")
         content = msg.get("content")
-        # Flatten structured content (lists of parts) to visible text. Content
-        # arrives as a list — not a string — in two common cases:
-        #   1. Anthropic prompt-cache decoration: conversation_loop runs
-        #      apply_anthropic_cache_control BEFORE the MoA facade, converting
-        #      string content to [{"type": "text", "text": ..., "cache_control":
-        #      ...}]. A str-only read here flattened the user's ENTIRE prompt to
-        #      "" — Claude references then 400'd ("messages: at least one
-        #      message is required") while tolerant models answered "no user
-        #      request is present".
-        #   2. Multimodal turns (pasted image → text + image_url parts) and
-        #      multimodal tool results (screenshots).
-        # flatten_message_text extracts the text parts and skips image parts,
-        # and returns strings unchanged — so a decorated and an undecorated
-        # transcript produce a byte-identical advisory view (which keeps the
-        # advisory prefix stable across iterations for advisor prompt caching).
+        # Decorated (cache_control parts) and undecorated transcripts must yield a
+        # byte-identical view so the advisory prefix stays cache-stable.
         text = flatten_message_text(content)
-
-        if role == "system":
-            continue
         if role == "user":
             if not text.strip() and isinstance(content, list) and content:
-                # Structured content with no extractable text (e.g. an
-                # image-only turn). Emitting an empty user message would be
-                # dropped/rejected by strict providers (Anthropic 400s on
-                # empty text blocks — the original "closed" preset failure
-                # mode), and silently skipping the turn would break
-                # user/assistant alternation in the advisory view. Substitute
-                # a placeholder so the reference knows a non-text turn
-                # happened. Only structured content qualifies — an empty or
-                # whitespace-only STRING turn carries nothing and is dropped
-                # below instead.
+                # Image-only turn: strict providers reject empty user messages and
+                # skipping would break alternation.
                 text = "[user sent non-text content (e.g. an image attachment)]"
             if not text.strip():
-                # Genuinely empty user turn (content="" / None). It carries
-                # nothing advisory, and strict providers (Kimi/Moonshot, ZAI,
-                # and others that enforce non-empty user content) reject it
-                # with 400 "message ... with role 'user' must not be empty" —
-                # the same way the assistant branch below drops turns with no
-                # parts. Lenient providers (DeepSeek) accept the empty turn,
-                # which is why a MoA fan-out would fail on one reference and
-                # pass on another for the identical rendered view. The
-                # advisory view is already not strictly alternating (adjacent
-                # assistant turns occur in every tool loop), so dropping a
-                # contentless turn is safe.
-                continue
+                continue  # genuinely empty user turn: strict providers 400 on it
             last_user_content = text
             rendered.append({"role": "user", "content": text})
         elif role == "assistant":
-            parts: list[str] = []
-            if text.strip():
-                parts.append(text.strip())
+            parts = [text.strip()] if text.strip() else []
             calls_text = _render_tool_calls(msg.get("tool_calls"))
             if calls_text:
                 parts.append(calls_text)
-            # Empty assistant turns (no text, no calls) carry nothing advisory.
-            if parts:
+            if parts:  # empty assistant turns carry nothing advisory
                 rendered.append({"role": "assistant", "content": "\n".join(parts)})
         elif role == "tool":
-            # Fold the tool result into the preceding assistant turn as text so
-            # the reference sees what came back, without emitting a tool-role
-            # message a reference never produced.
-            result_text = _truncate_tool_result(text)
-            block = f"[tool result: {result_text}]"
+            # Fold the tool result into the preceding assistant turn as text (a leading
+            # tool result with no assistant turn opens one).
+            block = f"[tool result: {_truncate_tool_result(text)}]"
             if rendered and rendered[-1].get("role") == "assistant":
                 rendered[-1]["content"] = rendered[-1]["content"] + "\n" + block
             else:
-                # No assistant turn to attach to (e.g. a leading tool result);
-                # keep it as advisory context on its own assistant-role line.
                 rendered.append({"role": "assistant", "content": block})
-        # Any other role is ignored.
+        # system and any other role are ignored.
 
-    # End on a user turn: append a synthetic advisory request rather than
-    # deleting the agent's latest assistant context. This satisfies Anthropic's
-    # no-trailing-assistant-prefill rule while preserving full state.
+    # Anthropic rejects trailing assistant prefill: end on a synthetic user request.
     if rendered and rendered[-1].get("role") == "assistant":
         rendered.append({"role": "user", "content": _ADVISORY_INSTRUCTION})
-    elif rendered and rendered[-1].get("role") == "user":
-        # Already ends on a user turn (fresh user prompt, no agent action yet).
-        # Leave it — the reference answers that prompt directly.
-        pass
-
     if not rendered:
-        # Degenerate case: nothing rendered. Fall back to the latest user turn.
+        # Nothing rendered: fall back to the latest user turn.
         if last_user_content is not None:
             return [{"role": "user", "content": last_user_content}]
         for msg in reversed(messages):
-            if msg.get("role") == "user":
-                fallback_text = flatten_message_text(msg.get("content"))
-                if fallback_text.strip():
-                    return [{"role": "user", "content": fallback_text}]
+            fallback_text = flatten_message_text(msg.get("content")) if msg.get("role") == "user" else ""
+            if fallback_text.strip():
+                return [{"role": "user", "content": fallback_text}]
     return rendered
 
 
-
 def _extract_text(response: Any) -> str:
-    try:
-        transport = get_transport("chat_completions")
-        if transport is None:
-            raise RuntimeError("chat_completions transport unavailable")
-        normalized = transport.normalize_response(response)
-        text = (normalized.content or "").strip()
+    """Assistant text of a completed response: transport-normalized, else ``choices[0]``."""
+    with contextlib.suppress(Exception):
+        text = (get_transport("chat_completions").normalize_response(response).content or "").strip()
         if text:
             return text
-    except Exception:
-        pass
     try:
         message = response.choices[0].message
-        if isinstance(message, dict):
-            content = message.get("content")
-        else:
-            content = getattr(message, "content", message)
+        content = message.get("content") if isinstance(message, dict) else getattr(message, "content", message)
         if not isinstance(content, str):
             content = str(content) if content else ""
         return content.strip()
@@ -1179,16 +712,7 @@ def _extract_text(response: Any) -> str:
 
 
 def _preset_temperature(preset: dict[str, Any], key: str) -> float | None:
-    """Read an optional temperature from a preset.
-
-    Returns None when the key is absent, empty, or explicitly null — meaning
-    "don't send temperature; let the provider default apply", exactly like a
-    single-model Hermes agent (which never sends temperature unless
-    configured). The old coercion ``float(preset.get(key, 0.6) or 0.6)``
-    made unset impossible: absent, null, and even 0 all collapsed to the
-    hardcoded default, so MoA advisors/aggregator always ran at 0.6/0.4
-    while the same model running solo used the provider default.
-    """
+    """Read an optional preset temperature; None (absent/empty/null) = provider default."""
     value = preset.get(key)
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
@@ -1199,29 +723,34 @@ def _preset_temperature(preset: dict[str, Any], key: str) -> float | None:
         return None
 
 
+def _hash_messages(msgs: list[dict[str, Any]]) -> str:
+    return hashlib.sha256("\u0000".join(f"{m.get('role')}:{m.get('content')}" for m in msgs).encode("utf-8", "replace")).hexdigest()
+
+
 def _is_failed_reference(text: str) -> bool:
-    """Return whether a reference output is an internal failure/skip sentinel.
-
-    Covers both the ``[failed: …]`` notes produced when a reference call
-    raises (which may embed raw provider error text) and the
-    ``[skipped: …]`` recursion-guard notes — neither is real advice, so
-    neither belongs in the aggregator prompt.
-    """
-    sentinel = text.lstrip().lower()
-    return sentinel.startswith("[failed:") or sentinel.startswith("[skipped:")
+    """Whether a reference output is a ``[failed: …]`` / ``[skipped: …]`` sentinel."""
+    return text.lstrip().lower().startswith(("[failed:", "[skipped:"))
 
 
-def _successful_references(
-    reference_outputs: list[tuple[str, str, Any]],
-) -> list[tuple[str, str, Any]]:
-    """Filter failed advice while preserving each accounting payload."""
-    return [output for output in reference_outputs if not _is_failed_reference(output[1])]
+def _join_reference_outputs(outputs: list[tuple[str, str, Any]], degraded: str = "") -> str:
+    """Render numbered reference blocks for the aggregator, appending any degraded notice."""
+    joined = "\n\n".join(f"Reference {idx} — {label}:\n{text}" for idx, (label, text, _acct) in enumerate(outputs, start=1))
+    if degraded:
+        joined = f"{joined}\n\n{degraded}" if joined else degraded
+    return joined
 
 
-def _failed_reference_labels(
-    reference_outputs: list[tuple[str, str, Any]],
-) -> list[str]:
-    return [label for label, text, _accounting in reference_outputs if _is_failed_reference(text)]
+def _sum_reference_accounting(outputs: list[tuple[str, str, Any]]) -> tuple[Any, Any]:
+    """Sum fan-out usage AND cost in dollars (each advisor priced at its OWN rate)."""
+    usage = CanonicalUsage()
+    cost: Any = None
+    for _lbl, _txt, acct in outputs:
+        if isinstance(acct, _RefAccounting):
+            if isinstance(acct.usage, CanonicalUsage):
+                usage = usage + acct.usage
+            if acct.cost_usd is not None:
+                cost = (cost or 0) + acct.cost_usd
+    return usage, cost
 
 
 def _degraded_notice(failed_labels: list[str], policy: str) -> str:
@@ -1230,95 +759,63 @@ def _degraded_notice(failed_labels: list[str], policy: str) -> str:
     return f"[Reference models unavailable: {', '.join(failed_labels)}]"
 
 
+def _slot_labels(slots: list[dict[str, Any]]) -> str:
+    return ", ".join(_slot_label(slot) for slot in slots)
+
+
+def _guidance_inputs(
+    reference_outputs: list[tuple[str, str, Any]], privacy_full: bool, policy: str,
+) -> tuple[list[tuple[str, str, Any]], str, bool]:
+    """``(advisor outputs for the aggregator, degraded notice, all_failed)``.
+
+    'full' privacy mode redacts advisor text reaching the aggregator (applied to a
+    per-call copy — caches hold raw text). Failed refs are filtered out first.
+    """
+    successful = [o for o in reference_outputs if not _is_failed_reference(o[1])]
+    failed_labels = [label for label, text, _acct in reference_outputs if _is_failed_reference(text)]
+    agg_refs = _redact_reference_outputs(successful) if privacy_full else successful
+    return agg_refs, _degraded_notice(failed_labels, policy), bool(reference_outputs) and not successful
+
+
 def aggregate_moa_context(
-    *,
-    user_prompt: str,
-    api_messages: list[dict[str, Any]],
-    reference_models: list[dict[str, Any]],
-    aggregator: dict[str, Any],
-    temperature: float | None = None,
-    aggregator_temperature: float | None = None,
-    reference_max_tokens: int | None = None,
-    reference_timeout: float | None = None,
-    degraded_reference_policy: str = "loud",
-    agent: Any = None,
+    *, user_prompt: str, api_messages: list[dict[str, Any]], reference_models: list[dict[str, Any]],
+    aggregator: dict[str, Any], temperature: float | None = None, aggregator_temperature: float | None = None,
+    reference_max_tokens: int | None = None, reference_timeout: float | None = None,
+    degraded_reference_policy: str = "loud", agent: Any = None,
 ) -> str:
-    """Run configured reference models and synthesize their advice.
+    """Run configured reference models and synthesize their advice (one-shot /moa).
 
-    Failures are returned as model-specific notes instead of aborting the normal
-    agent loop; the main model can still act with partial context.
+    Failures become model-specific notes instead of aborting the loop.
+    ``reference_max_tokens`` caps ONLY the fan-out (capping the aggregator truncated
+    long syntheses). ``agent`` makes the fan-out interruptible.
 
-    ``reference_max_tokens`` applies ONLY to the reference fan-out — the
-    aggregator's own synthesis call is never capped, so it always uses its
-    model's own maximum. ``call_llm`` omits the parameter entirely when it
-    is ``None`` (see its docstring), which also sidesteps providers that
-    reject ``max_tokens`` outright. A hardcoded cap on the aggregator call
-    previously truncated long aggregator syntheses (#53580) — passing
-    ``reference_max_tokens`` to both calls here would silently reintroduce
-    that regression.
-
-    ``temperature`` / ``aggregator_temperature`` are ``None`` by default:
-    like ``reference_max_tokens``, ``call_llm`` omits temperature when None
-    so the provider default applies — matching single-model agent behavior.
-    Presets may still pin explicit values.
-
-    ``agent``, when passed, lets the reference fan-out be aborted early on a
-    user interrupt — see ``_run_references_parallel``'s docstring.
+    ``reference_max_tokens`` applies ONLY to the reference fan-out — the aggregator's own synthesis call is
+    never capped, so it always uses its model's own maximum. ``call_llm`` omits the parameter entirely when
+    it is ``None`` (see its docstring), which also sidesteps providers that reject ``max_tokens`` outright.
+    A hardcoded cap on the aggregator call previously truncated long aggregator syntheses (#53580) — passing
+    ``reference_max_tokens`` to both calls here would silently reintroduce that regression.
     """
     reference_models = [slot for slot in reference_models if slot.get("enabled", True)]
-    reference_outputs: list[tuple[str, str, Any]] = []
-    ref_messages = _reference_messages(api_messages)
     reference_outputs = _run_references_parallel(
-        reference_models,
-        ref_messages,
-        temperature=temperature,
-        max_tokens=reference_max_tokens,
-        reference_timeout=reference_timeout,
-        agent=agent,
+        reference_models, _reference_messages(api_messages), temperature=temperature,
+        max_tokens=reference_max_tokens, reference_timeout=reference_timeout, agent=agent,
     )
-
-    successful_outputs = _successful_references(reference_outputs)
-    failed_labels = _failed_reference_labels(reference_outputs)
-
-    # 'full' privacy mode (moa.privacy_filter) also covers this one-shot /moa
-    # synthesis path: advisor text is redacted before it reaches the
-    # synthesizing aggregator. 'display' does not apply here — this path has
-    # no user-visible reference blocks or trace records of its own. Redaction
-    # runs on the successful outputs only (failed refs are already filtered
-    # into the degraded notice).
+    privacy_full = False
     try:
         from hermes_cli.config import load_config as _load_config
-
-        if _moa_privacy_mode((_load_config() or {}).get("moa")) == "full":
-            successful_outputs = _redact_reference_outputs(successful_outputs)
+        privacy_full = _moa_privacy_mode((_load_config() or {}).get("moa")) == "full"
     except Exception:  # pragma: no cover - privacy filter must never break a turn
         logger.debug("MoA privacy filter check failed", exc_info=True)
-
-    joined = "\n\n".join(
-        f"Reference {idx} — {label}:\n{text}"
-        for idx, (label, text, _accounting) in enumerate(successful_outputs, start=1)
-    )
-    degraded = _degraded_notice(failed_labels, degraded_reference_policy)
-    if degraded:
-        joined = f"{joined}\n\n{degraded}" if joined else degraded
-
-    # Skip the aggregator call when every reference failed or was skipped —
-    # synthesising over zero real advice wastes tokens and can block for the
-    # full provider timeout (observed: ~6 min on SenseNova) before returning
-    # a non-retryable error that leaves the session hanging. The early return
-    # carries only the sanitized unavailability notice (never raw provider
-    # error text) so the main agent loop can still act in single-model mode.
-    if reference_outputs and not successful_outputs:
-        logger.warning(
-            "MoA: all %d reference(s) failed — skipping aggregator synthesis",
-            len(reference_outputs),
-        )
-        notice = degraded or "[Reference models unavailable]"
+    agg_refs, degraded, all_failed = _guidance_inputs(reference_outputs, privacy_full, degraded_reference_policy)
+    joined = _join_reference_outputs(agg_refs, degraded)
+    if all_failed:
+        # Skip the aggregator: synthesizing over nothing can block for the full provider timeout.
+        logger.warning("MoA: all %d reference(s) failed — skipping aggregator synthesis", len(reference_outputs))
         return (
             "[Mixture of Agents context — all reference models failed. "
             "Proceeding without aggregated guidance.]\n"
-            f"References: {', '.join(_slot_label(slot) for slot in reference_models)}\n\n"
-            f"{notice}"
+            f"References: {_slot_labels(reference_models)}\n\n"
+            f"{degraded or '[Reference models unavailable]'}"
         )
 
     synth_prompt = (
@@ -1333,165 +830,82 @@ def aggregate_moa_context(
 
     agg_label = _slot_label(aggregator)
     agg_runtime = _slot_runtime(aggregator)
-    # Pin the live agent disable onto synthesis decoration so mid-session
-    # config flips cannot re-enable markers on this path alone (#76085).
-    # Same not-None guard as _run_reference: stamping None would be a no-op
-    # (present-None falls through to the config fallback anyway).
-    agg_cache_runtime = agg_runtime
-    _agg_cache_disabled = (
-        getattr(agent, "_cache_disabled", None) if agent is not None else None
-    )
-    if _agg_cache_disabled is not None:
-        agg_cache_runtime = {
-            **agg_runtime,
-            "_cache_disabled": _agg_cache_disabled,
-        }
-    # Thread the agent's configured cache TTL into the synthesis decoration
-    # so the one-shot /moa path stops regressing 1h → 5m (#84733).
-    _agg_cache_ttl = getattr(agent, "_cache_ttl", None) if agent is not None else None
+    cache_disabled, cache_ttl = _agent_cache_opts(agent)
     try:
-        # Same cache_control decoration as _run_reference's advisor calls
-        # (see _maybe_apply_moa_cache_control) — this synthesis call is a
-        # third, independent MoA call path that 22c5048d9 did not cover (it
-        # only restored caching for the acting-aggregator turn in the
-        # persistent `provider: moa` model and for advisor fan-out). Without
-        # it, the one-shot `/moa <prompt>` command's synthesis call re-bills
-        # its full input (system-less prompt containing every joined
-        # reference output) on every invocation with zero cache_control
-        # breakpoints, even when the resolved aggregator slot is a
-        # cache-honoring route (e.g. Claude on OpenRouter/native Anthropic).
+        # Same cache_control decoration as the advisor calls; this synthesis call is
+        # a third independent MoA call path that otherwise re-bills its full input.
         agg_messages = _maybe_apply_moa_cache_control(
-            [{"role": "user", "content": synth_prompt}],
-            agg_cache_runtime,
-            cache_ttl=_agg_cache_ttl,
+            [{"role": "user", "content": synth_prompt}], _with_cache_disabled(agg_runtime, cache_disabled), cache_ttl=cache_ttl,
         )
-        response = call_llm(
-            task="moa_aggregator",
-            messages=agg_messages,
-            temperature=aggregator_temperature,
-            reasoning_config=_aggregator_reasoning_config(aggregator),
-            **agg_runtime,
-        )
-        synthesis = _extract_text(response)
+        synthesis = _extract_text(call_llm(
+            task="moa_aggregator", messages=agg_messages, temperature=aggregator_temperature,
+            reasoning_config=_aggregator_reasoning_config(aggregator), **agg_runtime,
+        ))
     except Exception as exc:
         logger.warning("MoA aggregator model %s failed: %s", agg_label, exc)
         synthesis = ""
-
-    if not synthesis:
-        synthesis = joined
 
     return (
         "[Mixture of Agents context — use this as private guidance for the "
         "normal Hermes agent loop. You may call tools, continue reasoning, or "
         "finish normally.]\n"
         f"Aggregator: {agg_label}\n"
-        f"References: {', '.join(_slot_label(slot) for slot in reference_models)}\n\n"
-        f"{synthesis.strip()}"
+        f"References: {_slot_labels(reference_models)}\n\n"
+        f"{(synthesis or joined).strip()}"
     )
 
 
 def _completed_response_as_stream_chunk(response: Any) -> Any:
-    """Convert a completed Chat Completions response into one delta stream chunk.
-
-    MoA's outer streaming consumer expects ``choices[0].delta`` chunks. A
-    completed aggregator response carries ``choices[0].message`` instead; adapt
-    it here, at the MoA facade boundary, so provider-specific Relay behavior and
-    other transports remain untouched.
-    """
-
+    """Adapt a completed response into one delta stream chunk (facade boundary only)."""
     choices = getattr(response, "choices", None)
     first_choice = choices[0] if isinstance(choices, (list, tuple)) and choices else None
     message = getattr(first_choice, "message", None)
     raw_tool_calls = getattr(message, "tool_calls", None)
     tool_call_deltas = None
     if isinstance(raw_tool_calls, (list, tuple)) and raw_tool_calls:
-        tool_call_deltas = []
-        for index, tc in enumerate(raw_tool_calls):
-            function = getattr(tc, "function", None)
-            tool_call_deltas.append(SimpleNamespace(
-                index=getattr(tc, "index", index),
-                id=getattr(tc, "id", None),
-                type=getattr(tc, "type", None) or "function",
+        tool_call_deltas = [
+            SimpleNamespace(
+                index=getattr(tc, "index", index), id=getattr(tc, "id", None), type=getattr(tc, "type", None) or "function",
                 function=SimpleNamespace(
-                    name=getattr(function, "name", None),
-                    arguments=getattr(function, "arguments", None),
+                    name=getattr(getattr(tc, "function", None), "name", None),
+                    arguments=getattr(getattr(tc, "function", None), "arguments", None),
                 ),
-            ))
+            )
+            for index, tc in enumerate(raw_tool_calls)
+        ]
     delta = SimpleNamespace(
-        content=getattr(message, "content", None),
-        tool_calls=tool_call_deltas,
-        reasoning_content=getattr(message, "reasoning_content", None),
-        reasoning=getattr(message, "reasoning", None),
-        reasoning_details=getattr(message, "reasoning_details", None),
+        content=getattr(message, "content", None), tool_calls=tool_call_deltas,
+        **{k: getattr(message, k, None) for k in ("reasoning_content", "reasoning", "reasoning_details")},
     )
     choice = SimpleNamespace(
-        index=getattr(first_choice, "index", 0),
-        delta=delta,
-        finish_reason=getattr(first_choice, "finish_reason", None) or "stop",
+        index=getattr(first_choice, "index", 0), delta=delta, finish_reason=getattr(first_choice, "finish_reason", None) or "stop",
     )
     return SimpleNamespace(
-        id=getattr(response, "id", None),
-        model=getattr(response, "model", None),
-        choices=[choice],
-        usage=getattr(response, "usage", None),
+        id=getattr(response, "id", None), model=getattr(response, "model", None), choices=[choice], usage=getattr(response, "usage", None),
     )
 
 
 def _attach_reference_guidance(agg_messages: list[dict[str, Any]], guidance: str) -> None:
     """Attach the per-turn reference block at the END of the aggregator prompt.
 
-    The reference text differs on every tool-loop iteration. In an agentic loop
-    the most recent ``user`` message is the *original task* sitting near the TOP
-    of the context (everything after it is assistant/tool turns), so merging the
-    turn-varying reference block into it diverges the prompt prefix early — the
-    server's KV cache cannot be reused and the entire conversation re-prefills on
-    every step (full prefill each tool call, dominating latency on long contexts).
-
-    Appending at the very end keeps the ``[system][task][tool-history]`` prefix
-    stable and cache-reusable (only the new block re-prefills), and gives the
-    aggregator the references with recency. Merge into the last message only when
-    it is already a trailing ``user`` turn (plain chat — still at the end).
-
-    A trailing user turn's content may be a STRING or a LIST of content parts —
-    Anthropic prompt-cache decoration (which runs before the MoA facade)
-    converts string content to ``[{"type": "text", ..., "cache_control": ...}]``,
-    and multimodal turns are lists natively. Both shapes are merged in place:
-    appending a new text part AFTER the cache_control-marked part keeps the
-    cached prefix byte-stable (the marker still terminates it) while the
-    turn-varying guidance rides outside the cached span. Appending a SEPARATE
-    user message here instead would produce two consecutive user turns —
-    strict providers reject that.
+    The block varies per iteration; appending keeps ``[system][task][tool-history]``
+    cache-stable. A trailing user turn is merged in place (string, or a new text part
+    AFTER the cache_control-marked part); otherwise a user message is appended (two
+    consecutive user turns would be rejected by strict providers).
     """
     last = agg_messages[-1] if agg_messages else None
-    if last is not None and last.get("role") == "user":
-        last_content = last.get("content")
-        if isinstance(last_content, str):
-            last["content"] = last_content + "\n\n" + guidance
-            return
-        if isinstance(last_content, list):
-            last["content"] = [*last_content, {"type": "text", "text": "\n\n" + guidance}]
-            return
-    agg_messages.append({"role": "user", "content": guidance})
+    last_content = last.get("content") if last is not None and last.get("role") == "user" else None
+    if isinstance(last_content, str):
+        last["content"] = last_content + "\n\n" + guidance
+    elif isinstance(last_content, list):
+        last["content"] = [*last_content, {"type": "text", "text": "\n\n" + guidance}]
+    else:
+        agg_messages.append({"role": "user", "content": guidance})
 
 
-def peel_reference_guidance(
-    messages: list[dict[str, Any]],
-    guidance: Any,
-) -> list[dict[str, Any]]:
-    """Remove reference guidance previously attached by ``_attach_reference_guidance``.
-
-    Exact inverse of the three attach shapes above (string merge, trailing
-    text part, appended user message) — kept adjacent so the two evolve
-    together; a drifting separator or shape would make the peel silently
-    no-op and let a cache breakpoint land on the turn-varying guidance
-    block (the bug class #72626 fixes).
-
-    Used by the failover redecoration chokepoint: redecoration must run on
-    the base transcript so the last cache breakpoint does not land on the
-    guidance; callers then rebase via ``rebase_prepared_request``.
-
-    Returns a new list (input list and its messages are not mutated).
-    """
+def peel_reference_guidance(messages: list[dict[str, Any]], guidance: Any) -> list[dict[str, Any]]:
+    """Exact inverse of ``_attach_reference_guidance`` (the three attach shapes), so a
+    cache breakpoint never lands on the turn-varying guidance. Inputs are not mutated."""
     if not guidance or not messages:
         return messages
     guidance_text = str(guidance)
@@ -1499,127 +913,61 @@ def peel_reference_guidance(
     if not isinstance(last, dict) or last.get("role") != "user":
         return messages
     content = last.get("content")
-    if content == guidance_text:
-        # Attach shape (c): guidance was appended as its own user message.
+    if content == guidance_text:  # shape (c): guidance was its own user message
         return list(messages[:-1])
     suffix = "\n\n" + guidance_text
-    if isinstance(content, str) and content.endswith(suffix):
-        # Attach shape (a): merged into a trailing string user turn.
-        peeled = dict(last)
-        peeled["content"] = content[: -len(suffix)]
-        return [*messages[:-1], peeled]
+    if isinstance(content, str) and content.endswith(suffix):  # shape (a): merged into a string turn
+        return [*messages[:-1], {**last, "content": content[: -len(suffix)]}]
     if isinstance(content, list) and content:
         last_part = content[-1]
         if isinstance(last_part, dict) and last_part.get("type", "text") == "text":
             text = last_part.get("text") or ""
-            if text == suffix or text == guidance_text:
-                # Attach shape (b): guidance rode as its own trailing part.
-                peeled = dict(last)
-                peeled["content"] = list(content[:-1])
-                if not peeled["content"]:
-                    # The guidance part was the only content — mirror the
-                    # string shape (c) and drop the whole message rather
-                    # than leaving an empty-content user turn behind.
-                    return list(messages[:-1])
-                return [*messages[:-1], peeled]
+            if text in (suffix, guidance_text):
+                # Shape (b): guidance rode as its own trailing part. Guidance as the
+                # only content drops the whole message (mirrors shape c).
+                return list(messages[:-1]) if len(content) == 1 else [*messages[:-1], {**last, "content": list(content[:-1])}]
             if text.endswith(suffix):
-                new_part = dict(last_part)
-                new_part["text"] = text[: -len(suffix)]
-                peeled = dict(last)
-                peeled["content"] = [*content[:-1], new_part]
-                return [*messages[:-1], peeled]
+                return [*messages[:-1], {**last, "content": [*content[:-1], {**last_part, "text": text[: -len(suffix)]}]}]
     return messages
 
 
 class MoAChatCompletions:
-    """OpenAI-chat-compatible facade where the aggregator is the acting model."""
+    """OpenAI-chat-compatible facade where the aggregator is the acting model.
+
+    ``reference_callback(event, **kwargs)`` is an optional best-effort display hook
+    (events: ``moa.reference``, ``moa.progress``, ``moa.phase``, ``moa.aggregating``;
+    kwargs per ``_RELAY_EVENTS``). ``agent`` is the owning AIAgent; it lets the
+    fan-out check ``_interrupt_requested``.
+    """
 
     def __init__(self, preset_name: str, reference_callback: Any = None, agent: Any = None):
         self.preset_name = preset_name or "default"
-        # Optional display hook. Called as reference outputs become available so
-        # frontends can show each reference model's answer as a labelled block
-        # before the aggregator acts. Signature:
-        #   reference_callback(event, **kwargs)
-        # where event is one of:
-        #   "moa.reference"   kwargs: index, count, label, text
-        #   "moa.progress"    kwargs: refs_done, refs_total, label
-        #                       (fired once per reference completion — drives
-        #                        status-bar progress like ``MOA: 2/3 refs done``)
-        #   "moa.phase"       kwargs: phase, refs_done, refs_total, aggregator
-        #                       (fired on phase transitions, currently
-        #                        phase="aggregator" right before the aggregator
-        #                        acts; phase="reference" mirrors ``moa.progress``
-        #                        so listeners can rely on a single event family)
-        #   "moa.aggregating" kwargs: aggregator (label), ref_count
-        # Never raises into the model call — display is best-effort.
         self.reference_callback = reference_callback
-        # Back-reference to the owning AIAgent, so the reference fan-out can
-        # check agent._interrupt_requested (see _run_references_parallel).
-        # Optional — a caller that doesn't pass it just keeps the fan-out
-        # uninterruptible, as it was before.
         self._agent = agent
-        # State-scoped reference cache. The agent loop calls create() once per
-        # tool-loop iteration; references should re-run whenever the task STATE
-        # advances — i.e. on every new user message AND every new tool result —
-        # so each reference judges the latest state. The advisory view
-        # (_reference_messages) now renders tool calls + results as text, so its
-        # signature changes on every new tool response; the cache key is that
-        # signature, so a new tool result is a cache MISS (references re-run)
-        # while a redundant create() call with identical state is a HIT (no
-        # re-run, no re-emit). This gives "fire on every user/tool response"
-        # for free, without re-firing on a pure no-op re-call.
+        # Reference cache keyed on the advisory-view signature (HIT = no re-run, no re-emit).
         self._ref_cache_key: tuple | None = None
         self._ref_cache_outputs: list[tuple[str, str, Any]] = []
-        # Token usage + estimated cost of the reference fan-out from the most
-        # recent cache-MISS create() call, awaiting consumption by session
-        # accounting. Set on every create() (zeroed on a cache HIT so per-turn
-        # advisor spend is counted exactly once). Consumed via
-        # ``consume_reference_usage``.
-        from agent.usage_pricing import CanonicalUsage
-
+        # Fan-out spend awaiting consume_reference_usage (nothing deposited on a HIT so
+        # spend counts once); the lock guards late-accounting callbacks on worker threads.
         self._pending_reference_usage: Any = CanonicalUsage()
         self._pending_reference_cost: Any = None
-        # Guards pending usage/cost against concurrent late-accounting
-        # callbacks (see _record_late_reference_accounting), which fire on
-        # executor worker threads after an interrupted fan-out returns.
         self._accounting_lock = threading.Lock()
-        # Resolved aggregator slot ({provider, model, ...}) from the most recent
-        # create(); read by session cost accounting to price the aggregator's
-        # acting turn at its real model instead of the virtual preset name.
+        # Real aggregator slot so cost accounting prices the acting turn at its model.
         self.last_aggregator_slot: Any = None
-        # Full-turn trace parts stashed on a cache-MISS create(), awaiting the
-        # caller to stitch in the live session_id + resolved aggregator output
-        # and flush to the trace file (only when moa.save_traces is on).
+        # Full-turn trace parts from a cache-MISS create(), flushed by consume_and_save_trace.
         self._pending_trace: Any = None
-        # Per-advisor metrics for observability hooks. Unlike _pending_trace
-        # this is NOT consumed — post_api_request fires on a different branch
-        # than consume_and_save_trace, so a consuming read would race it. Holds
-        # until the next fan-out replaces it.
+        # Per-advisor metrics for observability hooks; NOT consumed (post_api_request
+        # fires on a different branch than consume_and_save_trace).
         self._last_reference_metrics: Any = None
-        # every_n fan-out cadence state. The iteration counter is scoped to a
-        # single USER TURN (not the facade lifetime): it counts create() calls
-        # since the last new user message and resets whenever the user-turn
-        # signature changes, so cadence position never leaks across turns —
-        # iteration 1 of every turn is always on-cadence (fresh advice for a
-        # fresh request). See the fanout handling in create().
+        # every_n cadence state, scoped to one USER TURN so iteration 1 is on-cadence.
         self._fanout_iteration_count = 0
         self._fanout_turn_sig: str | None = None
         self._fanout_last_state_sig: str | None = None
-        # Normalized moa.privacy_filter mode for the current turn ('' |
-        # 'display' | 'full'), refreshed from config on every create().
-        self._privacy_mode: str = ""
+        self._privacy_mode: str = ""  # normalized moa.privacy_filter, refreshed per create()
 
     def consume_reference_usage(self) -> tuple[Any, Any]:
-        """Pop pending reference-fan-out usage + cost, resetting both to empty.
-
-        Returns ``(CanonicalUsage, cost_usd_or_None)`` for the most recent
-        ``create()`` and clears the pending values, so a subsequent read (e.g.
-        a streaming retry re-entering accounting) cannot double-count. Usage is
-        always a ``CanonicalUsage`` (zeroed if none); cost is a summed-dollars
-        float or ``None`` when no advisor could be priced.
-        """
-        from agent.usage_pricing import CanonicalUsage
-
+        """Pop pending fan-out ``(CanonicalUsage, cost_usd_or_None)`` and reset both
+        (so a streaming retry re-entering accounting cannot double-count)."""
         with self._accounting_lock:
             usage = self._pending_reference_usage or CanonicalUsage()
             cost = self._pending_reference_cost
@@ -1628,60 +976,28 @@ class MoAChatCompletions:
         return usage, cost
 
     def last_reference_metrics(self) -> Any:
-        """Per-advisor metrics from the most recent fan-out, or None.
-
-        Read-only: a MoA turn's post_api_request hook must not disturb the
-        accounting that consume_reference_usage and consume_and_save_trace own.
-        """
+        """Per-advisor metrics from the most recent fan-out, or None (read-only)."""
         return self._last_reference_metrics
 
     def _record_late_reference_accounting(self, label: str, accounting: Any) -> None:
-        """Fold a late-completing interrupted reference's real spend in.
-
-        When a user interrupt aborts the fan-out wait, references already in
-        flight keep running (they cannot be force-killed) and DO bill when
-        they complete. Their placeholder results carry zeroed accounting, so
-        without this hook that spend would vanish from session accounting.
-        The fan-out registers this as a done-callback on abandoned futures;
-        it folds the eventual real usage/cost into the pending totals, where
-        the next ``consume_reference_usage`` pick-up records it. Thread-safe:
-        done-callbacks fire on executor worker threads.
-        """
-        from agent.usage_pricing import CanonicalUsage
-
+        """Done-callback for abandoned (still billing) futures: fold their real spend in."""
         if not isinstance(accounting, _RefAccounting):
             return
+        self._fold_pending_accounting(*_sum_reference_accounting([(label, "", accounting)]))
+        logger.debug("MoA: recorded late accounting for interrupted reference %s", label)
+
+    def _fold_pending_accounting(self, usage: Any, cost: Any) -> None:
+        """Add (never overwrite) fan-out spend so late interrupted-reference deposits survive."""
         with self._accounting_lock:
-            if isinstance(accounting.usage, CanonicalUsage):
-                self._pending_reference_usage = (
-                    self._pending_reference_usage or CanonicalUsage()
-                ) + accounting.usage
-            if accounting.cost_usd is not None:
-                self._pending_reference_cost = (
-                    self._pending_reference_cost or 0
-                ) + accounting.cost_usd
-        logger.debug(
-            "MoA: recorded late accounting for interrupted reference %s", label
-        )
+            self._pending_reference_usage = (self._pending_reference_usage or CanonicalUsage()) + usage
+            if cost is not None:
+                self._pending_reference_cost = (self._pending_reference_cost or 0) + cost
 
-    def consume_and_save_trace(
-        self, session_id: Any = None, aggregator_output_fallback: Any = None
-    ) -> None:
-        """Flush the pending full-turn trace to disk, if one is pending.
+    def consume_and_save_trace(self, session_id: Any = None, aggregator_output_fallback: Any = None) -> None:
+        """Flush the pending full-turn trace to disk (no-op when nothing is pending).
 
-        No-op when tracing is off (``save_moa_turn`` checks the config), when
-        there is no pending trace (a cache-HIT iteration ran no references), or
-        when the aggregator input was never recorded. Clears the pending trace
-        so a repeat consume cannot double-write. Best-effort — never raises.
-
-        ``aggregator_output_fallback`` is the aggregator's resolved acting text
-        as the caller already holds it in memory (the streamed assistant text).
-        On the streaming path the aggregator's output could not be captured
-        inline at ``create()`` time (the raw token stream was handed to the live
-        consumer), so ``pending["aggregator_output"]`` is None; we fold the
-        caller's resolved text in here so the trace is self-contained in BOTH
-        streaming and non-streaming modes. Non-streaming already has the inline
-        output and ignores the fallback.
+        ``aggregator_output_fallback`` is the caller's resolved acting text for the
+        streaming path (not capturable at ``create()`` time). Never raises.
         """
         pending = self._pending_trace
         self._pending_trace = None
@@ -1689,213 +1005,279 @@ class MoAChatCompletions:
             return
         try:
             from agent.moa_trace import save_moa_turn
-
             agg_slot = pending.get("aggregator_slot") or {}
-            # Prefer the inline capture (non-streaming); fall back to the
-            # caller's resolved streamed text when streaming left it None.
+            # Inline capture (non-streaming) beats the caller's streamed text.
             agg_output = pending.get("aggregator_output")
             if agg_output is None and aggregator_output_fallback:
                 agg_output = aggregator_output_fallback
             save_moa_turn(
-                session_id=session_id,
-                preset_name=pending.get("preset", ""),
+                session_id=session_id, preset_name=pending.get("preset", ""),
                 reference_outputs=pending.get("reference_outputs", []),
-                aggregator_label=pending.get("aggregator_label", ""),
-                aggregator_model=agg_slot.get("model"),
-                aggregator_provider=agg_slot.get("provider"),
-                aggregator_temperature=pending.get("aggregator_temperature"),
+                aggregator_label=pending.get("aggregator_label", ""), aggregator_model=agg_slot.get("model"),
+                aggregator_provider=agg_slot.get("provider"), aggregator_temperature=pending.get("aggregator_temperature"),
                 aggregator_input_messages=pending.get("aggregator_input_messages"),
-                aggregator_output=agg_output,
-                aggregator_streamed=bool(pending.get("aggregator_streamed")),
+                aggregator_output=agg_output, aggregator_streamed=bool(pending.get("aggregator_streamed")),
             )
         except Exception as exc:  # pragma: no cover - tracing must never break a turn
             logger.debug("MoA trace flush failed: %s", exc)
 
     def _emit(self, event: str, **kwargs: Any) -> None:
-        cb = self.reference_callback
-        if cb is None:
+        if self.reference_callback is None:
             return
         try:
-            cb(event, **kwargs)
+            self.reference_callback(event, **kwargs)
         except Exception as exc:  # pragma: no cover - display must never break the turn
             logger.debug("MoA reference_callback failed for %s: %s", event, exc)
 
     def prepare(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        """Run the advisor fan-out and return the exact aggregator request.
-
-        The normal agent loop needs to measure this augmented prompt before its
-        compression gate.  ``create()`` also uses this method for direct callers;
-        when the loop supplies the returned private object back to ``create()``,
-        the advisor fan-out is not repeated.
-        """
+        """Run the advisor fan-out and return the exact aggregator request, which the
+        loop measures before its compression gate and hands back to ``create()``."""
         return self.create(messages=messages, _moa_prepare_only=True)
 
-    def rebase_prepared_request(
-        self, prepared: dict[str, Any], messages: list[dict[str, Any]]
-    ) -> dict[str, Any]:
-        """Apply already-generated advisor guidance to a rebuilt API transcript.
-
-        Context compression changes the persisted transcript but not the
-        ephemeral advisor result.  Reusing the guidance avoids a second costly
-        fan-out while keeping the aggregator request aligned with the compacted
-        history.
-        """
+    def rebase_prepared_request(self, prepared: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any]:
+        """Re-attach already-generated guidance to a rebuilt (compressed) transcript."""
         guidance = prepared.get("guidance")
         agg_messages = [dict(message) for message in messages]
         if guidance:
             _attach_reference_guidance(agg_messages, str(guidance))
         return {**prepared, "messages": agg_messages}
 
-    def _call_prepared_aggregator(
-        self, prepared: dict[str, Any], api_kwargs: dict[str, Any]
-    ) -> Any:
-        """Send an already prepared MoA aggregator request exactly once."""
-        agg_messages = prepared["messages"]
-        aggregator = prepared["aggregator"]
-        aggregator_temperature = prepared["aggregator_temperature"]
-        if aggregator.get("provider") == "moa":
-            raise RuntimeError("MoA aggregator cannot be another MoA preset")
-        agg_kwargs = dict(api_kwargs)
-        max_tokens: Any = agg_kwargs.get("max_tokens")
-        tools: Any = agg_kwargs.get("tools")
-        extra_body: Any = agg_kwargs.get("extra_body")
-        agg_runtime = _slot_runtime(aggregator)
-        try:
-            from agent.agent_runtime_helpers import (
-                plan_cache_sections_for_destination,
-            )
+    def _plan_aggregator_cache(
+        self, agg_messages: list[dict[str, Any]], tools: Any, guidance: Any, agg_runtime: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], Any]:
+        """Cache-breakpoint the aggregator request for its destination.
 
-            guidance = prepared.get("guidance")
-            planning_messages = agg_messages
-            if guidance:
-                planning_messages = peel_reference_guidance(
-                    agg_messages,
-                    str(guidance),
-                )
-            # plan_cache_sections_for_destination never mutates its inputs
-            # and always returns request-local copies, so the prepared
-            # state stays canonical.
-            # Tri-state: only pass a bool when a live agent snapshot exists.
-            # Prepared-aggregator facades built via __new__ have no _agent;
-            # getattr(self._agent, ...) raises and bool(None-agent) would
-            # force False and suppress the planner's config fallback (#76085).
+        Guidance is peeled before planning and re-attached after so a breakpoint never
+        lands on the turn-varying block. Any error → undecorated request (warning, not
+        debug: this is the aggregator's ONLY decoration path).
+        """
+        try:
+            from agent.agent_runtime_helpers import plan_cache_sections_for_destination
+            planning_messages = peel_reference_guidance(agg_messages, str(guidance)) if guidance else agg_messages
+            # Tri-state cache_disabled: facades built via __new__ have no _agent; forcing
+            # False would suppress the planner's config fallback.
+            # plan_cache_sections_for_destination never mutates its inputs and always returns request-local
+            # copies, so the prepared state stays canonical. Tri-state: only pass a bool when a live agent
+            # snapshot exists. See #76085.
             _agent = getattr(self, "_agent", None)
-            _cache_disabled = (
-                getattr(_agent, "_cache_disabled", None)
-                if _agent is not None
-                else None
-            )
+            cache_disabled, cache_ttl = _agent_cache_opts(_agent)
+            # Agent TTL + stable system prefix so MoA does not regress 1h → 5m.
             agg_messages, tools = plan_cache_sections_for_destination(
-                planning_messages,
-                tools,
-                provider=agg_runtime.get("provider") or "",
-                base_url=agg_runtime.get("base_url") or "",
-                api_mode=agg_runtime.get("api_mode") or "",
-                model=agg_runtime.get("model") or "",
-                cache_disabled=_cache_disabled,
-                # Thread the agent's configured TTL and stable system prefix
-                # into the aggregator plan so MoA stops regressing 1h → 5m and
-                # marking the whole system prompt as one breakpoint (#84733).
-                cache_ttl=getattr(_agent, "_cache_ttl", None),
-                static_system_prefix=getattr(
-                    _agent, "_cached_system_prompt_static", None
-                ),
+                planning_messages, tools, provider=agg_runtime.get("provider") or "",
+                base_url=agg_runtime.get("base_url") or "", api_mode=agg_runtime.get("api_mode") or "",
+                model=agg_runtime.get("model") or "", cache_disabled=cache_disabled, cache_ttl=cache_ttl,
+                static_system_prefix=getattr(_agent, "_cached_system_prompt_static", None),
             )
             if guidance:
                 _attach_reference_guidance(agg_messages, str(guidance))
         except Exception as exc:  # pragma: no cover - cache planning must not block MoA
-            # Warning, not debug: since the call-block site skips MoA, this
-            # block is the aggregator's ONLY decoration path — a silent
-            # failure here ships an undecorated request and regresses the
-            # exact 0%-cache MoA failure the planning exists to prevent.
             logger.warning(
                 "MoA aggregator cache plan failed — sending undecorated "
                 "request (cache misses expected): %s", exc,
             )
-        # Record the exact aggregator INPUT (incl. the injected reference
-        # context) into the pending trace so a trace captures what the
-        # aggregator actually saw, not a reconstruction. Traces are a
-        # persisted surface: when the privacy filter is active, the stored
-        # COPY is redacted ('display' mode's live aggregator input stays raw —
-        # only the on-disk record is filtered; 'full' mode's input is already
-        # redacted upstream, so this is a near no-op there).
-        if self._pending_trace is not None:
-            self._pending_trace["aggregator_input_messages"] = (
-                _redact_trace_messages([dict(m) for m in agg_messages])
-                if getattr(self, "_privacy_mode", "")
-                else agg_messages
+        return agg_messages, tools
+
+    def _call_prepared_aggregator(self, prepared: dict[str, Any], api_kwargs: dict[str, Any]) -> Any:
+        """Send an already prepared MoA aggregator request exactly once."""
+        aggregator = prepared["aggregator"]
+        if aggregator.get("provider") == "moa":
+            raise RuntimeError("MoA aggregator cannot be another MoA preset")
+        agg_runtime = _slot_runtime(aggregator)
+        agg_messages, tools = self._plan_aggregator_cache(
+            prepared["messages"], api_kwargs.get("tools"), prepared.get("guidance"), agg_runtime
+        )
+        trace = self._pending_trace
+        if trace is not None:
+            # Trace the exact aggregator INPUT (persisted copy redacted; live input raw).
+            trace["aggregator_input_messages"] = (
+                _redact_trace_messages([dict(m) for m in agg_messages]) if getattr(self, "_privacy_mode", "") else agg_messages
             )
-            self._pending_trace["aggregator_label"] = _slot_label(aggregator)
-        # The aggregator is the acting model. Resolve its slot to the provider's
-        # real runtime (base_url/api_key/api_mode) and call it through the same
-        # request-building path any model uses — so per-model wire-format
-        # handling (anthropic_messages, max_completion_tokens, fixed/forbidden
-        # temperature) applies identically to it. MoA imposes no output cap:
-        # max_tokens is passed through from the caller (normally None → omitted
-        # → the model's real maximum). The preset's old hardcoded 4096 default
-        # is gone — it truncated long syntheses.
-        # When the agent's streaming consumer calls us with stream=True, run the
-        # references first (above) and then return the aggregator's RAW token
-        # stream so the acting model's output reaches the user live. The consumer
-        # reassembles chunks + tool_calls, runs stale-stream detection, and falls
-        # back to a non-streaming retry on error. The non-streaming path
-        # (stream=False) is unchanged — no stream/stream_options/timeout are
-        # forwarded, so its behavior is byte-for-byte identical to before.
+            trace["aggregator_label"] = _slot_label(aggregator)
+        # stream=True returns the RAW token stream (consumer reassembles + retries);
+        # the non-streaming path forwards no stream/stream_options/timeout. The
+        # consumer's stream-read timeout must govern the aggregator stream.
         stream = bool(api_kwargs.get("stream"))
         stream_kwargs: dict[str, Any] = {}
         if stream:
-            stream_kwargs["stream"] = True
-            stream_kwargs["stream_options"] = (
-                api_kwargs.get("stream_options") or {"include_usage": True}
-            )
-            # Forward the consumer's per-request (stream read) timeout so it
-            # actually governs the aggregator stream, not just call_llm's default.
+            stream_kwargs = {"stream": True, "stream_options": api_kwargs.get("stream_options") or {"include_usage": True}}
             if api_kwargs.get("timeout") is not None:
                 stream_kwargs["timeout"] = api_kwargs["timeout"]
-        # _slot_runtime may carry the provider's request_overrides.extra_body;
-        # pop it and merge with the caller's extra_body (caller wins) so the
-        # explicit kwarg below never collides with **agg_runtime.
-        agg_extra_body = _merge_slot_extra_body(
-            agg_runtime.pop("extra_body", None),
-            extra_body,
+        # Pop the runtime's extra_body so the explicit kwarg never collides with **agg_runtime.
+        agg_extra_body = _merge_slot_extra_body(agg_runtime.pop("extra_body", None), api_kwargs.get("extra_body"))
+        agg_response = call_llm(
+            task="moa_aggregator", messages=agg_messages, temperature=prepared["aggregator_temperature"],
+            max_tokens=api_kwargs.get("max_tokens"), tools=tools, extra_body=agg_extra_body,
+            reasoning_config=_aggregator_reasoning_config(aggregator),  # same policy as direct create()
+            **stream_kwargs, **agg_runtime,
         )
-        _agg_response = call_llm(
-            task="moa_aggregator",
-            messages=agg_messages,
-            temperature=aggregator_temperature,
-            max_tokens=max_tokens,
-            tools=tools,
-            extra_body=agg_extra_body,
-            # Prepared requests must retain the acting aggregator's reasoning
-            # policy exactly as the direct create() path does (#64187).
-            reasoning_config=_aggregator_reasoning_config(aggregator),
-            **stream_kwargs,
-            **agg_runtime,
+        if trace is not None:
+            # Streaming output lands as the turn's assistant message; the trace marks it.
+            trace["aggregator_streamed"] = stream
+            output = None
+            if not stream:
+                with contextlib.suppress(Exception):  # pragma: no cover - defensive
+                    output = _extract_text(agg_response)
+            trace["aggregator_output"] = output
+        if stream and hasattr(agg_response, "choices"):
+            # Some adapters (openai-codex Responses) return a completed response even
+            # when streaming was requested; hand the loop a one-chunk iterator.
+            return iter((_completed_response_as_stream_chunk(agg_response),))
+        return agg_response
+
+    def _fanout_cache_key(
+        self, preset: dict[str, Any], ref_messages: list[dict[str, Any]], reference_models: list[dict[str, Any]],
+    ) -> tuple:
+        """Turn-scoped reference cache key per the preset's fan-out cadence.
+
+        "user_turn" (default) hashes only the prefix up to the LAST USER message, so
+        later tool iterations are HITs. "per_iteration" re-runs whenever the advisory
+        view changes. "every_n:<N>": iteration 1 of a turn, then every Nth; in-between
+        iterations return the pinned last on-cadence key (HIT: no calls, no re-emit).
+        """
+        # "user_turn" (default — cheapest cadence, #67199): advisors run ONCE per user turn; subsequent tool
+        # iterations reuse that turn's advice and the aggregator acts alone (the original MoA shape:
+        # synthesize at the start, then let the acting model work). Implemented by hashing only the prefix
+        # up to the LAST USER message so mid-turn growth doesn't change the signature — iteration 2+ becomes
+        # a cache HIT. "per_iteration": advisors re-run whenever the advisory view changes — i.e. every tool
+        # iteration, since the view grows with each tool result; advice tracks live task state at the cost
+        # of multiplying advisor latency/spend by tool-loop depth. "every_n:<N>" (N >= 2): the middle ground
+        # (issue #63393 — advisor fan-out multiplies latency/cost by the tool-iteration count). Advisors run
+        # on iteration 1 of a user turn and then every Nth tool iteration; the iterations in between REUSE
+        # the cached guidance from the last on-cadence run (same mechanism as user_turn's cache HIT — the
+        # aggregator still gets advice every iteration, it's just not refreshed against the very latest tool
+        # results). The iteration counter is scoped per user turn and resets on a new user message, so every
+        # turn starts with fresh advice.
+        fanout_mode = str(preset.get("fanout") or "user_turn").strip().lower()
+        every_n = 0
+        if fanout_mode.startswith("every_n:"):
+            with contextlib.suppress(TypeError, ValueError):
+                every_n = int(fanout_mode.split(":", 1)[1])
+            if every_n < 2:
+                fanout_mode = "per_iteration"  # every_n:1 IS per-iteration (mirrors _coerce_fanout)
+        sig_messages = turn_prefix = ref_messages
+        if fanout_mode == "user_turn" or every_n >= 2:
+            # Last REAL user message: the synthetic _ADVISORY_INSTRUCTION marker must not
+            # count or the prefix would grow (and re-sign) every iteration.
+            last_user = next(
+                (i for i in range(len(ref_messages) - 1, -1, -1)
+                 if ref_messages[i].get("role") == "user" and ref_messages[i].get("content") != _ADVISORY_INSTRUCTION),
+                None,
+            )
+            if last_user is not None:
+                turn_prefix = ref_messages[: last_user + 1]
+            if fanout_mode == "user_turn":
+                sig_messages = turn_prefix
+
+        # every_n bookkeeping: advance the counter only when the advisory STATE changed
+        # (a streaming retry must not consume a cadence slot); reset on a new turn prefix.
+        if every_n >= 2:
+            turn_sig = _hash_messages(turn_prefix)
+            if turn_sig != self._fanout_turn_sig:
+                self._fanout_turn_sig = turn_sig
+                self._fanout_iteration_count = 0
+                self._fanout_last_state_sig = None
+            state_sig = _hash_messages(ref_messages)
+            if state_sig != self._fanout_last_state_sig:
+                self._fanout_last_state_sig = state_sig
+                self._fanout_iteration_count += 1
+            # Iteration 1 is on-cadence; then every Nth iteration after it.
+            if (self._fanout_iteration_count - 1) % every_n != 0 and self._ref_cache_outputs:
+                return self._ref_cache_key
+
+        return (self.preset_name, _hash_messages(sig_messages), tuple(_slot_label(s) for s in reference_models))
+
+    def _run_fanout(
+        self, preset: dict[str, Any], ref_messages: list[dict[str, Any]], reference_models: list[dict[str, Any]],
+        aggregator: dict[str, Any], aggregator_temperature: Any, cache_key: tuple,
+    ) -> list[tuple[str, str, Any]]:
+        """Cache-MISS path of ``create``: run the advisors, account, trace and emit.
+
+        A preset MAY cap ADVISOR output (dominant MoA latency); the acting aggregator
+        is never capped. None timeout = inherit auxiliary.moa_reference.timeout.
+        """
+        raw_reference_timeout = preset.get("reference_timeout")
+        reference_outputs = _run_references_parallel(
+            reference_models, ref_messages, temperature=_preset_temperature(preset, "reference_temperature"),
+            max_tokens=preset.get("reference_max_tokens"),
+            progress_callback=lambda done, total, label: self._emit("moa.progress", refs_done=done, refs_total=total, label=label),
+            reference_timeout=float(raw_reference_timeout) if raw_reference_timeout else None,
+            agent=self._agent, late_accounting_sink=self._record_late_reference_accounting,
         )
-        # Non-streaming path (quiet mode / eval / subagents): the aggregator
-        # output is available inline, so capture it into the pending trace now.
-        # Streaming path: the aggregator's raw token stream is returned to the
-        # consumer live and its acting output lands as the turn's assistant
-        # message; the trace marks it streamed and points there.
-        if self._pending_trace is not None:
-            if stream:
-                self._pending_trace["aggregator_streamed"] = True
-                self._pending_trace["aggregator_output"] = None
-            else:
-                self._pending_trace["aggregator_streamed"] = False
-                try:
-                    self._pending_trace["aggregator_output"] = _extract_text(_agg_response)
-                except Exception:  # pragma: no cover - defensive
-                    self._pending_trace["aggregator_output"] = None
-        if stream and hasattr(_agg_response, "choices"):
-            # Some aggregator adapters (notably openai-codex Responses) consume
-            # their provider stream internally and return a completed response
-            # object even when the acting consumer requested token streaming.
-            # The outer chat-completions streaming loop expects delta chunks;
-            # hand it a one-chunk iterator instead of letting it iterate the
-            # SimpleNamespace response itself (#55933).
-            return iter((_completed_response_as_stream_chunk(_agg_response),))
-        return _agg_response
+        # An interrupted fan-out is a partial snapshot: never cache it (a HIT would
+        # replay placeholder notes every iteration).
+        interrupted = any(text == _INTERRUPTED_REFERENCE_NOTE for _lbl, text, _acct in reference_outputs)
+        self._ref_cache_key = None if interrupted else cache_key
+        self._ref_cache_outputs = [] if interrupted else list(reference_outputs)
+        # Fold advisor spend into accounting exactly once per turn.
+        self._fold_pending_accounting(*_sum_reference_accounting(reference_outputs))
+        # Stash the fan-out for trace persistence (aggregator parts filled in later).
+        # Traces are persisted, so ANY active privacy mode redacts them.
+        privacy_mode = self._privacy_mode
+        trace_refs = [
+            (label, _redact_reference_text(text), _redact_trace_accounting(acct)) for label, text, acct in reference_outputs
+        ] if privacy_mode else list(reference_outputs)
+        self._pending_trace = {
+            "preset": self.preset_name, "reference_outputs": trace_refs,
+            "aggregator_slot": aggregator, "aggregator_temperature": aggregator_temperature,
+        }
+        # Derived from the privacy-redacted trace_refs.
+        try:
+            from agent.moa_trace import slot_metrics
+            self._last_reference_metrics = [slot_metrics(acct, label, output=text) for label, text, acct in trace_refs]
+        except Exception as exc:  # pragma: no cover - never break a turn
+            logger.debug("MoA reference metrics render failed: %s", exc)
+            self._last_reference_metrics = None
+
+        # Surface each answer BEFORE the aggregator acts; the cache keeps RAW text.
+        ref_count = len(reference_outputs)
+        for idx, (label, text, _accounting) in enumerate(reference_outputs, start=1):
+            self._emit(
+                "moa.reference", index=idx, count=ref_count, label=label,
+                text=_redact_reference_text(text) if privacy_mode else text,
+            )
+        if ref_count:
+            # Phase transition: fan-out complete, aggregator about to act.
+            agg_label = _slot_label(aggregator)
+            self._emit("moa.phase", phase="aggregator", refs_done=ref_count, refs_total=ref_count, aggregator=agg_label)
+            self._emit("moa.aggregating", aggregator=agg_label, ref_count=ref_count)
+        return reference_outputs
+
+    def _build_guidance(
+        self, reference_outputs: list[tuple[str, str, Any]], aggregator: dict[str, Any], degraded_reference_policy: str,
+    ) -> str | None:
+        """Render the reference block attached to the aggregator prompt (None = nothing)."""
+        agg_refs, degraded, all_failed = _guidance_inputs(
+            reference_outputs, self._privacy_mode == "full", degraded_reference_policy
+        )
+        header = (
+            "[Mixture of Agents reference context]\n"
+            f"Preset: {self.preset_name}\n"
+            f"Aggregator/acting model: {_slot_label(aggregator)}\n"
+        )
+        if all_failed:
+            # Every reference failed: the aggregator acts alone (loud policy → notice).
+            logger.warning(
+                "MoA: all %d reference(s) failed — acting aggregator-alone "
+                "without reference guidance",
+                len(reference_outputs),
+            )
+            if degraded:
+                return (
+                    f"{header}\n"
+                    "All reference models failed this turn — no advisory "
+                    "guidance is available. Act on your own judgment.\n\n"
+                    f"{degraded}"
+                )
+            return None
+        if agg_refs or degraded:
+            return (
+                f"{header}"
+                f"References: {', '.join(label for label, _, _ in agg_refs)}\n\n"
+                "Use the reference responses below as private context. You are the aggregator and acting model: "
+                "answer the user directly or call tools as needed.\n\n"
+                f"{_join_reference_outputs(agg_refs, degraded)}"
+            )
+        return None
 
     def create(self, **api_kwargs: Any) -> Any:
         prepared_request = api_kwargs.pop("_moa_prepared_request", None)
@@ -1904,405 +1286,40 @@ class MoAChatCompletions:
                 raise TypeError("_moa_prepared_request must be a dict")
             return self._call_prepared_aggregator(prepared_request, api_kwargs)
 
-        from hermes_cli.config import get_config_path, load_config
-        from hermes_cli.moa_config import resolve_moa_preset
-
-        # Resolve the preset once per (config st_mtime_ns, preset_name).
-        # resolve_moa_preset re-normalizes + re-validates the whole moa
-        # config block on every call, and create() runs once per tool-loop
-        # iteration — a serial cold-start cost before the parallel fan-out
-        # can begin (#66793). Keyed on the config FILE's mtime_ns (not a
-        # config-object attribute, which load_config()'s dicts don't carry),
-        # so a config edit invalidates on the next call.
-        try:
-            _cfg_stamp = get_config_path().stat().st_mtime_ns
-        except OSError:
-            _cfg_stamp = None
-        # load_config() is itself (mtime_ns, size)-cached upstream, so this
-        # read is cheap; the expensive part this cache skips is
-        # resolve_moa_preset's re-normalization + re-validation.
-        _moa_raw = load_config().get("moa") or {}
-        preset_cache_key = (_cfg_stamp, self.preset_name)
-        preset = None
-        if _cfg_stamp is not None:
-            with _preset_cache_lock:
-                preset = _preset_cache.get(preset_cache_key)
-        if preset is None:
-            preset = resolve_moa_preset(_moa_raw, self.preset_name)
-            if _cfg_stamp is not None:
-                with _preset_cache_lock:
-                    _preset_cache.clear()  # one live config stamp at a time
-                    _preset_cache[preset_cache_key] = preset
-        # Privacy filter mode: '' (off, default) | 'display' | 'full'. See
-        # coerce_privacy_filter / the pattern block at the top of this module.
-        # Remembered on self so _call_prepared_aggregator (which may run on a
-        # later prepared-request call without re-reading config) redacts the
-        # trace's aggregator input consistently with this turn's fan-out.
-        privacy_mode = _moa_privacy_mode(_moa_raw)
-        self._privacy_mode = privacy_mode
+        preset, moa_raw = _resolve_preset_cached(self.preset_name)
+        # Remembered on self so _call_prepared_aggregator redacts the trace consistently.
+        self._privacy_mode = _moa_privacy_mode(moa_raw)
         messages = list(api_kwargs.get("messages") or [])
+        # A disabled preset = "use the aggregator directly".
         reference_models = [
-            slot for slot in (preset.get("reference_models") or [])
-            if slot.get("enabled", True)
-        ]
+            slot for slot in (preset.get("reference_models") or []) if slot.get("enabled", True)
+        ] if preset.get("enabled", True) else []
         aggregator = preset.get("aggregator") or {}
-        # Expose the resolved aggregator slot so session cost accounting can
-        # price the aggregator's acting turn at its REAL model/provider. The
-        # agent's model/provider on the MoA path are the virtual preset name
-        # ("closed") and "moa", which have no pricing entry — without this the
-        # aggregator's spend (often the bulk of the turn) is silently dropped
-        # and the session cost reflects advisor fan-out only.
+        # The MoA path's virtual model/provider have no pricing entry; expose the real slot.
         self.last_aggregator_slot = dict(aggregator) if aggregator else None
-        # By default MoA does not cap reference or aggregator output: each model
-        # uses its own maximum (max_tokens=None → call_llm omits the parameter,
-        # so a long aggregator synthesis is never truncated and providers that
-        # reject max_tokens don't 400). A preset MAY set reference_max_tokens to
-        # cap ADVISOR output only — advisor generation is the dominant MoA
-        # latency (turn latency correlates ~0.88 with output tokens), and the
-        # aggregator only needs the gist of each advisor's judgement, so a cap
-        # (e.g. 600) measurably cuts per-turn wall time (~44% on a sample task).
-        # The acting aggregator is never capped here (its output is the
-        # user-visible answer).
-        reference_max_tokens = preset.get("reference_max_tokens")
-        # None (the default) = don't send temperature; provider default
-        # applies, matching single-model agent behavior. Presets may pin
-        # explicit values. See _preset_temperature.
-        temperature = _preset_temperature(preset, "reference_temperature")
+        # None = provider default (see _preset_temperature); the acting agent's own
+        # temperature applies to the aggregator (the acting model).
         aggregator_temperature = _preset_temperature(preset, "aggregator_temperature")
-        # None (the default) = no per-preset override; the fan-out inherits
-        # auxiliary.moa_reference.timeout (900s default) via call_llm's own
-        # per-task timeout resolution. Explicit per-preset values are honored.
-        raw_reference_timeout = preset.get("reference_timeout")
-        reference_timeout = (
-            float(raw_reference_timeout) if raw_reference_timeout else None
-        )
-        degraded_reference_policy = str(
-            preset.get("degraded_reference_policy") or "loud"
-        )
         if aggregator_temperature is None and api_kwargs.get("temperature") is not None:
-            # The acting agent's own configured temperature (if any) still
-            # applies to the aggregator, which IS the acting model.
             aggregator_temperature = api_kwargs.get("temperature")
 
-        # When the preset is disabled, skip the reference fan-out and let the
-        # configured aggregator act alone — it is the preset's acting model, so
-        # a disabled MoA preset is simply "use the aggregator directly."
-        if not preset.get("enabled", True):
-            reference_models = []
-
-        from agent.usage_pricing import CanonicalUsage
-
-        reference_outputs: list[tuple[str, str, Any]] = []
         ref_messages = _reference_messages(messages)
-
-        # Fan-out cadence. "user_turn" (default — cheapest cadence, #67199):
-        # advisors run ONCE per user turn; subsequent tool iterations reuse
-        # that turn's advice and the aggregator acts alone (the original MoA
-        # shape: synthesize at the start, then let the acting model work).
-        # Implemented by hashing only the prefix up to the LAST USER message
-        # so mid-turn growth doesn't change the signature — iteration 2+
-        # becomes a cache HIT. "per_iteration": advisors re-run whenever the
-        # advisory view changes — i.e. every tool iteration, since the view
-        # grows with each tool result; advice tracks live task state at the
-        # cost of multiplying advisor latency/spend by tool-loop depth.
-        # "every_n:<N>" (N >= 2): the middle ground (issue #63393 — advisor
-        # fan-out multiplies latency/cost by the tool-iteration count).
-        # Advisors run on iteration 1 of a user turn and then every Nth tool
-        # iteration; the iterations in between REUSE the cached guidance from
-        # the last on-cadence run (same mechanism as user_turn's cache HIT —
-        # the aggregator still gets advice every iteration, it's just not
-        # refreshed against the very latest tool results). The iteration
-        # counter is scoped per user turn and resets on a new user message,
-        # so every turn starts with fresh advice.
-        fanout_mode = str(preset.get("fanout") or "user_turn").strip().lower()
-        every_n = 0
-        if fanout_mode.startswith("every_n:"):
-            try:
-                every_n = int(fanout_mode.split(":", 1)[1])
-            except (TypeError, ValueError):
-                every_n = 0
-            if every_n < 2:
-                # every_n:1 semantically IS per-iteration; degrade there,
-                # mirroring _coerce_fanout's collapse of degenerate N.
-                fanout_mode = "per_iteration"
-        sig_messages = ref_messages
-        turn_prefix = ref_messages
-        if fanout_mode in ("user_turn",) or every_n >= 2:
-            # Find the last REAL user message. The advisory view appends a
-            # synthetic user marker (_ADVISORY_INSTRUCTION) when it ends on an
-            # assistant turn — i.e. on every tool iteration after the first —
-            # so that marker must not count as a user turn or the prefix
-            # would include the grown mid-turn context and the signature
-            # would change every iteration (defeating the once-per-turn
-            # cadence entirely).
-            last_user_idx = None
-            for _i in range(len(ref_messages) - 1, -1, -1):
-                _m = ref_messages[_i]
-                if _m.get("role") == "user" and _m.get("content") != _ADVISORY_INSTRUCTION:
-                    last_user_idx = _i
-                    break
-            if last_user_idx is not None:
-                turn_prefix = ref_messages[: last_user_idx + 1]
-            if fanout_mode == "user_turn":
-                sig_messages = turn_prefix
-
-        def _hash_messages(msgs: list[dict[str, Any]]) -> str:
-            return hashlib.sha256(
-                "\u0000".join(
-                    f"{m.get('role')}:{m.get('content')}" for m in msgs
-                ).encode("utf-8", "replace")
-            ).hexdigest()
-
-        # every_n cadence bookkeeping: advance the per-turn iteration counter
-        # only when the advisory STATE actually advanced (a redundant create()
-        # with identical state — e.g. a streaming retry — must not consume a
-        # cadence slot), and reset it whenever the user-turn prefix changes.
-        _every_n_reuse = False
-        if every_n >= 2:
-            _turn_sig = _hash_messages(turn_prefix)
-            if _turn_sig != self._fanout_turn_sig:
-                self._fanout_turn_sig = _turn_sig
-                self._fanout_iteration_count = 0
-                self._fanout_last_state_sig = None
-            _state_sig = _hash_messages(ref_messages)
-            if _state_sig != self._fanout_last_state_sig:
-                self._fanout_last_state_sig = _state_sig
-                self._fanout_iteration_count += 1
-            # Iteration 1 is on-cadence; then every Nth iteration after it.
-            _on_cadence = (self._fanout_iteration_count - 1) % every_n == 0
-            _every_n_reuse = not _on_cadence and bool(self._ref_cache_outputs)
-
-        # Turn-scoped cache: only run + display references when the advisory
-        # view changed (i.e. a new user turn). Within one turn the agent loop
-        # calls create() once per tool iteration; in user_turn mode the
-        # signature is stable across those iterations (prefix hash above), so
-        # the fan-out runs once per user turn and iterations reuse the advice.
-        _sig = _hash_messages(sig_messages)
-        _cache_key = (self.preset_name, _sig, tuple(_slot_label(s) for s in reference_models))
-        if _every_n_reuse:
-            # Off-cadence every_n iteration: pin the key to the last
-            # on-cadence run so the lookup below is a HIT and its guidance is
-            # reused (no advisor calls, no double accounting, no re-emit) —
-            # exactly the user_turn cache-HIT path. When the cache is empty
-            # (defensive; a new turn resets the counter to on-cadence) the
-            # flag above stays False and the references run normally.
-            _cache_key = self._ref_cache_key
-        _refs_from_cache = _cache_key == self._ref_cache_key and bool(self._ref_cache_outputs)
-
-        if _refs_from_cache:
+        cache_key = self._fanout_cache_key(preset, ref_messages, reference_models)
+        if cache_key == self._ref_cache_key and self._ref_cache_outputs:
+            # HIT: already ran and accounted. Do NOT zero pending totals (a late
+            # interrupted reference may have deposited) and no trace (not a new turn).
             reference_outputs = list(self._ref_cache_outputs)
-            # References already ran (and were accounted) earlier this turn;
-            # this create() is a repeat tool-iteration reusing the cached
-            # advice. Charging their tokens/cost again here would multiply
-            # advisor spend by the tool-iteration count, so nothing new is
-            # deposited — but do NOT zero the pending totals: a
-            # late-completing interrupted reference may have deposited its
-            # real spend since the last consume(), and that must survive
-            # until the next consume_reference_usage() pick-up.
-            # Likewise no trace on a cache HIT — the full turn was already
-            # traced on the MISS that ran the references. A repeat iteration is
-            # not a new MoA turn.
             self._pending_trace = None
         else:
-            # Per-reference progress callback: emits ``moa.progress`` so
-            # listeners can render ``MOA: N/M refs done`` in the status bar as
-            # each reference completes. The callback is bound to self so it
-            # goes through the same display hook as the existing
-            # ``moa.reference`` / ``moa.aggregating`` events.
-            def _progress(done: int, total: int, label: str) -> None:
-                self._emit(
-                    "moa.progress",
-                    refs_done=done,
-                    refs_total=total,
-                    label=label,
-                )
+            reference_outputs = self._run_fanout(preset, ref_messages, reference_models, aggregator, aggregator_temperature, cache_key)
 
-            reference_outputs = _run_references_parallel(
-                reference_models,
-                ref_messages,
-                temperature=temperature,
-                max_tokens=reference_max_tokens,
-                progress_callback=_progress,
-                reference_timeout=reference_timeout,
-                agent=self._agent,
-                late_accounting_sink=self._record_late_reference_accounting,
-            )
-            interrupted_any = any(
-                text == _INTERRUPTED_REFERENCE_NOTE
-                for _lbl, text, _acct in reference_outputs
-            )
-            if interrupted_any:
-                # An interrupted fan-out is a partial snapshot, not real
-                # advice for this state. Caching it would replay the
-                # placeholder notes on every subsequent iteration of the
-                # turn (a cache HIT never re-runs the references), so leave
-                # the cache empty and let the next create() re-run them.
-                self._ref_cache_key = None
-                self._ref_cache_outputs = []
-            else:
-                self._ref_cache_key = _cache_key
-                self._ref_cache_outputs = list(reference_outputs)
-            # Sum the advisor fan-out's token usage AND cost so the caller can
-            # fold advisor spend into session accounting exactly once per turn.
-            # Only the freshly run references (cache MISS) contribute; a cache
-            # HIT above zeroes this. Token counts sum directly (each already
-            # normalized per-advisor provider/api_mode); cost sums in dollars
-            # because each advisor was priced at its OWN model rate — advisors
-            # may be cheaper/pricier than the aggregator, so their tokens must
-            # NOT be repriced at the aggregator's rate.
-            _ref_usage = CanonicalUsage()
-            _ref_cost: Any = None
-            for _lbl, _txt, _acct in reference_outputs:
-                if isinstance(_acct, _RefAccounting):
-                    if isinstance(_acct.usage, CanonicalUsage):
-                        _ref_usage = _ref_usage + _acct.usage
-                    if _acct.cost_usd is not None:
-                        _ref_cost = (_ref_cost or 0) + _acct.cost_usd
-            with self._accounting_lock:
-                # Fold (don't overwrite): a late-completing interrupted
-                # reference from a PREVIOUS turn may have deposited its real
-                # spend here between consume() calls — keep it.
-                self._pending_reference_usage = (
-                    self._pending_reference_usage or CanonicalUsage()
-                ) + _ref_usage
-                if _ref_cost is not None:
-                    self._pending_reference_cost = (
-                        self._pending_reference_cost or 0
-                    ) + _ref_cost
-            # Stash the full reference fan-out for trace persistence. The
-            # aggregator input/label are filled in below once agg_messages is
-            # built; the aggregator OUTPUT is stitched in by the caller
-            # (consume_and_save_trace) once the response resolves — the caller
-            # holds the live session_id and the resolved aggregator response.
-            # Traces are a persisted, user-readable surface, so ANY active
-            # privacy mode ('display' or 'full') redacts the advisor text and
-            # the full per-advisor input/output carried by _RefAccounting.
-            if privacy_mode:
-                _trace_refs = [
-                    (label, _redact_reference_text(text), _redact_trace_accounting(acct))
-                    for label, text, acct in reference_outputs
-                ]
-            else:
-                _trace_refs = list(reference_outputs)
-            self._pending_trace = {
-                "preset": self.preset_name,
-                "reference_outputs": _trace_refs,
-                "aggregator_slot": aggregator,
-                "aggregator_temperature": aggregator_temperature,
-            }
-            # Derived from the same privacy-redacted _trace_refs, so an active
-            # privacy mode redacts the observability payload too.
-            try:
-                from agent.moa_trace import slot_metrics
-
-                self._last_reference_metrics = [
-                    slot_metrics(acct, label, output=text)
-                    for label, text, acct in _trace_refs
-                ]
-            except Exception as exc:  # pragma: no cover - never break a turn
-                logger.debug("MoA reference metrics render failed: %s", exc)
-                self._last_reference_metrics = None
-
-            # Surface each reference model's answer to the display BEFORE the
-            # aggregator acts — once per turn (only on the iteration that
-            # actually ran them). The user sees one labelled block per
-            # reference (rendered like a thinking block) so the MoA process is
-            # visible rather than a silent pause. Best-effort: never blocks the
-            # turn. Reference blocks are a user-visible surface: both privacy
-            # modes redact them (the cache keeps the RAW text — redaction
-            # always happens at the consuming surface, so a mid-session mode
-            # change never leaks or double-redacts).
-            _ref_count = len(reference_outputs)
-            for _idx, (_label, _text, _accounting) in enumerate(reference_outputs, start=1):
-                self._emit(
-                    "moa.reference",
-                    index=_idx,
-                    count=_ref_count,
-                    label=_label,
-                    text=_redact_reference_text(_text) if privacy_mode else _text,
-                )
-            if _ref_count:
-                # Phase transition: reference fan-out is complete, the
-                # aggregator is about to act. Listeners that prefer a single
-                # event family for phase tracking can switch on ``phase``
-                # instead of subscribing to ``moa.aggregating`` separately.
-                self._emit(
-                    "moa.phase",
-                    phase="aggregator",
-                    refs_done=_ref_count,
-                    refs_total=_ref_count,
-                    aggregator=_slot_label(aggregator),
-                )
-                self._emit(
-                    "moa.aggregating",
-                    aggregator=_slot_label(aggregator),
-                    ref_count=_ref_count,
-                )
-
-        guidance: str | None = None
         agg_messages = [dict(m) for m in messages]
-        successful_outputs = _successful_references(reference_outputs)
-        failed_labels = _failed_reference_labels(reference_outputs)
-        joined = ""
-        _agg_refs: list = []
-        if successful_outputs:
-            # 'full' privacy mode: redact the advisor text that reaches the
-            # AGGREGATOR too (issue #59959's literal ask). 'display' leaves
-            # the aggregator input raw so synthesis quality is unaffected.
-            # The redaction is applied to a per-call copy — the cache always
-            # holds raw advisor text (see the emit comment above). Failed
-            # refs are already filtered out; only successful advisor text is
-            # joined (and redacted when requested).
-            _agg_refs = (
-                _redact_reference_outputs(successful_outputs)
-                if privacy_mode == "full"
-                else successful_outputs
-            )
-            joined = "\n\n".join(
-                f"Reference {idx} — {label}:\n{text}"
-                for idx, (label, text, _usage) in enumerate(_agg_refs, start=1)
-            )
-        degraded = _degraded_notice(failed_labels, degraded_reference_policy)
-        if reference_outputs and not successful_outputs:
-            # Every reference failed or was skipped: don't wrap a wall of
-            # failure sentinels in "use the reference responses below"
-            # guidance — the aggregator IS the acting model, so it simply
-            # acts alone this turn. Under the loud policy it still gets the
-            # sanitized unavailability notice so it can disclose degraded
-            # mode; under silent it gets nothing.
-            logger.warning(
-                "MoA: all %d reference(s) failed — acting aggregator-alone "
-                "without reference guidance",
-                len(reference_outputs),
-            )
-            if degraded:
-                guidance = (
-                    "[Mixture of Agents reference context]\n"
-                    f"Preset: {self.preset_name}\n"
-                    f"Aggregator/acting model: {_slot_label(aggregator)}\n\n"
-                    "All reference models failed this turn — no advisory "
-                    "guidance is available. Act on your own judgment.\n\n"
-                    f"{degraded}"
-                )
-                _attach_reference_guidance(agg_messages, guidance)
-        elif joined or degraded:
-            if degraded:
-                joined = f"{joined}\n\n{degraded}" if joined else degraded
-            guidance = (
-                "[Mixture of Agents reference context]\n"
-                f"Preset: {self.preset_name}\n"
-                f"Aggregator/acting model: {_slot_label(aggregator)}\n"
-                f"References: {', '.join(label for label, _, _ in _agg_refs)}\n\n"
-                "Use the reference responses below as private context. You are the aggregator and acting model: "
-                "answer the user directly or call tools as needed.\n\n"
-                f"{joined}"
-            )
+        guidance = self._build_guidance(reference_outputs, aggregator, str(preset.get("degraded_reference_policy") or "loud"))
+        if guidance:
             _attach_reference_guidance(agg_messages, guidance)
 
         prepared_request = {
-            "messages": agg_messages,
-            "guidance": guidance,
-            "aggregator": aggregator,
+            "messages": agg_messages, "guidance": guidance, "aggregator": aggregator,
             "aggregator_temperature": aggregator_temperature,
         }
         if api_kwargs.pop("_moa_prepare_only", False):
@@ -2311,143 +1328,64 @@ class MoAChatCompletions:
 
 
 class MoAClient:
+    """OpenAI-client-shaped wrapper: ``client.chat.completions`` is a ``MoAChatCompletions``;
+    the accounting/trace surface below is delegated to that facade."""
+
     def __init__(self, preset_name: str, reference_callback: Any = None, agent: Any = None):
         self.chat = type("_MoAChat", (), {})()
-        self.chat.completions = MoAChatCompletions(
-            preset_name, reference_callback=reference_callback, agent=agent,
-        )
+        self.chat.completions = MoAChatCompletions(preset_name, reference_callback=reference_callback, agent=agent)
 
     def consume_reference_usage(self) -> Any:
-        """Pop the pending reference-fan-out usage from the completions facade.
-
-        Lets session accounting fold the MoA advisor tokens into the turn's
-        usage without reaching into ``.chat.completions`` internals.
-        """
         return self.chat.completions.consume_reference_usage()
 
     @property
     def last_aggregator_slot(self) -> Any:
-        """Resolved aggregator slot ({provider, model, ...}) from the most
-        recent create(), or None. Read by session cost accounting to price the
-        aggregator's acting turn at its real model instead of the virtual
-        preset name."""
         return getattr(self.chat.completions, "last_aggregator_slot", None)
 
-    def consume_and_save_trace(
-        self, session_id: Any = None, aggregator_output_fallback: Any = None
-    ) -> None:
-        """Flush the pending full-turn MoA trace via the completions facade.
-
-        No-op unless ``moa.save_traces`` is enabled and a turn is pending.
-        ``aggregator_output_fallback`` supplies the resolved acting text so the
-        streaming path's trace is self-contained (see the facade docstring).
-        """
-        return self.chat.completions.consume_and_save_trace(
-            session_id, aggregator_output_fallback=aggregator_output_fallback
-        )
+    def consume_and_save_trace(self, session_id: Any = None, aggregator_output_fallback: Any = None) -> None:
+        return self.chat.completions.consume_and_save_trace(session_id, aggregator_output_fallback=aggregator_output_fallback)
 
     def last_reference_metrics(self) -> Any:
-        """Per-advisor metrics from the most recent fan-out, or None.
-
-        Read-only, unlike the two consume_* methods above: the observability
-        hook fires on a different branch than the accounting they own.
-        """
         return self.chat.completions.last_reference_metrics()
 
 
+# Relay table: event -> (primary kwarg, secondary kwarg or None, {cb kwarg: emit kwarg}).
+# The callback signature is ``cb(event, label, text, None, **moa_*)``.
+_RELAY_EVENTS: dict[str, tuple[str, str | None, dict[str, str]]] = {
+    "moa.reference": ("label", "text", {"moa_index": "index", "moa_count": "count"}),
+    "moa.progress": ("label", None, {"moa_refs_done": "refs_done", "moa_refs_total": "refs_total"}),
+    "moa.phase": ("aggregator", None, {"moa_phase": "phase", "moa_refs_done": "refs_done", "moa_refs_total": "refs_total"}),
+    "moa.aggregating": ("aggregator", None, {"moa_ref_count": "ref_count"}),
+}
+
+
 def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:
-    """Build the MoA facade client for ``agent``, wiring the reference relay.
-
-    Single construction point for ``MoAClient`` wherever the agent's shared
-    client is (re)built: initial setup (``agent_init``), turn-start fallback
-    restore (``restore_primary_runtime``), transient transport recovery
-    (``try_recover_primary_transport``), and mid-session model switches
-    (``switch_model``).
-
-    Constructing a bare ``MoAClient(preset)`` at any of those sites silently
-    drops the ``reference_callback`` relay that ``agent_init`` wires to
-    ``agent.tool_progress_callback`` — after a fallback+restore cycle the
-    facade would still work, but every frontend (CLI spinner, TUI, desktop,
-    gateway) would stop receiving ``moa.reference`` / ``moa.aggregating``
-    display events for the rest of the session (#53802).
-
-    The relay reads ``agent.tool_progress_callback`` at *emit* time, so a
-    callback attached after client construction is picked up automatically.
-    Best-effort and display-only — it never raises into the model call.
-    """
+    """Single construction point for ``MoAClient``: a bare ``MoAClient(preset)`` would
+    drop the ``reference_callback`` relay and silence display events for the session.
+    The relay reads ``agent.tool_progress_callback`` at emit time."""
     def _moa_reference_relay(event: str, **kwargs: Any) -> None:
         cb = getattr(agent, "tool_progress_callback", None)
-        if cb is None:
+        spec = _RELAY_EVENTS.get(event)
+        if cb is None or spec is None:
             return
-        try:
-            if event == "moa.reference":
-                label = str(kwargs.get("label") or "")
-                text = str(kwargs.get("text") or "")
-                idx = kwargs.get("index")
-                count = kwargs.get("count")
-                cb(
-                    "moa.reference",
-                    label,
-                    text,
-                    None,
-                    moa_index=idx,
-                    moa_count=count,
-                )
-            elif event == "moa.progress":
-                # Per-reference completion. Frontends render this as a
-                # status-bar progress indicator like ``MOA: N/M refs done``.
-                cb(
-                    "moa.progress",
-                    str(kwargs.get("label") or ""),
-                    None,
-                    None,
-                    moa_refs_done=kwargs.get("refs_done"),
-                    moa_refs_total=kwargs.get("refs_total"),
-                )
-            elif event == "moa.phase":
-                # Phase transition (currently only ``phase="aggregator"``
-                # fires once the fan-out is done). Subscribers can switch
-                # on ``moa_phase`` to know which phase is active.
-                cb(
-                    "moa.phase",
-                    str(kwargs.get("aggregator") or ""),
-                    None,
-                    None,
-                    moa_phase=kwargs.get("phase"),
-                    moa_refs_done=kwargs.get("refs_done"),
-                    moa_refs_total=kwargs.get("refs_total"),
-                )
-            elif event == "moa.aggregating":
-                cb(
-                    "moa.aggregating",
-                    str(kwargs.get("aggregator") or ""),
-                    None,
-                    None,
-                    moa_ref_count=kwargs.get("ref_count"),
-                )
-        except Exception:
-            pass
+        primary, secondary, extra_map = spec
+        with contextlib.suppress(Exception):
+            cb(
+                event, str(kwargs.get(primary) or ""), str(kwargs.get(secondary) or "") if secondary else None, None,
+                **{out: kwargs.get(src) for out, src in extra_map.items()},
+            )
 
     resolved_preset = preset_name
     if resolved_preset is None and getattr(agent, "provider", None) == "moa":
         resolved_preset = getattr(agent, "model", None)
-
     resolved_preset = str(resolved_preset or "default")
     try:
         from hermes_cli.config import load_config
         from hermes_cli.moa_config import normalize_moa_config
-
         moa_cfg = normalize_moa_config(load_config().get("moa") or {})
-        presets = moa_cfg.get("presets") or {}
-        if resolved_preset not in presets:
+        if resolved_preset not in (moa_cfg.get("presets") or {}):
             resolved_preset = moa_cfg.get("default_preset") or "default"
     except Exception:
         resolved_preset = "default"
-
-    return MoAClient(
-        resolved_preset,
-        reference_callback=_moa_reference_relay,
-        # Thread the agent through so the reference fan-out wait can be
-        # aborted on a user interrupt (see _run_references_parallel).
-        agent=agent,
-    )
+    # ``agent`` lets the fan-out wait be aborted on a user interrupt.
+    return MoAClient(resolved_preset, reference_callback=_moa_reference_relay, agent=agent)

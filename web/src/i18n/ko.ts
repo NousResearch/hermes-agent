@@ -468,6 +468,8 @@ export const ko: Translations = {
     copyCliCommand: "CLI 명령 복사 (외부 / 대체용)",
     connect: "연결",
     sessionExpires: "세션이 {time} 후 만료됩니다",
+    sessionExpiredNoError:
+      "제공자에 도달하지 못한 채 로그인 시간이 만료되었습니다. 보통 열린 탭에서 로그인 페이지가 멈춘 경우입니다(서버 측 문제) — 해당 탭에서 로그인을 완료한 후 다시 시도를 클릭하세요. 계속 실패하면 API 키 또는 CLI를 사용하세요.",
     initiatingLogin: "로그인 흐름 시작 중…",
     exchangingCode: "코드를 토큰으로 교환 중…",
     connectedClosing: "연결되었습니다! 닫는 중…",

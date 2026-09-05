@@ -202,3 +202,13 @@ def test_artifact_file_mode_is_group_writable_when_managed(
     monkeypatch.setenv("HERMES_MANAGED", "nixos")
 
     assert config.artifact_file_mode() == 0o660
+
+
+@posix_only
+def test_internal_legacy_directory_is_tightened_but_explicit_directory_is_unchanged(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+    for internal in (False, True):
+        leaf = tmp_path / str(internal)
+        leaf.mkdir(mode=0o755)
+        config.secure_artifact_dir(leaf, tighten_existing=internal)
+        assert _mode(leaf) == (0o700 if internal else 0o755)

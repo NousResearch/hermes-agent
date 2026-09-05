@@ -2,39 +2,21 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { EnvVarInfo } from '@/types/hermes'
+import { stubResizeObserver } from '@/test/jsdom'
+
+import { envVar } from './test-utils'
 
 const getEnvVars = vi.fn()
 
-class TestResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-
-vi.stubGlobal('ResizeObserver', TestResizeObserver)
+stubResizeObserver()
 
 vi.mock('@/hermes', () => ({
   deleteEnvVar: vi.fn(),
-  getEnvVars: () => getEnvVars(),
+  getEnvVars: (profile?: null | string) => getEnvVars(profile),
   revealEnvVar: vi.fn(),
   setApiRequestProfile: () => undefined,
   setEnvVar: vi.fn()
 }))
-
-function envVar(category: string, patch: Partial<EnvVarInfo> = {}): EnvVarInfo {
-  return {
-    advanced: false,
-    category,
-    description: '',
-    is_password: true,
-    is_set: false,
-    redacted_value: null,
-    tools: [],
-    url: '',
-    ...patch
-  }
-}
 
 beforeEach(() => {
   getEnvVars.mockResolvedValue({})
@@ -72,6 +54,15 @@ function DeepLinkButton({ target }: { target: string }) {
 }
 
 describe('KeysSettings', () => {
+  it('fetches env vars for the active profile (undefined, never null) when unscoped', async () => {
+    // #90549 class: getEnvVars(null) targets the primary profile's env store,
+    // so a non-default profile's Keys page would read (and edit) the wrong
+    // profile. Unscoped must send undefined so the active profile applies.
+    await renderKeysSettings('tools')
+
+    await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith(undefined))
+  })
+
   it('lists tools and excludes settings / channel-managed credentials', async () => {
     getEnvVars.mockResolvedValue({
       BRAVE_SEARCH_API_KEY: envVar('tool', { description: 'Search the web with Brave.' }),

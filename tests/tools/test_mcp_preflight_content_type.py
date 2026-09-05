@@ -29,7 +29,8 @@ from contextlib import contextmanager
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask, NonMcpEndpointError
+from tools.mcp_tool import MCPServerTask
+from tools.mcp_tool_errors import NonMcpEndpointError
 
 
 def _make_task(name: str = "probe_srv") -> MCPServerTask:
@@ -201,6 +202,7 @@ def test_run_skips_preflight_for_oauth(monkeypatch):
     (``.well-known/oauth-protected-resource``), not by a GET content-type check.
     """
     import tools.mcp_tool as _mcp
+    from tools import mcp_tool_errors as _mcp_errors
 
     preflight_calls: list[str] = []
 
@@ -215,7 +217,7 @@ def test_run_skips_preflight_for_oauth(monkeypatch):
             raise asyncio.CancelledError()
 
         # Bypass URL validation so the test doesn't need a live network.
-        monkeypatch.setattr(_mcp, "_validate_remote_mcp_url", lambda n, u: None)
+        monkeypatch.setattr(_mcp_errors, "_validate_remote_mcp_url", lambda n, u: None)
         monkeypatch.setattr(_mcp.MCPServerTask, "_preflight_content_type", _fake_preflight)
         monkeypatch.setattr(_mcp.MCPServerTask, "_run_http", _fake_run_http)
 
@@ -239,6 +241,7 @@ def test_run_skips_preflight_when_skip_preflight_set(monkeypatch):
     non-OAuth auth schemes the probe headers don't satisfy).
     """
     import tools.mcp_tool as _mcp
+    from tools import mcp_tool_errors as _mcp_errors
 
     preflight_calls: list[str] = []
 
@@ -249,7 +252,7 @@ def test_run_skips_preflight_when_skip_preflight_set(monkeypatch):
         async def _fake_run_http(self, config):
             raise asyncio.CancelledError()
 
-        monkeypatch.setattr(_mcp, "_validate_remote_mcp_url", lambda n, u: None)
+        monkeypatch.setattr(_mcp_errors, "_validate_remote_mcp_url", lambda n, u: None)
         monkeypatch.setattr(_mcp.MCPServerTask, "_preflight_content_type", _fake_preflight)
         monkeypatch.setattr(_mcp.MCPServerTask, "_run_http", _fake_run_http)
 

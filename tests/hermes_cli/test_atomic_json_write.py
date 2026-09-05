@@ -135,6 +135,42 @@ def test_open_private_append_preserves_existing_mode_and_appends(
 
 
 @posix_only
+def test_internal_append_tightens_before_writing_without_touching_explicit_outputs(tmp_path):
+    for internal in (False, True):
+        target = tmp_path / str(internal)
+        target.write_text("old\n", encoding="utf-8")
+        target.chmod(0o644)
+        with utils.open_private_append(target, tighten_existing=internal) as handle:
+            assert _mode(target) == (0o600 if internal else 0o644)
+            handle.write("new\n")
+        assert target.read_text(encoding="utf-8") == "old\nnew\n"
+
+
+@posix_only
+def test_internal_append_reports_links_and_fails_before_bytes_on_chmod_error(tmp_path, monkeypatch, caplog):
+    target = tmp_path / "target"
+    target.write_text("old\n", encoding="utf-8")
+    target.chmod(0o644)
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    with utils.open_private_append(link, tighten_existing=True) as handle:
+        handle.write("linked\n")
+    assert _mode(target) == 0o644
+    assert link.is_symlink()
+    assert "verify its target permissions" in caplog.text
+    before = target.read_bytes()
+
+    def denied(*args):
+        raise PermissionError("chmod denied")
+
+    monkeypatch.setattr(utils.os, "fchmod", denied)
+    with pytest.raises(PermissionError):
+        with utils.open_private_append(target, tighten_existing=True) as handle:
+            handle.write("must not be written")
+    assert target.read_bytes() == before
+
+
+@posix_only
 def test_open_private_append_uses_managed_group_writable_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

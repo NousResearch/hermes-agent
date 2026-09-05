@@ -10,7 +10,7 @@ import io
 
 import yaml
 
-from utils import fast_safe_load, _get_fast_yaml_loader
+from utils import fast_safe_load, _fast_yaml_loader
 
 
 _DOCS = [
@@ -39,7 +39,7 @@ def test_empty_document_returns_none():
 
 
 def test_prefers_c_loader_when_available():
-    loader = _get_fast_yaml_loader()
+    loader = _fast_yaml_loader
     # If libyaml is compiled in, we must be using the C loader; otherwise the
     # pure-Python SafeLoader is an acceptable fallback. Either way it must be a
     # safe loader (never the unsafe full Loader).

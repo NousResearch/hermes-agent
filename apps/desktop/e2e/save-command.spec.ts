@@ -30,7 +30,7 @@ test.afterAll(async () => {
 })
 
 test.describe('/save command', () => {
-  test('persists the transcript privately with 0700 dir / 0600 file', async () => {
+  test('persists the transcript privately with 0700 dir / 0600 file', async ({}, testInfo) => {
     const page = fixture!.page
 
     const composer = page.locator('[contenteditable="true"]').first()
@@ -56,13 +56,16 @@ test.describe('/save command', () => {
       timeout: 30_000,
     })
 
+    const savedDir = path.join(fixture!.sandbox.hermesHome, 'sessions', 'saved')
+    fs.mkdirSync(savedDir, { recursive: true })
+    if (process.platform !== 'win32') fs.chmodSync(savedDir, 0o755)
     await composer.click()
     await composer.type('/save', { delay: 20 })
-    await page.keyboard.press('Enter')
+    // Enter may accept the slash-completion row without submitting it.
+    await page.getByRole('button', { name: 'Send', exact: true }).click()
 
     // The sandbox starts empty, so the created JSON is unambiguous and this
     // remains correct when HERMES_HOME contains spaces.
-    const savedDir = path.join(fixture!.sandbox.hermesHome, 'sessions', 'saved')
     await expect
       .poll(
         () => (fs.existsSync(savedDir) ? fs.readdirSync(savedDir).filter(name => name.endsWith('.json')).length : 0),
@@ -89,5 +92,10 @@ test.describe('/save command', () => {
 
     expect(saved.messages.some(m => m.role === 'user' && flatten(m.content).includes('Remember this for later'))).toBe(true)
     expect(saved.messages.some(m => m.role === 'assistant' && flatten(m.content).includes(MOCK_REPLY))).toBe(true)
+    await testInfo.attach('saved-transcript', {
+      body: fs.readFileSync(savedPath),
+      contentType: 'application/json',
+    })
+    await page.screenshot({ path: testInfo.outputPath('save-confirmed.png') })
   })
 })

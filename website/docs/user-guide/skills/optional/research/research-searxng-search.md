@@ -15,7 +15,7 @@ Free keyless meta-search aggregating 70+ engines.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/research/searxng-search` |
-| Path | `optional-skills/research/searxng-search` |
+| Path | `optional-skills/research\searxng-search` |
 | Version | `1.0.1` |
 | Author | hermes-agent |
 | License | MIT |

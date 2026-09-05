@@ -44,6 +44,23 @@ def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
+def test_single_sample_export_uses_private_profile_bucket(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from run_agent import _save_sample_trajectory
+
+    home = tmp_path / "profile"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    agent = SimpleNamespace(_convert_to_trajectory_format=lambda *args: SENTINEL)
+    _save_sample_trajectory(agent, {"messages": [], "completed": True}, "query", "m")
+    assert not list(tmp_path.glob("sample_*.json"))
+    samples = list((home / "trajectories").glob("*/sample_*.json"))
+    assert len(samples) == 1
+    assert json.loads(samples[0].read_text(encoding="utf-8"))["conversations"] == SENTINEL
+    if os.name == "posix":
+        assert not samples[0].stat().st_mode & 0o077
+
+
 def _assert_entry(entry: dict, *, model: str, completed: bool) -> None:
     assert set(entry) == {"conversations", "timestamp", "model", "completed"}
     assert entry["conversations"] == SENTINEL

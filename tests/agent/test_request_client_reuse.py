@@ -33,7 +33,7 @@ class _StubClient:
 
 
 def _make_agent(provider="openai", base_url="https://api.openai.com/v1", model="gpt-5.4"):
-    with patch("run_agent.OpenAI") as mock_openai:
+    with patch("agent.process_bootstrap.OpenAI") as mock_openai:
         mock_openai.return_value = MagicMock()
         agent = AIAgent(
             api_key="sk-test",

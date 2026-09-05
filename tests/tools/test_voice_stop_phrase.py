@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.voice_mode import (
+from tools.voice_mode_transcript import (
     DEFAULT_VOICE_STOP_PHRASES,
     _load_voice_stop_phrases,
     is_voice_stop_phrase,
@@ -25,12 +25,12 @@ class TestVoiceStopHint:
     """The 'Say "stop" to end the voice chat.' hint shown on voice-mode start."""
 
     def test_default_phrase(self):
-        with patch("tools.voice_mode._load_voice_stop_phrases", return_value=("stop",)):
+        with patch("tools.voice_mode_transcript._load_voice_stop_phrases", return_value=("stop",)):
             assert voice_stop_hint() == 'Say "stop" to end the voice chat.'
 
 
     def test_disabled_phrases_show_no_hint(self):
-        with patch("tools.voice_mode._load_voice_stop_phrases", return_value=()):
+        with patch("tools.voice_mode_transcript._load_voice_stop_phrases", return_value=()):
             assert voice_stop_hint() == ""
 
 
@@ -43,7 +43,7 @@ class TestIsVoiceStopPhrase:
 
 
     def test_uses_config_when_phrases_omitted(self):
-        with patch("tools.voice_mode._load_voice_stop_phrases", return_value=("halt",)):
+        with patch("tools.voice_mode_transcript._load_voice_stop_phrases", return_value=("halt",)):
             assert is_voice_stop_phrase("halt") is True
             assert is_voice_stop_phrase("stop") is False
 
@@ -90,10 +90,8 @@ class TestContinuousLoopStopPhrase:
         fake_result = {"success": True, "transcript": transcript_text}
         with patch.object(v, "_continuous_active", True), \
              patch.object(v, "_continuous_recorder", _FakeRecorder()), \
-             patch.object(v, "_continuous_on_transcript", delivered.append), \
-             patch.object(v, "_continuous_on_status", None), \
-             patch.object(v, "_continuous_on_silent_limit",
-                          lambda: silent_limit_fired.append(True)), \
+             patch.object(v, "_continuous_callbacks",
+                          (delivered.append, None, lambda: silent_limit_fired.append(True), None)), \
              patch.object(v, "_continuous_no_speech_count", 0), \
              patch.object(v, "transcribe_recording", return_value=fake_result), \
              patch.object(v, "_play_beep", lambda **kw: None), \
@@ -140,11 +138,8 @@ class TestContinuousLoopStopPhraseSignal:
         fake_result = {"success": True, "transcript": transcript_text}
         with patch.object(v, "_continuous_active", True), \
              patch.object(v, "_continuous_recorder", self._FakeRecorder()), \
-             patch.object(v, "_continuous_on_transcript", delivered.append), \
-             patch.object(v, "_continuous_on_status", None), \
-             patch.object(v, "_continuous_on_silent_limit",
-                          lambda: silent_limit_fired.append(True)), \
-             patch.object(v, "_continuous_on_stop_phrase", on_stop_phrase), \
+             patch.object(v, "_continuous_callbacks",
+                          (delivered.append, None, lambda: silent_limit_fired.append(True), on_stop_phrase)), \
              patch.object(v, "_continuous_no_speech_count", 0), \
              patch.object(v, "transcribe_recording", return_value=fake_result), \
              patch.object(v, "_play_beep", lambda **kw: None), \
@@ -190,9 +185,10 @@ class TestStopPhraseSurvivesHallucinationFilter:
 
     def _transcribe(self, text, phrases):
         import tools.voice_mode as vm
+        import tools.voice_mode_transcript as vmt
 
         with patch.object(
-            vm, "_load_voice_stop_phrases", return_value=tuple(phrases)
+            vmt, "_load_voice_stop_phrases", return_value=tuple(phrases)
         ), patch(
             "tools.transcription_tools.transcribe_audio",
             return_value={"success": True, "transcript": text},

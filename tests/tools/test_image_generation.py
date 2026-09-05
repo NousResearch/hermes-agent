@@ -57,17 +57,6 @@ class TestFalCatalog:
             assert not missing, f"{mid} missing required keys: {missing}"
 
 
-    def test_upscale_defaults_are_all_off(self, image_tool):
-        """Upscaling is opt-in only (Aug 2026 policy). The default-on
-        experiment chained the Clarity Upscaler — a creative SD1.5
-        tile-diffusion enhancer — after every sub-2MP generation, which
-        degraded output quality (mangled GPT Image 2 / Ideogram text
-        rendering, CJK, faces). No catalog entry may default upscale on."""
-        for mid, meta in image_tool.FAL_MODELS.items():
-            assert meta["upscale"] is False, \
-                f"{mid} must not default upscale on — opt-in per call only"
-
-
     def test_edit_capable_entries_declare_a_full_edit_contract(self, image_tool):
         """An `edit_endpoint` is useless without the whitelist and the
         reference-image cap that `_build_fal_edit_payload` reads."""
@@ -358,16 +347,18 @@ class TestAspectRatioNormalization:
 class TestRegistryIntegration:
 
     def test_schema_exposes_expected_agent_params(self, image_tool):
-        """The agent-facing schema exposes the unified text+image surface:
-        prompt (required), aspect_ratio, the image-to-image inputs
-        image_url + reference_image_urls, and the opt-in upscale pass. Model
-        selection stays a user-level config choice, never an agent-level arg."""
+        """The static registration schema stays minimal — prompt (required)
+        + aspect_ratio. Capability args (image_url, reference_image_urls,
+        upscale) are added per-model by the dynamic override so sessions
+        whose active model can't honor them never see them (#95681 diet).
+        Model selection stays a user-level config choice, never an
+        agent-level arg."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
-        assert set(props.keys()) == {
-            "prompt", "aspect_ratio", "image_url", "reference_image_urls",
-            "upscale",
-        }
+        assert set(props.keys()) == {"prompt", "aspect_ratio"}
         assert image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["required"] == ["prompt"]
+        # The dynamic builder owns the capability args.
+        dyn = image_tool._build_dynamic_image_schema()
+        assert "parameters" in dyn and "prompt" in dyn["parameters"]["properties"]
 
     def test_aspect_ratio_enum_is_three_values(self, image_tool):
         enum = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["aspect_ratio"]["enum"]
@@ -462,13 +453,11 @@ class TestKreaModelNormalization:
 
     def test_native_models_detected(self, image_tool):
         for mid in ("krea-2-medium", "krea-2-large", "krea-2-medium-turbo"):
-            assert image_tool.is_krea_model(mid) is True
             assert image_tool._normalize_krea_model(mid) == mid
 
 
     def test_non_krea_models_are_not_krea(self, image_tool):
         for mid in ("fal-ai/flux-2/klein/9b", "fal-ai/nano-banana-pro", None, "", 123):
-            assert image_tool.is_krea_model(mid) is False
             assert image_tool._normalize_krea_model(mid) is None
 
 

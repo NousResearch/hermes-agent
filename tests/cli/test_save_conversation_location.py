@@ -172,3 +172,16 @@ def test_save_conversation_retightens_existing_snapshot(
     cli.HermesCLI.save_conversation(_make_stub_cli(history), "/save json")
     assert _mode(path) == 0o600
     assert json.loads(path.read_text(encoding="utf-8"))["messages"] == history
+
+
+@posix_only
+def test_explicit_save_preserves_existing_output_permissions(hermes_home, tmp_path):
+    import cli
+
+    path = tmp_path / "shared.json"
+    path.write_text("{}", encoding="utf-8")
+    path.chmod(0o644)
+    history = [{"role": "user", "content": "hi"}]
+    cli.HermesCLI.save_conversation(_make_stub_cli(history), f"/save json {path}")
+    assert _mode(path) == 0o644
+    assert json.loads(path.read_text(encoding="utf-8"))["messages"] == history

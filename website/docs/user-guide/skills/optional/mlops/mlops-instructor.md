@@ -15,7 +15,7 @@ Structured LLM outputs validated with Pydantic.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/instructor` |
-| Path | `optional-skills/mlops/instructor` |
+| Path | `optional-skills/mlops\instructor` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
 | License | MIT |

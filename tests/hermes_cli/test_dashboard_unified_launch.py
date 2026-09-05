@@ -8,6 +8,7 @@ launching profile preselected. `--isolated` opts out.
 import sys
 import types
 import pytest
+from hermes_cli import main_dashboard
 
 
 @pytest.fixture
@@ -34,7 +35,7 @@ class TestUnifiedDashboardRouting:
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
-        monkeypatch.setattr(main_mod, "_dashboard_listening", lambda host, port: False)
+        monkeypatch.setattr(main_dashboard, "_dashboard_listening", lambda host, port: False)
         execs = []
 
         def fake_exec(exe, argv, env):
@@ -71,8 +72,7 @@ class TestUnifiedDashboardRouting:
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
         listening_calls = []
-        monkeypatch.setattr(
-            main_mod, "_dashboard_listening",
+        monkeypatch.setattr(main_dashboard, "_dashboard_listening",
             lambda host, port: listening_calls.append(1) or False,
         )
         execs = []
@@ -83,6 +83,31 @@ class TestUnifiedDashboardRouting:
             main_mod.cmd_dashboard(_args())
         assert listening_calls == []
         assert execs == []
+
+
+class TestInteractiveDashboardAuthSetup:
+
+    def test_loopback_proxy_public_url_offers_auth_setup(
+        self, main_mod, monkeypatch, capsys
+    ):
+        """A TTY operator is prompted when public_url gates a loopback bind."""
+        from hermes_cli.dashboard_auth import clear_providers
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_PUBLIC_URL",
+            "https://dashboard.example.test:9443",
+        )
+        clear_providers()
+        monkeypatch.setattr(main_mod.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(main_mod.sys.stdout, "isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda _prompt: "3")
+
+        with pytest.raises(SystemExit) as exc:
+            main_mod._maybe_setup_dashboard_auth_interactively(_args())
+
+        assert exc.value.code == 1
+        output = capsys.readouterr().out
+        assert "configured external dashboard.public_url" in output
 
 
 

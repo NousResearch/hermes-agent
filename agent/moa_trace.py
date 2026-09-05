@@ -1,23 +1,11 @@
 """Full MoA turn trace persistence (opt-in via config ``moa.save_traces``).
 
-When enabled, every Mixture-of-Agents turn that actually runs the reference
-fan-out (a cache MISS in ``MoAChatCompletions.create``) appends one JSON line
-to ``<hermes_home>/moa-traces/<session_id>.jsonl``. The record is the TRUE
-FULL turn — the exact messages array each reference model received (system
-prompt + advisory view, not the truncated display preview), each reference's
-full output, and the exact messages array the aggregator received (including
-the injected reference-context guidance block) plus its output when available
-— so a run can be audited end-to-end offline: what every model saw, what every
-model said, and what it cost.
-
-This is a side-channel trace. It is NOT the conversation ``messages`` table and
-never enters message history or replay — MoA references are advisory side-calls
-with their own system prompt, not conversation turns, so persisting them as
-message rows would corrupt role alternation / replay. Traces live in their own
-files, keyed by session id, and are safe to delete.
-
-Cost model note: gated OFF by default. When off, the only overhead is the
-``_traces_enabled()`` config read (cheap) — no file I/O, no serialization.
+Every MoA turn that runs the reference fan-out (a cache MISS in
+``MoAChatCompletions.create``) appends one JSON line to
+``<hermes_home>/moa-traces/<session_id>.jsonl``: what every model saw, said, and
+cost. Side-channel only: never enters the ``messages`` table, history or replay
+(references are advisory side-calls whose rows would corrupt role alternation).
+Off by default; when off the only overhead is the config read.
 """
 
 from __future__ import annotations
@@ -37,73 +25,48 @@ logger = logging.getLogger(__name__)
 
 
 def _traces_enabled_and_dir() -> Optional[Path]:
-    """Return the trace directory if ``moa.save_traces`` is on, else None.
-
-    Reads config lazily per call (config is cheap to load and this only runs on
-    a cache-MISS MoA turn, i.e. once per user turn, not per tool iteration).
-    ``moa.trace_dir`` overrides the default ``<hermes_home>/moa-traces/``.
-    """
+    """Trace directory if ``moa.save_traces`` is on, else None. Reads config per
+    call (once per cache-MISS turn); ``moa.trace_dir`` overrides the default."""
     try:
         from hermes_cli.config import load_config
-
         moa_cfg = (load_config() or {}).get("moa") or {}
-    except Exception:  # pragma: no cover - defensive: never break a turn over tracing
+    except Exception:  # pragma: no cover - never break a turn over tracing
         return None
     if not moa_cfg.get("save_traces"):
         return None
     override = moa_cfg.get("trace_dir")
     if override:
-        base = Path(os.path.expandvars(os.path.expanduser(str(override))))
-    else:
-        base = get_hermes_home() / "moa-traces"
-    return base
+        return Path(os.path.expandvars(os.path.expanduser(str(override))))
+    return get_hermes_home() / "moa-traces"
 
 
 def _sanitize_session_id(session_id: Optional[str]) -> str:
-    """Make a session id safe as a filename component."""
     if not session_id:
         return "unknown-session"
     return "".join(c if (c.isalnum() or c in "-_.") else "_" for c in str(session_id))
 
 
-def _slot_trace(acct: Any, label: str) -> dict[str, Any]:
-    """Render one reference's _RefAccounting into a full trace dict.
+_USAGE_FIELDS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
+_ACCT_FIELDS = ("model", "provider", "temperature")
+_COST_FIELDS = ("cost_usd", "cost_status", "cost_source")
 
-    Includes the FULL input messages the reference received and its FULL
-    output — not the truncated display preview.
-    """
+
+def _slot_trace(acct: Any, label: str) -> dict[str, Any]:
+    """One reference's _RefAccounting as a full trace dict, including the FULL
+    input messages and output (not the truncated display preview)."""
     usage = getattr(acct, "usage", None)
-    usage_dict: dict[str, Any] = {}
-    if usage is not None:
-        usage_dict = {
-            "input_tokens": getattr(usage, "input_tokens", 0),
-            "output_tokens": getattr(usage, "output_tokens", 0),
-            "cache_read_tokens": getattr(usage, "cache_read_tokens", 0),
-            "cache_write_tokens": getattr(usage, "cache_write_tokens", 0),
-            "reasoning_tokens": getattr(usage, "reasoning_tokens", 0),
-        }
     return {
-        "label": label,
-        "model": getattr(acct, "model", None),
-        "provider": getattr(acct, "provider", None),
-        "temperature": getattr(acct, "temperature", None),
-        "input_messages": getattr(acct, "messages", None),
-        "output": getattr(acct, "output", None),
-        "usage": usage_dict,
-        "cost_usd": getattr(acct, "cost_usd", None),
-        "cost_status": getattr(acct, "cost_status", None),
-        "cost_source": getattr(acct, "cost_source", None),
+        "label": label, **{f: getattr(acct, f, None) for f in _ACCT_FIELDS},
+        "input_messages": getattr(acct, "messages", None), "output": getattr(acct, "output", None),
+        "usage": {f: getattr(usage, f, 0) for f in _USAGE_FIELDS} if usage is not None else {},
+        **{f: getattr(acct, f, None) for f in _COST_FIELDS},
     }
 
 
 def slot_metrics(acct: Any, label: str, output: Any = None) -> dict[str, Any]:
-    """Render one reference's accounting for observability hooks.
-
-    Same fields as ``_slot_trace`` minus ``input_messages``, which is the bulk
-    of a trace record and would cross the plugin-hook boundary for every
-    advisor on every turn. ``output`` comes from the caller because the
-    privacy-redacted advisor text lives alongside the accounting, not on it.
-    """
+    """``_slot_trace`` minus ``input_messages`` (the bulk of a record) for
+    observability hooks. ``output`` comes from the caller because the
+    privacy-redacted advisor text lives alongside the accounting, not on it."""
     trace = _slot_trace(acct, label)
     trace.pop("input_messages", None)
     if output is not None:
@@ -112,73 +75,44 @@ def slot_metrics(acct: Any, label: str, output: Any = None) -> dict[str, Any]:
 
 
 def save_moa_turn(
-    *,
-    session_id: Optional[str],
-    preset_name: str,
-    reference_outputs: list[tuple[str, str, Any]],
-    aggregator_label: str,
-    aggregator_model: Optional[str],
-    aggregator_provider: Optional[str],
-    aggregator_temperature: Any,
-    aggregator_input_messages: Any,
-    aggregator_output: Optional[str],
+    *, session_id: Optional[str], preset_name: str, reference_outputs: list[tuple[str, str, Any]],
+    aggregator_label: str, aggregator_model: Optional[str], aggregator_provider: Optional[str],
+    aggregator_temperature: Any, aggregator_input_messages: Any, aggregator_output: Optional[str],
     aggregator_streamed: bool,
 ) -> None:
     """Append one full MoA turn record to the session's trace JSONL, if enabled.
 
-    Best-effort: any failure is logged at debug and swallowed — tracing must
-    never break a live turn. Called once per turn on a reference cache MISS.
-
-    ``aggregator_output`` is the aggregator's synthesized text. On the
-    non-streaming path (eval / quiet-mode / subagents) it was captured inline
-    at call time. On the streaming path it is captured after the fact from the
-    caller's resolved assistant text (``aggregator_output_fallback`` in
-    ``consume_and_save_trace``) so the trace is self-contained either way; if
-    that resolved text was unavailable, it falls back to None and the record
-    points at the session store via ``output_location``.
+    Best-effort: failures are logged at debug and swallowed. ``aggregator_output``
+    is captured inline on the non-streaming path and after the fact from the
+    resolved assistant text on the streaming path; if unavailable it is None and
+    ``output_location`` points at the session store.
     """
     base = _traces_enabled_and_dir()
     if base is None:
         return
     try:
-        secure_artifact_dir(base)
+        internal = base == get_hermes_home() / "moa-traces"
+        secure_artifact_dir(base, tighten_existing=internal)
         path = base / f"{_sanitize_session_id(session_id)}.jsonl"
-        # output_location tells an offline reader where the acting text lives:
-        # embedded here when we have it (both non-streaming inline capture and
-        # streaming after-the-fact capture), else the session-db assistant row.
-        _have_output = bool(aggregator_output)
         if not aggregator_streamed:
-            _output_location = "inline"
-        elif _have_output:
-            _output_location = "inline_from_stream"
+            output_location = "inline"
+        elif aggregator_output:
+            output_location = "inline_from_stream"
         else:
-            _output_location = "assistant_message_in_session_db"
+            output_location = "assistant_message_in_session_db"
         record = {
             "ts": time.time(),
             "session_id": session_id,
             "preset": preset_name,
-            "references": [
-                _slot_trace(acct, label)
-                for label, _text, acct in reference_outputs
-            ],
+            "references": [_slot_trace(acct, label) for label, _text, acct in reference_outputs],
             "aggregator": {
-                "label": aggregator_label,
-                "model": aggregator_model,
-                "provider": aggregator_provider,
-                "temperature": aggregator_temperature,
-                "input_messages": aggregator_input_messages,
-                "output": aggregator_output,
-                "streamed": aggregator_streamed,
-                # Where the aggregator's acting output lives for this record.
-                # "inline"             — non-streaming inline capture
-                # "inline_from_stream" — streamed, then captured from the
-                #                        caller's resolved assistant text
-                # "assistant_message_in_session_db" — streamed and the resolved
-                #                        text was unavailable at flush time
-                "output_location": _output_location,
+                "label": aggregator_label, "model": aggregator_model,
+                "provider": aggregator_provider, "temperature": aggregator_temperature,
+                "input_messages": aggregator_input_messages, "output": aggregator_output,
+                "streamed": aggregator_streamed, "output_location": output_location,
             },
         }
-        with open_private_append(path, mode=artifact_file_mode()) as f:
+        with open_private_append(path, mode=artifact_file_mode(), tighten_existing=internal) as f:
             f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
     except Exception as exc:  # pragma: no cover - tracing must never break a turn
         logger.debug("MoA trace write failed (session=%s): %s", session_id, exc)

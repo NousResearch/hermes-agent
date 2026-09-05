@@ -29,6 +29,33 @@ def _mode(path: Path) -> int:
 
 
 @posix_only
+def test_legacy_internal_transcripts_are_private_on_append(tmp_path, monkeypatch):
+    from agent.trajectory import default_trajectory_path
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    (home / "config.yaml").write_text("moa:\n  save_traces: true\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+    monkeypatch.chdir(tmp_path)
+    paths = [default_trajectory_path(True), home / "moa-traces" / "legacy.jsonl"]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.chmod(0o755)
+        path.write_text("{}\n", encoding="utf-8")
+        path.chmod(0o644)
+    save_trajectory([{"from": "human", "value": "secret remains replayable"}], "m", True)
+    save_moa_turn(session_id="legacy", preset_name="test", reference_outputs=[],
+                  aggregator_label="agg", aggregator_model="m", aggregator_provider="p",
+                  aggregator_temperature=0.4, aggregator_input_messages=[],
+                  aggregator_output="output", aggregator_streamed=False)
+    for path in paths:
+        assert not _mode(path) & 0o077
+        assert not _mode(path.parent) & 0o077
+        assert len(path.read_text(encoding="utf-8").splitlines()) == 2
+
+
+@posix_only
 @pytest.mark.parametrize("completed", [True, False])
 def test_save_trajectory_creates_fresh_file_owner_only(
     tmp_path, monkeypatch, completed

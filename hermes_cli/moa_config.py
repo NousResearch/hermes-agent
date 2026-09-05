@@ -13,13 +13,10 @@ DEFAULT_MOA_PRESET_NAME = "default"
 
 DEFAULT_MOA_REFERENCE_MODELS: list[dict[str, str]] = [
     {"provider": "openai-codex", "model": "gpt-5.5"},
-    {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
-]
+    {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}]
 
 DEFAULT_MOA_AGGREGATOR: dict[str, str] = {
-    "provider": "openrouter",
-    "model": "anthropic/claude-opus-4.8",
-}
+    "provider": "openrouter", "model": "anthropic/claude-opus-4.8"}
 
 DEFAULT_MOA_REFERENCE_TIMEOUT: float | None = None
 
@@ -28,152 +25,90 @@ def _default_reference_models() -> list[dict[str, Any]]:
     return [{**slot, "enabled": True} for slot in deepcopy(DEFAULT_MOA_REFERENCE_MODELS)]
 
 
-def _coerce_float_or_none(value: Any) -> float | None:
-    """Coerce to a float, or None when unset/blank/invalid.
+def _coerce_number(value: Any, cast, default=None, *, positive: bool = False):
+    """Coerce ``value`` with ``cast`` (float/int); ``default`` when unset/blank/invalid.
 
-    Used for optional sampling params (reference_temperature /
-    aggregator_temperature) where None means 'don't send the parameter —
-    provider default applies', matching how a single-model Hermes agent
-    never sends temperature unless explicitly configured.
-    """
-    if value is None or value == "":
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _coerce_reference_timeout(value: Any) -> float | None:
-    """Return a finite positive advisor timeout, or None to inherit.
-
-    ``None`` (the default) means "no per-preset override": the reference
-    fan-out inherits the ``auxiliary.moa_reference.timeout`` config value
-    (900s by default) via ``call_llm``'s own resolution, exactly like every
-    other auxiliary task. An explicit finite positive per-preset value is
-    honored as-is — no artificial cap, since long-thinking advisor models
-    legitimately run far beyond five minutes.
-    """
-    if value is None or value == "" or isinstance(value, bool):
-        return DEFAULT_MOA_REFERENCE_TIMEOUT
-    try:
-        timeout = float(value)
-    except (TypeError, ValueError):
-        return DEFAULT_MOA_REFERENCE_TIMEOUT
-    if not math.isfinite(timeout) or timeout <= 0:
-        return DEFAULT_MOA_REFERENCE_TIMEOUT
-    return timeout
-
-
-def _coerce_degraded_reference_policy(value: Any) -> str:
-    """Normalize failed-advisor disclosure policy; unknown values fail loud."""
-    policy = str(value or "loud").strip().lower()
-    return policy if policy in {"loud", "silent"} else "loud"
-
-
-def _coerce_int(value: Any, default: int) -> int:
+    ``int`` also accepts float-looking strings ("3.0"). With ``positive`` the result must be > 0
+    (and finite for floats) or ``default`` is returned."""
     if value is None or value == "":
         return default
     try:
-        return int(value)
+        number = cast(value)
     except (TypeError, ValueError):
+        if cast is not int:
+            return default
         try:
-            return int(float(value))
+            number = int(float(value))
         except (TypeError, ValueError):
             return default
+    if positive and (number <= 0 or (cast is float and not math.isfinite(number))):
+        return default
+    return number
 
 
-def _coerce_int_or_none(value: Any) -> int | None:
-    """Coerce to a positive int, or None when unset/blank/invalid/non-positive.
+def _coerce_reference_timeout(value: Any) -> float | None:
+    """Finite positive advisor timeout, or None to inherit ``auxiliary.moa_reference.timeout``.
 
-    Used for optional caps (e.g. reference_max_tokens) where None means
-    'no cap' — the safe default that preserves prior uncapped behavior.
-    """
-    if value is None or value == "":
-        return None
-    try:
-        n = int(value)
-    except (TypeError, ValueError):
-        try:
-            n = int(float(value))
-        except (TypeError, ValueError):
-            return None
-    return n if n > 0 else None
+    No artificial cap: long-thinking advisor models legitimately run far beyond five minutes."""
+    if isinstance(value, bool):
+        return DEFAULT_MOA_REFERENCE_TIMEOUT
+    return _coerce_number(value, float, DEFAULT_MOA_REFERENCE_TIMEOUT, positive=True)
 
 
 def _coerce_fanout(value: Any) -> str:
-    """Normalize the fan-out cadence; unknown values fall back to default.
+    """Normalize the fan-out cadence to ``per_iteration`` | ``user_turn`` | ``every_n:<N>`` (N >= 2);
+    the mapping form ``{mode: every_n, n: N}`` becomes the string, ``every_n:1`` collapses to
+    ``per_iteration``, anything unparseable falls back to ``user_turn`` (the cheapest cadence).
 
-    Canonical values are the strings ``per_iteration``, ``user_turn``, and
-    ``every_n:<N>`` (N >= 2). The ``every_n`` cadence also accepts the mapping
-    form ``{mode: every_n, n: N}`` from hand-edited YAML and normalizes it to
-    the canonical string, so the rest of the pipeline (presets, flattened
-    view, runtime) only ever sees one shape. ``every_n:1`` semantically means
-    "run every iteration" and collapses to ``per_iteration``; anything
-    unparseable falls back to ``user_turn`` (the default — cheapest cadence;
-    see #67199).
+    The ``every_n`` cadence also accepts the mapping form ``{mode: every_n, n: N}`` from hand-edited YAML
+    and normalizes it to the canonical string, so the rest of the pipeline (presets, flattened view,
+    runtime) only ever sees one shape. See #67199.
     """
+    def _every_n(n: int) -> str:
+        return f"every_n:{n}" if n >= 2 else ("per_iteration" if n == 1 else "user_turn")
+
     if isinstance(value, dict):
-        # Mapping form: {mode: every_n, n: 3}. Non-every_n mapping modes fall
-        # through to the string path below (e.g. {mode: user_turn}).
+        # Non-every_n mapping modes fall through to the string path (e.g. {mode: user_turn}).
         mode = str(value.get("mode") or "").strip().lower()
         if mode == "every_n":
-            n = _coerce_int(value.get("n"), 0)
-            if n >= 2:
-                return f"every_n:{n}"
-            return "per_iteration" if n == 1 else "user_turn"
+            return _every_n(_coerce_number(value.get("n"), int, 0))
         value = mode
     mode = str(value or "").strip().lower()
     if mode in {"per_iteration", "user_turn"}:
         return mode
     if mode.startswith("every_n"):
         _, sep, rest = mode.partition(":")
-        n = _coerce_int(rest.strip(), 0) if sep else 0
-        if n >= 2:
-            return f"every_n:{n}"
-        if n == 1:
-            return "per_iteration"
+        return _every_n(_coerce_number(rest.strip(), int, 0) if sep else 0)
     return "user_turn"
 
 
 def coerce_privacy_filter(value: Any) -> str:
-    """Normalize ``moa.privacy_filter`` to '' (off), 'display', or 'full'.
+    """Normalize ``moa.privacy_filter`` to '' (off, the default), 'display', or 'full'.
 
-    - ``''`` (empty string): filter off — the default. ``false``/``None``/
-      unknown values land here so a hand-edited config degrades to prior
-      behavior (tolerant-read contract).
-    - ``'display'``: redact user-visible surfaces only — the reference blocks
-      shown in the UI and the saved MoA trace records. The aggregator still
-      sees raw advisor text, so answer quality is unaffected.
-    - ``'full'``: additionally redact the advisor text injected into the
-      aggregator prompt (issue #59959's literal ask). A hand-edited boolean
-      ``true`` maps here because the issue framed the toggle as "redact
-      before passing to the aggregator".
+    ``false``/``None``/unknown values land on '' so a hand-edited config degrades to prior
+    behavior. 'display' redacts user-visible surfaces only (reference blocks in the UI and saved
+    MoA trace records).
+
+    - ``''`` (empty string): filter off — the default. The aggregator still sees raw advisor text, so answer
+    quality is unaffected. - ``'full'``: additionally redact the advisor text injected into the aggregator
+    prompt (issue #59959's literal ask). A hand-edited boolean ``true`` maps here because the issue framed
+    the toggle as "redact before passing to the aggregator".
     """
     if value is True:
         return "full"
     if value is None or value is False:
         return ""
     mode = str(value).strip().lower()
-    if mode in {"display", "full"}:
-        return mode
-    if mode in {"true", "on", "yes", "1"}:
-        return "full"
-    return ""
+    return mode if mode in {"display", "full"} else ("full" if mode in {"true", "on", "yes", "1"} else "")
 
 
 def _clean_reasoning_effort(value: Any) -> str | None:
-    """Return a canonical per-slot reasoning effort, or None when unset/invalid."""
+    """Canonical per-slot reasoning effort, or None when unset/invalid."""
     from hermes_constants import parse_reasoning_effort
-
-    if value is None or value is True:
-        return None
-    parsed = parse_reasoning_effort(value)
+    parsed = None if value is None or value is True else parse_reasoning_effort(value)
     if parsed is None:
         return None
-    if parsed.get("enabled") is False:
-        return "none"
-    return parsed.get("effort")
+    return "none" if parsed.get("enabled") is False else parsed.get("effort")
 
 
 def _coerce_bool(value: Any, default: bool = True) -> bool:
@@ -183,52 +118,15 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
         return value
     if isinstance(value, str):
         text = value.strip().lower()
-        if text in {"0", "false", "no", "off"}:
-            return False
-        if text in {"1", "true", "yes", "on"}:
-            return True
-        return default
+        return True if text in {"1", "true", "yes", "on"} else False if text in {"0", "false", "no", "off"} else default
     return bool(value)
 
 
-def _clean_slot(slot: Any, *, include_enabled: bool = False) -> dict[str, Any] | None:
-    if not isinstance(slot, dict):
-        return None
-    provider = str(slot.get("provider") or "").strip()
-    model = str(slot.get("model") or "").strip()
-    if not provider or not model:
-        return None
-    # MoA is a virtual provider whose presets are themselves MoA runs. Allowing
-    # one as a reference or aggregator slot would create a recursive MoA tree
-    # (the runtime guards in moa_loop.py skip references / raise on aggregators,
-    # but that surfaces only mid-turn). Reject it here so it can never be saved:
-    # an invalid slot is dropped, falling back to the preset's defaults.
-    if provider.lower() == "moa":
-        return None
-    clean: dict[str, Any] = {"provider": provider, "model": model}
-    effort = _clean_reasoning_effort(slot.get("reasoning_effort"))
-    if effort:
-        clean["reasoning_effort"] = effort
-    # Optional per-slot max_tokens: overrides the preset-level
-    # reference_max_tokens for this specific reference model. None (the
-    # default) = no cap, so existing slots are unaffected. Allows tuning
-    # each advisor's output length independently — useful when one model
-    # is verbose and another is terse.
-    slot_mt = _coerce_int_or_none(slot.get("max_tokens"))
-    if slot_mt is not None:
-        clean["max_tokens"] = slot_mt
-    if include_enabled:
-        clean["enabled"] = _coerce_bool(slot.get("enabled"), True)
-    return clean
-
-
 def _slot_problem(slot: Any) -> str | None:
-    """Return a human-readable problem for a slot ``_clean_slot`` would drop.
+    """Human-readable problem for a slot ``_clean_slot`` would drop; None when complete and valid.
 
-    None means the slot is complete and valid. Mirrors ``_clean_slot`` exactly
-    so the write-boundary validator (``validate_moa_payload``) and the
-    tolerant runtime normalizer can never disagree about what is acceptable.
-    """
+    Mirrors ``_clean_slot`` exactly so the write-boundary validator (``validate_moa_payload``) and
+    the tolerant runtime normalizer can never disagree about what is acceptable."""
     if not isinstance(slot, dict):
         return "must be an object with 'provider' and 'model'"
     provider = str(slot.get("provider") or "").strip()
@@ -239,32 +137,60 @@ def _slot_problem(slot: Any) -> str | None:
         return "provider is required"
     if not model:
         return f"model is required (provider '{provider}' has no model selected)"
+    # MoA is a virtual provider whose presets are themselves MoA runs; allowing one as a slot
+    # would create a recursive MoA tree that the runtime guards only catch mid-turn.
     if provider.lower() == "moa":
         return "the Mixture of Agents provider cannot be used inside a preset (recursive MoA)"
     return None
 
 
+def _clean_slot(slot: Any, *, include_enabled: bool = False) -> dict[str, Any] | None:
+    # Any slot ``_slot_problem`` rejects is dropped, falling back to the preset's defaults.
+    if _slot_problem(slot) is not None:
+        return None
+    clean: dict[str, Any] = {"provider": str(slot["provider"]).strip(), "model": str(slot["model"]).strip()}
+    effort = _clean_reasoning_effort(slot.get("reasoning_effort"))
+    if effort:
+        clean["reasoning_effort"] = effort
+    # Optional per-slot max_tokens overrides the preset-level reference_max_tokens for this
+    # advisor; None (default) = no cap.
+    slot_mt = _coerce_number(slot.get("max_tokens"), int, positive=True)
+    if slot_mt is not None:
+        clean["max_tokens"] = slot_mt
+    if include_enabled:
+        clean["enabled"] = _coerce_bool(slot.get("enabled"), True)
+    return clean
+
+
+def _reference_slots(raw_refs: Any) -> list:
+    """``reference_models`` as a list: a JSON string (hand-edited config.yaml) is decoded, a single
+    mapping is wrapped, and any other scalar / bad type degrades to ``[]`` instead of crashing."""
+    if isinstance(raw_refs, str):
+        try:
+            raw_refs = json.loads(raw_refs)
+        except (json.JSONDecodeError, ValueError):
+            raw_refs = []
+    if not isinstance(raw_refs, list):
+        raw_refs = [raw_refs] if isinstance(raw_refs, dict) else []
+    return raw_refs
+
+
 def validate_moa_payload(raw: Any) -> list[str]:
-    """Return the problems ``normalize_moa_config`` would silently paper over.
+    """Return the problems ``normalize_moa_config`` would silently paper over (empty = safe to save).
 
-    ``normalize_moa_config`` is deliberately tolerant: at *read* time a
-    hand-edited config must degrade to defaults rather than crash the agent.
-    That same tolerance at *write* time is a corruption engine — a client that
-    sends a half-filled slot gets its whole preset silently replaced with the
-    hardcoded defaults (#64156). API write paths call this first and reject
-    invalid payloads loudly instead of saving something the user never chose.
+    Read-time tolerance (a hand-edited config degrades to defaults instead of crashing) is a
+    corruption engine at write time: a half-filled slot would silently replace the whole preset.
 
-    Returns a list of human-readable problems; empty means safe to save.
+    ``normalize_moa_config`` is deliberately tolerant: at *read* time a hand-edited config must degrade to
+    defaults rather than crash the agent. API write paths call this first and reject invalid payloads loudly
+    instead of saving something the user never chose. See #64156.
     """
     if not isinstance(raw, dict):
         return ["MoA config must be an object"]
 
     presets_raw = raw.get("presets")
-    if isinstance(presets_raw, dict) and presets_raw:
-        presets: dict[Any, Any] = presets_raw
-    else:
-        # Legacy flat payload: the top-level object is the default preset.
-        presets = {DEFAULT_MOA_PRESET_NAME: raw}
+    # Legacy flat payload: the top-level object is the default preset.
+    presets: dict[Any, Any] = presets_raw if isinstance(presets_raw, dict) and presets_raw else {DEFAULT_MOA_PRESET_NAME: raw}
 
     problems: list[str] = []
     for name, preset in presets.items():
@@ -276,105 +202,59 @@ def validate_moa_payload(raw: Any) -> list[str]:
         refs = preset.get("reference_models")
         if not isinstance(refs, list):
             refs = [refs] if isinstance(refs, dict) else []
-        complete_refs = 0
-        for index, slot in enumerate(refs):
-            issue = _slot_problem(slot)
-            if issue:
-                problems.append(f"preset '{label}' reference {index + 1}: {issue}")
-            else:
-                complete_refs += 1
-        if not complete_refs:
+        issues = [(index, _slot_problem(slot)) for index, slot in enumerate(refs)]
+        problems.extend(f"preset '{label}' reference {index + 1}: {issue}" for index, issue in issues if issue)
+        if all(issue for _, issue in issues):
             problems.append(f"preset '{label}': needs at least one complete reference model")
 
         agg_issue = _slot_problem(preset.get("aggregator"))
         if agg_issue:
             problems.append(f"preset '{label}' aggregator: {agg_issue}")
-
     return problems
-
-
-def _default_preset() -> dict[str, Any]:
-    return {
-        "reference_models": _default_reference_models(),
-        "aggregator": deepcopy(DEFAULT_MOA_AGGREGATOR),
-        # None = temperature omitted from API calls (provider default),
-        # matching single-model agent behavior.
-        "reference_temperature": None,
-        "aggregator_temperature": None,
-        "reference_timeout": DEFAULT_MOA_REFERENCE_TIMEOUT,
-        "degraded_reference_policy": "loud",
-        "max_tokens": 4096,
-        "reference_max_tokens": None,
-        "fanout": "user_turn",
-        "enabled": True,
-    }
 
 
 def _normalize_preset(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
 
-    raw_refs = raw.get("reference_models")
-    # reference_models may be a JSON string (hand-edited config.yaml) or a list.
-    if isinstance(raw_refs, str):
-        try:
-            raw_refs = json.loads(raw_refs)
-        except (json.JSONDecodeError, ValueError):
-            raw_refs = []
-    if not isinstance(raw_refs, list):
-        # A hand-edited scalar / single mapping (or a bad type) must degrade to
-        # defaults instead of crashing the iteration, mirroring the tolerance
-        # for the scalar fields below (reference_temperature / max_tokens).
-        raw_refs = [raw_refs] if isinstance(raw_refs, dict) else []
-    refs = [_clean_slot(item, include_enabled=True) for item in raw_refs]
-    refs = [item for item in refs if item is not None]
-    if not refs:
-        refs = _default_reference_models()
-
-    aggregator = _clean_slot(raw.get("aggregator")) or deepcopy(DEFAULT_MOA_AGGREGATOR)
-
+    cleaned = (_clean_slot(item, include_enabled=True) for item in _reference_slots(raw.get("reference_models")))
+    refs = [item for item in cleaned if item is not None]
+    policy = str(raw.get("degraded_reference_policy") or "loud").strip().lower()
     return {
         "enabled": _coerce_bool(raw.get("enabled"), True),
-        "reference_models": refs,
-        "aggregator": aggregator,
-        "reference_temperature": _coerce_float_or_none(raw.get("reference_temperature")),
-        "aggregator_temperature": _coerce_float_or_none(raw.get("aggregator_temperature")),
+        "reference_models": refs or _default_reference_models(),
+        "aggregator": _clean_slot(raw.get("aggregator")) or deepcopy(DEFAULT_MOA_AGGREGATOR),
+        # None means 'don't send it — provider default applies'.
+        "reference_temperature": _coerce_number(raw.get("reference_temperature"), float),
+        "aggregator_temperature": _coerce_number(raw.get("aggregator_temperature"), float),
         "reference_timeout": _coerce_reference_timeout(raw.get("reference_timeout")),
-        "degraded_reference_policy": _coerce_degraded_reference_policy(
-            raw.get("degraded_reference_policy")
-        ),
-        "max_tokens": _coerce_int(raw.get("max_tokens"), 4096),
-        # Optional cap on how much each reference ADVISOR may generate per turn.
-        # None (default) = uncapped: advisors write full-length advice, matching
-        # prior behavior so existing presets are unchanged. Set a value (e.g.
-        # 600) to make advisors give concise advice — the dominant MoA latency
-        # is advisor generation (turn latency correlates ~0.88 with output
-        # tokens), and the aggregator only needs the gist of each advisor's
-        # judgement, so capping roughly halves per-turn wall time. Does NOT cap
-        # the acting aggregator (its output is the user-visible answer).
-        "reference_max_tokens": _coerce_int_or_none(raw.get("reference_max_tokens")),
-        # When the reference fan-out runs. "user_turn" (default) runs the
-        # advisors ONCE per user turn (the original MoA shape, and the
-        # cheapest cadence — #67199): the aggregator gets their upfront
-        # plan-level advice, then acts alone for the rest of the tool loop.
-        # "per_iteration" re-runs the advisors whenever the advisory view
-        # changes — i.e. every tool iteration, so advice tracks live task
-        # state at the cost of multiplying advisor spend by tool-loop depth.
-        # "every_n:<N>" (N >= 2) is the middle ground: advisors run on the
-        # first iteration of each user turn and every Nth tool iteration
-        # after it; in-between iterations reuse the cached guidance from the
-        # last advisor run. Also accepts the mapping form
-        # {mode: every_n, n: N}, normalized to the canonical string.
-        "fanout": _coerce_fanout(raw.get("fanout")),
-    }
+        # Failed-advisor disclosure policy; unknown values fail loud.
+        "degraded_reference_policy": policy if policy in {"loud", "silent"} else "loud",
+        "max_tokens": _coerce_number(raw.get("max_tokens"), int, 4096),
+        # Per-turn cap on each reference ADVISOR (never the acting aggregator). None = uncapped;
+        # advisor generation dominates MoA latency, so e.g. 600 roughly halves wall time.
+        "reference_max_tokens": _coerce_number(raw.get("reference_max_tokens"), int, positive=True),
+        # "user_turn" (default, cheapest): advisors run ONCE per user turn; "per_iteration": every
+        # tool iteration; "every_n:<N>": first iteration of each turn and every Nth after.
+        "fanout": _coerce_fanout(raw.get("fanout"))}
 
 
+_FLAT_PRESET_KEYS = (
+    "reference_models", "aggregator", "reference_temperature", "aggregator_temperature",
+    "reference_timeout", "degraded_reference_policy", "max_tokens", "reference_max_tokens",
+    "fanout", "enabled")
+
+
+# When the reference fan-out runs. "user_turn" (default) runs the advisors ONCE per user turn (the original
+# MoA shape, and the cheapest cadence — #67199): the aggregator gets their upfront plan-level advice, then
+# acts alone for the rest of the tool loop. "per_iteration" re-runs the advisors whenever the advisory view
+# changes — i.e. every tool iteration, so advice tracks live task state at the cost of multiplying advisor
+# spend by tool-loop depth. "every_n:<N>" (N >= 2) is the middle ground: advisors run on the first iteration
+# of each user turn and every Nth tool iteration after it; in-between iterations reuse the cached guidance
+# from the last advisor run. Also accepts the mapping form {mode: every_n, n: N}, normalized to the
+# canonical string.
 def normalize_moa_config(raw: Any) -> dict[str, Any]:
-    """Return validated MoA config with named presets.
-
-    Backward compatible with the first PR shape where ``moa`` itself contained
-    ``reference_models`` and ``aggregator`` directly.
-    """
+    """Return validated MoA config with named presets."""
     if not isinstance(raw, dict):
         raw = {}
 
@@ -385,47 +265,24 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
             clean_name = str(name or "").strip()
             if clean_name:
                 presets[clean_name] = _normalize_preset(preset)
-
-    # Legacy flat config becomes the default preset.
-    if not presets:
+    if not presets:  # Legacy flat config becomes the default preset.
         presets[DEFAULT_MOA_PRESET_NAME] = _normalize_preset(raw)
 
     default_name = str(raw.get("default_preset") or "").strip()
     if not default_name or default_name not in presets:
-        default_name = next(iter(presets), DEFAULT_MOA_PRESET_NAME)
-    if default_name not in presets:
-        presets[default_name] = _default_preset()
+        default_name = next(iter(presets))  # never empty: legacy flat config seeds the default
 
     active_name = str(raw.get("active_preset") or "").strip()
     if active_name not in presets:
         active_name = ""
-
-    active = presets[default_name]
     return {
         "default_preset": default_name,
         "active_preset": active_name,
         "presets": presets,
         # Compatibility/flattened view for existing dashboard/desktop callers.
-        "reference_models": deepcopy(active["reference_models"]),
-        "aggregator": deepcopy(active["aggregator"]),
-        "reference_temperature": active["reference_temperature"],
-        "aggregator_temperature": active["aggregator_temperature"],
-        "reference_timeout": active["reference_timeout"],
-        "degraded_reference_policy": active["degraded_reference_policy"],
-        "max_tokens": active["max_tokens"],
-        "reference_max_tokens": active.get("reference_max_tokens"),
-        "fanout": active.get("fanout", "user_turn"),
-        "enabled": active["enabled"],
-        # MoA-level (not per-preset) toggles ride at the top level alongside
-        # save_traces. privacy_filter: '' (off, default) | 'display' | 'full'
-        # — see coerce_privacy_filter for the semantics of each mode.
-        "privacy_filter": coerce_privacy_filter(raw.get("privacy_filter")),
-    }
-
-
-def list_moa_presets(config: Any) -> list[str]:
-    cfg = normalize_moa_config(config)
-    return list(cfg["presets"].keys())
+        **{key: deepcopy(presets[default_name][key]) for key in _FLAT_PRESET_KEYS},
+        # MoA-level (not per-preset) toggle; see coerce_privacy_filter for the modes.
+        "privacy_filter": coerce_privacy_filter(raw.get("privacy_filter"))}
 
 
 def resolve_moa_preset(config: Any, name: str | None = None) -> dict[str, Any]:
@@ -434,46 +291,50 @@ def resolve_moa_preset(config: Any, name: str | None = None) -> dict[str, Any]:
     preset = cfg["presets"].get(preset_name)
     if preset is None:
         from agent.errors import MoAPresetNotFoundError
-
         available = ", ".join(cfg["presets"]) or "(none)"
         raise MoAPresetNotFoundError(
             f"MoA preset '{preset_name}' was not found. Available presets: "
-            f"{available}. Run `hermes moa list`."
-        )
+            f"{available}. Run `hermes moa list`.")
     return deepcopy(preset)
 
 
 def exact_moa_preset_name(config: Any, text: str) -> str | None:
     """Return the preset name iff ``text`` exactly matches an *enabled* preset.
 
-    Used by the no-explicit-provider switch path (PATH B in
-    ``hermes_cli/model_switch.py``) to recognize a bare ``/model <preset>``
-    that the user typed without the ``moa:`` prefix. This is an *implicit*
-    match, so it must honor the per-preset ``enabled`` opt-out: a user who set
-    ``enabled: false`` to disable a preset must not have a plain model switch
-    whose name happens to collide with that preset key silently pivot the
-    session onto the MoA virtual provider (issue #55187). Explicit selection
-    via ``--provider moa`` / the model picker does not go through here, so a
-    disabled preset is still reachable when the user explicitly asks for it.
+    Used by the no-explicit-provider switch path for a bare ``/model <preset>``. Because the match
+    is implicit it honors the per-preset ``enabled`` opt-out: a plain model switch that collides
+    with a disabled preset's name must not silently pivot onto the MoA provider. Explicit
+    ``--provider moa`` / picker selection bypasses this, so disabled presets stay reachable.
+
+    See #55187.
     """
     wanted = str(text or "").strip()
     if not wanted:
         return None
-    cfg = normalize_moa_config(config)
-    preset = cfg["presets"].get(wanted)
-    if preset is None or not preset.get("enabled", True):
-        return None
-    return wanted
+    preset = normalize_moa_config(config)["presets"].get(wanted)
+    return None if preset is None or not preset.get("enabled", True) else wanted
 
 
-def set_active_moa_preset(config: Any, name: str | None) -> dict[str, Any]:
-    cfg = normalize_moa_config(config)
-    clean = str(name or "").strip()
-    if clean and clean not in cfg["presets"]:
-        raise KeyError(clean)
-    cfg["active_preset"] = clean
-    return cfg
+def decode_moa_turn(message: Any) -> tuple[str, dict[str, Any] | None]:
+    """Decode a hidden /moa one-shot marker."""
+    if not isinstance(message, str) or not message.startswith(MOA_MARKER_PREFIX):
+        return message, None
+    encoded = message[len(MOA_MARKER_PREFIX):].strip()
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(encoded.encode("ascii")).decode("utf-8"))
+    except Exception:
+        return message, None
+    return str(payload.get("prompt") or ""), _normalize_preset(payload.get("config") or {})
 
+
+def moa_usage() -> str:
+    return "Usage: /moa <prompt>  (runs one prompt through the default MoA preset, then restores your model; pick a preset from the model picker to switch for the session)"
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
 
 def encode_moa_turn(prompt: str, config: Any = None, preset: str | None = None) -> str:
     """Encode a /moa one-shot turn for frontends that can only send text."""
@@ -486,24 +347,19 @@ def encode_moa_turn(prompt: str, config: Any = None, preset: str | None = None) 
     ).decode("ascii")
     return f"{MOA_MARKER_PREFIX}{encoded}"
 
-
-def decode_moa_turn(message: Any) -> tuple[str, dict[str, Any] | None]:
-    """Decode a hidden /moa one-shot marker."""
-    if not isinstance(message, str) or not message.startswith(MOA_MARKER_PREFIX):
-        return message, None
-    encoded = message[len(MOA_MARKER_PREFIX):].strip()
-    try:
-        payload = json.loads(base64.urlsafe_b64decode(encoded.encode("ascii")).decode("utf-8"))
-    except Exception:
-        return message, None
-    prompt = str(payload.get("prompt") or "")
-    return prompt, _normalize_preset(payload.get("config") or {})
-
-
 def build_moa_turn_prompt(user_prompt: str, config: Any = None, preset: str | None = None) -> str:
     """Build the hidden one-shot payload used by TUI/gateway routing."""
     return encode_moa_turn(user_prompt, config, preset=preset)
 
+def list_moa_presets(config: Any) -> list[str]:
+    cfg = normalize_moa_config(config)
+    return list(cfg["presets"].keys())
 
-def moa_usage() -> str:
-    return "Usage: /moa <prompt>  (runs one prompt through the default MoA preset, then restores your model; pick a preset from the model picker to switch for the session)"
+def set_active_moa_preset(config: Any, name: str | None) -> dict[str, Any]:
+    cfg = normalize_moa_config(config)
+    clean = str(name or "").strip()
+    if clean and clean not in cfg["presets"]:
+        raise KeyError(clean)
+    cfg["active_preset"] = clean
+    return cfg
+# ---- END PLUGIN-COMPAT ----

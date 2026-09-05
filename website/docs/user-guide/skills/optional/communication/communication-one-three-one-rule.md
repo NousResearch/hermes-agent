@@ -15,7 +15,7 @@ description: "1-3-1 decision briefs: problem, three options, one pick"
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/communication/one-three-one-rule` |
-| Path | `optional-skills/communication/one-three-one-rule` |
+| Path | `optional-skills/communication\one-three-one-rule` |
 | Version | `1.0.0` |
 | Author | Willard Moore |
 | License | MIT |

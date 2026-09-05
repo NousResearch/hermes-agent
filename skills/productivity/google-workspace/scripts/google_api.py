@@ -13,6 +13,7 @@ Usage:
   python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary]
   python google_api.py calendar create --summary "Meeting" --start DATETIME --end DATETIME
   python google_api.py drive search "budget report" [--max 10]
+  python google_api.py drive move FILE_ID --to FOLDER_ID [--execute]
   python google_api.py contacts list [--max 20]
   python google_api.py sheets get SHEET_ID RANGE
   python google_api.py sheets update SHEET_ID RANGE --values '[[...]]'
@@ -607,6 +608,180 @@ def drive_get(args):
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
+_DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder"
+_DRIVE_MOVE_FIELDS = "id, name, mimeType, parents, driveId, webViewLink"
+_DRIVE_MOVE_MAX_PARENT_HOPS = 100
+
+
+def _drive_move_get(file_id: str) -> dict:
+    params = {
+        "fileId": file_id,
+        "fields": _DRIVE_MOVE_FIELDS,
+        "supportsAllDrives": True,
+    }
+    if _gws_binary():
+        return _run_gws(["drive", "files", "get"], params=params)
+    service = build_service("drive", "v3")
+    return service.files().get(**params).execute()
+
+
+def _drive_move_duplicates(name: str, destination_id: str, moving_file_id: str) -> list[dict]:
+    escaped_name = name.replace("\\", "\\\\").replace("'", "\\'")
+    escaped_parent = destination_id.replace("\\", "\\\\").replace("'", "\\'")
+    params = {
+        "q": f"'{escaped_parent}' in parents and name = '{escaped_name}' and trashed = false",
+        "pageSize": 100,
+        "fields": "nextPageToken, files(id, name, mimeType, webViewLink)",
+        "supportsAllDrives": True,
+        "includeItemsFromAllDrives": True,
+    }
+    use_gws = bool(_gws_binary())
+    service = None if use_gws else build_service("drive", "v3")
+    files = []
+    while True:
+        if use_gws:
+            result = _run_gws(["drive", "files", "list"], params=params)
+        else:
+            assert service is not None
+            result = service.files().list(**params).execute()
+        files.extend(result.get("files", []))
+        page_token = result.get("nextPageToken")
+        if not page_token:
+            break
+        params = {**params, "pageToken": page_token}
+
+    duplicates = []
+    seen_ids = set()
+    for item in files:
+        item_id = item.get("id")
+        if item_id == moving_file_id or item_id in seen_ids:
+            continue
+        seen_ids.add(item_id)
+        duplicates.append(item)
+    return duplicates
+
+
+def _drive_move_update(file_id: str, destination_id: str, current_parents: list[str]) -> dict:
+    params = {
+        "fileId": file_id,
+        "addParents": destination_id,
+        "supportsAllDrives": True,
+        "fields": _DRIVE_MOVE_FIELDS,
+    }
+    if current_parents:
+        params["removeParents"] = ",".join(current_parents)
+    if _gws_binary():
+        return _run_gws(["drive", "files", "update"], params=params)
+    service = build_service("drive", "v3")
+    return service.files().update(**params).execute()
+
+
+def _drive_move_reject_descendant(source_id: str, destination: dict) -> None:
+    """Reject moving a folder beneath itself without following ancestry forever."""
+    current = destination
+    seen: set[str] = set()
+    parent_hops = 0
+    while True:
+        current_id = current.get("id")
+        if current_id in seen:
+            raise SystemExit("ERROR: Drive folder ancestry contains a cycle; manual handling is required.")
+        if current_id:
+            seen.add(current_id)
+
+        parents = list(current.get("parents") or [])
+        if not parents:
+            return
+        if len(parents) > 1:
+            raise SystemExit(
+                "ERROR: Drive folder ancestry contains multiple parents; "
+                "manual handling is required."
+            )
+        parent_id = parents[0]
+        if parent_id == source_id:
+            raise SystemExit("ERROR: A folder cannot be moved into its descendant.")
+        if parent_id in seen:
+            raise SystemExit("ERROR: Drive folder ancestry contains a cycle; manual handling is required.")
+
+        parent_hops += 1
+        if parent_hops > _DRIVE_MOVE_MAX_PARENT_HOPS:
+            raise SystemExit(
+                "ERROR: Drive folder ancestry exceeded the safe traversal limit; "
+                "manual handling is required."
+            )
+        current = _drive_move_get(parent_id)
+
+
+def drive_move(args):
+    """Preview or execute a single-parent Drive move."""
+    if args.file_id == args.destination_id:
+        raise SystemExit("ERROR: A file or folder cannot be moved into itself.")
+
+    source = _drive_move_get(args.file_id)
+    destination = _drive_move_get(args.destination_id)
+    if destination.get("mimeType") != _DRIVE_FOLDER_MIME:
+        raise SystemExit("ERROR: The destination ID is not a Google Drive folder.")
+
+    current_parents = list(source.get("parents") or [])
+    if len(current_parents) > 1:
+        raise SystemExit(
+            "ERROR: Drive returned multiple current parents for this item. "
+            "Drive v3 supports a single parent; manual handling is required."
+        )
+    if current_parents == [args.destination_id]:
+        print(json.dumps({
+            "status": "unchanged",
+            "verified": True,
+            "file": {"id": source.get("id", args.file_id), "name": source.get("name", "")},
+            "parent": {"id": destination.get("id", args.destination_id), "name": destination.get("name", "")},
+        }, indent=2, ensure_ascii=False))
+        return
+
+    if source.get("mimeType") == _DRIVE_FOLDER_MIME:
+        _drive_move_reject_descendant(args.file_id, destination)
+
+    duplicates = _drive_move_duplicates(
+        source.get("name", ""), args.destination_id, args.file_id
+    )
+    cross_drive = source.get("driveId") != destination.get("driveId")
+
+    if not args.execute:
+        print(json.dumps({
+            "status": "preview",
+            "file": {"id": source.get("id", args.file_id), "name": source.get("name", "")},
+            "from": {"id": current_parents[0]} if current_parents else None,
+            "to": {"id": destination.get("id", args.destination_id), "name": destination.get("name", "")},
+            "crossDrive": cross_drive,
+            "duplicateNameWarning": duplicates,
+            "requiresConfirmation": True,
+        }, indent=2, ensure_ascii=False))
+        return
+
+    if cross_drive and not args.allow_cross_drive:
+        raise SystemExit(
+            "ERROR: This move crosses My Drive/shared-drive boundaries. "
+            "Preview it, obtain separate confirmation, then add --allow-cross-drive."
+        )
+
+    _drive_move_update(args.file_id, args.destination_id, current_parents)
+    verified = _drive_move_get(args.file_id)
+    if list(verified.get("parents") or []) != [args.destination_id]:
+        raise SystemExit(
+            "ERROR: Drive accepted the move but parent verification failed; "
+            f"observed parents: {verified.get('parents') or []}"
+        )
+
+    print(json.dumps({
+        "status": "moved",
+        "verified": True,
+        "file": {"id": verified.get("id", args.file_id), "name": verified.get("name", source.get("name", ""))},
+        "from": {"id": current_parents[0]} if current_parents else None,
+        "to": {"id": destination.get("id", args.destination_id), "name": destination.get("name", "")},
+        "crossDrive": cross_drive,
+        "duplicateNameWarning": duplicates,
+        "rollback": ({"fileId": args.file_id, "to": current_parents[0]} if current_parents else None),
+    }, indent=2, ensure_ascii=False))
+
+
 def drive_upload(args):
     """Upload a local file to Drive. Falls through to Python client even when gws
     is installed, because gws doesn't do multipart uploads."""
@@ -1132,6 +1307,30 @@ def main():
     p = drv_sub.add_parser("get")
     p.add_argument("file_id")
     p.set_defaults(func=drive_get)
+
+    p = drv_sub.add_parser(
+        "move",
+        help="Preview or move a Drive item to another folder",
+    )
+    p.add_argument("file_id", metavar="FILE_ID")
+    p.add_argument(
+        "--to",
+        dest="destination_id",
+        metavar="DESTINATION_ID",
+        required=True,
+        help="Destination folder ID",
+    )
+    p.add_argument(
+        "--execute",
+        action="store_true",
+        help="Perform the move after reviewing the default preview",
+    )
+    p.add_argument(
+        "--allow-cross-drive",
+        action="store_true",
+        help="Allow a separately confirmed My Drive/shared-drive boundary move",
+    )
+    p.set_defaults(func=drive_move)
 
     p = drv_sub.add_parser("upload")
     p.add_argument("path", help="Local file path to upload")

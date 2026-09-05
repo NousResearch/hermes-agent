@@ -97,8 +97,8 @@ _UNLINKED_SCOPE_CLAUSES = """                      AND COALESCE(NULLIF(TRIM(s.pr
 
 class SessionTelegramTopicsMixin:
     """Telegram DM topic-mode tables, bindings and lookups. Read paths tolerate absent
-    tables (nobody ran ``/topic``) by returning their empty value; only
-    ``enable``/``bind`` run the migration."""
+    tables (nobody ran ``/topic``) by returning their empty value and never create them;
+    pre-v3 tables left by an upgrade are self-healed on read."""
 
     def _topic_read_one(self, sql: str, params):
         """``fetchone`` that treats an unmigrated table as None. A pre-v3 table left by an
@@ -109,16 +109,31 @@ class SessionTelegramTopicsMixin:
         except sqlite3.OperationalError as exc:
             if "no such column: profile_name" not in str(exc):
                 return None
-            self.apply_telegram_topic_migration()
+            self._heal_pre_v3_topic_tables()
             try:
                 return self._read_one(sql, params)
             except sqlite3.OperationalError:
                 return None
 
+    def _heal_pre_v3_topic_tables(self) -> None:
+        """Heal pre-v3 topic tables left by an upgrade. A failed heal (lock timeout,
+        cross-process race) warns once instead of surfacing through the readers as the
+        silent-return shape they exist to avoid; the next read retries the heal."""
+        try:
+            self.apply_telegram_topic_migration()
+        except sqlite3.Error:
+            if not getattr(self, "_topic_heal_warned", False):
+                self._topic_heal_warned = True
+                logger.warning(
+                    "telegram topic self-heal to v3 failed; reads keep hitting the "
+                    "pre-v3 schema and read as empty until the heal succeeds",
+                    exc_info=True,
+                )
+
     def apply_telegram_topic_migration(self) -> None:
-        """Create Telegram DM topic-mode tables on explicit /topic opt-in. Deliberately NOT
-        part of startup reconciliation: operators can upgrade and keep the old bot
-        behavior until a user runs /topic. Schema versions: v1 initial; v2 session_id FK
+        """Create Telegram DM topic-mode tables on explicit /topic opt-in and self-heal
+        pre-v3 tables on read (#103363); absent tables stay read-only, and startup
+        reconciliation never runs this. Schema versions: v1 initial; v2 session_id FK
         ON DELETE CASCADE (pruning clears bindings); v3 ``profile_name`` on both tables so
         multiplexed gateways sharing one state.db isolate topic state per profile.
 
@@ -131,23 +146,29 @@ class SessionTelegramTopicsMixin:
                 if "profile_name" in have:
                     continue
                 # v1/v2 → v3. SQLite can't ALTER a PK or FK, so rebuild (also supplies v2's
-                # ON DELETE CASCADE). Legacy rows land in "default" only.
+                # ON DELETE CASCADE). Legacy rows land in "default" only. Plain execute()
+                # keeps every statement inside _execute_write's BEGIN IMMEDIATE:
+                # executescript would implicitly commit the open transaction and run each
+                # statement in autocommit, so a crash after the DROP strands legacy rows
+                # in {table}_new (#42004 diagnosed the same shape for v1→v2) and breaks
+                # the whole-callback retry contract.
                 legacy_columns = columns.replace("profile_name, ", "", 1)
-                conn.executescript(f"""
-                    CREATE TABLE {table}_new ({ddl});
-                    INSERT INTO {table}_new ({columns})
-                        SELECT 'default', {legacy_columns} FROM {table};
-                    DROP TABLE {table};
-                    ALTER TABLE {table}_new RENAME TO {table};
-                    """)
+                conn.execute(f"CREATE TABLE {table}_new ({ddl})")
+                conn.execute(
+                    f"INSERT INTO {table}_new ({columns}) "
+                    f"SELECT 'default', {legacy_columns} FROM {table}"
+                )
+                conn.execute(f"DROP TABLE {table}")
+                conn.execute(f"ALTER TABLE {table}_new RENAME TO {table}")
             # Indexes after any rebuild: the user index needs profile_name.
-            conn.executescript("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_session
-                ON telegram_dm_topic_bindings(session_id);
-
-                CREATE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_user
-                ON telegram_dm_topic_bindings(profile_name, user_id, chat_id);
-                """)
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_session "
+                "ON telegram_dm_topic_bindings(session_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_user "
+                "ON telegram_dm_topic_bindings(profile_name, user_id, chat_id)"
+            )
             conn.execute(
                 "INSERT INTO state_meta (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -245,7 +266,7 @@ class SessionTelegramTopicsMixin:
             if "no such column: profile_name" not in str(exc):
                 return []
             # Same pre-v3 self-heal as _topic_read_one (issue #103363).
-            self.apply_telegram_topic_migration()
+            self._heal_pre_v3_topic_tables()
             try:
                 rows = self._read_all(
                     "SELECT * FROM telegram_dm_topic_bindings WHERE profile_name = ? AND chat_id = ? ORDER BY updated_at DESC",

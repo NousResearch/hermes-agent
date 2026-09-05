@@ -8,8 +8,10 @@ migration was never reached. Reads now heal the table once and retry.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
+from unittest import mock
 
 from hermes_state import SessionDB
 
@@ -105,4 +107,84 @@ def test_absent_tables_still_read_empty_and_are_not_created(tmp_path: Path):
     }
     assert "telegram_dm_topic_bindings" not in tables
     assert "telegram_dm_topic_mode" not in tables
+    db.close()
+
+
+def test_heal_rebuild_rolls_back_atomically(tmp_path: Path):
+    """The v2→v3 rebuild must stay inside _execute_write's transaction.
+
+    Pre-fix the rebuild ran via executescript, which implicitly commits the
+    open transaction and then autocommits each statement: a failure once the
+    rebuild reaches the DROP strands legacy rows in {table}_new (#42004
+    diagnosed the same shape for the v1→v2 rebuild) and the retry then builds
+    an empty v3 table. The same mid-rebuild failure must now roll back to the
+    intact v2 table so the next read can heal cleanly.
+    """
+    db_path = tmp_path / "v2-upgrade.db"
+    _create_v2_state(db_path)
+    db = SessionDB(db_path=db_path)
+
+    ok = getattr(sqlite3, "SQLITE_OK", 0)
+    deny = getattr(sqlite3, "SQLITE_DENY", 2)
+    drop_table = getattr(sqlite3, "SQLITE_DROP_TABLE", 11)
+
+    def deny_topic_rebuild_drop(action, arg1, arg2, db_name, trigger):
+        if action == drop_table and arg1 and arg1.startswith("telegram_dm_topic"):
+            return deny
+        return ok
+
+    db._conn.set_authorizer(deny_topic_rebuild_drop)
+    try:
+        # The guarded read degrades to "off" instead of raising...
+        assert not db.is_telegram_topic_mode_enabled(
+            chat_id=CHAT, user_id=CHAT, profile_name="default",
+        )
+    finally:
+        db._conn.set_authorizer(None)
+
+    # ...and the interrupted rebuild rolled back completely: the v2 table and
+    # its legacy row are intact, with nothing stranded in *_new.
+    tables = {
+        row[0]
+        for row in db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    assert "telegram_dm_topic_mode" in tables
+    assert not any(t.endswith("_new") for t in tables)
+    mode_row = db._conn.execute(
+        "SELECT enabled FROM telegram_dm_topic_mode WHERE chat_id = ?", (CHAT,)
+    ).fetchone()
+    assert mode_row is not None and mode_row[0] == 1
+
+    # Idempotent under retry (the _execute_write contract): the next clean
+    # read heals and keeps the legacy rows.
+    assert db.is_telegram_topic_mode_enabled(
+        chat_id=CHAT, user_id=CHAT, profile_name="default",
+    )
+    db.close()
+
+
+def test_failed_heal_warns_once_and_degrades_to_empty(tmp_path: Path, caplog):
+    """A failing heal (lock timeout, cross-process race) must not surface as the
+    silent-return shape the readers exist to fix: one warning per instance,
+    reads keep returning their empty value."""
+    db_path = tmp_path / "v2-upgrade.db"
+    _create_v2_state(db_path)
+    db = SessionDB(db_path=db_path)
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    with mock.patch.object(SessionDB, "apply_telegram_topic_migration", locked):
+        with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            assert not db.is_telegram_topic_mode_enabled(
+                chat_id=CHAT, user_id=CHAT, profile_name="default",
+            )
+            assert db.get_telegram_topic_binding(
+                chat_id=CHAT, thread_id="99", profile_name="default",
+            ) is None
+            assert db.list_telegram_topic_bindings_for_chat(chat_id=CHAT) == []
+    # One warning across every reader, not one per read.
+    assert len([r for r in caplog.records if "self-heal" in r.getMessage()]) == 1
     db.close()

@@ -822,6 +822,41 @@ def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iteratio
     return kwargs
 
 
+# Sentinel generation above any live registry generation. Mid-review compaction
+# boundaries re-run refresh_agent_mcp_tools(content_aware=True); freezing the
+# snapshot generation prevents compaction from rebuilding agent.tools and dropping
+# inherited provider tools (#103579).
+_FROZEN_TOOL_SNAPSHOT_GENERATION: int = 2_147_483_647
+
+
+def _inherit_parent_tool_surface(review_agent: Any, agent: Any) -> None:
+    """Copy the parent's advertised tools for a same-model cache-parity fork.
+
+    The parent's array is the last outbound payload: ``agent.tools`` is read
+    directly at request time and is not mutated between review turns because
+    ``_skip_mcp_refresh`` blocks the between-turn MCP refresh. Dispatch remains
+    restricted by the thread whitelist. Copying the whole surface covers every
+    dynamically injected tool (memory-provider, late MCP, and plugin-registered),
+    not just memory tools.
+
+    Freezes ``_tool_snapshot_generation`` so mid-review compaction boundaries
+    (which invoke ``refresh_agent_mcp_tools(content_aware=True)``) refuse the
+    rebuild and do not clobber the inherited tools (#103579).
+    """
+    parent_tools = getattr(agent, "tools", None)
+    if not isinstance(parent_tools, (list, tuple)) or not parent_tools:
+        return
+    review_agent.tools = copy.deepcopy(list(parent_tools))
+    review_agent.valid_tool_names = {
+        entry["function"]["name"]
+        for entry in review_agent.tools
+        if isinstance(entry, dict)
+        and isinstance(entry.get("function"), dict)
+        and isinstance(entry["function"].get("name"), str)
+    }
+    review_agent._tool_snapshot_generation = _FROZEN_TOOL_SNAPSHOT_GENERATION
+
+
 def build_cache_parity_fork(
     agent: Any, task_cfg: Optional[Dict[str, Any]] = None, *, max_iterations: int,
     write_origin: str = "background_review",
@@ -867,6 +902,7 @@ def build_cache_parity_fork(
     if not _routed:
         review_agent._cached_system_prompt = agent._cached_system_prompt
         review_agent.session_start = agent.session_start
+        _inherit_parent_tool_surface(review_agent, agent)
     _detach_fork_compression(review_agent)
     # Compaction bounds a single request; this bounds the WHOLE review (checked in
     # conversation_loop via _review_input_budget_exhausted).

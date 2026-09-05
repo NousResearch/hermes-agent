@@ -101,6 +101,9 @@ def _make_recorder_class(captured=None, record_on_run=()):
             self.suppress_status_output = None
             self.session_start = None
             self.session_id = None
+            self.tools = None
+            self.valid_tool_names = set()
+            self._tool_snapshot_generation = 0
             self.ephemeral_system_prompt = kwargs.get("ephemeral_system_prompt")
 
         def run_conversation(self, *args, **kwargs):
@@ -340,3 +343,113 @@ def test_routed_review_fork_does_not_inherit_reasoning_config():
             f"Routed review fork was passed parent-only kwarg {_gated!r}; "
             "cache-parity inheritance must stay behind the not-routed gate."
         )
+
+
+def test_unrouted_review_fork_inherits_entire_tool_surface():
+    """Unrouted forks preserve all advertised tools and their name index (#103579)."""
+    import run_agent
+    from agent.background_review import build_cache_parity_fork
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    parent_tools = [
+        {"type": "function", "function": {"name": "base_tool"}},
+        {"type": "function", "function": {"name": "fact_store"}},
+        {"type": "function", "function": {"name": "fact_feedback"}},
+        {"type": "function", "function": {"name": "mcp_late_tool"}},
+        {"malformed": True},
+    ]
+    agent.tools = parent_tools
+
+    _Recorder = _make_recorder_class()
+
+    with patch.object(run_agent, "AIAgent", _Recorder):
+        fork, _rt, routed = build_cache_parity_fork(agent, max_iterations=5)
+        assert not routed
+        assert fork.tools == parent_tools
+        assert fork.tools is not parent_tools
+        assert fork.tools[0] is not parent_tools[0]
+        assert fork.valid_tool_names == {
+            "base_tool", "fact_store", "fact_feedback", "mcp_late_tool"
+        }
+        fork.tools.append({"type": "function", "function": {"name": "new"}})
+        assert len(fork.tools) != len(agent.tools)
+
+
+def test_routed_review_fork_does_not_inherit_tool_surface():
+    """Routed review fork does not inherit parent's tools[] across different models (#103579)."""
+    import run_agent
+    import agent.background_review as bg_review
+    from agent.background_review import build_cache_parity_fork
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    parent_tools = [
+        {"type": "function", "function": {"name": "parent_tool"}},
+    ]
+    agent.tools = parent_tools
+
+    _Recorder = _make_recorder_class()
+    routed_runtime = {
+        "provider": "openrouter",
+        "model": "aux-cheap-model",
+        "api_key": "test-key",
+        "base_url": None,
+        "api_mode": None,
+        "credential_pool": None,
+        "request_overrides": {},
+        "max_tokens": None,
+        "command": None,
+        "args": [],
+        "routed": True,
+    }
+
+    with patch.object(run_agent, "AIAgent", _Recorder), \
+         patch.object(bg_review, "_resolve_review_runtime", return_value=routed_runtime):
+        fork, _rt, routed = build_cache_parity_fork(agent, max_iterations=5)
+        assert routed
+        assert fork.tools is None
+
+
+def test_review_fork_inherited_tools_survive_compaction_refresh():
+    """Inherited tools survive mid-review compaction refresh (#103579).
+
+    Acceptance criterion 1 requires the fork to advertise the same tools[] as
+    the parent when targeting the same cache scope. Mid-review compaction
+    boundaries invoke refresh_agent_mcp_tools(content_aware=True), which re-reads
+    the live registry and drops memory provider tools unless the snapshot
+    generation staleness check refuses the rebuild.
+    """
+    import run_agent
+    from agent.background_review import build_cache_parity_fork
+    from tools.mcp_tool_agent import refresh_agent_mcp_tools
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    parent_tools = [
+        {"type": "function", "function": {"name": "terminal_command"}},
+        {"type": "function", "function": {"name": "read_file"}},
+        {"type": "function", "function": {"name": "memory"}},
+        {"type": "function", "function": {"name": "fact_store"}},
+        {"type": "function", "function": {"name": "fact_feedback"}},
+    ]
+    agent.tools = parent_tools
+
+    _Recorder = _make_recorder_class()
+
+    with patch.object(run_agent, "AIAgent", _Recorder):
+        fork, _rt, routed = build_cache_parity_fork(agent, max_iterations=5)
+        assert not routed
+        assert fork._tool_snapshot_generation == 2_147_483_647
+        assert [t["function"]["name"] for t in fork.tools] == [
+            "terminal_command", "read_file", "memory", "fact_store", "fact_feedback"
+        ]
+
+        # Simulate mid-review compaction boundary tool refresh
+        added = refresh_agent_mcp_tools(fork, content_aware=True)
+        assert added == set()
+        assert [t["function"]["name"] for t in fork.tools] == [
+            "terminal_command", "read_file", "memory", "fact_store", "fact_feedback"
+        ]
+        assert fork.valid_tool_names == {
+            "terminal_command", "read_file", "memory", "fact_store", "fact_feedback"
+        }
+
+

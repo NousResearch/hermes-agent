@@ -1137,7 +1137,7 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
         route_thread_id = None
         route_metadata = {
             "direct_messages_topic_id": str(thread_id), "job_id": job["id"],
-            "notify": t.notify_delivery,
+            "notify": t.notify_delivery, "subject": job.get("name") or job["id"],
         }
         media_metadata = {"direct_messages_topic_id": str(thread_id), "notify": t.notify_delivery}
     else:
@@ -1147,7 +1147,8 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
         # thread_id is absent from metadata; cron deliveries have no inbound reply anchor, so the metadata
         # key bypasses that check and lets the adapter route via a plain message_thread_id. See #52060.
         route_thread_id = str(thread_id) if thread_id is not None else None
-        route_metadata = {"job_id": job["id"], "notify": t.notify_delivery}
+        route_metadata = {"job_id": job["id"], "notify": t.notify_delivery,
+                          "subject": job.get("name") or job["id"]}
         if route_thread_id:
             route_metadata["thread_id"] = route_thread_id
         media_metadata = {"notify": t.notify_delivery}
@@ -1383,7 +1384,7 @@ def _standalone_send(
     def _send():
         return _send_to_platform(
             t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
-            media_files=media_files)
+            media_files=media_files, subject=job.get("name") or job["id"])
 
     def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)

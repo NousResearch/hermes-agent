@@ -218,9 +218,63 @@ RECALL_SCHEMA = {
         "Search long-term memory. Returns memories ranked by relevance using "
         "semantic search, keyword matching, entity graph traversal, and reranking."
     ),
-    "parameters": {"type": "object", "required": ["query"],
-                   "properties": {"query": {"type": "string", "description": "What to search for."}}},
+    "parameters": {"type": "object", "required": ["query"], "properties": {
+        "query": {"type": "string", "description": "What to search for."},
+        "budget": {"type": "string", "enum": ["low", "mid", "high"],
+                   "description": "Search thoroughness for this call; defaults to configured budget."},
+        "max_tokens": {"type": "integer", "minimum": 128, "maximum": 8192,
+                       "description": "Result token budget for this call."},
+        "types": {"type": "array", "minItems": 1, "uniqueItems": True,
+                  "items": {"type": "string", "enum": ["observation", "world", "experience"]},
+                  "description": "Override the configured fact types for this search."},
+        "tags": {"type": "array", "items": {"type": "string"},
+                 "description": "Override configured search tags for this call; [] clears the filter."},
+        "tags_match": {"type": "string", "enum": ["any", "all", "any_strict", "all_strict"]},
+        "include_source_facts": {"type": "boolean",
+                                 "description": "Include observation source-fact metadata. Defaults to true."},
+    }},
 }
+
+
+def _recall_overrides(args: dict) -> dict:
+    """Validate only explicit overrides; existing global settings keep their semantics."""
+    result = {}
+    for key, allowed in (("budget", ("low", "mid", "high")),
+                         ("tags_match", ("any", "all", "any_strict", "all_strict"))):
+        if key in args:
+            if args[key] not in allowed:
+                raise ValueError(f"Invalid {key}: choose {', '.join(allowed)}")
+            result[key] = args[key]
+    if "max_tokens" in args:
+        value = args["max_tokens"]
+        if type(value) is not int or not 128 <= value <= 8192:
+            raise ValueError("Invalid max_tokens: expected integer 128..8192")
+        result["max_tokens"] = value
+    for key in ("types", "tags"):
+        if key in args:
+            value = args[key]
+            if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+                raise ValueError(f"Invalid {key}: expected a list of strings")
+            if key == "types" and (not value or any(item not in ("observation", "world", "experience") for item in value)):
+                raise ValueError("Invalid types: use observation, world, and/or experience")
+            result[key] = list(dict.fromkeys(value))
+    include = args.get("include_source_facts", True)
+    if not isinstance(include, bool):
+        raise ValueError("Invalid include_source_facts: expected a boolean")
+    result["include_source_facts"] = include
+    return result
+
+
+def _recall_provenance(item: Any) -> str:
+    """Expose the source metadata the client returned, without inferring freshness."""
+    parts = []
+    for key in ("id", "type", "document_id", "occurred_start", "mentioned_at", "tags", "source_fact_ids"):
+        value = getattr(item, key, None)
+        if value:
+            if isinstance(value, (list, tuple)):
+                value = ",".join(str(part) for part in value)
+            parts.append(f"{key}={value}")
+    return "; ".join(parts)
 
 REFLECT_SCHEMA = {
     "name": "hindsight_reflect",
@@ -841,12 +895,16 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.debug("Prefetch: skipped (%s)", why)
         return why is not None
 
-    def _recall(self, query: str) -> list:
+    def _recall_kwargs(self, query: str) -> dict:
         kwargs: dict = {"bank_id": self._bank_id, "query": query, "budget": self._budget, "max_tokens": self._recall_max_tokens}
         if self._recall_tags:
             kwargs.update(tags=self._recall_tags, tags_match=self._recall_tags_match)
         if self._recall_types:
             kwargs["types"] = self._recall_types
+        return kwargs
+
+    def _recall(self, query: str) -> list:
+        kwargs = self._recall_kwargs(query)
         resp = self._run_hindsight_operation(lambda client: client.arecall(**kwargs))
         return resp.results or []
 
@@ -1068,9 +1126,23 @@ class HindsightMemoryProvider(MemoryProvider):
         query = args["query"]
         logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s",
                      self._bank_id, len(query), self._budget)
-        results = self._recall(query)
+        kwargs = self._recall_kwargs(query)
+        kwargs.update(_recall_overrides(args))
+        if kwargs["include_source_facts"]:
+            kwargs["max_source_facts_tokens"] = kwargs["max_tokens"]
+        response = self._run_hindsight_operation(lambda client: client.arecall(**kwargs))
+        results = response.results or []
         logger.debug("Tool hindsight_recall: %d results", len(results))
-        return "\n".join(f"{i}. {r.text}" for i, r in enumerate(results, 1)) or "No relevant memories found."
+        lines = []
+        for i, item in enumerate(results, 1):
+            lines.append(f"{i}. {item.text}")
+            if provenance := _recall_provenance(item):
+                lines.append(f"   provenance: {provenance}")
+        sources = getattr(response, "source_facts", None)
+        if kwargs["include_source_facts"] and isinstance(sources, dict) and sources:
+            lines.append("Source facts:")
+            lines.extend(f"- source_id={source_id}; {_recall_provenance(fact)}" for source_id, fact in sources.items())
+        return "\n".join(lines) or "No relevant memories found."
 
     def _tool_reflect(self, args: dict) -> str:
         query = args["query"]

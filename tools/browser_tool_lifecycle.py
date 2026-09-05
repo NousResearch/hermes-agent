@@ -77,8 +77,8 @@ def _emergency_cleanup_all_sessions():
     _bt._cleanup_done = True
 
     # Own sessions first so their owner_pid files are gone before the reaper scans.
-    # Real-profile Chrome is launched directly (not by agent-browser), so the
-    # session cleanup never reaps it.
+    # Real-profile Chrome is launched directly (not by agent-browser); cleanup_browser
+    # now terminates it too, and atexit remains the last-resort process-exit path.
     _best_effort("Real-profile chrome cleanup on exit", _real_profile._terminate_real_profile_chrome)
     if _bt._active_sessions:
         _bt.logger.info("Emergency cleanup: closing %s active session(s)...", len(_bt._active_sessions))
@@ -357,6 +357,7 @@ def _reap_orphaned_browser_sessions():
         from tools.browser_lightpanda import reap_orphaned_lightpanda
         reap_orphaned_lightpanda()
     _best_effort("Lightpanda orphan reap", _reap_lp)
+    _best_effort("Real-profile orphan reap", _real_profile._reap_orphaned_real_profile_browsers)
 
     tmpdir = _bt._socket_safe_tmpdir()
     socket_dirs = []
@@ -555,6 +556,9 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     for session_key in session_keys:
         _cleanup_single_browser_session(session_key)
     _drop_last_active_binding(task_id)
+    # Real-profile Chrome is not an agent-browser child; idle/session cleanup must
+    # terminate it explicitly or the snapshot dir stays locked (#103591).
+    _best_effort("Real-profile chrome cleanup", _real_profile._terminate_real_profile_chrome)
 
 
 def _kill_verified_daemon(socket_dir: str, session_name: str) -> bool:

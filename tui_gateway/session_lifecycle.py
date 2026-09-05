@@ -45,6 +45,32 @@ def _claim_active_session_slot(
         return (None, _SESSION_OWNERSHIP_UNAVAILABLE)
 
 
+def _yield_local_desktop_owner(session_key: str) -> bool:
+    """Auto-yield (#auto-yield patch): when a cross-surface send (Relay) is fenced out by a
+    lease THIS process holds for the desktop UI, and that desktop session is idle, close it
+    locally so the other surface can take over. Same teardown the WS-orphan reaper performs;
+    the desktop tab receives ``session.reclaimed`` and reloads from the DB on next use.
+    Returns True when a local owner existed and was closed."""
+    wanted = str(session_key or "")
+    if not wanted:
+        return False
+    with _sessions_lock:
+        candidates = [
+            (sid, sess) for sid, sess in _sessions.items()
+            if str(sess.get("session_key") or "") == wanted
+            and (sess.get("active_session_lease") is not None)
+            and not sess.get("running")
+        ]
+        if not candidates:
+            return False
+        sid, _ = candidates[0]
+    return _close_session_by_id(
+        sid, end_reason="ws_orphan_reap",
+        predicate=lambda sess: (
+            str(sess.get("session_key") or "") == wanted
+            and not sess.get("running")))
+
+
 def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     """Claim this session's cap slot on its first real turn; None when ok. session.create/resume deliberately
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
@@ -56,6 +82,22 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
         surface=_session_source(session), profile_home=session.get("profile_home"))
     if limit_message is None:
         session["active_session_lease"] = lease
+        return None
+    # #auto-yield patch: a same-process desktop tab holds the lease and is idle -> close it
+    # and retry, so a Relay (phone) send takes over instead of bouncing off the refusal.
+    from hermes_cli.active_sessions import SESSION_NOT_OWNED
+    refusal_reason = getattr(limit_message, "reason", None)
+    if refusal_reason == SESSION_NOT_OWNED and _yield_local_desktop_owner(
+            str(session.get("session_key") or "")):
+        lease, limit_message = _claim_active_session_slot(
+            str(session.get("session_key") or ""), live_session_id=sid,
+            surface=_session_source(session), profile_home=session.get("profile_home"))
+        if limit_message is None:
+            logger.info(
+                "Auto-yield: closed local desktop owner for session %s; cross-surface turn admitted",
+                session.get("session_key") or sid)
+            session["active_session_lease"] = lease
+            return None
     return limit_message
 
 

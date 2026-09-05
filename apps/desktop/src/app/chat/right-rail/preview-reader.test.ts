@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { $rightRailActiveTabId, selectRightRailTab } from '@/store/layout'
+import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from '@/store/layout'
 import { closeRightRail, openPreview, type PreviewTarget } from '@/store/preview'
 
 import { PREVIEW_READ_MAX_CHARS, readActivePreview, registerPreviewPageReader } from './preview-reader'
@@ -18,7 +18,7 @@ describe('readActivePreview (read_preview tool)', () => {
   // in one test would answer the next — unregister whatever a test installed.
   let cleanups: Array<() => void> = []
 
-  const register = (tabId: string, reader: Parameters<typeof registerPreviewPageReader>[1]) => {
+  const register = (tabId: RightRailTabId, reader: Parameters<typeof registerPreviewPageReader>[1]) => {
     const unregister = registerPreviewPageReader(tabId, reader)
 
     cleanups.push(unregister)

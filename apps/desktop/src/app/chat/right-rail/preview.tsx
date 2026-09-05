@@ -1,13 +1,14 @@
 import { useStore } from '@nanostores/react'
 
 import { $restartPreviewServer } from '@/app/contrib/panes'
+import { type RightRailTabId } from '@/store/layout'
 import { $previewReloadRequest, $previewTabs } from '@/store/preview'
 
 import { PreviewPane } from './preview-pane'
 
 interface PreviewTilePaneProps {
   /** The `$previewTabs` id this pane renders. */
-  tabId: string
+  tabId: RightRailTabId
 }
 
 /**
@@ -24,7 +25,8 @@ export function PreviewTilePane({ tabId }: PreviewTilePaneProps) {
   const previewReloadRequest = useStore($previewReloadRequest)
   const previewTabs = useStore($previewTabs)
   const restartPreviewServer = useStore($restartPreviewServer)
-  const target = previewTabs.find(tab => tab.id === tabId)?.target
+  const tab = previewTabs.find(candidate => candidate.id === tabId)
+  const target = tab?.target
 
   // The tab closed while this pane was still mounted (the mirror disposes it a
   // tick later).
@@ -36,6 +38,7 @@ export function PreviewTilePane({ tabId }: PreviewTilePaneProps) {
     <PreviewPane
       embedded
       onRestartServer={target.kind === 'url' ? (restartPreviewServer ?? undefined) : undefined}
+      ownerSessionId={tab.ownerSessionId}
       reloadRequest={previewReloadRequest}
       tabId={tabId}
       target={target}

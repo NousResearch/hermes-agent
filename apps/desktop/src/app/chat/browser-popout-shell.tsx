@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react'
 import { PanelEmpty } from '@/app/overlays/panel'
 import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { useI18n } from '@/i18n'
+import { type RightRailTabId } from '@/store/layout'
 import { windowBrowserTabId } from '@/store/windows'
 
 import { PreviewTilePane } from './right-rail/preview'
@@ -30,7 +31,7 @@ export function BrowserPopoutShell() {
       </div>
       <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
         {tabId ? (
-          <PreviewTilePane tabId={tabId} />
+          <PreviewTilePane tabId={tabId as RightRailTabId} />
         ) : (
           <div className="grid h-full place-items-center">
             <PanelEmpty description={t.preview.web.blankPageBody} icon="globe" />

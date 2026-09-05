@@ -616,13 +616,13 @@ def _action_lines(data: Dict, detail: Dict, verbose: bool) -> List[str]:
     target = data.get("target", "") or detail.get("target", "")
     is_skill = detail.get("tool") == "skill_manage"
     lower = message.lower()
-    if not verbose and ("created" in lower or "updated" in lower or (is_skill and "patched" in lower)):
-        return [message]
     if not verbose and is_skill and "staged" in lower:
         # A skill write held by ``skills.write_approval`` reports "Staged for approval …". Without this
         # branch the result matched nothing below and was dropped, so the owner never learned a skill
         # proposal was waiting for review.
-        return ["📥 Skill proposal staged for approval — review it in the desktop Review tab or /skills pending"]
+        return ["📥 Skill proposal staged for approval — review it with /skills pending"]
+    if not verbose and ("created" in lower or "updated" in lower or (is_skill and "patched" in lower)):
+        return [message]
     if not is_skill and not target:
         return []
     label = "Skill" if is_skill else {"memory": "Memory", "user": "User profile"}.get(target, target)

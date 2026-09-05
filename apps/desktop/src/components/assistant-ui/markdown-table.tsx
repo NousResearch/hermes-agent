@@ -154,11 +154,10 @@ export function ResizableMarkdownTable({ children, className, ...props }: Compon
   }, [])
 
   return (
-    <div className="aui-md-table my-2 max-w-full overflow-x-auto rounded-[0.375rem] border border-(--ui-stroke-tertiary)">
+    <div className="aui-md-table my-2 max-w-full overflow-x-hidden rounded-[0.375rem] border border-(--ui-stroke-tertiary)">
       <table
         className={cn(
-          'm-0 w-full min-w-[18rem] border-collapse text-[0.8125rem] [&_tr]:border-b [&_tr]:border-(--ui-stroke-tertiary) last:[&_tr]:border-0',
-          widths && 'table-fixed [&_td]:wrap-anywhere',
+          'm-0 w-full table-fixed border-collapse text-[0.8125rem] [&_td]:wrap-anywhere [&_th]:wrap-anywhere [&_tr]:border-b [&_tr]:border-(--ui-stroke-tertiary) last:[&_tr]:border-0',
           className
         )}
         onDoubleClick={onDoubleClick}
@@ -191,9 +190,9 @@ export function ResizableMarkdownTh({ children, className, ...props }: Component
       )}
       {...props}
     >
-      {/* Truncation lives on an inner box, not the cell: the grab band straddles
-          the cell's edge, so a clipping `<th>` would cut half of it off. */}
-      <span className="block overflow-hidden text-ellipsis whitespace-nowrap">{children}</span>
+      {/* Header text wraps; the grab band still sits on this inner box so a
+          clipping `<th>` would not cut the seam handle in half. */}
+      <span className="block wrap-anywhere">{children}</span>
       {/* Invisible grab band straddling the seam, with the hairline revealed on
           hover — the pane sash treatment (`tree-split.tsx`) scaled to a header
           row. The table carries no vertical rules otherwise, so the line only

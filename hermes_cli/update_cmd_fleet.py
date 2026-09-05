@@ -81,9 +81,8 @@ def _receipt_looks_unfinished(receipt: dict) -> bool:
     """True when *receipt* is from an update that did not finish cleanly."""
     gateway_restart = receipt.get("gateway_restart")
     return bool(
-        receipt.get("stop_reason")
-        or receipt.get("exit_code") not in (0, None)
-        or receipt.get("outcome") in ("failed", "partial", "running")
+        receipt.get("exit_code") not in (0, None)
+        or receipt.get("outcome") in ("failed", "partial", "running", "refused")
         or (isinstance(gateway_restart, dict) and gateway_restart.get("incomplete"))
     )
 

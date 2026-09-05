@@ -67,6 +67,19 @@ class TestReceiptLifecycle:
         assert gr["incomplete"] is False
         assert payload["fleet"][0]["profile"] == "default"
 
+    def test_desktop_correlation_reaches_persisted_receipts(
+        self, receipt_home, monkeypatch
+    ):
+        correlation_id = "2b459d8a-a138-4f1e-8317-e5f98067a968"
+        monkeypatch.setenv("HERMES_UPDATE_CORRELATION_ID", correlation_id)
+
+        ur.begin_update_receipt()
+        path = _finalize("success")
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["correlation_id"] == correlation_id
+        assert ur.read_latest_receipt()["correlation_id"] == correlation_id
+
     def test_fresh_recovery_result_reaches_persisted_receipt(self, receipt_home):
         recovery = {
             "requested": ["coder", "default", "ops"],

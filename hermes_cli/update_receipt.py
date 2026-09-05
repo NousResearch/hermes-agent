@@ -61,6 +61,9 @@ class UpdateReceipt:
             "pre_update": _code_identity(), "post_update": {},
             "steps": [], "skips": [], "gateway_restart": {}, "fleet": [],
         }
+        correlation_id = os.getenv("HERMES_UPDATE_CORRELATION_ID")
+        if correlation_id:
+            self.data["correlation_id"] = correlation_id
 
     def step(self, name: str, ok: bool, detail: str = "") -> None:
         self.data["steps"].append({"name": name, "ok": bool(ok), "detail": detail, "at": _utc_now_iso()})

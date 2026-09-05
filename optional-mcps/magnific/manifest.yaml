@@ -1,0 +1,145 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: magnific
+description: >-
+  Image, video, and audio generation plus Magnific upscaling, on your
+  Magnific/Freepik account.
+source: https://mcp.magnific.com
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native MCP OAuth 2.1 + Dynamic Client Registration
+# against a Keycloak realm, so Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh with nothing to install.
+#
+#   401 www-authenticate  → resource_metadata=/.well-known/oauth-protected-resource
+#   protected resource    → authorization_servers: https://auth.magnific.com/realms/mcp
+#   registration_endpoint → .../clients-registrations/openid-connect
+#
+# Anonymous DCR is open here and accepts Hermes's default client_name
+# ("Hermes Agent"), so — unlike the figma entry — no client_name override is
+# needed. Scopes come from the server's scopes_supported; no oauth.scope pin.
+transport:
+  type: http
+  url: https://mcp.magnific.com
+
+auth:
+  type: oauth
+  # No `provider:` — native MCP OAuth, not a third-party provider like Google.
+  # The MCP client triggers the browser flow on the first probe / first connect.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - magnific
+  hosts:
+    - magnific.com
+
+# Tool selection at install time:
+# Hermes discovers this server's tools itself — install_entry probes it and
+# shows the live checklist, so the list below is NOT the source of truth for
+# what exists. It does exactly two things (see _apply_tool_selection):
+#
+#   1. sets which rows come pre-checked in that live checklist, and
+#   2. is the fallback applied when the probe fails.
+#
+# (2) is the reason it is here rather than omitted. `_probe_tools` names
+# "OAuth not yet completed" as a failure cause, and this entry authorizes in
+# the browser on FIRST CONNECT — so at install time the probe is expected to
+# fail. With no list the fallback writes no `tools.include` at all, which
+# leaves every tool enabled: the server exposes ~100 of them, and at Hermes's
+# measured ~600 tokens/tool schema average that is ~60k tokens added to EVERY
+# API call, several times the entire Hermes core toolset. The curated 24 below
+# hold that to ~14k until the user refines it.
+#
+# The list therefore rots in the safe direction only. A name that no longer
+# exists upstream is dropped by the intersection in _apply_tool_selection; a
+# newly added tool simply is not pre-checked. Both are recovered with
+# `hermes mcp configure magnific`, which re-probes and re-opens the checklist.
+# The real fix — re-probing automatically once the OAuth flow lands — belongs
+# in the install path, not in a manifest.
+#
+# Deliberately excluded from the default (opt back in any time with
+# `hermes mcp configure magnific`):
+#   - creations_show, creations_upload_show, creations_list, library_show,
+#     mockups_show, flows_show, spaces_show, stock_show, images_models_show,
+#     video_models_show, audio_voices_show, design_auto_resize_show
+#                                     — inline MCP-UI widgets. They render an
+#     iframe for Apps-UI clients and their results carry no asset URL, so a
+#     terminal/TUI agent gets nothing back. The data-only twins
+#     (creations_get, creations_search, images_models_list, audio_voices_list, …)
+#     are included instead. Note creations_list is a widget despite the name
+#     ("filterable gallery widget" — it is creations_search that returns data).
+#   - creations_upload_image, creations_upload_file
+#                                     — superseded by the headless
+#     request_upload + finalize_upload pair, which is the documented path for
+#     non-UI clients.
+#   - spaces_*, flows_*, design_auto_*, projects_move, folders_*,
+#     library_*, mockups_*, models3d_*, stock_*, video_speak,
+#     video_dubbing, video_concatenate, images_generate_svg, images_to_svg,
+#     images_variations, images_relight, images_change_camera,
+#     images_skin_enhancer, images_crop, images_resize
+#                                     — Magnific product surfaces and niche
+#     transforms beyond the core generate/upscale loop.
+#   - team_activity, team_groups, team_members, team_usage_report,
+#     project_report, account_permissions, account_profile,
+#     creations_like, creations_comment, creations_move,
+#     creations_register_download, creation_status, simulate_flows,
+#     simulate_spaces                 — org admin, reporting, and social
+#     surfaces with no agent use case.
+tools:
+  default_enabled:
+    # Discovery — model slugs, per-mode params, and voice ids must be read
+    # before the generators below can be called correctly
+    - images_models_list
+    - images_upscale_modes_list
+    - video_models_list
+    - audio_voices_list
+    # Cost guardrail — every generation below spends credits
+    - simulate_cost
+    - account_balance
+    # Images
+    - images_generate
+    - images_upscale
+    - images_expand
+    - images_retouch
+    - images_remove_background
+    # Video — video_plan resolves the brief + model slug for video_generate,
+    # and video_upscale's required `mode` params come from its modes list
+    - video_plan
+    - video_generate
+    - video_upscale
+    - video_upscale_models_list
+    # Audio
+    - audio_tts
+    - audio_music_generate
+    - audio_sfx_generate
+    # Creation lifecycle (headless: submit → wait → fetch URL)
+    - creations_get
+    - creations_wait
+    - creations_search
+    - creations_tags
+    - creations_request_upload
+    - creations_finalize_upload
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with Magnific
+  (or run `hermes mcp login magnific`). Approve access, then restart the
+  session so tools load.
+
+  Generation tools spend Magnific credits. `simulate_cost` prices a call
+  before you make it — pass the target tool name and the same arguments —
+  and `account_balance` reports what is left. See
+  https://magnific.com/pricing for plans.
+
+  Generation is asynchronous: the generate tools return creation
+  identifiers, `creations_wait` long-polls them (up to 8 per call, 25s
+  budget), and `creations_get` returns the final asset URLs. Chain steps by
+  passing the creation identifier, never a web URL.
+
+  A curated 24-tool subset is enabled by default (discovery, images, video,
+  audio, creation lifecycle). Spaces, flows, brand/library assets, mockups,
+  3D, stock, and team reporting are available but unchecked — enable them
+  any time with:
+    hermes mcp configure magnific

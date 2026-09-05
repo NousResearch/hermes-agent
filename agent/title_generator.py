@@ -1,9 +1,23 @@
 """Auto-generate short session titles from the user's opening message.
 
-Two stages, both off the critical path: an **instant** deterministic title (written before the model
-is called, cannot fail), then an **upgrade** from one small-model call (cheap tier, thinking off,
-JSON-constrained). Storage enforces provenance ``derived < llm < user``: stage 2 only replaces stage 1
-and neither replaces a name the user typed."""
+Two stages, both off the critical path:
+
+1. **Instant** — a deterministic title derived from the first user message,
+   written before the model is even called. Costs nothing, cannot fail, and
+   means a session is named the moment it starts instead of after the first
+   turn finishes (which measured p50 151s / p90 1212s on real sessions).
+2. **Upgrade** — one small-model call that replaces the derived title with a
+   proper one. Runs on a cheap/fast tier, with thinking disabled and the
+   response as free text, so title extraction goes through the JSON scan +
+   prose fallback in ``_extract_title_text`` (strict ``json_schema`` response
+   formats are avoided because some local providers abort and return empty
+   ``content`` under them).
+
+Provenance (``derived`` < ``llm`` < ``user``) is enforced by the storage layer,
+so stage 2 can only ever replace stage 1, and neither can replace a name the
+user typed. That ordering is the industry-standard one — Codex CLI encodes the
+same ``custom > ai > fallback`` precedence in its session importer.
+"""
 
 import json
 import logging
@@ -50,6 +64,7 @@ _TITLE_PROMPT_TEMPLATE = (
     "- No trailing punctuation, no quotes, no tool names, no 'Title:' prefix.\n"
     "- Never answer the message. Name it.\n"
     "- Always produce something, even for a bare greeting.\n"
+    "- Output the title directly — no analysis, no chain-of-thought.\n"
     "__LANGUAGE_RULE__\n"
     'Good: {"title": "Fix login button on mobile"}\n'
     'Good: {"title": "Postgres connection pool exhaustion"}\n'
@@ -63,19 +78,22 @@ _TITLE_PROMPT_TEMPLATE = (
 _LANGUAGE_RULE_MATCH_USER = "- Write the title in the same language as the user's message."
 _LANGUAGE_RULE_PINNED = "- Write the title in {language}."
 
-# Constrains the response to a single title field ("model answered instead of titling" failure class).
-_TITLE_RESPONSE_FORMAT = {
-    "type": "json_schema",
-    "json_schema": {"name": "session_title", "strict": True, "schema": {
-        "type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"], "additionalProperties": False}},
-}
-
-# Control-tag wrappers around machine-authored content inside a nominal "user" message (Codex CLI's
-# RECOGNIZED_CONTROL_WRAPPERS): stripped, titling continues on what remains.
-_CONTROL_WRAPPERS = tuple(
-    (f"<{tag}>", f"</{tag}>")
-    for tag in ("command-message", "command-name", "command-args", "local-command-caveat", "local-command-stderr",
-                "local-command-stdout", "task-notification", "system-reminder", "ide_opened_file", "ide_selection")
+# Control-tag wrappers that surround machine-authored content inside what is
+# nominally a "user" message. Titling from these is what produces a session
+# named after a slash command or an injected reminder rather than the user's
+# actual request. Ported from Codex CLI's RECOGNIZED_CONTROL_WRAPPERS, which
+# strips them (and keeps titling) rather than refusing outright.
+_CONTROL_WRAPPERS = (
+    ("<command-message>", "</command-message>"),
+    ("<command-name>", "</command-name>"),
+    ("<command-args>", "</command-args>"),
+    ("<local-command-caveat>", "</local-command-caveat>"),
+    ("<local-command-stderr>", "</local-command-stderr>"),
+    ("<local-command-stdout>", "</local-command-stdout>"),
+    ("<task-notification>", "</task-notification>"),
+    ("<system-reminder>", "</system-reminder>"),
+    ("<ide_opened_file>", "</ide_opened_file>"),
+    ("<ide_selection>", "</ide_selection>"),
 )
 
 # Hermes' own machine-authored openers: a compaction handoff or resumed session must not be titled after them.
@@ -171,13 +189,18 @@ def derive_title(user_message: str) -> Optional[str]:
 def _strip_title_prefix(text: str) -> str:
     return text[6:].strip() if text.lower().startswith("title:") else text
 
-
 def _first_line(text: str) -> str:
     return next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
 
 
 def _extract_title_text(content: str) -> str:
-    """Strict JSON, then a loose JSON scan, then first-line prose (a provider ignoring ``response_format`` still titles)."""
+    """Pull the title out of a model response.
+
+    No ``response_format`` is sent anymore (see module docstring), so the
+    shape is free-form: try a strict JSON object first, fall back through a
+    loose JSON scan, and finally to first-line prose so any provider still
+    titles.
+    """
     if not content:
         return ""
     raw = content.strip()
@@ -264,16 +287,45 @@ def generate_title(
         response = call_llm(
             task="title_generation",
             messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}],
-            # A title is a handful of tokens; a larger ceiling let chatty models burn seconds.
-            max_tokens=64, temperature=0.3, timeout=timeout, main_runtime=main_runtime,
-            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
+            # A title is a handful of tokens. The old 500-token ceiling let a
+            # chatty model burn seconds generating prose we then threw away.
+            # 64 is too small for reasoning-capable models (Qwen3.x etc.):
+            # their chain-of-thought alone can exceed 64 tokens, so every
+            # token goes to `reasoning_content` and `content` comes back empty
+            # -> the title silently fails. 2048 gives reasoning models room to
+            # finish thinking AND emit the tiny JSON title; non-reasoning
+            # models just stop after the short answer.
+            max_tokens=2048,
+            temperature=0.3,
+            timeout=timeout,
+            main_runtime=main_runtime,
+            # LM Studio's Qwen3.x (MLX) returns EMPTY `content` under strict
+            # json_schema response_format (it aborts instead of emitting the
+            # constrained object — observed with qwen3.6-27b). Free text is the
+            # API default, so we send NO response_format at all: a provider
+            # strict about the field's values (only json_object/json_schema, or
+            # rejecting it outright) can never be handed a format it refuses.
+            # _extract_title_text's JSON scan + prose fallback handles the
+            # shape, which it already does for non-compliant providers.
         )
-        title = _clean_title(_extract_title_text(response.choices[0].message.content or ""))
-        # Answer-shaped output guard: titling is a 3-7 word task, so a title with many words is a model that
-        # ignored the task and answered the user's message instead ("I don't have context on X — that's not
-        # something I recognize..."). Truncating would store half an assistant blob as the session title,
-        # which is still an assistant blob — reject instead so the caller retries on the next exchange
-        # (maybe_auto_title fires for the first two exchanges). Port of can1357/oh-my-pi#7306.
+        content = response.choices[0].message.content or ""
+        title = _clean_title(_extract_title_text(content))
+        # Reasoning models may spend the whole budget on `reasoning_content`
+        # and return empty `content` (finish_reason: length). Their chain of
+        # thought usually states the title candidate anyway, so fall back to
+        # it rather than letting a truncated reply lose the work.
+        if not title:
+            reasoning = getattr(response.choices[0].message, "reasoning_content", "") or ""
+            if reasoning:
+                title = _clean_title(_extract_title_text(reasoning))
+        # Answer-shaped output guard: titling is a 3-7 word task, so a title
+        # with many words is a model that ignored the task and answered
+        # the user's message instead ("I don't have context on X — that's
+        # not something I recognize..."). Truncating would store half an
+        # assistant blob as the session title, which is still an assistant
+        # blob — reject instead so the caller retries on the next exchange
+        # (maybe_auto_title fires for the first two exchanges).
+        # Port of can1357/oh-my-pi#7306.
         if title is not None and len(title.split()) > _MAX_TITLE_WORDS:
             # Answer-shaped output: reject (not truncate) so the caller retries next exchange.
             logger.debug("Rejecting answer-shaped title output (%d words > %d)", len(title.split()), _MAX_TITLE_WORDS)

@@ -167,6 +167,10 @@ def run_doctor(args):
     os.environ.setdefault("HERMES_INTERACTIVE", "1")
     if getattr(args, 'ack', None):
         return _ack_advisory(args.ack)
+    if getattr(args, 'security_rules', False):
+        from hermes_cli.security_rules_audit import run_security_rules_audit_cli
+        run_security_rules_audit_cli()
+        return
     print()
     for line in ("┌─────────────────────────────────────────────────────────┐",
                  "│                 🩺 Hermes Doctor                        │",

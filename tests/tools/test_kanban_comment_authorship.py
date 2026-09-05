@@ -19,6 +19,7 @@ import pytest
 def comment_board(monkeypatch, tmp_path):
     """Isolated board DB + clean session env; returns a created task id."""
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -27,7 +28,7 @@ def comment_board(monkeypatch, tmp_path):
     kb._INITIALIZED_PATHS.clear()
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="authored", assignee="forge")
     finally:
@@ -38,7 +39,8 @@ def comment_board(monkeypatch, tmp_path):
 
 def _comment_row(task_id):
     from hermes_cli import kanban_db as kb
-    conn = kb.connect()
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
     try:
         return conn.execute(
             "SELECT author, body, session_id FROM task_comments "
@@ -76,7 +78,8 @@ def test_fork_session_differs_from_claimant_session(comment_board, monkeypatch):
     kt._handle_comment({"task_id": tid, "body": "fork here"})
 
     from hermes_cli import kanban_db as kb
-    conn = kb.connect()
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
     try:
         rows = conn.execute(
             "SELECT session_id FROM task_comments WHERE task_id = ? "
@@ -103,9 +106,10 @@ def test_missing_session_env_records_null(comment_board, monkeypatch):
 
 def test_add_comment_session_id_defaults_and_strips(comment_board):
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
 
     tid = comment_board
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         kb.add_comment(conn, tid, author="forge", body="no provenance")
         kb.add_comment(conn, tid, author="forge", body="blank provenance",
@@ -124,9 +128,10 @@ def test_add_comment_session_id_defaults_and_strips(comment_board):
 
 def test_comment_dataclass_carries_session_id(comment_board):
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
 
     tid = comment_board
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         kb.add_comment(conn, tid, author="forge", body="hi",
                        session_id="sessX")
@@ -139,9 +144,10 @@ def test_comment_dataclass_carries_session_id(comment_board):
 def test_add_comment_rejects_bad_input(comment_board):
     """Pre-existing validation intact (author/body required)."""
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
 
     tid = comment_board
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         with pytest.raises(ValueError):
             kb.add_comment(conn, tid, author="", body="x")
@@ -186,7 +192,8 @@ def test_two_task_local_contexts_one_process_leave_distinct_trails(
         kt._handle_comment({"task_id": tid, "body": "context 2"})
 
     from hermes_cli import kanban_db as kb
-    conn = kb.connect()
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
     try:
         rows = conn.execute(
             "SELECT body, session_id FROM task_comments WHERE task_id = ? "
@@ -205,9 +212,10 @@ def test_worker_context_rendering_marks_off_run_session(comment_board):
     comments render their (raw) session id for current-vs-ended ownership
     checks; legacy NULL rows render unchanged."""
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
 
     tid = comment_board
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         kb.add_comment(conn, tid, author="forge", body="with provenance",
                        session_id="ended_run_session")

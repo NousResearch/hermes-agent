@@ -68,7 +68,14 @@ def _add_worktree(repo: Path, target: Path, branch: str) -> Path:
     return target
 
 
-def test_decompose_worktree_children_get_own_workspace(kanban_home):
+def test_decompose_worktree_children_get_own_workspace(kanban_home, tmp_path):
+    # A worktree child with no repo of its own is anchored on the board's
+    # default_workdir; without one it cannot be checked out anywhere and the
+    # fan-out is refused (see test_kanban_decompose_child_repo.py). Set the
+    # anchor the way ``boards set-default-workdir`` does.
+    kb.write_board_metadata(
+        kb.read_board_metadata()["slug"], default_workdir=str(tmp_path / "repo"),
+    )
     with kbc.connect() as conn:
         root = kb.create_task(conn, title="build the feature", triage=True)
         conn.execute(

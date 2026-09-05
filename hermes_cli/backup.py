@@ -1101,8 +1101,7 @@ def _copy_quick_snapshot_files(
     """Copy every quick-snapshot candidate into *staging_dir*.
 
     Returns ``(manifest {rel: size}, failed_dbs, oversized_skipped)``. The last two are snapshot
-    incompleteness (#68805): the caller must suppress pruning so the older snapshot that may hold
-    the only recoverable DB survives.
+    incompleteness (#68805): pruning still runs but must keep the newest recovery copy of each omitted DB.
     """
     manifest: Dict[str, int] = {}
     failed_dbs: list[str] = []
@@ -1182,18 +1181,21 @@ def _create_quick_snapshot_locked(
         json.dump(meta, f, indent=2)
     os.replace(staging_dir, root / snap_id)
     # Auto-prune (pre-update callers pass a smaller keep so state.db copies don't accumulate).
-    # Skip when a DB failed to capture OR was skipped for size (#68805): the snapshot is
-    # incomplete and the older one may hold the only recoverable database.
-    if not (failed_dbs or oversized_skipped):
-        _prune_oldest(_snapshot_dirs(root), _QUICK_DEFAULT_KEEP if keep is None else keep, shutil.rmtree, "snapshot")
-    else:
+    # When a present DB failed to capture or was skipped for size (#68805), preserve the newest
+    # recovery copy of each omitted DB in addition to the retention window. Still prune stale
+    # partial snapshots that add no recovery coverage: they contain config/auth copies and must
+    # stay bounded.
+    incomplete = failed_dbs or oversized_skipped
+    retention = _QUICK_DEFAULT_KEEP if keep is None else keep
+    if incomplete:
         if oversized_skipped:
-            print("  ⚠ Skipping snapshot prune: DB file(s) skipped for size: " + ", ".join(oversized_skipped))
+            print("  ⚠ Preserving latest recovery copy: DB file(s) skipped for size: " + ", ".join(oversized_skipped))
             logger.warning("Quick snapshot skipped oversized DB file(s): %s", ", ".join(oversized_skipped))
         logger.warning(
-            "Skipping snapshot prune because %d DB(s) failed to capture and/or %d were oversized "
-            "— preserving older snapshots as recovery source",
+            "Snapshot incomplete because %d DB(s) failed to capture and/or %d were oversized "
+            "— preserving latest recovery copy of each omitted DB",
             len(failed_dbs), len(oversized_skipped))
+    _prune_quick_snapshots(root, keep=retention, preserve_recovery_for=set(failed_dbs) | set(oversized_skipped))
     logger.info("quick snapshot phase=copy status=complete id=%s files=%d bytes=%d",
                 snap_id, len(manifest), sum(manifest.values()))
     return snap_id
@@ -1503,6 +1505,38 @@ def _prune_oldest(newest_first: List[Path], keep: int, remove, what: str) -> int
         except OSError as exc:
             logger.warning("Failed to prune %s %s: %s", what, p.name, exc)
     return deleted
+
+
+def _prune_quick_snapshots(
+    root: Path,
+    keep: int = _QUICK_DEFAULT_KEEP,
+    *,
+    preserve_recovery_for: Optional[set[str]] = None,
+) -> int:
+    """Remove old snapshots while retaining recovery copies for omitted DBs."""
+    dirs = _snapshot_dirs(root)
+    retained = set(dirs[:keep])
+    missing = set(preserve_recovery_for or ())
+    if missing:
+        for d in dirs:
+            try:
+                with open(d / "manifest.json", encoding="utf-8") as f:
+                    meta = json.load(f)
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning(
+                    "Could not inspect snapshot %s while preserving recovery copies: %s",
+                    d.name, exc)
+                continue
+            files = meta.get("files") if isinstance(meta, dict) else None
+            if not isinstance(files, dict):
+                continue
+            covered = missing.intersection(files)
+            if covered:
+                retained.add(d)
+                missing.difference_update(covered)
+                if not missing:
+                    break
+    return _prune_oldest([d for d in dirs if d not in retained], 0, shutil.rmtree, "snapshot")
 
 
 def prune_quick_snapshots(keep: int = _QUICK_DEFAULT_KEEP, hermes_home: Optional[Path] = None) -> int:

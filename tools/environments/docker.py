@@ -919,39 +919,30 @@ class DockerEnvironment(BaseEnvironment):
     def _find_reusable_container(
         self, task_label: str, profile_label: str, egress_label: str) -> Optional[tuple[str, str]]:
         """``(container_id, state)`` of an existing container labeled for this task/profile/
-        egress posture, or ``None`` on miss or any failure. With egress off the probe is
-        widened to all task+profile containers and post-filtered to reject a non-"off" egress
-        label — else a container built with egress on would be reused after ``hermes egress
-        disable`` with its baked-in proxy env and CA mounts."""
-        egress_off = egress_label == "off"
+        egress posture, or ``None`` on miss or any failure. The egress posture is a label
+        FILTER for every posture, "off" included: a container built with egress on must not be
+        reused after ``hermes egress disable`` (baked-in proxy env and CA mounts), and every
+        container this class creates carries the label. The ``{{.Label "key"}}`` template
+        function is Docker-only — podman ps exits 125 on it — so the probe never uses it (#99213)."""
         filters = [
             "--filter", "label=hermes-agent=1",
             "--filter", f"label=hermes-task-id={task_label}",
-            "--filter", f"label=hermes-profile={profile_label}"]
-        if egress_off:
-            fmt = '{{.ID}}\t{{.State}}\t{{.Label "' + _EGRESS_LABEL_KEY + '"}}'
-        else:
-            filters.extend(["--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"])
-            fmt = "{{.ID}}\t{{.State}}"
+            "--filter", f"label=hermes-profile={profile_label}",
+            "--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"]
         result = _docker_query(
-            [self._docker_exe, "ps", "-a", *filters, "--format", fmt], timeout=10,
+            [self._docker_exe, "ps", "-a", *filters, "--format", "{{.ID}}\t{{.State}}"], timeout=10,
             fail="docker ps probe failed: %s — will start a fresh container",
             nonzero="docker ps probe returned %d: %s — will start a fresh container")
         if result is None:
             return None
         # Multiple matches can happen after a crash mid-cleanup: prefer a running
         # one, else the first listed; stale duplicates are the orphan reaper's job.
-        nparts = 3 if egress_off else 2
         running = first = None
         for ln in (ln for ln in result.stdout.splitlines() if ln.strip()):
-            parts = ln.split("\t", nparts - 1)
-            if len(parts) != nparts:
+            parts = ln.split("\t", 1)
+            if len(parts) != 2:
                 continue
-            cid, state = parts[0], parts[1].lower()
-            if egress_off and parts[2] not in ("", "<no value>", "off"):
-                logger.debug(
-                    "skipping container %s for egress=off reuse: label %s=%r", cid, _EGRESS_LABEL_KEY, parts[2])
-                continue
+            cid, state = parts[0], parts[1].strip().lower()
             if first is None:
                 first = (cid, state)
             if state == "running" and running is None:

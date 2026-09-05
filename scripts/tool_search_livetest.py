@@ -287,7 +287,7 @@ def setup_isolated_home(enabled: bool, listing: str = "off",
                 "enabled": "on" if enabled else "off",
                 "threshold_pct": 10,
                 "search_default_limit": 5,
-                "max_search_limit": 20,
+                "max_search_limit": 25,
                 "listing": listing,
                 "listing_max_tokens": listing_max_tokens,
             },
@@ -366,7 +366,7 @@ def run_one_scenario(scenario: Dict[str, Any], enabled: bool, out_dir: Path) -> 
     n_registered = register_fake_tools()
 
     # Capture tool calls via a hook on the registry dispatch path. We use the
-    # registry hook (rather than the run_agent.handle_function_call binding,
+    # registry hook (rather than the model_tools.handle_function_call binding,
     # which is already cached by tool_executor) because the dispatch call is
     # the one place every underlying tool call lands. Bridge calls are
     # extracted from the message transcript after the run.

@@ -148,7 +148,12 @@ function DialogContent({
           <DialogPortalContainerContext.Provider value={contentNode}>
             {/* Scroll lives on an inner box so this shell keeps a painted bottom radius. */}
             <div className="relative z-10 overflow-hidden rounded-xl border border-b-0 border-(--stroke-nous) bg-(--ui-chat-bubble-background)">
-              <div className={cn('grid max-h-[calc(85vh-5rem)] min-h-0 gap-3 overflow-y-auto p-4', bodyClassName)}>
+              <div
+                className={cn(
+                  'grid max-h-[calc(85vh-5rem)] min-h-0 grid-cols-[minmax(0,1fr)] gap-3 overflow-y-auto p-4',
+                  bodyClassName
+                )}
+              >
                 {children}
               </div>
             </div>
@@ -194,8 +199,17 @@ function DialogContent({
         <DialogPortalContainerContext.Provider value={contentNode}>
           {/* The BODY: layout and scroll. `min-h-0` lets this box shrink inside
               the max-height of the shell. The overflow then scrolls here
-              instead of pushing the shell past the viewport. */}
-          <div className={cn('grid min-h-0 gap-3 overflow-y-auto rounded-[inherit] p-4', bodyClassName)}>
+              instead of pushing the shell past the viewport. The explicit
+              `minmax(0,1fr)` column keeps the implicit grid track from sizing
+              to unbreakable content (a long URL in a nowrap <code>), which
+              otherwise widens the track past the dialog and grows a horizontal
+              scrollbar that clips the content instead of truncating it. */}
+          <div
+            className={cn(
+              'grid min-h-0 grid-cols-[minmax(0,1fr)] gap-3 overflow-y-auto rounded-[inherit] p-4',
+              bodyClassName
+            )}
+          >
             {children}
           </div>
           {closeButton}

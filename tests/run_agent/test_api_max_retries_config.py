@@ -16,7 +16,7 @@ def _make_agent(api_max_retries=None):
     if api_max_retries is not None:
         cfg["agent"]["api_max_retries"] = api_max_retries
 
-    with patch("run_agent.OpenAI"), \
+    with patch("agent.process_bootstrap.OpenAI"), \
          patch("hermes_cli.config.load_config", return_value=cfg), \
          patch("hermes_cli.config.load_config_readonly", return_value=cfg):
         return AIAgent(

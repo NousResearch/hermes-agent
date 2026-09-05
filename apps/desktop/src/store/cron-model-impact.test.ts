@@ -20,6 +20,16 @@ import {
 
 import { deferred } from '../test/deferred'
 
+async function waitForConfirmToast() {
+  return vi.waitFor(() => {
+    const toast = $notifications.get().find(item => item.id.startsWith('model-warning-confirm-'))
+
+    expect(toast).toBeDefined()
+
+    return toast!
+  })
+}
+
 function response(impact: ModelAssignmentResponse['cron_model_impact']): ModelAssignmentResponse {
   return {
     ok: true,
@@ -114,7 +124,43 @@ describe('setMainModelAssignment', () => {
     expect($notifications.get()).toEqual([])
   })
 
-  it('rejects non-persisted confirmation outcomes without changing impact state', async () => {
+  it('prompts and retries with confirm_expensive_model when the user accepts', async () => {
+    setModelAssignment.mockResolvedValueOnce(response(positive()))
+    await setMainModelAssignment({ provider: 'nous', model: 'one' })
+
+    const confirmResponse = {
+      ok: false,
+      scope: 'main',
+      provider: 'openrouter',
+      model: 'openai/gpt-5.5-pro',
+      confirm_required: true,
+      confirm_message: 'Confirm this expensive model.'
+    } satisfies ModelAssignmentResponse
+
+    setModelAssignment.mockResolvedValueOnce(confirmResponse)
+    setModelAssignment.mockResolvedValueOnce(response(positive('Confirmed job')))
+
+    const pending = setMainModelAssignment({ provider: 'openrouter', model: 'openai/gpt-5.5-pro' })
+    const confirm = await waitForConfirmToast()
+
+    expect(confirm.kind).toBe('warning')
+    expect(confirm.message).toBe('Confirm this expensive model.')
+    expect(confirm.action?.label).toBe('Confirm')
+
+    confirm.action?.onClick()
+    await pending
+
+    expect(setModelAssignment).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        provider: 'openrouter',
+        model: 'openai/gpt-5.5-pro',
+        confirm_expensive_model: true
+      })
+    )
+    expect($notifications.get().some(item => item.detail?.includes('Confirmed job'))).toBe(true)
+  })
+
+  it('declines without retrying when the user dismisses the guard prompt', async () => {
     setModelAssignment.mockResolvedValueOnce(response(positive()))
     await setMainModelAssignment({ provider: 'nous', model: 'one' })
 
@@ -127,14 +173,59 @@ describe('setMainModelAssignment', () => {
       confirm_message: 'Confirm this expensive model.'
     } satisfies ModelAssignmentResponse)
 
-    await expect(setMainModelAssignment({ provider: 'openrouter', model: 'openai/gpt-5.5-pro' })).rejects.toThrow(
-      'Confirm this expensive model.'
-    )
-    expect($notifications.get()).toHaveLength(1)
-    const action = $notifications.get()[0].action
+    const pending = setMainModelAssignment({ provider: 'openrouter', model: 'openai/gpt-5.5-pro' })
+    const confirm = await waitForConfirmToast()
+
+    dismissNotification(confirm.id)
+
+    await expect(pending).rejects.toThrow('Model change cancelled')
+    expect(setModelAssignment.mock.calls).toHaveLength(2)
+
+    const impact = $notifications.get().find(item => item.id === CRON_MODEL_IMPACT_NOTIFICATION_ID)
     const reviewCount = $cronReviewRequest.get()
-    action?.onClick()
+    impact?.action?.onClick()
     expect($cronReviewRequest.get()).toBe(reviewCount + 1)
+  })
+
+  it('fails closed without a prompt when skipConfirmPrompt is set', async () => {
+    setModelAssignment.mockResolvedValueOnce({
+      ok: false,
+      scope: 'main',
+      provider: 'openrouter',
+      model: 'openai/gpt-5.5-pro',
+      confirm_required: true,
+      confirm_message: 'Confirm this expensive model.'
+    } satisfies ModelAssignmentResponse)
+
+    await expect(
+      setMainModelAssignment({ provider: 'openrouter', model: 'openai/gpt-5.5-pro' }, undefined, {
+        skipConfirmPrompt: true
+      })
+    ).rejects.toThrow('Confirm this expensive model.')
+    expect(setModelAssignment).toHaveBeenCalledTimes(1)
+    expect($notifications.get()).toEqual([])
+  })
+
+  it('does not recurse when the backend still demands confirm after ack', async () => {
+    const confirmResponse = {
+      ok: false,
+      scope: 'main',
+      provider: 'openrouter',
+      model: 'openai/gpt-5.5-pro',
+      confirm_required: true,
+      confirm_message: 'Confirm this expensive model.'
+    } satisfies ModelAssignmentResponse
+
+    setModelAssignment.mockResolvedValueOnce(confirmResponse)
+    setModelAssignment.mockResolvedValueOnce(confirmResponse)
+
+    const pending = setMainModelAssignment({ provider: 'openrouter', model: 'openai/gpt-5.5-pro' })
+    const confirm = await waitForConfirmToast()
+
+    confirm.action?.onClick()
+
+    await expect(pending).rejects.toThrow('Confirm this expensive model.')
+    expect(setModelAssignment).toHaveBeenCalledTimes(2)
   })
 
   it('publishes only the latest same-profile assignment when responses reverse', async () => {

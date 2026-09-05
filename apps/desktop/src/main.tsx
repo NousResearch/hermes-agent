@@ -5,6 +5,8 @@ import './store/active-work'
 import './store/power'
 // Side-effect: applies the persisted window translucency on load.
 import './store/translucency'
+// Side-effect: applies the persisted user-bubble transparency on load.
+import './store/user-bubble-transparency'
 // Dev-only render/state churn counters. MUST precede the `react-dom` import
 // below: react-dom captures the devtools hook at module init, so bippy has to
 // install during THIS import's evaluation or every commit goes unseen
@@ -26,9 +28,14 @@ import { I18nProvider } from './i18n'
 import { installClipboardShim } from './lib/clipboard'
 import { queryClient } from './lib/query-client'
 import { installRendererAnimationPauseState } from './lib/renderer-loop-pause'
+import { installSelectionCopyColorGuard } from './lib/selection-copy-colors'
 import { ThemeProvider } from './themes/context'
 
 installClipboardShim()
+// Chromium serializes selection copies (Cmd+C, right-click Copy) with the
+// theme's computed colors inlined; without this guard a dark-theme selection
+// pastes as near-white text into light-background targets.
+installSelectionCopyColorGuard()
 
 // The perf probe ships in dev, and in a production build ONLY when explicitly
 // opted in (VITE_PERF_PROBE=1) — this lets the perf harness measure a real,

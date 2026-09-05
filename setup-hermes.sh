@@ -133,19 +133,32 @@ fi
 echo -e "${CYAN}→${NC} Checking Python $PYTHON_VERSION..."
 
 if is_termux; then
-    if command -v python >/dev/null 2>&1; then
-        PYTHON_PATH="$(command -v python)"
-        if "$PYTHON_PATH" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
-            PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
-            echo -e "${GREEN}✓${NC} $PYTHON_FOUND_VERSION found"
-        else
-            echo -e "${RED}✗${NC} Termux Python must be 3.11+"
-            echo "    Run: pkg install python"
-            exit 1
+    # Hermes currently declares requires-python >=3.11,<3.14. Termux can expose
+    # a newer default `python` before dependencies have compatible wheels, so
+    # prefer explicit compatible minors and verify the upper bound before using
+    # the interpreter to create the venv.
+    for python_cmd in python3.11 python3.12 python3.13 python; do
+        if command -v "$python_cmd" >/dev/null 2>&1; then
+            CANDIDATE_PATH="$(command -v "$python_cmd")"
+            if "$CANDIDATE_PATH" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+                PYTHON_PATH="$CANDIDATE_PATH"
+                PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
+                echo -e "${GREEN}✓${NC} $PYTHON_FOUND_VERSION found"
+                break
+            fi
         fi
-    else
-        echo -e "${RED}✗${NC} Python not found in Termux"
-        echo "    Run: pkg install python"
+    done
+
+    if [ -z "${PYTHON_PATH:-}" ]; then
+        if command -v python >/dev/null 2>&1; then
+            PYTHON_FOUND_VERSION="$(python --version 2>/dev/null || true)"
+            echo -e "${RED}✗${NC} Termux Python $PYTHON_FOUND_VERSION is not supported; Hermes requires Python >=3.11,<3.14"
+            echo "    Install a supported interpreter and re-run this script:"
+            echo "      pkg install tur-repo && pkg install python3.13"
+        else
+            echo -e "${RED}✗${NC} Python not found in Termux"
+            echo "    Run: pkg install python"
+        fi
         exit 1
     fi
 else
@@ -187,6 +200,30 @@ SETUP_PYTHON="$SCRIPT_DIR/venv/bin/python"
 # ============================================================================
 # Dependencies
 # ============================================================================
+
+run_locked_uv_sync() {
+    # Bootstrap uv calls stay isolated from ambient config via UV_NO_CONFIG
+    # (#21269). A locked project sync is different: uv.lock records resolver
+    # settings from this checkout's [tool.uv], so hiding pyproject.toml makes
+    # uv 0.12+ reject the valid lock. Re-enable project discovery only for
+    # this subprocess while redirecting user/system config lookups to an empty
+    # directory. Keep HOME unchanged so caches, credentials, and git continue
+    # to work normally.
+    local project_env="$1"
+    local isolated_uv_config
+    local sync_rc
+    isolated_uv_config="$(mktemp -d)" || return 1
+
+    (
+        unset UV_NO_CONFIG UV_CONFIG_FILE
+        export XDG_CONFIG_HOME="$isolated_uv_config"
+        export XDG_CONFIG_DIRS="$isolated_uv_config"
+        UV_PROJECT_ENVIRONMENT="$project_env" $UV_CMD sync --extra all --locked
+    )
+    sync_rc=$?
+    rmdir "$isolated_uv_config" 2>/dev/null || true
+    return "$sync_rc"
+}
 
 echo -e "${CYAN}→${NC} Installing dependencies..."
 
@@ -251,7 +288,7 @@ else
         # at first use.
         # Also: stream stderr through directly so the user sees uv's
         # progress UI instead of staring at a frozen prompt.
-        if UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD sync --extra all --locked; then
+        if run_locked_uv_sync "$SCRIPT_DIR/venv"; then
             echo -e "${GREEN}✓${NC} Dependencies installed (hash-verified via uv.lock)"
         else
             echo -e "${YELLOW}⚠${NC} Lockfile sync failed (see uv output above)."

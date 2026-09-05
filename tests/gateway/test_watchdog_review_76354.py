@@ -16,6 +16,16 @@ from agent.session_activity import ActivityProvenance, build_activity_snapshot
 from hermes_state import SessionDB
 
 
+def _activity_snapshot(db, session_id):
+    """Durable activity snapshot for *session_id* (what gateway/delegate readers build from the row)."""
+    row = db.get_session(session_id)
+    return build_activity_snapshot(
+        last_activity_at=row.get("last_activity_at"),
+        last_activity_description=row.get("last_activity_description"),
+        last_activity_provenance=row.get("last_activity_provenance"),
+    )
+
+
 # ── S1: observational activity writes must not ride the 20s patience ────────
 
 
@@ -77,7 +87,7 @@ def test_s1_clear_labels_noop_skips_transaction(tmp_path, monkeypatch):
     calls.clear()
     db.clear_session_activity_labels(sid)
     assert len(calls) == 1
-    activity = db.get_session_activity(sid)
+    activity = _activity_snapshot(db, sid)
     assert activity["last_activity_description"] == ""
 
 

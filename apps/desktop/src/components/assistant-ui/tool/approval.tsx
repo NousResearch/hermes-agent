@@ -28,6 +28,7 @@ import {
   sessionApprovalInlineVisible,
   sessionApprovalRequest
 } from '@/store/prompts'
+import { requestForOwnedSession } from '@/store/session-states'
 
 import type { ToolPart } from './fallback-model'
 
@@ -39,12 +40,12 @@ import type { ToolPart } from './fallback-model'
 // Binding is POSITIONAL, not command-matched: the desktop `tool.start` payload
 // carries no structured args (only tool_id/name/context — see
 // tui_gateway/server.py::_on_tool_start), so we cannot join the approval to the
-// row by command string. But `approval.request` only ever fires from the
-// `terminal` / `execute_code` guards and the agent thread blocks on exactly one
+// row by command string. `approval.request` can fire from the command guards
+// and protected-instruction file writes. The agent thread blocks on exactly one
 // approval at a time, so the single pending row of those tools IS the row that
 // raised it. The command/description text comes from `$approvalRequest` (the
 // event payload), which is the only place that data reliably exists.
-export const APPROVAL_TOOLS = new Set(['terminal', 'execute_code'])
+export const APPROVAL_TOOLS = new Set(['terminal', 'execute_code', 'patch', 'write_file'])
 
 // Canonical gateway choices (ui-tui/src/components/prompts.tsx).
 type ApprovalChoice = 'once' | 'session' | 'always' | 'deny'
@@ -143,11 +144,22 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
       setSubmitting(choice)
 
       try {
-        await gateway.request<{ resolved?: boolean }>('approval.respond', {
-          choice,
-          request_id: request.requestId,
-          session_id: request.sessionId ?? undefined
-        })
+        // Route through the session's OWNER (tile route → known profile);
+        // ambient only when no owner is known. The ambient socket follows
+        // foreground focus, and for a cross-profile session it points at a
+        // backend that never held this approval (#91684 client half).
+        await requestForOwnedSession<{ resolved?: boolean }>(
+          request.sessionId,
+          // Bound (not wrapped) so the ambient fallback keeps the exact
+          // 2-arg call shape gateway.request callers assert on.
+          gateway.request.bind(gateway) as typeof gateway.request,
+          'approval.respond',
+          {
+            choice,
+            request_id: request.requestId,
+            session_id: request.sessionId ?? undefined
+          }
+        )
         triggerHaptic(choice === 'deny' ? 'cancel' : 'submit')
         clearApprovalRequest(request.sessionId, request.requestId)
         void replayPendingApproval(gateway, request.sessionId).catch(() => undefined)

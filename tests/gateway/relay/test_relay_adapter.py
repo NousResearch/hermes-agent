@@ -96,7 +96,7 @@ class _CaptureTransport:
     def __init__(self):
         self.sent = None
         self.sent_platform = None
-        # No concrete fronted identities ⇒ _platform_is_fronted is a no-op here.
+        # No concrete fronted identities ⇒ fronts_platform is a no-op here.
         self._identities = []
 
     def set_inbound_handler(self, h):  # noqa: D401

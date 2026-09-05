@@ -172,3 +172,27 @@ class TestSessionStoreUnmultiplexedRecovery:
         assert recovered.session_id == "sess-coder"
         assert recovered.session_key == "agent:main:telegram:dm:99"
         assert store._db.reopened == ["sess-coder"]
+
+    @pytest.mark.parametrize(
+        ("recovered_key", "adopted"),
+        [
+            ("agent:coder:telegram:dm:99", False),  # sibling namespace → fail closed
+            ("agent:main:telegram:dm:99:v1", True),  # same namespace → adoptable
+        ],
+        ids=["sibling-profile", "same-profile"],
+    )
+    def test_flag_on_fences_recovery_by_requested_namespace(
+        self, tmp_path, recovered_key, adopted
+    ):
+        """#74285: under multiplexing the guard compares the recovered row's
+        ``agent:<ns>:`` against the REQUESTED key, never the active profile."""
+        row = {"id": "sess", "started_at": 1700000000, "session_key": recovered_key}
+        store = self._store_with_row(tmp_path, row, multiplex_profiles=True)
+        store._db_pinned = store._db
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="coder"):
+            recovered = store._recover_session_from_db(
+                session_key="agent:main:telegram:dm:99",
+                source=_src(chat_id="99", chat_type="dm"),
+                now=datetime.fromtimestamp(1700000001),
+            )
+        assert (recovered is not None) is adopted

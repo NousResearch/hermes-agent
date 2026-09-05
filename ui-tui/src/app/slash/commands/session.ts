@@ -78,12 +78,12 @@ const reasoningConfigPayload = (arg: string, sid: string) => {
 
 export const sessionCommands: SlashCommand[] = [
   {
-    aliases: ['bg', 'btw'],
+    aliases: ['background'],
     help: 'launch a background prompt',
-    name: 'background',
+    name: 'bg',
     run: (arg, ctx) => {
       if (!arg) {
-        return ctx.transcript.sys('/background <prompt>')
+        return ctx.transcript.sys('/bg <prompt>')
       }
 
       ctx.gateway.rpc<BackgroundStartResponse>('prompt.background', { session_id: ctx.sid, text: arg }).then(
@@ -94,6 +94,26 @@ export const sessionCommands: SlashCommand[] = [
 
           patchUiState(state => ({ ...state, bgTasks: new Set(state.bgTasks).add(r.task_id!) }))
           ctx.transcript.sys(`bg ${r.task_id} started`)
+        })
+      )
+    }
+  },
+
+  {
+    help: 'ask a side question about this conversation',
+    name: 'btw',
+    run: (arg, ctx) => {
+      if (!arg) {
+        return ctx.transcript.sys('/btw <question>')
+      }
+
+      ctx.gateway.rpc<BackgroundStartResponse>('prompt.btw', { session_id: ctx.sid, text: arg }).then(
+        ctx.guarded<BackgroundStartResponse>(r => {
+          if (!r.task_id) {
+            return
+          }
+
+          ctx.transcript.sys(`btw ${r.task_id} — answering from a conversation snapshot`)
         })
       )
     }

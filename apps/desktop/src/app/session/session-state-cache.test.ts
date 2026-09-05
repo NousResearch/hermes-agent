@@ -130,4 +130,99 @@ describe('SessionStateCache', () => {
     expect($sessionStates.get().runtime).toMatchObject({ storedSessionId: 'stored', busy: false, needsInput: false })
     expect($sessionStates.get().runtime.messages).toEqual([])
   })
+
+  describe('authoritative liveness probe (#95189)', () => {
+    function cacheWithAuthority(evicted: string[]): SessionStateCache {
+      return new SessionStateCache(
+        {
+          isReferenced: () => false,
+          onEvict: runtimeId => evicted.push(runtimeId),
+          isAuthoritativelyActive: runtimeId => {
+            const live = $sessionStates.get()[runtimeId]
+
+            return Boolean(live && (live.busy || live.awaitingResponse))
+          }
+        },
+        { maxBytes: 0, maxCount: 0 }
+      )
+    }
+
+    it.each([
+      ['busy', (state: ClientSessionState) => ({ ...state, busy: true })],
+      ['awaiting', (state: ClientSessionState) => ({ ...state, awaitingResponse: true })]
+    ])('evicts an orphaned %s transcript once the authoritative record settles', (_label, decorate) => {
+      const evicted: string[] = []
+      const cache = cacheWithAuthority(evicted)
+      const orphaned = decorate(settled('orphaned'))
+
+      // Mid-turn the snapshot and the authoritative record agree: protection
+      // must hold exactly as it does without the probe.
+      $sessionStates.set({ orphaned })
+      cache.set('orphaned', orphaned)
+      cache.prune()
+      expect(cache.get('orphaned')).toBe(orphaned)
+
+      // The minting connection dies mid-turn. Reconnect reconciliation
+      // settles the authoritative record, but the respawned backend re-mints
+      // runtime ids — no event will ever reach this snapshot again, so its
+      // frozen in-flight flags must stop pinning the transcript.
+      $sessionStates.set({ orphaned: { ...orphaned, busy: false, awaitingResponse: false } })
+      cache.prune()
+
+      expect(cache.has('orphaned')).toBe(false)
+      expect(evicted).toEqual(['orphaned'])
+    })
+
+    it('evicts an in-flight transcript whose authoritative record was dropped entirely', () => {
+      const evicted: string[] = []
+      const cache = cacheWithAuthority(evicted)
+      const working = { ...settled('working'), busy: true }
+
+      $sessionStates.set({ working })
+      cache.set('working', working)
+      cache.prune()
+      expect(cache.has('working')).toBe(true)
+
+      // A soft gateway-mode apply wipes every authoritative state; surviving
+      // snapshots describe dead runtimes (#95189 reconnect churn).
+      $sessionStates.set({})
+      cache.prune()
+
+      expect(cache.has('working')).toBe(false)
+      expect(evicted).toEqual(['working'])
+    })
+
+    it('keeps an in-flight transcript pinned while the authoritative store still claims work', () => {
+      const evicted: string[] = []
+      const cache = cacheWithAuthority(evicted)
+      const working = { ...settled('working'), busy: true }
+
+      $sessionStates.set({ working })
+      cache.set('working', working)
+      cache.prune()
+
+      expect(cache.get('working')).toBe(working)
+      expect(evicted).toEqual([])
+    })
+
+    it.each([
+      ['busy', (state: ClientSessionState) => ({ ...state, busy: true })],
+      ['awaiting', (state: ClientSessionState) => ({ ...state, awaitingResponse: true })]
+    ])('still never evicts %s transcripts when no authority probe is wired', (_label, decorate) => {
+      // Legacy construction: without the probe there is no way to tell a live
+      // turn from an orphaned snapshot, so the flags keep blocking eviction.
+      const working = decorate(settled('working'))
+      $sessionStates.set({ working: { ...working, busy: false, awaitingResponse: false } })
+
+      const cache = new SessionStateCache(
+        { isReferenced: () => false, onEvict: () => undefined },
+        { maxBytes: 0, maxCount: 0 }
+      )
+
+      cache.set('working', working)
+      cache.prune()
+
+      expect(cache.get('working')).toBe(working)
+    })
+  })
 })

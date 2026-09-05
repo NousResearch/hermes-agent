@@ -340,16 +340,17 @@ def test_credential_summary_no_secret_leak(
         project_secret="secret-bbbbbbbbbbb",
         dashboard_project_id="dash-uuid",
     )
-    summary = photon_auth.credential_summary()
-    blob = "\n".join(summary.values())
+    lines: list[str] = []
+    photon_auth.print_credential_summary(lines.append)
+    blob = "\n".join(lines)
     assert "token-aaaa" not in blob
     assert "secret-bbbb" not in blob
-    assert summary["device_token"].startswith("✓")
-    assert summary["project_key"].startswith("✓")
+    assert "device token        : ✓" in blob
+    assert "project secret      : ✓" in blob
     # Unified id: dashboard id == Spectrum id, surfaced as one project id.
-    assert summary["project_id"] == "sp-uuid"
-    assert summary["phone_number"].startswith("✗ missing")
-    assert summary["assigned_phone_number"].startswith("✗ missing")
+    assert "project id          : sp-uuid" in blob
+    assert "my number           : ✗ missing" in blob
+    assert "assigned number     : ✗ missing" in blob
 
 
 # ---------------------------------------------------------------------------
@@ -385,11 +386,13 @@ def test_validate_photon_token_rejects_unrecognized_session(
         photon_auth.validate_photon_token("some-token")
 
 
-@pytest.mark.parametrize("first_status", [200, 401, 403, 404])
+@pytest.mark.parametrize("first_status, nested_status", [(200, 200), (401, 200), (403, 200), (404, 200), (401, 403)])
 def test_login_device_flow_validates_before_persisting(
-    tmp_hermes_home: Path, monkeypatch: pytest.MonkeyPatch, first_status: int,
+    tmp_hermes_home: Path, monkeypatch: pytest.MonkeyPatch, first_status: int, nested_status: int,
 ) -> None:
+    photon_auth.store_photon_token("previous-token")
     checked = []
+
     def fake_post(url: str, *, json: Dict[str, Any], timeout: float) -> _FakeResponse:
         if url.endswith("/api/auth/device/code"):
             return _FakeResponse(json_body={
@@ -410,7 +413,7 @@ def test_login_device_flow_validates_before_persisting(
         assert url.endswith("/api/projects/")
         bearer = headers["Authorization"]
         checked.append(bearer)
-        status = first_status if bearer == "Bearer first-token" else 200
+        status = first_status if bearer == "Bearer first-token" else nested_status
         return _FakeResponse(status=status, json_body=[])
 
     monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
@@ -418,6 +421,16 @@ def test_login_device_flow_validates_before_persisting(
     # interval=0 falls back to DEFAULT_POLL_INTERVAL inside the poll loop
     # ("sleep first, then poll") — stub the sleep so the test doesn't idle 5s.
     monkeypatch.setattr(photon_auth.time, "sleep", lambda _s: None)
+
+    if nested_status != 200:
+        with pytest.raises(photon_auth.PhotonDashboardAuthError) as exc:
+            photon_auth.login_device_flow(open_browser=False)
+        assert checked == ["Bearer first-token", "Bearer nested-token"]
+        assert "tried: access_token, data.access_token" in str(exc.value)
+        assert "first-token" not in str(exc.value)
+        assert "nested-token" not in str(exc.value)
+        assert photon_auth.load_photon_token() == "previous-token"
+        return
 
     token = photon_auth.login_device_flow(open_browser=False)
     expected = "first-token" if first_status == 200 else "nested-token"
@@ -428,12 +441,21 @@ def test_login_device_flow_validates_before_persisting(
 
 
 
-def test_poll_candidates_preserves_priority_and_deduplicates(monkeypatch):
+@pytest.mark.parametrize("empty", [False, True], ids=["priority", "empty"])
+def test_poll_candidates_contract(monkeypatch, empty):
+    body = {} if empty else {
+        "access_token": "first-token", "accessToken": "first-token",
+        "data": {"access_token": "nested-token"},
+    }
+    headers = {} if empty else {"set-auth-token": "header-token"}
     monkeypatch.setattr(photon_auth.httpx, "post", lambda *args, **kwargs: _FakeResponse(
-        json_body={"access_token": "first-token", "accessToken": "first-token",
-                   "data": {"access_token": "nested-token"}},
-        headers={"set-auth-token": "header-token"},
+        json_body=body, headers=headers,
     ))
+    if empty:
+        for poll in (photon_auth.poll_for_token, photon_auth.poll_for_token_candidates):
+            with pytest.raises(RuntimeError, match="no token candidate"):
+                poll(_device_code(), interval=0)
+        return
     candidates = photon_auth.poll_for_token_candidates(_device_code(), interval=0)
     assert [(candidate.source, candidate.token) for candidate in candidates] == [
         ("access_token", "first-token"),
@@ -441,37 +463,3 @@ def test_poll_candidates_preserves_priority_and_deduplicates(monkeypatch):
         ("set-auth-token", "header-token"),
     ]
     assert photon_auth.poll_for_token(_device_code(), interval=0) == candidates[0].token
-
-
-@pytest.mark.parametrize("poll", [photon_auth.poll_for_token, photon_auth.poll_for_token_candidates])
-def test_poll_empty_candidates_raises(monkeypatch, poll):
-    monkeypatch.setattr(photon_auth.httpx, "post", lambda *args, **kwargs: _FakeResponse(
-        json_body={"access_token": " ", "data": {}},
-    ))
-    with pytest.raises(RuntimeError, match="no token candidate"):
-        poll(_device_code(), interval=0)
-
-
-def test_login_rejected_candidates_reports_sources_and_preserves_token(
-    tmp_hermes_home, monkeypatch,
-):
-    photon_auth.store_photon_token("previous-token")
-    monkeypatch.setattr(photon_auth, "request_device_code", lambda **kwargs: _device_code())
-    monkeypatch.setattr(photon_auth.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(photon_auth.httpx, "post", lambda *args, **kwargs: _FakeResponse(
-        json_body={"access_token": "rejected-first", "data": {"access_token": "rejected-nested"}},
-    ))
-    checked = []
-
-    def fake_get(url, *, headers, timeout):
-        checked.append(headers["Authorization"])
-        return _FakeResponse(status=401)
-
-    monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
-    with pytest.raises(photon_auth.PhotonDashboardAuthError) as exc:
-        photon_auth.login_device_flow(open_browser=False)
-    assert checked == ["Bearer rejected-first", "Bearer rejected-nested"]
-    assert "tried: access_token, data.access_token" in str(exc.value)
-    assert "rejected-first" not in str(exc.value)
-    assert "rejected-nested" not in str(exc.value)
-    assert photon_auth.load_photon_token() == "previous-token"

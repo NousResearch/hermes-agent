@@ -366,6 +366,191 @@ def test_shift_space_inserts_space():
     assert _parse("\x1b[27;2;32~") == [" "]
 
 
+def _parse_presses(byte_seq: str):
+    """Feed bytes through the VT100 parser and return the full KeyPress
+    objects (key + data), so buffer-level data leakage is observable."""
+    from prompt_toolkit.input.vt100_parser import Vt100Parser as _Vt100Parser
+    from prompt_toolkit.key_binding.key_processor import KeyPress as _KeyPress
+
+    out = []
+    parser = _Vt100Parser(out.append)
+    for ch in byte_seq:
+        parser.feed(ch)
+    parser.flush()
+    assert all(isinstance(kp, _KeyPress) for kp in out)
+    return out
+
+
+@pytest.mark.parametrize(
+    "seq",
+    ["\x1b[32;2u", "\x1b[27;2;32~"],  # kitty CSI-u and xterm modifyOtherKeys
+)
+def test_shift_space_keypress_data_is_plain_space(seq):
+    """The KeyPress data for Shift+Space must be ' ', not the raw CSI
+    sequence — self-insert inserts event.data, so raw bytes would leak
+    into the buffer even though the key is correctly mapped (#88071)."""
+    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+
+    install_keypress_data_normalization()
+    presses = _parse_presses(seq)
+    assert [kp.key for kp in presses] == [" "]
+    assert [kp.data for kp in presses] == [" "], (
+        f"{seq!r} KeyPress data must be ' ', got {[kp.data for kp in presses]!r}"
+    )
+
+
+@pytest.mark.parametrize("seq", ["\x1b[97;2u", "\x1b[27;2;97~"])
+def test_shift_letter_keypress_data_is_uppercase(seq):
+    """Shift+letter (modifier 2) maps to the uppercase letter; its KeyPress
+    data must be that letter, not the raw escape text (#88071)."""
+    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+
+    install_keypress_data_normalization()
+    presses = _parse_presses(seq)
+    assert [kp.key for kp in presses] == ["A"]
+    assert [kp.data for kp in presses] == ["A"], (
+        f"{seq!r} KeyPress data must be 'A', got {[kp.data for kp in presses]!r}"
+    )
+
+
+def test_keypad_digit_keypress_data_is_digit():
+    """Keypad digits (Kitty PUA) map to plain digits; their KeyPress data
+    must be the digit, not the raw escape text (#88071)."""
+    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+
+    install_keypress_data_normalization()
+    presses = _parse_presses("\x1b[57404u")
+    assert [kp.key for kp in presses] == ["5"]
+    assert [kp.data for kp in presses] == ["5"], (
+        f"keypad 5 KeyPress data must be '5', got {[kp.data for kp in presses]!r}"
+    )
+
+
+def test_plain_space_keypress_data_unchanged():
+    """A plain space must keep data == ' ' — normalization must not break
+    the ordinary typing path."""
+    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+
+    install_keypress_data_normalization()
+    presses = _parse_presses(" ")
+    assert [kp.key for kp in presses] == [" "]
+    assert [kp.data for kp in presses] == [" "]
+
+
+def test_buffer_level_shift_space_no_raw_csi():
+    """End-to-end: feeding Shift+Space through a real Application must put
+    a space in the buffer, not raw CSI bytes (#88071).
+
+    This is the regression the parser-only tests miss: Vt100Parser maps
+    the key to ' ' but the KeyPress data still carried the raw sequence,
+    and the default self-insert binding inserts event.data.
+    """
+    import asyncio
+
+    from prompt_toolkit import Application
+    from prompt_toolkit.buffer import Buffer
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.layout import HSplit, Layout, Window, BufferControl
+
+    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+
+    install_keypress_data_normalization()
+
+    async def _probe(payload: str) -> str:
+        buf = Buffer()
+        with create_pipe_input() as inp:
+            app = Application(
+                layout=Layout(HSplit([Window(BufferControl(buf))])), input=inp
+            )
+            run_task = asyncio.ensure_future(app.run_async())
+            await asyncio.sleep(0.05)
+            inp.send_text("ab")
+            inp.send_text(payload)
+            inp.send_text("cd")
+            await asyncio.sleep(0.15)
+            result = buf.text
+            app.exit()
+            try:
+                await asyncio.wait_for(run_task, 2)
+            except Exception:
+                pass
+        return result
+
+    for label, payload in (
+        ("Shift+Space xterm", "\x1b[27;2;32~"),
+        ("Shift+Space kitty", "\x1b[32;2u"),
+        ("plain space", " "),
+    ):
+        buffer = asyncio.run(_probe(payload))
+        assert buffer == "ab cd", (
+            f"{label}: buffer={buffer!r} — expected 'ab cd'; raw CSI bytes "
+            f"must never land in the buffer"
+        )
+
+
+def test_buffer_level_shift_letter_no_raw_csi():
+    """End-to-end: Shift+letter through a real Application must type the
+    capital letter, not literal ``^[[27;2;<code>~`` text (#92343).
+
+    Same KeyPress.data defect as Shift+Space (#88071), surfaced live on
+    Ghostty after 1a8fea3ce2 dropped it onto the modifyOtherKeys-only path:
+    ANSI_SEQUENCES maps the sequence to 'M', but self-insert pastes
+    event.data — the raw escape bytes.
+    """
+    import asyncio
+
+    from prompt_toolkit import Application
+    from prompt_toolkit.buffer import Buffer
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.layout import HSplit, Layout, Window, BufferControl
+
+    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+
+    install_keypress_data_normalization()
+
+    async def _probe(payload: str) -> str:
+        buf = Buffer()
+        with create_pipe_input() as inp:
+            app = Application(
+                layout=Layout(HSplit([Window(BufferControl(buf))])), input=inp
+            )
+            run_task = asyncio.ensure_future(app.run_async())
+            await asyncio.sleep(0.05)
+            inp.send_text("ab")
+            inp.send_text(payload)
+            inp.send_text("cd")
+            await asyncio.sleep(0.15)
+            result = buf.text
+            app.exit()
+            try:
+                await asyncio.wait_for(run_task, 2)
+            except Exception:
+                pass
+        return result
+
+    for label, payload, expected in (
+        ("Shift+M xterm modifyOtherKeys", "\x1b[27;2;77~", "abMcd"),
+        ("Shift+M kitty CSI-u (shifted cp)", "\x1b[77;2u", "abMcd"),
+        ("Shift+L kitty CSI-u (unshifted cp)", "\x1b[108;2u", "abLcd"),
+        ("plain letter", "M", "abMcd"),
+    ):
+        buffer = asyncio.run(_probe(payload))
+        assert buffer == expected, (
+            f"{label}: buffer={buffer!r} — expected {expected!r}; raw CSI "
+            f"bytes must never land in the buffer"
+        )
+
+
+def test_plain_letter_keypress_data_unchanged():
+    """The normalization predicate only fires on ESC-prefixed payloads —
+    ordinary ASCII typing must pass through untouched."""
+    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+
+    install_keypress_data_normalization()
+    presses = _parse_presses("M")
+    assert [(kp.key, kp.data) for kp in presses] == [("M", "M")]
+
+
 # ---------------------------------------------------------------------------
 # Multi-modifier combos (Ctrl+Shift / Ctrl+Alt / Shift+Alt / Ctrl+Alt+Shift)
 # ---------------------------------------------------------------------------

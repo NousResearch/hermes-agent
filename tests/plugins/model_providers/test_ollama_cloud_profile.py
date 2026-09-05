@@ -199,7 +199,7 @@ class TestOllamaModelSupportsThinking:
         monkeypatch.setattr(httpx, "Client", _Client)
 
     def test_thinking_capability_true(self, monkeypatch):
-        from hermes_cli.models import ollama_model_supports_thinking
+        from hermes_cli.models_local import ollama_model_supports_thinking
 
         self._patch_show(monkeypatch, capabilities=["completion", "tools", "thinking"])
         assert (
@@ -211,7 +211,7 @@ class TestOllamaModelSupportsThinking:
 
 
     def test_probe_failure_returns_none(self, monkeypatch):
-        from hermes_cli.models import ollama_model_supports_thinking
+        from hermes_cli.models_local import ollama_model_supports_thinking
 
         self._patch_show(monkeypatch, status=404)
         assert (
@@ -219,7 +219,7 @@ class TestOllamaModelSupportsThinking:
         )
 
     def test_exception_returns_none(self, monkeypatch):
-        from hermes_cli.models import ollama_model_supports_thinking
+        from hermes_cli.models_local import ollama_model_supports_thinking
 
         self._patch_show(monkeypatch, raise_exc=RuntimeError("boom"))
         assert (

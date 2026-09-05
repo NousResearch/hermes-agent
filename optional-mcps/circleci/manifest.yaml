@@ -1,0 +1,38 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: circleci
+description: 'CircleCI: diagnose build failures, read logs, rerun workflows.'
+source: https://circleci.com/docs/guides/toolkit/circleci-mcp-overview/
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint); Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh.
+
+transport:
+  type: http
+  url: https://mcp.circleci.com/v1/mcp
+
+auth:
+  type: oauth
+
+# Excluded: connectivity ping and billing-CSV power-user probe.
+tools:
+  default_excluded:
+    - hello
+    - download_usage_data
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - circleci
+  hosts:
+    - circleci.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  CircleCI (or run `hermes mcp login circleci`). Approve access,
+  then restart the session so tools load.

@@ -27,7 +27,6 @@ from hermes_cli.gitlock import (
     LOCK_NAMES,
     STALE_LOCK_MIN_AGE_SECONDS,
     clear_stale_git_locks,
-    is_ancestor_of_head,
 )
 
 
@@ -114,26 +113,3 @@ def test_clear_noop_on_non_repo(tmp_path: Path) -> None:
 
 def test_clear_noop_with_no_locks(repo: Path) -> None:
     assert clear_stale_git_locks(repo) == []
-
-
-def test_is_ancestor_true_for_first_commit(repo: Path) -> None:
-    first = subprocess.run(
-        ["git", "rev-list", "--max-parents=0", "HEAD"],
-        cwd=repo, capture_output=True, text=True, check=True,
-    ).stdout.strip()
-    assert is_ancestor_of_head(repo, first) is True
-
-
-def test_is_ancestor_true_for_head_itself(repo: Path) -> None:
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True,
-    ).stdout.strip()
-    assert is_ancestor_of_head(repo, head) is True
-
-
-def test_is_ancestor_false_for_unknown_rev(repo: Path) -> None:
-    assert is_ancestor_of_head(repo, "deadbeef" * 5) is False
-
-
-def test_is_ancestor_false_for_nonexistent_repo(tmp_path: Path) -> None:
-    assert is_ancestor_of_head(tmp_path / "missing", "HEAD") is False

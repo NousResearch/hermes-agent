@@ -5,6 +5,10 @@ import { PaneTab, PaneTabLabel } from './pane-tab'
 
 afterEach(cleanup)
 
+/** The tab shell's own classes (the label's grandparent), split for set diffs. */
+const classesOf = (label: string): string[] =>
+  screen.getByText(label).parentElement!.parentElement!.className.split(/\s+/).filter(Boolean)
+
 describe('PaneTab close gestures', () => {
   it('middle-click closes — pointer events only, no auxclick', () => {
     const onClose = vi.fn()
@@ -124,15 +128,64 @@ describe('PaneTab hover close button', () => {
     expect(screen.queryByRole('button', { name: 'Close' })).toBeNull()
   })
 
-  it('can hide the hover ✕ while retaining the close handler', () => {
+  it('floors a closeable horizontal tab instead of padding a runway onto it', () => {
+    const onClose = vi.fn()
+
+    const closeable = render(
+      <PaneTab onClose={onClose}>
+        <PaneTabLabel>BROWSER</PaneTabLabel>
+      </PaneTab>
+    )
+
+    const withClose = classesOf('BROWSER')
+    closeable.unmount()
+
+    render(
+      <PaneTab>
+        <PaneTabLabel>BROWSER</PaneTabLabel>
+      </PaneTab>
+    )
+    const withoutClose = classesOf('BROWSER')
+
+    // The ✕ is paid for with a min-width FLOOR, not right padding: a short
+    // label can't be swallowed by its own chip, and a tab whose label already
+    // clears the floor pays nothing — so no tab carries dead runway at rest.
+    const added = withClose.filter(cls => !withoutClose.includes(cls))
+    expect(added.some(cls => /^min-w-/.test(cls))).toBe(true)
+    expect(withClose.some(cls => /^pr-/.test(cls))).toBe(false)
+  })
+
+  it('a vertical rail tab gets no floor — it has no ✕ to make room for', () => {
+    const onClose = vi.fn()
+
+    const railed = render(
+      <PaneTab onClose={onClose} vertical>
+        <PaneTabLabel>BROWSER</PaneTabLabel>
+      </PaneTab>
+    )
+
+    const withClose = classesOf('BROWSER')
+    railed.unmount()
+
+    render(
+      <PaneTab vertical>
+        <PaneTabLabel>BROWSER</PaneTabLabel>
+      </PaneTab>
+    )
+
+    expect(withClose).toEqual(classesOf('BROWSER'))
+  })
+
+  it('a closeable horizontal tab always shows its ✕ — the chip and the pointer gestures are one affordance', () => {
     const onClose = vi.fn()
     render(
-      <PaneTab onClose={onClose} showCloseButton={false}>
+      <PaneTab onClose={onClose}>
         <PaneTabLabel>tab</PaneTabLabel>
       </PaneTab>
     )
 
-    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Close' })).toBeTruthy()
+
     const tab = screen.getByText('tab')
     fireEvent.pointerDown(tab, { button: 1 })
     fireEvent.pointerUp(tab, { button: 1 })

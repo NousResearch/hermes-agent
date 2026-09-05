@@ -45,7 +45,7 @@ class TestOAuthUserAgentPrefix:
     def test_token_refresh_ua_not_throttled(self):
         """refresh_anthropic_oauth_pure must NOT send a throttled token-endpoint UA."""
         import inspect
-        import agent.anthropic_adapter as mod
+        import agent.anthropic_credentials as mod
 
         func = getattr(mod, "refresh_anthropic_oauth_pure", None)
         if func is None or not callable(func):

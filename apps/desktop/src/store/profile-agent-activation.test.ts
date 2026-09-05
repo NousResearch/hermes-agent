@@ -36,7 +36,16 @@ vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
 const { $activeGatewayProfile, ensureGatewayAgent, ensureGatewayProfile } = await import('./profile')
-const { $connection } = await import('./session')
+
+const {
+  $connection,
+  $currentModel,
+  $currentProvider,
+  setComposerSelectionOwner,
+  setCurrentModel,
+  setCurrentModelSource,
+  setCurrentProvider
+} = await import('./session')
 
 const agentConn = (over: Partial<HermesConnection> = {}): HermesConnection =>
   ({ baseUrl: 'https://homelab.invalid', mode: 'remote', profile: 'research', ...over }) as HermesConnection
@@ -50,6 +59,9 @@ const getConnectionFor =
   vi.fn<(payload: { connectionId?: null | string; profile?: null | string }) => Promise<HermesConnection>>()
 
 beforeEach(() => {
+  const localStorage = window.localStorage
+
+  localStorage.clear()
   getConnection.mockReset()
   getConnectionFor.mockReset()
   ensureGatewayForAgent.mockClear()
@@ -57,7 +69,8 @@ beforeEach(() => {
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
-  vi.stubGlobal('window', { hermesDesktop: { getConnection, getConnectionFor } })
+  vi.stubGlobal('window', { hermesDesktop: { getConnection, getConnectionFor }, localStorage })
+  setComposerSelectionOwner('homelab', 'default')
 })
 
 afterEach(() => {
@@ -88,6 +101,67 @@ describe('ensureGatewayAgent → $connection / $activeGatewayProfile sync', () =
     expect($activeGatewayProfile.get()).toBe('research')
     // Best-effort: boot/reconnect resyncs later; we must not null it out here.
     expect($connection.get()?.mode).toBe('local')
+  })
+
+  it('reseeds and persists under the activated owner when its descriptor fetch fails', async () => {
+    setComposerSelectionOwner('homelab', 'default')
+    setCurrentModel('grok-4')
+    setCurrentProvider('xai-oauth')
+    setCurrentModelSource('manual')
+    getConnectionFor.mockRejectedValue(new Error('source unreachable'))
+
+    // Mirrors ContribWiring's gateway-scope effect: the active-profile
+    // publication forces the target profile's model/provider defaults.
+    const unbind = $activeGatewayProfile.subscribe(profile => {
+      if (profile === 'research') {
+        setCurrentModel('local/model')
+        setCurrentProvider('custom:local')
+        setCurrentModelSource('default')
+      }
+    })
+
+    await ensureGatewayAgent('homelab', 'research')
+    unbind()
+
+    expect($connection.get()?.mode).toBe('local')
+    expect($currentModel.get()).toBe('local/model')
+    expect($currentProvider.get()).toBe('custom:local')
+
+    setComposerSelectionOwner('homelab', 'default')
+    expect($currentModel.get()).toBe('grok-4')
+    expect($currentProvider.get()).toBe('xai-oauth')
+
+    setComposerSelectionOwner('homelab', 'research')
+    expect($currentModel.get()).toBe('local/model')
+    expect($currentProvider.get()).toBe('custom:local')
+  })
+
+  it('does not persist a legacy profile reseed when its owner descriptor is unresolved', async () => {
+    setComposerSelectionOwner('homelab', 'default')
+    setCurrentModel('grok-4')
+    setCurrentProvider('xai-oauth')
+    setCurrentModelSource('manual')
+    getConnection.mockRejectedValue(new Error('source unreachable'))
+
+    const unbind = $activeGatewayProfile.subscribe(profile => {
+      if (profile === 'research') {
+        setCurrentModel('unresolved-model')
+        setCurrentProvider('unresolved-provider')
+        setCurrentModelSource('default')
+      }
+    })
+
+    await ensureGatewayProfile('research')
+    unbind()
+
+    setComposerSelectionOwner('homelab', 'default')
+    expect($currentModel.get()).toBe('grok-4')
+    expect($currentProvider.get()).toBe('xai-oauth')
+    expect(
+      [...Array(window.localStorage.length)].map((_, index) =>
+        window.localStorage.getItem(window.localStorage.key(index) || '')
+      )
+    ).not.toContain('unresolved-model')
   })
 
   it('does not republish a registry identity invalidated during activation', async () => {
@@ -162,6 +236,61 @@ describe('ensureGatewayAgent shares the gatewaySwitch mutex with profile switche
     expect($connection.get()?.profile).toBe('research')
   })
 
+  it('serializes every profile waiter after three overlapping activations wake together', async () => {
+    const firstGate = deferred()
+    const secondGate = deferred()
+    const thirdGate = deferred()
+    const order: string[] = []
+
+    ensureGatewayForProfile.mockImplementation(async (profile: string) => {
+      order.push(`start:${profile}`)
+
+      if (profile === 'worker') {
+        await firstGate.promise
+      } else if (profile === 'research') {
+        await secondGate.promise
+      } else if (profile === 'writer') {
+        await thirdGate.promise
+      }
+
+      order.push(`finish:${profile}`)
+    })
+    getConnection.mockImplementation(async profile => localConn({ profile: profile || 'default' }))
+
+    const first = ensureGatewayProfile('worker')
+    await Promise.resolve()
+    const second = ensureGatewayProfile('research')
+    const third = ensureGatewayProfile('writer')
+    await Promise.resolve()
+
+    expect(order).toEqual(['start:worker'])
+
+    firstGate.resolve()
+    await first
+    await vi.waitFor(() => expect(order).toContain('start:research'))
+
+    // The third activation was requested last, but it must not enter while the
+    // second waiter owns the switch mutex after both woke behind `worker`.
+    expect(order).not.toContain('start:writer')
+
+    secondGate.resolve()
+    await second
+    await vi.waitFor(() => expect(order).toContain('start:writer'))
+    thirdGate.resolve()
+    await third
+
+    expect(order).toEqual([
+      'start:worker',
+      'finish:worker',
+      'start:research',
+      'finish:research',
+      'start:writer',
+      'finish:writer'
+    ])
+    expect($activeGatewayProfile.get()).toBe('writer')
+    expect($connection.get()?.profile).toBe('writer')
+  })
+
   it('serializes a profile switch behind an in-flight agent activation', async () => {
     const agentGate = deferred()
     const order: string[] = []
@@ -191,5 +320,121 @@ describe('ensureGatewayAgent shares the gatewaySwitch mutex with profile switche
 
     expect(order).toEqual(['agent:research', 'profile:worker'])
     expect($activeGatewayProfile.get()).toBe('worker')
+  })
+})
+
+describe('ensureGatewayAgent commit hook (beforeActivate) — the Sessions switcher door (#93937)', () => {
+  it('runs the hook inside the serialized section, right before the activation; a declined hook activates nothing', async () => {
+    const profileGate = deferred()
+    const order: string[] = []
+
+    ensureGatewayForProfile.mockImplementation(async (profile: string) => {
+      order.push(`profile:${profile}`)
+      await profileGate.promise
+    })
+    ensureGatewayForAgent.mockImplementation(async (_connectionId, profile) => {
+      order.push(`agent:${profile}`)
+
+      return true
+    })
+    getConnection.mockResolvedValue(localConn({ profile: 'worker' }))
+    getConnectionFor.mockResolvedValue(agentConn())
+
+    const profileSwitch = ensureGatewayProfile('worker')
+    await Promise.resolve()
+
+    const declined = ensureGatewayAgent('homelab', 'research', {
+      beforeActivate: () => {
+        order.push('hook:declined')
+
+        return false
+      }
+    })
+
+    await Promise.resolve()
+    // The hook waits for its turn — it must see the world AFTER the earlier
+    // switch published, never before.
+    expect(order).toEqual(['profile:worker'])
+
+    profileGate.resolve()
+    await profileSwitch
+    await declined
+
+    expect(order).toEqual(['profile:worker', 'hook:declined'])
+    expect(ensureGatewayForAgent).not.toHaveBeenCalled()
+    expect(getConnectionFor).not.toHaveBeenCalled()
+    expect($activeGatewayProfile.get()).toBe('worker')
+
+    // An accepted hook runs synchronously before the activation starts.
+    await ensureGatewayAgent('homelab', 'research', {
+      beforeActivate: () => {
+        order.push('hook:accepted')
+
+        return true
+      }
+    })
+
+    expect(order).toEqual(['profile:worker', 'hook:declined', 'hook:accepted', 'agent:research'])
+    expect($activeGatewayProfile.get()).toBe('research')
+    expect($connection.get()?.profile).toBe('research')
+  })
+
+  it('a descriptor lookup that never answers is bounded, fails open, and releases the mutex', async () => {
+    vi.useFakeTimers()
+
+    try {
+      getConnectionFor.mockImplementationOnce(() => new Promise<HermesConnection>(() => undefined))
+
+      const activation = ensureGatewayAgent('homelab', 'research')
+      await vi.advanceTimersByTimeAsync(20_000)
+      await activation
+
+      // Activated; the previous descriptor is kept (fail open), not nulled.
+      expect($activeGatewayProfile.get()).toBe('research')
+      expect($connection.get()?.mode).toBe('local')
+
+      // The next switch is not stuck behind the stalled lookup.
+      getConnectionFor.mockResolvedValue(agentConn({ profile: 'writer' }))
+      await ensureGatewayAgent('homelab', 'writer')
+
+      expect($activeGatewayProfile.get()).toBe('writer')
+      expect($connection.get()?.profile).toBe('writer')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('an aborted activation releases the mutex and cannot publish when its work settles later', async () => {
+    const activationGate = deferred()
+    const controller = new AbortController()
+
+    ensureGatewayForAgent.mockImplementationOnce(async () => {
+      await activationGate.promise
+
+      return true
+    })
+    getConnectionFor.mockImplementation(async ({ profile }) => agentConn({ profile: profile ?? 'default' }))
+
+    const abandoned = ensureGatewayAgent('homelab', 'research', { signal: controller.signal })
+    await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledTimes(1))
+
+    controller.abort()
+
+    try {
+      const winner = ensureGatewayAgent('homelab', 'writer')
+      await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledTimes(2))
+      await winner
+
+      expect($activeGatewayProfile.get()).toBe('writer')
+      expect($connection.get()?.profile).toBe('writer')
+    } finally {
+      activationGate.resolve()
+      await abandoned
+    }
+
+    // The detached activation completed after cancellation but did not regain
+    // ownership and overwrite the newer source/profile publication.
+    expect($activeGatewayProfile.get()).toBe('writer')
+    expect($connection.get()?.profile).toBe('writer')
   })
 })

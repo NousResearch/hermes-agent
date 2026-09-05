@@ -7,8 +7,6 @@ import pytest
 from tools.skill_linter import (
     ERROR,
     WARNING,
-    format_findings,
-    has_errors,
     lint_content,
     lint_skill,
 )
@@ -105,7 +103,7 @@ def test_bad_name_format_is_error():
     content = CLEAN.replace("name: my-skill", "name: My_Skill!")
     findings = lint_content(content)
     assert "name-format" in _rules(findings)
-    assert has_errors(findings)
+    assert any(f.severity == ERROR for f in findings)
 
 
 def test_name_dir_mismatch_is_error(tmp_path):
@@ -113,7 +111,7 @@ def test_name_dir_mismatch_is_error(tmp_path):
     skill_dir.mkdir()
     findings = lint_content(CLEAN, skill_dir=skill_dir)  # name is my-skill
     assert "name-dir-mismatch" in _rules(findings)
-    assert has_errors(findings)
+    assert any(f.severity == ERROR for f in findings)
 
 
 def test_dangling_reference_link_flagged(tmp_path):
@@ -183,7 +181,34 @@ def test_author_caps_warned():
     assert "author-caps" in _rules(findings)
 
 
-def test_format_findings_renders():
+def test_findings_carry_rule_and_severity():
     findings = lint_content(CLEAN.replace("name: my-skill", "name: BAD"))
-    out = format_findings(findings)
-    assert "name-format" in out
+    assert any(f.rule == "name-format" and f.severity == ERROR for f in findings)
+
+
+def test_incident_log_shape_flagged_and_rule_shape_not():
+    # A body narrating incidents by PR number is a log, not a lesson; the same lesson stated as a
+    # rule + why with no numbers passes. Density-gated so one citation in a long body is fine.
+    log = CLEAN.replace(
+        "1. Use `read_file` to load it.",
+        "In #12345 the watcher died; #23456 was the same; see PR #34567 and issue #45678 for the fix.",
+    )
+    rule = CLEAN.replace(
+        "1. Use `read_file` to load it.",
+        "Launch the watcher from a directory that outlives the watch; a deleted cwd reads as a stall.",
+    )
+    assert "incident-log-shape" in _rules(lint_content(log))
+    assert "incident-log-shape" not in _rules(lint_content(rule))
+
+
+def test_references_sprawl_flagged_above_cap(tmp_path):
+    from tools.skill_linter import _MAX_REFERENCE_FILES
+    skill_dir = tmp_path / "my-skill"
+    refs = skill_dir / "references"
+    refs.mkdir(parents=True)
+    for i in range(_MAX_REFERENCE_FILES + 1):
+        (refs / f"note-{i}.md").write_text("x")
+    (skill_dir / "SKILL.md").write_text(CLEAN)
+    assert "references-sprawl" in _rules(lint_skill(skill_dir / "SKILL.md"))
+    (refs / f"note-{_MAX_REFERENCE_FILES}.md").unlink()
+    assert "references-sprawl" not in _rules(lint_skill(skill_dir / "SKILL.md"))

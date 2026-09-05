@@ -344,6 +344,7 @@ import {
 import { missingRendererAssets } from './renderer-bundle'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
+import { assertRuntimeProvisioningAllowed, type RuntimeProvisioningIntent } from './runtime-provisioning-policy'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
@@ -5073,7 +5074,9 @@ function resolveHermesBackend(backendArgs) {
   }
 }
 
-async function ensureRuntime(backend) {
+async function ensureRuntime(backend, intent: RuntimeProvisioningIntent) {
+  assertRuntimeProvisioningAllowed(backend, intent)
+
   if (!backend.bootstrap) {
     await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
 
@@ -5183,7 +5186,7 @@ async function ensureRuntime(backend) {
 
     // Re-resolve now that the install exists. The new resolution lands in
     // step 3 (bootstrap-complete marker) and we recurse to wire venvPython.
-    return ensureRuntime(resolveHermesBackend(backend.args))
+    return ensureRuntime(resolveHermesBackend(backend.args), intent)
   }
 
   // bootstrap=true with a real backend (createActiveBackend path) means we
@@ -12493,7 +12496,10 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   // step 3 in hermes_cli/main.py), so the child re-homes to this profile.
   // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
   const backendArgs = ['--profile', profile, 'serve', '--host', '127.0.0.1', '--port', '0']
-  const backend = await ensureRuntime(resolveHermesBackend(backendArgs))
+  // A secondary source may activate an installed runtime, but it never owns
+  // first-run provisioning. The policy is enforced inside ensureRuntime so a
+  // future secondary caller cannot bypass it accidentally.
+  const backend = await ensureRuntime(resolveHermesBackend(backendArgs), 'secondary-activate')
   // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
   backend.args = getBackendArgsForRuntime(backend)
   const hermesCwd = resolveHermesCwd()
@@ -12885,7 +12891,9 @@ async function startHermes() {
 
     const setup = await runPrimaryBackendStartup({
       connectRemote,
-      ensureLocalRuntime: ensureRuntime,
+      // Primary startup is the sole Desktop authority allowed to cross the
+      // bootstrap-needed sentinel into the platform installer.
+      ensureLocalRuntime: backend => ensureRuntime(backend, 'primary-bootstrap'),
       prepareLocalBackend: async () => {
         await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
 

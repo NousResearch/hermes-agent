@@ -153,7 +153,7 @@ export function resolveCssPx(container: HTMLElement, css: number | string, horiz
 export interface TrackContext {
   paneFor: (id: string) => Contribution | undefined
   paneGone: (id: string) => boolean
-  overrides: Record<string, { widthOverride?: number; heightOverride?: number }>
+  overrides: Record<string, { heightLocked?: boolean; heightOverride?: number; widthLocked?: boolean; widthOverride?: number }>
 }
 
 /** A group's panes that are actually on screen (not hidden / narrow-collapsed
@@ -229,18 +229,19 @@ export function fixedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: Tr
     }
 
     const overrideKey = axis === 'row' ? 'widthOverride' : 'heightOverride'
+    const lockKey = axis === 'row' ? 'widthLocked' : 'heightLocked'
 
     const declared = (id: string) => {
       const sizing = (ctx.paneFor(id)?.data ?? {}) as PaneSizing
       const css = (axis === 'row' ? sizing.width : sizing.height) ?? null
-      const override = ctx.overrides[id]?.[overrideKey]
+      const state = ctx.overrides[id]
+      const override = state?.[overrideKey]
+      const locked = Boolean(state?.[lockKey])
 
-      // An override only refines a pane that DECLARES a size along this axis
-      // (sash drags write overrides to fixed zones only). One without a
-      // declaration is stale data from another surface — honoring it would
-      // turn a flex-at-heart zone (main!) into a fixed track and hand the
-      // whole leftover to the run's absorber.
-      if (css !== null && override !== undefined) {
+      // A locked user size promotes even a flex-at-heart zone to a fixed track.
+      // An ordinary stale override still cannot do that: those are written only
+      // for declared fixed panes and must never pin the main workspace.
+      if (override !== undefined && (css !== null || locked)) {
         return `${override}px`
       }
 

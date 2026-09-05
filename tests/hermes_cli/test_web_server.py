@@ -216,6 +216,29 @@ class TestSessionTokenInjection:
         assert ws.app is original_app
         assert ws._SESSION_TOKEN == original_token
 
+    def test_headless_root_serves_token_applied_after_mount(self, monkeypatch):
+        """Desktop SSH: ``mount_spa(app)`` runs at import time, but the SSH session
+        token is applied later in ``start_web_server`` via ``_apply_ssh_session_token``.
+        The served ``__HERMES_SESSION_TOKEN__`` must be the *current* token, not the
+        one captured at mount — a stale capture made the desktop adopt a token the
+        backend then rejected (every /api/* 401'd).
+        """
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
+        original_token = ws._SESSION_TOKEN
+        try:
+            application = FastAPI()
+            _web_server_dashboard.mount_spa(application)  # captures token here (bug) ...
+            ws._apply_ssh_session_token("ssh-token-applied-after-mount")  # ... applied later
+            body = TestClient(application).get("/").text
+            assert "ssh-token-applied-after-mount" in body
+            assert original_token not in body
+        finally:
+            ws._apply_ssh_session_token(original_token)
+
     def test_falls_back_to_random_token(self, monkeypatch):
         import hermes_cli.web_server as ws
 

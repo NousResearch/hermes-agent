@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-12T00:00:00Z",
+  "generated_at": "2026-09-04T00:00:00Z",
   "plugins": [
     {
       "name": "hermes-media-studio",
@@ -63,6 +63,19 @@
       "capabilities": ["tools"],
       "api_version": 1,
       "added_at": "2026-08-12"
+    },
+    {
+      "name": "inline-platform",
+      "description": "Use Hermes Agent from Inline work-chat DMs, chats, and reply threads.",
+      "author": "Inline",
+      "tags": ["inline", "work-chat", "messaging", "gateway"],
+      "repo": "inline-chat/inline",
+      "subdir": "hermes-agent/plugin/inline",
+      "ref": "32944bd9bc5be716a615136fc02d65fb81ac0ae9",
+      "homepage": "https://github.com/inline-chat/inline/tree/main/hermes-agent",
+      "capabilities": ["platform"],
+      "api_version": 1,
+      "added_at": "2026-09-04"
     }
   ]
 }

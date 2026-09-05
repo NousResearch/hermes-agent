@@ -173,8 +173,9 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
     for nothing (~48 MB private memory per MCP server, measured); Hermes already supervises the
     child (shared death supervisor). When the package is in npx's cache we spawn its binary
     directly. Deliberately conservative — None (caller keeps plain ``npx``, so a cold machine
-    still installs) for a cache miss, a version pin (``pkg@1.2.3``), extra npx flags, a manifest
-    without one obvious bin, or any unreadable cache entry. Returns ``(binary_path, remaining_args)``."""
+    still installs) for a cache miss, ambiguous multiple cache generations, a version pin
+    (``pkg@1.2.3``), extra npx flags, a manifest without one obvious bin, or any unreadable cache
+    entry. Returns ``(binary_path, remaining_args)``."""
     if not isinstance(args, list) or not args:
         return None
 
@@ -199,10 +200,13 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
     if not os.path.isdir(npx_root):
         return None
     try:
-        entries = os.listdir(npx_root)
+        entries = sorted(os.listdir(npx_root))
     except OSError:
         return None
 
+    matched = False
+    matched_entry = None
+    cached = None
     for entry in entries:
         manifest = os.path.join(npx_root, entry, "package.json")
         try:
@@ -212,6 +216,16 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
             continue
         if spec not in deps:
             continue
+        # Cache order cannot tell us which generation npm would resolve. A second
+        # matching manifest is ambiguity even when the first had no usable bin, so
+        # only a clean single-generation match keeps the fast path.
+        if matched:
+            logger.debug(
+                "npx fast path bypassed for %s: cache generations %s and %s both match; "
+                "letting real npx resolve", spec, matched_entry, entry)
+            return None
+        matched = True
+        matched_entry = entry
         pkg_json = os.path.join(npx_root, entry, "node_modules", spec, "package.json")
         try:
             with open(pkg_json, "r", encoding="utf-8") as fh:
@@ -227,8 +241,9 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
         bin_dir = os.path.join(npx_root, entry, "node_modules", ".bin")
         for candidate in _npx_bin_candidates(bin_dir, names[0]):
             if os.path.exists(candidate) and os.access(candidate, os.X_OK):
-                return candidate, rest[1:]
-    return None
+                cached = candidate, rest[1:]
+                break
+    return cached
 
 
 def _interpolate_env_vars(value):

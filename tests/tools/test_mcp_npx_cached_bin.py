@@ -56,6 +56,28 @@ def test_cached_package_resolves_to_its_binary(tmp_path):
     assert got == (str(target), [])
 
 
+@pytest.mark.parametrize("entry_order", [
+    ("old-cache", "new-cache"),
+    ("new-cache", "old-cache"),
+])
+def test_multiple_cache_generations_are_left_to_npx(tmp_path, monkeypatch, entry_order):
+    for entry, version in (("old-cache", "1.0.0"), ("new-cache", "2.0.0")):
+        _cache(
+            tmp_path,
+            package="mcp-linear",
+            deps={"mcp-linear": version},
+            bin_field={"mcp-linear": "dist/index.js"},
+            entry=entry,
+        )
+
+    # Neither filesystem order can tell us which generation npm would resolve.
+    with monkeypatch.context() as patch:
+        patch.setattr("tools.mcp_tool_config.os.listdir", lambda path: list(entry_order))
+        got = _npx_cached_bin(["-y", "mcp-linear"])
+
+    assert got is None
+
+
 def test_scoped_package_and_trailing_args_survive(tmp_path):
     target = _cache(
         tmp_path,

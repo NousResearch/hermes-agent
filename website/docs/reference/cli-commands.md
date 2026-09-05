@@ -1057,6 +1057,10 @@ View, tail, and filter Hermes log files. All logs are stored in `~/.hermes/logs/
 | `gui` | `gui.log` | Dashboard / TUI-gateway / PTY-bridge / websocket events |
 | `desktop` | `desktop.log` | Electron desktop app — boot, backend spawn output, and recent Python tracebacks |
 
+On macOS, the managed gateway service keeps structured activity in
+`gateway.log`; raw child-process stdout and timestamped stderr are captured
+separately in the rotating `gateway.stdout.log` and `gateway.error.log` files.
+
 ### Options
 
 | Option | Description |

@@ -347,6 +347,8 @@ def test_spawn_detached_gateway_timestamps_stderr(monkeypatch, tmp_path):
         "/usr/bin/python3",
         "-m",
         "hermes_cli.stderr_timestamp",
+        "--output-log",
+        str(tmp_path / "logs" / "gateway.stdout.log"),
         "--error-log",
         str(tmp_path / "logs" / "gateway.error.log"),
         "--",
@@ -354,7 +356,7 @@ def test_spawn_detached_gateway_timestamps_stderr(monkeypatch, tmp_path):
     ]
     assert kwargs["stdin"] is gateway.subprocess.DEVNULL
     assert kwargs["stderr"] is gateway.subprocess.DEVNULL
-    assert kwargs["stdout"].name == str(tmp_path / "logs" / "gateway.log")
+    assert kwargs["stdout"] is gateway.subprocess.DEVNULL
 
 
 @pytest.mark.skipif(

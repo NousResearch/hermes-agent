@@ -1,7 +1,10 @@
 """Tests for hermes_cli.stderr_timestamp."""
 
 import re
+import stat
 import sys
+
+import pytest
 
 from gateway.restart import EXTERNAL_GATEWAY_SUPERVISOR_ENV
 from hermes_cli import stderr_timestamp
@@ -45,6 +48,67 @@ def test_main_timestamps_each_stderr_line(tmp_path):
     assert re.fullmatch(f"{timestamp} first failure", lines[0])
     assert re.fullmatch(f"{timestamp} second failure without newline", lines[1])
     assert lines[2] == "2026-07-15 12:34:56,789 already timestamped"
+
+
+def test_main_captures_stdout_separately(tmp_path):
+    output_path = tmp_path / "gateway.stdout.log"
+    error_path = tmp_path / "gateway.error.log"
+
+    rc = stderr_timestamp.main(
+        [
+            "--output-log",
+            str(output_path),
+            "--error-log",
+            str(error_path),
+            "--",
+            sys.executable,
+            "-c",
+            "import sys; print('ready'); print('failed', file=sys.stderr)",
+        ]
+    )
+
+    assert rc == 0
+    assert output_path.read_text(encoding="utf-8") == "ready\n"
+    assert error_path.read_text(encoding="utf-8").endswith(" failed\n")
+
+
+def test_rotation_config_falls_back_for_malformed_values(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_logging._read_logging_config",
+        lambda: ("INFO", "not-a-size", "not-a-count"),
+    )
+
+    assert stderr_timestamp._rotation_config() == (5, 3)
+
+
+@pytest.mark.skipif(
+    sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows"
+)
+def test_rotating_writer_bounds_backups_and_tightens_modes(tmp_path):
+    log_path = tmp_path / "gateway.stdout.log"
+    log_path.write_text("legacy world-readable\n", encoding="utf-8")
+    log_path.chmod(0o644)
+    stale_backup = tmp_path / "gateway.stdout.log.9"
+    stale_backup.write_text("stale", encoding="utf-8")
+
+    writer = stderr_timestamp._RotatingWriter(
+        log_path, max_bytes=32, backup_count=2
+    )
+    try:
+        for index in range(10):
+            writer.write(f"line-{index:02d}-padding\n")
+    finally:
+        writer.close()
+
+    logs = sorted(tmp_path.glob("gateway.stdout.log*"))
+    assert [path.name for path in logs] == [
+        "gateway.stdout.log",
+        "gateway.stdout.log.1",
+        "gateway.stdout.log.2",
+    ]
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in logs)
+    assert all(path.stat().st_size <= 32 for path in logs)
+    assert not stale_backup.exists()
 
 
 def test_prepare_upgrades_stale_gateway_argv_under_launchd():

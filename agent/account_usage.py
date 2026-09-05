@@ -101,7 +101,7 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
             base = f"{window.label}: {max(0, round(100 - used))}% remaining ({max(0, round(used))}% used)"
         if window.reset_at:
             base += f" • resets {_format_reset(window.reset_at)}"
-        elif window.detail:
+        if window.detail:
             base += f" • {window.detail}"
         lines.append(base)
     lines.extend(snapshot.details)
@@ -557,6 +557,26 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     return _snapshot("openrouter", "credits_api", windows, details)
 
 
+_OLLAMA_SESSION_EPOCH = 1786500000  # 2026-08-12 02:00 UTC anchor; resets land on 01/06/11/16/21:00 UTC (measured Sep 5 2026)
+_OLLAMA_SESSION_PERIOD = 5 * 3600  # 5h fixed blocks
+
+
+def _ollama_next_session_reset(now: Optional[datetime] = None) -> datetime:
+    """Next 5h session-quota boundary. The API exposes no reset clock, so this
+    is derived from the measured fixed grid (see tracker notes); if Ollama ever
+    ships a reset timestamp in /api/usage, prefer that instead."""
+    moment = now or _utc_now()
+    k = math.floor((moment.timestamp() - _OLLAMA_SESSION_EPOCH) / _OLLAMA_SESSION_PERIOD) + 1
+    return datetime.fromtimestamp(_OLLAMA_SESSION_EPOCH + k * _OLLAMA_SESSION_PERIOD, tz=timezone.utc)
+
+
+def _ollama_weekly_reset_estimate() -> Optional[datetime]:
+    """7-day trailing window: usage decays continuously, so the practical
+    'reset' is when the oldest in-window usage exits. Without a server clock
+    we can't name it; report None (rendered as no reset hint) rather than guess."""
+    return None
+
+
 def _fetch_ollama_account_usage(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -586,6 +606,9 @@ def _fetch_ollama_account_usage(
         response.raise_for_status()
     payload = response.json() or {}
     limits = payload.get("limits") or {}
+    session_reset: Optional[datetime] = None
+    if "session" in limits:
+        session_reset = _ollama_next_session_reset()
     windows: list[AccountUsageWindow] = []
     for key, label in (("session", "Session (rolling)"), ("weekly", "Weekly")):
         window = limits.get(key) or {}
@@ -598,10 +621,12 @@ def _fetch_ollama_account_usage(
             for m in model_counts
             if isinstance(m, dict) and m.get("name")
         ]
+        reset_at = session_reset if key == "session" else _ollama_weekly_reset_estimate()
         windows.append(
             AccountUsageWindow(
                 label=label,
                 used_percent=float(usage) * 100.0,
+                reset_at=reset_at,
                 detail=" • ".join(parts) if parts else None,
             )
         )

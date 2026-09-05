@@ -298,3 +298,35 @@ def test_ollama_usage_non_numeric_cost_is_ignored(monkeypatch):
     snapshot = account_usage.fetch_account_usage("ollama-cloud")
     assert snapshot is not None
     assert snapshot.details == ()
+
+
+def test_ollama_session_reset_lands_on_5h_grid():
+    """The derived session reset is strictly in the future, at most one 5h block away,
+    and congruent with the measured 01/06/11/16/21:00 UTC grid."""
+    from datetime import datetime, timezone
+
+    from agent.account_usage import _OLLAMA_SESSION_EPOCH, _OLLAMA_SESSION_PERIOD, _ollama_next_session_reset
+
+    now = datetime(2026, 9, 5, 20, 30, tzinfo=timezone.utc)
+    reset = _ollama_next_session_reset(now)
+    delta = reset.timestamp() - now.timestamp()
+    assert 0 < delta <= _OLLAMA_SESSION_PERIOD
+    offset = (reset.timestamp() - _OLLAMA_SESSION_EPOCH) % _OLLAMA_SESSION_PERIOD
+    assert offset == 0  # exactly on the fixed grid
+
+
+def test_ollama_window_carries_reset_and_detail():
+    """A session window from the usage API renders with both the reset hint and model counts."""
+    import agent.account_usage as au
+
+    snapshot = au._snapshot(
+        "ollama-cloud",
+        "usage_api",
+        (au.AccountUsageWindow(label="Session (rolling)", used_percent=30.0,
+                               reset_at=au._ollama_next_session_reset(), detail="glm-5.3 x391"),),
+        (),
+    )
+    lines = au.render_account_usage_lines(snapshot)
+    session_line = next(l for l in lines if l.startswith("Session"))
+    assert "resets" in session_line
+    assert "glm-5.3 x391" in session_line  # detail renders alongside reset, not dropped

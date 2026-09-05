@@ -637,6 +637,23 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     if not assignee.strip():
         return []
 
+    # Occupied configured capacity defers a valid profile's task by design;
+    # reporting it as unclaimed would recommend an incorrect reassignment.
+    graph = cfg.get("_graph") or {}
+    kanban_cfg = cfg.get("kanban") or {}
+    running_total = int(graph.get("running_total") or 0)
+    running_by_assignee = graph.get("running_by_assignee") or {}
+    running_on_board = sum(int(count) for count in running_by_assignee.values())
+    max_spawn = _positive_int(kanban_cfg.get("max_spawn"), 0)
+    max_in_progress = _positive_int(kanban_cfg.get("max_in_progress"), 0)
+    max_per_profile = _positive_int(kanban_cfg.get("max_in_progress_per_profile"), 0)
+    if graph.get("assignee_profile_exists") is True and (
+        (max_spawn and running_on_board >= max_spawn)
+        or (max_in_progress and running_total >= max_in_progress)
+        or (max_per_profile and int(running_by_assignee.get(assignee, 0)) >= max_per_profile)
+    ):
+        return []
+
     # Most recent event that put the task into ready; with none (old task /
     # truncated events) fall back to created_at — over-flagging an ancient
     # task beats missing a stranded one.

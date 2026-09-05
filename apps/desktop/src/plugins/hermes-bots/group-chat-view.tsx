@@ -94,7 +94,7 @@ import {
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { sendToGroupChat, stopGroupThread } from './group-rounds'
-import { clearGroupClarify } from './group-turns'
+import { clearGroupClarify, compressGroupChatSessions } from './group-turns'
 import { botsText, useBots } from './i18n'
 import { displayName, slugify, stripPreviewMarkdown } from './labels'
 import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
@@ -363,13 +363,14 @@ interface GroupChatSettingsDialogProps {
 /** Edit an existing group chat's name and picture. Renames re-key the room
  *  and every local member's membership (renameGroupChat); the picture rides
  *  the room record. Both apply on Save so a cancelled dialog changes nothing. */
-function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: GroupChatSettingsDialogProps) {
+export function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: GroupChatSettingsDialogProps) {
   const { t } = useI18n()
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
   const current = (rooms[group] || {}).image || null
   const [name, setName] = useState(group)
   const [image, setImage] = useState(current)
+  const [compressing, setCompressing] = useState(false)
   useEffect(() => {
     if (open) {
       setName(group)
@@ -393,6 +394,37 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
 
     if (finalName !== group) {
       onRenamed?.(finalName)
+    }
+  }
+
+  const compressHistories = async () => {
+    if (compressing || !(members || []).length) {
+      return
+    }
+
+    setCompressing(true)
+
+    try {
+      const outcomes = await compressGroupChatSessions(group, members || [])
+      const compressed = outcomes.filter(outcome => outcome.status === 'compressed').length
+      const pending = outcomes.filter(outcome => outcome.status === 'pending').length
+      const failed = outcomes.filter(outcome => outcome.status === 'failed').length
+
+      const failureDetails = outcomes
+        .filter(outcome => outcome.status === 'failed' && outcome.error)
+        .map(outcome => `${outcome.member}: ${outcome.error}`)
+        .join(' ')
+
+      host.notify({
+        kind: failed ? 'error' : 'success',
+        message: failed
+          ? `${b.group.compressHistoryFailed(failed, outcomes.length)}${failureDetails ? ` ${failureDetails}` : ''}`
+          : compressed || pending
+            ? b.group.compressHistoryDone(compressed, pending)
+            : b.group.compressHistoryNone
+      })
+    } finally {
+      setCompressing(false)
     }
   }
 
@@ -430,6 +462,22 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
             value={name}
           />
         </form>
+        <div className="flex items-center justify-between gap-3 rounded-md border border-(--ui-stroke-secondary) px-3 py-2">
+          <div className="min-w-0">
+            <div className="text-sm font-medium">{b.group.compressHistory}</div>
+            <div className="text-xs text-(--ui-text-tertiary)">{b.group.compressHistoryHint}</div>
+          </div>
+          <Button
+            disabled={compressing || !(members || []).length}
+            onClick={() => void compressHistories()}
+            size="sm"
+            type="button"
+            variant="secondary"
+          >
+            <Codicon name="fold-down" />
+            {compressing ? b.group.compressingHistory : b.group.compressHistory}
+          </Button>
+        </div>
         <DialogFooter>
           <Button onClick={onClose} variant="secondary">
             {t.common.cancel}

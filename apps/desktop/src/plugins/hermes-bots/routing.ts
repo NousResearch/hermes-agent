@@ -200,7 +200,8 @@ export function botBackendProfileScope(route: null | ProfileRoute | undefined, f
 export async function requestForBot<T = unknown>(
   bot: Partial<RosterRow> | null | undefined,
   method: string,
-  params: Record<string, unknown> = {}
+  params: Record<string, unknown> = {},
+  timeoutMs?: number
 ): Promise<T> {
   const route = botConnectionRoute(bot)
 
@@ -210,7 +211,11 @@ export async function requestForBot<T = unknown>(
     }
 
     try {
-      return await host.requestProfile(route, method, scopedBotParams(route, method, params))
+      const scoped = scopedBotParams(route, method, params)
+
+      return await (timeoutMs === undefined
+        ? host.requestProfile(route, method, scoped)
+        : host.requestProfile(route, method, scoped, timeoutMs))
     } catch (error) {
       // React 19 formats query errors with `(error.name || '').trim()`. IPC /
       // JSON-RPC rejections are often plain objects whose `name` is a number,
@@ -220,7 +225,7 @@ export async function requestForBot<T = unknown>(
   }
 
   try {
-    return await host.request(method, params)
+    return await (timeoutMs === undefined ? host.request(method, params) : host.request(method, params, timeoutMs))
   } catch (error) {
     throw asRpcError(error, `Gateway request ${method} failed`)
   }

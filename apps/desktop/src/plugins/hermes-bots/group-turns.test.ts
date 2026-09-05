@@ -186,6 +186,98 @@ describe('session resolution', () => {
     expect(result.stored).toBeTruthy()
     expect(result.stored).not.toBe('sid-gone')
   })
+
+  it('compresses existing member histories through live ids without minting sessions', async () => {
+    const room = await loadRoom()
+    const local: GroupMember = { name: 'research', title: '' }
+
+    const remote: GroupMember = {
+      connectionId: 'mini',
+      name: 'critic',
+      remoteSource: true,
+      route: { connectionId: 'mini', mode: 'remote', profile: 'critic', targetProfile: 'critic' }
+    }
+
+    room.chat.updateGroupChat('Core', current => {
+      current.roomId = 'r-core'
+
+      return current
+    })
+    await room.turns.ensureGroupChatSession('Core', local)
+    await room.turns.ensureGroupChatSession('Core', remote)
+
+    const beforeCreates = room.gateway.rpcFor('session.create').length
+    const outcomes = await room.turns.compressGroupChatSessions('Core', [local, remote])
+
+    expect(outcomes.map(outcome => outcome.status)).toEqual(['compressed', 'compressed'])
+    expect(room.gateway.rpcFor('session.create')).toHaveLength(beforeCreates)
+    expect(room.gateway.rpcFor('session.compress')).toHaveLength(2)
+
+    for (const call of room.gateway.rpcFor('session.compress')) {
+      expect(String(call.params.session_id)).toMatch(/^rt-/)
+    }
+
+    // Routed sessions stay leased for resume -> compress, so their runtime id
+    // cannot be reaped between the two session-scoped RPCs.
+    expect(room.gateway.timeline).toContain('session.compress')
+    expect(room.gateway.refcount()).toBe(0)
+  })
+
+  it('skips a member with no room session instead of creating empty plumbing', async () => {
+    const room = await loadRoom()
+
+    room.chat.updateGroupChat('Fresh', current => {
+      current.roomId = 'r-fresh'
+
+      return current
+    })
+
+    const outcomes = await room.turns.compressGroupChatSessions('Fresh', [{ name: 'research', title: '' }])
+
+    expect(outcomes).toEqual([{ member: 'research', status: 'skipped' }])
+    expect(room.gateway.rpcFor('session.resume')).toHaveLength(1)
+    expect(room.gateway.rpcFor('session.create')).toHaveLength(0)
+    expect(room.gateway.rpcFor('session.compress')).toHaveLength(0)
+  })
+
+  it('surfaces an aborted compression as a failure', async () => {
+    const room = await loadRoom({
+      compressionResult: {
+        status: 'aborted',
+        summary: { aborted: true, note: 'No compression provider is configured.' }
+      }
+    })
+
+    const member: GroupMember = { name: 'research', title: '' }
+
+    await room.turns.ensureGroupChatSession('Core', member)
+
+    await expect(room.turns.compressGroupChatSessions('Core', [member])).resolves.toEqual([
+      { error: 'No compression provider is configured.', member: 'research', status: 'failed' }
+    ])
+  })
+
+  it('surfaces lock contention instead of reporting compression success', async () => {
+    const room = await loadRoom({
+      compressionResult: {
+        compressed: false,
+        lock_held: true,
+        message: 'Another compression may still be running; try again shortly.'
+      }
+    })
+
+    const member: GroupMember = { name: 'research', title: '' }
+
+    await room.turns.ensureGroupChatSession('Core', member)
+
+    await expect(room.turns.compressGroupChatSessions('Core', [member])).resolves.toEqual([
+      {
+        error: 'Another compression may still be running; try again shortly.',
+        member: 'research',
+        status: 'failed'
+      }
+    ])
+  })
 })
 
 describe('session-gone classification', () => {

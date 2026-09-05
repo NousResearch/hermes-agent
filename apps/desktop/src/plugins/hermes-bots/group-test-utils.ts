@@ -98,6 +98,8 @@ export interface GatewayOptions {
   onResumePoll?: (polls: number) => void
   /** Report the member inflight for the first N post-submit polls. */
   pollsBusy?: number
+  /** Structured result returned by session.compress. */
+  compressionResult?: Record<string, unknown>
   turn?: TurnScript
 }
 
@@ -296,6 +298,19 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
       return method === 'file.attach'
         ? { attached: true, ref_text: `@file:attachments/${String(params.name ?? 'attachment')}` }
         : { attached: true }
+    }
+
+    if (method === 'session.compress') {
+      const session = resolveSession(null, params.session_id)
+
+      if (!session) {
+        throw gatewayError(`session-scoped RPC rejected: ${String(params.session_id)} not in memory`, 4001)
+      }
+
+      const removed = Math.max(0, session.messages.length - 2)
+      session.messages = session.messages.slice(-2)
+
+      return options.compressionResult || { removed, status: 'compressed' }
     }
 
     if (method === 'prompt.submit') {

@@ -116,6 +116,114 @@ interface GroupMemberSessionHandle {
   stored?: null | string | true
 }
 
+export interface GroupSessionCompressionOutcome {
+  error?: string
+  member: string
+  status: 'compressed' | 'failed' | 'pending' | 'skipped'
+}
+
+interface GroupSessionCompressionResponse {
+  compressed?: boolean
+  lock_held?: boolean
+  message?: string
+  status?: string
+  summary?: {
+    aborted?: boolean
+    headline?: string
+    note?: string
+  }
+}
+
+// session.compress can legitimately use the gateway's full compute-host wait
+// ceiling. Match the focused-chat /compress budget so the room action does not
+// report a false timeout while compression is still committing (#97948).
+const GROUP_SESSION_COMPRESS_TIMEOUT_MS = 660_000
+
+/** Compress every EXISTING hidden member session for a room. Resolve durable
+ * ids (then the immutable room title for rehydrated/legacy rooms) to live ids,
+ * keep routed sockets leased across resume -> compress, and never mint a new
+ * empty plumbing session merely because the maintenance action was clicked. */
+export async function compressGroupChatSessions(
+  group: string,
+  members: GroupMember[]
+): Promise<GroupSessionCompressionOutcome[]> {
+  const room = $groupChats.get()[group] || {}
+  const title = `Group: ${room.roomId || group}`
+
+  return Promise.all(
+    members.map(async member => {
+      const release = await retainGroupTurnRoute(member)
+
+      try {
+        const key = groupMemberKey(member)
+        const known = room.sessions?.[key]
+        let runtime: null | string = null
+
+        for (const target of [known, title]) {
+          if (!target || target === true) {
+            continue
+          }
+
+          try {
+            const resumed = (await requestForBot(member, 'session.resume', {
+              session_id: target,
+              profile: member.name,
+              omit_messages: true
+            })) as GroupSessionSnapshot
+
+            if (resumed?.session_id) {
+              runtime = resumed.session_id
+
+              break
+            }
+          } catch (error: any) {
+            if (error?.code !== 4007) {
+              throw error
+            }
+          }
+        }
+
+        if (!runtime) {
+          return { member: member.name, status: 'skipped' }
+        }
+
+        const result = await requestForBot<GroupSessionCompressionResponse>(
+          member,
+          'session.compress',
+          { session_id: runtime },
+          GROUP_SESSION_COMPRESS_TIMEOUT_MS
+        )
+
+        if (result?.status === 'pending') {
+          return { member: member.name, status: 'pending' }
+        }
+
+        if (result?.status === 'aborted' || result?.summary?.aborted || result?.compressed === false) {
+          return {
+            error:
+              result?.message ||
+              result?.summary?.note ||
+              result?.summary?.headline ||
+              (result?.lock_held ? 'Compression is already in progress.' : 'Compression was not completed.'),
+            member: member.name,
+            status: 'failed'
+          }
+        }
+
+        return { member: member.name, status: 'compressed' }
+      } catch (error) {
+        return {
+          error: error instanceof Error ? error.message : String(error),
+          member: member.name,
+          status: 'failed'
+        }
+      } finally {
+        release()
+      }
+    })
+  )
+}
+
 /** Ensure the member's per-group session exists and return a LIVE runtime
  *  session id for it. Gateway-native: session.create mints the session
  *  (lazy until its first message), session.resume by stored id — or by

@@ -1,7 +1,8 @@
 """Sanitize tool JSON schemas for strict LLM backends. llama.cpp's grammar converter fails on
 ``{"type": "object"}`` without ``properties``, bare-string schemas and ``type`` arrays; Anthropic
 rejects nullable ``anyOf`` at the top of ``input_schema``; Fireworks rejects ``default`` beside
-``$ref``; Codex rejects top-level combinators. Walks a deep copy and fixes only those shapes."""
+``$ref``; Codex rejects top-level combinators; OpenAI rejects array schemas missing items. Walks
+a deep copy and fixes only those shapes."""
 
 from __future__ import annotations
 
@@ -248,7 +249,11 @@ def _sanitize_node(node: Any, path: str) -> Any:
         if node in _BARE_TYPE_NAMES:
             logger.debug("schema_sanitizer[%s]: replacing bare-string schema %r with {'type': %r}",
                          path, node, node)
-            return _empty_object() if node == "object" else {"type": node}
+            if node == "object":
+                return _empty_object()
+            if node == "array":
+                return {"type": "array", "items": {}}
+            return {"type": node}
         logger.debug("schema_sanitizer[%s]: replacing non-schema string %r "
                      "with empty object schema", path, node)
         return _empty_object()
@@ -298,6 +303,14 @@ def _sanitize_node(node: Any, path: str) -> Any:
                 out["required"] = valid
             else:
                 del out["required"]
+
+    # Array nodes must declare an ``items`` or ``prefixItems`` schema for
+    # OpenAI-compatible function calling. Some MCP servers omit both for
+    # loosely typed lists (for example Canva asset ``tags``). Use the
+    # permissive empty schema so we repair the invalid shape without inventing
+    # a stricter element type.
+    if out.get("type") == "array" and "items" not in out and "prefixItems" not in out:
+        out["items"] = {}
     return out
 
 

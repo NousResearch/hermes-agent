@@ -741,10 +741,10 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
         if refresh_counts[refresh_key] > _MAX_AUTH_REFRESH_ATTEMPTS:
             _ra().logger.warning(
                 "Credential auth failure persists after %s refreshes for "
-                "pool entry %s — treating as unrecoverable and allowing "
-                "fallback to activate.", refresh_counts[refresh_key] - 1, refreshed_id,
+                "pool entry %s — marking entry exhausted and rotating to next entry.",
+                refresh_counts[refresh_key] - 1, refreshed_id,
             )
-            return False, has_retried_429
+            return (True, False) if rotate_and_swap(401, "auth loop exhausted") else (False, has_retried_429)
     _ra().logger.info("Credential auth failure — refreshed pool entry %s", getattr(refreshed, 'id', '?'))
     agent._swap_credential(refreshed)
     return True, has_retried_429
@@ -791,6 +791,43 @@ def recover_with_credential_pool(
     rotating. ``classified_reason`` beats raw HTTP codes (e.g. Anthropic 400 "out of extra
     usage"); ``billing_unverified`` gives the entry a short cooldown, not the one-hour bench."""
     pool = agent._credential_pool
+    if pool is None:
+        provider_source = getattr(agent, "_provider_source", None)
+        # Attach the provider's credential pool whenever one exists. AMS- and
+        # gateway-spawned openai-codex sessions resolve their credential from the
+        # pool (source="credential_pool") but don't always propagate the source
+        # to the agent, leaving provider_source=None — which previously skipped
+        # the attach and left rotation dead (the agent kept retrying the one
+        # exhausted credential). Matching the agent's current api key is
+        # preferred (it sets the active entry) but not required: rotation only
+        # needs a healthy sibling to swap to, and the provider-mismatch guard
+        # below still protects against acting on a fallback provider's pool.
+        _pool_eligible = (
+            provider_source in (None, "credential_pool", "hermes-auth-store", "pool")
+            or (isinstance(provider_source, str) and (
+                provider_source.startswith("manual:")
+                or provider_source.startswith("pool:")
+            ))
+        )
+        if _pool_eligible:
+            from agent.credential_pool import load_pool
+            try:
+                loaded_pool = load_pool(agent.provider)
+            except Exception:
+                loaded_pool = None
+            if loaded_pool and loaded_pool.has_credentials():
+                current_api_key = getattr(agent, "api_key", None)
+                matching_entry = None
+                if current_api_key:
+                    for entry in loaded_pool.entries():
+                        if entry.runtime_api_key == current_api_key:
+                            matching_entry = entry
+                            break
+                if matching_entry is not None:
+                    loaded_pool._current_id = matching_entry.id
+                    agent._credential_pool = loaded_pool
+                    pool = loaded_pool
+
     if pool is None:
         return False, has_retried_429
     # The pool belongs to the PRIMARY provider: acting on fallback errors would corrupt its state
@@ -870,6 +907,10 @@ def recover_with_credential_pool(
             pool, has_retried_429=has_retried_429, error_context=error_context,
             api_key_hint=api_key_hint, credential_id=credential_id, rotate_and_swap=_rotate_and_swap,
         )
+    if effective_reason == FailoverReason.overloaded:
+        if not has_retried_429:
+            return False, True
+        return (True, False) if _rotate_and_swap(503, "overloaded") else (False, True)
     if effective_reason == FailoverReason.auth:
         return _recover_auth_failure(
             agent, pool, status_code=status_code, has_retried_429=has_retried_429,
@@ -1029,6 +1070,35 @@ def drop_thinking_only_and_merge_users(
     return merged
 
 
+def _check_and_rotate_exhausted_pool_key(agent) -> None:
+    if not agent.provider:
+        return
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool(agent.provider)
+        if pool and pool.has_credentials():
+            current_key = getattr(agent, "api_key", None)
+            if current_key:
+                current_entry = next((e for e in pool.entries() if e.runtime_api_key == current_key), None)
+                if current_entry:
+                    available = pool._available_entries(clear_expired=True, refresh=True)
+                    if not any(e.id == current_entry.id for e in available):
+                        new_entry = pool.select()
+                        if new_entry:
+                            logger.info(
+                                "restore_primary_runtime: current key %s is exhausted/dead in pool, rotating to %s",
+                                current_entry.label or current_entry.id,
+                                new_entry.label or new_entry.id
+                            )
+                            agent._swap_credential(new_entry)
+                            if hasattr(agent, "_primary_runtime") and isinstance(agent._primary_runtime, dict):
+                                agent._primary_runtime["api_key"] = new_entry.runtime_api_key
+                                if "client_kwargs" in agent._primary_runtime:
+                                    agent._primary_runtime["client_kwargs"]["api_key"] = new_entry.runtime_api_key
+    except Exception as pe:
+        logger.debug("Failed to check/rotate exhausted key in pool: %s", pe)
+
+
 def _primary_reset_gate_blocks(agent, rt, primary_provider, primary_runtime_base_url, matches_primary, load_primary_pool):
     """Reset-aware gate: skip a guaranteed-to-fail restore while the primary pool reports a
     future reset; fails open on any error/None. Returns ``(blocked, prefetched_pool, prefetched)``
@@ -1111,6 +1181,7 @@ def restore_primary_runtime(agent) -> bool:
         # Reset the index even without activation: a failed _try_activate_fallback() can strand
         # _fallback_index past the chain end and silently block future fallbacks.
         agent._fallback_index = 0
+        _check_and_rotate_exhausted_pool_key(agent)
         return False
     # Reset the chain index even when no fallback was activated this turn. Without this, a turn where
     # _try_activate_fallback() was called but returned False (chain exhausted or provider not configured)
@@ -1178,6 +1249,7 @@ def restore_primary_runtime(agent) -> bool:
         # Undo the fallback's identity rewrite so the prompt is byte-identical to the stored copy
         # again (prefix cache match).
         rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
+        _check_and_rotate_exhausted_pool_key(agent)
         logger.info("Primary runtime restored for new turn: %s (%s)", agent.model, agent.provider)
         agent._provider_fallback_active = False
         agent._provider_fallback_route = None

@@ -88,6 +88,8 @@ def _repair_object_shape(node):
                     repaired["required"] = valid
                 else:
                     repaired.pop("required", None)
+    if repaired.get("type") == "array" and "items" not in repaired and "prefixItems" not in repaired:
+        repaired["items"] = {}
     return repaired
 
 

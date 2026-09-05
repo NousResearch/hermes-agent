@@ -620,12 +620,64 @@ def _pool_codex_access_token() -> str:
     Fallback for ``resolve_codex_runtime_credentials`` when the singleton has no creds.
     """
     from hermes_cli.auth import _nonempty_str
+    from datetime import datetime
     try:
-        for entry in _codex_pool_dicts(_read_codex_pool_entries()):
-            token, reset_at = entry.get("access_token"), entry.get("last_error_reset_at")
-            in_cooldown = isinstance(reset_at, (int, float)) and reset_at > time.time()
-            if _nonempty_str(token) and not in_cooldown:
-                return token.strip()
+        entries = list(_codex_pool_dicts(_read_codex_pool_entries()))
+        if not entries:
+            return ""
+
+        def _parse_timestamp(value: Any) -> Optional[float]:
+            if value is None or value == "":
+                return None
+            if isinstance(value, (int, float)):
+                numeric = float(value)
+                if numeric <= 0:
+                    return None
+                return numeric / 1000.0 if numeric > 1_000_000_000_000 else numeric
+            if isinstance(value, str):
+                raw = value.strip()
+                if not raw:
+                    return None
+                try:
+                    numeric = float(raw)
+                    return numeric / 1000.0 if numeric > 1_000_000_000_000 else numeric
+                except ValueError:
+                    pass
+                try:
+                    return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+                except ValueError:
+                    return None
+            return None
+
+        def _entry_usable(entry: Dict[str, Any]) -> bool:
+            if not isinstance(entry, dict):
+                return False
+            token = entry.get("access_token")
+            if not isinstance(token, str) or not token.strip():
+                return False
+            if entry.get("last_status") == "dead":
+                return False
+            reset_at = _parse_timestamp(entry.get("last_error_reset_at"))
+            if reset_at is not None:
+                if reset_at > time.time():
+                    return False
+            if entry.get("last_status") == "exhausted":
+                if reset_at is None:
+                    status_at = _parse_timestamp(entry.get("last_status_at"))
+                    if status_at is not None:
+                        err_code = entry.get("last_error_code")
+                        cooldown = 300 if err_code == 401 else 3600
+                        if status_at + cooldown > time.time():
+                            return False
+                    else:
+                        return False
+            return True
+
+        for entry in entries:
+            if _entry_usable(entry):
+                token = entry.get("access_token")
+                if _nonempty_str(token):
+                    return token.strip()
     except Exception:
         logger.debug("Codex pool fallback lookup failed", exc_info=True)
     return ""

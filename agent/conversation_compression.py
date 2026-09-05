@@ -3404,6 +3404,29 @@ def _run_summary_phase(
             agent, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force, memory_context=memory_context,
             bypass_cooldown=bypass_cooldown,
         )
+        if memory_context.strip() and "memory_context" not in compress_kwargs:
+            engine_name = getattr(
+                agent.context_compressor,
+                "name",
+                type(agent.context_compressor).__name__,
+            )
+            if (
+                getattr(agent, "_last_memory_context_unsupported_engine", None)
+                != engine_name
+            ):
+                agent._last_memory_context_unsupported_engine = engine_name
+                logger.warning(
+                    "context engine %s does not accept memory_context; continuing "
+                    "without provider-supplied summary context",
+                    engine_name,
+                )
+
+        if hasattr(agent, "context_compressor") and agent.context_compressor:
+            cc = agent.context_compressor
+            cc.api_key = getattr(agent, "api_key", "")
+            cc.base_url = getattr(agent, "base_url", "")
+            cc.provider = getattr(agent, "provider", "")
+            cc.api_mode = getattr(agent, "api_mode", "")
         messages_before_compression = copy.deepcopy(messages)
         _activity_heartbeat = _CompressionActivityHeartbeat(
             agent, commit_fence=commit_fence, emit_client_status=lease.status_emitted,

@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -381,6 +382,53 @@ def _migrate_profile_config_if_outdated(profile_dir: Path) -> None:
             reset_hermes_home_override(token)
 
 
+def _load_wrappers() -> list[tuple[str, str]]:
+    """Get the list of wrappers, checking directory mtime to auto-invalidate the cache."""
+    wrapper_dir = _get_wrapper_dir()
+    if not wrapper_dir.is_dir():
+        return []
+    try:
+        mtime_ns = wrapper_dir.stat().st_mtime_ns
+    except OSError:
+        mtime_ns = 0
+    return _load_wrappers_cached(wrapper_dir, mtime_ns)
+
+
+@lru_cache(maxsize=1)
+def _load_wrappers_cached(wrapper_dir: Path, mtime_ns: int) -> list[tuple[str, str]]:
+    """Load and cache the (alias_name, file_content) of all valid wrapper scripts in wrapper_dir.
+
+    This avoids re-reading the filesystem and especially decoding large files on multiple calls.
+    """
+    is_windows = sys.platform == "win32"
+    wrappers = []
+
+    try:
+        for entry in sorted(wrapper_dir.iterdir()):
+            if not entry.is_file():
+                continue
+            if is_windows and entry.suffix != ".bat":
+                continue
+            if not is_windows and entry.suffix:
+                continue
+
+            try:
+                # Wrapper scripts are very small (typically < 100 bytes).
+                # Skip large binary files (like uv) to avoid expensive reading/decoding.
+                if entry.stat().st_size > 8192:
+                    continue
+                content = entry.read_text()
+            except (OSError, UnicodeDecodeError):
+                continue
+
+            alias = entry.stem if is_windows else entry.name
+            wrappers.append((alias, content))
+    except OSError:
+        pass
+
+    return wrappers
+
+
 def find_alias_for_profile(profile_name: str) -> Optional[str]:
     """Alias name of the wrapper activating *profile_name*, or None. For listing ALL profiles
     prefer :func:`build_alias_map`: per-profile calls re-read every wrapper N times (O(N*M)),
@@ -403,10 +451,8 @@ def build_alias_map() -> dict[str, str]:
     deterministic via sorted iteration."""
     wrapper_dir = _get_wrapper_dir()
     result: dict[str, str] = {}
-    if not wrapper_dir.is_dir():
-        return result
-    is_windows = sys.platform == "win32"
     prefix = "hermes -p "
+    is_windows = sys.platform == "win32"
     for entry in sorted(wrapper_dir.iterdir()):
         if not entry.is_file():
             continue
@@ -474,7 +520,8 @@ def _load_yaml_dict(path: Path) -> Optional[dict]:
         return None
     try:
         import yaml
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader
+        data = yaml.load(path.read_text(encoding="utf-8"), Loader=loader) or {}
     except Exception:
         return None
     return data if isinstance(data, dict) else None

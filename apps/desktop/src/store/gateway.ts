@@ -73,6 +73,14 @@ interface Secondary {
   offState: () => void
   reconnectTimer: ReturnType<typeof setTimeout> | null
   reconnectAttempt: number
+  /**
+   * Straight connect-budget timeouts in a row (#102978). The pool gate parks
+   * saturated dials past the renderer's 20s budget, so consecutive hits mean
+   * the pool isn't draining for this socket; the reconnect loop fail-stops
+   * the BACKGROUND entry past the cap below instead of re-queueing forever.
+   * Reset on any successful open or non-timeout error.
+   */
+  consecutiveSaturatedDials: number
   reconnecting: boolean
   /** A material connection edit is waiting for live owners to drain. */
   pendingConnectionRedial: boolean
@@ -584,6 +592,8 @@ async function openSecondary(entry: Secondary): Promise<void> {
 
     entry.openedOnce = true
     openedScopes.add(entry.scope)
+    // A successful open breaks any saturation streak (#102978).
+    entry.consecutiveSaturatedDials = 0
 
     try {
       reconcileBusyAfterOpen?.()
@@ -660,6 +670,41 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
 
       return
     }
+    // Pool-saturation backpressure (#102978). The local pool has a hard cap
+    // (default 3) while a fleet of background bots can hold 60+ wantOpen
+    // secondaries: each dial parks a 30s pool ticket, keepalive-fresh holders
+    // never yield, and every attempt trips the 20s connect budget above — so
+    // this loop re-queues forever, the pool never drains, and desktop.log
+    // floods with "waiting for a free local slot". Straight connect-budget
+    // timeouts are effectively permanent for a BACKGROUND socket, so fail-stop
+    // like a removed connection above: dispose + evict, and reopening the
+    // profile dials fresh. The ACTIVE scope is spared — a foreground chat
+    // waits out the pool however long it takes.
+    // ponytail: fixed cap (~8 straight timeouts ≈ 4 min of zero progress),
+    // not adaptive backoff — shorter would strand bots in transient stalls,
+    // longer just delays the same call while the queue stays wedged.
+    if (isPoolConnectTimeout(error) && entry.scope !== g.activeKey) {
+      entry.consecutiveSaturatedDials += 1
+
+      if (entry.consecutiveSaturatedDials >= MAX_CONSECUTIVE_SATURATED_DIALS) {
+        entry.reconnecting = false
+        console.error(
+          `[gateway] pool saturated for scope="${entry.scope}" profile="${entry.profile}" ` +
+            `(${entry.consecutiveSaturatedDials} straight connect timeouts); giving up this background socket`
+        )
+        disposeSecondary(entry)
+
+        if (g.secondaries.get(entry.scope) === entry) {
+          g.secondaries.delete(entry.scope)
+        }
+
+        restoreActiveToPrimaryIfEvicted()
+
+        return
+      }
+    } else {
+      entry.consecutiveSaturatedDials = 0
+    }
     // Other transport failure → fall through to the backoff below.
   } finally {
     entry.reconnecting = false
@@ -689,6 +734,26 @@ function isMissingProfileError(error: unknown): boolean {
   return message.includes('no longer exists') || message.includes('is being deleted')
 }
 
+// Pool-saturation fail-stop budget (#102978): give up a background socket
+// after this many STRAIGHT connect-budget timeouts. One cycle ≈ 20s budget +
+// ≤15s backoff, so 8 ≈ 4 minutes of zero progress — far past transient
+// pressure (a healthy cold boot publishes in ~3s), far short of a wedged
+// pool's hours-long retry steady state.
+const MAX_CONSECUTIVE_SATURATED_DIALS = 8
+
+// The pool gate (ensureBackend) parks a saturated dial on a 30s ticket while
+// the renderer's per-attempt connect budget is 20s, so pool saturation
+// surfaces here as the connect-budget timeout — the slot message itself only
+// escapes on longer-patience paths, so match it too for completeness.
+function isPoolConnectTimeout(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+
+  return (
+    message.includes('Timed out connecting to profile') ||
+    message.includes('timed out while waiting for a free slot')
+  )
+}
+
 function createSecondary(profile: string, connectionId: null | string = null): Secondary {
   const gateway = new HermesGateway()
   const scope = registryBackendScopeKey(connectionId, profile)
@@ -706,6 +771,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     offState: () => {},
     reconnectTimer: null,
     reconnectAttempt: 0,
+    consecutiveSaturatedDials: 0,
     reconnecting: false,
     pendingConnectionRedial: false,
     retained: false,

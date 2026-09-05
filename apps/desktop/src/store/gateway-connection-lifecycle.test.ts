@@ -532,3 +532,100 @@ describe('reconnect fail-stop on a removed connection', () => {
     expect((result as unknown as { connectionState: string }).connectionState).toBe('open')
   })
 })
+
+describe('reconnect fail-stop on a saturated pool (#102978)', () => {
+  it('fail-stops a BACKGROUND secondary after straight pool-saturation timeouts', async () => {
+    // Saturated pool (3 slots vs a fleet of bots): every dial trips the 20s
+    // connect budget while keepalive-fresh holders never yield, so the loop
+    // used to re-queue a 30s ticket per attempt forever — the queue never
+    // drains and desktop.log floods. After several straight timeouts the
+    // background socket must give up; reopening the profile dials fresh.
+    let saturate = false
+
+    const getConnection = vi.fn(async (profile: string) => {
+      if (!saturate) {
+        return descriptorFor('legacy-local', String(profile))
+      }
+
+      throw new Error(`Timed out connecting to profile "${String(profile)}"`)
+    })
+
+    installDesktop({ getConnection })
+
+    await openGatewayForProfile('selena')
+    await openGatewayForProfile('writer')
+    expect(gatewayMocks.instances).toHaveLength(2)
+    saturate = true
+
+    const background = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    background.connectionState = 'closed'
+
+    const callsAtSaturation = getConnection.mock.calls.length
+
+    // Fake timers: the fail-stop's own scheduleReconnect() timers must not
+    // fire mid-test and inflate the dial count — only explicit sweeps dial.
+    vi.useFakeTimers()
+
+    try {
+      for (let dial = 0; dial < 8; dial += 1) {
+        reconnectSecondaryGateways()
+        await vi.advanceTimersByTimeAsync(0)
+        expect(getConnection.mock.calls.length).toBe(callsAtSaturation + dial + 1)
+      }
+
+      // Disposed + evicted: a further sweep finds nothing to retry, while the
+      // foreground socket was never disturbed.
+      reconnectSecondaryGateways()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(getConnection.mock.calls.length).toBe(callsAtSaturation + 8)
+    } finally {
+      vi.useRealTimers()
+    }
+    expect((gatewayMocks.instances[1] as unknown as { connectionState: string }).connectionState).toBe('open')
+  })
+
+  it('spares the ACTIVE scope: a foreground chat out-waits pool saturation', async () => {
+    // Same saturation, but the user is staring at this chat — disposing it
+    // would strand the foreground on a transient stall, so it must keep
+    // retrying past the background fail-stop cap.
+    let saturate = false
+
+    const getConnection = vi.fn(async (profile: string) => {
+      if (!saturate) {
+        return descriptorFor('legacy-local', String(profile))
+      }
+
+      throw new Error(`Timed out connecting to profile "${String(profile)}"`)
+    })
+
+    installDesktop({ getConnection })
+
+    // ensureGatewayForProfile (not openGatewayForProfile): only the former
+    // activates the scope, and the spare branch keys off g.activeKey.
+    await ensureGatewayForProfile('selena')
+    saturate = true
+    ;(gatewayMocks.instances[0] as unknown as { connectionState: string }).connectionState = 'closed'
+
+    const callsAtSaturation = getConnection.mock.calls.length
+
+    // Drive via the sweep (the same path as the background test):
+    // ensureActiveGatewayOpen short-circuits on the mock's open state and
+    // never dials, so it cannot exercise the spare branch. Fake timers keep
+    // the loop's own scheduleReconnect() from inflating the count.
+    vi.useFakeTimers()
+
+    try {
+      for (let dial = 0; dial < 12; dial += 1) {
+        reconnectSecondaryGateways()
+        await vi.advanceTimersByTimeAsync(0)
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+
+    // Twelve straight saturation timeouts — past the background fail-stop
+    // cap of 8 — and the foreground entry still dials every sweep: no
+    // fail-stop for the active scope.
+    expect(getConnection.mock.calls.length).toBe(callsAtSaturation + 12)
+  })
+})

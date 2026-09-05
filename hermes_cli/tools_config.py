@@ -588,11 +588,9 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
     explicit_passthrough = {ts for ts in toolset_names if ts not in explicit_known_keys and ts not in platform_default_keys}
     enabled_toolsets |= _merge_mcp_servers(config, toolset_names, explicit_passthrough, include_default_mcp_servers)
 
-    # agent.disabled_toolsets is a global suppression list and runs LAST so it overrides everything above. It
-    # may arrive as a JSON-array string ("['memory']") from `hermes config set` or a JSON-mode editor save.
+    # agent.disabled_toolsets is a global suppression list (#86661) and runs LAST so it overrides everything
+    # above. It may arrive as a JSON-array string ("['memory']") from `hermes config set` or a JSON-mode editor.
     disabled_toolsets = (config.get("agent") or {}).get("disabled_toolsets")
-    # Honor agent.disabled_toolsets from config.yaml — allows users to globally suppress specific toolsets
-    # (e.g. "memory") across all platforms without per-platform toolset configuration. See #86661.
     if disabled_toolsets:
         from agent.skill_utils import parse_config_string_list
         disabled_names = [name.strip() for name in parse_config_string_list(disabled_toolsets) if name.strip()]
@@ -615,18 +613,11 @@ def _prune_toolsets_stripped_by_disabled(enabled_toolsets: Set[str], disabled_na
     from model_tools import _apply_toolset_selection
     from toolsets import resolve_toolset, validate_toolset
 
-    remaining = set(enabled_toolsets) - set(disabled_names)
-    surviving: Set[str] = set()
-    for name in remaining:
-        if validate_toolset(name):
-            surviving.update(resolve_toolset(name))
+    remaining = enabled_toolsets - set(disabled_names)
+    resolved = {name: set(resolve_toolset(name)) if validate_toolset(name) else set() for name in remaining}
+    surviving: Set[str] = set().union(*resolved.values())
     _apply_toolset_selection(surviving, disabled_names, quiet_mode=True, disable=True)
-    pruned = set()
-    for name in remaining:
-        tools = set(resolve_toolset(name)) if validate_toolset(name) else set()
-        if tools and not tools & surviving:
-            pruned.add(name)
-    return remaining - pruned
+    return {name for name, tools in resolved.items() if not tools or tools & surviving}
 
 
 def _recover_platform_native_toolsets(enabled_toolsets: Set[str], platform: str, *, skip: Set[str]) -> None:

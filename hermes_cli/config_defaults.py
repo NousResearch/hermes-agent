@@ -411,6 +411,12 @@ DEFAULT_CONFIG = {
         # 2"). Empty = browser's last-used profile, which on multi-profile machines can hand the
         # agent the wrong identity. A pin naming a missing directory FAILS CLOSED.
         "real_profile_pin": "",
+        # Run-owned browser lease for unattended workers (#100945). False by
+        # default: Cron/Kanban workers (HERMES_KANBAN_TASK / HERMES_CRON_SESSION)
+        # always use a task-private Browser Harness runtime + private Chrome.
+        # True forces that path anywhere (explicit opt-in, tests). Behavioral
+        # flags live in config.yaml, never in .env.
+        "run_owned_browser": False,
         # restrict_evaluate: opt-in denylist blocking sensitive JS primitives (cookies/storage/
         # clipboard/network/form values) in browser_console(expression=...); allow_unsafe_evaluate
         # is the legacy override that bypasses that denylist entirely.

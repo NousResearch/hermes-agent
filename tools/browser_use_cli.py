@@ -4,14 +4,18 @@ When browser.backend is "browser-use", the model gets ``browser_exec`` tool
 instead of default browser tools
 """
 
+import atexit
 import contextlib
 import importlib
 import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import subprocess
+import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -236,6 +240,22 @@ def _managed_bin_dir() -> str:
     return str(Path(get_hermes_home()) / "bin")
 
 
+def _user_local_bin_dir() -> Optional[str]:
+    """The standard user-level tool dir (~/.local/bin on POSIX; uv's default
+    tool bin dir on Windows). Desktop/TUI workers may start with a minimal
+    PATH that omits it even when `uv tool install browser-use` put the
+    binary there.
+    """
+    try:
+        if os.name == "nt":
+            base = os.environ.get("APPDATA")
+            return str(Path(base) / "uv" / "bin") if base else None
+        return str(Path(os.path.expanduser("~")) / ".local" / "bin")
+    except Exception as e:  # pragma: no cover — defensive
+        logger.debug("Could not resolve user-local bin dir: %s", e)
+        return None
+
+
 def _find_cli() -> Optional[List[str]]:
     """Locate the browser-use CLI, or None when it can't be run. MANAGED-FIRST: Hermes' own ``$HERMES_HOME/bin``
     copy always wins so every session drives one Hermes-controlled binary; PATH and the user-level tool dir
@@ -295,6 +315,647 @@ def install_cli(timeout_s: int = 600) -> Tuple[bool, str]:
         return False, ("install reported success but the browser-use binary is still not resolvable — "
                        "run `uv tool install browser-use` manually")
     return True, f"browser-use CLI installed ({found[0]})"
+
+
+# ---------------------------------------------------------------------------
+# Run-owned browser leases for unattended workers (#100945)
+#
+# Cron/Kanban workers share one process tree with future unattended
+# consumers, so per-runner workarounds leave every other consumer exposed.
+# When this process IS an unattended worker, browser_exec switches to a
+# task-private lease:
+#
+# - one governed CLI binary (direct install, never uvx) or fail closed;
+# - inherited BU_*/BH_* routing scrubbed before any backend decision, so a
+#   stale BU_CDP_URL from a dead prior run cannot suppress the new lease;
+# - a short task-private BH_RUNTIME_DIR (+BU_NAME namespaced per worker)
+#   even when attaching to an operator-owned CDP endpoint;
+# - a task-private Chrome on an OS-assigned loopback port when no CDP
+#   endpoint exists, with an isolated profile and the standard proxy/PAC
+#   env contract forwarded;
+# - no-download guards, no pipe inheritance (temp-file stdio), and lifetime
+#   bound to the worker (atexit + teardown on timeout).
+#
+# Interactive behavior below (_find_cli with uvx fallback, shared runtime
+# dir, captured pipes) is intentionally untouched.
+# ---------------------------------------------------------------------------
+
+_UNATTENDED_KANBAN_ENV = "HERMES_KANBAN_TASK"
+_UNATTENDED_CRON_ENV = "HERMES_CRON_SESSION"
+
+# Prefix-complete scrub: every harness routing var starts with one of these.
+_SCRUB_PREFIXES = ("BU_", "BH_")
+
+# Proxy/PAC contract forwarded to the private Chrome + CLI env (upper and
+# lower case; Chrome honors --proxy-server/--proxy-pac-url explicitly).
+_PROXY_ENV_KEYS = (
+    "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy",
+    "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
+)
+_PAC_ENV_KEYS = ("PROXY_PAC_URL", "PAC_URL", "HTTPS_PROXY_PAC", "HTTP_PROXY_PAC")
+
+# Guards so an unattended run can never trigger a runtime download.
+_NO_DOWNLOAD_GUARDS = {
+    "UV_OFFLINE": "1",
+    "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+    "PIP_NO_INPUT": "1",
+    "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1",
+}
+
+_CHROME_PROBE_NAMES = (
+    "google-chrome-stable", "google-chrome", "chromium-browser", "chromium",
+    "microsoft-edge-stable", "microsoft-edge", "brave-browser-stable", "brave-browser",
+)
+
+_CHROME_READY_TIMEOUT_S = 25
+_MAX_SOCKET_PATH_CHARS = 100
+
+
+def _is_unattended_worker() -> bool:
+    """True inside Cron/Kanban workers or under the explicit config override.
+
+    Detection uses the pre-existing worker markers (no new HERMES_* env):
+    HERMES_KANBAN_TASK set by the dispatcher, HERMES_CRON_SESSION=1 for cron
+    runs. ``browser.run_owned_browser: true`` in config.yaml forces the
+    run-owned path anywhere (tests, explicit opt-in). Behavioral flags live
+    in config.yaml, never in .env.
+    """
+    if (os.environ.get(_UNATTENDED_KANBAN_ENV) or "").strip():
+        return True
+    if (os.environ.get(_UNATTENDED_CRON_ENV) or "").strip() == "1":
+        return True
+    try:
+        return bool(_read_browser_cfg().get("run_owned_browser"))
+    except Exception:
+        return False
+
+
+def _find_governed_cli() -> Optional[List[str]]:
+    """Resolve the Hermes-managed browser-use binary — never uvx.
+
+    Same managed-first probes as _find_cli() (managed bin, PATH,
+    user-level tool dir) but direct binaries only. Unattended workers fail
+    closed when absent instead of downloading at runtime.
+    """
+    for probe_path in (_managed_bin_dir(), None, _user_local_bin_dir()):
+        if probe_path is None or probe_path:
+            direct = shutil.which("browser-use", path=probe_path)
+            if direct:
+                return [direct]
+    return None
+
+
+def _scrub_routing_env(env: dict) -> dict:
+    """Drop inherited BU_*/BH_* harness routing from a subprocess env."""
+    for key in [k for k in env if k.startswith(_SCRUB_PREFIXES)]:
+        env.pop(key, None)
+    return env
+
+
+def _apply_no_download_guards(env: dict) -> dict:
+    env.update(_NO_DOWNLOAD_GUARDS)
+    env.setdefault("ANONYMIZED_TELEMETRY", "false")
+    return env
+
+
+def _preserve_proxy_env(env: dict) -> dict:
+    """Forward the operator's proxy/PAC contract into the lease env."""
+    for key in _PROXY_ENV_KEYS + _PAC_ENV_KEYS:
+        if key in os.environ and key not in env:
+            env[key] = os.environ[key]
+    return env
+
+
+def _short_tmp_base() -> str:
+    """Short temp base for runtime dirs (AF_UNIX sun_path is ~104B on macOS)."""
+    try:
+        from tools.browser_tool import _socket_safe_tmpdir
+
+        return _socket_safe_tmpdir()
+    except Exception:
+        return tempfile.gettempdir()
+
+
+def _sanitize_name_part(raw: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", str(raw or "")).strip("_-") or "run"
+
+
+def _unattended_lease_key(task_id: Optional[str]) -> str:
+    """Cache key scoping one lease per worker job in this process."""
+    kanban = (os.environ.get(_UNATTENDED_KANBAN_ENV) or "").strip()
+    if kanban:
+        return f"kb-{_sanitize_name_part(kanban)[:24]}"
+    if (os.environ.get(_UNATTENDED_CRON_ENV) or "").strip() == "1":
+        return f"cron-{_sanitize_name_part(task_id)[:24]}" if task_id else "cron-default"
+    return f"forced-{_sanitize_name_part(task_id)[:24]}" if task_id else "forced-default"
+
+
+class _RunOwnedLease:
+    """Task-private harness state: runtime dir, name prefix, Chrome."""
+
+    def __init__(self, key: str, runtime_dir: str, prefix: str) -> None:
+        self.key = key
+        self.runtime_dir = runtime_dir
+        self.tmp_dir = os.path.join(runtime_dir, "tmp")
+        self.prefix = prefix
+        self.daemon_names: set = set()
+        self.chrome_proc = None
+        self.chrome_profile: Optional[str] = None
+        self.chrome_cdp_url: Optional[str] = None
+
+    @property
+    def env_overrides(self) -> dict:
+        # SHARED=1: one private dir holds every namespaced daemon of this
+        # worker (bu-<name>.sock), so concurrent sessions keep isolation
+        # while staying invisible to other workers.
+        return {
+            "BH_RUNTIME_DIR": self.runtime_dir,
+            "BH_TMP_DIR": self.tmp_dir,
+            "BH_RUNTIME_DIR_SHARED": "1",
+            "BH_TMP_DIR_SHARED": "1",
+            "BH_OPEN_LIVE_URL": "0",
+        }
+
+
+_LEASES: Dict[str, _RunOwnedLease] = {}
+_LEASES_LOCK = threading.Lock()
+_ATEXIT_REGISTERED = False
+
+
+def _lease_prefix(key: str) -> str:
+    safe = _sanitize_name_part(key)[:16]
+    return f"{safe}-p{os.getpid():05d}-{secrets.token_hex(2)}"[:32]
+
+
+def _get_or_allocate_lease(key: str) -> _RunOwnedLease:
+    """Return the cached lease for key, allocating a private runtime dir."""
+    global _ATEXIT_REGISTERED
+    with _LEASES_LOCK:
+        existing = _LEASES.get(key)
+        if existing is not None and os.path.isdir(existing.runtime_dir):
+            return existing
+        base = _short_tmp_base()
+        runtime_dir = tempfile.mkdtemp(prefix="h-bu-", dir=base)
+        try:
+            os.chmod(runtime_dir, 0o700)
+        except OSError:
+            pass
+        lease = _RunOwnedLease(key, runtime_dir, _lease_prefix(key))
+        try:
+            os.makedirs(lease.tmp_dir, mode=0o700, exist_ok=True)
+        except OSError:
+            pass
+        _LEASES[key] = lease
+        if not _ATEXIT_REGISTERED:
+            _ATEXIT_REGISTERED = True
+            atexit.register(_teardown_all_leases)
+        return lease
+
+
+def _effective_bu_name(lease: _RunOwnedLease, session: str) -> str:
+    """Namespace the session under this worker; keep the socket path short."""
+    name = f"{lease.prefix}-{session}" if session else lease.prefix
+    name = _sanitize_name_part(name)[:64]
+    if not _SESSION_RE.match(name):
+        name = _sanitize_name_part(f"u-{name}")[:64]
+    # AF_UNIX budget: <runtime>/bu-<name>.sock must stay short.
+    budget = _MAX_SOCKET_PATH_CHARS - len(lease.runtime_dir) - len("/bu-.sock")
+    if len(name) > budget:
+        name = name[: max(budget, 8)]
+    return name
+
+
+def _teardown_lease(key: str) -> None:
+    """Best-effort: stop daemons, kill Chrome, remove sockets/profiles/ports."""
+    with _LEASES_LOCK:
+        lease = _LEASES.pop(key, None)
+    if lease is None:
+        return
+    # Cloud daemons own billable browsers: ask for a graceful stop first via
+    # the governed CLI (best-effort, short timeout, no pipes to inherit).
+    cli = _find_governed_cli()
+    for name in sorted(lease.daemon_names):
+        if cli:
+            try:
+                stop_env = dict(os.environ)
+                stop_env.update(lease.env_overrides)
+                stop_env["BU_NAME"] = name
+                subprocess.run(
+                    cli,
+                    input="stop_remote_daemon(%r)\n" % name,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    env=stop_env,
+                    start_new_session=(os.name != "nt"),
+                    close_fds=True,
+                )
+            except Exception:
+                pass
+        pid_path = os.path.join(lease.runtime_dir, f"bu-{name}.pid")
+        try:
+            raw = open(pid_path, encoding="utf-8").read().strip()
+        except OSError:
+            continue
+        try:
+            import json as _json
+
+            try:
+                pid = int(_json.loads(raw).get("pid", 0))
+            except (ValueError, TypeError, AttributeError):
+                pid = int(raw.split()[0])
+        except (ValueError, IndexError):
+            continue
+        if not 0 < pid < (1 << 31) or pid == os.getpid():
+            continue
+        try:
+            if os.name != "nt":
+                os.kill(pid, 15)
+            else:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/F"],
+                    capture_output=True,
+                    timeout=10,
+                )
+        except Exception:
+            pass
+    chrome = lease.chrome_proc
+    lease.chrome_proc = None
+    if chrome is not None:
+        try:
+            from tools.browser_tool_lifecycle import _kill_process_tree
+
+            _kill_process_tree(chrome)
+        except Exception:
+            try:
+                chrome.terminate()
+                chrome.wait(timeout=5)
+            except Exception:
+                try:
+                    chrome.kill()
+                except Exception:
+                    pass
+    import shutil as _shutil
+
+    _shutil.rmtree(lease.runtime_dir, ignore_errors=True)
+
+
+def _teardown_all_leases() -> None:
+    for key in list(_LEASES.keys()):
+        try:
+            _teardown_lease(key)
+        except Exception:
+            pass
+
+
+def _chrome_binary() -> Optional[str]:
+    """Resolve a governed Chrome/Chromium binary (BH_CHROME_PATH first)."""
+    for key in ("BH_CHROME_PATH", "CHROME_PATH"):
+        raw = (os.environ.get(key) or "").strip()
+        if raw and os.path.isfile(os.path.expanduser(raw)):
+            return os.path.expanduser(raw)
+    try:
+        from hermes_cli.browser_connect import chromium_executable, detect_default_chromium
+
+        name = detect_default_chromium()
+        if name:
+            found = chromium_executable(name)
+            if found:
+                return found
+    except Exception as e:
+        logger.debug("run-owned chrome detect failed: %s", e)
+    for probe in _CHROME_PROBE_NAMES:
+        found = shutil.which(probe)
+        if found:
+            return found
+    return None
+
+
+def _cdp_live(url: str, timeout: float = 2.0) -> bool:
+    try:
+        import urllib.request
+
+        with urllib.request.urlopen(url.rstrip("/") + "/json/version", timeout=timeout) as r:
+            body = _json_parse(r.read().decode("utf-8", "replace"))
+        return isinstance(body, dict) and bool(body.get("webSocketDebuggerUrl"))
+    except Exception:
+        return False
+
+
+def _json_parse(text: str):
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
+def _chrome_proxy_flags() -> List[str]:
+    """Translate the standard proxy/PAC env contract into Chrome flags."""
+    for key in _PAC_ENV_KEYS:
+        pac = (os.environ.get(key) or "").strip()
+        if pac:
+            return ["--proxy-pac-url=" + pac]
+    server = ""
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        server = (os.environ.get(key) or "").strip()
+        if server:
+            break
+    flags: List[str] = []
+    if server:
+        flags.append("--proxy-server=" + server)
+    bypass = (os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or "").strip()
+    if bypass:
+        flags.append("--proxy-bypass-list=" + bypass.replace(",", ";"))
+    return flags
+
+
+def _ensure_run_owned_chrome(lease: _RunOwnedLease, env: dict) -> Optional[str]:
+    """Launch (or reuse) the lease's private Chrome; return (url, err)."""
+    if lease.chrome_cdp_url and _cdp_live(lease.chrome_cdp_url):
+        return None
+    # A previous Chrome died: drop the handle so a fresh one launches below.
+    lease.chrome_cdp_url = None
+    lease.chrome_proc = None
+    binary = _chrome_binary()
+    if not binary:
+        return (
+            "Run-owned browser unavailable: no Chrome/Chromium binary found. "
+            "Install Google Chrome (not the Snap build) or set BH_CHROME_PATH. "
+            "Unattended workers never download a browser at runtime."
+        )
+    profile = os.path.join(lease.runtime_dir, "chrome-profile")
+    try:
+        os.makedirs(profile, mode=0o700, exist_ok=True)
+    except OSError as e:
+        return f"Run-owned browser unavailable: cannot create profile dir: {e}"
+    lease.chrome_profile = profile
+    args = [
+        binary,
+        "--headless=new",
+        "--remote-debugging-port=0",
+        f"--user-data-dir={profile}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-dev-shm-usage",
+        "--disable-extensions",
+    ]
+    try:
+        from tools.browser_tool import _needs_chromium_sandbox_bypass
+
+        if _needs_chromium_sandbox_bypass():
+            args.append("--no-sandbox")
+    except Exception:
+        pass
+    args.extend(_chrome_proxy_flags())
+    popen_extra: dict = {"close_fds": True}
+    if os.name == "nt":
+        try:
+            from hermes_cli._subprocess_compat import windows_hide_flags
+
+            popen_extra["creationflags"] = (
+                windows_hide_flags() | subprocess.CREATE_NEW_PROCESS_GROUP
+            )
+        except Exception:
+            popen_extra["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        popen_extra["start_new_session"] = True
+    try:
+        proc = subprocess.Popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=dict(env),
+            **popen_extra,
+        )
+    except OSError as e:
+        return f"Run-owned browser unavailable: failed to launch Chrome: {e}"
+    lease.chrome_proc = proc
+    # --remote-debugging-port=0 lets the OS assign the loopback port; Chrome
+    # publishes it in DevToolsActivePort under the isolated profile.
+    port_file = os.path.join(profile, "DevToolsActivePort")
+    deadline = time.time() + _CHROME_READY_TIMEOUT_S
+    port = ""
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            lease.chrome_proc = None
+            return (
+                f"Run-owned browser unavailable: Chrome exited early (code {proc.returncode}). "
+                "Check that a native (non-Snap) Chrome is installed."
+            )
+        try:
+            with open(port_file, encoding="utf-8") as f:
+                port = (f.readline() or "").strip()
+            if port.isdigit():
+                break
+        except OSError:
+            pass
+        time.sleep(0.2)
+    if not port.isdigit():
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        lease.chrome_proc = None
+        return "Run-owned browser unavailable: Chrome published no debugging port in time."
+    url = f"http://127.0.0.1:{port}"
+    if not _cdp_live(url, timeout=5.0):
+        return "Run-owned browser unavailable: Chrome's CDP endpoint never became reachable."
+    lease.chrome_cdp_url = url
+    return None
+
+
+def _run_cli_no_pipes(
+    cmd: List[str], env: dict, timeout: int, stdin_path: str
+) -> Tuple[int, str, str]:
+    """Run the CLI with file-backed stdio so no daemon can hold our pipes open.
+
+    Mirrors the browser_tool temp-file pattern: a persistent harness daemon
+    inheriting captured stdout/stderr pipes would keep them open past CLI
+    exit and hang the parent's EOF. The model script is delivered on stdin
+    via a temp FILE (not an OS pipe), so EOF is immediate no matter what a
+    detached daemon inherits — on both POSIX and Windows.
+    """
+    base = _short_tmp_base()
+    out_path = err_path = ""
+    try:
+        out_fd, out_path = tempfile.mkstemp(prefix="bu-out-", dir=base)
+        os.close(out_fd)
+        err_fd, err_path = tempfile.mkstemp(prefix="bu-err-", dir=base)
+        os.close(err_fd)
+        popen_extra: dict = {"close_fds": True}
+        if os.name == "nt":
+            try:
+                from hermes_cli._subprocess_compat import windows_hide_flags
+
+                popen_extra["creationflags"] = windows_hide_flags()
+                _si = subprocess.STARTUPINFO()
+                _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
+                popen_extra["startupinfo"] = _si
+            except Exception as e:
+                logger.debug("Windows hide-flags unavailable: %s", e)
+        else:
+            popen_extra["start_new_session"] = True
+        with open(stdin_path, "rb") as stdin_f, open(out_path, "wb") as out_f, open(
+            err_path, "wb"
+        ) as err_f:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=stdin_f,
+                stdout=out_f,
+                stderr=err_f,
+                env=env,
+                **popen_extra,
+            )
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=10)
+            except Exception:
+                pass
+            raise
+        returncode = proc.returncode
+    finally:
+        pass
+    stdout = stderr = ""
+    try:
+        with open(out_path, encoding="utf-8", errors="replace") as f:
+            stdout = f.read()
+    except OSError:
+        pass
+    try:
+        with open(err_path, encoding="utf-8", errors="replace") as f:
+            stderr = f.read()
+    except OSError:
+        pass
+    for path in (out_path, err_path):
+        try:
+            if path:
+                os.unlink(path)
+        except OSError:
+            pass
+    return returncode, stdout, stderr
+
+
+def _browser_exec_unattended(
+    code: str,
+    session: str = "",
+    timeout_s: int = _DEFAULT_TIMEOUT_S,
+    task_id: Optional[str] = None,
+    local: bool = False,
+):
+    """browser_exec on a task-private lease (unattended workers only)."""
+    from tools.registry import tool_error, tool_result
+
+    if session and not _SESSION_RE.match(session):
+        return tool_error(
+            f"Invalid session name {session!r}: use 1-64 letters, digits, "
+            "dashes, or underscores (e.g. 'r7k2')."
+        )
+    governed = _find_governed_cli()
+    if not governed:
+        return tool_error(
+            "Run-owned browser unavailable: no managed browser-use binary found "
+            "and unattended workers never fall back to uvx or runtime installs. "
+            "Install it with `uv tool install browser-use`, then retry."
+        )
+    key = _unattended_lease_key(task_id)
+    lease = _get_or_allocate_lease(key)
+    # Prefix-complete scrub FIRST: a stale BU_CDP_URL from a dead prior run
+    # must not suppress the private lease (issue #100945 comment point 4).
+    env = _scrub_routing_env(_base_subprocess_env())
+    _apply_no_download_guards(env)
+    _preserve_proxy_env(env)
+    env.update(lease.env_overrides)
+    bu_name = _effective_bu_name(lease, session)
+    env["BU_NAME"] = bu_name
+    lease.daemon_names.add(bu_name)
+    rp_err = _resolve_real_profile_cdp(env, force_local=bool(local))
+    if rp_err:
+        return tool_error(rp_err)
+    if local and not (env.get("BU_CDP_URL") or env.get("BU_CDP_WS")):
+        if not _real_profile_consented():
+            return tool_error(
+                "local=true was requested but browser.use_real_profile is off. "
+                "Enable it in config.yaml (browser.use_real_profile: true) or "
+                "the desktop Settings → Browser section, then retry."
+            )
+    backend_err = _resolve_backend_cdp(env, task_id, session_name=session)
+    if backend_err:
+        return tool_error(backend_err)
+    private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)
+    exec_code = code
+    if session and not private_browser:
+        exec_code = _OWN_TAB_PREAMBLE + code
+    workspace = _workspace_dir(task_id)
+    if workspace:
+        env["BH_AGENT_WORKSPACE"] = workspace
+    if "BU_AUTOSPAWN" not in env and is_legacy_browser_use_cloud_config(_read_browser_cfg()):
+        env["BU_AUTOSPAWN"] = "1"
+    if not (env.get("BU_CDP_URL") or env.get("BU_CDP_WS")):
+        # BU_CDP_WS wins over BU_CDP_URL in the harness; set exactly one.
+        env.pop("BU_CDP_WS", None)
+        chrome_err = _ensure_run_owned_chrome(lease, env)
+        if chrome_err:
+            return tool_error(chrome_err)
+        env["BU_CDP_URL"] = lease.chrome_cdp_url or ""
+    try:
+        timeout = max(_MIN_TIMEOUT_S, min(int(timeout_s), _MAX_TIMEOUT_S))
+    except (TypeError, ValueError):
+        timeout = _DEFAULT_TIMEOUT_S
+    # The harness reads the script on stdin; deliver it via a temp FILE (not
+    # an OS pipe) so a detached daemon can never hold our stdin/stdout open.
+    script_path = ""
+    try:
+        fd, script_path = tempfile.mkstemp(prefix="bu-code-", suffix=".py", dir=lease.tmp_dir)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(exec_code)
+        started = time.time()
+        returncode, stdout, stderr = _run_cli_no_pipes(governed, env, timeout, script_path)
+    except subprocess.TimeoutExpired:
+        # Fail closed: a timed-out call must not leave a child, socket,
+        # port, or profile behind for the next task to trip over.
+        _teardown_lease(key)
+        return tool_error(
+            f"browser-use exec timed out after {timeout}s. The run-owned lease "
+            "(daemon, browser, profile) was torn down; retry with a larger "
+            f"timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several "
+            "calls that append to workspace files."
+        )
+    except OSError as e:
+        return tool_error(f"Failed to launch browser-use CLI: {e}")
+    finally:
+        try:
+            if script_path:
+                os.unlink(script_path)
+        except OSError:
+            pass
+    result = {
+        "success": returncode == 0,
+        "exit_code": returncode,
+        "output": stdout,
+    }
+    if workspace:
+        result["workspace"] = workspace
+    if session:
+        result["session"] = session
+    stderr = (stderr or "").strip()
+    if stderr:
+        if len(stderr) > _STDERR_CAP_CHARS:
+            stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"
+        result["stderr"] = stderr
+    screenshot = _find_screenshot(stdout, started)
+    if screenshot:
+        result["screenshot_path"] = screenshot
+        native = _native_screenshot_result(result, screenshot)
+        if native is not None:
+            return native
+    return tool_result(result)
 
 
 def _workspace_dir(task_id: Optional[str]) -> Optional[str]:
@@ -526,6 +1187,18 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     blocked = _blocked_url_in_code(code)
     if blocked:
         return tool_error(blocked)
+
+    # Unattended workers (Cron/Kanban) run on a task-private lease with a
+    # governed launcher and worker-bound lifetime (#100945). Interactive
+    # behavior below is unchanged.
+    if _is_unattended_worker():
+        return _browser_exec_unattended(
+            code,
+            session=session,
+            timeout_s=timeout_s,
+            task_id=task_id,
+            local=local,
+        )
 
     cmd = _find_cli()
     if not cmd:

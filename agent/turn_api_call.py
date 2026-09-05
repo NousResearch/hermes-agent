@@ -79,7 +79,7 @@ def perform_api_call(
 
     _use_streaming = _should_stream(agent)
 
-    def _perform_api_call(next_api_kwargs):
+    def _perform_api_call_inner(next_api_kwargs):
         if agent.api_mode == "codex_responses":
             next_api_kwargs = agent._get_transport().preflight_kwargs(
                 next_api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),
@@ -124,7 +124,7 @@ def perform_api_call(
             _model_request_active.set()
     try:
         response = run_llm_execution_middleware(
-            api_kwargs, _perform_api_call, original_request=_original_api_kwargs,
+            api_kwargs, _perform_api_call_inner, original_request=_original_api_kwargs,
             task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
             session_id=agent.session_id or "", platform=agent.platform or "", model=agent.model,
             provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode,

@@ -78,13 +78,30 @@ function isLocale(value: string): value is Locale {
   return (SUPPORTED_LOCALES as string[]).includes(value);
 }
 
-function getInitialLocale(): Locale {
+// zh-TW/zh-HK/zh-MO must map to Traditional Chinese explicitly — their base
+// subtag "zh" would otherwise resolve to Simplified.
+const ZH_HANT_TAGS = new Set(["zh-tw", "zh-hk", "zh-mo"]);
+
+export function getInitialLocale(): Locale {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored && isLocale(stored)) return stored;
   } catch {
     // SSR or privacy mode
   }
+
+  const preferred =
+    typeof navigator === "undefined"
+      ? []
+      : navigator.languages ?? (navigator.language ? [navigator.language] : []);
+  for (const tag of preferred) {
+    const lower = tag.toLowerCase();
+    if (isLocale(lower)) return lower;
+    if (ZH_HANT_TAGS.has(lower)) return "zh-hant";
+    const base = lower.split("-")[0];
+    if (isLocale(base)) return base;
+  }
+
   return "en";
 }
 

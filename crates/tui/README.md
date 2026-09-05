@@ -24,6 +24,18 @@ Do not call model APIs from this crate. Turns, tools, slash fallthrough, YOLO, c
 
 Ink extras that stay on the TypeScript client until they have a gateway-backed UI here: widgets, billing/subscription, voice, wake, pet, dashboard PTY embed, Telegram/Claude handoff.
 
+## Screenshots
+
+Caduceus gold, a live stream, `/theme`, `/model`.
+
+![Empty session](docs/screenshots/01-intro.jpg)
+
+![Stream](docs/screenshots/02-stream.jpg)
+
+![Theme picker](docs/screenshots/05-theme-picker.jpg)
+
+![Model picker](docs/screenshots/07-model-picker.jpg)
+
 ## Run
 
 ```bash

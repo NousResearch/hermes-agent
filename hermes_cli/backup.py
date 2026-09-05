@@ -416,12 +416,15 @@ def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
     def _canonical(path: str) -> str:
         return os.path.normcase(os.path.abspath(path.removesuffix(" (deleted)")))
 
-    def _holds_watched(fds: List[str], fd_dir: str) -> bool:
+    def _holds_watched(fds: List[str], fd_dir: str) -> Optional[bool]:
         for fd in fds:
             try:
                 target = os.readlink(f"{fd_dir}/{fd}")
-            except OSError:
+            except FileNotFoundError:
+                # The descriptor closed after its directory was listed.
                 continue
+            except OSError:
+                return None
             if _canonical(target) in watched:
                 return True
         return False
@@ -437,9 +440,15 @@ def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
             fd_dir = f"/proc/{pid_str}/fd"
             try:
                 fds = os.listdir(fd_dir)
-            except OSError:
+            except FileNotFoundError:
+                # The process exited after the /proc PID listing.
                 continue
-            if _holds_watched(fds, fd_dir):
+            except OSError:
+                return None
+            holds_watched = _holds_watched(fds, fd_dir)
+            if holds_watched is None:
+                return None
+            if holds_watched:
                 pids.append(int(pid_str))
     except OSError:
         return None
@@ -451,7 +460,7 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
 
     Writing pages into the live file preserves its inode and WAL state, so other holders (gateway,
     dashboard, another CLI) see the restored data instead of stale pages from a replaced inode.
-    The fallback runs ONLY when no other process or in-process connection holds the file
+    The fallback runs ONLY when inspection proves that no other process or in-process connection holds the file
     (replacing the inode under a live holder is the #90950 split-brain); otherwise it fails closed
     (``False``) and the caller reports the file as skipped.
     """
@@ -482,6 +491,14 @@ def _unlink_move_restore_db(src: Path, dst: Path) -> bool:
     from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
     try:
         holders = _foreign_db_holder_pids(dst)
+        if holders is None:
+            logger.error(
+                "Refusing unlink+move restore of %s: database-holder inspection "
+                "is unavailable or incomplete, so the destructive fallback "
+                "cannot be proven safe. Resolve the SQLite restore error and retry.",
+                dst,
+            )
+            return False
         if holders:
             logger.error("Refusing unlink+move restore of %s: process(es) %s still "
                          "hold the database or its WAL open. Stop them and retry.", dst, holders)
@@ -1071,6 +1088,27 @@ def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
     return home / _QUICK_SNAPSHOTS_DIR
 
 
+def _resolve_quick_snapshot_dir(
+    snapshot_id: str,
+    hermes_home: Optional[Path] = None,
+) -> Optional[Path]:
+    """Return a contained quick-snapshot directory, or None for an invalid ID or missing directory."""
+    root = _quick_snapshot_root(hermes_home)
+    if (
+        not snapshot_id
+        or "/" in snapshot_id
+        or "\\" in snapshot_id
+        or snapshot_id in (".", "..")
+    ):
+        logger.error("Invalid snapshot_id: %s", snapshot_id)
+        return None
+    snap_dir = root / snapshot_id
+    if not _is_within(snap_dir, root.resolve()):
+        logger.error("Snapshot path traversal blocked for id: %s", snapshot_id)
+        return None
+    return snap_dir if snap_dir.is_dir() else None
+
+
 def create_quick_snapshot(
     label: Optional[str] = None, hermes_home: Optional[Path] = None, keep: Optional[int] = None,
     max_file_size: Optional[int] = None) -> Optional[str]:
@@ -1230,22 +1268,17 @@ def list_quick_snapshots(limit: int = 20, hermes_home: Optional[Path] = None) ->
 def restore_quick_snapshot(snapshot_id: str, hermes_home: Optional[Path] = None) -> bool:
     """Restore state from a quick snapshot."""
     home = hermes_home or get_hermes_home()
-    root = _quick_snapshot_root(home)
-    # Reject ids with separators or traversal so ``root / snapshot_id`` stays inside root.
-    if not snapshot_id or "/" in snapshot_id or "\\" in snapshot_id or snapshot_id in (".", ".."):
-        logger.error("Invalid snapshot_id: %s", snapshot_id)
-        return False
-    snap_dir = root / snapshot_id
-    if not _is_within(snap_dir, root.resolve()):  # handles symlinks etc.
-        logger.error("Snapshot path traversal blocked for id: %s", snapshot_id)
+    snap_dir = _resolve_quick_snapshot_dir(snapshot_id, home)
+    if snap_dir is None:
         return False
     manifest_path = snap_dir / "manifest.json"
-    if not snap_dir.is_dir() or not manifest_path.exists():
+    if not manifest_path.exists():
         return False
     with open(manifest_path, encoding="utf-8") as f:
         meta = json.load(f)
     snap_res, home_res = snap_dir.resolve(), home.resolve()
     restored = 0
+    db_restore_failed = False
     for rel in meta.get("files", {}):
         src = snap_dir / rel
         dst = home / rel
@@ -1261,7 +1294,8 @@ def restore_quick_snapshot(snapshot_id: str, hermes_home: Optional[Path] = None)
                 # stale pages from a replaced inode (#65942).
                 if not _safe_restore_db(src, dst):
                     # Refused (live holder) or failed: destination untouched — a failure, not a restore.
-                    logger.error("Failed to restore %s: live-safe restore refused", rel)
+                    logger.error("Failed to restore %s: live-safe restore failed or was refused", rel)
+                    db_restore_failed = True
                     continue
             else:
                 shutil.copy2(src, dst)
@@ -1269,7 +1303,7 @@ def restore_quick_snapshot(snapshot_id: str, hermes_home: Optional[Path] = None)
         except (OSError, PermissionError) as exc:
             logger.error("Failed to restore %s: %s", rel, exc)
     logger.info("Restored %d files from snapshot %s", restored, snapshot_id)
-    return restored > 0
+    return restored > 0 and not db_restore_failed
 
 
 # Kept in sync with ``_QUICK_STATE_FILES`` and ``cron/jobs.py``'s ``JOBS_FILE``.

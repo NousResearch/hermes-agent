@@ -3944,7 +3944,11 @@ def _ctx_comments(lines: list[str], comments: list[Comment], now: int) -> None:
     """Newest ``_CTX_MAX_COMMENTS`` comments. The explicit "comment from
     worker" framing stops an operator-controlled HERMES_PROFILE like
     "hermes-system" being read as a system directive above an
-    attacker-influenceable body (defense-in-depth)."""
+    attacker-influenceable body (defense-in-depth). Comments that carry a
+    session id (authorship provenance, #103457) render it after the stamp so
+    a next worker can tell WHICH execution wrote the comment — the #98750
+    stale-comment symptom; interpreting that id against the current-vs-ended
+    run remains complementary open work, this is provenance disclosure only."""
     shown, omitted_note = _ctx_tail(comments, _CTX_MAX_COMMENTS, "comment")
     if not shown:
         return
@@ -3957,7 +3961,10 @@ def _ctx_comments(lines: list[str], comments: list[Comment], now: int) -> None:
         # directive above the (attacker-influenceable) comment body. Defense-in-depth — the LLM-controlled
         # author-forgery surface was already closed in #22435. See #22452.
         safe_author = (c.author or "").replace("`", "")
-        lines.append(f"comment from worker `{safe_author}` at {_ctx_stamp(c.created_at, now)}:")
+        session_note = (f" (commenting session: `{c.session_id}`)"
+                        if c.session_id else "")
+        lines.append(f"comment from worker `{safe_author}` at "
+                     f"{_ctx_stamp(c.created_at, now)}{session_note}:")
         lines.append(_ctx_cap(c.body, _CTX_MAX_COMMENT_BYTES))
         lines.append("")
 

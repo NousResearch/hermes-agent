@@ -149,3 +149,72 @@ def test_add_comment_rejects_bad_input(comment_board):
             kb.add_comment(conn, tid, author="forge", body="   ")
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Blocker-3 regression: stamp the TASK-LOCAL session identity, not the
+# process-global env (gateway made HERMES_SESSION_* ContextVars for exactly
+# this reason — concurrent tasks in one process clobber os.environ)
+# ---------------------------------------------------------------------------
+
+def test_comment_stamps_task_local_session_id(comment_board, monkeypatch):
+    """With the gateway's task-local binding active, get_session_env wins
+    over os.environ: the comment records the session of the task context
+    that issued it, not whatever the process env happens to hold."""
+    tid = comment_board
+    from gateway import session_context as sc
+
+    monkeypatch.setenv("HERMES_SESSION_ID", "stale_process_env_session")
+    with sc.scoped_current_session_id("task_local_session_A"):
+        from tools import kanban_tools as kt
+        out = kt._handle_comment({"task_id": tid, "body": "from context A"})
+    assert json.loads(out).get("ok") is True, out
+    assert _comment_row(tid)["session_id"] == "task_local_session_A"
+
+
+def test_two_task_local_contexts_one_process_leave_distinct_trails(
+        comment_board):
+    """Two task-local session contexts sharing ONE process stamp their own
+    ids — the process-global env could only ever record the last writer."""
+    tid = comment_board
+    from gateway import session_context as sc
+    from tools import kanban_tools as kt
+
+    with sc.scoped_current_session_id("session_of_task_1"):
+        kt._handle_comment({"task_id": tid, "body": "context 1"})
+    with sc.scoped_current_session_id("session_of_task_2"):
+        kt._handle_comment({"task_id": tid, "body": "context 2"})
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        rows = conn.execute(
+            "SELECT body, session_id FROM task_comments WHERE task_id = ? "
+            "ORDER BY id ASC", (tid,)).fetchall()
+    finally:
+        conn.close()
+    assert [(r["body"], r["session_id"]) for r in rows] == [
+        ("context 1", "session_of_task_1"),
+        ("context 2", "session_of_task_2"),
+    ]
+
+
+def test_worker_context_rendering_marks_off_run_session(comment_board):
+    """The #98750 stale-comment symptom: worker_context must distinguish
+    provenance, not render 'comment from worker X' bare. session-bearing
+    comments render their (raw) session id for current-vs-ended ownership
+    checks; legacy NULL rows render unchanged."""
+    from hermes_cli import kanban_db as kb
+
+    tid = comment_board
+    conn = kb.connect()
+    try:
+        kb.add_comment(conn, tid, author="forge", body="with provenance",
+                       session_id="ended_run_session")
+        kb.add_comment(conn, tid, author="forge", body="legacy row")
+        ctx = kb.build_worker_context(conn, tid)
+    finally:
+        conn.close()
+    assert "ended_run_session" in ctx          # provenance surfaced
+    assert "legacy row" in ctx                 # NULL session: unchanged form
+    assert "comment from worker `forge`" in ctx  # author framing intact

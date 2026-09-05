@@ -1,5 +1,7 @@
 import { useStore } from '@nanostores/react'
+import { useState } from 'react'
 
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {
   ContextMenu,
@@ -8,6 +10,8 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { Tip, TipHintLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { formatCombo } from '@/lib/keybinds/combo'
@@ -24,6 +28,7 @@ import {
   closeOtherTerminals,
   closeTerminal,
   createTerminal,
+  renameTerminal,
   selectTerminal,
   type TerminalEntry
 } from './terminals'
@@ -110,6 +115,18 @@ interface TerminalRailItemProps {
 function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: TerminalRailItemProps) {
   const { t } = useI18n()
   const label = `${index + 1}. ${term.title}`
+  const [renaming, setRenaming] = useState(false)
+  const [draftTitle, setDraftTitle] = useState('')
+
+  const openRenameDialog = () => {
+    setDraftTitle(term.title)
+    setRenaming(true)
+  }
+
+  const saveRename = () => {
+    renameTerminal(term.id, draftTitle)
+    setRenaming(false)
+  }
 
   return (
     <ContextMenu>
@@ -147,6 +164,7 @@ function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: T
         </li>
       </ContextMenuTrigger>
       <ContextMenuContent>
+        <ContextMenuItem onSelect={openRenameDialog}>{t.rightSidebar.terminalRename}</ContextMenuItem>
         <ContextMenuItem onSelect={() => closeTerminal(term.id)}>{t.common.close}</ContextMenuItem>
         <ContextMenuItem disabled={!canCloseOthers} onSelect={() => closeOtherTerminals(term.id)}>
           {t.rightSidebar.terminalCloseOthers}
@@ -155,6 +173,36 @@ function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: T
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => setTerminalTakeover(false)}>{t.rightSidebar.terminalHide}</ContextMenuItem>
       </ContextMenuContent>
+
+      <Dialog onOpenChange={open => !open && setRenaming(false)} open={renaming}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{t.rightSidebar.terminalRenameTitle}</DialogTitle>
+          </DialogHeader>
+          <Input
+            aria-label={t.rightSidebar.terminalRenameLabel}
+            autoFocus
+            onChange={event => setDraftTitle(event.target.value)}
+            onKeyDown={event => {
+              // Skip Enter pressed to commit an IME composition (ja/zh users):
+              // saving mid-composition would take a half-composed name.
+              if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                event.preventDefault()
+                saveRename()
+              }
+            }}
+            value={draftTitle}
+          />
+          <DialogFooter>
+            <Button onClick={() => setRenaming(false)} type="button" variant="ghost">
+              {t.common.cancel}
+            </Button>
+            <Button onClick={saveRename} type="button">
+              {t.common.save}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </ContextMenu>
   )
 }

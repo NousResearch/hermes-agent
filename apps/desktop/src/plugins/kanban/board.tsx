@@ -178,7 +178,7 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
           }
         >
           <span className="inline-flex min-w-0 cursor-help items-center gap-1 font-medium" style={{ color: meta.tone }}>
-            <Avatar name={attached} size="1.125rem" />
+            <Avatar name={attached} size="1.125rem" decorative />
             <span className="truncate">
               {!task.assignee && '→ '}
               {attached}

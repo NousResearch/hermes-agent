@@ -333,6 +333,48 @@ describe('board card tooltips', () => {
     expect(screen.getByRole('tooltip').textContent).toContain('t_test123456')
   })
 
+  it('renders the queued-lane assignee chip with NO [title] descendant (opt-in default-false hardening)', async () => {
+    // Round-3 m2: the opt-IN title default-false hardening was untested —
+    // mutation N1 (revert the Avatar title default to true) SURVIVED all 61
+    // tests, because the one call site that RELIES on the new default (the
+    // queued footer chip, where the assignee name is already adjacent visible
+    // text) had no coverage. A ready+assigned card renders the queued chip;
+    // its avatar must emit NO native title (a stray title would stack a native
+    // OS tooltip and, being adjacent to the visible name, double-announce it).
+    const queuedBoard: KanbanBoard = {
+      ...testBoard,
+      columns: [
+        {
+          name: 'ready',
+          tasks: [
+            {
+              assignee: 'alice',
+              id: 't_queuedchip1',
+              status: 'ready',
+              title: 'Queued assigned card'
+            }
+          ]
+        }
+      ]
+    }
+    const api = await import('./api')
+    ;(api.fetchBoard as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(queuedBoard)
+
+    await renderBoard('Queued assigned card')
+
+    // The queued chip renders "→? alice" as visible text (the whole chip is the
+    // Tip trigger); its avatar is decorative — no [title] anywhere in the chip.
+    const chip = screen.getByText('alice').closest('[data-slot="tooltip-trigger"]') as HTMLElement
+    expect(chip).toBeTruthy()
+    expect(chip.querySelector('[title]')).toBeNull()
+    // And the avatar is hidden from the a11y tree with no aria-label, so the
+    // enclosing chip announces the assignee exactly once via the visible span.
+    const avatar = screen.getByText('A').closest('span') as HTMLElement
+    expect(avatar.getAttribute('aria-hidden')).toBe('true')
+    expect(avatar.hasAttribute('aria-label')).toBe(false)
+    expect(avatar.hasAttribute('title')).toBe(false)
+  })
+
   it('shows a tooltip on the plain assignee avatar (native title= converted to Tip)', async () => {
     await renderBoard()
 

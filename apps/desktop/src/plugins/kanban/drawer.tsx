@@ -254,7 +254,7 @@ function AssigneeMenu({
           >
             {current ? (
               <>
-                <Avatar name={current} size="0.875rem" title={false} />
+                <Avatar name={current} size="0.875rem" decorative />
                 <span className="truncate">{current}</span>
               </>
             ) : (

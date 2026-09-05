@@ -136,16 +136,57 @@ describe('drawer tooltips', () => {
     expect(trigger.hasAttribute('title')).toBe(false)
   })
 
-  it('keeps the assignee name accessible via aria-label when the native title is suppressed', async () => {
-    // A11y (round-2 m1): suppressing the Avatar's native title dropped the
-    // accessible description on live cards. When title is false, the Avatar
-    // must render aria-label={name} so the name is not mouse-hover-only.
+  it('keeps the reassign button accessible name to the assignee EXACTLY ONCE (no avatar stutter)', async () => {
+    // Round-3 m1: the round-2 aria-label fallback on the reassign trigger's
+    // Avatar made the button announce the name twice — accname computes the
+    // button's name from content, and a child aria-label REPLACES that child's
+    // text, so the avatar's "A" initials became "alice" next to the visible
+    // <span>alice</span> ("alice alice"). The fix marks the avatar decorative
+    // (aria-hidden), so the name comes only from the visible span — exactly once.
     await renderDrawer()
 
-    const avatarInitials = screen.getByText('A')
-    const avatar = avatarInitials.closest('span')!
+    const trigger = screen.getByText('alice').closest('button') as HTMLElement
+    expect(trigger).toBeTruthy()
+
+    // The avatar is hidden from the a11y tree and carries neither title nor
+    // aria-label; the name lives solely in the adjacent visible text.
+    const avatar = screen.getByText('A').closest('span') as HTMLElement
+    expect(avatar.getAttribute('aria-hidden')).toBe('true')
     expect(avatar.hasAttribute('title')).toBe(false)
-    expect(avatar.getAttribute('aria-label')).toBe('alice')
+    expect(avatar.hasAttribute('aria-label')).toBe(false)
+
+    // Accessible name (Testing Library computes it via the same accname algo):
+    // querying the button by the SINGLE name resolves it, while the doubled
+    // "alice alice" (the round-2 regression) does not exist.
+    expect(screen.getByRole('button', { name: 'alice' })).toBe(trigger)
+    expect(screen.queryByRole('button', { name: 'alice alice' })).toBeNull()
+  })
+
+  it('keeps the OPTED-IN reassign menu-item avatar carrying native title= (opt-in path coverage)', async () => {
+    // Round-3 m3: the opted-in Avatar path (title={true}) had zero coverage —
+    // mutations N4 (always emit aria-label even when opted in) and N9 (drop the
+    // opt-in at the menu item) both survived. The menu items are dropdown
+    // choices with NO adjacent avatar-labelled control, so they DO want the
+    // native title. Open the menu and assert the item avatar still emits
+    // title='bob' AND does NOT emit an aria-label (which would double-announce
+    // against the item's own visible name text).
+    await renderDrawer()
+
+    const trigger = screen.getByText('alice').closest('button') as HTMLElement
+    act(() => {
+      fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+      fireEvent.click(trigger)
+    })
+
+    // The roster mock exposes one profile, 'bob'; its menu-item avatar renders
+    // the "B" initials with the opted-in native title.
+    const itemAvatar = await screen.findByText('B')
+    const itemAvatarSpan = itemAvatar.closest('span') as HTMLElement
+    expect(itemAvatarSpan.getAttribute('title')).toBe('bob')
+    // Opted-in path must NOT also emit aria-label (that is the suppressed-path
+    // behaviour; emitting both is mutation N4).
+    expect(itemAvatarSpan.hasAttribute('aria-label')).toBe(false)
+    expect(itemAvatarSpan.hasAttribute('aria-hidden')).toBe(false)
   })
 
   it('shows distinct tooltips on parent vs child dependency chips', async () => {

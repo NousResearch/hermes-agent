@@ -56,12 +56,12 @@ def test_url_lookup_without_hint_keeps_first_match(monkeypatch):
     assert rp.find_custom_provider_identity(URL) == "custom:provider-chat"
 
 
-def test_url_lookup_with_unmatched_hint_falls_back_to_first(monkeypatch):
+def test_url_lookup_with_unmatched_hint_returns_none(monkeypatch):
+    """A usable hint that matches no candidate must NOT fall back to the first
+    entry (which may be a different wire mode) — reviewer follow-up on #102748.
+    Historical first-wins applies only when no usable ``api_mode`` is given."""
     _cfg(monkeypatch)
-    assert (
-        rp.find_custom_provider_identity(URL, api_mode="anthropic_messages")
-        == "custom:provider-chat"
-    )
+    assert rp.find_custom_provider_identity(URL, api_mode="anthropic_messages") is None
 
 
 def test_model_lookup_prefers_matching_api_mode(monkeypatch):
@@ -168,3 +168,41 @@ def test_healed_slug_resolves_back_with_right_mode(monkeypatch):
     assert entry is not None
     assert entry["api_mode"] == "codex_responses"
     assert entry["api_key"] == "sk-responses"
+
+
+def test_hint_with_all_entries_broken_returns_none_not_first(monkeypatch):
+    """Reviewer follow-up (#102748): when ``api_mode`` is set but every matching
+    entry throws during mode probing, recovery must return None — never the
+    first sibling, which may be a different wire mode."""
+    _cfg(
+        monkeypatch,
+        {
+            "custom_providers": [
+                {
+                    "name": "provider-chat",
+                    "base_url": URL,
+                    "api_key": "sk-chat",
+                    "api_mode": "chat_completions",
+                    "model": MODEL,
+                    "models": {MODEL: {"context_length": 1000000}},
+                },
+                {
+                    "name": "provider-responses",
+                    "base_url": URL,
+                    "api_key": "sk-responses",
+                    "api_mode": "codex_responses",
+                    "model": MODEL,
+                    "models": {MODEL: {"context_length": 1000000}},
+                },
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider_custom._effective_custom_entry_api_mode",
+        lambda entry: (_ for _ in ()).throw(RuntimeError("probe failed")),
+    )
+    assert rp.find_custom_provider_identity(URL, api_mode="codex_responses") is None
+    assert (
+        rp.find_custom_provider_identity_by_model(MODEL, api_mode="codex_responses")
+        is None
+    )

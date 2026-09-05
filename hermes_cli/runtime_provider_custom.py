@@ -218,8 +218,12 @@ def _effective_custom_entry_api_mode(entry: Dict[str, Any]) -> str:
 def _pick_custom_identity(candidates, api_mode=None) -> Optional[str]:
     """Pick one ``(slug, entry)`` candidate, preferring an ``api_mode`` match.
 
-    Without a usable ``api_mode`` (or when nothing matches it) the first
-    candidate wins — the historical behavior every existing caller relies on.
+    Without a usable ``api_mode`` hint the first candidate wins — the
+    historical behavior every existing caller relies on. But when the hint is
+    set and every matching entry failed mode probing, return None instead of
+    the first sibling: a wrong-wire fallback is worse than no recovery, and
+    every caller already treats None as "drop the provider" (issue #102725
+    reviewer follow-up on #102748).
     """
     if not candidates:
         return None
@@ -231,6 +235,7 @@ def _pick_custom_identity(candidates, api_mode=None) -> Optional[str]:
                     return slug
             except Exception:
                 continue
+        return None
     return candidates[0][0]
 
 

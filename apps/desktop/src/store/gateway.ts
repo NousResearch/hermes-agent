@@ -680,13 +680,18 @@ function isMissingConnectionError(error: unknown): boolean {
 }
 
 // Electron's spawn guard (assertLocalProfileCanStart) rejects with these when
-// the profile's directory is gone or its DELETE is still in flight. For a
+// the profile's directory is gone or its DELETE is still in flight. Remote
+// CLI startup reports the same permanent condition as "does not exist". For a
 // renderer socket that condition is permanent: the backend it reconnects to
 // can never come back, and every retry hammers the guard (#88769).
 function isMissingProfileError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? '')
 
-  return message.includes('no longer exists') || message.includes('is being deleted')
+  return (
+    message.includes('no longer exists') ||
+    message.includes('is being deleted') ||
+    /Profile ['"][^'"\r\n]+['"] does not exist/i.test(message)
+  )
 }
 
 function createSecondary(profile: string, connectionId: null | string = null): Secondary {

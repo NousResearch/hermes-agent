@@ -28,8 +28,7 @@ from tools.environments.docker_egress import (
     check_forward_env_collisions, merge_egress_env,
 )
 from tools.environments.path_utils import sanitize_task_id_for_path
-from tools.environments.remote_common import bash_argv, run_capture
-from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST, _is_hermes_internal_secret
+from tools.environments.remote_common import bash_argv, load_hermes_env_vars, resolve_passthrough_env, run_capture
 
 logger = logging.getLogger(__name__)
 
@@ -79,13 +78,8 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
     return normalized
 
 
-def _load_hermes_env_vars() -> dict[str, str]:
-    """Load ~/.hermes/.env values without failing Docker command execution."""
-    try:
-        from hermes_cli.config import load_env
-        return load_env() or {}
-    except Exception:
-        return {}
+# Module-level binding: tests patch ``docker._load_hermes_env_vars`` to fake the .env file.
+_load_hermes_env_vars = load_hermes_env_vars
 
 
 # Docker label values must match [a-zA-Z0-9_.-] and stay <=63 chars to round-trip
@@ -784,34 +778,9 @@ class DockerEnvironment(BaseEnvironment):
         return _name_only_env_args(exec_env)
 
     def _resolve_passthrough_env(self) -> tuple[dict[str, str], set[str]]:
-        """Forwarded values plus scoped names that must be unset. Explicit docker_forward_env
-        entries are an opt-in that wins over the Hermes secret blocklist; only implicit
-        passthrough keys are filtered (incl. Hermes-internal dynamic secrets)."""
-        exec_env: dict[str, str] = {}
-        passthrough_keys: set[str] = set()
-        resolve_passthrough_value = None
-        multiplex_active = False
-        is_global_env = lambda _name: False  # noqa: E731
-        try:
-            from tools.env_passthrough import get_all_passthrough, resolve_passthrough_value
-            from agent.secret_scope import _is_global_env as is_global_env, is_multiplex_active
-            multiplex_active = is_multiplex_active()
-            passthrough_keys = set(get_all_passthrough())
-        except Exception:
-            pass
-        implicit_forward = {k for k in passthrough_keys if not _is_hermes_internal_secret(k)}
-        forward_keys = set(self._forward_env) | (implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST)
-        hermes_env = _load_hermes_env_vars() if forward_keys else {}
-        unset_names: set[str] = set()
-        for key in sorted(forward_keys):
-            value = os.getenv(key) or hermes_env.get(key)
-            if resolve_passthrough_value is not None:
-                value = resolve_passthrough_value(key, value)
-            if value is not None:
-                exec_env[key] = value
-            elif multiplex_active and not is_global_env(key) and _ENV_VAR_NAME_RE.fullmatch(key):
-                unset_names.add(key)
-        return exec_env, unset_names
+        """Forwarded values plus scoped names that must be unset; explicit docker_forward_env
+        entries bypass the blocklist (see ``remote_common.resolve_passthrough_env``)."""
+        return resolve_passthrough_env(self._forward_env, hermes_env_loader=lambda: _load_hermes_env_vars())
 
     def _build_runtime_env_args_with_unsets(self) -> tuple[list[str], tuple[str, ...], dict[str, str]]:
         """Runtime name-only forwarding args, names absent from scope, and the values

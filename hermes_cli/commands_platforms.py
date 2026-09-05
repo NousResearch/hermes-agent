@@ -376,14 +376,19 @@ def _sanitize_slack_name(raw: str) -> str:
     return _SLACK_INVALID_CHARS.sub("", raw.lower()).strip("-_")[:_SLACK_NAME_LIMIT]
 
 
-def slack_native_slashes() -> list[tuple[str, str, str]]:
+def slack_native_slashes(prefix: str = "") -> list[tuple[str, str, str]]:
     """(slash_name, description, usage_hint) triples for Slack: every gateway-available command
     (canonical names first so they win slots at the cap, then aliases, then plugins) becomes a
     standalone slash, deduped and clamped to the 50-command cap; Slack built-ins and
-    _SLACK_VIA_HERMES_ONLY are skipped. ``/hermes`` is always first for anything dropped."""
+    _SLACK_VIA_HERMES_ONLY are skipped. ``/hermes`` is always first for anything dropped.
+
+    Names are returned UNPREFIXED — ``prefix`` only affects what the caller renders. It shifts two
+    decisions: the Slack built-in collision is tested against the *registered* name (``/myorg-status``
+    does not collide, so a prefix un-reserves those commands), and alias descriptions point at the
+    prefixed canonical the reader will actually type."""
     available = _gateway_available_commands()
     wanted = [(cmd.name, cmd.description, cmd.args_hint or "") for cmd in available]
-    wanted += [(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
+    wanted += [(alias, f"Alias for /{prefix}{cmd.name} — {cmd.description}", cmd.args_hint or "")
                for cmd in available for alias in cmd.aliases]
     wanted += [(name, desc, hint or "") for name, desc, hint in _iter_plugin_command_entries()]
 
@@ -392,7 +397,8 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     seen = {"hermes"}
     for name, desc, hint in wanted:
         slack_name = _sanitize_slack_name(name)
-        if (not slack_name or slack_name in seen or slack_name in _SLACK_RESERVED_COMMANDS
+        if (not slack_name or slack_name in seen
+                or f"{prefix}{slack_name}" in _SLACK_RESERVED_COMMANDS
                 or slack_name in _SLACK_VIA_HERMES_ONLY
                 or len(entries) >= _SLACK_MAX_SLASH_COMMANDS):
             continue
@@ -402,17 +408,89 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     return entries
 
 
+def _sanitize_slack_prefix(raw: str) -> str:
+    """Sanitize a slash-command namespace prefix: same charset as :func:`_sanitize_slack_name`, but a
+    trailing ``-``/``_`` is PRESERVED so ``myorg-`` yields ``/myorg-model``, not ``/myorgmodel``.
+    A leading ``/`` and surrounding whitespace are dropped."""
+    return _SLACK_INVALID_CHARS.sub("", raw.strip().lstrip("/").lower()).lstrip("-_")[:_SLACK_NAME_LIMIT]
+
+
+def _slack_command_prefix_from_config() -> str | None:
+    """``platforms.slack.extra.command_prefix`` from config.yaml (both the top-level ``platforms``
+    section and the ``gateway.platforms`` form are accepted), or ``None`` when unset."""
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config() or {}
+    except ImportError:
+        # read_raw_config() already absorbs a missing/unparseable config.yaml (returns {} and warns),
+        # so the only way out of this block is a genuinely broken install. Narrow the catch to that
+        # and log it — silently returning would drop the namespace and leave a multi-app workspace
+        # colliding again.
+        logger.warning("Could not import hermes_cli.config to read platforms.slack.extra."
+                       "command_prefix; Slack commands will NOT be namespaced.", exc_info=True)
+        return None
+    gateway = cfg.get("gateway")
+    for base in (cfg, gateway if isinstance(gateway, dict) else {}):
+        platforms = base.get("platforms")
+        if not isinstance(platforms, dict):
+            continue
+        slack = platforms.get("slack")
+        if isinstance(slack, dict) and isinstance(extra := slack.get("extra"), dict) \
+                and extra.get("command_prefix") is not None:
+            return extra.get("command_prefix")
+    return None
+
+
+def slack_command_prefix(extra: dict | None = None) -> str:
+    """Resolve the Slack slash-command namespace prefix; ``""`` (unprefixed) is the default.
+
+    Read from ``platforms.slack.extra.command_prefix`` — passed in as *extra* by the adapter (which
+    already loaded config; never touch disk then), or from config.yaml when generating the manifest.
+    The prefix is prepended to every generated slash name and stripped again on the receive side, so
+    the two always agree; that is what lets two gateway apps share one Slack workspace despite Slack
+    slash commands being workspace-global and un-namespaced.
+
+    Pure: no side effects beyond the warning, so a future shared projection builder can reuse it."""
+    raw = extra.get("command_prefix") if extra is not None else _slack_command_prefix_from_config()
+    if not raw:
+        return ""
+    prefix = _sanitize_slack_prefix(str(raw))
+    if not prefix:
+        logger.warning("Slack command_prefix %r contains no valid slash-command characters "
+                       "(a-z, 0-9, -, _); commands are NOT namespaced.", raw)
+    return prefix
+
+
 def slack_app_manifest(
     request_url: str = "https://hermes-agent.local/slack/commands") -> dict[str, Any]:
     """``features.slash_commands`` manifest portion only (decoupled from the rest of the manifest
-    users configure in the Slack UI); ``request_url`` is schema-required, ignored in Socket Mode."""
-    slashes = []
-    for name, desc, usage in slack_native_slashes():
-        entry = {"command": f"/{name}", "description": desc or f"Run /{name}",
+    users configure in the Slack UI); ``request_url`` is schema-required, ignored in Socket Mode.
+
+    Names carry the configured namespace prefix. Slack caps a slash name at 32 chars, so a long
+    prefix can push one over; those are dropped (and warned about) rather than emitted into a
+    manifest Slack would reject outright."""
+    prefix = slack_command_prefix()
+    slashes, skipped = [], []
+    for name, desc, usage in slack_native_slashes(prefix):
+        slash_name = f"{prefix}{name}"
+        if len(slash_name) > _SLACK_NAME_LIMIT:
+            skipped.append(slash_name)
+            continue
+        entry = {"command": f"/{slash_name}", "description": desc or f"Run /{slash_name}",
                  "should_escape": False, "url": request_url}
         if usage:
             entry["usage_hint"] = usage
         slashes.append(entry)
+    if skipped:
+        catchall = f"{prefix}hermes"
+        tail = (f"The /{catchall} entry point itself does not fit — use a shorter command_prefix."
+                if catchall in skipped else
+                f"They remain reachable via /{catchall} <subcommand>; use a shorter command_prefix "
+                "to register them as native slashes.")
+        logger.warning("Slack manifest: skipped %d command(s) whose prefixed name exceeds Slack's "
+                       "%d-char slash-command limit: %s. %s",
+                       len(skipped), _SLACK_NAME_LIMIT, ", ".join(sorted(skipped)), tail)
     return {"features": {"slash_commands": slashes}}
 
 

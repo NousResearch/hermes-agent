@@ -334,16 +334,28 @@ def _slack_mention_detection_text(event: dict) -> str:
     return (flat.strip() + "\n" + " ".join(extra)).strip() if extra else flat
 
 
-def _rewrite_known_bang_command(text: str) -> str:
-    """Rewrite a known leading ``!cmd`` to the gateway ``/cmd`` form."""
+def _rewrite_known_bang_command(text: str, prefix: str = "") -> str:
+    """Rewrite a known leading ``!cmd`` to the gateway ``/cmd`` form.
+
+    Mirrors the native-slash surface: with a namespace prefix configured
+    (e.g. ``myorg-``), bang commands carry the same prefix (``!myorg-stop``)
+    and it is stripped before dispatch. Unprefixed bangs stay plain text so
+    two namespaced apps sharing a channel do not both execute ``!stop``.
+    """
     if not text.startswith("!"):
         return text
     try:
         from hermes_cli.commands import is_gateway_known_command
         first_token = text[1:].split(maxsplit=1)[0]
         cmd_name = first_token.split("@", 1)[0].lower()
+        rest = text[1:]
+        if prefix:
+            if not cmd_name.startswith(prefix):
+                return text
+            cmd_name = cmd_name[len(prefix) :]
+            rest = rest[len(prefix) :]
         if cmd_name and "/" not in cmd_name and is_gateway_known_command(cmd_name):
-            return "/" + text[1:]
+            return "/" + rest
     except Exception:  # pragma: no cover - defensive
         pass
     return text
@@ -860,6 +872,10 @@ class SlackAdapter(BasePlatformAdapter):
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # Slack rejects slash commands inside threads; "!" is rewritten to "/" for known commands.
     typed_command_prefix = "!"
+    # Class-level default for the optional slash-command namespace prefix (resolved per instance
+    # in __init__). Kept here so the receive paths that read it stay safe on adapters built
+    # without __init__ — object.__new__ partial instances are the standard fixture shape.
+    _command_prefix: str = ""
     # ``reply_in_thread: false`` gives both a flat outbound reply and a whole-channel
     # session bucket, so a flat continuable cron continues on a plain reply.
     supports_inchannel_continuable = True
@@ -973,6 +989,12 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_handler_started_monotonic: Optional[float] = None
+        # Optional slash-command namespace prefix (e.g. "myorg-") so multiple gateway apps can
+        # share one Slack workspace without their global, non-namespaced slash commands colliding.
+        # Resolved once from platforms.slack.extra.command_prefix; "" (the default) leaves every
+        # name unchanged. Baked into the routing regex, stripped again in _handle_slash_command.
+        from hermes_cli.commands_platforms import slack_command_prefix
+        self._command_prefix = slack_command_prefix(self.config.extra)
 
     async def _close_workspace_clients(self) -> None:
         """Close any Slack SDK clients that may own aiohttp sessions."""
@@ -1506,12 +1528,16 @@ class SlackAdapter(BasePlatformAdapter):
         # ALSO be declared in the app manifest (`hermes slack manifest`): Socket Mode won't
         # deliver undeclared commands at all.
         from hermes_cli.commands_platforms import slack_native_slashes
-        _slash_names = [name for name, _d, _h in slack_native_slashes()]
+        # The optional namespace prefix (e.g. "myorg-") is baked into the matcher so /myorg-model
+        # reaches this handler; _handle_slash_command strips it again before dispatch. An empty
+        # prefix matches the bare command names unchanged.
+        _prefix = re.escape(self._command_prefix)
+        _slash_names = [name for name, _d, _h in slack_native_slashes(self._command_prefix)]
         if _slash_names:
             _slash_pattern = re.compile(
-                r"^/(?:" + "|".join(re.escape(n) for n in _slash_names) + r")$")
+                r"^/" + _prefix + r"(?:" + "|".join(re.escape(n) for n in _slash_names) + r")$")
         else:  # pragma: no cover - registry always non-empty
-            _slash_pattern = re.compile(r"^/hermes$")
+            _slash_pattern = re.compile(r"^/" + _prefix + r"hermes$")
 
         @self._app.command(_slash_pattern)
         async def handle_hermes_command(ack, command):
@@ -4197,7 +4223,7 @@ class SlackAdapter(BasePlatformAdapter):
         command_text = (
             mention_stripped
             if mention_stripped.startswith("/")
-            else _rewrite_known_bang_command(mention_stripped))
+            else _rewrite_known_bang_command(mention_stripped, self._command_prefix))
         if command_text.startswith("/"):
             original_text = text = command_probe_text = command_text
             is_command_text = True
@@ -4218,8 +4244,9 @@ class SlackAdapter(BasePlatformAdapter):
         event, dedup_team_id, channel_id = accepted
         original_text = event.get("text", "")
         # Slack rejects slash commands inside threads, so a leading ``!`` is rewritten to ``/``
-        # — only for known gateway commands, so "!nice work" passes through.
-        command_probe_text = _rewrite_known_bang_command(original_text.lstrip())
+        # — only for known gateway commands, so "!nice work" passes through. The namespace
+        # prefix rides along: with one configured only ``!myorg-stop`` rewrites, never ``!stop``.
+        command_probe_text = _rewrite_known_bang_command(original_text.lstrip(), self._command_prefix)
         if command_probe_text != original_text.lstrip():
             original_text = command_probe_text
         is_command_text = command_probe_text.startswith("/")
@@ -5637,12 +5664,15 @@ class SlackAdapter(BasePlatformAdapter):
     async def _handle_slash_command(self, command: dict) -> None:
         """Slash commands: native ``/<command> [args]`` for every COMMAND_REGISTRY entry, or
         ``/hermes <subcommand> [args]``; other text after ``/hermes`` is a regular message."""
+        slash_name = (command.get("command") or "").lstrip("/").strip()
+        raw_text = str(command.get("text") or "")
+        text = raw_text
         user_id = command.get("user_id", "")
         channel_id = command.get("channel_id", "")
         team_id = command.get("team_id", "")
         if team_id and channel_id:
             self._remember_channel_team(channel_id, team_id)
-        text = self._slash_command_text(command)
+        text = self._slash_command_text(command, self._command_prefix)
         thread_id = self._slash_thread_id(command)
         is_dm = str(channel_id).startswith("D")
         if is_dm and self._slack_disable_dms():
@@ -5671,11 +5701,16 @@ class SlackAdapter(BasePlatformAdapter):
             _slash_user_id.reset(_slash_user_id_token)
 
     @staticmethod
-    def _slash_command_text(command: dict) -> str:
+    def _slash_command_text(command: dict, prefix: str = "") -> str:
         """Gateway message text for a slash payload. Native slashes keep Slack's raw argument
         payload verbatim (internal/trailing spacing). ``/hermes`` (or a missing ``command``) maps
-        ``<subcommand> [args]`` via the registry, else free-form text is a regular question."""
+        ``<subcommand> [args]`` via the registry, else free-form text is a regular question.
+
+        ``prefix`` is the configured namespace: ``/myorg-model`` resolves to ``model`` and
+        ``/myorg-hermes`` to the legacy catch-all, so the gateway never sees the namespace."""
         slash_name = (command.get("command") or "").lstrip("/").strip()
+        if prefix and slash_name.startswith(prefix):
+            slash_name = slash_name[len(prefix):]
         raw_text = str(command.get("text") or "")
         if slash_name not in {"hermes", ""}:
             return f"/{slash_name}" if not raw_text else f"/{slash_name} {raw_text}"

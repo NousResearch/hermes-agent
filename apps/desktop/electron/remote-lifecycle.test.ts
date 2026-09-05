@@ -779,6 +779,57 @@ test('buildSpawnCommand is headless serve, detached, token not in argv', () => {
   assert.ok(!cmd.includes('HERMES_DASHBOARD_SESSION_TOKEN'), 'token env var must not appear')
 })
 
+test('buildSpawnCommand exports HERMES_HOME for a named profile so the frozen DB path is the profile DB (#103467)', () => {
+  // buildSpawnCommand wraps the serve line in the update-mutex + detached-spawn
+  // quoting layers, so the HERMES_HOME assignment's own single-quotes are
+  // re-escaped (`'` -> `'\''`) in the returned string; only the quote-free spans
+  // survive verbatim. Assert on those, mirroring the sibling "headless serve"
+  // test, rather than on the pre-wrap fragment.
+
+  // tilde home: the profile HERMES_HOME $HOME-expands at the remote shell.
+  const tildeCmd = buildSpawnCommand('/x/hermes', 'work', {
+    hermesHome: '~/.hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+  })
+  assert.match(tildeCmd, /env HERMES_DESKTOP=1 /)
+  assert.match(tildeCmd, /HERMES_HOME="\$HOME"/)
+  assert.match(tildeCmd, /\/\.hermes\/profiles\/work/)
+  // absolute home is passed through verbatim, with no $HOME expansion.
+  const absCmd = buildSpawnCommand('/x/hermes', 'work', {
+    hermesHome: '/root/.hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+  })
+  assert.match(absCmd, /HERMES_HOME=/)
+  assert.match(absCmd, /\/root\/\.hermes\/profiles\/work/)
+  assert.doesNotMatch(absCmd, /HERMES_HOME="\$HOME"/)
+  // A profile home already ending in /profiles/<name> is not double-nested.
+  const nestedCmd = buildSpawnCommand('/x/hermes', 'work', {
+    hermesHome: '/root/.hermes/profiles/other',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+  })
+  assert.match(nestedCmd, /\/root\/\.hermes\/profiles\/work/)
+  assert.doesNotMatch(nestedCmd, /profiles\/other/)
+})
+
+test('buildSpawnCommand omits HERMES_HOME for the default (unnamed) profile', () => {
+  const cmd = buildSpawnCommand('/x/hermes', '', {
+    hermesHome: '~/.hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+  })
+  assert.doesNotMatch(cmd, /HERMES_HOME/)
+  assert.match(cmd, /env HERMES_DESKTOP=1 /)
+})
+
+test('buildSpawnCommand rejects a path-traversal profile name (fails closed)', () => {
+  assert.throws(
+    () => buildSpawnCommand('/x/hermes', '../../etc', {
+      hermesHome: '~/.hermes',
+      logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+    }),
+    /Unsafe remote/,
+  )
+})
+
 test('buildSpawnCommand always uses serve (legacy dashboard path removed)', () => {
   const cmd = buildSpawnCommand('/x/hermes', 'work', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
   assert.match(cmd, /serve --isolated/)

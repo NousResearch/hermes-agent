@@ -1038,6 +1038,18 @@ async function terminateOwnedDashboardForUpdate(ssh, expected) {
 function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const hermes = expandRemotePath(hermesPath)
   const profileArgs = profile ? `--profile ${shq(profile)} ` : ''
+  // Export HERMES_HOME for named-profile serves. The launcher imports
+  // hermes_cli.main (and thus hermes_state) at module level, freezing
+  // DEFAULT_DB_PATH against the resolved home BEFORE --profile is applied; with
+  // HERMES_HOME unset that freezes the shared root state.db and profile
+  // isolation collapses (#103467). Setting it in the spawn env mirrors the
+  // launchd/systemd gateway units. assertSafeRemoteHome rejects `..`/unsafe
+  // segments so a hostile profile name fails closed rather than mis-homing.
+  const profileHomeEnv = profile
+    ? ` HERMES_HOME=${expandRemotePath(
+        assertSafeRemoteHome(`${remoteInstallRoot(opts.hermesHome || '~/.hermes')}/profiles/${profile}`),
+      )}`
+    : ''
   const logPath = expandRemotePath(opts.logPath)
   const tokenFilePath = opts.tokenFilePath
   const tokenArg = tokenFilePath ? ` --ssh-session-token-file ${expandRemotePath(tokenFilePath)}` : ''
@@ -1062,7 +1074,7 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
 
   const dashCmd =
     `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +
-    `exec env HERMES_DESKTOP=1 ${hermes} ${profileArgs}${subCmd}`
+    `exec env HERMES_DESKTOP=1${profileHomeEnv} ${hermes} ${profileArgs}${subCmd}`
 
   const detachedShell = `eval "exec $1>&-"; ${dashCmd} </dev/null >> ${logPath} 2>&1 & echo $!`
   const detachedSpawn = `child=$("$(command -v setsid || echo nohup)" sh -c ${shq(detachedShell)} hermes-update-child "$1" & echo $!)`

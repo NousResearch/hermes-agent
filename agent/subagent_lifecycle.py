@@ -84,6 +84,14 @@ class SubagentHandle:
     role: str
     depth: int
     capability: str
+    # Route provenance (appended last, defaults None, so positional construction and old serialized
+    # handles stay valid). All four are None for legacy profile-less launches. ``resolved_model`` is the
+    # SPAWN-TIME route model while ``model`` tracks the child's live model — divergence between the two
+    # is the requested-vs-effective signal when a fallback fires mid-run.
+    requested_profile: Optional[str] = None
+    resolved_provider: Optional[str] = None
+    resolved_model: Optional[str] = None
+    fallback_policy: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -224,6 +232,10 @@ _HANDLE_FIELD_CHECKS: tuple[tuple[str, Callable[[Any], bool]], ...] = (
     ("role", lambda v: isinstance(v, str)),
     ("depth", lambda v: type(v) is int),
     ("capability", lambda v: isinstance(v, str)),
+    ("requested_profile", _opt_str),
+    ("resolved_provider", _opt_str),
+    ("resolved_model", _opt_str),
+    ("fallback_policy", _opt_str),
 )
 
 # Launch-request rejections in check order: (predicate, error). The type check leads so later predicates may
@@ -301,6 +313,11 @@ class SubagentLifecycleService:
             PUBLIC_CONTRACT_VERSION, subagent_id, parent_session_id, request.correlation_id, created,
             getattr(child, "provider", None), getattr(child, "model", None), getattr(child, "_delegate_role", request.role),
             int(getattr(child, "_delegate_depth", 1) or 1), self._capability(subagent_id, parent_session_id, created),
+            # Spawn-time route provenance stamped by _build_child_preserving_parent_tools; all None on legacy launches.
+            requested_profile=getattr(child, "_route_requested_profile", None),
+            resolved_provider=getattr(child, "_route_resolved_provider", None),
+            resolved_model=getattr(child, "_route_resolved_model", None),
+            fallback_policy=getattr(child, "_route_fallback_policy", None),
         )
         record = _Record(handle, SubagentState.PENDING, created, agent=child)
         with _REGISTRY.lock:

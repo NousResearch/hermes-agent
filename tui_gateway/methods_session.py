@@ -627,6 +627,20 @@ def _resume_guard(ctx: _Resume) -> dict | None:
     return None
 
 
+def _prepare_handoff_reattach(rid, session: dict, state: str) -> dict | None:
+    """Preserve the runtime; an idle handback reloads at the next durable turn admission."""
+    if not state:
+        return None
+    session["handoff_requested"] = True
+    with session["history_lock"]:
+        if not session.get("running"):
+            if state not in {"completed", "failed"}:
+                return _err(rid, 4009, "session handoff still settling; retry resume when it finishes")
+            # The destination can append even between reattachment and the prompt.
+            session["handoff_history_refresh"] = True
+    return None
+
+
 def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> dict:
     """Reattach an already-live session under the resume lock (held across the client-gone check,
     transport rebind and reap cancel so grace expiry is atomic)."""
@@ -635,6 +649,8 @@ def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> dict:
             return _err(ctx.rid, 4007, "session no longer live; retry resume")
         if session.get("_client_gone_interrupt_requested"):
             return _err(ctx.rid, 4009, "session disconnect interrupt settling")
+        if (err := _prepare_handoff_reattach(ctx.rid, session, ctx.found.get("handoff_state"))) is not None:
+            return err
         _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
         payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
                                         transport=current_transport() or _stdio_transport)
@@ -890,6 +906,15 @@ def _(rid, params: dict) -> dict:
 @_session_method("session.activate")
 def _(rid, params: dict, session: dict) -> dict:
     """Attach the frontend to a live TUI session without closing the previously focused one."""
+    if session.get("handoff_requested"):
+        with _session_db(session) as db:
+            if db is None:
+                return _db_unavailable_error(rid, code=5007)
+            row = db.get_session(session["session_key"])
+            if row is None:
+                return _err(rid, 4007, "session not found")
+            if (err := _prepare_handoff_reattach(rid, session, row.get("handoff_state"))) is not None:
+                return err
     return _ok(rid, _live_session_payload(
         str(params.get("session_id") or ""), session, touch=True, transport=current_transport() or _stdio_transport,
         omit_messages=is_truthy_value(params.get("omit_messages", False))))
@@ -1082,6 +1107,9 @@ def _(rid, params: dict, session: dict) -> dict:
         try:
             if not db.get_session(key):
                 db.set_session_title(key, f"handoff-{key[:8]}")
+            # Remember even an uncertain write acknowledgement; picker reattachment
+            # must consult the durable outcome rather than trust the old live cache.
+            session["handoff_requested"] = True
             if not db.request_handoff(key, platform_name):
                 return _err(rid, 4027, "session is already in flight for handoff — wait for it to settle, then retry")
         except Exception as e:

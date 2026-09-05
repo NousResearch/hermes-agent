@@ -20,6 +20,13 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
     const ui = getUiState()
     const sid = ui.sid
     const parsed = parseSlashCommand(cmd)
+
+    if (ui.handoffSessionId && !sid) {
+      sys('handoff in progress — wait for the result before changing this session')
+
+      return true
+    }
+
     const argTail = parsed.arg ? ` ${parsed.arg}` : ''
 
     const stale = () => flight !== ctx.slashFlightRef.current || getUiState().sid !== sid

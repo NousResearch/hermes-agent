@@ -137,6 +137,42 @@ def test_mention_stripping_removes_bot_phone_from_body():
     assert "weather" in cleaned
 
 
+def test_poll_vote_on_own_poll_passes_mention_gate_in_group():
+    # scripts/whatsapp-bridge/bridge.js's enqueuePollUpdateEvent used to
+    # hardcode botIds: [] and quotedParticipant: '' for every poll vote,
+    # even though a vote is only ever surfaced for polls the bot itself
+    # sent (gated upstream by recentlySentIds.has(pollId)). In a
+    # mention-gated group the vote's text (the chosen option) satisfies
+    # none of "/command", "@mention", or "reply to bot", so it was
+    # silently dropped before the agent ever saw it — any clarify()
+    # question rendered as a poll then hung forever. The fix populates
+    # botIds/quotedParticipant from the bot's own identity, since the vote
+    # is inherently a reply to the bot's poll message.
+    adapter = _make_adapter(require_mention=True, group_policy="open")
+
+    # Old (buggy) bridge.js shape: blank botIds/quotedParticipant on every
+    # poll vote event, regardless of whose poll it was.
+    buggy_poll_vote_event = _group_message(
+        "Dogs - Leia",
+        mediaType="poll_update",
+        quotedParticipant="",
+        botIds=[],
+        hasQuotedMessage=True,
+    )
+    assert adapter._should_process_message(buggy_poll_vote_event) is False
+
+    # Fixed shape: botIds/quotedParticipant populated from the bot's own
+    # identity, since every event reaching this path is a vote on a poll
+    # the bot itself sent.
+    fixed_poll_vote_event = _group_message(
+        "Dogs - Leia",
+        mediaType="poll_update",
+        quotedParticipant="15551230000@s.whatsapp.net",
+        hasQuotedMessage=True,
+    )
+    assert adapter._should_process_message(fixed_poll_vote_event) is True
+
+
 # --- New dm_policy tests ---
 
 

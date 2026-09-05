@@ -1988,6 +1988,29 @@ class BasePlatformAdapter(ABC):
         deleting the preview) instead of final-editing it (Telegram: keeps rich rendering)."""
         return False
 
+    @property
+    def notify_only_last_final_delivery(self) -> bool:
+        """Whether ``notify`` belongs only on the last logical delivery of a final response.
+
+        Most adapters keep their historical behavior. Platforms with native silent-message
+        support can opt in so text plus attachments still produces at most one push.
+        """
+        return False
+
+    def _metadata_for_final_delivery(
+        self, metadata: Optional[Dict[str, Any]], *, is_last: bool,
+    ) -> Optional[Dict[str, Any]]:
+        """Return metadata for one logical part of a completed response.
+
+        Opted-in adapters receive ``notify`` only on the last part. All other metadata,
+        including thread routing, is preserved and the caller's dictionary is never mutated.
+        """
+        if is_last or not self.notify_only_last_final_delivery:
+            return metadata
+        quiet_metadata = dict(metadata) if metadata else {}
+        quiet_metadata.pop("notify", None)
+        return quiet_metadata
+
     def streaming_overflow_limit(self) -> Optional[int]:
         """Max single-message length (``message_len_fn`` units) the stream consumer may
         accumulate before splitting, for rich send/draft paths exceeding the legacy cap
@@ -2818,7 +2841,11 @@ class BasePlatformAdapter(ABC):
         else:
             text = _media_failure_text("file", os.path.basename(media_path))
         try:
-            notice = await self.send(chat_id=chat_id, content=text, metadata=metadata)
+            notice = await self.send(
+                chat_id=chat_id,
+                content=text,
+                metadata=_mark_notify_metadata(metadata),
+            )
             problem = None if notice.success else notice.error
         except Exception as notify_err:
             problem = notify_err
@@ -3705,36 +3732,52 @@ class BasePlatformAdapter(ABC):
             return Path(path).suffix.lower() in _IMAGE_EXTS and not force_document_attachments
         _image_paths = [p for p, is_voice in media_files if not is_voice and _as_image(p)]
         _image_paths += [p for p in local_files if _as_image(p)]
+        queue = [(p, v, True) for p, v in media_files if v or not _as_image(p)]
+        queue += [(p, False, False) for p in local_files if not _as_image(p)]
         if _image_paths:
             await self._send_image_batch(
-                event, [(f"file://{_quote(p)}", "") for p in _image_paths], metadata, human_delay)
+                event,
+                [(f"file://{_quote(p)}", "") for p in _image_paths],
+                self._metadata_for_final_delivery(metadata, is_last=not queue) or {},
+                human_delay,
+            )
         chat_id = event.source.chat_id
 
-        async def _send_one(path: str, *, is_voice: bool, media_tag: bool) -> None:
+        async def _send_one(
+            path: str, *, is_voice: bool, media_tag: bool, send_metadata: Dict[str, Any],
+        ) -> None:
             """MEDIA-tag files (``media_tag``) may route to send_voice; bare local files never
             do."""
             ext = Path(path).suffix.lower()
             if media_tag and should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
-                result = await self.send_voice(chat_id=chat_id, audio_path=path, metadata=metadata, is_voice=is_voice)
+                result = await self.send_voice(
+                    chat_id=chat_id, audio_path=path, metadata=send_metadata, is_voice=is_voice)
             elif ext in _VIDEO_EXTS:
                 if media_tag:
                     logger.info("[%s] Sending video attachment (%s) to %s", self.name, ext, chat_id)
-                result = await self.send_video(chat_id=chat_id, video_path=path, metadata=metadata)
+                result = await self.send_video(
+                    chat_id=chat_id, video_path=path, metadata=send_metadata)
             else:
-                result = await self.send_document(chat_id=chat_id, file_path=path, metadata=metadata)
+                result = await self.send_document(
+                    chat_id=chat_id, file_path=path, metadata=send_metadata)
             if not result.success:
                 logger.warning("[%s] Failed to send %s (%s): %s", self.name,
                                "media" if media_tag else "local file", ext, result.error)
-                await self._notify_media_delivery_failure(chat_id, path, is_voice=is_voice, metadata=metadata)
-        queue = [(p, v, True) for p, v in media_files if v or not _as_image(p)]
+                await self._notify_media_delivery_failure(
+                    chat_id, path, is_voice=is_voice, metadata=send_metadata)
         if queue:
             logger.info("[%s] Delivering %d non-image MEDIA attachment(s)", self.name, len(queue))
-        queue += [(p, False, False) for p in local_files if not _as_image(p)]
-        for path, is_voice, media_tag in queue:
+        for index, (path, is_voice, media_tag) in enumerate(queue):
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
+            send_metadata = self._metadata_for_final_delivery(
+                metadata, is_last=index == len(queue) - 1,
+            ) or {}
             try:
-                await _send_one(path, is_voice=is_voice, media_tag=media_tag)
+                await _send_one(
+                    path, is_voice=is_voice, media_tag=media_tag,
+                    send_metadata=send_metadata,
+                )
             except Exception as err:
                 if media_tag:
                     logger.warning("[%s] Error sending media: %s", self.name, err)
@@ -3776,7 +3819,7 @@ class BasePlatformAdapter(ABC):
         _thread_metadata = None
         try:
             error_detail = str(e)[:300] if str(e) else "no details available"
-            _thread_metadata = _thread_metadata_for_event(event)
+            _thread_metadata = _mark_notify_metadata(_thread_metadata_for_event(event))
             await self.send(
                 chat_id=event.source.chat_id,
                 content=(f"Sorry, I encountered an error ({type(e).__name__}).\n{error_detail}\n"
@@ -3794,7 +3837,10 @@ class BasePlatformAdapter(ABC):
         images, media_files, local_files = extracted.images, extracted.media_files, extracted.local_files
         if images:
             logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
-            await self._send_image_batch(event, images, metadata, human_delay)
+            image_metadata = self._metadata_for_final_delivery(
+                metadata, is_last=not (media_files or local_files),
+            ) or {}
+            await self._send_image_batch(event, images, image_metadata, human_delay)
         await self._deliver_media_attachments(
             event, media_files, local_files,
             force_document_attachments=extracted.force_document_attachments,
@@ -3933,6 +3979,14 @@ class BasePlatformAdapter(ABC):
                 text_content, media_files = extracted.text_content, extracted.media_files
                 # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                _notify_last_only = (
+                    self.notify_only_last_final_delivery
+                    and bool(_final_thread_metadata.get("notify"))
+                )
+                _nonfinal_metadata = (
+                    self._metadata_for_final_delivery(_final_thread_metadata, is_last=False)
+                    or {}
+                )
                 _tts_paths, _tts_requested_path = [], None
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):
@@ -3942,7 +3996,8 @@ class BasePlatformAdapter(ABC):
                 for _tts_index, _tts_path in enumerate(_tts_paths):
                     try:
                         _tts_caption_delivered |= await self._play_tts_file(
-                            event, text_content, _tts_path, _tts_index == 0, _final_thread_metadata,
+                            event, text_content, _tts_path, _tts_index == 0,
+                            _nonfinal_metadata if _notify_last_only else _final_thread_metadata,
                             _record_delivery)
                     finally:
                         with contextlib.suppress(OSError):
@@ -3950,13 +4005,27 @@ class BasePlatformAdapter(ABC):
                 if not _tts_paths and _tts_requested_path is not None:
                     with contextlib.suppress(OSError):
                         os.remove(_tts_requested_path)
-                if text_content and not _tts_caption_delivered:
+                if _notify_last_only and text_content and not _tts_caption_delivered:
+                    # Discord ``important`` mode needs the completed text to be the last physical
+                    # message even when the response also has attachments. Deliver attachments
+                    # first without ``notify``; the final text is the sole notification candidate.
+                    await self._deliver_attachments(
+                        event, extracted, _nonfinal_metadata,
+                        anything_sent=(
+                            delivery_attempted or _tts_caption_delivered or bool(text_content)
+                        ),
+                    )
                     await self._send_final_text(
                         event, session_key, text_content, _final_thread_metadata,
                         is_ephemeral_response, _ephemeral_ttl, _record_delivery)
-                await self._deliver_attachments(
-                    event, extracted, _final_thread_metadata,
-                    anything_sent=delivery_attempted or _tts_caption_delivered)
+                else:
+                    if text_content and not _tts_caption_delivered:
+                        await self._send_final_text(
+                            event, session_key, text_content, _final_thread_metadata,
+                            is_ephemeral_response, _ephemeral_ttl, _record_delivery)
+                    await self._deliver_attachments(
+                        event, extracted, _final_thread_metadata,
+                        anything_sent=delivery_attempted or _tts_caption_delivered)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(

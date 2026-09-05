@@ -1278,7 +1278,11 @@ class TurnRunner:
         msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
         try:
             # Mark as approval prompt so WeCom routes through the control lane.
-            metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
+            metadata = {
+                **(ctx._status_thread_metadata or {}),
+                "is_approval_prompt": True,
+                "notify": True,
+            }
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )

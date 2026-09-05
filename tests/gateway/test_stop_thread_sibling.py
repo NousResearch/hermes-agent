@@ -137,3 +137,34 @@ async def test_stop_no_active_agent_survives_status_clear_failure():
     result = await runner._handle_stop_command(event)
 
     assert "no active" in str(getattr(result, "text", result)).lower()
+
+
+@pytest.mark.asyncio
+async def test_stop_no_active_agent_closes_background_only_group(monkeypatch):
+    runner = object.__new__(GatewayRunner)
+    key = _per_user_key("userA")
+    entry = _StoreEntry(key)
+    entry.session_id = "stored-a"
+    runner._running_agents = {}
+    runner.session_store = _FakeStore(key)
+    runner.session_store.get_or_create_session = lambda source: entry
+    runner._is_user_authorized = lambda source: True
+    runner.adapters = {}
+    closed = []
+    monkeypatch.setattr(
+        "tools.async_delegation.close_work_groups_for_session",
+        lambda **kwargs: closed.append(kwargs) or 1,
+    )
+
+    event = MessageEvent(
+        text="/stop", message_type=MessageType.TEXT, source=_thread_source("userA")
+    )
+    result = await runner._handle_stop_command(event)
+
+    assert "no active" in str(getattr(result, "text", result)).lower()
+    assert closed == [{
+        "origin_session": key,
+        "parent_session_id": "stored-a",
+        "disposition": "cancelled",
+        "diagnostics": "gateway /stop cancelled outstanding delegation work",
+    }]

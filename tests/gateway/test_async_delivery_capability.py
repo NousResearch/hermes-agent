@@ -24,6 +24,7 @@ import pytest
 from gateway.session_context import (
     async_delivery_supported,
     clear_session_vars,
+    closeout_delivery_supported,
     get_session_env,
     reset_session_vars,
     set_session_vars,
@@ -49,6 +50,7 @@ class TestAsyncDeliverySupported:
         )
         try:
             assert async_delivery_supported() is False
+            assert closeout_delivery_supported() is False
             # Platform must still be readable for routing/diagnostics even
             # though delivery is unsupported.
             assert get_session_env("HERMES_SESSION_PLATFORM") == "api_server"
@@ -168,9 +170,53 @@ class TestAdapterCapabilityFlag:
         )
         try:
             assert async_delivery_supported() is False
+            assert closeout_delivery_supported() is True
             assert get_session_env("HERMES_SESSION_PLATFORM") == "api_server"
         finally:
             clear_session_vars(tokens)
+
+        assert async_delivery_supported() is True
+        assert closeout_delivery_supported() is True
+
+    def test_api_server_without_raw_session_id_cannot_close_out(self):
+        from gateway.platforms.api_server import APIServerAdapter
+
+        tokens = APIServerAdapter._bind_api_server_session()
+        try:
+            assert async_delivery_supported() is False
+            assert closeout_delivery_supported() is False
+        finally:
+            clear_session_vars(tokens)
+
+
+def test_concurrent_session_contexts_do_not_leak_closeout_capability():
+    """A copied context is overwritten by each request binding and clear."""
+    import contextvars
+
+    api = contextvars.copy_context()
+    finite = contextvars.copy_context()
+
+    def bind_api():
+        tokens = set_session_vars(
+            platform="api_server", session_id="api-1",
+            async_delivery=False, closeout_delivery=True,
+        )
+        try:
+            return async_delivery_supported(), closeout_delivery_supported()
+        finally:
+            clear_session_vars(tokens)
+
+    def bind_finite():
+        tokens = set_session_vars(async_delivery=False)
+        try:
+            return async_delivery_supported(), closeout_delivery_supported()
+        finally:
+            clear_session_vars(tokens)
+
+    assert api.run(bind_api) == (False, True)
+    assert finite.run(bind_finite) == (False, False)
+    assert api.run(closeout_delivery_supported) is True
+    assert finite.run(closeout_delivery_supported) is True
 
 
 # ---------------------------------------------------------------------------
@@ -208,5 +254,4 @@ class TestTerminalNotifyGate:
         assert d.get("notify_unsupported"), "must explain the limitation"
         assert "poll" in d["notify_unsupported"].lower()
         assert len(process_registry.pending_watchers) == 0
-
 

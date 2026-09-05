@@ -484,7 +484,38 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     owner_started_at INTEGER,
     task_json TEXT,
     delivery_claim TEXT,
-    delivery_claimed_at REAL
+    delivery_claimed_at REAL,
+    origin_session_id TEXT NOT NULL DEFAULT '',
+    origin_work_id TEXT NOT NULL DEFAULT '',
+    work_generation INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS async_delegation_work_groups (
+    work_id TEXT PRIMARY KEY,
+    origin_session TEXT NOT NULL DEFAULT '',
+    origin_ui_session_id TEXT NOT NULL DEFAULT '',
+    origin_session_id TEXT NOT NULL DEFAULT '',
+    parent_session_id TEXT,
+    routing_json TEXT NOT NULL DEFAULT '{}',
+    owner_turn_id TEXT NOT NULL,
+    owner_pid INTEGER,
+    owner_started_at INTEGER,
+    state TEXT NOT NULL CHECK (state IN ('open','sealed','closing','closed')),
+    generation INTEGER NOT NULL DEFAULT 0,
+    aggregate_char_budget INTEGER NOT NULL DEFAULT 0,
+    closeout_delivery_id TEXT,
+    closeout_payload_json TEXT,
+    closeout_claim TEXT,
+    closeout_claimed_at REAL,
+    closeout_turn_id TEXT,
+    closeout_owner_pid INTEGER,
+    closeout_owner_started_at INTEGER,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    sealed_at REAL,
+    closed_at REAL,
+    terminal_disposition TEXT,
+    terminal_diagnostics TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -507,10 +538,17 @@ CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usag
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
+CREATE INDEX IF NOT EXISTS idx_async_work_groups_state
+    ON async_delegation_work_groups(state, updated_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_async_work_groups_delivery
+    ON async_delegation_work_groups(closeout_delivery_id)
+    WHERE closeout_delivery_id IS NOT NULL;
 """
 
 # Indexes on later-added columns must run AFTER _reconcile_columns(), or executescript fails on legacy DBs.
 DEFERRED_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_async_delegations_work
+    ON async_delegations(origin_work_id, work_generation, dispatched_at);
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_active_null

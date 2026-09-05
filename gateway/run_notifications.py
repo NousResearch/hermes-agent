@@ -12,7 +12,7 @@ import dataclasses
 import json
 import logging
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
@@ -752,12 +752,20 @@ class GatewayNotificationsMixin:
                 platform, home, transport, message, "state.db warning notification failed for %s:%s: %s",
             )
 
-    def _build_process_event_source(self, evt: dict):
+    def _build_process_event_source(
+        self, evt: dict, *, trusted_profile_name: Optional[str] = None
+    ):
         """Resolve the canonical source for a synthetic background-process event.
 
         Prefer the persisted session-store origin; the active foreground event causes cross-topic bleed.
         """
         from gateway.run import _parse_session_key
+
+        def _scoped_source(source):
+            if not trusted_profile_name or source.profile == trusted_profile_name:
+                return source
+            return dataclasses.replace(source, profile=trusted_profile_name)
+
         session_key = str(evt.get("session_key") or "").strip()
         derived = {}
         if session_key:
@@ -765,12 +773,12 @@ class GatewayNotificationsMixin:
                 self.session_store._ensure_loaded()
                 entry = self.session_store._entries.get(session_key)
                 if entry and getattr(entry, "origin", None):
-                    return entry.origin
+                    return _scoped_source(entry.origin)
             except Exception as exc:
                 logger.debug("Synthetic process-event session-store lookup failed for %s: %s", session_key, exc)
             cached_source = self._get_cached_session_source(session_key)
             if cached_source is not None:
-                return cached_source
+                return _scoped_source(cached_source)
             derived = _parse_session_key(session_key) or {}
         platform_name = str(evt.get("platform") or derived.get("platform") or "").strip().lower()
         chat_type = str(evt.get("chat_type") or derived.get("chat_type") or "").strip().lower()
@@ -811,6 +819,7 @@ class GatewayNotificationsMixin:
         return SessionSource(
             platform=platform, chat_id=chat_id, chat_type=chat_type, thread_id=_opt("thread_id"),
             user_id=_opt("user_id"), user_name=_opt("user_name"), scope_id=scope_id,
+            profile=trusted_profile_name,
         )
 
     async def _drain_watch_notifications(self, completion_queue) -> None:
@@ -839,7 +848,15 @@ class GatewayNotificationsMixin:
                 return a
         return None
 
-    async def _self_post_api_server(self, adapter, synth_text: str, raw_sid: str, evt: dict) -> bool:
+    async def _self_post_api_server(
+        self,
+        adapter,
+        synth_text: str,
+        raw_sid: str,
+        evt: dict,
+        *,
+        trusted_profile_name: Optional[str] = None,
+    ) -> bool:
         """Deliver to a non-push (api_server) session by raw session id.
 
         Async-delegation completions are persisted as a durable delivery row — after the parent
@@ -854,7 +871,22 @@ class GatewayNotificationsMixin:
         else:
             info = "Watch pattern notification — waking api_server session %s via self-post"
             fail = "Watch notification self-post wake failed for session %s: %s"
-            deliver = lambda: deliver_wake(adapter, text=synth_text, session_id=raw_sid)  # noqa: E731
+            deliver = lambda: deliver_wake(  # noqa: E731
+                adapter,
+                text=synth_text,
+                session_id=raw_sid,
+                profile=str(trusted_profile_name or ""),
+                internal_metadata=(
+                    {
+                        "work_id": str(evt.get("origin_work_id") or ""),
+                        "generation": int(evt.get("work_generation") or 0),
+                        "delivery_id": str(evt.get("delivery_id") or ""),
+                        "claim_id": str(evt.get("claim_id") or ""),
+                    }
+                    if evt.get("type") == "async_delegation_work_closeout"
+                    else None
+                ),
+            )
         try:
             logger.info(info, raw_sid)
             await deliver()
@@ -876,7 +908,13 @@ class GatewayNotificationsMixin:
             return _transport.adapter
         return self._adapter_by_platform_value(platform_name)
 
-    async def _inject_watch_notification(self, synth_text: str, evt: dict) -> Optional[bool]:
+    async def _inject_watch_notification(
+        self,
+        synth_text: str,
+        evt: dict,
+        *,
+        trusted_profile_name: Optional[str] = None,
+    ) -> Optional[bool]:
         """Inject a watch/completion notification as a synthetic message event.
 
         Routing comes from the queued event, never the active foreground message. Returns
@@ -885,7 +923,11 @@ class GatewayNotificationsMixin:
         """
         from gateway.run import _parse_session_key
         from gateway.wake import adapter_supports_push
-        source = await asyncio.to_thread(self._build_process_event_source, evt)
+        source = await asyncio.to_thread(
+            self._build_process_event_source,
+            evt,
+            trusted_profile_name=trusted_profile_name,
+        )
         if not source:
             # API-server sessions bind the RAW X-Hermes-Session-Id key, not a structured ``agent:...`` key.
             raw_sid = str(evt.get("origin_session_id") or "").strip()
@@ -895,7 +937,13 @@ class GatewayNotificationsMixin:
             if raw_sid:
                 adapter = self.adapters.get(Platform.API_SERVER)
                 if adapter is not None and not adapter_supports_push(adapter):
-                    return await self._self_post_api_server(adapter, synth_text, raw_sid, evt)
+                    return await self._self_post_api_server(
+                        adapter,
+                        synth_text,
+                        raw_sid,
+                        evt,
+                        trusted_profile_name=trusted_profile_name,
+                    )
                 logger.warning(
                     "Dropping watch notification for raw session %s: no api_server adapter to self-post through",
                     raw_sid,
@@ -914,14 +962,28 @@ class GatewayNotificationsMixin:
             # Non-push adapter (api_server): its chat_id IS the raw session id, so handle_message would
             # key the wake under a build_session_key() that never matches — self-post instead.
             raw_sid = str(evt.get("origin_session_id") or "").strip() or str(source.chat_id or "")
-            return await self._self_post_api_server(adapter, synth_text, raw_sid, evt)
+            return await self._self_post_api_server(
+                adapter,
+                synth_text,
+                raw_sid,
+                evt,
+                trusted_profile_name=trusted_profile_name,
+            )
         try:
             metadata = {}
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            if evt.get("type") == "async_delegation_work_closeout":
+                metadata["delegation_closeout"] = {
+                    "work_id": str(evt.get("origin_work_id") or ""),
+                    "generation": int(evt.get("work_generation") or 0),
+                    "delivery_id": str(evt.get("delivery_id") or ""),
+                    "claim_id": str(evt.get("claim_id") or ""),
+                }
             synth_event = MessageEvent(
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
+                allow_gateway_control=False,
                 message_id=str(evt.get("message_id") or "").strip() or None, metadata=metadata,
             )
             logger.info(
@@ -951,6 +1013,10 @@ class GatewayNotificationsMixin:
         if evt_type == "async_delegation":
             producer_id = str(evt.get("delegation_id") or "")
             return (evt_type, producer_id, "") if producer_id else None
+        if evt_type == "async_delegation_work_closeout":
+            delivery_id = str(evt.get("delivery_id") or "")
+            profile_home = str(evt.get("_ledger_profile_home") or "")
+            return (evt_type, delivery_id, profile_home) if delivery_id else None
         if evt_type == "completion":
             producer_id = str(evt.get("session_id") or "")
             started_at = evt.get("started_at")
@@ -1048,7 +1114,7 @@ class GatewayNotificationsMixin:
                     logger.warning("Could not claim durable async completion %s: %s", claim.delegation_id, exc)
                     claim.proceed, claim.early_result = False, False
                     return claim
-        elif evt_type != "completion":
+        elif evt_type not in {"completion", "async_delegation_work_closeout"}:
             return claim
         # Background completions carry only session_key, so after /new the OLD session's notification
         # would land in the NEW one. Stamped events get the async-delegation pre-flight; unstamped deliver.
@@ -1069,6 +1135,27 @@ class GatewayNotificationsMixin:
                 )
                 if claim.claim_id:
                     self._settle_durable_claim("drop", claim.delegation_id, claim.claim_id)
+            elif evt_type == "async_delegation_work_closeout":
+                try:
+                    from tools.async_delegation import (
+                        close_work_groups_for_session,
+                        release_enqueued_work_group_event,
+                    )
+
+                    release_enqueued_work_group_event(evt)
+                    close_work_groups_for_session(
+                        origin_session=str(evt.get("session_key") or ""),
+                        origin_ui_session_id=str(evt.get("origin_ui_session_id") or ""),
+                        parent_session_id=parent_session_id,
+                        disposition="dropped",
+                        diagnostics="completion target crossed a user session boundary",
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not terminally disposition delegation work group %s",
+                        evt.get("origin_work_id"),
+                        exc_info=True,
+                    )
             else:
                 logger.warning(
                     "Background process %s completion targets "
@@ -1084,7 +1171,13 @@ class GatewayNotificationsMixin:
             claim.proceed, claim.early_result = False, False
         return claim
 
-    async def _deliver_completion_notification(self, synth_text: str, evt: dict) -> Optional[bool]:
+    async def _deliver_completion_notification(
+        self,
+        synth_text: str,
+        evt: dict,
+        *,
+        trusted_profile_name: Optional[str] = None,
+    ) -> Optional[bool]:
         """Deliver once per live gateway, or return False for a retry.
 
         ``True``: adapter accepted; ``False``: injection failed, claim released for retry; ``None``:
@@ -1098,7 +1191,11 @@ class GatewayNotificationsMixin:
             return None
         accepted = False
         try:
-            injection_result = await self._inject_watch_notification(synth_text, evt)
+            injection_result = await self._inject_watch_notification(
+                synth_text,
+                evt,
+                trusted_profile_name=trusted_profile_name,
+            )
             if injection_result is not True:
                 return injection_result
             accepted = True
@@ -1335,36 +1432,131 @@ class GatewayNotificationsMixin:
                         _pr.completion_queue.put(evt)
         return delivered
 
-    async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
-        """Drain async-delegation completions and inject them as new turns (IDLE case).
+    def _recover_closeout_work_groups(self, target_queue) -> None:
+        """Recover grouped closeouts from every authoritative profile ledger."""
+        from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
+        from tools.async_delegation import recover_and_enqueue_work_groups
 
-        Background subagents run on the daemon executor with no per-process watcher, so their
-        completions would otherwise only be seen by the post-turn drain. Ignores non-async events.
-        """
+        config = getattr(self, "config", None)
+        if not getattr(config, "multiplex_profiles", False):
+            recover_and_enqueue_work_groups(target_queue=target_queue)
+            return
+        for _profile_name, profile_home in _multiplex_profile_homes(config):
+            with _profile_runtime_scope(profile_home):
+                recover_and_enqueue_work_groups(target_queue=target_queue)
+
+    @contextmanager
+    def _closeout_event_runtime_scope(self, evt: dict):
+        """Bind a grouped closeout to its trusted authoritative profile."""
+        from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
+
+        config = getattr(self, "config", None)
+        if not getattr(config, "multiplex_profiles", False):
+            yield None
+            return
+
+        raw_home = evt.get("_ledger_profile_home")
+        try:
+            event_home = Path(str(raw_home)).resolve() if raw_home else None
+        except (OSError, RuntimeError, ValueError):
+            event_home = None
+        for profile_name, profile_home in _multiplex_profile_homes(config):
+            try:
+                authoritative_home = Path(profile_home).resolve()
+            except (OSError, RuntimeError, ValueError):
+                continue
+            if event_home == authoritative_home:
+                with _profile_runtime_scope(authoritative_home):
+                    yield profile_name
+                return
+        raise ValueError("closeout event has no authoritative profile affinity")
+
+    async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
+        """Drain async-delegation completions and inject them as new turns (IDLE case)."""
         await asyncio.sleep(3)  # let platforms finish connecting
+        from gateway.run import _format_gateway_process_notification
+        from tools.async_delegation import (
+            recover_and_enqueue_work_groups,
+            release_enqueued_work_group_event,
+        )
         from tools.process_registry import process_registry as _pr
+
+        try:
+            await asyncio.to_thread(
+                self._recover_closeout_work_groups, _pr.completion_queue
+            )
+        except Exception:
+            logger.exception("Failed to recover delegation closeout work groups")
+        last_closeout_recovery = time.monotonic()
+
         while self._running:
             with _log_suppressed(logging.DEBUG, "Async delegation watcher error: %s"):
-                # Take async-delegation events only; requeue watch/completion events for their own drains.
+                if time.monotonic() - last_closeout_recovery >= 30.0:
+                    await asyncio.to_thread(
+                        self._recover_closeout_work_groups, _pr.completion_queue
+                    )
+                    last_closeout_recovery = time.monotonic()
+
                 requeue = []
                 async_events = []
+                closeout_events = []
                 while not _pr.completion_queue.empty():
                     try:
                         evt = _pr.completion_queue.get_nowait()
                     except Exception:
                         break
-                    (async_events if evt.get("type") == "async_delegation" else requeue).append(evt)
+                    evt_type = evt.get("type")
+                    if evt_type == "async_delegation":
+                        async_events.append(evt)
+                    elif evt_type == "async_delegation_work_closeout":
+                        closeout_events.append(evt)
+                    else:
+                        requeue.append(evt)
                 for evt in requeue:
                     _pr.completion_queue.put(evt)
-                # A fan-out finishing together yields N completions for one session; group by full route +
-                # parent session so each group becomes ONE consolidated turn.
-                # A same-tick drain often carries several completions for the SAME originating session (a
-                # fan-out of background subagents finishing together). Events for different sessions never
-                # coalesce. See #70300.
+
+                for evt in closeout_events:
+                    try:
+                        with self._closeout_event_runtime_scope(evt) as profile_name:
+                            self._enrich_async_delegation_routing(evt)
+                            session_key = str(evt.get("session_key") or "")
+                            if session_key and self._is_session_running(session_key):
+                                _pr.completion_queue.put(evt)
+                                continue
+                            synth_text = _format_gateway_process_notification(evt)
+                            if not synth_text:
+                                release_enqueued_work_group_event(evt)
+                                await asyncio.to_thread(
+                                    recover_and_enqueue_work_groups,
+                                    target_queue=_pr.completion_queue,
+                                )
+                                continue
+                            try:
+                                delivered = await self._deliver_completion_notification(
+                                    synth_text,
+                                    evt,
+                                    trusted_profile_name=profile_name,
+                                )
+                            except Exception:
+                                delivered = False
+                                logger.exception("Delegation closeout injection error")
+                            if delivered is False:
+                                release_enqueued_work_group_event(evt)
+                                await asyncio.to_thread(
+                                    recover_and_enqueue_work_groups,
+                                    target_queue=_pr.completion_queue,
+                                )
+                    except ValueError:
+                        _pr.completion_queue.put(evt)
+                        logger.error(
+                            "Deferring delegation closeout with invalid profile affinity"
+                        )
+
                 groups: dict[tuple[str, ...], list[dict]] = {}
                 for evt in async_events:
                     self._enrich_async_delegation_routing(evt)
-                    groups.setdefault(self._event_route_key(evt, self._ASYNC_GROUP_KEY_FIELDS), []).append(evt)
+                    key = self._event_route_key(evt, self._ASYNC_GROUP_KEY_FIELDS)
+                    groups.setdefault(key, []).append(evt)
                 for group in groups.values():
                     try:
                         delivered = await self._deliver_async_delegation_group(group)

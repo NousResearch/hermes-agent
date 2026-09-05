@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import uuid
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable: split modules)
@@ -37,6 +38,15 @@ from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_
 from tui_gateway.transport import (StdioTransport, Transport, bind_transport, current_transport, reset_transport)
 
 logger = logging.getLogger(__name__)
+
+
+class _InternalContinuation(NamedTuple):
+    text: str
+    work_id: str
+    generation: int
+    delivery_id: str
+    claim_id: str
+    profile_home: str = ""
 
 _hermes_home = get_hermes_home()
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env")
@@ -2345,7 +2355,8 @@ def _init_session(
         _sessions[sid] = {
             "agent": agent, "session_key": key, "history": history, "history_lock": threading.Lock(),
             "history_version": 0, "inflight_turn": None, "created_at": now, "last_active": now,
-            "running": False, "attached_images": [], "image_counter": 0, "cwd": cwd or _completion_cwd(),
+            "running": False, "internal_continuations": deque(), "attached_images": [],
+            "image_counter": 0, "cwd": cwd or _completion_cwd(),
             "explicit_cwd": bool(explicit_cwd), "cols": cols, "slash_worker": None,
             "show_reasoning": _load_show_reasoning(), "source": _resolve_session_source(source),
             "tool_progress_mode": _load_tool_progress_mode(), "edit_snapshots": {}, "tool_started_at": {},
@@ -2415,7 +2426,8 @@ def _deferred_session_record(
         "pending_title": None,
         "profile_home": str(profile_home) if profile_home is not None else None,
         "resume_runtime_overrides": resume_runtime_overrides, "resume_session_id": session_key,
-        "running": False, "session_key": session_key, "show_reasoning": _load_show_reasoning(),
+        "running": False, "internal_continuations": deque(), "session_key": session_key,
+        "show_reasoning": _load_show_reasoning(),
         "slash_worker": None, "source": source, "tool_progress_mode": _load_tool_progress_mode(),
         "tool_started_at": {}, "todo_state": todo_state,
         "transport": current_transport() or _stdio_transport,

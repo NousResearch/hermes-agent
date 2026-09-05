@@ -1296,6 +1296,8 @@ class _LoopState:
     # is set ONLY if it becomes the final response (#65919).
     _pending_verification_response: Any = None
     _pending_verification_response_previewed: bool = False
+    delegation_waiting: bool = False
+    closeout_terminal_candidate: bool = False
     # MoA guidance retained across a pre-API compression, rebased next iteration (no second fan-out).
     pending_moa_prepared_request: Any = None
     # Per-iteration slots.

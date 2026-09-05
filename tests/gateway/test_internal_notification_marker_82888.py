@@ -138,6 +138,42 @@ async def test_internal_event_threads_marker_into_agent_run(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_closeout_event_threads_trusted_work_identity(monkeypatch, tmp_path):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "done",
+        "messages": [],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+    })
+    event = _event(internal=True, text="closeout")
+    event.metadata = {
+        "delegation_closeout": {
+            "work_id": "work-1",
+            "generation": 2,
+            "delivery_id": "delivery-2",
+            "claim_id": "claim-2",
+        }
+    }
+
+    await runner._handle_message_with_agent(event, _source(), SESSION_KEY, 1)
+
+    kwargs = runner._run_agent.call_args.kwargs
+    assert kwargs["persist_user_display_kind"] == "delegation_closeout"
+    assert kwargs["persist_user_display_metadata"] == {
+        "hidden": True,
+        "work_id": "work-1",
+        "generation": 2,
+        "delivery_id": "delivery-2",
+    }
+    assert kwargs["delegation_work_id"] == "work-1"
+    assert kwargs["delegation_work_generation"] == 2
+    assert kwargs["delegation_work_delivery_id"] == "delivery-2"
+    assert kwargs["delegation_work_claim_id"] == "claim-2"
+
+
+@pytest.mark.asyncio
 async def test_real_user_event_gets_no_marker(monkeypatch, tmp_path):
     runner = _bootstrap(monkeypatch, tmp_path)
     runner._run_agent = AsyncMock(

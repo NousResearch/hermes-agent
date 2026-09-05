@@ -28,11 +28,14 @@ class DurableTurnLease:
     written only under ``_lock``.
     """
 
-    def __init__(self, agent, db, session_id: str, holder: str) -> None:
+    def __init__(
+        self, agent, db, session_id: str, holder: str, relay_turn_id: str = ""
+    ) -> None:
         self.agent = agent
         self.db = db
         self.session_id = session_id  # id at admission; release always targets this row
         self.holder = holder
+        self.relay_turn_id = relay_turn_id
         self.stop = threading.Event()
         self.refresh_interval = float(getattr(agent, "_session_turn_lease_refresh_interval", 60.0))
         self._lock = threading.Lock()
@@ -184,6 +187,30 @@ class DurableTurnLease:
             if self.db.refresh_session_turn_lease(
                 self._current_session_id(), self.holder, ttl_seconds=LEASE_TTL_SECONDS
             ):
+                work_id = str(getattr(self.agent, "_current_work_id", "") or "")
+                delivery_id = str(
+                    getattr(self.agent, "_current_work_delivery_id", "") or ""
+                )
+                claim_id = str(
+                    getattr(self.agent, "_current_work_claim_id", "") or ""
+                )
+                if work_id and delivery_id and claim_id:
+                    from tools.async_delegation import renew_work_group_claim
+
+                    if not renew_work_group_claim(
+                        work_id,
+                        int(getattr(self.agent, "_current_work_generation", 0) or 0),
+                        delivery_id,
+                        claim_id,
+                        self.relay_turn_id,
+                    ):
+                        if self.stop.is_set():
+                            return False
+                        self._interrupt_turn(
+                            "Delegation closeout claim lost; stopping to prevent "
+                            "duplicate reconciliation."
+                        )
+                        return False
                 return None
             if self.stop.is_set():
                 return False
@@ -277,7 +304,7 @@ def admit_durable_turn_lease(
 
     # Assign only after admission so the finally cannot release a holder that never owned the
     # row; persist paths read the agent attr so a late flush is fenced in the same transaction.
-    lease = DurableTurnLease(agent, db, session_id, holder)
+    lease = DurableTurnLease(agent, db, session_id, holder, relay_turn_id)
     agent._active_session_turn_lease_holder = holder
     agent._active_session_turn_lease_ttl_seconds = LEASE_TTL_SECONDS
     try:

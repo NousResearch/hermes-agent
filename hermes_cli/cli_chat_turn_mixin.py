@@ -22,7 +22,17 @@ from typing import Optional
 class CLIChatTurnMixin:
     """chat() and its per-turn phase helpers."""
 
-    def chat(self, message, images: list = None, voice_input: bool = False) -> Optional[str]:
+    def chat(
+        self,
+        message,
+        images: list = None,
+        voice_input: bool = False,
+        *,
+        origin_work_id: str = "",
+        work_generation: int = 0,
+        work_delivery_id: str = "",
+        work_claim_id: str = "",
+    ) -> Optional[str]:
         """Run one user turn; returns the agent's response, or None on error.
 
         Input typed while the agent runs goes to ``_interrupt_queue`` (separate from
@@ -69,7 +79,12 @@ class CLIChatTurnMixin:
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         print(flush=True)
 
-        turn = _ChatTurn()
+        turn = _ChatTurn(
+            origin_work_id=origin_work_id,
+            work_generation=work_generation,
+            work_delivery_id=work_delivery_id,
+            work_claim_id=work_claim_id,
+        )
         try:
             self._reset_stream_state()
             # Not part of _reset_stream_state: must persist across intermediate turn
@@ -84,8 +99,22 @@ class CLIChatTurnMixin:
             agent_thread.start()
             interrupt_msg = self._chat_monitor_agent_thread(turn, agent_thread)
             self._chat_settle_turn(turn)
+            if isinstance(turn.result, dict) and turn.result.get("waiting_on_delegates"):
+                return None
             return self._chat_render_turn(turn, agent_thread, interrupt_msg)
         except Exception as e:
+            if origin_work_id:
+                from cli import _InternalContinuation, _retry_failed_closeout_continuation
+
+                _retry_failed_closeout_continuation(
+                    _InternalContinuation(
+                        message,
+                        origin_work_id,
+                        work_generation,
+                        work_delivery_id,
+                        work_claim_id,
+                    )
+                )
             print(f"Error: {e}")
             return None
         finally:
@@ -302,13 +331,25 @@ class CLIChatTurnMixin:
         _persist_clean_user_message = message if (turn.voice_prefix or agent_message != message) else None
         _one_turn_model_restore = getattr(self, "_pending_one_turn_model_restore", None)
         self._pending_one_turn_model_restore = None
-        try:
-            turn.result = self.agent.run_conversation(
-                user_message=agent_message,
-                conversation_history=self.conversation_history[:-1],  # exclude the message just staged
-                stream_callback=turn.stream_callback, task_id=self.session_id,
-                persist_user_message=_persist_clean_user_message, moa_config=_moa_cfg,
+        conversation_kwargs = {
+            "user_message": agent_message,
+            "conversation_history": self.conversation_history[:-1],
+            "stream_callback": turn.stream_callback,
+            "task_id": self.session_id,
+            "persist_user_message": _persist_clean_user_message,
+            "moa_config": _moa_cfg,
+        }
+        if turn.origin_work_id:
+            conversation_kwargs.update(
+                {
+                    "origin_work_id": turn.origin_work_id,
+                    "work_generation": turn.work_generation,
+                    "work_delivery_id": turn.work_delivery_id,
+                    "work_claim_id": turn.work_claim_id,
+                }
             )
+        try:
+            turn.result = self.agent.run_conversation(**conversation_kwargs)
             if getattr(self, "_pending_moa_disable_after_turn", False):
                 _restore = getattr(self, "_pending_moa_restore_model", None) or {}
                 for _key, _value in _restore.items():

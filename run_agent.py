@@ -1295,18 +1295,83 @@ class AIAgent(
             self._executing_tools = False
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:
-        """Single call site for delegate_task dispatch; new DELEGATE_TASK_SCHEMA fields are added only here."""
-        from tools.delegate_tool import _strip_model_hidden_task_fields, delegate_task as _delegate_task
-        # Top-level MODEL delegations always run in the background (handle returned, results re-enter as
-        # messages). An ORCHESTRATOR SUBAGENT (depth > 0) stays synchronous — it needs results in-turn and
-        # owns no gateway session. The schema-level `background` param is intentionally ignored.
-        return _delegate_task(
-            goal=function_args.get("goal"), context=function_args.get("context"),
-            tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
-            max_iterations=function_args.get("max_iterations"), role=function_args.get("role"),
-            background=not (getattr(self, "_delegate_depth", 0) > 0), action=function_args.get("action"),
-            subagent_id=function_args.get("subagent_id"), message=function_args.get("message"), parent_agent=self,
+        """Dispatch delegation with trusted task-scoped closeout identity."""
+        from tools.delegate_tool import (
+            _model_background_value,
+            _strip_model_hidden_task_fields,
+            delegate_task as _delegate_task,
         )
+
+        background = _model_background_value(function_args, self)
+        is_subagent = getattr(self, "_delegate_depth", 0) > 0
+        try:
+            from gateway.session_context import closeout_delivery_supported
+            from tools.async_delegation import task_scoped_closeout_enabled
+
+            closeout_enabled = task_scoped_closeout_enabled()
+            async_supported = closeout_delivery_supported()
+        except Exception:
+            closeout_enabled = False
+            async_supported = False
+
+        closeout_active = closeout_enabled or bool(
+            getattr(self, "_current_work_id", "")
+        )
+        work_id = ""
+        work_generation = 0
+        closeout_delivery_id = ""
+        closeout_claim_id = ""
+        allocated_here = False
+        if not is_subagent and closeout_active and async_supported and background:
+            work_id = str(getattr(self, "_current_work_id", "") or "")
+            if work_id:
+                closeout_delivery_id = str(
+                    getattr(self, "_current_work_delivery_id", "") or ""
+                )
+                closeout_claim_id = str(
+                    getattr(self, "_current_work_claim_id", "") or ""
+                )
+                work_generation = int(
+                    getattr(self, "_current_work_generation", 0) or 0
+                ) + 1
+            else:
+                work_id = uuid.uuid4().hex
+                allocated_here = True
+            self._current_work_id = work_id
+            self._current_work_generation = work_generation
+            self._current_work_delivery_id = ""
+            self._current_work_claim_id = ""
+
+        result = _delegate_task(
+            goal=function_args.get("goal"),
+            context=function_args.get("context"),
+            tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
+            max_iterations=function_args.get("max_iterations"),
+            role=function_args.get("role"),
+            background=background,
+            action=function_args.get("action"),
+            subagent_id=function_args.get("subagent_id"),
+            message=function_args.get("message"),
+            parent_agent=self,
+            origin_work_id=work_id,
+            work_generation=work_generation,
+            owner_turn_id=str(getattr(self, "_current_turn_id", "") or ""),
+            closeout_delivery_id=closeout_delivery_id,
+            closeout_claim_id=closeout_claim_id,
+        )
+        try:
+            payload = json.loads(result)
+        except (TypeError, ValueError):
+            payload = {}
+        if work_id and payload.get("status") != "dispatched":
+            if allocated_here:
+                self._current_work_id = ""
+                self._current_work_generation = 0
+            elif closeout_delivery_id and closeout_claim_id:
+                self._current_work_generation = max(0, work_generation - 1)
+                self._current_work_delivery_id = closeout_delivery_id
+                self._current_work_claim_id = closeout_claim_id
+        return result
 
     _invoke_tool = _forward("agent.agent_runtime_helpers", "invoke_tool")
 

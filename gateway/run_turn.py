@@ -1357,6 +1357,9 @@ class GatewayTurnMixin:
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
             response = ""
         _intentional_silence = self._is_intentional_silence(agent_result, response)
+        if agent_result.get("waiting_on_delegates"):
+            _intentional_silence = True
+            response = ""
 
         # "(empty)" = the model produced no visible content after exhausting all retries.
         if response == "(empty)" and not _intentional_silence:
@@ -1828,6 +1831,11 @@ class GatewayTurnMixin:
         persist_user_message: Any
         persist_user_timestamp: Any
         persist_user_display_kind: Optional[str]
+        persist_user_display_metadata: Optional[Dict[str, Any]] = None
+        delegation_work_id: Optional[str] = None
+        delegation_work_generation: Optional[int] = None
+        delegation_work_delivery_id: Optional[str] = None
+        delegation_work_claim_id: Optional[str] = None
 
     async def _hmwa_prepare_turn(self, event, source, session_entry, session_key, _quick_key, run_generation):
         """Everything between session resolution and the agent run: session open, task-local env,
@@ -1842,6 +1850,34 @@ class GatewayTurnMixin:
         # Self-injected turns (MessageEvent(internal=True)) persist with a DB-only display_kind so
         # UIs render timeline notices, not user bubbles; role/content untouched.
         persist_user_display_kind = "internal_notification" if getattr(event, "internal", False) else None
+        closeout_meta: Dict[str, Any] = {}
+        closeout_generation = 0
+        event_metadata = getattr(event, "metadata", None)
+        if getattr(event, "internal", False) and isinstance(event_metadata, dict):
+            raw_closeout_meta = event_metadata.get("delegation_closeout")
+            if isinstance(raw_closeout_meta, dict):
+                try:
+                    closeout_generation = int(raw_closeout_meta.get("generation") or 0)
+                except (TypeError, ValueError):
+                    closeout_generation = -1
+                if (
+                    closeout_generation >= 0
+                    and str(raw_closeout_meta.get("work_id") or "")
+                    and str(raw_closeout_meta.get("delivery_id") or "")
+                    and str(raw_closeout_meta.get("claim_id") or "")
+                ):
+                    closeout_meta = dict(raw_closeout_meta)
+                    persist_user_display_kind = "delegation_closeout"
+        persist_user_display_metadata = (
+            {
+                "hidden": True,
+                "work_id": str(closeout_meta.get("work_id") or ""),
+                "generation": closeout_generation,
+                "delivery_id": str(closeout_meta.get("delivery_id") or ""),
+            }
+            if closeout_meta
+            else None
+        )
         _redact_pii = False  # privacy.redact_pii, re-read per message
         with suppress(Exception):
             _redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
@@ -1911,8 +1947,21 @@ class GatewayTurnMixin:
         # by the run that registered them.
         self._bind_adapter_run_generation(self._adapter_for_source(source), session_key, run_generation)
         return self._PreparedTurn(
-            history, context_prompt, message_text, persist_user_message, persist_user_timestamp,
-            persist_user_display_kind,
+            history=history,
+            context_prompt=context_prompt,
+            message_text=message_text,
+            persist_user_message=persist_user_message,
+            persist_user_timestamp=persist_user_timestamp,
+            persist_user_display_kind=persist_user_display_kind,
+            persist_user_display_metadata=persist_user_display_metadata,
+            delegation_work_id=str(closeout_meta.get("work_id") or "") or None,
+            delegation_work_generation=(closeout_generation if closeout_meta else None),
+            delegation_work_delivery_id=(
+                str(closeout_meta.get("delivery_id") or "") or None
+            ),
+            delegation_work_claim_id=(
+                str(closeout_meta.get("claim_id") or "") or None
+            ),
         ), _session_env_tokens
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
@@ -1963,6 +2012,11 @@ class GatewayTurnMixin:
                 persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
+                persist_user_display_metadata=prepared.persist_user_display_metadata,
+                delegation_work_id=prepared.delegation_work_id,
+                delegation_work_generation=prepared.delegation_work_generation,
+                delegation_work_delivery_id=prepared.delegation_work_delivery_id,
+                delegation_work_claim_id=prepared.delegation_work_claim_id,
                 message_type=event.message_type,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
@@ -3778,7 +3832,13 @@ class GatewayTurnMixin:
         event_message_id: Optional[str] = None, inbound_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None, moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
-        persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
+        persist_user_display_kind: Optional[str] = None,
+        persist_user_display_metadata: Optional[Dict[str, Any]] = None,
+        delegation_work_id: Optional[str] = None,
+        delegation_work_generation: Optional[int] = None,
+        delegation_work_delivery_id: Optional[str] = None,
+        delegation_work_claim_id: Optional[str] = None,
+        message_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -3802,6 +3862,11 @@ class GatewayTurnMixin:
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
+            persist_user_display_metadata=persist_user_display_metadata,
+            delegation_work_id=delegation_work_id,
+            delegation_work_generation=delegation_work_generation,
+            delegation_work_delivery_id=delegation_work_delivery_id,
+            delegation_work_claim_id=delegation_work_claim_id,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,

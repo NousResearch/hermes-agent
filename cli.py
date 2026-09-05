@@ -25,7 +25,7 @@ from urllib.parse import unquote, urlparse
 from contextlib import contextmanager, suppress
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Mapping
+from typing import List, Dict, Any, Optional, Mapping, NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -611,6 +611,46 @@ _deferred_agent_startup_done = False
 # Set once the TUI app starts (focus reporting + mouse tracking on); gates the on-exit
 # terminal reset so non-TUI one-shot runs never emit codes for modes they never enabled.
 _tui_input_modes_active = False
+
+
+class _InternalContinuation(NamedTuple):
+    text: str
+    work_id: str
+    generation: int
+    delivery_id: str
+    claim_id: str
+
+
+def _retry_failed_closeout_continuation(
+    continuation: _InternalContinuation,
+) -> bool:
+    """Release a failed CLI handoff and immediately publish its replacement."""
+    from tools.async_delegation import (
+        recover_and_enqueue_work_groups,
+        release_enqueued_work_group_event,
+    )
+    from tools.process_registry import process_registry
+
+    try:
+        released = release_enqueued_work_group_event(
+            {
+                "type": "async_delegation_work_closeout",
+                "origin_work_id": continuation.work_id,
+                "work_generation": continuation.generation,
+                "delivery_id": continuation.delivery_id,
+                "claim_id": continuation.claim_id,
+            }
+        )
+        if not released:
+            return False
+        recover_and_enqueue_work_groups(
+            consumer="cli-closeout-retry",
+            target_queue=process_registry.completion_queue,
+        )
+        return True
+    except Exception:
+        logging.warning("CLI closeout retry scheduling failed", exc_info=True)
+        return False
 
 
 # Set True once the TUI's prompt_toolkit app starts (which enables focus reporting + mouse tracking). Gates
@@ -2519,6 +2559,10 @@ class _ChatTurn:
     stop_event: Optional[threading.Event] = None
     tts_normal_exit: bool = False
     voice_prefix: str = ""
+    origin_work_id: str = ""
+    work_generation: int = 0
+    work_delivery_id: str = ""
+    work_claim_id: str = ""
 from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 
 
@@ -2865,6 +2909,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         """Per-run mutable UI state; must exist before any chat() call since -q never goes through run()."""
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
+        self._internal_continuations = queue.Queue()
         self._agent_running = self._should_exit = False
         self._last_turn_interrupted = False  # /goal never auto-queues on a Ctrl+C'd turn
         self._terminal_io_broken = False  # stdout EIO: freeze UI paints instead of spinning
@@ -3398,7 +3443,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
     def _drain_process_notifications(self, consumer: str) -> None:
         """Queue background notifications owned by this session (drained with our stable identity so another window can't claim them)."""
         from tools.process_registry import process_registry
-        from tools.async_delegation import claim_event_delivery, complete_event_delivery
+        from tools.async_delegation import (
+            claim_event_delivery,
+            complete_event_delivery,
+            recover_and_enqueue_work_groups,
+            release_enqueued_work_group_event,
+        )
+
+        try:
+            recover_and_enqueue_work_groups(
+                consumer="cli-closeout-poller",
+                target_queue=process_registry.completion_queue,
+            )
+        except Exception:
+            logging.warning("CLI closeout recovery poll failed", exc_info=True)
 
         for event, synthetic_message in process_registry.drain_notifications(
             session_key=getattr(self, "session_id", "") or "", owns_event=self._owns_process_notification,
@@ -3406,8 +3464,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
             claim = claim_event_delivery(event, consumer)
             if claim is None:
                 continue
-            self._pending_input.put(synthetic_message)
-            complete_event_delivery(event, claim)
+            if event.get("type") == "async_delegation_work_closeout":
+                item = _InternalContinuation(
+                    text=synthetic_message,
+                    work_id=str(event.get("origin_work_id") or ""),
+                    generation=int(event.get("work_generation") or 0),
+                    delivery_id=str(event.get("delivery_id") or ""),
+                    claim_id=str(event.get("claim_id") or ""),
+                )
+                try:
+                    self._internal_continuations.put_nowait(item)
+                except Exception:
+                    release_enqueued_work_group_event(event)
+                    raise
+            else:
+                self._pending_input.put(synthetic_message)
+                complete_event_delivery(event, claim)
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:
         """Move stray ``_interrupt_queue`` messages into ``_pending_input`` after every turn.
@@ -3446,6 +3518,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         """REPL worker thread: drain ``_pending_input``, run idle housekeeping, dispatch each input."""
         while not self._should_exit:
             try:
+                continuation = None
+                internal_queue = getattr(self, "_internal_continuations", None)
+                if internal_queue is not None:
+                    try:
+                        continuation = internal_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                if continuation is not None:
+                    self.chat(
+                        continuation.text,
+                        origin_work_id=continuation.work_id,
+                        work_generation=continuation.generation,
+                        work_delivery_id=continuation.delivery_id,
+                        work_claim_id=continuation.claim_id,
+                    )
+                    continue
                 try:
                     user_input = self._pending_input.get(timeout=0.1)
                 except queue.Empty:

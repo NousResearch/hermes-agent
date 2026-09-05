@@ -192,20 +192,32 @@ def _lifecycle_own_sid(session: dict, sid_hint: str = "") -> str:
     return own_sid
 
 
+@contextlib.contextmanager
+def _session_profile_scope(session: dict):
+    """Bind the session's profile home for profile-scoped ledger operations."""
+    profile_home = session.get("profile_home")
+    token = set_hermes_home_override(profile_home) if profile_home else None
+    try:
+        yield
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
+
+
 def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> None:
     """Best-effort finalize hook + memory commit; mirrors the CLI exit path so a force-quit mid-turn (double
     Ctrl-C, terminal close, SIGHUP) loses nothing."""
     if not session or session.get("_finalized"):
         return
     session["_finalized"] = True
+    session["_finalize_retryable"] = False
+    own_sid = _lifecycle_own_sid(session)
     if (history_ready := session.get("resume_history_ready")) is not None and not history_ready.is_set():
         session["resume_history_error"] = "session resume cancelled"
         history_ready.set()
     _desktop_automatic_cleanup = (
         end_reason in _AUTOMATIC_SESSION_END_REASONS and _session_source(session).strip().lower() == "desktop")
-    # Automatic Desktop cleanup releases its lease inside the lifecycle guard below; other paths keep force/end semantics.
-    if not _desktop_automatic_cleanup:
-        _release_active_session_slot(session)
+
     if (stop_event := session.get("_notif_stop")) is not None:
         stop_event.set()
     agent = session.get("agent")
@@ -237,29 +249,64 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     # Fix for #20001.
     if _desktop_automatic_cleanup and not session_id:
         _release_active_session_slot(session)
-    _lifecycle_guard = (_other_runtime_lease_guard(session_id, session)
-                        if _desktop_automatic_cleanup and session_id else contextlib.nullcontext(False))
-    with _lifecycle_guard as _other_runtime_owns_lifecycle:
-        _tui_owns_lifecycle = not _other_runtime_owns_lifecycle
-        if _other_runtime_owns_lifecycle:
-            logger.info("Preserving session %s during %s: another backend owns an active lease", session_id, end_reason)
-        if session_id:
-            # The *session's* profile state.db (app-global remote mode), not the launch profile's.
-            with contextlib.suppress(Exception), _session_db(session) as db:
-                if db is not None:
-                    # Never end gateway-originated sessions: Groundhog Day loop (gateway self-heals to the parent,
-                    # compression splits back to the reaped child, forever).
-                    if _is_gateway_owned_source((db.get_session(session_id) or {}).get("source", "")):
-                        _tui_owns_lifecycle = False
-                    elif _tui_owns_lifecycle:
-                        db.end_session(session_id, end_reason)
+    lifecycle_guard = (
+        _other_runtime_lease_guard(session_id, session)
+        if _desktop_automatic_cleanup and session_id
+        else contextlib.nullcontext(False)
+    )
+    tui_owns_lifecycle = True
+    try:
+        with lifecycle_guard as other_runtime_owns_lifecycle:
+            tui_owns_lifecycle = not other_runtime_owns_lifecycle
+            if other_runtime_owns_lifecycle:
+                logger.info(
+                    "Preserving session %s during %s: another backend owns an active lease",
+                    session_id,
+                    end_reason,
+                )
+            if session_id:
+                with _session_db(session) as db:
+                    if (
+                        db is not None
+                        and callable(getattr(db, "get_session", None))
+                        and callable(getattr(db, "end_session", None))
+                    ):
+                        source = (db.get_session(session_id) or {}).get("source", "")
+                        if _is_gateway_owned_source(source):
+                            tui_owns_lifecycle = False
+                        elif tui_owns_lifecycle:
+                            from tools.async_delegation import close_work_groups_for_session
+
+                            with _session_profile_scope(session):
+                                close_work_groups_for_session(
+                                    origin_session=str(session_key or ""),
+                                    origin_ui_session_id=own_sid,
+                                    parent_session_id=str(session_id or ""),
+                                    disposition="cancelled",
+                                    diagnostics="TUI/Desktop intentional session close",
+                                )
+                                db.end_session(session_id, end_reason)
+        if not _desktop_automatic_cleanup:
+            _release_active_session_slot(session)
+    except Exception:
+        session["_finalized"] = False
+        session["_finalize_retryable"] = True
+        logger.warning(
+            "TUI lifecycle closeout failed; preserving session for retry",
+            exc_info=True,
+        )
+        return
+
     # In-flight async delegations end WITH the session (no return address left). Always interrupt by THIS live UI
     # sid; by durable session_key only when the TUI owns the lifecycle — a viewer tab must not kill gateway work.
-    with contextlib.suppress(Exception):
+    with contextlib.suppress(Exception), _session_profile_scope(session):
         from tools.async_delegation import interrupt_for_session
+
         interrupt_for_session(
-            session_key=str(session_key or "") if _tui_owns_lifecycle else "",
-            origin_ui_session_id=_lifecycle_own_sid(session), reason=end_reason)
+            session_key=str(session_key or "") if tui_owns_lifecycle else "",
+            origin_ui_session_id=own_sid,
+            reason=end_reason,
+        )
     # Close the slash-worker in this single ``_finalized``-guarded chokepoint (a direct caller can't leak it); idempotent.
     with contextlib.suppress(Exception):
         if worker := session.get("slash_worker"):
@@ -285,12 +332,26 @@ def _announce_session_reclaimed(session: dict, end_reason: str) -> None:
         logger.debug("session.reclaimed broadcast failed", exc_info=True)
 
 
-def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") -> None:
-    """Fully tear down a session: finalize, unregister notifier, close agent (``session.close`` + WS reaper). The
-    slash-worker is closed in ``_finalize_session`` (the single chokepoint), NOT here. Idempotent via ``_finalized``."""
+def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") -> bool:
+    """Fully tear down a session after a durable lifecycle close succeeds."""
     if not session:
-        return
+        return False
     _finalize_session(session, end_reason=end_reason)
+    if session.pop("_finalize_retryable", False):
+        sid = str(session.get("_sid") or "")
+        if sid:
+            session["_closing"] = False
+            with _sessions_lock:
+                _sessions.setdefault(sid, session)
+            old_stop = session.get("_notif_stop")
+            if old_stop is not None:
+                old_stop.set()
+                for stop, thread in list(_notification_pollers):
+                    if stop is old_stop and thread is not threading.current_thread():
+                        thread.join(timeout=1.0)
+                        break
+            session["_notif_stop"] = _start_notification_poller(sid, session)
+        return False
     _announce_session_reclaimed(session, end_reason)
     with contextlib.suppress(Exception):
         from tools.approval import unregister_gateway_notify
@@ -299,6 +360,7 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
     with contextlib.suppress(Exception):
         if hasattr(agent := session.get("agent"), "close"):
             agent.close()
+    return True
 
 
 def _attach_worker(sid: str, session: dict, worker) -> None:
@@ -335,8 +397,7 @@ def _teardown_popped_session(session: dict | None, *, end_reason: str = "tui_clo
                     "session turn thread still alive after %.1fs teardown grace", _TURN_SETTLE_BEFORE_CLOSE_SECONDS)
         except Exception:
             logger.debug("failed waiting for session turn thread", exc_info=True)
-    _teardown_session(session, end_reason=end_reason)
-    return True
+    return _teardown_session(session, end_reason=end_reason) is not False
 
 
 def _close_session_by_id(

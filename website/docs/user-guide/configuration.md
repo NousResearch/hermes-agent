@@ -2652,7 +2652,20 @@ delegation:
   worktree_isolation: false                 # Give each child its own git worktree branched from HEAD (local backend + git repos only; inspired by Muse Code). See Subagent Delegation → Worktree Isolation.
   max_spawn_depth: 1                        # Delegation tree depth cap (1-3, clamped). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3 = three levels.
   orchestrator_enabled: true                # Global kill switch. When false, role="orchestrator" is ignored and every child is forced to leaf regardless of max_spawn_depth.
+  task_scoped_closeout: false               # Experimental: hold one terminal reply until required async delegation work is reconciled (supported long-lived surfaces only).
 ```
+
+`task_scoped_closeout` is **off by default**. When enabled on a supported
+long-lived surface (messaging gateways, the classic CLI, Desktop/TUI, or an API
+request with a resumable session ID), top-level asynchronous delegations are
+attached to the current turn, their completion summaries are aggregated into
+one internal continuation, and the parent emits one terminal reply after
+reconciliation. Set `background=false` for an awaited prerequisite or final
+review that must finish before the parent continues. Finite/stateless surfaces
+that cannot accept a durable continuation (including ACP and one-shot runners)
+fall back to synchronous delegation. Disabling the option stops creating new
+work groups; already-created groups remain recoverable until they reach a
+terminal disposition.
 
 **Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
 

@@ -2791,12 +2791,8 @@ class _StreamingCall:
         self.agent._fire_tool_gen_started(name)
 
     def _route_suppressed_text(self, text: str) -> None:
-        """Tool-call turns suppress content streaming (no chatty preamble), but
-        reasoning tags inside it must still reach the display: route through
-        the delta callback for tag extraction (the CLI drops non-reasoning text
-        once the stream box is closed)."""
-        if self.agent.stream_delta_callback:
-            self._quiet(lambda: (self.agent.stream_delta_callback(text), self.agent._record_streamed_assistant_text(text)))
+        """Route tool-call preamble text through shared response admission."""
+        self.agent._fire_suppressed_tool_text(text)
 
     def _new_diag(self) -> dict:
         diag = self.agent._stream_diag_init()

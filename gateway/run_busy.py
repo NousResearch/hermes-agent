@@ -272,7 +272,7 @@ class GatewayBusySessionMixin:
     # Metadata that must match for two pending events to merge into one slot.
     _SECURITY_METADATA_KEYS = (
         "hermes_plugin_id", "hermes_plugin_injection", "gateway_session_key",
-        "gateway_session_id", "gateway_session_strict",
+        "gateway_session_id", "gateway_session_strict", "delegation_closeout",
     )
 
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
@@ -807,6 +807,10 @@ class GatewayBusySessionMixin:
     async def _busy_stop_command(self, event: MessageEvent, quick_key: str, source):
         # Hard-kill: a soft interrupt can't reach a truly hung executor thread.
         from gateway.run import _INTERRUPT_REASON_STOP
+        self._cancel_work_groups_for_session_boundary(
+            quick_key,
+            diagnostics="gateway /stop cancelled outstanding delegation work",
+        )
         await self._interrupt_and_clear_session(
             quick_key, source, interrupt_reason=_INTERRUPT_REASON_STOP, invalidation_reason="stop_command",
         )

@@ -42,6 +42,11 @@ class _Batch:
     origin_owner_transport: Any
     origin_owner_session_record: Any
     overall_start: float
+    origin_work_id: str = ""
+    work_generation: int = 0
+    owner_turn_id: str = ""
+    closeout_delivery_id: str = ""
+    closeout_claim_id: str = ""
 
     def owner_kwargs(self) -> Dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
@@ -325,6 +330,11 @@ def _dispatch_background(batch: _Batch) -> str:
         # cache/delegation/live/<id>/.
         delegation_id=batch.live_deleg_id,
         progress_fn=lambda: _batch_progress_token(child_agents),
+        origin_work_id=batch.origin_work_id,
+        work_generation=batch.work_generation,
+        owner_turn_id=batch.owner_turn_id,
+        closeout_delivery_id=batch.closeout_delivery_id,
+        closeout_claim_id=batch.closeout_claim_id,
     )
     if dispatch.get("status") == "dispatched":
         return json.dumps(_dispatched_payload(dispatch, goals, child_agents, batch.live_paths), ensure_ascii=False)

@@ -350,6 +350,8 @@ def delegate_task(
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None, action: Optional[str] = None, subagent_id: Optional[str] = None,
     message: Optional[str] = None, parent_agent=None, credentials_cfg: Optional[Dict[str, Any]] = None,
+    origin_work_id: str = "", work_generation: int = 0, owner_turn_id: str = "",
+    closeout_delivery_id: str = "", closeout_claim_id: str = "",
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -428,11 +430,25 @@ def delegate_task(
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
         live_deleg_id, live_writers, live_paths, *origin, overall_start,
+        origin_work_id=origin_work_id,
+        work_generation=work_generation,
+        owner_turn_id=owner_turn_id,
+        closeout_delivery_id=closeout_delivery_id,
+        closeout_claim_id=closeout_claim_id,
     )
     return _run_batch(batch, background)
 
 
 # ── OpenAI function-calling schema ──────────────────────────────────────────
+
+def _task_scoped_closeout_enabled() -> bool:
+    try:
+        from tools.async_delegation import task_scoped_closeout_enabled
+
+        return task_scoped_closeout_enabled()
+    except Exception:
+        return False
+
 
 def _build_top_level_description() -> str:
     """delegate_task description: ONLY guidance stated nowhere else in the schema
@@ -451,7 +467,14 @@ def _build_top_level_description() -> str:
         )
     else:
         restrictions_rule = "- Children cannot call delegate_task, clarify, memory, or cronjob.\n"
-    return _DESCRIPTION_HEAD + restrictions_rule + _DESCRIPTION_TAIL
+    awaited = ""
+    if _task_scoped_closeout_enabled():
+        awaited = (
+            " Set background=false for a required final read-only review or "
+            "prerequisite whose result must be consumed before you continue. "
+            "Any later edit requires a fresh review."
+        )
+    return _DESCRIPTION_HEAD + restrictions_rule + awaited + _DESCRIPTION_TAIL
 
 _DESCRIPTION_HEAD = (
     "Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its "
@@ -501,6 +524,16 @@ def _build_dynamic_schema_overrides() -> dict:
     # Copy properties so the static schema dict is never mutated.
     overrides_params["properties"] = {k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()}
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
+    if _task_scoped_closeout_enabled():
+        overrides_params["properties"]["background"] = {
+            "type": "boolean",
+            "description": (
+                "Omit or set true to dispatch asynchronously. Set false for a "
+                "required final read-only review or prerequisite whose result "
+                "must be consumed before continuing."
+            ),
+            "default": True,
+        }
 
     return {"description": _build_top_level_description(), "parameters": overrides_params}
 
@@ -579,12 +612,22 @@ DELEGATE_TASK_SCHEMA = {
 from tools.registry import registry, tool_error
 
 def _model_background_value(args: dict, parent_agent=None) -> bool:
-    """Background flag for the MODEL-facing dispatch path (registry fallback). Top-level delegations always run in the
-    background — the model does not choose — for single tasks and fan-out batches alike (one async unit, one
-    consolidated result); an orchestrator subagent (depth > 0) is the exception since it needs its workers' results
-    within its own turn. The live path is ``run_agent._dispatch_delegate_task``; this mirrors it for the rare case
-    the intercept is bypassed. Direct Python callers keep the synchronous default."""
-    return not getattr(parent_agent, "_delegate_depth", 0) > 0
+    """Resolve model-facing background mode without exposing trusted work ids."""
+    if getattr(parent_agent, "_delegate_depth", 0) > 0:
+        return False
+    closeout_active = _task_scoped_closeout_enabled() or bool(
+        getattr(parent_agent, "_current_work_id", "")
+    )
+    if not closeout_active:
+        return True
+    if args.get("background") is False:
+        return False
+    try:
+        from gateway.session_context import closeout_delivery_supported
+
+        return bool(closeout_delivery_supported())
+    except Exception:
+        return False
 
 _MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}
 

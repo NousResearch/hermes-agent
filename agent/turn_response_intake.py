@@ -135,6 +135,12 @@ def normalize_model_response(
     # call/result rows before this turn's assistant message; no-op for ordinary providers.
     splice_provider_projection(agent, response, messages)
 
+    # Conversational delivery is response-scoped: only the normalized response
+    # now exposes the complete provider-independent tool set.
+    agent._settle_conversational_response(
+        has_tool_calls=bool(assistant_message.tool_calls)
+    )
+
     _fire_post_api_request_hook(
         agent, response, assistant_message, finish_reason, api_messages=api_messages,
         api_call_count=api_call_count, api_duration=api_duration, api_start_time=api_start_time,

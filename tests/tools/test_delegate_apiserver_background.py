@@ -1,10 +1,10 @@
 """delegate_task(background=true) on stateless API-server sessions.
 
-Previously async_delivery_supported()=False forced SYNCHRONOUS execution for
-every background dispatch on the API server, blocking the whole turn. Now
-that background completions can wake the originating session via the
-/v1/chat/completions self-post (gateway/wake.py), a session-continuable
-turn (raw session id bound as the api_server chat_id) dispatches async; only
+Generic async delivery remains false on the API server. A session-continuable
+turn (raw session id bound as the api_server chat_id) still dispatches in the
+background and wakes through the /v1/chat/completions self-post: the legacy
+raw-session fallback remains active when task-scoped closeout is disabled,
+while the narrower closeout capability owns the opt-in path. Only
 session-id-less one-shot requests keep the sync fallback.
 
 The wake target must be captured from the request-scoped chat_id binding,
@@ -41,6 +41,7 @@ def _clean_queue_and_context(monkeypatch):
     for var in sc._VAR_MAP.values():
         var.set(sc._UNSET)
     sc._SESSION_ASYNC_DELIVERY.set(sc._UNSET)
+    sc._SESSION_CLOSEOUT_DELIVERY.set(sc._UNSET)
     # set_current_session_id (invoked by the clobber-reproducing fake child
     # build) writes os.environ directly — scrub it so it can't leak into
     # other test modules.
@@ -112,6 +113,7 @@ def test_apiserver_session_with_id_dispatches_background(monkeypatch):
     background dispatch (the completion wakes the session via the
     api_server self-post), NOT the forced-sync fallback."""
     dt = _patch_delegate(monkeypatch)
+    monkeypatch.setattr(dt, "_task_scoped_closeout_enabled", lambda: True)
     monkeypatch.setenv("HERMES_SESSION_ID", "raw-sid-7")
     set_session_vars(
         platform="api_server",
@@ -119,6 +121,7 @@ def test_apiserver_session_with_id_dispatches_background(monkeypatch):
         session_key="raw-sid-7",
         session_id="raw-sid-7",
         async_delivery=False,
+        closeout_delivery=True,
     )
 
     out = dt.delegate_task(
@@ -149,12 +152,14 @@ def test_apiserver_session_without_id_stays_synchronous(monkeypatch):
     """No session id to wake → keep the sync fallback (a detached result
     would never re-enter any conversation)."""
     dt = _patch_delegate(monkeypatch)
+    monkeypatch.setattr(dt, "_task_scoped_closeout_enabled", lambda: True)
     set_session_vars(
         platform="api_server",
         chat_id="",
         session_key="",
         session_id="",
         async_delivery=False,
+        closeout_delivery=False,
     )
 
     out = dt.delegate_task(
@@ -165,3 +170,30 @@ def test_apiserver_session_without_id_stays_synchronous(monkeypatch):
     assert parsed.get("status") != "dispatched", parsed
     assert "SYNCHRONOUSLY" in parsed.get("note", "")
     assert process_registry.completion_queue.empty()
+
+
+def test_feature_off_keeps_legacy_api_session_wake_fallback(monkeypatch):
+    dt = _patch_delegate(monkeypatch)
+    monkeypatch.setattr(dt, "_task_scoped_closeout_enabled", lambda: False)
+    set_session_vars(
+        platform="api_server",
+        chat_id="raw-sid-7",
+        session_key="raw-sid-7",
+        session_id="raw-sid-7",
+        async_delivery=False,
+        closeout_delivery=True,
+    )
+
+    parsed = json.loads(
+        dt.delegate_task(
+            goal="legacy",
+            background=True,
+            parent_agent=_fake_parent(),
+        )
+    )
+
+    assert parsed["status"] == "dispatched", parsed
+    assert parsed["mode"] == "background"
+    event = _drain_one()
+    assert event is not None
+    assert event["origin_session_id"] == "raw-sid-7"

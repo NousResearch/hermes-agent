@@ -78,6 +78,16 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
     resolved matches) — the fail-closed gate for addressed notifications, without the orphan-adoption fallback."""
     if session.get("_finalized"):
         return False
+    if evt.get("type") == "async_delegation_work_closeout":
+        ledger_home = str(evt.get("_ledger_profile_home") or "")
+        expected_home = str(session.get("profile_home") or _hermes_home)
+        if not ledger_home:
+            return False
+        try:
+            if Path(ledger_home).resolve() != Path(expected_home).resolve():
+                return False
+        except (OSError, RuntimeError, ValueError):
+            return False
     if str(evt.get("origin_ui_session_id") or "") == str(sid or ""):
         return True
     evt_key = str(evt.get("session_key") or "")
@@ -105,6 +115,8 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     if evt_type == "async_delegation":
         # No process session_id: else every completion keys as ("", "async_delegation") and the second is suppressed forever.
         return (evt.get("delegation_id", ""), evt_type)
+    if evt_type == "async_delegation_work_closeout":
+        return (evt.get("delivery_id", ""), evt_type, evt.get("_ledger_profile_home", ""))
     extra = _DEDUP_EXTRA_FIELDS.get("watch_overflow_" if evt_type.startswith("watch_overflow_") else evt_type, ())
     return (evt.get("session_id", ""), evt_type, *(evt.get(f, 0 if f == "suppressed" else "") for f in extra))
 
@@ -355,13 +367,86 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
     complete_event_delivery(evt, claim)
 
 
+def _closeout_continuation(evt: dict, text: str) -> _InternalContinuation:
+    return _InternalContinuation(
+        text=text,
+        work_id=str(evt.get("origin_work_id") or ""),
+        generation=int(evt.get("work_generation") or 0),
+        delivery_id=str(evt.get("delivery_id") or ""),
+        claim_id=str(evt.get("claim_id") or ""),
+        profile_home=str(evt.get("_ledger_profile_home") or ""),
+    )
+
+
+def _start_next_internal_continuation(rid, sid: str, session: dict) -> bool:
+    """Start one trusted continuation after the current/user turn boundary."""
+    with session["history_lock"]:
+        pending = session.setdefault("internal_continuations", deque())
+        if session.get("running") or not pending:
+            return False
+        item = pending.popleft()
+        session["running"] = True
+    try:
+        if item.profile_home:
+            expected_home = session.get("profile_home") or _hermes_home
+            try:
+                affinity_matches = (
+                    Path(item.profile_home).resolve() == Path(expected_home).resolve()
+                )
+            except (OSError, RuntimeError, ValueError):
+                affinity_matches = False
+            if not affinity_matches:
+                raise RuntimeError(
+                    "closeout profile affinity does not match target TUI session"
+                )
+        _emit("message.start", sid)
+        if not _run_prompt_submit(
+            rid, sid, session, item.text, internal_continuation=item
+        ):
+            raise RuntimeError("target TUI session cannot resume continuation")
+        return True
+    except Exception:
+        from tools.async_delegation import (
+            recover_and_enqueue_work_groups,
+            release_enqueued_work_group_event,
+        )
+        from tools.process_registry import process_registry
+
+        try:
+            scoped_session = (
+                {"profile_home": item.profile_home} if item.profile_home else session
+            )
+            with _session_profile_scope(scoped_session):
+                released = release_enqueued_work_group_event(
+                    {
+                        "type": "async_delegation_work_closeout",
+                        "origin_work_id": item.work_id,
+                        "work_generation": item.generation,
+                        "delivery_id": item.delivery_id,
+                        "claim_id": item.claim_id,
+                        "_ledger_profile_home": item.profile_home,
+                    }
+                )
+                if released:
+                    recover_and_enqueue_work_groups(
+                        consumer="tui-closeout-retry",
+                        target_queue=process_registry.completion_queue,
+                    )
+        finally:
+            with session["history_lock"]:
+                session["running"] = False
+        raise
+
+
 def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred) -> bool:
     """Route one dequeued event: foreign (another live session owns it) → requeued, or onto ``deferred`` during the
     shutdown drain; unowned (addressed but unprovable — never adopt an orphan) → dropped, except delegation payloads
     deferred for a resume; ours (or ownerless legacy, kept process-global) → status.update once, then an agent turn if
     idle. False = the drain must stop (session busy)."""
     queue = registry.completion_queue
-    evt_type, is_delegation = evt.get("type", "completion"), evt.get("type") == "async_delegation"
+    evt_type = evt.get("type", "completion")
+    is_closeout = evt_type == "async_delegation_work_closeout"
+    is_delegation = evt_type in {"async_delegation", "async_delegation_work_closeout"}
     if _notification_event_belongs_elsewhere(sid, session, evt):
         if deferred is not None:
             deferred.append(evt)
@@ -371,6 +456,13 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred) -> 
         return True
     if _notification_event_requires_owner(evt) and not _session_owns_notification_event(sid, session, evt):
         origin, key = str(evt.get("origin_ui_session_id") or ""), str(evt.get("session_key") or "")
+        if is_closeout:
+            if deferred is not None:
+                deferred.append(evt)
+            else:
+                queue.put(evt)
+                time.sleep(0.5)
+            return True
         if deferred is None:
             (logger.warning if is_delegation else logger.debug)(
                 "Dropping unowned %s notification (origin=%r key=%r) instead of delivering to session %s",
@@ -391,6 +483,20 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred) -> 
     if dedup_key not in emitted:
         _emit("status.update", sid, {"kind": "process", "text": text})
         emitted.add(dedup_key)
+    if is_closeout:
+        with session["history_lock"]:
+            session.setdefault("internal_continuations", deque()).append(
+                _closeout_continuation(evt, text)
+            )
+            busy = bool(session.get("running"))
+        if not busy:
+            try:
+                _start_next_internal_continuation(
+                    f"__notif__{int(time.time() * 1000)}", sid, session
+                )
+            except Exception as exc:
+                _notif_log_failure("closeout continuation dispatch failed", exc)
+        return True
     if not _notif_claim_turn(session):
         queue.put(evt)
         if deferred is not None:
@@ -412,13 +518,24 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
     """
     from tools.process_registry import process_registry
     from tools.process_registry_notifications import format_process_notification
+    from tools.async_delegation import recover_and_enqueue_work_groups
     queue = process_registry.completion_queue
     emitted: set = set()  # dedup re-queued events so one completion isn't emitted 50 times while busy
     handle = lambda evt, deferred: _notif_handle_event(  # noqa: E731
         sid, session, evt, emitted, process_registry, format_process_notification, deferred)
-    last_kanban_poll = last_loop_poll = 0.0
+    last_kanban_poll = last_loop_poll = last_closeout_recovery = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
+        if now - last_closeout_recovery >= _LOOP_POLL_SECONDS:
+            last_closeout_recovery = now
+            try:
+                with _session_profile_scope(session):
+                    recover_and_enqueue_work_groups(
+                        consumer="tui-closeout-poller",
+                        target_queue=queue,
+                    )
+            except Exception:
+                logger.warning("TUI closeout recovery poll failed", exc_info=True)
         # /loop wakeup driver: fire a due tick for THIS session while idle (same claim-under-lock as kanban dispatch).
         # An active non-parked /goal owns the idle boundary and defers it.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:

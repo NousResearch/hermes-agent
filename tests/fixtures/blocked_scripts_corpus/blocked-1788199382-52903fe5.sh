@@ -1,0 +1,1 @@
+grep -n "cadence\|def main\|add_parser\|def tick\|def cmd_\|argparse\|CADENCE\|sleep" "$LOCALAPPDATA/hermes/drp/drp_controller.py" | head -30; echo ===; sed -n "$(grep -n 'def main' "$LOCALAPPDATA/hermes/drp/drp_controller.py" | head -1 | cut -d: -f1),\$p" "$LOCALAPPDATA/hermes/drp/drp_controller.py" | head -80

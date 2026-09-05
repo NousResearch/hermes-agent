@@ -1,0 +1,1 @@
+grep -n "_curl_cffi_get" "$LOCALAPPDATA/hermes/scripts/fetch_router.py" | head -4; sed -n "$(grep -n 'def _curl_cffi_get' "$LOCALAPPDATA/hermes/scripts/fetch_router.py" | cut -d: -f1),+14p" "$LOCALAPPDATA/hermes/scripts/fetch_router.py"

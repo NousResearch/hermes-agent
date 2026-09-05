@@ -1,0 +1,1 @@
+sleep 420; echo "transcripts: $(ls 'C:/Users/Admin/Documents/yt-tutorials-corpus/transcripts/' | wc -l)/196"; echo "extracted: $(ls 'C:/Users/Admin/Documents/yt-tutorials-corpus/extracted/' | grep -c json)/28-so-far"; echo "principles so far: $(grep -c '\"principle\"' 'C:/Users/Admin/Documents/yt-tutorials-corpus/extracted'/*.json 2>/dev/null | awk -F: '{s+=$2} END {print s}')"

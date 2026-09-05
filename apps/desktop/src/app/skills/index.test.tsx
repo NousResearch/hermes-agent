@@ -309,6 +309,24 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     )
   })
 
+  it('hub picker ignores a card without an exact install identifier', async () => {
+    const { installHubSkill } = await import('@/store/hub-actions')
+    const { EmbeddedHubPicker } = await import('./embedded-hub-picker')
+
+    render(<EmbeddedHubPicker installedNames={new Set()} profile="researcher" />)
+
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { type: 'hermes-skill-pick', name: 'humanizer' },
+          origin: 'https://hermes-agent.nousresearch.com'
+        })
+      )
+    })
+
+    expect(vi.mocked(installHubSkill)).not.toHaveBeenCalled()
+  })
+
   it('mounts the hub iframe lazily and keeps it (hidden) across tab switches', async () => {
     // On a non-Skills tab the docs-site iframe must not exist at all — an
     // eagerly mounted hub is exactly the Capabilities lag bug.

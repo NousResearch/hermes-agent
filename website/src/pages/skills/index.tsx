@@ -299,6 +299,7 @@ function SkillCard({
 }) {
   const src = SOURCE_CONFIG[skill.source] || SOURCE_CONFIG["optional"];
   const icon = CATEGORY_ICONS[skill.category] || "\u{1F4E6}";
+  const canPick = Boolean(skill.identifier);
 
   return (
     <div
@@ -426,12 +427,14 @@ function SkillCard({
             {onPick ? (
               <button
                 className={styles.pickBtn}
+                disabled={!canPick}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onPick(skill);
+                  if (canPick) onPick(skill);
                 }}
+                title={canPick ? undefined : "This catalog entry has no install identifier"}
               >
-                + Add to this Agent
+                {canPick ? "+ Add to this Agent" : "Install unavailable"}
               </button>
             ) : null}
             <div className={styles.cardLinks}>
@@ -516,11 +519,12 @@ export default function SkillsDashboard() {
   const pickSkill = useCallback(
     (skill: Skill) => {
       if (typeof window === "undefined" || window.parent === window) return;
+      if (!skill.identifier) return;
       window.parent.postMessage(
         {
           type: "hermes-skill-pick",
           name: skill.name,
-          identifier: skill.identifier || skill.name,
+          identifier: skill.identifier,
           installCmd: skill.installCmd || `hermes skills install ${skill.name}`,
           source: skill.source,
         },

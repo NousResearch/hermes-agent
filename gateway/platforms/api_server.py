@@ -1508,9 +1508,20 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """(method, path, handler) rows registered by ``connect()`` (a method so multiplex tests
         can assert the /p/<profile>/ mirrors without a listener)."""
         routes: List[tuple] = [
+            # Liveness endpoints: public, cheap, and intentionally do not run
+            # runtime readiness probes.
             ("GET", "/health", self._handle_health),
-            ("GET", "/health/detailed", self._handle_health_detailed),
+            ("GET", "/healthz", self._handle_health),
+            ("GET", "/livez", self._handle_health),
             ("GET", "/v1/health", self._handle_health),
+            ("GET", "/v1/healthz", self._handle_health),
+            ("GET", "/v1/livez", self._handle_health),
+            # Readiness endpoints: same authenticated rich contract as
+            # /health/detailed, because they report runtime readiness rather
+            # than simple process liveness.
+            ("GET", "/health/detailed", self._handle_health_detailed),
+            ("GET", "/readyz", self._handle_health_detailed),
+            ("GET", "/v1/readyz", self._handle_health_detailed),
             ("GET", "/v1/models", self._handle_models),
             ("GET", "/api/model/options", self._handle_model_options),
             ("GET", "/v1/capabilities", self._handle_capabilities),

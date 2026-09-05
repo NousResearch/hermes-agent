@@ -208,6 +208,8 @@ class WebhookAdapter(BasePlatformAdapter):
         # Content-Length that bypass the header check.
         app = web.Application(client_max_size=self._max_body_bytes)
         app.router.add_get("/health", self._handle_health)
+        app.router.add_get("/healthz", self._handle_health)
+        app.router.add_get("/livez", self._handle_health)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
         # /p/<profile>/ routes the event to that profile (honored only under gateway.multiplex_profiles).
         app.router.add_post("/p/{profile}/webhooks/{route_name}", self._handle_webhook)

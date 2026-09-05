@@ -1081,3 +1081,49 @@ def test_route_profile_validation_fails_closed():
         assert WebhookAdapter._route_allows_profile(
             {"profile": malformed}, "worker"
         ) is False
+
+
+def test_webhook_health_aliases_registered_on_connect(monkeypatch):
+    from gateway.config import PlatformConfig
+    from gateway.platforms.webhook import WebhookAdapter
+
+    adapter = WebhookAdapter(PlatformConfig(enabled=True, extra={"routes": {}}))
+    registered = []
+
+    class FakeRouter:
+        def add_get(self, path, handler):
+            registered.append(("GET", path, handler))
+        def add_post(self, path, handler):
+            registered.append(("POST", path, handler))
+
+    class FakeApp:
+        router = FakeRouter()
+
+    class FakeRunner:
+        def __init__(self, app):
+            self.app = app
+        async def setup(self):
+            return None
+        async def cleanup(self):
+            return None
+
+    class FakeSite:
+        def __init__(self, runner, host, port, **kwargs):
+            self.runner = runner
+            self.host = host
+            self.port = port
+            self.kwargs = kwargs
+        async def start(self):
+            return None
+
+    monkeypatch.setattr("gateway.platforms.webhook.web.Application", lambda *a, **k: FakeApp())
+    monkeypatch.setattr("gateway.platforms.webhook.web.AppRunner", FakeRunner)
+    monkeypatch.setattr("gateway.platforms.webhook.web.TCPSite", FakeSite)
+
+    import asyncio
+    assert asyncio.run(adapter.connect()) is True
+    try:
+        for path in ("/health", "/healthz", "/livez"):
+            assert ("GET", path, adapter._handle_health) in registered
+    finally:
+        asyncio.run(adapter.disconnect())

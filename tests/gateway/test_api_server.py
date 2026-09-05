@@ -304,24 +304,15 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
     app = web.Application(middlewares=mws)
     app["api_server_adapter"] = adapter
-    app.router.add_get("/health", adapter._handle_health)
-    app.router.add_get("/health/detailed", adapter._handle_health_detailed)
-    app.router.add_get("/v1/health", adapter._handle_health)
-    app.router.add_get("/v1/models", adapter._handle_models)
-    app.router.add_get("/api/model/options", adapter._handle_model_options)
-    app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
-    app.router.add_get("/v1/skills", adapter._handle_skills)
-    app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
-    app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
-    app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
-    app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
-    app.router.add_post("/v1/responses", adapter._handle_responses)
-    app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
-    app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
-    app.router.add_post(
-        "/api/platforms/{platform}/events",
-        adapter._handle_platform_event_callback,
-    )
+    for method, path, handler in adapter._http_route_table():
+        if method == "GET":
+            app.router.add_get(path, handler)
+        elif method == "POST":
+            app.router.add_post(path, handler)
+        elif method == "PATCH":
+            app.router.add_patch(path, handler)
+        elif method == "DELETE":
+            app.router.add_delete(path, handler)
     return app
 
 
@@ -663,6 +654,34 @@ class TestRunEventCallback:
 
 
 class TestHealthEndpoint:
+
+    def test_probe_aliases_registered_on_production_route_table(self, adapter):
+        routes = {(method, path, handler) for method, path, handler in adapter._http_route_table()}
+        for path in ("/health", "/healthz", "/livez", "/v1/health", "/v1/healthz", "/v1/livez"):
+            assert ("GET", path, adapter._handle_health) in routes
+        for path in ("/health/detailed", "/readyz", "/v1/readyz"):
+            assert ("GET", path, adapter._handle_health_detailed) in routes
+
+    @pytest.mark.asyncio
+    async def test_liveness_aliases_do_not_run_readiness_probes(self, adapter):
+        app = _create_app(adapter)
+        with patch("gateway.platforms.api_server.collect_runtime_readiness") as probe:
+            async with TestClient(TestServer(app)) as cli:
+                for path in ("/healthz", "/livez", "/v1/healthz", "/v1/livez"):
+                    resp = await cli.get(path)
+                    assert resp.status == 200
+                    assert (await resp.json())["status"] == "ok"
+        probe.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_readyz_alias_uses_authenticated_detailed_readiness(self, adapter):
+        app = _create_app(adapter)
+        with patch("gateway.platforms.api_server.collect_runtime_readiness", return_value={"status": "ok", "reason": "ready", "problems": []}) as probe:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/readyz")
+                assert resp.status == 200
+        probe.assert_called_once()
+
     @pytest.mark.asyncio
     async def test_security_headers_present(self, adapter):
         """Responses should include basic security headers."""

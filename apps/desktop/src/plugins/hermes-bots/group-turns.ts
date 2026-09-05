@@ -618,7 +618,7 @@ async function runGroupChatMemberTurnLeased(
   const memberKey = groupMemberKey(member)
   recordGroupActivity(group, {
     kind: 'working',
-    member: member.name,
+    member,
     thread
   })
 
@@ -752,7 +752,7 @@ async function runGroupChatMemberTurnLeased(
       if (replyText !== null) {
         recordGroupActivity(group, {
           kind: isGroupPassText(replyText) ? 'passed' : 'replied',
-          member: member.name,
+          member,
           thread
         })
 
@@ -761,7 +761,7 @@ async function runGroupChatMemberTurnLeased(
 
       recordGroupActivity(group, {
         kind: 'passed',
-        member: member.name,
+        member,
         thread
       })
 
@@ -782,7 +782,7 @@ async function runGroupChatMemberTurnLeased(
   // thread instead of vanishing.
   recordGroupActivity(group, {
     kind: 'timed-out',
-    member: member.name,
+    member,
     thread
   })
   syncGroupClarify(group, member, null)
@@ -860,7 +860,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
   if (reply && !isGroupPassText(reply)) {
     recordGroupActivity(group, {
       kind: 'delivered',
-      member: member.name,
+      member,
       thread: strandedThread
     })
     appendGroupChatEntry(

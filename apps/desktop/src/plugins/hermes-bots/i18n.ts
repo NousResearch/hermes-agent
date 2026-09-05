@@ -484,6 +484,39 @@ const en: BotsMessages = {
   }
 }
 
+const sv: BotsMessages = {
+  roster: {
+    search: 'Sök botar och gruppchattar', searchPlaceholder: 'Sök botar och gruppchattar…', newBotOrGroup: 'Ny bot eller gruppchatt', groupChats: 'Gruppchattar', emptyTitle: 'Inga botar ännu', emptyDesc: 'Skapa din första bot.',
+    noMatchQuery: query => `Inga botar eller gruppchattar matchar ”${query}”`, noMatchQueryOn: (query, gateway) => `Inga botar eller gruppchattar matchar ”${query}” på ${gateway}`,
+    noMatchFiltersOn: gateway => `Inga botar eller gruppchattar matchar dessa filter på ${gateway}`, noMatchFilters: 'Inga botar eller gruppchattar matchar dessa filter.', clearFilters: 'Rensa filter',
+    allHidden: 'Alla botar är dolda', allHiddenDesc: 'De fortsätter arbeta och behåller sin historik.', showHidden: 'Visa dolda botar', noHiddenMatch: 'Inga dolda botar matchar dessa filter.', hiddenFromRoster: 'Dold från listan', pinned: 'Fäst', needsAttention: 'behöver uppmärksamhet', needsInput: 'Behöver din inmatning',
+    botsAndGroups: 'Botar och gruppchattar', botsOnly: 'Endast botar', groupsOnly: 'Endast gruppchattar', anyActivity: 'Valfri aktivitet', activeNow: 'Aktiv nu', recentlyActive: 'Nyligen aktiv', older: 'Äldre',
+    gatewayRemoved: 'Gateway borttagen', onDemand: 'Vid behov', ready: 'Redo', statusUnknown: 'Okänd status', unavailable: 'Inte tillgänglig', retryNow: 'Försök igen nu',
+    rosterUnavailable: reason => `Listan är inte tillgänglig: ${reason}. Om din gateway är äldre än profiles.list, uppdatera Hermes och starta om gatewayen.`,
+    waitingForGateway: 'Väntar på gatewayanslutningen… (fjärrgatewayar kan ta några sekunder; försöker automatiskt igen)'
+  },
+  bot: {
+    newTitle: 'Ny bot', editTitle: 'Redigera profil', editMenu: 'Redigera…', helpPromptPlaceholder: 'Vad ska denna bot hjälpa till med?', descriptionHint: 'Lämna tomt för att skapa från botens namn och beskrivning.',
+    newChatWith: 'Ny chatt med denna bot', openBotChat: 'Öppna botchatt', duplicate: 'Duplicera', duplicateFailed: 'Dupliceringen misslyckades', deleteTitle: 'Ta bort bot och profil?', removeFromAllGroups: 'Ta bort från alla grupper',
+    createFirstHint: 'Öppna Botar-panelen och klicka på ”Ny bot”.', createFailed: 'Kunde inte skapa profilen ännu', advanced: 'Avancerat', advancedHint: 'Avancerat — modell, färdigheter, verktygsuppsättningar, SOUL.md', advancedFailed: 'Avancerad konfiguration misslyckades',
+    openAnotherChatUnsupported: 'Uppdatera Hermes Desktop för att öppna en annan botchatt.', remoteConnectionsUnsupported: 'Uppdatera Hermes Desktop för att chatta med botar på andra anslutningar.', chatEmpty: 'Skriv något för att börja.', kickoff: 'Hej, berätta om dig själv!'
+  },
+  avatar: {
+    classicShapes: 'Klassiska former', blobFromName: 'Blobansikte — ritas från botens namn', unlockFollowsName: 'Lås upp — ansiktet följer botens namn igen', randomize: 'Slumpa', tabBot: 'Bot', tabGenerate: 'Skapa', upload: 'Ladda upp', tabPet: 'Husdjur',
+    removeImage: 'Ta bort bild — använd form', removeBackToShape: 'Ta bort — återgå till formavatar', describePlaceholder: 'Beskriv din avatar…', describeHint: 'Lämna tomt för att skapa automatiskt från namn/titel/beskrivning och agentmeddelandelistan.',
+    matchTheName: 'Matcha namnet', pickPet: 'Välj ett husdjur som botens profilbild.', petLoadFailed: 'Kunde inte läsa in husdjuret — prova ett annat.', imageTooLarge: 'Bilden är för stor (högst 15 MB).', generationFailed: 'Skapandet av avatar misslyckades', savedLocally: 'Utseendet sparades lokalt; fjärrlagring misslyckades', savedLocallyDescriptionFailed: 'Utseendet sparades lokalt; beskrivningsuppdateringen misslyckades', generate: 'Skapa', generating: 'Skapar…'
+  },
+  group: {
+    newTitle: 'Ny gruppchatt', manageDesc: 'En bot kan delta i flera gruppchattar. Medlemskap synkroniseras till alla datorer.', manageTitle: 'Hantera grupper', settingsTitle: 'Gruppinställningar', settingsDesc: 'Byt namn på gruppen eller ange en rumsbild. Medlemmar och historik behålls.', nameLabel: 'Gruppnamn', searchToAdd: 'Sök efter botar att lägga till', searchToAddPlaceholder: 'Sök efter botar att lägga till…', removeFromSelection: 'Ta bort från markering',
+    disbandTitle: 'Upplösa gruppchatten?', deleteTitle: 'Ta bort gruppchatten?', deleteAction: 'Ta bort', composerPlaceholder: 'Skriv något — varje bot i gruppen hör rummet.', attachHint: 'Bifoga filer — varje svarande bot ser dem', newThread: 'Ny tråd', reply: 'Svara', replyInThread: 'Svara i tråden', replyInThreadPlaceholder: 'Svara i tråden…', openThread: 'Öppna denna tråd', collapseThread: 'Fäll ihop tråden', collapseThreadLabel: 'Fäll ihop denna tråd', activity: 'Aktivitet', noActivityYet: 'Ingen aktivitet i denna tur ännu.', showActivity: 'Visa rumsaktivitet', hideActivity: 'Dölj rumsaktivitet', stop: 'Stoppa', stopHint: 'Stoppa denna körning — avbryter medlemmen i tur och håller resten',
+    allHeldStatus: count => `Alla ${count} botar är pausade`, heldMembersStatus: members => `Pausade: ${members}`, holdReleaseHint: 'Nämn en pausad bot eller skicka @all resume för att släppa dem.', needsYourInput: 'En bot i denna gruppchatt behöver din inmatning', pictureGenerationFailed: 'Skapandet av gruppbild misslyckades', nameTaken: name => `En grupp med namnet ”${name}” finns redan.`, memberCount: count => `${count} botar`, settingsHint: group => `Gruppinställningar — byt namn på ${group} eller ange en rumsbild`, settingsLabel: group => `Gruppinställningar för ${group}`, disbandHint: group => `Upplös gruppchatten ${group}`, disbandLabel: group => `Upplös ${group}`, disbandAction: 'Upplös', disbanding: 'Upplöser…', disbandDone: 'Upplöst', disbanded: group => `”${group}” upplöst`, disbandDescPrefix: 'Detta tar bort ', disbandDescSuffix: count => ` grupperingen från dess ${count} botar och rensar den delade rumsloggen. Botarna själva och deras sessioner per grupp behålls.`, stopped: group => `Stoppade ${group} — återstående turer hålls tills du återupptar dem`, removeAttachment: 'Ta bort bilaga', threadFallback: 'Tråd', replyCount: replies => `${replies} ${replies === 1 ? 'svar' : 'svar'}`, dropToThread: 'Släpp för att bifoga till detta trådsvar', dropToRoom: 'Släpp för att bifoga — varje svarande bot ser det', waitingForAnswer: 'Väntar på ditt svar…', memberThinking: name => `${name} tänker…`, roomWorking: 'Rummet arbetar…', messageRoom: group => `Meddela ${group}`, newThreadPlaceholder: group => `Ny tråd i ${group}… (@namn för att styra, @everyone för alla)`, everyoneMeta: 'Varje bot i rummet', commandApproval: 'kommandogodkännande', answerFailed: (handle, error) => `Kunde inte skicka svaret till @${handle}: ${error}`, wantsToRunCommand: handle => `@${handle} vill köra ett kommando:`, asks: handle => `@${handle} frågar:`, answerTo: member => `Svara @${member}`
+  },
+  tools: { skillsHub: 'Hermes färdighetsnav', filterSkills: 'Filtrera färdigheter…', searchHub: 'Sök i navet (gemenskapen och välkända källor)…', noMcpServers: 'Inga MCP-servrar är konfigurerade eller i katalogen.' },
+  cron: {
+    filterHint: 'Schemalagda jobb finns i denna profil men inga är märkta för denna bot. Namnge ett jobb ”[bot:<namn>] …” för att visa det här, eller se dem under Cron nedan.', needsRosterFirst: 'Denna bot måste först visas i listan.', staleNotice: 'Kunde inte uppdatera schemalagda jobb. Visar den senaste listan vi hade.', readFailure: 'Listan kan fortfarande finnas kvar — detta var ett läsfel, inte en borttagning.', createDesc: bot => `En återkommande uppgift kör ${bot} enligt ett schema. Körningar hamnar i dess egen chatthistorik.`, instruction: 'Instruktion', whenToRun: 'När den ska köras', dayOfMonth: 'Dag i månaden', sendResultsTo: 'Skicka resultat till', runHistoryOnly: 'Kör bara historik', botChatTarget: bot => `${bot}s chatt (boten svarar)`, continuity: 'Kontinuitet: varje körning ser föregående körnings utdata (undvik dubbletter, fortsätt där den slutade)', onceIn: when => `En gång (${when})`, everyNDays: days => `Var ${days}:e dag`, everyNHours: hours => `Var ${hours}:e timme`, everyNMinutes: minutes => `Var ${minutes}:e minut`, freqOnce: 'En gång, om…', freqHourly: 'Varje timme', freqDaily: 'Varje dag', freqWeekdays: 'Vardagar', freqWeekly: 'Varje vecka', freqMonthly: 'Varje månad', freqInterval: 'Intervall', freqAdvanced: 'Avancerat…', unitMinutes: 'minut(er)', unitHours: 'timme/timmar', unitDays: 'dag(ar)', runsOnce: (count, unit) => `Körs en gång, om ${count} ${unit}`, runsHourly: 'Körs vid varje heltimme', runsDaily: time => `Körs varje dag kl. ${time}`, runsWeekdays: time => `Körs måndag–fredag kl. ${time}`, runsWeekly: (day, time) => `Körs varje ${day} kl. ${time}`, runsMonthly: (day, time) => `Körs dag ${day} varje månad kl. ${time}`, runsInterval: (count, unit) => `Körs var ${count}:e ${unit}`, runsRaw: 'Rått schema — every Nm/Nh/Nd eller cron med fem fält', timesTotal: count => `, totalt ${count} gång(er)`
+  }
+}
+
 const ja: BotsMessages = {
   roster: {
     search: 'ボットとグループチャットを検索',
@@ -1128,7 +1161,7 @@ const zhHant: BotsMessages = {
 }
 
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
-export const BOTS_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant }
+export const BOTS_LOCALES: PluginLocaleBundles = { en, sv, ja, zh, 'zh-hant': zhHant }
 
 // Bind the message SHAPE to a plugin translator: string leaves resolve now,
 // function leaves forward their args through t(path, …).

@@ -423,6 +423,93 @@ export const en: KanbanMessages = {
   }
 }
 
+const sv: KanbanMessages = {
+  nav: 'Kanban',
+  openBoard: 'Kanban: Öppna tavla',
+  newTaskCommand: 'Kanban: Ny uppgift',
+  countTip: (running, ready) => `Kanban — ${running} pågår, ${ready} redo`,
+  col: {
+    triage: { label: 'Bedömning', help: 'Råa idéer — en specificerare utvecklar specifikationen.' },
+    todo: { label: 'Att göra', help: 'Väntar på beroenden eller saknar tilldelning.' },
+    scheduled: { label: 'Schemalagd', help: 'Väntar på att den schemalagda tiden ska infalla.' },
+    ready: { label: 'Redo', help: 'Beroenden uppfyllda — tilldela en profil så kör dirigenten uppgiften.' },
+    running: { label: 'Pågår', help: 'Tagen av en arbetare — en agent arbetar med den. Anges av dirigenten.' },
+    blocked: { label: 'Blockerad', help: 'Arbetaren bad om mänsklig inmatning.' },
+    review: { label: 'Granskning', help: 'En granskningsagent kontrollerar arbetet. Anges av dirigenten.' },
+    done: { label: 'Klar', help: 'Slutförd; beroende underuppgifter blir redo.' },
+    archived: { label: 'Arkiverad', help: 'Dold i tavlans standardvy.' }
+  },
+  locked: {
+    review: 'Granskning anges av dirigenten när en granskningsagent tar kortet.',
+    running: 'Pågår anges av dirigenten när en arbetare tar kortet.',
+    scheduled: 'Schemalagd behöver en uppvakningstid — agenter anger den; kortet kan inte dras hit.'
+  },
+  arcRunning: 'En agent arbetar med detta nu.',
+  arcStale: 'Tagen, men ingen livssignal från arbetaren på över två minuter — dirigenten tar tillbaka den.',
+  title: 'Kanban', orchestrationSettings: 'Orkestreringsinställningar', newTask: 'Ny uppgift',
+  filterCards: 'Filtrera kort…', noMatch: 'Inga uppgifter matchar filtren', noTasks: 'Inga uppgifter på denna tavla',
+  open: 'Öppna', select: modifier => `Markera (${modifier}-klick)`, deselect: 'Avmarkera',
+  moveTo: label => `Flytta till ${label}`, delete: 'Ta bort', reviewChecking: 'En granskningsagent kontrollerar det slutförda arbetet.',
+  attachedTip: name => `${name} är kopplad — dirigenten lämnar över detta vid nästa körning (≤1 min).`,
+  orchestratorTip: name => `${name} (orkestreraren) tar hand om detta vid nästa körning och skriver specifikationen.`,
+  autoAssignTip: name => `Tilldelas automatiskt till ”${name}” (kanban.default_assignee) vid nästa körning.`,
+  wontRun: 'körs inte',
+  wontRunTip: 'Redo-kort körs först när en profil tilldelats. Öppna kortet och ange en ansvarig, eller konfigurera en standardansvarig i orkestreringsinställningarna.',
+  noHeartbeat: 'ingen livssignal', expand: label => `Fäll ut ${label}`, collapse: label => `Fäll ihop ${label}`,
+  newTaskIn: label => `Ny uppgift i ${label}`, empty: 'Tom', unassigned: 'ej tilldelad', filters: 'Filter',
+  allProfiles: 'Alla profiler', allTenants: 'Alla klienter', showArchived: 'Visa arkiverade', groupRunning: 'Gruppera Pågår efter profil',
+  nSelected: n => `${n} markerade`, moveToShort: 'Flytta till', assign: 'Tilldela', unassignAction: 'Ta bort tilldelning',
+  archive: 'Arkivera', clearSelection: 'Rensa markering (Esc)', refused: 'nekad',
+  bulkFailed: (failed, total, err) => `${failed} av ${total} misslyckades — ${err}. Misslyckade kort förblir markerade.`,
+  titlePlaceholderTriage: 'Grov idé — en specificerare utvecklar den', titlePlaceholder: 'Titel', descPlaceholder: 'Beskrivning (valfri)',
+  priority: 'Prioritet', workspace: 'Arbetsyta', boardDefaultSuffix: ' · tavlans standardvärde', workspaceOverride: 'Arbetsytans sökväg (valfri åsidosättning)',
+  model: 'Modell', modelInherit: 'Profilens standardvärde', modelClear: 'Rensa modellåsidosättning',
+  modelHint: 'Kör uppgiften med en viss modell och tankedjup. Om den inte anges används den tilldelade profilens egen.',
+  workspaceInherit: 'Ärver tavlans projektkatalog', workspaceInheritDir: dir => `Lämna tomt för att ärva ${dir}`,
+  workspaceInheritGeneric: 'Lämna tomt för att ärva tavlans projektkatalog.', assignee: 'Ansvarig', defaultOption: name => `${name} (standard)`,
+  parkedOption: 'ej tilldelad (parkerad — körs inte)', skills: 'Färdigheter (kommaseparerade)', skillsPlaceholder: 'översättning, github',
+  parent: 'Överordnad uppgift (blockerar tills den är klar)', noParent: '— ingen överordnad uppgift —',
+  goalMode: 'Målläge (arbetaren fortsätter tills en domare godkänner att det är klart)', creating: 'Skapar…', createTask: 'Skapa uppgift',
+  cancel: 'Avbryt', save: 'Spara', estimate: 'Uppskatta', estimateEffort: 'Uppskatta arbetsinsats', estimating: 'Uppskattar…',
+  reEstimate: 'Uppskatta på nytt', makesModelCall: 'gör ett modellanrop',
+  estimateTip: 'Grov token- och komplexitetsuppskattning från hjälpmodellen — gör ett modellanrop.',
+  estimateTipLong: 'Kör ett snabbt anrop till hjälpmodellen för att uppskatta token och komplexitet. En grov vägledning, inte en faktura.',
+  roughEstimate: 'Grov uppskattning', tokUnit: 'tok', couldNotEstimate: 'Kunde inte uppskatta', complexity: { S: 'Liten', M: 'Medel', L: 'Stor' },
+  introBody: 'Du kör inte korten — det gör agenter. Lägg ett kort i Redo med en ansvarig så tar en agent det inom en minut. Ingen ansvarig, ingen körning. Bedömning: en agent skriver först om idén till en riktig uppgift. Att göra: väntar på andra kort. Schemalagd: väntar på en tid. Pågår och Granskning: agenternas fält, rör dem inte. Blockerad: väntar på dig. Resultat kommer tillbaka på kortet.',
+  introGotIt: 'Jag förstår',
+  evtCreated: (where, assignee) => `skapad${where ? ` i ${where}` : ''}${assignee ? ` · tilldelad ${assignee}` : ''}`,
+  evtMovedTo: col => `flyttad till ${col}`, evtParentReopened: parent => `överordnad uppgift ${parent} öppnades igen`, evtAssignedTo: assignee => `tilldelad ${assignee}`,
+  evtUnassigned: 'tilldelning borttagen', evtCommentBy: author => `kommentar av ${author}`, evtClaimedReview: 'tagen av en granskningsagent',
+  evtClaimedWorker: 'tagen av en arbetare', evtWorkerStarted: 'arbetaren startade', evtCompleted: 'slutförd', evtBlocked: 'blockerad — behöver mänsklig inmatning',
+  evtUnblocked: col => `avblockerad${col ? ` → ${col}` : ' → Redo'}`, evtReclaimed: 'tagen tillbaka — åter i kön', evtSpecified: 'specifikation skriven av bedömningsagenten',
+  evtPromoted: 'beroenden klara — flyttad till Redo', evtScheduled: 'schemalagd till senare', evtArchived: 'arkiverad', evtReprioritized: priority => `prioritet satt till ${priority}`,
+  someone: 'någon', metaPriority: 'Prioritet', metaTenant: 'Klient', metaCreatedBy: 'Skapad av', metaCreated: 'Skapad', metaWorkerPid: 'Arbetarens PID',
+  readyUnassignedTitle: 'Redo, men ej tilldelad — detta kort kommer aldrig att köras.',
+  readyUnassignedBody: 'Dirigenten tar bara Redo-kort som har en ansvarig. Välj en profil i fältet Ansvarig ovan (eller ange en standardansvarig i orkestreringsinställningarna) så körs den inom en minut.',
+  diagnosticsN: n => `Diagnostik · ${n}`, commandCopied: 'Kommandot kopierades', description: 'Beskrivning', editDescription: 'Redigera beskrivning',
+  cancelEdit: 'Avbryt redigering', noDescription: 'Ingen beskrivning ännu.', result: 'Resultat', latestSummary: 'Senaste sammanfattning',
+  dependencies: 'Beroenden', blockedBy: 'Blockeras av', blocks: 'Blockerar', comments: n => `Kommentarer · ${n}`,
+  commentsHelpRunning: 'Den här uppgiften körs. Din anteckning förs in i arbetarens aktuella tur inom några sekunder — ingen blockeringsdans behövs. ”Köa om med anteckning” startar i stället om uppgiften från början med din anteckning i sammanhanget.',
+  commentsHelp: 'Kommentarer läggs till i uppgiftstråden. När en arbetare tar uppgiften läser den dem som en del av sitt sammanhang.',
+  send: 'Skicka', comment: 'Kommentar', messageWorker: 'Skicka meddelande till den pågående arbetaren…', addComment: 'Lägg till en kommentar…',
+  deliveredLive: 'Levererades till den pågående arbetaren inom några sekunder.', requeueWithNote: 'Köa om med anteckning', notePosted: 'Anteckning skickad — arbetaren köades om',
+  activity: n => `Aktivitet · ${n}`, runs: n => `Körningar · ${n}`, workerLog: 'Arbetarlogg', workerLogTail: 'Arbetarlogg · slutet',
+  attachments: n => `Bilagor · ${n}`, noAttachments: 'Inga bilagor ännu.', uploadAttachment: 'Ladda upp bilaga', taskActions: 'Uppgiftsåtgärder',
+  copyTaskId: 'Kopiera uppgifts-id', copyTitle: 'Kopiera titel', copiedId: id => `Kopierade ${id}`, copiedTitle: 'Titeln kopierades', close: 'Stäng', working: 'arbetar',
+  board: 'Tavla', newBoard: 'Ny tavla', newBoardDots: 'Ny tavla…', exportDots: 'Exportera…', importDots: 'Importera…', renameDots: 'Byt namn…', settingsDots: 'Inställningar…',
+  exportBoardTitle: 'Exportera tavla…', importBoardTitle: 'Importera tavla…', boardExported: path => `Tavlan exporterades till ${path}`,
+  boardImported: name => `Importerade ${name}`, boardImportedAs: slug => `Namnet var upptaget — importerade som ${slug}`,
+  renameBoardTitle: 'Byt namn på tavla', deleteBoardTitle: name => `Ta bort ”${name}”?`,
+  deleteBoardConfirm: 'Tavlan arkiveras, inte raderas — dess uppgifter och bilagor finns kvar på disken och kan återställas.',
+  boardArchived: path => `Tavlan arkiverades till ${path}`, boardSettingsFor: name => `Tavlans inställningar — ${name}`,
+  name: 'Namn', boardNamePlaceholder: 'Tavlans namn', slug: slug => `slug: ${slug}`, project: 'Projekt', noProject: 'Inget projekt (tillfälliga sandlådor)',
+  projectHintPre: 'Nya uppgifter körs i projektets lagringsplats (ett worktree per uppgift); varje uppgift kan fortfarande åsidosätta sin arbetsyta när den skapas. Hantera projekt med ',
+  projectHintCmd: 'hermes project', createBoard: 'Skapa tavla', orchestratorProfile: 'Orkestrerarprofil', defaultAssignee: 'Standardansvarig', defaultParen: '(standard)',
+  autoDecompose: 'Dela upp bedömningsuppgifter automatiskt', profileDescriptions: 'Profilbeskrivningar',
+  profileDescriptionsHint: 'Beskrivningar vägleder uppdelarens dirigering. Skapa dem automatiskt med hjälpmodellen eller skriv egna.', profileGoodAt: 'Vad är den här profilen bra på?', auto: 'Automatiskt',
+  notify: { completedTitle: 'Uppgift slutförd', blockedTitle: 'Uppgift blockerad — behöver din inmatning', blockLoopTitle: 'Uppgift skickad till bedömning — behöver ett beslut', gaveUpTitle: 'Uppgiften gav upp', crashedTitle: 'Arbetaren kraschade — försöker igen', timedOutTitle: 'Arbetaren fick tidsgräns — försöker igen', openKanban: 'Öppna Kanban', artifacts: n => `${n} artefakter` }
+}
+
 const ja: KanbanMessages = {
   nav: 'カンバン',
   openBoard: 'カンバン: ボードを開く',
@@ -1051,7 +1138,7 @@ const zhHant: KanbanMessages = {
 }
 
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
-export const KANBAN_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant }
+export const KANBAN_LOCALES: PluginLocaleBundles = { en, sv, ja, zh, 'zh-hant': zhHant }
 
 // Bind the message SHAPE to a plugin translator: string leaves resolve now,
 // function leaves forward their args through t(path, …). One tiny generic

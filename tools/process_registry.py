@@ -218,6 +218,31 @@ def _build_systemd_scope_argv(shell_argv: List[str], unit_suffix: str) -> List[s
     return _systemd_scope_argv(binary, f"hermes-worker-{unit_suffix}", *shell_argv)
 
 
+#: Opt-in fail-closed behaviour for gateway children that need restart-safe
+#: cgroup isolation.  When the user systemd session is unavailable we degrade
+#: to a plain subprocess (previous behaviour) so cron/kanban workers keep
+#: running in containers; set this to "1" to restore the hard failure.
+_GATEWAY_CHILD_REQUIRE_SCOPE_ENV = "HERMES_GATEWAY_CHILD_REQUIRE_SCOPE"
+
+
+def _require_restart_safe_scope() -> bool:
+    return os.environ.get(_GATEWAY_CHILD_REQUIRE_SCOPE_ENV, "").strip() == "1"
+
+
+def _warn_scope_unavailable(unit_suffix: str) -> None:
+    logger.warning(
+        "%s: systemd-run --user --scope is unavailable (no user D-Bus session); "
+        "dispatching gateway child %r without restart-safe cgroup isolation. "
+        "Cron/kanban workers will be killed if the gateway restarts mid-job. "
+        "Enable a user systemd session (loginctl enable-linger and set "
+        "XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS in the service unit), or set "
+        "%s=1 to fail closed instead.",
+        unit_suffix,
+        unit_suffix,
+        _GATEWAY_CHILD_REQUIRE_SCOPE_ENV,
+    )
+
+
 def restart_safe_gateway_child_argv(
     command: List[str], *, unit_suffix: str
 ) -> List[str]:
@@ -225,25 +250,43 @@ def restart_safe_gateway_child_argv(
 
     Children that must survive an intentional gateway restart cannot rely on
     ``start_new_session`` alone: systemd still kills every process in the
-    service cgroup.  In that topology, require a transient user scope and fail
+    service cgroup.  In that topology, prefer a transient user scope and fail
     closed if it cannot be established.  Standalone processes, non-systemd
     supervisors, and non-Linux hosts retain the direct command.
+
+    When a user systemd session is genuinely absent (containers, minimal
+    LXCs, macOS-style supervisors) the scope cannot be created, but hard
+    failing takes down every scheduled job on the host — a silent cron
+    outage with no operator-visible symptom beyond skipped executions.  We
+    therefore degrade to the direct command with a warning, restoring the
+    pre-#70716 dispatch behaviour, unless
+    ``HERMES_GATEWAY_CHILD_REQUIRE_SCOPE=1`` re-enables fail-closed.
     """
     if not _IS_LINUX:
         return command
     if not _is_supervised_gateway_process() or not os.environ.get("INVOCATION_ID"):
         return command
     if not _systemd_run_user_scope_available():
-        raise RuntimeError(
-            "cannot create restart-safe systemd scope for gateway child: "
-            "systemd-run --user --scope is unavailable"
-        )
+        if _require_restart_safe_scope():
+            raise RuntimeError(
+                "cannot create restart-safe systemd scope for gateway child: "
+                "systemd-run --user --scope is unavailable"
+            )
+        _warn_scope_unavailable(unit_suffix)
+        return command
     scoped = _build_systemd_scope_argv(command, unit_suffix=unit_suffix)
     if scoped == command:
-        raise RuntimeError(
-            "cannot create restart-safe systemd scope for gateway child: "
-            "systemd-run disappeared after the availability probe"
+        if _require_restart_safe_scope():
+            raise RuntimeError(
+                "cannot create restart-safe systemd scope for gateway child: "
+                "systemd-run disappeared after the availability probe"
+            )
+        logger.warning(
+            "systemd-run disappeared after the availability probe; "
+            "dispatching gateway child %r without restart-safe cgroup isolation",
+            unit_suffix,
         )
+        return command
     return scoped
 
 

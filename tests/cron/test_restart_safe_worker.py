@@ -78,11 +78,28 @@ def test_genuine_external_worker_crash_is_recovered_unknown(
 
 
 @pytest.mark.linux_only
-def test_restart_safe_gateway_child_fails_closed_without_scope(monkeypatch):
+def test_restart_safe_gateway_child_degrades_without_scope(monkeypatch, caplog):
+    import tools.process_registry as process_registry
+
+    command = ["python", "worker.py"]
+    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
+    monkeypatch.setenv("INVOCATION_ID", "managed-service")
+    monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: False)
+
+    with caplog.at_level("WARNING"):
+        assert process_registry.restart_safe_gateway_child_argv(
+            command, unit_suffix="cron-job-1"
+        ) is command
+    assert "systemd-run --user --scope is unavailable" in caplog.text
+
+
+@pytest.mark.linux_only
+def test_restart_safe_gateway_child_fails_closed_when_required(monkeypatch):
     import tools.process_registry as process_registry
 
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
     monkeypatch.setenv("INVOCATION_ID", "managed-service")
+    monkeypatch.setenv(process_registry._GATEWAY_CHILD_REQUIRE_SCOPE_ENV, "1")
     monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: False)
 
     with pytest.raises(RuntimeError, match="systemd-run --user --scope is unavailable"):

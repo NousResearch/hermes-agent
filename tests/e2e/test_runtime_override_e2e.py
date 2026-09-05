@@ -209,6 +209,10 @@ def test_override_model_and_provider_are_authoritative(monkeypatch):
 
         # The turn restored the pre-override identity.
         assert (agent.model, agent.provider, agent.api_mode) == pre
+        # P1-1: the turn-scoped projection left no model-owned state behind — the
+        # session compressor still describes the base route (no context-length
+        # leak from the override).
+        assert agent.context_compressor.model == "base-model"
     finally:
         handle.dispose()
 
@@ -346,5 +350,9 @@ def test_failed_override_falls_back_and_is_not_reapplied(monkeypatch):
         assert "override-model" not in models[fallback_at + 1:], (
             f"failed override re-applied after the fallback activated: {models}"
         )
+        # P1-1 supersession: the fallback-owned compressor state survives the
+        # override scope's exit (the pre-override route is NOT restored over the
+        # freshly activated fallback).
+        assert agent.context_compressor.model == "fallback-model"
     finally:
         handle.dispose()

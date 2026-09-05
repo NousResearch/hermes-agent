@@ -1720,8 +1720,8 @@ body.guest-pointer-lock :is(webview, iframe) {
   /* Unfocused chat surface (multi-pane): a pane the user isn't in recedes so
      the focused conversation reads as the one being worked in. Light needs a
      deeper cut — a dim over a bright surface loses contrast far more slowly
-     than the same dim over a dark one. Pairs with a grayscale pass on the same
-     element — one treatment for the whole pane, not per-part tuning. */
+     than the same dim over a dark one. Opacity only — a grayscale filter on
+     this layer re-filters on every streamed token and flashes the pane (#101890). */
   --chat-unfocused-opacity: 0.62;
 }
 
@@ -1731,18 +1731,13 @@ body.guest-pointer-lock :is(webview, iframe) {
 }
 
 /* The whole surface recedes as ONE layer — thread, timeline rail, composer,
-   header — fading and desaturating together rather than each part taking its
-   own treatment. Both properties on the surface root also composite the
-   already-painted layer instead of repainting descendants. */
+   header — fading together rather than each part taking its own treatment. */
 [data-chat-surface][data-chat-unfocused] {
   opacity: var(--chat-unfocused-opacity);
-  filter: grayscale(1);
 }
 
 [data-chat-surface] {
-  transition:
-    opacity 75ms ease-out,
-    filter 75ms ease-out;
+  transition: opacity 75ms ease-out;
 }
 
 /* Drag-region hatch — a diagonal ///// pattern (Photoshop-style) that fades into

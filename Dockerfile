@@ -40,7 +40,7 @@ RUN apt-get -o Acquire::Retries=3 update && \
     make -j"$(nproc)" && \
     make install
 
-FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_source
+FROM ghcr.io/astral-sh/uv:0.11.33-python3.13-trixie@sha256:83447533ae5dab3fbe1b09dff4d34bce0b796d65392179007c04ce1d72d3d752 AS uv_source
 # Node 26 source stage. Debian trixie's bundled nodejs is pinned to 20.x
 # which reached EOL in April 2026 — we copy node + npm from the upstream
 # node:26 image instead (Hermes pins its toolchain to Node 26 everywhere).

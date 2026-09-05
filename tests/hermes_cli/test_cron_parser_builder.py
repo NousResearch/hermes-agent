@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
+
+from hermes_cli.main import _build_cli_parser, _parse_cli_args
 from hermes_cli.subcommands.cron import build_cron_parser
 
 
@@ -48,3 +51,36 @@ def test_cron_accept_hooks_flag_on_run_and_tick():
     assert ns.accept_hooks is True
     ns2 = parser.parse_args(["cron", "tick", "--accept-hooks"])
     assert ns2.accept_hooks is True
+
+
+@pytest.mark.parametrize(
+    ("options", "prompt"),
+    [
+        (["--name", "test-prompt-job"], "Single-word-prompt"),
+        (
+            ["--name", "test-prompt-job", "--deliver", "local"],
+            "Test prompt to see if positionals work",
+        ),
+    ],
+)
+def test_cron_create_accepts_prompt_after_options(options, prompt):
+    parser, subparsers = _build_cli_parser()
+
+    ns = _parse_cli_args(
+        parser,
+        subparsers,
+        ["cron", "create", "0 3 * * *", *options, prompt],
+    )
+
+    assert ns.prompt == prompt
+
+
+def test_cron_create_still_rejects_unknown_options():
+    parser, subparsers = _build_cli_parser()
+
+    with pytest.raises(SystemExit):
+        _parse_cli_args(
+            parser,
+            subparsers,
+            ["cron", "create", "30m", "--unknown", "value"],
+        )

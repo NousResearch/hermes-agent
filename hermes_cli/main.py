@@ -3259,6 +3259,29 @@ def _build_cli_parser():
     return parser, subparsers
 
 
+def _parse_args_with_trailing_cron_prompt(parser, argv):
+    """Accept cron create's optional prompt after its option/value pairs.
+
+    ``argparse`` does not return to a ``nargs='?'`` positional after parsing
+    subparser options, so the documented trailing prompt otherwise lands in
+    ``unknown``. Keep the exception narrow so misspelled flags and additional
+    positional arguments retain argparse's normal strict failure.
+    """
+    args, unknown = parser.parse_known_args(argv)
+    if not unknown:
+        return args
+    if (
+        getattr(args, "command", None) == "cron"
+        and getattr(args, "cron_command", None) in {"create", "add"}
+        and getattr(args, "prompt", None) is None
+        and len(unknown) == 1
+        and not unknown[0].startswith("-")
+    ):
+        args.prompt = unknown[0]
+        return args
+    return parser.parse_args(argv)
+
+
 def _parse_cli_args(parser, subparsers, argv):
     """Parse ``argv`` with the bpo-9338 subparser-routing workaround.
 
@@ -3279,13 +3302,13 @@ def _parse_cli_args(parser, subparsers, argv):
     )
     if not _has_cmd_token:
         subparsers.required = False
-        return parser.parse_args(_processed_argv)
+        return _parse_args_with_trailing_cron_prompt(parser, _processed_argv)
 
     subparsers.required = True
     _saved_stderr = sys.stderr
     try:
         sys.stderr = _io.StringIO()
-        args = parser.parse_args(_processed_argv)
+        args = _parse_args_with_trailing_cron_prompt(parser, _processed_argv)
         sys.stderr = _saved_stderr
     except SystemExit as exc:
         sys.stderr = _saved_stderr
@@ -3293,7 +3316,7 @@ def _parse_cli_args(parser, subparsers, argv):
             raise
         # Subcommand consumed as a flag value (e.g. -c model): normal parse.
         subparsers.required = False
-        args = parser.parse_args(_processed_argv)
+        args = _parse_args_with_trailing_cron_prompt(parser, _processed_argv)
     return args
 
 

@@ -4,7 +4,9 @@ When browser.backend is "browser-use", the model gets ``browser_exec`` tool
 instead of default browser tools
 """
 
+import atexit
 import contextlib
+import hashlib
 import importlib
 import json
 import logging
@@ -12,6 +14,8 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -74,6 +78,13 @@ _DEFAULT_TIMEOUT_S = 300
 _MIN_TIMEOUT_S = 5
 _MAX_TIMEOUT_S = 1800
 _STDERR_CAP_CHARS = 4000
+_BROWSER_USE_RELOAD_TIMEOUT_S = 30
+_BROWSER_USE_CLEANUP_POLL_S = 5
+
+_browser_use_sessions: Dict[str, Dict[str, Any]] = {}
+_browser_use_sessions_lock = threading.RLock()
+_browser_use_cleanup_started = False
+_browser_use_cleanup_stop = threading.Event()
 
 _TASK_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")  # filesystem-safe task ids
 # Screenshot paths printed by capture_screenshot(): POSIX or Windows drive-letter absolute.
@@ -97,6 +108,126 @@ def _lazy_call(module: str, name: str, default: Any, log_prefix: str) -> Any:
     """Call ``module.name()`` resolved at call time (tests stub the module / patch the
     attribute); on any failure log ``log_prefix`` and return ``default``."""
     return _quiet(lambda: getattr(importlib.import_module(module), name)(), default, log_prefix)
+
+
+def _browser_use_inactivity_timeout() -> int:
+    """Use the existing browser.inactivity_timeout setting."""
+    try:
+        from tools.browser_tool import _get_session_inactivity_timeout
+        return max(30, int(_get_session_inactivity_timeout()))
+    except Exception as e:  # pragma: no cover - defensive import/config path
+        logger.debug("Browser Use inactivity timeout lookup failed: %s", e)
+        return 120
+
+
+def _browser_use_runtime_dir(session: str) -> Path:
+    """Short profile/process/session-scoped Harness runtime path."""
+    try:
+        profile_root = str(Path(get_hermes_home()).expanduser().resolve())
+    except Exception:
+        profile_root = os.path.expanduser("~")
+    profile_key = hashlib.sha256(profile_root.encode("utf-8")).hexdigest()[:12]
+    safe_session = _TASK_ID_SAFE_RE.sub("_", session or "default")[:64] or "default"
+    runtime_base = Path(tempfile.gettempdir()) if os.name == "nt" else Path("/tmp")
+    return runtime_base / f"hermes-bu-{profile_key}" / str(os.getpid()) / safe_session
+
+
+def _managed_browser_use_state(session: str, env: dict, cmd: List[str]) -> Optional[Dict[str, Any]]:
+    """Register one Hermes-owned Harness runtime; explicit BH paths opt out."""
+    if env.get("BH_RUNTIME_DIR") or env.get("BH_TMP_DIR"):
+        return None
+    runtime = _browser_use_runtime_dir(session)
+    runtime.mkdir(parents=True, exist_ok=True)
+    env["BH_RUNTIME_DIR"] = env["BH_TMP_DIR"] = str(runtime)
+    key = str(runtime)
+    with _browser_use_sessions_lock:
+        if (state := _browser_use_sessions.get(key)) is None:
+            state = {"key": key, "runtime_dir": runtime, "session": session or "default",
+                     "cmd": tuple(cmd), "env": dict(env), "last_activity": time.monotonic(),
+                     "inflight": 0, "operation_lock": threading.Lock()}
+            _browser_use_sessions[key] = state
+        else:
+            state["cmd"], state["env"] = tuple(cmd), dict(env)
+    return state
+
+
+def _stop_browser_use_state(state: Dict[str, Any]) -> bool:
+    """Stop exactly one Harness daemon through its public top-level CLI."""
+    try:
+        result = subprocess.run([*state["cmd"], "--reload"], capture_output=True, text=True, encoding="utf-8",
+                                errors="replace", timeout=_BROWSER_USE_RELOAD_TIMEOUT_S,
+                                env=dict(state["env"]),
+                                **_windows_popen_kwargs())
+    except Exception as e:
+        logger.debug("Browser Use reload failed for %s: %s", state["session"], e)
+        return False
+    if result.returncode != 0:
+        logger.debug("Browser Use reload exited %s for %s: %s", result.returncode, state["session"],
+                     (result.stderr or result.stdout or "").strip()[-500:])
+        return False
+    return True
+
+
+def _expire_idle_browser_use_sessions(now: Optional[float] = None) -> None:
+    """Stop idle Hermes-owned daemons without racing active CLI calls."""
+    current, timeout = time.monotonic() if now is None else now, _browser_use_inactivity_timeout()
+    with _browser_use_sessions_lock:
+        snapshot = list(_browser_use_sessions.items())
+    for key, state in snapshot:
+        if state["inflight"] or current - state["last_activity"] < timeout:
+            continue
+        operation_lock = state["operation_lock"]
+        if not operation_lock.acquire(blocking=False):
+            continue
+        try:
+            with _browser_use_sessions_lock:
+                if (_browser_use_sessions.get(key) is not state or state["inflight"]
+                        or current - state["last_activity"] < timeout):
+                    continue
+            if _stop_browser_use_state(state):
+                with _browser_use_sessions_lock:
+                    if _browser_use_sessions.get(key) is state:
+                        _browser_use_sessions.pop(key, None)
+        finally:
+            operation_lock.release()
+
+
+def _browser_use_cleanup_loop() -> None:
+    while not _browser_use_cleanup_stop.wait(_BROWSER_USE_CLEANUP_POLL_S):
+        try:
+            _expire_idle_browser_use_sessions()
+        except Exception as e:  # pragma: no cover - background defense
+            logger.debug("Browser Use cleanup loop failed: %s", e)
+
+
+def _ensure_browser_use_cleanup_thread() -> None:
+    global _browser_use_cleanup_started
+    with _browser_use_sessions_lock:
+        if _browser_use_cleanup_started:
+            return
+        _browser_use_cleanup_started = True
+    threading.Thread(target=_browser_use_cleanup_loop, name="browser-use-cleanup", daemon=True).start()
+
+
+def _shutdown_browser_use_sessions() -> None:
+    """Best-effort graceful shutdown for daemons owned by this Hermes process."""
+    _browser_use_cleanup_stop.set()
+    with _browser_use_sessions_lock:
+        snapshot = list(_browser_use_sessions.items())
+    for key, state in snapshot:
+        operation_lock = state["operation_lock"]
+        if not operation_lock.acquire(blocking=False):
+            continue
+        try:
+            if _stop_browser_use_state(state):
+                with _browser_use_sessions_lock:
+                    if _browser_use_sessions.get(key) is state:
+                        _browser_use_sessions.pop(key, None)
+        finally:
+            operation_lock.release()
+
+
+atexit.register(_shutdown_browser_use_sessions)
 
 
 def _camofox_active(context: str = "") -> bool:
@@ -558,19 +689,46 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     if "BU_AUTOSPAWN" not in env and is_legacy_browser_use_cloud_config(_read_browser_cfg()):
         env["BU_AUTOSPAWN"] = "1"
 
+    lifecycle_state = _managed_browser_use_state(session, env, cmd)
+    if lifecycle_state is not None:
+        _ensure_browser_use_cleanup_thread()
+
     timeout = _clamp_timeout(timeout_s)
+    operation_lock = None
+    if lifecycle_state is not None:
+        operation_lock = lifecycle_state["operation_lock"]
+        operation_lock.acquire()
+        with _browser_use_sessions_lock:
+            lifecycle_state["inflight"] += 1
+            lifecycle_state["last_activity"] = time.monotonic()
+
     started = time.time()
     try:
-        proc = subprocess.run(
-            cmd, input=code, capture_output=True, text=True, timeout=timeout, env=env,
-            **_windows_popen_kwargs(),
-        )
-    except subprocess.TimeoutExpired:
-        return tool_error(f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
-                          f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
-                          "append to workspace files — anything already written to the workspace is preserved.")
-    except OSError as e:
-        return tool_error(f"Failed to launch browser-use CLI: {e}")
+        try:
+            proc = subprocess.run(
+                cmd, input=code, capture_output=True, text=True, timeout=timeout, env=env,
+                **_windows_popen_kwargs(),
+            )
+        except subprocess.TimeoutExpired:
+            stopped = False
+            if lifecycle_state is not None:
+                stopped = _stop_browser_use_state(lifecycle_state)
+                if stopped:
+                    with _browser_use_sessions_lock:
+                        if _browser_use_sessions.get(lifecycle_state["key"]) is lifecycle_state:
+                            _browser_use_sessions.pop(lifecycle_state["key"], None)
+            detail = "The Hermes-owned daemon was stopped" if stopped else "The daemon may still be working"
+            return tool_error(f"browser-use exec timed out after {timeout}s. {detail}; retry "
+                              f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
+                              "append to workspace files — anything already written to the workspace is preserved.")
+        except OSError as e:
+            return tool_error(f"Failed to launch browser-use CLI: {e}")
+    finally:
+        if operation_lock is not None and lifecycle_state is not None:
+            with _browser_use_sessions_lock:
+                lifecycle_state["inflight"] = max(0, lifecycle_state["inflight"] - 1)
+                lifecycle_state["last_activity"] = time.monotonic()
+            operation_lock.release()
 
     result = {"success": proc.returncode == 0, "exit_code": proc.returncode, "output": proc.stdout}
     if workspace:

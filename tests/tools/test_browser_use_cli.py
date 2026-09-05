@@ -49,7 +49,7 @@ def _fake_managed_chromium(monkeypatch):
 def _fake_cli(tmp_path, body):
     """Write an executable fake browser-use CLI and return its path."""
     script = tmp_path / "browser-use"
-    script.write_text("#!/bin/sh\n" + body)
+    script.write_text("#!/bin/sh\n" + body, encoding="utf-8")
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
     return str(script)
 
@@ -875,6 +875,76 @@ class TestSkillTextDescription:
         assert "uv tool install browser-use" in desc
 
 
+class TestBrowserUseManagedLifecycle:
+    @pytest.fixture(autouse=True)
+    def _reset_lifecycle(self):
+        bu_cli._browser_use_sessions.clear()
+        yield
+        bu_cli._browser_use_sessions.clear()
+
+    def test_runtime_is_scoped_to_profile_process_and_session(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+        env = {}
+
+        state = bu_cli._managed_browser_use_state("research", env, ["browser-use"])
+
+        assert state is not None
+        assert state["session"] == "research"
+        assert env["BH_RUNTIME_DIR"] == env["BH_TMP_DIR"]
+        assert str(os.getpid()) in env["BH_RUNTIME_DIR"]
+        assert env["BH_RUNTIME_DIR"].endswith("research")
+        if os.name != "nt":
+            assert len(f"{env['BH_RUNTIME_DIR']}/bu.sock".encode()) < 104
+
+    def test_operator_runtime_override_opts_out(self):
+        env = {"BH_RUNTIME_DIR": "/operator/runtime"}
+
+        assert bu_cli._managed_browser_use_state("research", env, ["browser-use"]) is None
+        assert env == {"BH_RUNTIME_DIR": "/operator/runtime"}
+
+    def test_idle_cleanup_removes_state_only_after_confirmed_reload(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+        state = bu_cli._managed_browser_use_state("research", {}, ["browser-use"])
+        assert state is not None
+        state["last_activity"] = 0.0
+        monkeypatch.setattr(bu_cli, "_browser_use_inactivity_timeout", lambda: 30)
+        monkeypatch.setattr(bu_cli, "_stop_browser_use_state", lambda current: True)
+
+        bu_cli._expire_idle_browser_use_sessions(now=31.0)
+
+        assert bu_cli._browser_use_sessions == {}
+
+    def test_idle_cleanup_retains_state_when_reload_fails(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+        state = bu_cli._managed_browser_use_state("research", {}, ["browser-use"])
+        assert state is not None
+        state["last_activity"] = 0.0
+        monkeypatch.setattr(bu_cli, "_browser_use_inactivity_timeout", lambda: 30)
+        monkeypatch.setattr(bu_cli, "_stop_browser_use_state", lambda current: False)
+
+        bu_cli._expire_idle_browser_use_sessions(now=31.0)
+
+        assert len(bu_cli._browser_use_sessions) == 1
+
+    def test_browser_exec_holds_session_lock_for_full_cli_call(self, tmp_path, monkeypatch):
+        cli = _fake_cli(tmp_path, "cat > /dev/null\n")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        state = bu_cli._managed_browser_use_state("research", {}, [cli])
+        assert state is not None
+        monkeypatch.setattr(bu_cli, "_managed_browser_use_state", lambda *_args: state)
+        real_run = bu_cli.subprocess.run
+
+        def checked_run(*args, **kwargs):
+            assert state["operation_lock"].acquire(blocking=False) is False
+            return real_run(*args, **kwargs)
+
+        monkeypatch.setattr(bu_cli.subprocess, "run", checked_run)
+
+        result = json.loads(bu_cli.browser_exec("print(1)", session="research"))
+
+        assert result["success"] is True
+
+
 class TestBrowserExec:
     def test_missing_cli_returns_install_hint(self, monkeypatch):
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
@@ -917,11 +987,15 @@ class TestBrowserExec:
         assert "boom" in result["stderr"]
 
     def test_timeout_returns_actionable_error(self, tmp_path, monkeypatch):
-        cli = _fake_cli(tmp_path, "cat > /dev/null\nsleep 30\n")
+        cli = _fake_cli(
+            tmp_path,
+            'if [ "${1:-}" = "--reload" ]; then exit 0; fi\ncat > /dev/null\nsleep 30\n',
+        )
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
         monkeypatch.setattr(bu_cli, "_MIN_TIMEOUT_S", 1)
         result = json.loads(bu_cli.browser_exec("print(1)", timeout_s=1))
         assert "timed out" in result["error"]
+        assert "daemon was stopped" in result["error"]
 
 
 class TestFindCliManagedBin:
@@ -940,7 +1014,7 @@ class TestFindCliManagedBin:
         bin_dir = tmp_path / "home" / "bin"
         bin_dir.mkdir(parents=True)
         bu = bin_dir / "browser-use"
-        bu.write_text("#!/bin/sh\n")
+        bu.write_text("#!/bin/sh\n", encoding="utf-8")
         bu.chmod(bu.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(bu)]
 
@@ -948,7 +1022,7 @@ class TestFindCliManagedBin:
         bin_dir = tmp_path / "home" / "bin"
         bin_dir.mkdir(parents=True)
         uvx = bin_dir / "uvx"
-        uvx.write_text("#!/bin/sh\n")
+        uvx.write_text("#!/bin/sh\n", encoding="utf-8")
         uvx.chmod(uvx.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(uvx), "browser-use"]
 
@@ -962,7 +1036,7 @@ class TestFindCliManagedBin:
         cli_dir = tmp_path / "userhome" / ".local" / "bin"
         cli_dir.mkdir(parents=True)
         cli = cli_dir / "browser-use"
-        cli.write_text("#!/bin/sh\n")
+        cli.write_text("#!/bin/sh\n", encoding="utf-8")
         cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(cli)]
 
@@ -974,12 +1048,12 @@ class TestFindCliManagedBin:
         user_dir = tmp_path / "userhome" / ".local" / "bin"
         user_dir.mkdir(parents=True)
         user_cli = user_dir / "browser-use"
-        user_cli.write_text("#!/bin/sh\n")
+        user_cli.write_text("#!/bin/sh\n", encoding="utf-8")
         user_cli.chmod(user_cli.stat().st_mode | stat.S_IXUSR)
         managed_dir = tmp_path / "home" / "bin"
         managed_dir.mkdir(parents=True)
         managed_cli = managed_dir / "browser-use"
-        managed_cli.write_text("#!/bin/sh\n")
+        managed_cli.write_text("#!/bin/sh\n", encoding="utf-8")
         managed_cli.chmod(managed_cli.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(managed_cli)]
 
@@ -988,13 +1062,13 @@ class TestFindCliManagedBin:
         path_dir = tmp_path / "onpath"
         path_dir.mkdir()
         path_cli = path_dir / "browser-use"
-        path_cli.write_text("#!/bin/sh\n")
+        path_cli.write_text("#!/bin/sh\n", encoding="utf-8")
         path_cli.chmod(path_cli.stat().st_mode | stat.S_IXUSR)
         monkeypatch.setenv("PATH", str(path_dir))
         managed_dir = tmp_path / "home" / "bin"
         managed_dir.mkdir(parents=True)
         managed_cli = managed_dir / "browser-use"
-        managed_cli.write_text("#!/bin/sh\n")
+        managed_cli.write_text("#!/bin/sh\n", encoding="utf-8")
         managed_cli.chmod(managed_cli.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(managed_cli)]
 
@@ -1002,7 +1076,7 @@ class TestFindCliManagedBin:
         cli_dir = tmp_path / "userhome" / ".local" / "bin"
         cli_dir.mkdir(parents=True)
         uvx = cli_dir / "uvx"
-        uvx.write_text("#!/bin/sh\n")
+        uvx.write_text("#!/bin/sh\n", encoding="utf-8")
         uvx.chmod(uvx.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(uvx), "browser-use"]
 
@@ -1030,7 +1104,7 @@ class TestInstallCli:
         bin_dir = tmp_path / "home" / "bin"
         bin_dir.mkdir(parents=True)
         cli = bin_dir / "browser-use"
-        cli.write_text("#!/bin/sh\n")
+        cli.write_text("#!/bin/sh\n", encoding="utf-8")
         cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         monkeypatch.setenv("PATH", str(tmp_path / "empty"))
@@ -1066,7 +1140,8 @@ class TestInstallCli:
             "#!/bin/sh\n"
             'target="$UV_TOOL_BIN_DIR/browser-use"\n'
             'echo "#!/bin/sh" > "$target"\n'
-            '/bin/chmod +x "$target"\n'
+            '/bin/chmod +x "$target"\n',
+            encoding="utf-8",
         )
         uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
         import sys as _sys
@@ -1083,7 +1158,7 @@ class TestInstallCli:
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv("PATH", str(tmp_path / "empty"))
         uv = tmp_path / "uv"
-        uv.write_text('#!/bin/sh\necho "no network" >&2\nexit 1\n')
+        uv.write_text('#!/bin/sh\necho "no network" >&2\nexit 1\n', encoding="utf-8")
         uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
         import sys as _sys
         import types as _types

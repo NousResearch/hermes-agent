@@ -2,9 +2,11 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { markActiveComposer, onComposerInsertRequest } from '@/app/chat/composer/focus'
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { ContextMenu, ContextMenuTrigger, HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { expandComposerQuotes } from '@/lib/composer-quote'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 import { $connection } from '@/store/session'
@@ -57,6 +59,48 @@ afterEach(() => {
 })
 
 describe('resolveDomTarget', () => {
+  it('replies with the captured selection to its owning composer after the menu takes focus', async () => {
+    mountMenu()
+    const host = attach('<div data-composer-target="tile:quoted"><p>Why?</p></div>')
+    const selected = host.querySelector('p')!
+    const range = document.createRange()
+    range.selectNodeContents(selected)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    const inserts: Array<{ target: string; text: string }> = []
+    const unsubscribe = onComposerInsertRequest(detail => inserts.push(detail))
+
+    try {
+      fireEvent.contextMenu(selected)
+      const reply = await screen.findByRole('menuitem', { name: 'Reply' })
+      window.getSelection()?.removeAllRanges()
+      markActiveComposer('main')
+      fireEvent.click(reply)
+      await waitFor(() => expect(inserts).toHaveLength(1))
+      expect(inserts[0]?.target).toBe('tile:quoted')
+      expect(expandComposerQuotes(inserts[0]!.text)).toBe('> Why?')
+    } finally {
+      unsubscribe()
+      markActiveComposer('main')
+    }
+  })
+
+  it('does not offer selection replies in edit fields or without a chat surface', async () => {
+    mountMenu()
+    const host = attach('<textarea>draft</textarea><p>preview</p>')
+    const range = document.createRange()
+    range.selectNodeContents(host.querySelector('p')!)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    fireEvent.contextMenu(host.querySelector('p')!)
+    await screen.findByRole('menuitem', { name: 'Copy' })
+    expect(screen.queryByRole('menuitem', { name: 'Reply' })).toBeNull()
+    host.dataset.composerTarget = 'main'
+    fireEvent.contextMenu(host.querySelector('textarea')!)
+    await screen.findByRole('menuitem', { name: /Paste/ })
+    expect(screen.queryByRole('menuitem', { name: 'Reply' })).toBeNull()
+  })
+
   it('resolves an anchor and its href', () => {
     const host = attach('<a href="https://example.com/x">link</a>')
 

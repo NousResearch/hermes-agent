@@ -1,6 +1,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { encodeComposerQuote } from '@/lib/composer-quote'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
@@ -23,7 +24,18 @@ import { useComposerQueue } from './use-composer-queue'
 
 const SESSION_KEY = 'stored-session-queue-hook'
 
-function renderQueueHook(overrides: { busy?: boolean; onCancel?: () => void; onSteer?: ChatBarProps['onSteer'] } = {}) {
+function renderQueueHook(
+  overrides: {
+    activeQueueSessionKey?: string | null
+    busy?: boolean
+    onCancel?: () => void
+    onSteer?: ChatBarProps['onSteer']
+    text?: string
+  } = {}
+) {
+  const activeQueueSessionKey =
+    overrides.activeQueueSessionKey === undefined ? SESSION_KEY : overrides.activeQueueSessionKey
+  const clearDraft = vi.fn()
   const onSubmit = vi.fn<ChatBarProps['onSubmit']>(async () => true)
   const onCancel = overrides.onCancel ?? vi.fn()
   const onSteer = overrides.onSteer
@@ -32,11 +44,11 @@ function renderQueueHook(overrides: { busy?: boolean; onCancel?: () => void; onS
   const hook = renderHook(
     ({ busy }: { busy: boolean }) =>
       useComposerQueue({
-        activeQueueSessionKey: SESSION_KEY,
+        activeQueueSessionKey,
         attachments: [],
         busy,
-        clearDraft: () => undefined,
-        draftRef: { current: '' },
+        clearDraft,
+        draftRef: { current: overrides.text ?? '' },
         focusInput: () => undefined,
         loadIntoComposer: () => undefined,
         onCancel,
@@ -49,12 +61,12 @@ function renderQueueHook(overrides: { busy?: boolean; onCancel?: () => void; onS
     { initialProps: { busy: overrides.busy ?? false } }
   )
 
-  return { hook, onCancel, onSubmit }
+  return { clearDraft, hook, onCancel, onSubmit }
 }
 
 describe('useComposerQueue park integration', () => {
   beforeEach(() => {
-    window.localStorage.clear()
+    window.localStorage?.clear()
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
   })
@@ -194,5 +206,29 @@ describe('useComposerQueue park integration', () => {
 
     expect(isQueueParked(SESSION_KEY)).toBe(false)
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+  })
+
+  it('stores expanded quote text so a queued prompt does not depend on the composer-only body store', () => {
+    const ref = '@quote:`' + encodeComposerQuote({ body: '> Earlier reply', label: 'earlier reply' }) + '`'
+    const { hook } = renderQueueHook({ busy: true, text: ref + 'Correction' })
+
+    act(() => {
+      expect(hook.result.current.queueCurrentDraft()).toBe(true)
+    })
+
+    expect(getQueuedPrompts(SESSION_KEY)[0]?.text).toBe('> Earlier reply\n\nCorrection')
+  })
+
+  it('leaves the compact draft intact when no queue session can persist it', () => {
+    const rawDraft =
+      '@quote:`' + encodeComposerQuote({ body: '> Earlier reply', label: 'earlier reply' }) + '`Correction'
+    const { clearDraft, hook } = renderQueueHook({ activeQueueSessionKey: null, busy: true, text: rawDraft })
+
+    act(() => {
+      expect(hook.result.current.queueCurrentDraft()).toBe(false)
+    })
+
+    expect(clearDraft).not.toHaveBeenCalled()
+    expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
   })
 })

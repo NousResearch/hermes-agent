@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { expandComposerQuotes } from '@/lib/composer-quote'
 import { triggerHaptic } from '@/lib/haptics'
 import { useSessionSlice } from '@/lib/use-session-slice'
 import { type ComposerAttachment } from '@/store/composer'
@@ -131,9 +132,11 @@ export function useComposerQueue({
       return index >= 0 // at the oldest: swallow; missing entry: let it fall through
     }
 
+    const rawText = draftRef.current
+
     const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, {
       attachments: cloneAttachments(attachments),
-      text: draftRef.current
+      text: expandComposerQuotes(rawText)
     })
 
     const next = queuedPrompts[target]
@@ -158,7 +161,8 @@ export function useComposerQueue({
     }
 
     if (action === 'save') {
-      const text = draftRef.current
+      const rawText = draftRef.current
+      const text = expandComposerQuotes(rawText)
       const next = cloneAttachments(attachments)
 
       if (!text.trim() && next.length === 0) {
@@ -166,6 +170,7 @@ export function useComposerQueue({
       }
 
       const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, { attachments: next, text })
+
       triggerHaptic(saved ? 'success' : 'selection')
     } else {
       triggerHaptic('cancel')
@@ -179,7 +184,8 @@ export function useComposerQueue({
   }
 
   const queueCurrentDraft = useCallback(() => {
-    const text = draftRef.current
+    const rawText = draftRef.current
+    const text = expandComposerQuotes(rawText)
 
     if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
       return false

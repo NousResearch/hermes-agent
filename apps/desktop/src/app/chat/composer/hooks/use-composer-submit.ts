@@ -2,6 +2,7 @@ import { type RefObject, useLayoutEffect, useRef } from 'react'
 
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
+import { expandComposerQuotes } from '@/lib/composer-quote'
 import { triggerHaptic } from '@/lib/haptics'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
@@ -86,6 +87,7 @@ export function useComposerSubmit({
   const dispatchSubmit = (text: string, attachments?: ComposerAttachment[], displayKind?: 'hidden') => {
     const submittedScope = activeQueueSessionKeyRef.current
     const submittedAttachments = attachments ?? []
+    const submittedText = expandComposerQuotes(text)
 
     const restore = () => {
       loadIntoComposer(text, submittedAttachments)
@@ -98,10 +100,22 @@ export function useComposerSubmit({
 
     void Promise.resolve(
       attachments
-        ? onSubmit(text, { attachments, composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
-        : onSubmit(text, { composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
+        ? onSubmit(submittedText, {
+            attachments,
+            composerScope: submittedScope,
+            ...(displayKind ? { displayKind } : {})
+          })
+        : onSubmit(submittedText, { composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
     )
-      .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
+      .then(accepted => {
+        if (accepted === false) {
+          restore()
+
+          return
+        }
+
+        clearSessionDraft(submittedScope)
+      })
       .catch(restore)
   }
 
@@ -238,6 +252,8 @@ export function useComposerSubmit({
   // tool boundary. If the turn already ended, queue the words instead.
   const steerDraft = () => {
     const text = draftRef.current.trim()
+    const submittedText = expandComposerQuotes(text).trim()
+    const submittedScope = activeQueueSessionKey
 
     // Guard on live editor state, not the render-lagged `canSteer`: a redirect
     // fired on a fast Enter must not be dropped because state hasn't synced.
@@ -248,11 +264,20 @@ export function useComposerSubmit({
     triggerHaptic('submit')
     clearDraft()
 
-    void Promise.resolve(onSteer(text)).then(accepted => {
-      if (!accepted && activeQueueSessionKey) {
-        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
+    const recover = () => {
+      if (!enqueueQueuedPrompt(submittedScope, { text: submittedText, attachments: [] })) {
+        loadIntoComposer(text, [])
+        stashAt(submittedScope, text, [])
       }
-    })
+    }
+
+    void Promise.resolve(onSteer(submittedText))
+      .then(accepted => {
+        if (!accepted) {
+          recover()
+        }
+      })
+      .catch(recover)
   }
 
   const queueDraft = () => {

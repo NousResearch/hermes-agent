@@ -10,6 +10,8 @@ import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useCallback, useMemo, useState } from 'react'
 import { useInRouterContext, useNavigate } from 'react-router'
 
+import { insertMessageReply } from '@/app/chat/composer/message-reply'
+import { useComposerScope } from '@/app/chat/composer/scope'
 import { useSessionView } from '@/app/chat/session-view'
 import { SETTINGS_ROUTE } from '@/app/routes'
 import { ChangedFilesCard } from '@/components/assistant-ui/thread/changed-files-card'
@@ -36,6 +38,7 @@ import {
   AudioLines,
   GitForkIcon,
   Loader2Icon,
+  MessageReplyIcon,
   RefreshCwIcon,
   SmilePlusIcon,
   Upload,
@@ -51,6 +54,7 @@ import { notifyError } from '@/store/notifications'
 import { requestSendDiagnostics } from '@/store/send-diagnostics'
 import { $connection, $currentModel } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
+import { isWatchWindow } from '@/store/windows'
 
 // Stable empty identity for the settled-parts selector — a fresh [] per render
 // would re-derive the changed-files card on every message re-render.
@@ -586,6 +590,7 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
 }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
+  const { target } = useComposerScope()
 
   const [pickerOpen, setPickerOpen] = useState(false)
   const { enabled: reactionsEnabled, react, reactions: shownReactions } = useMessageReactions(messageId, 'assistant')
@@ -597,6 +602,12 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
     },
     [react]
   )
+
+  const reply = useCallback(() => {
+    if (insertMessageReply(getMessageText(), { target })) {
+      triggerHaptic('selection')
+    }
+  }, [getMessageText, target])
 
   return (
     <div className="relative flex w-full shrink-0 items-center justify-end gap-1.5">
@@ -634,6 +645,11 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
           </TooltipIconButton>
         )}
         <CopyButton appearance="icon" buttonSize="icon" label={copy.copy} text={getMessageText} />
+        {!isWatchWindow() && (
+          <TooltipIconButton onClick={reply} tooltip={copy.reply}>
+            <MessageReplyIcon />
+          </TooltipIconButton>
+        )}
         <ReadAloudButton getText={getMessageText} messageId={messageId} />
         <ActionBarPrimitive.Reload asChild>
           <TooltipIconButton onClick={() => triggerHaptic('submit')} tooltip={copy.refresh}>

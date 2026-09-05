@@ -96,6 +96,25 @@ class TestSubdirectoryHintTracker:
 
 
 
+    def test_dotted_directory_name_is_a_directory(self, project):
+        """A path pointing AT an existing directory whose final component contains a dot
+        (src.v2, app.old) is a directory, not a file path: its own hint must load, not be
+        silently climbed past to the parent (which may hold no hint or the wrong one)."""
+        dotted = project / "backend.v2"
+        dotted.mkdir()
+        (dotted / "AGENTS.md").write_text("V2-specific instructions")
+        (dotted / "main.py").write_text("print('v2')")
+
+        # workdir pointing at the dotted directory (terminal) must load ITS hint.
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call("terminal", {"command": "ls", "workdir": str(dotted)})
+        assert result is not None and "V2-specific instructions" in result
+
+        # Reading a file inside the dotted directory loads its hint too.
+        tracker2 = SubdirectoryHintTracker(working_dir=str(project))
+        result2 = tracker2.check_tool_call("read_file", {"path": str(dotted / "main.py")})
+        assert result2 is not None and "V2-specific instructions" in result2
+
     def test_truncation_of_large_hints(self, tmp_path, caplog):
         """Over the ceiling: head AND tail survive, the marker names the file to read_file, and it is logged
         (the old silent tail-chop hid a truncated apps/desktop/AGENTS.md for months)."""

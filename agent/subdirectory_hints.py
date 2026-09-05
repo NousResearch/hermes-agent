@@ -97,7 +97,11 @@ class SubdirectoryHintTracker:
             if not p.is_absolute():
                 p = self.working_dir / p
             p = p.resolve()
-            if p.suffix or (p.exists() and p.is_file()):
+            # A path pointing AT an existing directory must not be climbed past just
+            # because its final component contains a dot ("src.v2", "app.old", "tools.1"):
+            # such directories carry their own hint files. Only file paths (existing or
+            # to-be-created) climb to their parent directory.
+            if not (p.exists() and p.is_dir()) and (p.suffix or (p.exists() and p.is_file())):
                 p = p.parent
             for _ in range(_MAX_ANCESTOR_WALK):
                 if p in self._loaded_dirs:

@@ -838,17 +838,42 @@ check_git() {
 # Best-effort like install_system_packages: warns and lets the caller decide
 # whether to proceed rather than aborting the whole install (unlike git,
 # which is hard-required much earlier for clone_repo).
+
+# RHEL 8-family systems (AlmaLinux/Rocky/CentOS/RHEL 8) ship GCC 8.5 as the
+# default g++, which predates the -std=gnu++20 flag name node-gyp passes when
+# building node-pty (it only recognizes the pre-standardization -std=gnu++2a
+# alias). GCC 11+ (e.g. gcc-toolset-12) is required. Other distros' g++/
+# clang++ are recent enough that mere presence has always been sufficient.
+cxx_compiler_ok() {
+    case "$DISTRO" in
+        rhel|centos|rocky|alma|almalinux)
+            command -v g++ &> /dev/null || return 1
+            local gxx_major
+            gxx_major="$(g++ -dumpversion 2>/dev/null | cut -d. -f1)"
+            case "$gxx_major" in ''|*[!0-9]*) return 1 ;; esac
+            [ "$gxx_major" -ge 11 ]
+            ;;
+        *)
+            command -v g++ &> /dev/null || command -v clang++ &> /dev/null
+            ;;
+    esac
+}
+
 check_cxx_compiler() {
     log_info "Checking for a C++ compiler (needed to build native Node modules like node-pty)..."
 
-    if command -v g++ &> /dev/null || command -v clang++ &> /dev/null; then
+    if cxx_compiler_ok; then
         log_success "C++ compiler found"
         HAS_CXX_COMPILER=true
         return 0
     fi
 
     HAS_CXX_COMPILER=false
-    log_warn "No C++ compiler found"
+    if [ "$OS" = "linux" ] && command -v g++ &> /dev/null; then
+        log_warn "System GCC is too old to build node-pty (needs GCC 11+ for -std=gnu++20)"
+    else
+        log_warn "No C++ compiler found"
+    fi
 
     case "$OS" in
         macos)
@@ -894,8 +919,16 @@ check_cxx_compiler() {
                     log_info "Installing base-devel via pacman..."
                     $sudo_cmd pacman -S --noconfirm base-devel >/dev/null 2>&1 || true
                     ;;
+                rhel|centos|rocky|alma|almalinux)
+                    log_info "Installing gcc-toolset-12 via dnf (RHEL 8's default GCC is too old for C++20)..."
+                    $sudo_cmd dnf install -y gcc-toolset-12 >/dev/null 2>&1 || true
+                    if [ -f /opt/rh/gcc-toolset-12/enable ]; then
+                        # shellcheck disable=SC1091
+                        . /opt/rh/gcc-toolset-12/enable
+                    fi
+                    ;;
             esac
-            if command -v g++ &> /dev/null || command -v clang++ &> /dev/null; then
+            if cxx_compiler_ok; then
                 log_success "C++ compiler installed"
                 HAS_CXX_COMPILER=true
                 return 0
@@ -912,6 +945,10 @@ check_cxx_compiler() {
                 ubuntu|debian) log_info "  sudo apt install build-essential" ;;
                 fedora)        log_info "  sudo dnf install gcc-c++" ;;
                 arch)          log_info "  sudo pacman -S base-devel" ;;
+                rhel|centos|rocky|alma|almalinux)
+                    log_info "  sudo dnf install gcc-toolset-12"
+                    log_info "  scl enable gcc-toolset-12 bash   # then re-run the installer in this shell"
+                    ;;
                 *)             log_info "  Install a C++ compiler (g++/gcc-c++) via your package manager" ;;
             esac
             ;;
@@ -2753,7 +2790,7 @@ install_node_deps() {
                         log_warn "Playwright browser installation failed — browser tools will not work."
                     }
                     ;;
-                fedora|rhel|centos|rocky|alma)
+                fedora|rhel|centos|rocky|alma|almalinux)
                     log_warn "Playwright does not support automatic dependency installation on RPM-based systems."
                     log_info "Install Chromium system dependencies manually before using browser tools:"
                     log_info "  sudo dnf install nss atk at-spi2-core cups-libs libdrm libxkbcommon mesa-libgbm pango cairo alsa-lib"

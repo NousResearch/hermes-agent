@@ -386,9 +386,13 @@ def test_validate_photon_token_rejects_unrecognized_session(
         photon_auth.validate_photon_token("some-token")
 
 
+@pytest.mark.parametrize("first_status, nested_status", [(200, 200), (401, 200), (403, 200), (404, 200), (401, 403)])
 def test_login_device_flow_validates_before_persisting(
-    tmp_hermes_home: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_hermes_home: Path, monkeypatch: pytest.MonkeyPatch, first_status: int, nested_status: int,
 ) -> None:
+    photon_auth.store_photon_token("previous-token")
+    checked = []
+
     def fake_post(url: str, *, json: Dict[str, Any], timeout: float) -> _FakeResponse:
         if url.endswith("/api/auth/device/code"):
             return _FakeResponse(json_body={
@@ -398,12 +402,19 @@ def test_login_device_flow_validates_before_persisting(
                 "expires_in": 600, "interval": 0,
             })
         # device/token approval
-        return _FakeResponse(json_body={"access_token": "good-token"})
+        return _FakeResponse(json_body={
+            "access_token": "first-token",
+            "data": {"access_token": "nested-token"},
+        })
 
     def fake_get(url: str, *, headers: Dict[str, str], timeout: float) -> _FakeResponse:
         if url.endswith("/api/auth/get-session"):
             return _FakeResponse(json_body={"user": {"id": "u1"}})
-        return _FakeResponse(json_body=[])  # projects OK
+        assert url.endswith("/api/projects/")
+        bearer = headers["Authorization"]
+        checked.append(bearer)
+        status = first_status if bearer == "Bearer first-token" else nested_status
+        return _FakeResponse(status=status, json_body=[])
 
     monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
     monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
@@ -411,8 +422,44 @@ def test_login_device_flow_validates_before_persisting(
     # ("sleep first, then poll") — stub the sleep so the test doesn't idle 5s.
     monkeypatch.setattr(photon_auth.time, "sleep", lambda _s: None)
 
+    if nested_status != 200:
+        with pytest.raises(photon_auth.PhotonDashboardAuthError) as exc:
+            photon_auth.login_device_flow(open_browser=False)
+        assert checked == ["Bearer first-token", "Bearer nested-token"]
+        assert "tried: access_token, data.access_token" in str(exc.value)
+        assert "first-token" not in str(exc.value)
+        assert "nested-token" not in str(exc.value)
+        assert photon_auth.load_photon_token() == "previous-token"
+        return
+
     token = photon_auth.login_device_flow(open_browser=False)
-    assert token == "good-token"
-    assert photon_auth.load_photon_token() == "good-token"
+    expected = "first-token" if first_status == 200 else "nested-token"
+    assert token == expected
+    assert photon_auth.load_photon_token() == expected
+    assert checked == (["Bearer first-token"] if first_status == 200 else
+                       ["Bearer first-token", "Bearer nested-token"])
 
 
+
+@pytest.mark.parametrize("empty", [False, True], ids=["priority", "empty"])
+def test_poll_candidates_contract(monkeypatch, empty):
+    body = {} if empty else {
+        "access_token": "first-token", "accessToken": "first-token",
+        "data": {"access_token": "nested-token"},
+    }
+    headers = {} if empty else {"set-auth-token": "header-token"}
+    monkeypatch.setattr(photon_auth.httpx, "post", lambda *args, **kwargs: _FakeResponse(
+        json_body=body, headers=headers,
+    ))
+    if empty:
+        for poll in (photon_auth.poll_for_token, photon_auth.poll_for_token_candidates):
+            with pytest.raises(RuntimeError, match="no token candidate"):
+                poll(_device_code(), interval=0)
+        return
+    candidates = photon_auth.poll_for_token_candidates(_device_code(), interval=0)
+    assert [(candidate.source, candidate.token) for candidate in candidates] == [
+        ("access_token", "first-token"),
+        ("data.access_token", "nested-token"),
+        ("set-auth-token", "header-token"),
+    ]
+    assert photon_auth.poll_for_token(_device_code(), interval=0) == candidates[0].token

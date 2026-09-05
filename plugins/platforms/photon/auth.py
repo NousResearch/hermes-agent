@@ -318,9 +318,21 @@ def request_device_code(
 def poll_for_token(
     code: DeviceCode, *, client_id: str = DEFAULT_CLIENT_ID, timeout: Optional[int] = None,
     interval: Optional[int] = None, on_pending: Optional[Callable[[], None]] = None) -> str:
-    """Poll ``/api/auth/device/token`` until approved (official-CLI semantics: sleep first;
-    ``authorization_pending`` keeps the interval, ``slow_down`` +5s, HTTP 429 +10s,
-    ``access_denied``/``expired_token`` abort)."""
+    """Poll for approval and return the highest-priority token candidate."""
+    return poll_for_token_candidates(
+        code, client_id=client_id, timeout=timeout, interval=interval, on_pending=on_pending,
+    )[0].token
+
+
+def poll_for_token_candidates(
+    code: DeviceCode, *, client_id: str = DEFAULT_CLIENT_ID, timeout: Optional[int] = None,
+    interval: Optional[int] = None,
+    on_pending: Optional[Callable[[], None]] = None) -> list[_DeviceTokenCandidate]:
+    """Poll until approved; return candidates in priority order, never empty on success.
+
+    Official-CLI semantics: sleep first; authorization_pending keeps the interval,
+    slow_down adds 5s, HTTP 429 adds 10s, and access_denied/expired_token abort.
+    """
     _require_httpx(" device login")
     url = f"{_dashboard_host()}/api/auth/device/token"
     deadline = time.time() + (timeout or code.expires_in or DEFAULT_POLL_TIMEOUT)
@@ -348,7 +360,7 @@ def poll_for_token(
                 raise RuntimeError(
                     "Photon returned 200 but no token candidate in the device-token response "
                     "(expected access_token, data.access_token, accessToken, or set-auth-token).")
-            return candidates[0].token
+            return candidates
         if resp.status_code == 429:  # RFC 8628 §3.5 — treat as slow_down
             sleep += 10
             _pending()
@@ -468,8 +480,8 @@ def login_device_flow(
         with contextlib.suppress(Exception):
             import webbrowser
             webbrowser.open(code.verification_uri_complete or code.verification_uri, new=2)
-    first_token = poll_for_token(code, client_id=client_id)
-    token = _validated_dashboard_token([_DeviceTokenCandidate(source="poll", token=first_token)])
+    candidates = poll_for_token_candidates(code, client_id=client_id)
+    token = _validated_dashboard_token(candidates)
     store_photon_token(token)
     return token
 

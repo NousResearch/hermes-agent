@@ -39,6 +39,7 @@ export const sessionEn = {
       titleQueuedSuffix: ' (queued while session initializes)',
       failedToSetTitle: (message: string) => `failed to set session title: ${message}`,
       switchSessions: 'switch sessions',
+      handoffPending: 'handoff pending — wait for it to settle before changing sessions',
       interruptBeforeSwitch: (what: string) => `interrupt the current turn before trying to ${what}`
     },
     main: {

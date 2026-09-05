@@ -2,6 +2,7 @@ import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared/slash'
 
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SlashExecResponse } from '../gatewayTypes.js'
+import { t } from '../i18n/runtime.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { launchWidget } from '../sdk/host.js'
 import { getWidgetApp } from '../sdk/registry.js'
@@ -37,6 +38,13 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string, type
     const ui = getUiState()
     const sid = ui.sid
     const parsed = parseSlashCommand(cmd)
+
+    if (ui.handoffSessionId && !sid) {
+      sys(t('slashCmd.handoff.inProgress'))
+
+      return true
+    }
+
     const argTail = parsed.arg ? ` ${parsed.arg}` : ''
 
     const countTyped = () => {

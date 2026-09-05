@@ -331,6 +331,7 @@ export interface UiState {
   batteryStatus: BatteryInfo | null
   bgTasks: Set<string>
   busy: boolean
+  handoffSessionId: null | string
   busyInputMode: BusyInputMode
   compact: boolean
   // Context compaction in progress (idle/preflight/auto). Distinct from

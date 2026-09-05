@@ -704,15 +704,19 @@ class TestHealthDetailedEndpoint:
     async def test_health_detailed_returns_ok(self, adapter):
         """GET /health/detailed returns status, platform, and runtime fields."""
         app = _create_app(adapter)
-        with patch("gateway.status.read_runtime_status", return_value={
-            "gateway_state": "running",
-            "platforms": {"telegram": {"state": "connected"}},
-            "active_agents": 2,
-            "exit_reason": None,
-            "updated_at": "2026-04-14T00:00:00Z",
-        }), patch("gateway.run._resolve_gateway_model", return_value="test/model"), patch(
-            "gateway.readiness.shutil.disk_usage",
-            return_value=types.SimpleNamespace(total=100, used=25, free=75),
+        with (
+            patch("gateway.status.read_runtime_status", return_value={
+                "gateway_state": "running",
+                "platforms": {"telegram": {"state": "connected"}},
+                "active_agents": 2,
+                "exit_reason": None,
+                "updated_at": "2026-04-14T00:00:00Z",
+            }),
+            patch("gateway.run._resolve_gateway_model", return_value="test/model"),
+            patch(
+                "gateway.readiness.shutil.disk_usage",
+                return_value=types.SimpleNamespace(total=100, used=10, free=90),
+            ),
         ):
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/health/detailed")

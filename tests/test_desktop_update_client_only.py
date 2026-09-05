@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -56,6 +57,10 @@ def _init_origin(path: Path) -> str:
     (path / "README.md").write_text("first\n", encoding="utf-8")
     (path / "apps/desktop").mkdir(parents=True)
     (path / "apps/desktop/package.json").write_text("{}", encoding="utf-8")
+    entitlements = path / "apps/desktop/electron"
+    entitlements.mkdir()
+    for name in ("entitlements.mac.plist", "entitlements.mac.inherit.plist"):
+        shutil.copy2(REPO_ROOT / "apps/desktop/electron" / name, entitlements / name)
     _git(path, "add", ".")
     _git(path, "commit", "-m", "first")
     return _git(path, "rev-parse", "HEAD")
@@ -170,7 +175,7 @@ def test_posix_client_only_missing_runtime_succeeds_and_reads_commit(tmp_path: P
     assert launched.returncode == 0
 
     payload = _wait_result(hermes_home)
-    assert payload["ok"] is True
+    assert payload["ok"] is True, payload
     assert payload["exit_code"] == 0
     assert "needs repair" not in payload["message"]
     assert payload["commit"] == second
@@ -194,7 +199,8 @@ def test_posix_client_only_missing_runtime_succeeds_and_reads_commit(tmp_path: P
 def test_posix_client_only_success_still_relaunches_linux_unpacked(tmp_path: Path):
     """Client-only success must keep the existing Linux relaunch path."""
     install, hermes_home, _first, second = _prepare_behind_clone(tmp_path)
-    unpacked = install / "apps" / "desktop" / "release" / "linux-unpacked"
+    from hermes_cli.client_only_update import _desktop_layout
+    unpacked = _desktop_layout(install / "apps/desktop/release")[0]
     unpacked.mkdir(parents=True)
     stamp = hermes_home / "relaunch.stamp"
     target = unpacked / "Hermes"
@@ -225,7 +231,7 @@ def test_posix_client_only_success_still_relaunches_linux_unpacked(tmp_path: Pat
         assert launched.returncode == 0
 
         payload = _wait_result(hermes_home)
-        assert payload["ok"] is True
+        assert payload["ok"] is True, payload
         assert payload["exit_code"] == 0
         assert payload["commit"] == second
 
@@ -245,7 +251,7 @@ def _install_fake_npm(hermes_home: Path):
     npm = hermes_home / "node/bin/npm"
     npm.parent.mkdir(parents=True)
     npm.write_text('''#!/usr/bin/python3
-import json, os, subprocess, sys
+import json, os, plistlib, shutil, subprocess, sys
 from pathlib import Path
 from hermes_cli.client_only_update import _desktop_layout
 if 'builder' in sys.argv:
@@ -257,6 +263,13 @@ if 'builder' in sys.argv:
         script = '#!/bin/sh\\nprintf launched > "$HERMES_TEST_RELAUNCH_STAMP"\\nwhile [ ! -f "$HERMES_TEST_RELAUNCH_DONE" ]; do sleep 0.2; done\\n'
     executable.write_text(script)
     executable.chmod(0o755)
+    if sys.platform == 'darwin':
+        shutil.copyfile('/usr/bin/true', executable)
+        (bundle / 'Contents/Info.plist').write_bytes(plistlib.dumps({
+            'CFBundleIdentifier': 'invalid.example.hermes-updater-test',
+            'CFBundleExecutable': 'Hermes', 'CFBundlePackageType': 'APPL',
+            'CFBundleName': 'Hermes', 'CFBundleVersion': '1',
+        }))
     (resources / 'app.asar.unpacked/dist').mkdir(parents=True)
     (resources / 'app.asar.unpacked/dist/index.html').write_text('packaged fixture')
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
@@ -273,8 +286,23 @@ def test_macos_native_handoff_installs_matching_packaged_bundle(tmp_path: Path):
     launched = _launch_posix(install_root=install, extra_args=["--client-only"])
     assert launched.returncode == 0
     payload = _wait_result(hermes_home)
-    assert payload["ok"] and payload["commit"] == second
+    assert payload["ok"] and payload["commit"] == second, payload
     _, executable, resources = _desktop_layout(install / "apps/desktop/release")
     assert os.access(executable, os.X_OK)
     assert json.loads((resources / "install-stamp.json").read_text())["commit"] == second
     assert (resources / "app.asar.unpacked/dist/index.html").read_text() == "packaged fixture"
+
+
+@pytest.mark.linux_only
+@requires_posix_handoff
+def test_linux_relaunch_gate_accepts_only_host_architecture(tmp_path):
+    from hermes_cli.client_only_update import _desktop_layout
+    install = tmp_path / "hermes-agent"
+    bundle, executable, _ = _desktop_layout(install / "apps/desktop/release")
+    other = "linux-unpacked" if bundle.name == "linux-arm64-unpacked" else "linux-arm64-unpacked"
+    for target, expected in ((executable, "relaunch"), (bundle.parent / other / "Hermes", "skew")):
+        result = _launch_posix(install_root=install, extra_args=[
+            "--self-test-gate", "--relaunch-target", str(target),
+        ])
+        assert result.returncode == 0
+        assert result.stdout.strip().split(":", 1)[0] == expected

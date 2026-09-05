@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -51,6 +52,36 @@ def desktop_checkout(tmp_path):
     return root, home, canonical, executable, before
 
 
+@pytest.fixture
+def fake_macos_signer(monkeypatch):
+    """Keep fake bundle tests focused on updater promotion and signing gates."""
+    from hermes_cli import main_desktop
+
+    calls = []
+    real_which = shutil.which
+
+    def signer(desktop_dir, *, release_dir=None, **kwargs):
+        calls.append((desktop_dir, release_dir))
+        return True
+
+    monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", signer)
+    monkeypatch.setattr(
+        main_desktop,
+        "_codesign_verify",
+        lambda codesign, app, **kwargs: subprocess.CompletedProcess(
+            [codesign, "--verify", str(app)], 0, "", ""
+        ),
+    )
+    monkeypatch.setattr(
+        main_desktop.shutil,
+        "which",
+        lambda name, path=None: "/usr/bin/codesign"
+        if name == "codesign"
+        else real_which(name, path=path),
+    )
+    return calls
+
+
 def package_runner(root, home, *, wrong_stamp=False, fail_build=False, reopen=False):
     calls = []
     checks = 0
@@ -86,13 +117,17 @@ def package_runner(root, home, *, wrong_stamp=False, fail_build=False, reopen=Fa
 
 
 @pytest.mark.macos_only
-def test_packages_verified_app_and_retains_previous_bundle(desktop_checkout, monkeypatch):
+def test_packages_verified_app_and_retains_previous_bundle(
+    desktop_checkout, fake_macos_signer, monkeypatch
+):
     root, home, canonical, executable, before = desktop_checkout
     monkeypatch.setenv("ELECTRON_RUN_AS_NODE", "1")
     monkeypatch.setenv("APPLE_API_KEY", "fixture-not-a-key")
     runner, calls = package_runner(root, home)
     result = run_client_only_update(root, hermes_home=home, run=runner)
     assert result.ok and result.rebuilt_desktop
+    assert fake_macos_signer[0][0] == root / "apps/desktop"
+    assert fake_macos_signer[0][1].is_relative_to(home / "backups" / "desktop-client-updates")
     assert executable.read_text() == "new app"
     assert result.installed_commit != before
     resources = _desktop_layout(root / "apps/desktop/release")[2]
@@ -108,7 +143,9 @@ def test_packages_verified_app_and_retains_previous_bundle(desktop_checkout, mon
 
 @pytest.mark.macos_only
 @pytest.mark.parametrize("failure", ["wrong_stamp", "fail_build", "reopen"])
-def test_failed_package_or_reopened_app_keeps_working_bundle(desktop_checkout, failure):
+def test_failed_package_or_reopened_app_keeps_working_bundle(
+    desktop_checkout, failure, fake_macos_signer
+):
     root, home, canonical, executable, before = desktop_checkout
     runner, _ = package_runner(root, home, **{failure: True})
     result = run_client_only_update(root, hermes_home=home, run=runner)
@@ -119,7 +156,7 @@ def test_failed_package_or_reopened_app_keeps_working_bundle(desktop_checkout, f
 
 
 @pytest.mark.macos_only
-def test_failed_swap_restores_previous_app(desktop_checkout, monkeypatch):
+def test_failed_swap_restores_previous_app(desktop_checkout, fake_macos_signer, monkeypatch):
     root, home, canonical, executable, before = desktop_checkout
     runner, _ = package_runner(root, home)
     rename = Path.rename
@@ -134,3 +171,46 @@ def test_failed_swap_restores_previous_app(desktop_checkout, monkeypatch):
     assert not result.ok
     assert executable.read_text() == "previous app"
     assert git(root, "rev-parse", "HEAD") == before
+
+
+@pytest.mark.macos_only
+def test_signing_failure_keeps_previous_app(
+    desktop_checkout, fake_macos_signer, monkeypatch
+):
+    root, home, canonical, executable, before = desktop_checkout
+    from hermes_cli import main_desktop
+
+    monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", lambda *args, **kwargs: False)
+    runner, _ = package_runner(root, home)
+
+    result = run_client_only_update(root, hermes_home=home, run=runner)
+
+    assert not result.ok and result.exit_code == 6
+    assert "could not be signed" in result.message
+    assert executable.read_text() == "previous app"
+    assert git(root, "rev-parse", "HEAD") == before
+    assert not (home / "logs/update_receipts/latest.json").exists()
+
+
+@pytest.mark.macos_only
+def test_strict_verification_failure_keeps_previous_app(
+    desktop_checkout, fake_macos_signer, monkeypatch
+):
+    root, home, canonical, executable, before = desktop_checkout
+    from hermes_cli import main_desktop
+
+    def failed_verify(codesign, app, **kwargs):
+        return subprocess.CompletedProcess(
+            [codesign, "--verify", str(app)], 1, "", "invalid signature"
+        )
+
+    monkeypatch.setattr(main_desktop, "_codesign_verify", failed_verify)
+    runner, _ = package_runner(root, home)
+
+    result = run_client_only_update(root, hermes_home=home, run=runner)
+
+    assert not result.ok and result.exit_code == 6
+    assert "strict code-signature verification" in result.message
+    assert executable.read_text() == "previous app"
+    assert git(root, "rev-parse", "HEAD") == before
+    assert not (home / "logs/update_receipts/latest.json").exists()

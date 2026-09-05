@@ -394,6 +394,49 @@ def _verify_desktop_bundle(output: Path, commit: str) -> Path:
     return bundle
 
 
+def _sign_and_verify_macos_bundle(desktop_dir: Path, staging_dir: Path) -> None:
+    """Sign and strictly verify a staged macOS app before it can replace the live app.
+
+    The desktop module owns the signing policy and implementation. Import it only
+    for this macOS gate so the runtime-free updater remains usable with Python's
+    standard library and does not load backend or configuration state up front.
+    The shared fixup may use a configured local identity, identifier-pinned
+    ad-hoc signing, or its legacy ad-hoc fallback. Ad-hoc signing can require
+    TCC permissions to be granted again, so a fallback is reported as a warning
+    by the shared implementation rather than treated as a publisher signature.
+    """
+    try:
+        from hermes_cli import main_desktop
+    except Exception as exc:
+        raise ClientOnlyBuildError(f"macOS signing support is unavailable: {exc}") from exc
+
+    if not main_desktop._desktop_macos_relaunchable_fixup(
+        desktop_dir,
+        publisher_signing_configured=False,
+        release_dir=staging_dir,
+    ):
+        raise ClientOnlyBuildError(
+            "Staged macOS Desktop bundle could not be signed; the previous app was kept."
+        )
+
+    bundle, _executable, _resources = _desktop_layout(staging_dir)
+    codesign = shutil.which("codesign")
+    if not codesign:
+        raise ClientOnlyBuildError(
+            "macOS codesign is unavailable; the previous Desktop app was kept."
+        )
+    verification = main_desktop._codesign_verify(
+        codesign, bundle, check=False, text=True
+    )
+    if verification.returncode != 0:
+        detail = (verification.stderr or verification.stdout or "").strip()
+        suffix = f": {detail}" if detail else ""
+        raise ClientOnlyBuildError(
+            "Staged macOS Desktop bundle failed strict code-signature verification"
+            f"{suffix}; the previous app was kept."
+        )
+
+
 def _rebuild_desktop(
     install_root: Path,
     *,
@@ -454,6 +497,8 @@ def _rebuild_desktop(
             raise ClientOnlyBuildError(tail or f"{' '.join(command)} failed")
 
     candidate = _verify_desktop_bundle(output, expected_commit)
+    if sys.platform == "darwin":
+        _sign_and_verify_macos_bundle(desktop_dir, output)
     _require_desktop_closed(executables, runner, install_root)
     canonical.parent.mkdir(parents=True, exist_ok=True)
     previous = operation / "previous-app"

@@ -313,6 +313,7 @@ stop_ui() { # error/manual outcomes keep the window up briefly so a watching
 GATE="" GATE_MSG=""
 linux_gate() {
   local unpacked="$INSTALL_ROOT/apps/desktop/release/linux-unpacked" sb arg
+  case "$(uname -m)" in arm64|aarch64) unpacked="$INSTALL_ROOT/apps/desktop/release/linux-arm64-unpacked" ;; esac
   case "$RELAUNCH_TARGET" in
     "$unpacked"/*) ;;
     *) GATE=skew GATE_MSG="Backend updated, but the desktop app package (AppImage/deb/rpm) was not changed. Update or reinstall it to match."; return ;;
@@ -336,11 +337,10 @@ linux_gate() {
 }
 
 mac_swap() {
-  local rebuilt="" c
-  for c in "$INSTALL_ROOT/apps/desktop/release/mac-arm64/Hermes.app" \
-           "$INSTALL_ROOT/apps/desktop/release/mac/Hermes.app"; do
-    [ -d "$c" ] && { rebuilt="$c"; break; }
-  done
+  local rebuilt="" arch_dir="mac"
+  case "$(uname -m)" in arm64|aarch64) arch_dir="mac-arm64" ;; esac
+  [ ! -d "$INSTALL_ROOT/apps/desktop/release/$arch_dir/Hermes.app" ] ||
+    rebuilt="$INSTALL_ROOT/apps/desktop/release/$arch_dir/Hermes.app"
 
   # Transactional swap: stage a full copy, move the old bundle aside, move
   # the copy in. Every step checked; a failed final move ROLLS BACK so the

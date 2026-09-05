@@ -24,6 +24,7 @@ import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/sto
 import { isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
   $sessions,
+  knownSessionOwner,
   resolveComposerSessionKey,
   setActiveSessionId,
   setAwaitingResponse,
@@ -307,6 +308,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       let startingSelectedStoredSessionId = selectedStoredSessionId
 
       let startingRouteToken = getRouteToken()
+      const resumeOwner = knownSessionOwner($sessions.get(), targetStoredSessionId)
 
       // Reason string (or null) for why the session context genuinely drifted
       // under this in-flight submit. sessionContextDrift ignores the churn a
@@ -561,7 +563,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           const publishedRuntimeId = getRuntimeIdForStoredSession(routedStoredSessionId)
 
           if (publishedRuntimeId) {
-            registerRecoveredRuntime(routedStoredSessionId, publishedRuntimeId)
+            registerRecoveredRuntime(routedStoredSessionId, publishedRuntimeId, resumeOwner)
           }
 
           return abortForSessionSwitch(null)
@@ -596,20 +598,22 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // profile is live would fork the conversation into the wrong DB (#67603).
           // A runtime a previous drift-aborted recovery already minted for this
           // exact stored session is reused instead of resuming again.
-          const cachedRuntimeId = takeRecoveredRuntime(targetStoredSessionId)
+          const cachedRuntimeId = takeRecoveredRuntime(targetStoredSessionId, undefined, resumeOwner)
+          const resumeProfile = cachedRuntimeId ? undefined : await resolveSessionProfile(targetStoredSessionId)
 
           const resumed = cachedRuntimeId
             ? { session_id: cachedRuntimeId }
-            : await singleFlightSessionResume(targetStoredSessionId, async () => {
-                const resumeProfile = await resolveSessionProfile(targetStoredSessionId)
-
-                return requestGateway<{ session_id: string }>('session.resume', {
-                  session_id: targetStoredSessionId,
-                  source: 'desktop',
-                  omit_messages: true,
-                  ...(resumeProfile ? { profile: resumeProfile } : {})
-                })
-              })
+            : await singleFlightSessionResume(
+                targetStoredSessionId,
+                () =>
+                  requestGateway<{ session_id: string }>('session.resume', {
+                    session_id: targetStoredSessionId,
+                    source: 'desktop',
+                    omit_messages: true,
+                    ...(resumeProfile ? { profile: resumeProfile } : {})
+                  }),
+                resumeOwner ?? resumeProfile
+              )
 
           const resumeDrift = sessionDriftReason()
 
@@ -619,7 +623,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // Keep the freshly-bound runtime findable for the next action on
             // this stored session instead of stranding it for the reaper.
             if (resumed?.session_id) {
-              registerRecoveredRuntime(targetStoredSessionId, resumed.session_id)
+              registerRecoveredRuntime(targetStoredSessionId, resumed.session_id, resumeOwner)
             }
 
             return abortForSessionSwitch(sessionId)

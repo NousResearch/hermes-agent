@@ -75,6 +75,7 @@ import { deferred } from '../../../test/deferred'
 import { NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
+import { clearSingleFlightSessionResumeState } from './use-prompt-actions/single-flight-resume'
 import { useSessionActions } from './use-session-actions'
 import { useSessionStateCache } from './use-session-state-cache'
 
@@ -2454,6 +2455,161 @@ describe('resumeSession drops a redundant tile when the session loads into main'
 const clientState = (storedSessionId: string | null): ClientSessionState => createClientSessionState(storedSessionId)
 
 describe('resumeSession warm-cache mapping integrity', () => {
+  it.each([
+    { metadataError: 'Failed to fetch', profile: 'worker', targetProfile: undefined },
+    { metadataError: '404: Session not found', profile: 'worker', targetProfile: undefined },
+    { metadataError: 'Failed to fetch', profile: 'desktop-alias', targetProfile: 'worker' },
+    { metadataError: '404: Session not found', profile: 'desktop-alias', targetProfile: 'worker' }
+  ])(
+    'keeps native resume on its explicit owner after $metadataError ($profile/$targetProfile)',
+    async ({ metadataError, profile, targetProfile }) => {
+      const owner: SessionProfileRoute = { connectionId: 'secondary-source', profile, targetProfile }
+      const backendProfile = targetProfile || profile
+      const storedId = 'metadata-failure-collision'
+      const states = { current: new Map<string, ClientSessionState>() }
+      const ambientRequest = vi.fn(async () => ({}) as never)
+
+      setConnection({ connectionId: 'primary-source', mode: 'remote' } as never)
+      // The requested live session is not in REST yet; the launch profile has
+      // a persisted, unrelated conversation with exactly the same stored ID.
+      setSessions([storedSession({ connection_id: owner.connectionId, id: storedId, profile: 'launch' })])
+      vi.mocked(getSession).mockReset().mockRejectedValue(new Error(metadataError))
+      vi.mocked(getLatestSessionMessages).mockRejectedValue(new Error(metadataError))
+      vi.mocked(requestGatewayForAgent).mockImplementation(async (_connection, _profile, method, params) => {
+        if (method !== 'session.resume') {
+          return {} as never
+        }
+
+        // Model the multiplexed backend boundary: DB selection uses the RPC
+        // payload, NOT the profile that selected the registry socket.
+        const selectedProfile = params?.profile || 'launch'
+
+        return {
+          info: {},
+          messages: [],
+          resumed: storedId,
+          session_id: selectedProfile === backendProfile ? 'runtime-worker' : 'runtime-launch'
+        } as never
+      })
+      let resume!: Parameters<typeof ResumeHarness>[0]['onReady'] extends (value: infer R) => void ? R : never
+      render(
+        <ResumeHarness
+          onReady={ready => (resume = ready)}
+          requestGateway={ambientRequest}
+          sessionStateByRuntimeIdRef={states}
+        />
+      )
+      await act(async () => {
+        await resume(storedId, true, owner)
+      })
+
+      expect($activeSessionId.get()).toBe('runtime-worker')
+      expect(states.current.has('runtime-launch')).toBe(false)
+      expect(states.current.get('runtime-worker')?.ownerRoute).toMatchObject({
+        connectionId: owner.connectionId,
+        profile: backendProfile
+      })
+      expect(getSession).toHaveBeenCalledExactlyOnceWith(storedId, {
+        connectionId: owner.connectionId,
+        profile: backendProfile
+      })
+      expect(requestGatewayForAgent).toHaveBeenCalledWith(
+        owner.connectionId,
+        profile,
+        'session.resume',
+        expect.objectContaining({ session_id: storedId, profile: backendProfile })
+      )
+      expect(requestGatewayForProfile).not.toHaveBeenCalled()
+      expect(ambientRequest).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each([
+    { connectionId: 'source-b', profile: 'default' },
+    { connectionId: 'source-a', profile: 'other' }
+  ])('keeps overlapping same-id native resumes isolated for $connectionId/$profile', async ownerB => {
+    const ownerA = { connectionId: 'source-a', profile: 'default' }
+    const pendingA = deferred<SessionResumeResponse>()
+    const pendingB = deferred<SessionResumeResponse>()
+    const states = { current: new Map<string, ClientSessionState>() }
+    const viewSync = vi.fn()
+    vi.mocked(getLatestSessionMessages).mockClear()
+    vi.mocked(getSession).mockResolvedValue(storedSession({ id: 'collision' }))
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [] } as never)
+    vi.mocked(requestGatewayForAgent).mockImplementation(
+      (connection, profile) =>
+        (connection === ownerA.connectionId && profile === ownerA.profile
+          ? pendingA.promise
+          : pendingB.promise) as never
+    )
+    let resume!: Parameters<typeof ResumeHarness>[0]['onReady'] extends (value: infer R) => void ? R : never
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onViewSync={viewSync}
+        requestGateway={vi.fn(async () => ({}) as never)}
+        sessionStateByRuntimeIdRef={states}
+      />
+    )
+    const openingA = resume('collision', true, ownerA)
+    await waitFor(() => expect(requestGatewayForAgent).toHaveBeenCalledTimes(1))
+    const openingB = resume('collision', true, ownerB)
+    // Resolve A only after B has entered native hydration. A must never be
+    // adopted (or stamped with B's owner) by the newer open.
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalledTimes(2))
+    pendingA.resolve({ session_id: 'runtime-a', resumed: 'collision', messages: [], info: {} } as never)
+    pendingB.resolve({ session_id: 'runtime-b', resumed: 'collision', messages: [], info: {} } as never)
+    await Promise.all([openingA, openingB])
+    expect(requestGatewayForAgent).toHaveBeenCalledTimes(2)
+    expect($activeSessionId.get()).toBe('runtime-b')
+    expect(states.current.get('runtime-b')?.ownerRoute).toMatchObject(ownerB)
+    expect(viewSync.mock.calls.some(([id]) => id === 'runtime-a')).toBe(false)
+  })
+
+  it('never paints another owner’s same-id cached transcript while resolving the selected owner', async () => {
+    const owner = { connectionId: 'source-b', profile: 'default', mode: 'remote' as const }
+
+    const cached = {
+      ...clientState('collision'),
+      ownerRoute: { connectionId: 'source-a', profile: 'default' },
+      messages: [{ id: 'foreign', role: 'assistant', parts: [{ type: 'text', text: 'PRIVATE SOURCE A' }] }]
+    } as ClientSessionState
+
+    const runtimeMap = { current: new Map([['collision', 'same-runtime']]) }
+    const states = { current: new Map([['same-runtime', cached]]) }
+    const metadata = deferred<SessionInfo>()
+    vi.mocked(getSession).mockReturnValue(metadata.promise)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [] } as never)
+    vi.mocked(requestGatewayForAgent).mockResolvedValue({
+      session_id: 'source-b-runtime',
+      resumed: 'collision',
+      messages: [],
+      info: {}
+    } as never)
+    let resume: ((id: string, replace?: boolean, owner?: SessionProfileRoute) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        requestGateway={vi.fn(async () => ({}) as never)}
+        runtimeIdByStoredSessionIdRef={runtimeMap}
+        sessionStateByRuntimeIdRef={states}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    setMessages(cached.messages)
+    const opening = resume!('collision', true, owner)
+    expect($messages.get()).toEqual([])
+    expect(states.current.get('same-runtime')).toBe(cached)
+    metadata.resolve(storedSession({ id: 'collision', connection_id: 'source-b', profile: 'default' }))
+    await opening
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'source-b',
+      'default',
+      'session.resume',
+      expect.objectContaining({ session_id: 'collision' })
+    )
+    expect($messages.get().some(message => message.id === 'foreign')).toBe(false)
+  })
   beforeEach(() => {
     // Earlier describes (branchStoredSession) drive resumes through the
     // profile path on the SAME hoisted mock; drop their recorded calls so the
@@ -2469,6 +2625,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     setMessages([])
     setSessions([])
     vi.mocked(getSession).mockReset()
+    clearSingleFlightSessionResumeState()
     vi.mocked(getLatestSessionMessages)
       .mockReset()
       .mockResolvedValue({ messages: [] } as never)
@@ -2530,8 +2687,14 @@ describe('resumeSession warm-cache mapping integrity', () => {
 
     const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
       current: new Map([
-        ['runtime-warm', clientState('stored-warm')],
-        ['runtime-legacy', clientState('stored-legacy')]
+        [
+          'runtime-warm',
+          { ...clientState('stored-warm'), ownerRoute: { ...ownerRoute, profile: ownerRoute.targetProfile! } }
+        ],
+        [
+          'runtime-legacy',
+          { ...clientState('stored-legacy'), ownerRoute: { ...ownerRoute, profile: ownerRoute.targetProfile! } }
+        ]
       ])
     }
 

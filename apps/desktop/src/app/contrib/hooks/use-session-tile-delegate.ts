@@ -266,13 +266,16 @@ export function useSessionTileDelegate({
           () => {
             assertSessionOwnerResolved(owner, { method: 'session.resume', sessionId: storedSessionId })
 
-            return singleFlightSessionResume(storedSessionId, () =>
-              requestForSessionProfile<SessionResumeResponse>(owner, requestGateway, 'session.resume', {
-                session_id: storedSessionId,
-                cols: 96,
-                omit_messages: true,
-                ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
-              })
+            return singleFlightSessionResume(
+              storedSessionId,
+              () =>
+                requestForSessionProfile<SessionResumeResponse>(owner, requestGateway, 'session.resume', {
+                  session_id: storedSessionId,
+                  cols: 96,
+                  omit_messages: true,
+                  ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
+                }),
+              owner
             )
           },
           async () => {

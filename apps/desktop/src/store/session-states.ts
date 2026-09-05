@@ -103,6 +103,10 @@ export function recordSessionEventScope(event: { connectionId?: string; profile?
   }
 }
 
+export function runtimeSessionOwner(runtimeId: string): SessionOwnerRoute | undefined {
+  return sessionOwnerByRuntimeId.get(runtimeId)
+}
+
 /** Composite scopes of registry-sourced sessions that are live (busy or
  * waiting on input) — the (connectionId, profile) half of the gateway
  * keep-set. Local-source live work keeps flowing through profile names. */
@@ -210,8 +214,9 @@ export function _resetSessionOwnerHoldsForTests(): void {
  * source switch briefly changes the active gateway before an idle conversation
  * is cleared, so the primary runtime must survive that handoff. Open panes have
  * the same ownership contract: a non-focused idle tile is still user-visible
- * state and must not be evicted just because another pane has focus. Prefer the
- * live event scope, with the tile's persisted route as the pre-bind fallback.
+ * state and must not be evicted just because another pane has focus. The main
+ * thread's captured selected owner (or matching resumed state) pins its socket
+ * without waiting for a session event. Tiles carry their own persisted routes.
  *
  * A just-created session's owner is named by its create → foreground hold
  * (holdSessionOwnerUntilForeground) until the selected/tiled publication or
@@ -238,7 +243,22 @@ export function foregroundSessionScopes(): Set<string> {
     }
   }
 
-  addRuntimeScope($activeSessionId.get() ?? undefined)
+  const runtimeId = $activeSessionId.get()
+  const selectedId = $selectedStoredSessionId.get()
+  const state = runtimeId ? $sessionStates.get()[runtimeId] : undefined
+
+  // Native resume may bind without emitting an event. The captured open route
+  // also covers the synchronous active-id → state-publication gap. Never take
+  // an unrelated cached runtime's owner after the selection has moved on.
+  const selectedOwner = selectedId
+    ? (getSessionOwnerHint(selectedId) ?? (state?.storedSessionId === selectedId ? state.ownerRoute : undefined))
+    : undefined
+
+  if (selectedOwner) {
+    addRouteScope(selectedOwner)
+  } else {
+    addRuntimeScope(runtimeId ?? undefined)
+  }
 
   for (const tile of $sessionTiles.get()) {
     addRuntimeScope(tile.runtimeId)

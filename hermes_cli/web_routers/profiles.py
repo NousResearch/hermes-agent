@@ -57,7 +57,10 @@ def _warn_profile_read_error(profile: str, exc: Exception) -> None:
     _log.warning("profile session read failed for %r (reported only in the response "
                  "errors array): %s", profile, exc)
 
+from hermes_cli.web_routers.agent_overview import router as agent_overview_router
+
 sessions_router = APIRouter()
+sessions_router.include_router(agent_overview_router)
 router = APIRouter()
 
 # Late-bound web_server helpers (resolved at call time; cycle-safe, monkeypatch-transparent).
@@ -169,16 +172,20 @@ def _best_effort(log_msg: str, *args, fn, default=None):
         return default
 
 
-def _profile_targets(log_label: str, *, lightweight: bool) -> List[Tuple[str, Path]]:
+def _profile_targets(log_label: str, *, lightweight: bool,
+                     errors: Optional[List[Dict[str, str]]] = None) -> List[Tuple[str, Path]]:
     """(name, home) for every profile, falling back to ``default`` alone. ``lightweight``
     uses ``profiles_to_serve`` (name/path only) instead of ``list_profiles``, which parses
-    config/meta and probes gateways/skills per profile — too heavy per sidebar refresh."""
+    config/meta and probes gateways/skills per profile — too heavy per sidebar refresh.
+    Overview callers pass ``errors`` so discovery failure cannot imply full coverage."""
     from hermes_cli import profiles as profiles_mod
     try:
         targets = (list(profiles_mod.profiles_to_serve(multiplex=True)) if lightweight
                    else [(info.name, info.path) for info in profiles_mod.list_profiles()])
     except Exception:
         _log.exception("%s: list_profiles failed", log_label)
+        if errors is not None:
+            errors.append({"error": "profile-inventory-unavailable"})
         targets = []
     if not targets:
         targets.append(("default", profiles_mod.get_profile_dir("default")))

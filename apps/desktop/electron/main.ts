@@ -1586,6 +1586,9 @@ let connectionConfigCache = null
 let connectionConfigCacheMtime = null
 let connectionRegistryCache = null
 let connectionRegistryCacheMtime = null
+// ponytail: coalesce sync FS storm — 4 profiles × 1.5s polls = 8 statSync per 1.5s without throttle; 500ms window drops to ~1
+let _connectionConfigLastReadAt = 0
+let _connectionsRegistryLastReadAt = 0
 let remoteHeaderRulesInstalled = false
 const remoteWsHeaderStore = createRemoteWsHeaderStore()
 const previewWatchers = new Map()
@@ -9268,6 +9271,12 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
 }
 
 function readDesktopConnectionConfig() {
+  // ponytail: throttle sync stat to 500ms — one guard covers all periodic callers (status, roster, connection IPC)
+  const now = Date.now()
+  if (connectionConfigCache !== null && now - _connectionConfigLastReadAt < 500) {
+    return connectionConfigCache
+  }
+  _connectionConfigLastReadAt = now
   // Check if file changed on disk since last read (e.g. modified by another
   // process or an external tool).  Our own writes update the cache inline
   // via writeDesktopConnectionConfig, but external changes would be missed.
@@ -9366,6 +9375,12 @@ function writeDesktopConnectionConfig(config) {
  * and until that heals, every launch re-homes them onto a local backend.
  */
 function readDesktopConnectionsRegistry() {
+  // ponytail: same 500ms throttle — one place fixes all registry pollers (roster, connections IPC, remote routes)
+  const now = Date.now()
+  if (connectionRegistryCache !== null && now - _connectionsRegistryLastReadAt < 500) {
+    return connectionRegistryCache
+  }
+  _connectionsRegistryLastReadAt = now
   let mtime = null
 
   try {

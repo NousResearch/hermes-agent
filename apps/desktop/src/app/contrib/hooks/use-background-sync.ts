@@ -521,14 +521,31 @@ export function windowIsActivelyViewed({
 }
 
 function visiblePoll(intervalMs: number, tick: () => void): () => void {
+  // ponytail: shared poll guard — one throttle in the common helper covers all 5 callers, not per-caller fixes
+  let inFlight = false
+  let lastRun = 0
   const run = () => {
+    const now = Date.now()
+    if (inFlight) {
+      return
+    }
+    if (now - lastRun < Math.max(500, intervalMs * 0.8)) {
+      return
+    }
     // On macOS an unfocused or app-hidden BrowserWindow commonly remains
     // `visibilityState === "visible"`. Visibility alone therefore kept every
     // safety-net gateway poll alive while the user was in another app. These
     // are stale-data backstops, not the live event path, so pause them until
     // the window is actually being viewed and catch up immediately on focus.
-    if (windowIsActivelyViewed({ focused: document.hasFocus(), visibilityState: document.visibilityState })) {
+    if (!windowIsActivelyViewed({ focused: document.hasFocus(), visibilityState: document.visibilityState })) {
+      return
+    }
+    inFlight = true
+    lastRun = now
+    try {
       tick()
+    } finally {
+      inFlight = false
     }
   }
 

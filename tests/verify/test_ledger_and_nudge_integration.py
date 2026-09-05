@@ -136,6 +136,32 @@ def test_passing_verify_run_satisfies_stop_guard(hermes_home, capsys):
     assert build_verify_on_stop_nudge(session_id="default", changed_paths=[changed]) is None
 
 
+def test_full_verify_run_satisfies_stop_guard_across_sessions(hermes_home, capsys):
+    project = _workspace(hermes_home, manifest_recipe={"name": "Fake", "test": ["echo ok"]})
+    changed = str(project / "src" / "app.ts")
+    mark_workspace_edited(session_id="editing-session", cwd=project, paths=[changed])
+    assert build_verify_on_stop_nudge(session_id="editing-session", changed_paths=[changed]) is not None
+
+    assert run_verify_command(make_args(project)) == 0
+
+    assert build_verify_on_stop_nudge(session_id="editing-session", changed_paths=[changed]) is None
+
+    mark_workspace_edited(session_id="editing-session", cwd=project, paths=[changed])
+    assert build_verify_on_stop_nudge(session_id="editing-session", changed_paths=[changed]) is not None
+
+
+def test_cross_session_verify_requires_full_pass(hermes_home):
+    project = _workspace(hermes_home)
+    changed = str(project / "src" / "app.ts")
+    mark_workspace_edited(session_id="editing-session", cwd=project, paths=[changed])
+
+    record_verify_run(root=project, session_id="default", ok=True, scope="targeted")
+    assert build_verify_on_stop_nudge(session_id="editing-session", changed_paths=[changed]) is not None
+
+    record_verify_run(root=project, session_id="default", ok=False, scope="full")
+    assert build_verify_on_stop_nudge(session_id="editing-session", changed_paths=[changed]) is not None
+
+
 # ---------------------------------------------------------------------------
 # nudge wording: recipe-aware `hermes verify --json` suggestion
 # ---------------------------------------------------------------------------

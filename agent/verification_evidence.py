@@ -501,6 +501,15 @@ def _insert_evidence(evidence: VerificationEvidence) -> dict[str, Any]:
             " changed_paths_json = '[]'",
             (e.session_id, e.root, event_id),
         )
+        if e.kind == "verify" and e.scope == "full" and e.status == "passed":
+            # A full verify proves the workspace, regardless of which session
+            # launched the detached CLI process that recorded it.
+            conn.execute(
+                "UPDATE verification_state SET"
+                " last_event_id = ?, last_edit_at = NULL, changed_paths_json = '[]'"
+                " WHERE root = ? AND (last_edit_at IS NULL OR last_edit_at <= ?)",
+                (event_id, e.root, created_at),
+            )
         _prune_old_events(conn, session_id=e.session_id, root=e.root)
         conn.commit()
 

@@ -21,6 +21,15 @@ from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli.dashboard_auth import (
+    DashboardAuthProvider,
+    LoginStart,
+    Session,
+    TokenPrincipal,
+    clear_providers,
+    register_provider,
+)
+from hermes_cli.dashboard_auth import token_auth
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +53,15 @@ def _load_plugin_router():
     return mod.router
 
 
+@pytest.fixture(autouse=True)
+def _reset_token_auth():
+    clear_providers()
+    token_auth.clear_token_routes()
+    yield
+    clear_providers()
+    token_auth.clear_token_routes()
+
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME with an empty kanban DB."""
@@ -60,6 +78,38 @@ def client(kanban_home):
     app = FastAPI()
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
     return TestClient(app)
+
+
+class _BearerProvider(DashboardAuthProvider):
+    name = "bearer"
+    display_name = "Bearer"
+    supports_token = True
+
+    def __init__(self, *, secret: str, scopes=("kanban:read",)):
+        self.secret = secret
+        self.scopes = tuple(scopes)
+        self.calls = 0
+
+    def start_login(self, *, redirect_uri):
+        return LoginStart(redirect_url="x", cookie_payload={})
+
+    def complete_login(self, *, code, state, code_verifier, redirect_uri):
+        return Session("u", "e", "n", "o", self.name, 0, "a", "r")
+
+    def verify_session(self, *, access_token):
+        return None
+
+    def refresh_session(self, *, refresh_token):
+        return Session("u", "e", "n", "o", self.name, 0, "a", "r")
+
+    def revoke_session(self, *, refresh_token):
+        return None
+
+    def verify_token(self, *, token: str):
+        self.calls += 1
+        if token == self.secret:
+            return TokenPrincipal(principal=self.name, provider=self.name, scopes=self.scopes)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -590,6 +640,33 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     # The bug symptom was a traceback; we don't assert on stderr because
     # capturing asyncio's internal "exception was never retrieved" logging
     # is flaky. The assertion that matters is: no CancelledError escaped.
+
+
+def test_ws_events_accepts_bearer_on_exact_registered_route(client):
+    provider = _BearerProvider(secret="bearer-good", scopes=("kanban:read",))
+    register_provider(provider)
+
+    with client.websocket_connect(
+        "/api/plugins/kanban/events",
+        headers={"Authorization": "Bearer bearer-good"},
+    ) as ws:
+        assert ws is not None
+    assert provider.calls == 1
+
+
+def test_ws_events_rejects_bearer_scope_mismatch(client):
+    provider = _BearerProvider(secret="bearer-good", scopes=("drain",))
+    register_provider(provider)
+
+    from starlette.websockets import WebSocketDisconnect
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(
+            "/api/plugins/kanban/events",
+            headers={"Authorization": "Bearer bearer-good"},
+        ):
+            pass
+    assert exc.value.code == 1008
+    assert provider.calls == 1
 
 
 # ---------------------------------------------------------------------------

@@ -3,8 +3,9 @@
 Every handler is a thin wrapper around ``hermes_cli.kanban_db`` (the same code paths the CLI
 and gateway ``/kanban`` command use, so the surfaces cannot drift). The ``/events`` WebSocket
 tails the append-only ``task_events`` table on a short poll (WAL reads run alongside the
-dispatcher's write txns); it carries its credential in the query string (browsers can't set
-``Authorization`` on an upgrade) and is gated by the dashboard's canonical WS auth check.
+dispatcher's write txns); browsers still authenticate with the legacy query credential, while
+non-browser service clients may use Bearer tokens only on the exact registered token
+route and only after the bearer principal satisfies the route's required scopes.
 """
 
 from __future__ import annotations
@@ -43,17 +44,30 @@ router = APIRouter()
 _BOARD_Q = Query(None, description="Kanban board slug (omit for current)")
 
 
+# Register the service-visible read routes with the shared bearer-token seam.
+try:
+    from hermes_cli.dashboard_auth.token_auth import register_token_route
+
+    register_token_route("/api/plugins/kanban/board", required_scopes=("kanban:read",))
+    register_token_route("/api/plugins/kanban/events", required_scopes=("kanban:read",))
+except Exception as exc:  # noqa: BLE001 — auth seam absence must not break plugin import
+    log = logging.getLogger(__name__)
+    log.warning("kanban dashboard token-route registration failed: %s", exc)
+
+
 # --- Connection / board helpers ---------------------------------------------
 
 def _ws_upgrade_authorized(ws: "WebSocket") -> bool:
-    """Authorize a WS upgrade via the dashboard's canonical gate (``web_server_chat._ws_auth_ok``:
-    ``?token=`` / ``?ticket=`` / ``?internal=``) so this endpoint can never drift from core
-    auth; accepts when the dashboard isn't importable (bare-FastAPI test harness)."""
+    """Authorize a WS upgrade using the shared token-auth seam when possible.
+
+    Bearer auth is only accepted on an exact registered token route. If the request has no bearer
+    header, the legacy browser/query path remains intact.
+    """
     try:
-        from hermes_cli import web_server_chat as _ws
+        from hermes_cli.dashboard_auth import token_auth
     except Exception:
         return True
-    return bool(_ws._ws_auth_ok(ws))
+    return token_auth._ws_auth_reason(ws)[0] is None
 
 
 def _normalize_slug_or_400(slug: str) -> Optional[str]:

@@ -59,8 +59,14 @@ class TestStoredPromptReuse:
         assert agent._cached_system_prompt == stored
         agent._build_system_prompt.assert_not_called()
         db.update_system_prompt.assert_not_called()
-        # No warnings on the happy path
-        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        # No warnings on the happy path — scoped to the logger under test:
+        # unrelated plugins (dashboard-auth config warnings, etc.) emit their
+        # own WARNINGs in some dev/CI environments and are not this test's
+        # concern. The at_level() above already targets agent.conversation_loop.
+        assert not [
+            r for r in caplog.records
+            if r.name == "agent.conversation_loop" and r.levelno >= logging.WARNING
+        ]
 
     def test_present_row_with_unicode_preserved(self):
         """Non-ASCII bytes in the stored prompt are not mangled."""
@@ -134,7 +140,12 @@ class TestLegitimateFreshBuild:
         assert agent._cached_system_prompt == "BUILT_PROMPT"
         # Persisted to DB
         db.update_system_prompt.assert_called_once_with(agent.session_id, "BUILT_PROMPT")
-        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        # No warnings on the happy path — scoped to the logger under test (see
+        # the sibling test above for why the global caplog scan is wrong).
+        assert not [
+            r for r in caplog.records
+            if r.name == "agent.conversation_loop" and r.levelno >= logging.WARNING
+        ]
 
     def test_no_db_skips_persistence(self):
         """When session DB is None, build and skip persistence silently."""

@@ -8,6 +8,7 @@ import pytest
 
 from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 @pytest.fixture
@@ -16,13 +17,13 @@ def kanban_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb._INITIALIZED_PATHS.clear()
+    kbc._INITIALIZED_PATHS.clear()
     kb.init_db()
     return home
 
 
 def test_reconcile_triage_task_marks_done_and_records_admin_event(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         parent_id = kb.create_task(conn, title="verified prerequisite")
         assert kb.complete_task(conn, parent_id)
         task_id = kb.create_task(
@@ -80,7 +81,7 @@ def test_reconcile_triage_task_marks_done_and_records_admin_event(kanban_home):
 
 
 def test_reconcile_triage_task_is_idempotent(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="resolved", triage=True)
 
         first = kb.reconcile_triage_task(
@@ -102,7 +103,7 @@ def test_reconcile_triage_task_is_idempotent(kanban_home):
 
 @pytest.mark.parametrize("status", ["ready", "blocked", "review", "archived"])
 def test_reconcile_triage_task_rejects_other_source_states(kanban_home, status):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="wrong state", triage=True)
         with kb.write_txn(conn):
             conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))
@@ -116,7 +117,7 @@ def test_reconcile_triage_task_rejects_other_source_states(kanban_home, status):
 
 
 def test_reconcile_triage_task_rejects_open_parent(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         parent_id = kb.create_task(conn, title="open parent")
         task_id = kb.create_task(
             conn, title="resolved child", parents=[parent_id], triage=True
@@ -131,7 +132,7 @@ def test_reconcile_triage_task_rejects_open_parent(kanban_home):
 
 
 def test_reconcile_triage_task_rejects_live_run(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="inconsistent active task", triage=True)
         with kb.write_txn(conn):
             cur = conn.execute(
@@ -156,7 +157,7 @@ def test_reconcile_triage_task_rejects_live_run(kanban_home):
 def test_reconcile_triage_task_requires_audit_identity_and_reason(kanban_home, field):
     kwargs = {"reason": "Verified externally.", "operator": "admin"}
     kwargs[field] = "   "
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="resolved", triage=True)
         with pytest.raises(ValueError, match=field):
             kb.reconcile_triage_task(conn, task_id, **kwargs)
@@ -164,7 +165,7 @@ def test_reconcile_triage_task_requires_audit_identity_and_reason(kanban_home, f
 
 
 def test_reconcile_cli_exposes_operator_transition(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="resolved", triage=True)
 
     output = kc.run_slash(
@@ -172,7 +173,7 @@ def test_reconcile_cli_exposes_operator_transition(kanban_home):
     )
 
     assert f"Reconciled {task_id}" in output
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, task_id).status == "done"
         event = kb.list_events(conn, task_id)[-1]
     assert event.kind == "administratively_reconciled"
@@ -181,7 +182,7 @@ def test_reconcile_cli_exposes_operator_transition(kanban_home):
 def test_reconcile_tool_is_available_to_orchestrators(kanban_home, monkeypatch):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.setenv("HERMES_PROFILE", "ops-orchestrator")
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="resolved", triage=True)
 
     from tools import kanban_tools as kt
@@ -203,7 +204,7 @@ def test_reconcile_tool_is_available_to_orchestrators(kanban_home, monkeypatch):
 def test_reconcile_tool_audits_active_session_profile(kanban_home, monkeypatch):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.setenv("HERMES_PROFILE", "default")
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="resolved", triage=True)
 
     from gateway.session_context import clear_session_vars, set_session_vars
@@ -220,14 +221,14 @@ def test_reconcile_tool_audits_active_session_profile(kanban_home, monkeypatch):
         clear_session_vars(tokens)
 
     assert result["ok"] is True
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         event = kb.list_events(conn, task_id)[-1]
     assert event.kind == "administratively_reconciled"
     assert event.payload["operator"] == "ops-orchestrator"
 
 
 def test_reconcile_tool_refuses_dispatcher_workers(kanban_home, monkeypatch):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="resolved", triage=True)
     monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
 
@@ -240,5 +241,5 @@ def test_reconcile_tool_refuses_dispatcher_workers(kanban_home, monkeypatch):
     )
 
     assert "orchestrator-only" in result["error"]
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, task_id).status == "triage"

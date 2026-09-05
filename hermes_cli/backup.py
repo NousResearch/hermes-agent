@@ -73,6 +73,18 @@ def _in_excluded_root_dir(rel_path: Path) -> bool:
         or (len(parts) >= 3 and parts[0] == "profiles" and parts[2] in _EXCLUDED_ROOT_DIRS))
 
 
+def _in_ephemeral_cron_output_dir(rel_path: Path) -> bool:
+    """True for generated cron run output under root or named profiles."""
+    parts = rel_path.parts
+    return (
+        len(parts) >= 2 and parts[0:2] == ("cron", "output")
+    ) or (
+        len(parts) >= 4
+        and parts[0] == "profiles"
+        and parts[2:4] == ("cron", "output")
+    )
+
+
 # SQLite sidecars are excluded because ``*.db`` is snapshotted via ``sqlite3.backup()``:
 # shipping the live WAL/SHM/journal alongside would pair a fresh snapshot with stale sidecar
 # state and produce a torn restore on next open. They are regenerated on first connection.
@@ -253,6 +265,10 @@ def _should_exclude(rel_path: Path) -> bool:
     """Return True if *rel_path* (relative to hermes root) should be skipped."""
     parts = rel_path.parts
     if _in_excluded_root_dir(rel_path):
+        return True
+    # Cron run output is generated, retention-managed history. Files may be pruned during a
+    # long archive; job definitions and scheduler state remain protected.
+    if _in_ephemeral_cron_output_dir(rel_path):
         return True
     # ``hermes-agent`` only matches at the root level; nested same-named dirs are preserved.
     if any(p in _EXCLUDED_DIRS and (p != "hermes-agent" or p == parts[0]) for p in parts):

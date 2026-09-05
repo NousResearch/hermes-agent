@@ -194,6 +194,14 @@ class TestShouldExclude:
         # Other .bak files are user data and stay.
         assert not _should_exclude(Path("config.yaml.bak"))
 
+    def test_excludes_generated_cron_output_but_keeps_cron_state(self):
+        from hermes_cli.backup import _should_exclude
+
+        assert _should_exclude(Path("cron/output/job/run.md"))
+        assert _should_exclude(Path("profiles/worker/cron/output/job/run.md"))
+        assert not _should_exclude(Path("cron/jobs.json"))
+        assert not _should_exclude(Path("profiles/worker/cron/jobs.json"))
+
 
 # ---------------------------------------------------------------------------
 # _iter_backup_files tests

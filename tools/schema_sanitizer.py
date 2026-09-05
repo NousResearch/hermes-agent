@@ -32,6 +32,14 @@ def _rewrite(schema: Any, fn: Callable[[dict], Any]) -> Any:
         return schema
     return fn({k: _rewrite(v, fn) for k, v in schema.items()})
 
+# Annotation keywords that make an object node "annotated" for the #102795
+# Bedrock exception below: Bedrock rejects {type: object, <annotation>,
+# properties: {}} while accepting the annotation without properties.
+_ANNOTATION_KEYS = frozenset({
+    "description", "title", "examples", "default", "deprecated",
+    "readOnly", "writeOnly",
+})
+
 
 def sanitize_property_key(key: str) -> str:
     """Deterministically map an arbitrary property key to a conforming one."""
@@ -94,8 +102,11 @@ def _sanitize_single_tool(tool: dict) -> dict:
     top = _sanitize_node(params, path=name)
     top = top if isinstance(top, dict) else {}  # guarantee an object with properties on top
     top["type"] = "object"
-    if not isinstance(top.get("properties"), dict):
-        top["properties"] = {}
+    if "properties" not in top or not isinstance(top.get("properties"), dict):
+        # Same #102795 Bedrock exception as in _sanitize_node: skip the empty
+        # properties injection on annotated nodes.
+        if not (_ANNOTATION_KEYS & top.keys()):
+            top["properties"] = {}
     # The recursive pass only handles array-form ``type: [X, "null"]``; collapse anyOf unions
     # here, keeping ``nullable: true`` so ``tools.arg_coercion._schema_allows_null`` still coerces.
     top = strip_nullable_unions(top, keep_nullable_hint=True)
@@ -291,7 +302,13 @@ def _sanitize_node(node: Any, path: str) -> Any:
             out[key] = _sanitize_node(value, f"{path}.{key}") if isinstance(value, (dict, list)) else value
     if out.get("type") == "object":
         if not isinstance(out.get("properties"), dict):
-            out["properties"] = {}
+            # Exception (#102795): Bedrock's strict draft 2020-12 validator rejects
+            # {type: object, description: ..., properties: {}} while accepting both
+            # halves separately — so skip the injection on annotated nodes that
+            # would otherwise gain an EMPTY properties dict (e.g. delegate_task's
+            # per-task output_schema). Bare objects keep the injection.
+            if not (_ANNOTATION_KEYS & out.keys()):
+                out["properties"] = {}
         if isinstance(out.get("required"), list):
             valid = [r for r in out["required"] if isinstance(r, str) and r in out["properties"]]
             if valid:

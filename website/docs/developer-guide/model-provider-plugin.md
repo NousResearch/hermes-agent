@@ -154,9 +154,9 @@ class AcmeProfile(ProviderProfile):
         return None
 ```
 
-## External-process (ACP) providers
+## External-process providers
 
-An agent CLI driven over stdio is not an HTTP endpoint. Set `auth_type="external_process"`, describe how to launch the binary, and supply the client with `create_client`. No core edits are needed — `hermes -m <name>`, `/model`, credential resolution, runtime resolution and the auxiliary client (compression, vision) all key on `auth_type`, not on the provider name. `plugins/model-providers/copilot-acp/` is the in-tree example.
+An agent CLI driven over stdio is not an HTTP endpoint. Set `auth_type="external_process"`, describe how to launch the binary, and supply the client with `create_client`. Hermes then includes the provider in its normal model picker and routes setup, credential resolution, runtime resolution, and auxiliary clients by `auth_type` rather than by vendor name. `plugins/model-providers/copilot-acp/` is the in-tree ACP example.
 
 | Field | Purpose |
 |---|---|
@@ -164,8 +164,22 @@ An agent CLI driven over stdio is not an HTTP endpoint. Set `auth_type="external
 | `process_args` | Default argv tail, e.g. `("--acp", "--stdio")` |
 | `process_command_env_vars` | Env vars that override the binary, checked in order |
 | `process_args_env_var` | Env var that overrides argv (shlex-split) |
+| `fallback_models` | Models shown when `fetch_models()` cannot retrieve a live catalog |
 
-The client your `create_client` returns receives `command` and `args` in `client_kwargs`. If it is already complete and async-safe, declare `HERMES_SKIP_TRANSPORT_WRAP = True` / `HERMES_SKIP_ASYNC_WRAP = True` as class attributes so the auxiliary client does not re-dispatch it through an HTTP wire adapter.
+Operators may override the launch command and argv without changing the plugin:
+
+```yaml
+providers:
+  your-provider:
+    command: /absolute/path/to/provider-cli
+    args: ["--stdio"]
+```
+
+Launch settings resolve in this order: profile-declared environment override, `config.yaml`, then profile defaults. The client returned by `create_client` receives the resolved `command` and `args` in `client_kwargs`.
+
+A profile may implement a bounded, non-secret `external_process_auth_status(*, command, args, timeout)` hook returning `{"logged_in": bool, "auth_evidence": str}`. The model picker stops before selection when that live probe explicitly reports authentication unavailable. Providers without the hook retain structural executable/endpoint status for compatibility.
+
+If the custom client is already complete and async-safe, declare `HERMES_SKIP_TRANSPORT_WRAP = True` / `HERMES_SKIP_ASYNC_WRAP = True` as class attributes so the auxiliary client does not re-dispatch it through an HTTP wire adapter.
 
 ## Hook reference examples
 
@@ -222,7 +236,7 @@ Set `profile.api_mode` to match the default your provider ships — it acts as a
 | `oauth_external` | User signs in elsewhere, tokens land in `auth.json` | Anthropic OAuth, MiniMax OAuth, Qwen Portal, Nous Portal |
 | `copilot` | GitHub Copilot token refresh cycle | `copilot` plugin only |
 | `aws_sdk` | AWS SDK credential chain (IAM role, profile, env) | `bedrock` plugin only |
-| `external_process` | Auth handled by a subprocess the agent spawns (see [External-process providers](#external-process-acp-providers)) | `copilot-acp` plugin, out-of-tree ACP plugins |
+| `external_process` | Auth handled by a subprocess the agent spawns (see [External-process providers](#external-process-providers)) | `copilot-acp` plugin, out-of-tree ACP plugins |
 
 `auth_type` gates which codepaths treat your provider as a "simple api-key provider" — if it's not `api_key`, the PluginManager still records the manifest but Hermes' CLI-level automation (doctor checks, `--provider` flag, setup wizard delegation) may skip over it.
 

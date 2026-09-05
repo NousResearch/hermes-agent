@@ -1841,11 +1841,9 @@ def _external_process_auth_evidence(provider_id: str) -> tuple[bool, Optional[st
 
 
 def _external_process_spec(
-    pconfig: ProviderConfig) -> tuple[str, List[str], str, Optional[str], tuple[str, ...]]:
-    """``(command, args, base_url, resolved_command, command_env_vars)`` for an ACP provider.
-
-    Launch details come from the provider's own profile (copilot-acp: HERMES_COPILOT_ACP_COMMAND /
-    COPILOT_CLI_PATH / HERMES_COPILOT_ACP_ARGS), so out-of-tree providers describe their binary."""
+    pconfig: ProviderConfig,
+) -> tuple[str, List[str], str, Optional[str], tuple[str, ...]]:
+    """Resolve process launch settings as env override > config > profile defaults."""
     base_url = _provider_env_base_url(pconfig) or pconfig.inference_base_url
     try:
         from providers import get_provider_profile as _get_provider_profile
@@ -1854,28 +1852,119 @@ def _external_process_spec(
         profile = None
     command_env_vars = tuple(getattr(profile, "process_command_env_vars", ()) or ())
     args_env_var = str(getattr(profile, "process_args_env_var", "") or "")
-    command = (next((v for v in (os.getenv(var, "").strip() for var in command_env_vars) if v), "")
-               or str(getattr(profile, "process_command", "") or ""))
+    command = next(
+        (value for value in (os.getenv(var, "").strip() for var in command_env_vars) if value),
+        "",
+    )
     raw_args = os.getenv(args_env_var, "").strip() if args_env_var else ""
-    args = shlex.split(raw_args) if raw_args else list(getattr(profile, "process_args", ()) or [])
+
+    settings: Dict[str, Any] = {}
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        providers_cfg = cfg.get("providers") if isinstance(cfg, dict) else None
+        candidate = providers_cfg.get(pconfig.id) if isinstance(providers_cfg, dict) else None
+        if isinstance(candidate, dict):
+            settings = candidate
+    except Exception:
+        pass
+
+    configured_command = settings.get("command")
+    if not command and isinstance(configured_command, str):
+        command = configured_command.strip()
+    command = command or str(getattr(profile, "process_command", "") or "")
+
+    try:
+        if raw_args:
+            args = shlex.split(raw_args)
+        else:
+            configured_args = settings.get("args")
+            if isinstance(configured_args, str):
+                args = shlex.split(configured_args)
+            elif isinstance(configured_args, (list, tuple)):
+                args = [str(value) for value in configured_args]
+            else:
+                args = [str(value) for value in (getattr(profile, "process_args", ()) or ())]
+    except ValueError as exc:
+        raise AuthError(
+            f"Invalid process arguments for provider '{pconfig.id}'.",
+            provider=pconfig.id,
+            code="invalid_external_process_args",
+        ) from exc
     return command, args, base_url, shutil.which(command) if command else None, command_env_vars
 
 
-def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
-    """Status snapshot for providers that run a local subprocess.
+_EXTERNAL_PROCESS_PROBE_JOIN_TIMEOUT = 9.0
 
-    ``configured``/``logged_in`` are structural (executable resolves or TCP endpoint set): the
-    subprocess owns real auth. ``auth_verified``/``auth_source`` carry positive evidence only."""
+
+def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
+    """Status for a local subprocess, with an optional bounded provider-owned auth probe."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
-    command, args, base_url, resolved_command, _ = _external_process_spec(pconfig)
-    available = bool(resolved_command or base_url.startswith("acp+tcp://"))
+    try:
+        command, args, base_url, resolved_command, _ = _external_process_spec(pconfig)
+    except AuthError as exc:
+        return {
+            "configured": False,
+            "provider": provider_id,
+            "name": pconfig.name,
+            "logged_in": False,
+            "auth_verified": False,
+            "auth_source": "invalid_configuration",
+            "auth_evidence": str(exc),
+            "error": exc.code,
+        }
+    configured = bool(resolved_command or base_url.startswith("acp+tcp://"))
     auth_verified, auth_source = _external_process_auth_evidence(provider_id)
+    logged_in = configured
+    auth_evidence = "process command resolved" if configured else "process command not found"
+
+    profile = None
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider_id)
+    except Exception:
+        pass
+    probe = getattr(profile, "external_process_auth_status", None) if profile else None
+    if configured and callable(probe):
+        probe_result: list[Any] = []
+        probe_error: list[Exception] = []
+
+        def invoke_probe() -> None:
+            try:
+                probe_result.append(
+                    probe(command=resolved_command or command, args=args, timeout=8.0)
+                )
+            except Exception as exc:
+                probe_error.append(exc)
+
+        worker = threading.Thread(target=invoke_probe, daemon=True)
+        worker.start()
+        worker.join(timeout=_EXTERNAL_PROCESS_PROBE_JOIN_TIMEOUT)
+        if worker.is_alive():
+            auth_verified = False
+            auth_source = "provider_probe_timeout"
+            auth_evidence = "provider authentication probe timed out"
+        elif probe_error:
+            auth_verified = False
+            auth_source = "provider_probe_error"
+            auth_evidence = "provider authentication probe unavailable"
+        elif probe_result:
+            probed = probe_result[0]
+            if isinstance(probed, dict) and isinstance(probed.get("logged_in"), bool):
+                logged_in = bool(probed["logged_in"])
+                auth_verified = logged_in
+                auth_source = "provider_probe"
+                evidence = probed.get("auth_evidence")
+                if isinstance(evidence, str) and evidence.strip():
+                    auth_evidence = evidence.strip()
+
     return {
-        "configured": available, "provider": provider_id, "name": pconfig.name, "command": command,
-        "args": args, "resolved_command": resolved_command, "base_url": base_url,
-        "logged_in": available, "auth_verified": auth_verified, "auth_source": auth_source}
+        "configured": configured, "provider": provider_id, "name": pconfig.name,
+        "command": command, "args": args, "resolved_command": resolved_command,
+        "base_url": base_url, "logged_in": logged_in, "auth_verified": auth_verified,
+        "auth_source": auth_source, "auth_evidence": auth_evidence}
 
 
 def _get_aws_sdk_auth_status(target: str) -> Dict[str, Any]:

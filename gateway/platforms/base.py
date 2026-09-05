@@ -4103,6 +4103,13 @@ class BasePlatformAdapter(ABC):
         MarkdownV2); default returns content as-is."""
         return content
 
+    def fit_bubbles(self, bubbles: List[str]) -> List[str]:
+        """Per-message iMessage-style delivery: each bubble is one message, so only a bubble
+        that is itself over ``MAX_MESSAGE_LENGTH`` gets split (fence-aware), never merged."""
+        return [chunk for bubble in bubbles for chunk in (
+            [bubble] if len(bubble) <= self.MAX_MESSAGE_LENGTH
+            else self.truncate_message(bubble, self.MAX_MESSAGE_LENGTH))]
+
     @staticmethod
     def truncate_message(content: str, max_length: int = 4096,
                          len_fn: Optional["Callable[[str], int]"] = None) -> List[str]:

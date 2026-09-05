@@ -1166,12 +1166,6 @@ class PhotonAdapter(BasePlatformAdapter):
 
     # -- Outbound ------------------------------------------------------------------
 
-    def _outgoing_chunks(self, content: str) -> List[str]:
-        bubbles = _outgoing_bubbles(content)
-        return [chunk for bubble in bubbles for chunk in (
-            [bubble] if len(bubble) <= self.MAX_MESSAGE_LENGTH
-            else self.truncate_message(bubble, self.MAX_MESSAGE_LENGTH))]
-
     @staticmethod
     def _bubble_send_result(message_ids: List[str]) -> SendResult:
         return SendResult(
@@ -1218,7 +1212,7 @@ class PhotonAdapter(BasePlatformAdapter):
         bubble returns the sidecar result untouched; a failure mid-way returns the
         partial-overflow result so callers retry only the undelivered tail.
         """
-        bubbles = [self.format_message(chunk) for chunk in self._outgoing_chunks(content)]
+        bubbles = [self.format_message(chunk) for chunk in self.fit_bubbles(_outgoing_bubbles(content))]
         if len(bubbles) == 1:
             return await send_one(bubbles[0])
         message_ids: List[str] = []

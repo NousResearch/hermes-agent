@@ -362,9 +362,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not text:
             return SendResult(success=False, error="BlueBubbles send requires text")
         # Each paragraph becomes its own iMessage bubble; truncate any still too long.
-        paragraphs = split_markdown_paragraphs(text) or [text]
-        chunks = [c for para in paragraphs for c in (
-            [para] if len(para) <= self.MAX_MESSAGE_LENGTH else self.truncate_message(para, self.MAX_MESSAGE_LENGTH))]
+        chunks = self.fit_bubbles(split_markdown_paragraphs(text) or [text])
         last = SendResult(success=True)
         for chunk in chunks:
             guid = await self._resolve_chat_guid(chat_id)

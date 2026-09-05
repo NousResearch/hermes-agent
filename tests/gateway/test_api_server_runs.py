@@ -390,6 +390,74 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_events_stream_broadcasts_terminal_event_to_concurrent_subscribers(
+        self, adapter
+    ):
+        release = threading.Event()
+        agent = MagicMock()
+
+        def finish_after_subscribers_connect(**_):
+            release.wait(timeout=5.0)
+            return {"final_response": "broadcast"}
+
+        agent.run_conversation.side_effect = finish_after_subscribers_connect
+        agent.session_prompt_tokens = 1
+        agent.session_completion_tokens = 1
+        agent.session_total_tokens = 2
+        app = _create_runs_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=agent):
+                started = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await started.json())["run_id"]
+                first = asyncio.create_task(cli.get(f"/v1/runs/{run_id}/events"))
+                second = asyncio.create_task(cli.get(f"/v1/runs/{run_id}/events"))
+                for _ in range(100):
+                    if len(adapter._run_stream_subscribers.get(run_id, ())) == 2:
+                        break
+                    await asyncio.sleep(0.01)
+                assert len(adapter._run_stream_subscribers[run_id]) == 2
+
+                release.set()
+                responses = await asyncio.wait_for(
+                    asyncio.gather(first, second), timeout=5.0
+                )
+                bodies = await asyncio.wait_for(
+                    asyncio.gather(*(response.text() for response in responses)),
+                    timeout=2.0,
+                )
+
+        assert all("run.completed" in body for body in bodies)
+        assert all("broadcast" in body for body in bodies)
+
+    @pytest.mark.asyncio
+    async def test_events_stream_prepare_failure_removes_subscriber(self, adapter):
+        run_id = "run_prepare_failure"
+        pending = asyncio.Queue()
+        adapter._run_streams[run_id] = pending
+        adapter._set_run_status(run_id, "running")
+        _claim_run(adapter, run_id)
+        request = MagicMock()
+        request.headers = {}
+        request.match_info = {"run_id": run_id}
+        request.path = f"/v1/runs/{run_id}/events"
+        request.method = "GET"
+        response = MagicMock()
+        response.prepare = AsyncMock(
+            side_effect=ConnectionResetError("client disconnected")
+        )
+
+        with patch(
+            "gateway.platforms.api_server_runs.web.StreamResponse",
+            return_value=response,
+        ):
+            with pytest.raises(ConnectionResetError):
+                await adapter._handle_run_events(request)
+
+        assert run_id not in adapter._run_stream_subscribers
+        assert adapter._run_streams[run_id] is pending
+
 
     @pytest.mark.asyncio
     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):

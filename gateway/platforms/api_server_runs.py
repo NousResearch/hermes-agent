@@ -88,7 +88,7 @@ def _initialize_run_state(self, *, store_factory) -> None:
     # outlive the request, hence the separate stopping set), pollable statuses, and
     # approval session keys (approval core resolves by session key, clients by run_id).
     self._run_idempotency_ids: set[str] = set()
-    self._run_stream_subscribers: set[str] = set()
+    self._run_stream_subscribers: dict[str, set[asyncio.Queue]] = {}
     self._stopping_run_ids: set[str] = set()
     (
         self._run_owners, self._run_streams, self._run_streams_created, self._active_run_agents,
@@ -151,10 +151,9 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
     def _push(event: Dict[str, Any]) -> None:
         self._set_run_status(
             run_id, self._run_statuses.get(run_id, {}).get("status", "running"), last_event=event.get("event"))
-        q = self._run_streams.get(run_id)
-        if q is not None:
+        if run_id in self._run_streams:
             with suppress(Exception):
-                loop.call_soon_threadsafe(q.put_nowait, event)
+                loop.call_soon_threadsafe(_publish_run_event, self, run_id, event)
 
     def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
         # _thinking / subagent.tool / subagent_progress are deliberately dropped (UI noise);
@@ -330,8 +329,26 @@ class _RunLaunch:
 
     def put_event(self, event: Optional[Dict]) -> None:
         """Enqueue only while this run still owns live transport state."""
-        if self.owner._run_streams.get(self.run_id) is self.queue:
-            self.queue.put_nowait(event)
+        _publish_run_event(
+            self.owner, self.run_id, event, expected_queue=self.queue
+        )
+
+
+def _publish_run_event(
+    self,
+    run_id: str,
+    event: Optional[Dict],
+    *,
+    expected_queue: Optional[asyncio.Queue] = None,
+) -> None:
+    """Publish to every live subscriber, buffering only before the first connects."""
+    pending = self._run_streams.get(run_id)
+    if pending is None or (expected_queue is not None and pending is not expected_queue):
+        return
+    subscribers = self._run_stream_subscribers.get(run_id)
+    targets = tuple(subscribers) if subscribers else (pending,)
+    for queue in targets:
+        queue.put_nowait(event)
 
 
 def _forget_run(self, run_id: str, *tables) -> None:
@@ -348,7 +365,13 @@ def _retire_live_run(self, run_id: str) -> None:
 
 
 def _drop_run_transport(self, run_id: str) -> None:
-    _forget_run(self, run_id, self._run_streams, self._run_streams_created)
+    _forget_run(
+        self,
+        run_id,
+        self._run_streams,
+        self._run_streams_created,
+        self._run_stream_subscribers,
+    )
 
 
 async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Response":
@@ -517,7 +540,7 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
 
 def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Dict[str, Any]], None]:
     """Approval-request bridge: redact, stamp the event envelope, park the run status, enqueue."""
-    run_id, q, loop = run.run_id, run.queue, asyncio.get_running_loop()
+    run_id, loop = run.run_id, asyncio.get_running_loop()
 
     def _approval_notify(approval_data: Dict[str, Any]) -> None:
         event = dict(approval_data or {})
@@ -534,7 +557,7 @@ def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Di
             allow_permanent=event.get("allow_permanent") is not False)))
         self._set_run_status(run_id, "waiting_for_approval", last_event="approval.request", approval=event)
         with suppress(Exception):
-            loop.call_soon_threadsafe(q.put_nowait, event)
+            loop.call_soon_threadsafe(run.put_event, event)
 
     return _approval_notify
 
@@ -677,37 +700,45 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
         await asyncio.sleep(0.05)
     else:
         return _run_not_found(_api_server._openai_error, run_id)
-    q = self._run_streams[run_id]
-    self._run_stream_subscribers.add(run_id)
+    pending = self._run_streams[run_id]
+    q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
+    while not pending.empty():
+        q.put_nowait(pending.get_nowait())
+    subscribers = self._run_stream_subscribers.setdefault(run_id, set())
+    subscribers.add(q)
     response = web.StreamResponse(status=200, headers={
         "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-    await response.prepare(request)
     try:
-        while True:
-            try:
-                event = await asyncio.wait_for(q.get(), timeout=30.0)
-            except asyncio.TimeoutError:
-                await response.write(b": keepalive\n\n")
-                continue
-            if event is None:  # run finished
-                await response.write(b": stream closed\n\n")
-                break
-            await response.write(_api_server._sse_frame(event))
-    except Exception as exc:
-        logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
+        await response.prepare(request)
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    await response.write(b": keepalive\n\n")
+                    continue
+                if event is None:  # run finished
+                    await response.write(b": stream closed\n\n")
+                    break
+                await response.write(_api_server._sse_frame(event))
+        except Exception as exc:
+            logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
     finally:
-        self._run_stream_subscribers.discard(run_id)
-        _drop_run_transport(self, run_id)
+        subscribers.discard(q)
+        if not subscribers:
+            self._run_stream_subscribers.pop(run_id, None)
+            status = self._run_statuses.get(run_id, {}).get("status")
+            if status in TERMINAL_STATUSES:
+                _drop_run_transport(self, run_id)
     return response
 
 
 def _mark_run_event(self, run_id: str, name: str, **fields: Any) -> None:
     """Record a control-plane event on the run status and (best effort) its SSE stream."""
     self._set_run_status(run_id, "running", last_event=name)
-    q = self._run_streams.get(run_id)
-    if q is not None:
+    if run_id in self._run_streams:
         with suppress(Exception):
-            q.put_nowait(_run_event(run_id, name, **fields))
+            _publish_run_event(self, run_id, _run_event(run_id, name, **fields))
 
 
 _APPROVAL_CHOICE_ALIASES = {"approve": "once", "approved": "once", "allow": "once"}
@@ -834,7 +865,7 @@ def _sweep_orphaned_runs_once(self, now: Optional[float] = None) -> None:
     if now is None:
         now = time.time()
     for run_id, created_at in list(self._run_streams_created.items()):
-        if now - created_at <= self._RUN_STREAM_TTL or run_id in self._run_stream_subscribers:
+        if now - created_at <= self._RUN_STREAM_TTL or self._run_stream_subscribers.get(run_id):
             continue
         logger.debug("[api_server] sweeping expired run transport %s", run_id)
         task = self._active_run_tasks.get(run_id)

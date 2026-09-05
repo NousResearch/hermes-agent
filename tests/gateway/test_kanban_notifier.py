@@ -3,6 +3,7 @@ import sqlite3
 from pathlib import Path
 
 
+from gateway import kanban_watchers_notifier as notifier
 from gateway.config import Platform
 from gateway.kanban_watchers_common import (
     _acquire_singleton_lock,
@@ -81,6 +82,28 @@ def _unseen_terminal_events(tid):
         return events
     finally:
         conn.close()
+
+
+def test_mobile_excerpt_preserves_word_boundary_and_limit():
+    assert notifier._mobile_excerpt("alpha beta gamma delta", 14) == "alpha beta…"
+    assert notifier._mobile_excerpt("alpha beta gamma", 11) == "alpha beta…"
+    assert notifier._mobile_excerpt("alpha beta gamma", 12) == "alpha beta…"
+    assert notifier._mobile_excerpt("x" * 20, 8) == "xxxxxxx…"
+
+
+def test_completed_handoff_uses_explicit_word_boundary_truncation(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "handoff-truncation.db"))
+    kb.init_db()
+    _create_completed_subscription(summary="A durable event can be replayed safely. " * 20)
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    handoff = adapter.sent[0]["text"].split("\n", 1)[1]
+    assert handoff.endswith("…")
+    assert len(handoff) <= 200
+    assert handoff.removesuffix("…").endswith("safely.")
 
 
 def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, monkeypatch):

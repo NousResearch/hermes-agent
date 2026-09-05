@@ -84,6 +84,8 @@ interface ModelEditSubmenuProps {
   onSetOptions: (patch: { effort?: string; fast?: boolean }) => void
   /** This row's provider slug. */
   provider: string
+  /** Consume transient sibling-hover intent once the pointer reaches this portal. */
+  onPointerEnter?: () => void
   /** Whether this model supports reasoning effort. */
   reasoning: boolean
 }
@@ -95,7 +97,7 @@ export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
   // the sub actually opens — eagerly running the body's hooks/JSX for every
   // row made opening the menu itself lag on large catalogs.
   return (
-    <DropdownMenuSubContent className="w-52 p-0" sideOffset={4}>
+    <DropdownMenuSubContent className="w-52 p-0" onPointerEnter={props.onPointerEnter} sideOffset={4}>
       <ModelEditSubmenuBody {...props} />
     </DropdownMenuSubContent>
   )

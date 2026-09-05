@@ -16,7 +16,8 @@ import {
   rankSkillCommands,
   rememberDesktopCommandsCatalog,
   resolveDesktopCommand,
-  slashCompletionGroup
+  slashCompletionGroup,
+  splitDesktopSlashCommandSequence
 } from './desktop-slash-commands'
 
 function registryCatalog(
@@ -60,7 +61,8 @@ const REGISTRY_CATALOG = registryCatalog(
     '/tools': 'options',
     '/undo': null,
     '/loop': 'mixed',
-    '/lcm': 'text'
+    '/lcm': 'text',
+    '/worktree': 'text'
   },
   { '/tasks': '/agents', '/background': '/bg', '/q': '/queue', '/proactive': '/loop' }
 )
@@ -410,6 +412,76 @@ describe('desktop slash command curation', () => {
     expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'unavailable', reason: 'terminal' })
     // Skill / quick commands aren't in the registry.
     expect(resolveDesktopCommand('/gif-search')).toBeNull()
+  })
+})
+
+describe('splitDesktopSlashCommandSequence', () => {
+  beforeEach(() => {
+    rememberDesktopCommandsCatalog(REGISTRY_CATALOG)
+  })
+
+  afterEach(() => {
+    rememberDesktopCommandsCatalog(undefined)
+  })
+
+  it('chains bare and option commands before a prose command', () => {
+    expect(splitDesktopSlashCommandSequence('/yolo /wake on /goal ship the auth refactor')).toEqual([
+      '/yolo',
+      '/wake on',
+      '/goal ship the auth refactor'
+    ])
+  })
+
+  it('uses Desktop action arity instead of conflicting backend catalog metadata', () => {
+    rememberDesktopCommandsCatalog({ commands: { '/new': { argument_mode: 'text' }, '/goal': { argument_mode: 'mixed' } } })
+    expect(desktopSlashCommandArgumentMode('/new')).toBe('text')
+    expect(splitDesktopSlashCommandSequence('/new /goal ship it')).toEqual(['/new', '/goal ship it'])
+  })
+
+  it('preserves arguments for local actions and pickers that consume them', () => {
+    expect(desktopSlashCommandArgumentMode('/hatch')).toBe('text')
+    expect(desktopSlashCommandArgumentMode('/model')).toBe('text')
+    expect(desktopSlashCommandArgumentMode('/profile')).toBe('options')
+    expect(splitDesktopSlashCommandSequence('/hatch /yolo')).toEqual(['/hatch /yolo'])
+    expect(splitDesktopSlashCommandSequence('/model /yolo')).toEqual(['/model /yolo'])
+    expect(splitDesktopSlashCommandSequence('/profile coder /new')).toEqual(['/profile coder', '/new'])
+  })
+
+  it('overrides the backend catalog mode for bounded /worktree subcommands', () => {
+    expect(desktopSlashCommandArgumentMode('/worktree')).toBe('text')
+    expect(splitDesktopSlashCommandSequence('/worktree new named-tree /goal ship it')).toEqual([
+      '/worktree new named-tree',
+      '/goal ship it'
+    ])
+  })
+
+  it('does not reinterpret slash-looking prose after a text or mixed command', () => {
+    expect(splitDesktopSlashCommandSequence('/goal ship it /branch')).toEqual(['/goal ship it /branch'])
+    expect(splitDesktopSlashCommandSequence('/queue review /tmp/output then /status')).toEqual([
+      '/queue review /tmp/output then /status'
+    ])
+  })
+
+  it('hands an unknown extension tail to the backend after a bare command', () => {
+    expect(splitDesktopSlashCommandSequence('/yolo /unknown /goal ship it')).toEqual([
+      '/yolo',
+      '/unknown /goal ship it'
+    ])
+  })
+
+  it('does not execute slash-looking path fragments without whitespace boundaries', () => {
+    expect(splitDesktopSlashCommandSequence('/new /yolo/config')).toEqual(['/new /yolo/config'])
+    expect(splitDesktopSlashCommandSequence('/yolo/config')).toEqual(['/yolo/config'])
+    expect(splitDesktopSlashCommandSequence('/worktree new foo /yolo/config')).toEqual([
+      '/worktree new foo /yolo/config'
+    ])
+  })
+
+  it('only chains a bare command when the next token is another known command', () => {
+    expect(splitDesktopSlashCommandSequence('/new /goal ship it')).toEqual(['/new', '/goal ship it'])
+    expect(splitDesktopSlashCommandSequence('/new draft words /goal ship it')).toEqual([
+      '/new draft words /goal ship it'
+    ])
   })
 })
 

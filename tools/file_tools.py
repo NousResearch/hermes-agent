@@ -709,6 +709,52 @@ def _note_edited(task_id: str, paths: list[str], path_to_resolved: dict, session
             file_state.note_write(task_id, path_to_resolved[p])
 
 
+# Whole-file rewrite hint: an overwrite of an existing file this large whose new content keeps at least
+# this fraction of the old lines is a patch written the expensive way. In one 1,393-agent run 661 such
+# rewrites of >20k-char files cost ~25M output chars (~$155) where `patch` averaged 1.3k chars/call.
+_REWRITE_HINT_MIN_CHARS = 20_000
+_REWRITE_HINT_MIN_UNCHANGED = 0.80
+
+
+# Above this the line diff is skipped: SequenceMatcher on pathological repeated-line files is
+# quadratic (a 460 KB same-line file took ~22 s under the write lock).
+_REWRITE_HINT_MAX_CHARS = 400_000
+
+
+def _whole_file_rewrite_hint(task_id: str, resolved: str | None, new_content: str) -> str | None:
+    """Return a hint when ``new_content`` mostly re-sends what is already at ``resolved``.
+
+    Reads the OLD content through the task's own file ops (``read_file_raw``, the sandbox/remote
+    backend the write targets), never the host path: on a remote backend the host file is a
+    different file, and a host FIFO at that path would block the write lock forever. Bounded size
+    and a line multiset comparison (linear) instead of a sequence diff (quadratic on repeated lines)."""
+    if not resolved or not (_REWRITE_HINT_MIN_CHARS <= len(new_content) <= _REWRITE_HINT_MAX_CHARS):
+        return None
+    try:
+        result = _get_file_ops(task_id).read_file_raw(resolved)
+        old = getattr(result, "content", None)
+        if getattr(result, "error", None) or not isinstance(old, str):
+            return None
+    except Exception:
+        return None
+    if not (_REWRITE_HINT_MIN_CHARS <= len(old) <= _REWRITE_HINT_MAX_CHARS):
+        return None
+    old_lines, new_lines = old.splitlines(), new_content.splitlines()
+    if not old_lines:
+        return None
+    from collections import Counter
+    unchanged = sum((Counter(old_lines) & Counter(new_lines)).values())
+    ratio = unchanged / max(len(old_lines), len(new_lines))
+    if ratio < _REWRITE_HINT_MIN_UNCHANGED:
+        return None
+    changed = max(len(old_lines), len(new_lines)) - unchanged
+    return (
+        f"{unchanged:,} of {len(new_lines):,} lines were already on disk ({ratio:.0%} unchanged); ~{changed:,} "
+        f"line(s) actually changed. Re-sending a {len(new_content):,}-char file costs output tokens for every "
+        "unchanged line; for edits like this use patch (old_string/new_string), which sends only the changed region."
+    )
+
+
 def write_file_tool(path: str, content: str, task_id: str = "default",
                     cross_profile: bool = False,
                     session_id: str | None = None) -> str:
@@ -741,9 +787,12 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 # subagents; different paths stay fully parallel.
                 _lock.enter_context(file_state.lock_path(_resolved))
             warnings = _edit_warnings([path], path_to_resolved, task_id)
+            rewrite_hint = _whole_file_rewrite_hint(task_id, _resolved, content)
             result_dict = _get_file_ops(task_id).write_file(_resolved or path, content).to_dict()
             if warnings:
                 result_dict["_warning"] = warnings[0]
+            if rewrite_hint and not result_dict.get("error"):
+                result_dict["hint"] = rewrite_hint
             if _resolved:
                 # Always report the ABSOLUTE path written so a wrong-cwd mismatch
                 # is visible in the response instead of silently landing elsewhere.

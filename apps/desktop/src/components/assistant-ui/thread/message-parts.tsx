@@ -239,7 +239,14 @@ const ThinkingDisclosure: FC<{
             // and inherits the disclosure-level opacity fade defined in
             // styles.css (~0.67 at rest, 1 on hover/focus). overflow-auto so
             // the max-h-40 preview is a real scroller, not a clip.
-            'mt-0.5 w-full min-w-0 max-w-full overflow-auto overscroll-contain wrap-anywhere pb-1',
+            // No overscroll-contain in any state: a body that can't scroll
+            // itself (expanded, or content shorter than the cap) must chain
+            // the wheel to the thread viewport, and a scrollable preview
+            // chains past its own edge once it hits top/bottom — matching
+            // every other scroller in the app (settings, code blocks). A
+            // contain here is a dead zone or a scroll discontinuity, the
+            // same trap #84964 hit in the session list.
+            'mt-0.5 w-full min-w-0 max-w-full overflow-auto wrap-anywhere pb-1',
             isPreview && 'max-h-40'
           )}
           data-slot="aui_thinking-body"

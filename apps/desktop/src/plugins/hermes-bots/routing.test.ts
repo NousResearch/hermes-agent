@@ -21,6 +21,7 @@ import {
   beginAliasRouteIndex,
   botConnectionRoute,
   botRosterMeta,
+  groupTranscriptSpeakerMeta,
   indexAliasRoutes,
   requestForBot,
   resolveBotConnectionRoute
@@ -284,5 +285,45 @@ describe('requestForBot rides the bot’s own source', () => {
     expect(error).toBeInstanceOf(Error)
     expect(typeof (error as Error).name).toBe('string')
     expect((error as Error).message).toBe('profile busy')
+  })
+})
+
+describe('group transcript speaker meta (#96432)', () => {
+  const localDefault = { name: 'default' } as RosterRow
+  const remoteDefault = {
+    name: 'default',
+    connectionId: 'spark',
+    connectionLabel: 'spark',
+    remoteSource: true,
+    sourceScoped: true
+  } as RosterRow
+  const allMeta = {
+    default: { title: 'Local Default', image: 'local.png' },
+    'spark::default': { title: 'Remote Default', image: 'remote.png' }
+  }
+
+  it('gives user lines no bot meta', () => {
+    expect(groupTranscriptSpeakerMeta({ from: { kind: 'user', name: 'You' } }, [localDefault, remoteDefault], allMeta)).toBeNull()
+  })
+
+  it('keeps local meta for a local same-name speaker', () => {
+    const meta = groupTranscriptSpeakerMeta(
+      { from: { kind: 'member', name: 'default' } },
+      [localDefault, remoteDefault],
+      allMeta
+    )
+
+    expect(meta?.image).toBe('local.png')
+  })
+
+  it('keeps owner meta for a remote same-name speaker instead of null or the local twin', () => {
+    const meta = groupTranscriptSpeakerMeta(
+      { from: { kind: 'member', name: 'default', source: 'spark' } },
+      [localDefault, remoteDefault],
+      allMeta
+    )
+
+    expect(meta?.image).toBe('remote.png')
+    expect(meta?.title).toBe('Remote Default')
   })
 })

@@ -77,6 +77,32 @@ class TestIsTimeoutError:
 
 
 # ---------------------------------------------------------------------------
+# _is_rate_limited_error
+# ---------------------------------------------------------------------------
+
+class TestIsRateLimitedError:
+    def test_none_is_not_rate_limited(self):
+        assert not _StubAdapter._is_rate_limited_error(None)
+
+    def test_empty_is_not_rate_limited(self):
+        assert not _StubAdapter._is_rate_limited_error("")
+
+    def test_flood_is_rate_limited(self):
+        assert _StubAdapter._is_rate_limited_error("flood control exceeded, retry in 60 seconds")
+
+    def test_too_many_requests_is_rate_limited(self):
+        assert _StubAdapter._is_rate_limited_error("Too Many Requests: rate limit reached")
+
+    def test_weixin_rate_limit_text_is_rate_limited(self):
+        assert _StubAdapter._is_rate_limited_error(
+            "iLink sendmessage rate limited; cooldown active for 42.0s"
+        )
+
+    def test_formatting_error_not_rate_limited(self):
+        assert not _StubAdapter._is_rate_limited_error("Bad Request: can't parse entities")
+
+
+# ---------------------------------------------------------------------------
 # _send_with_retry — success on first attempt
 # ---------------------------------------------------------------------------
 
@@ -205,4 +231,114 @@ class TestSendWithRetryAfter:
         # Second sleep should use the retry_after from the second result
         second_sleep = mock_sleep.call_args_list[1][0][0]
         assert second_sleep >= 29.0  # 30 - 1 (max jitter)
+
+
+# ---------------------------------------------------------------------------
+# _send_with_retry — rate-limited sends (flood control) without retry_after
+# ---------------------------------------------------------------------------
+# Platforms like Weixin surface a rate limit as a bare error with NO retry_after
+# field.  These must still be treated as transient (back off / retry) rather than
+# falling through to the truncating plain-text fallback, which would re-enter the
+# server ban and drop the tail of the message.
+
+class TestSendWithRetryRateLimited:
+    @pytest.mark.asyncio
+    async def test_rate_limited_no_retry_after_backs_off_and_retries(self):
+        """A flood/rate-limit error WITHOUT retry_after still counts as network
+        (retryable) because classify_send_error == 'rate_limited', so it retries
+        and succeeds instead of falling through to plain-text fallback."""
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(success=False, error="flood control exceeded, timeout 30 seconds"),
+            SendResult(success=True, message_id="ok"),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=1.0)
+        # Must have slept (backoff), i.e. treated as transient — NOT immediate fallback
+        assert mock_sleep.called
+        assert result.success
+        assert len(adapter._send_calls) == 2
+        # No plain-text fallback content on either call
+        assert all("plain text" not in c[1].lower() for c in adapter._send_calls)
+
+    @pytest.mark.asyncio
+    async def test_rate_limited_exhausted_returns_typed_failure_not_fallback(self):
+        """When retries on a rate-limited send are exhausted, return the typed
+        failure for ledger redelivery. Never the truncating plain-text fallback,
+        and — because the final failure is still inside the flood penalty — never
+        a delivery-failure notice send that would re-enter the ban. 1 initial + 2
+        retries = 3 sends, no fourth notice send."""
+        adapter = _StubAdapter()
+        flood = SendResult(success=False, error="flood control exceeded, retry in 60 seconds")
+        adapter._send_results = [flood, flood, flood]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
+        assert not result.success
+        # 1 initial + 2 retries = 3 sends; NO delivery-failure notice (4th send)
+        # is sent inside the active flood penalty
+        assert len(adapter._send_calls) == 3
+        # The only sends are the retries — no truncating "plain text" fallback and
+        # no notice triggered inside the flood penalty
+        for chat_id, content in adapter._send_calls:
+            assert "plain text" not in content.lower(), \
+                f"rate-limited send must not fall through to plain-text fallback, got: {content[:40]!r}"
+            assert "delivery failed" not in content.lower() and \
+                   "Message delivery failed" not in content, \
+                "no notice send inside active flood penalty"
+
+
+# ---------------------------------------------------------------------------
+# _send_with_retry — failure-kind transitions between attempts
+# ---------------------------------------------------------------------------
+# is_rate_limited is recomputed from the refreshed error_str on every retry, so
+# the loop's continue/break decision reflects the CURRENT attempt, not the
+# initial send's classification. These cover the two transitions that a stale
+# classification would get wrong.
+
+class TestSendWithRetryFailureTypeTransitions:
+    @pytest.mark.asyncio
+    async def test_rate_limited_then_formatting_error_stops_retrying_and_falls_back(self):
+        """A rate-limited first attempt followed by a PERMANENT formatting error
+        on retry must stop retrying that permanent error and reach the existing
+        plain-text fallback — not keep retrying it (as a stale, still-true
+        is_rate_limited would)."""
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(success=False, error="flood control exceeded, retry in 60 seconds"),
+            SendResult(success=False, error="Bad Request: can't parse entities"),
+            # fallback send (auto-succeeds via _next_result)
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "**bold**", max_retries=3, base_delay=0)
+        # The formatting error was not retried further: exactly 1 retry then the
+        # plain-text fallback. 1 initial + 1 retry + 1 fallback = 3 sends.
+        assert len(adapter._send_calls) == 3
+        # The permanent formatting error switched attempts to non-transient:
+        # we fall through to (and return) the plain-text fallback.
+        assert "plain text" in adapter._send_calls[-1][1].lower()
+        assert result.success  # fallback succeeded
+        # No delivery-failure notice was sent (this is a formatting fallback, not network exhaustion)
+        assert "delivery failed" not in adapter._send_calls[-1][1].lower()
+
+    @pytest.mark.asyncio
+    async def test_transient_then_rate_limited_then_success_preserves_retry_budget(self):
+        """A transient network error followed by a rate-limited attempt must NOT
+        break the retry loop early: a later rate-limited result is still
+        transient, so the remaining retry budget is preserved and the send goes
+        on to succeed."""
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(success=False, error="httpx.ConnectError: connection refused"),
+            SendResult(success=False, error="flood control exceeded, retry in 30 seconds"),
+            SendResult(success=True, message_id="ok"),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=3, base_delay=0)
+        # Initial + retry(rate-limited) + retry(success) = 3 sends, recovered.
+        assert result.success
+        assert len(adapter._send_calls) == 3
+        # The rate-limited attempt was treated as transient (not a break), so no
+        # delivery-failure notice and no plain-text fallback.
+        assert all("plain text" not in c[1].lower() for c in adapter._send_calls)
+        assert "delivery failed" not in adapter._send_calls[-1][1].lower()
 

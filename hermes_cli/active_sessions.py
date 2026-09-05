@@ -544,6 +544,32 @@ def release_active_session(lease: ActiveSessionLease) -> None:
         lease.released = True
 
 
+def drop_lease_for_session(
+    session_id: str,
+    *, registry_home: str | Path | None = None,
+    profile_home: str | Path | None = None,
+) -> bool:
+    """Remove any active-session lease(s) for ``session_id`` from the on-disk registry.
+
+    Used when a cold resume re-attaches to a session whose in-memory entry was evicted:
+    the old lease (held by the now-evicted runtime's live_session_id) is stale and must
+    be cleared so the new surface can claim its own lease on the next submit.
+    """
+    target = str(session_id or "")
+    if not target:
+        return False
+    # Prefer the profile_home override if given (profile-scoped backend), else root.
+    home = profile_home if profile_home is not None else registry_home
+    state_path, lock_path = _lease_paths(registry_home=home)
+    with _FileLock(lock_path):
+        raw_entries = _read_entries(state_path, strict=True)
+        kept = [e for e in raw_entries if str(e.get("session_id") or "") != target]
+        if len(kept) != len(raw_entries):
+            _write_entries(state_path, kept)
+            return True
+    return False
+
+
 def transfer_active_session(
     lease: ActiveSessionLease, *, session_id: str, metadata: Optional[dict[str, Any]] = None
 ) -> bool:

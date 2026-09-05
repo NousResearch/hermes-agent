@@ -298,6 +298,115 @@ def test_transfer_under_profile_home_override_targets_acquisition_registry(
     assert [entry["session_id"] for entry in entries] == ["after"]
 
 
+def test_drop_lease_for_session_removes_stale_lease(tmp_path, monkeypatch):
+    """Cold resume should release a stale on-disk lease for the same session_key.
+
+    When a session is evicted from _sessions but the owning process is still
+    alive (e.g. idle TTL eviction), the on-disk lease persists. drop_lease_for_session
+    lets the cold-resume path clear it so a new surface can claim the lease.
+    """
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="session-to-take-over",
+        surface="desktop",
+        config={"max_concurrent_sessions": 1},
+        metadata={"live_session_id": "desktop-A-runtime"},
+        track_liveness=True,
+    )
+    assert message is None
+    assert lease is not None
+
+    snapshot = active_sessions.active_session_registry_snapshot()
+    assert len(snapshot) == 1
+    assert snapshot[0]["session_id"] == "session-to-take-over"
+
+    # Simulate the cold-resume path: drop the lease for this session_key
+    # (same pid is alive, but the session was evicted from memory)
+    dropped = active_sessions.drop_lease_for_session("session-to-take-over")
+    assert dropped is True
+
+    # The lease should now be gone — a new surface can claim it
+    snapshot = active_sessions.active_session_registry_snapshot()
+    assert len(snapshot) == 0
+
+    lease2, message2 = active_sessions.try_acquire_active_session(
+        session_id="session-to-take-over",
+        surface="desktop",
+        config={"max_concurrent_sessions": 1},
+        metadata={"live_session_id": "desktop-B-runtime"},
+        track_liveness=True,
+    )
+    assert message2 is None
+    assert lease2 is not None
+    lease2.release()
+
+
+def test_drop_lease_for_session_no_entry_is_noop(tmp_path, monkeypatch):
+    """Dropping a lease for a session with no existing lease is a no-op."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    dropped = active_sessions.drop_lease_for_session("no-such-session")
+    assert dropped is False
+
+
+def test_drop_lease_for_session_only_removes_target(tmp_path, monkeypatch):
+    """Dropping a lease for one session_key must not affect other sessions."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    lease_a, msg_a = active_sessions.try_acquire_active_session(
+        session_id="session-A", surface="desktop", config={"max_concurrent_sessions": 2},
+        metadata={"live_session_id": "ui-A"}, track_liveness=True,
+    )
+    assert msg_a is None
+    lease_b, msg_b = active_sessions.try_acquire_active_session(
+        session_id="session-B", surface="desktop", config={"max_concurrent_sessions": 2},
+        metadata={"live_session_id": "ui-B"}, track_liveness=True,
+    )
+    assert msg_b is None
+
+    dropped = active_sessions.drop_lease_for_session("session-A")
+    assert dropped is True
+
+    snapshot = {e["session_id"] for e in active_sessions.active_session_registry_snapshot()}
+    assert snapshot == {"session-B"}
+    lease_b.release()
+
+
+def test_drop_lease_for_session_under_profile_home(tmp_path, monkeypatch):
+    """Dropping a lease must target the profile home where it was acquired."""
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    lease, error = active_sessions.try_acquire_active_session(
+        session_id="profile-session",
+        surface="desktop",
+        config={"max_concurrent_sessions": 2},
+        registry_home=profile,
+    )
+    assert lease is not None and error is None
+
+    # Lease should be in the profile registry, not root
+    profile_registry = profile / "runtime" / "active_sessions.json"
+    root_registry = root / "runtime" / "active_sessions.json"
+    assert active_sessions._read_entries(profile_registry)
+    assert active_sessions._read_entries(root_registry) == []
+
+    dropped = active_sessions.drop_lease_for_session(
+        "profile-session", profile_home=profile,
+    )
+    assert dropped is True
+
+    assert active_sessions._read_entries(profile_registry) == []
+    assert lease is not None
+    lease.released = True  # already released via drop
+
+
 def test_liveness_registry_corruption_fails_closed_without_overwrite(
     tmp_path, monkeypatch
 ):

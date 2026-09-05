@@ -566,13 +566,49 @@ def _build_tasks_param_description() -> str:
 
 def _build_dynamic_schema_overrides() -> dict:
     """Per-call schema overrides (ToolEntry.dynamic_schema_overrides): every
-    get_definitions() pass rewrites the descriptions to the user's actual limits."""
+    get_definitions() pass rewrites the descriptions to the user's actual limits, and
+    the delegation.agent_routing gate adds/removes the model_profile enum."""
     overrides_params = {**DELEGATE_TASK_SCHEMA["parameters"]}
     # Copy properties so the static schema dict is never mutated.
     overrides_params["properties"] = {k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()}
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
 
+    # Phase 2 gate (delegation.agent_routing, default off): expose model_profile — the operator's
+    # named tiers — per task and batch-wide. Gate off (or no profiles) → schema byte-identical.
+    profile_names = _routable_profile_names()
+    if profile_names is not None:
+        tasks_prop = overrides_params["properties"]["tasks"]
+        items = {**tasks_prop["items"]}
+        items["properties"] = {**items["properties"], "model_profile": _model_profile_property(profile_names)}
+        overrides_params["properties"]["tasks"] = {**tasks_prop, "items": items}
+        overrides_params["properties"]["model_profile"] = _model_profile_property(profile_names, batch_wide=True)
+
     return {"description": _build_top_level_description(), "parameters": overrides_params}
+
+def _routable_profile_names() -> Optional[List[str]]:
+    """Sorted profile names when delegation.agent_routing is truthy AND profiles are configured and
+    parseable, else None (gate off → the public schema must not mention model_profile at all)."""
+    try:
+        cfg = _load_config()
+        if not is_truthy_value(cfg.get("agent_routing")):
+            return None
+        from agent.delegation_model_routing import parse_profiles
+        names = sorted(parse_profiles(cfg))
+        return names or None
+    except Exception as exc:
+        logger.debug("agent_routing: profiles unavailable, hiding model_profile: %s", exc)
+        return None
+
+def _model_profile_property(profile_names: List[str], batch_wide: bool = False) -> dict:
+    scope = "every task in this call (per-task model_profile wins)" if batch_wide else "this task"
+    return _p(
+        "string",
+        f"Model tier for {scope}, from the operator-configured delegation profiles. Use the profile the "
+        "caller requested when one is stated. Otherwise select a small/cheap profile for bounded, "
+        "well-specified work; never pick a more expensive profile without a task-specific reason. "
+        "Omit to use the default profile.",
+        enum=list(profile_names),
+    )
 
 def _p(type_: str, description: str, **extra) -> dict:
     return {"type": type_, **extra, "description": description}
@@ -664,18 +700,42 @@ def _strip_model_hidden_task_fields(tasks: Any) -> Any:
         return tasks
     return [{k: v for k, v in t.items() if k not in _MODEL_HIDDEN_TASK_FIELDS} if isinstance(t, dict) else t for t in tasks]
 
+def _handle_model_call(args: dict, parent_agent=None, background: Optional[bool] = None) -> str:
+    """Single MODEL-facing entry (registry handler and run_agent._dispatch_delegate_task): strips hidden
+    task fields and enforces the delegation.agent_routing gate — when the gate is off, a model-supplied
+    model_profile (task-level or top-level) is rejected with a clean tool_error BEFORE any resolution or
+    child construction (defense in depth: the gated schema never advertises it, but schema honesty must
+    hold even against a fabricated arg)."""
+    tasks = _strip_model_hidden_task_fields(args.get("tasks"))
+    model_profile = args.get("model_profile")
+    if _routable_profile_names() is None:
+        requested = [model_profile] if model_profile else []
+        requested += [
+            t.get("model_profile") for t in (tasks if isinstance(tasks, list) else []) if isinstance(t, dict)
+        ]
+        if any(requested):
+            return tool_error(
+                "model_profile is not enabled: delegation.agent_routing is off (or no delegation.profiles "
+                "are configured). Remove model_profile from the call, or have the operator enable "
+                "delegation.agent_routing in config.yaml."
+            )
+        model_profile = None
+    if background is None:
+        background = _model_background_value(args, parent_agent)
+    return delegate_task(
+        goal=args.get("goal"), context=args.get("context"), tasks=tasks,
+        max_iterations=args.get("max_iterations"), role=args.get("role"),
+        background=background, output_schema=args.get("output_schema"),
+        action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
+        parent_agent=parent_agent, model_profile=model_profile,
+    )
+
 
 registry.register(
     name="delegate_task",
     toolset="delegation",
     schema=DELEGATE_TASK_SCHEMA,
-    handler=lambda args, **kw: delegate_task(
-        goal=args.get("goal"), context=args.get("context"), tasks=_strip_model_hidden_task_fields(args.get("tasks")),
-        max_iterations=args.get("max_iterations"), role=args.get("role"),
-        background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
-        action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
-        parent_agent=kw.get("parent_agent"),
-    ),
+    handler=lambda args, **kw: _handle_model_call(args, parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,

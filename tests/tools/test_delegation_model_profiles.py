@@ -194,3 +194,112 @@ def test_supports_tools_false_profile_rejected_with_toolsets():
         )
     assert "small" in result and "tool" in result.lower()
     assert h.built == []
+
+
+# ── T4: agent_routing gate — model_profile on the public schema ──────────────
+
+import json
+
+import pytest
+
+import tools.delegate_tool as dt
+from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+
+FALSY_GATES = [False, None, "", 0]
+
+
+@pytest.mark.parametrize("gate", FALSY_GATES)
+def test_gate_off_schema_has_no_model_profile(gate):
+    cfg = {"profiles": PROFILES, "agent_routing": gate}
+    with patch("tools.delegate_tool._load_config", return_value=cfg):
+        overrides = dt._build_dynamic_schema_overrides()
+    assert "model_profile" not in json.dumps(overrides)
+    assert "model_profile" not in json.dumps(DELEGATE_TASK_SCHEMA)
+
+
+def test_gate_on_schema_exposes_profile_enum():
+    cfg = {"profiles": PROFILES, "agent_routing": True}
+    with patch("tools.delegate_tool._load_config", return_value=cfg):
+        overrides = dt._build_dynamic_schema_overrides()
+    props = overrides["parameters"]["properties"]
+    expected = sorted(PROFILES)
+    assert props["model_profile"]["enum"] == expected
+    assert props["tasks"]["items"]["properties"]["model_profile"]["enum"] == expected
+    desc = props["tasks"]["items"]["properties"]["model_profile"]["description"].lower()
+    for keyword in ("small", "expensive", "omit"):
+        assert keyword in desc, f"model_profile description lost: {keyword!r}"
+    # The static schema dict must never be mutated by the dynamic overrides.
+    assert "model_profile" not in json.dumps(DELEGATE_TASK_SCHEMA)
+
+
+def test_gate_on_without_profiles_stays_absent():
+    cfg = {"profiles": {}, "agent_routing": True}
+    with patch("tools.delegate_tool._load_config", return_value=cfg):
+        overrides = dt._build_dynamic_schema_overrides()
+    assert "model_profile" not in json.dumps(overrides)
+
+
+@pytest.mark.parametrize("gate", FALSY_GATES)
+def test_gate_off_handler_rejects_task_model_profile(gate):
+    cfg = {"profiles": PROFILES, "agent_routing": gate, "max_spawn_depth": 2}
+    with _Harness(cfg) as h:
+        result = dt._handle_model_call(
+            {"tasks": [{"goal": "Summarize the release notes", "model_profile": "small"}]},
+            parent_agent=_make_parent(depth=1),
+        )
+    assert "model_profile" in result
+    assert h.built == []
+
+
+@pytest.mark.parametrize("gate", FALSY_GATES)
+def test_gate_off_handler_rejects_top_level_model_profile(gate):
+    cfg = {"profiles": PROFILES, "agent_routing": gate, "max_spawn_depth": 2}
+    with _Harness(cfg) as h:
+        result = dt._handle_model_call(
+            {"tasks": [{"goal": "Summarize the release notes"}], "model_profile": "small"},
+            parent_agent=_make_parent(depth=1),
+        )
+    assert "model_profile" in result
+    assert h.built == []
+
+
+def test_gate_off_handler_without_model_profile_still_works():
+    cfg = {"profiles": PROFILES, "agent_routing": False, "max_spawn_depth": 2}
+    with _Harness(cfg) as h:
+        result = dt._handle_model_call(
+            {"tasks": [{"goal": "Summarize the release notes"}]},
+            parent_agent=_make_parent(depth=1),
+        )
+    assert "model_profile" not in result
+    assert len(h.built) == 1
+
+
+def test_gate_on_handler_routes_top_level_profile():
+    cfg = {"profiles": PROFILES, "agent_routing": True, "max_spawn_depth": 2}
+    with _Harness(cfg) as h:
+        dt._handle_model_call(
+            {"tasks": [{"goal": "Summarize the release notes"}], "model_profile": "big"},
+            parent_agent=_make_parent(depth=1),
+        )
+    assert h.built[0]["model"] == "prof/big-model"
+
+
+def test_gate_on_handler_routes_per_task_profile():
+    cfg = {"profiles": PROFILES, "agent_routing": True, "max_spawn_depth": 2}
+    with _Harness(cfg) as h:
+        dt._handle_model_call(
+            {"tasks": [{"goal": "Summarize the release notes", "model_profile": "small"}]},
+            parent_agent=_make_parent(depth=1),
+        )
+    assert h.built[0]["model"] == "prof/small-model"
+
+
+def test_gate_on_handler_unknown_profile_clean_error_no_spawn():
+    cfg = {"profiles": PROFILES, "agent_routing": True, "max_spawn_depth": 2}
+    with _Harness(cfg) as h:
+        result = dt._handle_model_call(
+            {"tasks": [{"goal": "Summarize the release notes", "model_profile": "bogus"}]},
+            parent_agent=_make_parent(depth=1),
+        )
+    assert "bogus" in result
+    assert h.built == []

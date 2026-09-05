@@ -73,6 +73,28 @@ export const requestScrollToBottom = (sessionId: string | null = null) => {
   handlers.get(sessionId)?.forEach(handler => handler())
 }
 
+// Timeline rail → mounted transcript list. A timeline target can already be in
+// assistant-ui's repository while still sitting outside the smaller DOM paint
+// budget. Lists report whether they own the requested durable message id; only
+// that list raises its render budget, so other visible panes remain untouched.
+const revealHandlers = new Set<(scope: string, id: string) => boolean>()
+
+export const onRevealMessageRequest = (handler: (scope: string, id: string) => boolean) => {
+  revealHandlers.add(handler)
+
+  return () => void revealHandlers.delete(handler)
+}
+
+export const requestRevealMessage = (scope: string, id: string): boolean => {
+  let handled = false
+
+  revealHandlers.forEach(handler => {
+    handled = handler(scope, id) || handled
+  })
+
+  return handled
+}
+
 // Inline edit grows a sticky human bubble. Fire on pointerdown so the viewport
 // escapes stick-to-bottom before focus/layout; close clears the edit flag when
 // the inline composer unmounts.

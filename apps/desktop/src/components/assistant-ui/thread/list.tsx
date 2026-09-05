@@ -22,6 +22,7 @@ import { useI18n } from '@/i18n'
 import { messagePaintWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
 import {
+  onRevealMessageRequest,
   onScrollToBottomRequest,
   onThreadEditClose,
   onThreadEditOpen,
@@ -112,6 +113,41 @@ export const transcriptPaneBudget = (mountedPanes: number, hidden: boolean): num
 // is a no-op. Parked panes are unmounted, so they never hit this path.
 export const shouldClampTranscriptBudget = (hidden: boolean, renderBudget: number, paneBudget: number): boolean =>
   hidden && renderBudget > paneBudget
+
+/** Paint budget required to include the group containing a durable message id. */
+export const renderBudgetToRevealGroup = (groups: readonly MessageGroup[], messageId: string): number | null => {
+  const index = groups.findIndex(group => group.id === messageId)
+
+  if (index < 0) {
+    return null
+  }
+
+  let weight = 0
+
+  for (let i = groups.length - 1; i >= index; i--) {
+    weight += groups[i].weight
+  }
+
+  return weight
+}
+
+export const weightMessageGroups = (groups: readonly MessageGroup[], weightSignature: string): MessageGroup[] => {
+  const weights = weightSignature.split(',').map(weight => Number(weight) || 1)
+
+  return groups.map(group => ({
+    ...group,
+    weight:
+      group.kind === 'turn'
+        ? group.indices.reduce((sum, index) => sum + (weights[index] ?? 1), 0)
+        : (weights[group.index] ?? 1)
+  }))
+}
+
+export const renderBudgetToRevealWeightedGroup = (
+  groups: readonly MessageGroup[],
+  weightSignature: string,
+  messageId: string
+): number | null => renderBudgetToRevealGroup(weightMessageGroups(groups, weightSignature), messageId)
 // Units the backfill adds per committed step (see the backfill effect). A
 // 60-unit step produced ~10 visible prepend frames after FIRST_PAINT_BUDGET
 // retune (#83681). 290 fills a 600-unit page in two interruptible commits —
@@ -429,7 +465,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     targetScrollTop: resolveThreadScrollTarget
   })
 
-  const { olderAvailable, expandWindow } = useTranscriptWindow()
+  const { olderAvailable, expandWindow, revealScope } = useTranscriptWindow()
 
   useEffect(() => {
     $mountedTranscriptPanes.set($mountedTranscriptPanes.get() + 1)
@@ -545,17 +581,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // Weights (part count + visible character cost) fold into the BUDGET only.
   // Group identity stays structural, so a streaming append re-runs this cheap
   // sum — not the row JSX. Settled content hits messagePaintWeight's WeakMap.
-  const weightedGroups = useMemo(() => {
-    const weights = weightSignature.split(',').map(w => Number(w) || 1)
-
-    return groups.map(group => ({
-      ...group,
-      weight:
-        group.kind === 'turn'
-          ? group.indices.reduce((sum, index) => sum + (weights[index] ?? 1), 0)
-          : (weights[group.index] ?? 1)
-    }))
-  }, [groups, weightSignature])
+  const weightedGroups = useMemo(() => weightMessageGroups(groups, weightSignature), [groups, weightSignature])
 
   // The turn floor applies to a real page only. During the first-paint budget
   // the point is a small synchronous commit; forcing 8 turns into it would put
@@ -604,6 +630,34 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   // Floating jump button (outside this subtree) → return to the bottom.
   useEffect(() => onScrollToBottomRequest(() => void scrollToBottom(), sessionId), [scrollToBottom, sessionId])
+
+  // The timeline can select a prompt present in assistant-ui but outside this
+  // list's bounded DOM page. Raise only the list that actually owns the durable
+  // id; the timeline's bounded frame retry performs the scroll after React
+  // mounts the target. Store-window expansion remains owned by ChatRuntimeBoundary.
+  const revealHandlerRef = useRef<(scope: string, id: string) => boolean>(() => false)
+
+  revealHandlerRef.current = (scope: string, id: string) => {
+    if (!revealScope || scope !== revealScope || paneLifecycle !== 'visible') {
+      return false
+    }
+
+    const neededBudget = renderBudgetToRevealWeightedGroup(groups, weightSignature, id)
+
+    if (neededBudget == null) {
+      return false
+    }
+
+    if (neededBudget > renderBudget) {
+      setRenderBudget(neededBudget)
+    }
+
+    stopScroll()
+
+    return true
+  }
+
+  useEffect(() => onRevealMessageRequest((scope, id) => revealHandlerRef.current(scope, id)), [])
 
   // Waking from display: hidden (HUD mode hides the main window; OS hide does
   // the same to any window): rAF and ResizeObserver may have been frozen, so

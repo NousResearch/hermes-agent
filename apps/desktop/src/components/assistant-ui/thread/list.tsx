@@ -248,11 +248,21 @@ export function buildGroups(signature: string): MessageGroup[] {
 // Walk turns newest-first, summing their render weights until the budget is met;
 // everything before the first kept turn is hidden. `minVisible` turns are kept
 // regardless of weight. Returns the index of that first visible group.
+//
+// The NEWEST turn spends none of the budget. Its weight climbs on every store
+// flush while it streams and lands in bulk as it completes, and counting it
+// walked this cut forward MID-TURN — each step dropping a settled turn off the
+// top, shrinking scrollHeight under the stick-to-bottom lock (the recurring
+// flicker/jump on long agent turns). Exempt, the cut is a function of settled
+// history only: it can move only when the next turn begins, never while the
+// current one grows or finishes.
 export function firstVisibleGroupIndex(groups: readonly MessageGroup[], budget: number, minVisible = 0): number {
   let firstVisible = groups.length
 
   for (let i = groups.length - 1, weight = 0; i >= 0; i--) {
-    weight += groups[i].weight
+    if (i < groups.length - 1) {
+      weight += groups[i].weight
+    }
     firstVisible = i
 
     if (weight >= budget) {

@@ -218,17 +218,39 @@ describe('firstVisibleGroupIndex', () => {
   })
 
   it('walks newest-first and hides everything before the turn that meets the budget', () => {
-    const groups = [group('old', 50), group('mid', 30), group('new', 30)]
+    const groups = [group('oldest', 50), group('old', 30), group('mid', 30), group('new', 999)]
 
-    // newest-first: 30 (new) < 60, +30 (mid) = 60 >= 60 → mid is the first
-    // visible group, old is hidden.
+    // The newest turn is exempt, then newest-first over history: 30 (mid) < 60,
+    // +30 (old) = 60 >= 60 → old is the first visible group, oldest is hidden.
     expect(firstVisibleGroupIndex(groups, 60)).toBe(1)
   })
 
   it('keeps whole turns intact — the turn that crosses the budget stays visible', () => {
-    const groups = [group('old', 5), group('huge', 500)]
+    const groups = [group('old', 5), group('huge', 500), group('new', 10)]
 
     expect(firstVisibleGroupIndex(groups, 60)).toBe(1)
+  })
+
+  it('exempts the newest turn — the cut cannot move while it grows or completes', () => {
+    // The streaming turn's weight climbs per flush and lands in bulk at
+    // completion. Counting it walked the cut forward mid-turn, dropping settled
+    // turns off the top and shifting scrollHeight under stick-to-bottom.
+    const history = [group('g0', 30), group('g1', 40), group('g2', 30)]
+
+    const streaming = firstVisibleGroupIndex([...history, group('new', 1)], 60)
+    const completed = firstVisibleGroupIndex([...history, group('new', 500)], 60)
+
+    expect(streaming).toBe(1)
+    expect(completed).toBe(streaming)
+  })
+
+  it('moves the cut only when the finished turn joins history', () => {
+    const groups = [group('g0', 30), group('g1', 40), group('g2', 30), group('done', 500)]
+
+    // Same transcript, next turn begins: `done` is now history and its full
+    // weight spends the budget in one step — the cut advances past it at a
+    // natural content-change moment, not mid-stream.
+    expect(firstVisibleGroupIndex([...groups, group('next', 1)], 60)).toBe(3)
   })
 
   it('returns groups.length for an empty list', () => {

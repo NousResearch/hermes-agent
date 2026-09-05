@@ -556,6 +556,10 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 
 `/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
 
+Session list and detail responses include `cwd`, `git_repo_root`,
+`project_id`, and `project_slug`. The project fields are `null` when the
+session is not owned by an explicit Project.
+
 ```bash
 # fork a session and run one turn
 curl -X POST http://localhost:8642/api/sessions/$ID/fork \
@@ -567,6 +571,27 @@ curl -N -X POST http://localhost:8642/api/sessions/$ID/chat/stream \
   -H "Authorization: Bearer $API_SERVER_KEY" \
   -d '{"input": "what files changed in the last hour?"}'
 ```
+
+## Projects API (read-only workspace discovery)
+
+`GET /api/projects` exposes the active profile's Project catalog to external
+UIs. The `data` array contains non-archived projects from `projects.db`, with
+their folders and a `session_count`. `discovered_repos` contains cached
+repo-first discovery rows with the same count field, and `active_id` identifies
+the selected explicit Project when one is active.
+
+Counts include the same active, non-hidden, client-visible conversations as
+the Sessions API and are not limited by session-list pagination. This endpoint
+does not create `projects.db` for a profile that has never used Projects; it
+returns empty arrays instead.
+
+```bash
+curl http://localhost:8642/api/projects \
+  -H "Authorization: Bearer $API_SERVER_KEY"
+```
+
+`/v1/capabilities` advertises this surface through
+`features.project_resources` and `endpoints.projects`.
 
 ## Skills and toolsets discovery
 

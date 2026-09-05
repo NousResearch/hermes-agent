@@ -116,6 +116,8 @@ POST /v1/browser-control/register Register a browser controller
 GET  /v1/browser-control/ws       Browser-controller WebSocket
 GET  /v1/models                  Lists hermes-agent
 GET  /api/model/options          Provider-aware picker inventory
+GET  /api/projects               Projects/discovered repos with session counts
+GET  /api/sessions               Session metadata with workspace association
 GET  /health, /health/detailed
 ```
 

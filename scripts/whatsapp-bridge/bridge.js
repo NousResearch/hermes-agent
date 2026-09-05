@@ -606,10 +606,19 @@ async function startSocket() {
           // WhatsApp now uses LID (Linked Identity Device) format: 67427329167522@lid
           // AND classic format: 34652029134@s.whatsapp.net
           // sock.user has both: { id: "number:10@s.whatsapp.net", lid: "lid_number:10@lid" }
-          const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
           const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
           const chatNumber = chatId.replace(/@.*/, '');
-          const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
+          // When the account exposes a LID, self-chat must match LID exclusively.
+          // The legacy PN identity also surfaces Meta AI conversations; an OR
+          // comparison would misclassify those as self-chat and ingest them as
+          // agent commands (#103281).
+          let isSelfChat;
+          if (myLid) {
+            isSelfChat = chatNumber === myLid;
+          } else {
+            const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
+            isSelfChat = !!(myNumber && chatNumber === myNumber);
+          }
           emitDebugEvent({
             stage: 'self_chat_check',
             matched: !!isSelfChat,

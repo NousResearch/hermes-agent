@@ -43,6 +43,34 @@ function runGh(args, cwd, ghBin): Promise<{ ok: boolean; stdout: string }> {
   })
 }
 
+// simple-git logs this to `console.warn` on EVERY construction that opts into
+// `unsafe.allowUnsafeCustomBinary`. We opt in deliberately (see `gitFor`), so
+// the warning carries no information — but the coding rail rebuilds a client on
+// every status poll, which turned the desktop log into hundreds of identical
+// lines and buried real errors.
+const SIMPLE_GIT_UNSAFE_BINARY_WARNING = 'Invalid value supplied for custom binary'
+
+// Run `build` with simple-git's known custom-binary warning suppressed. The
+// suppression is synchronous and scoped to the construction call, so unrelated
+// warnings (including any emitted later by the returned client) still surface.
+function withoutUnsafeBinaryWarning<T>(build: () => T): T {
+  const original = console.warn
+
+  console.warn = (...args: unknown[]) => {
+    if (typeof args[0] === 'string' && args[0].startsWith(SIMPLE_GIT_UNSAFE_BINARY_WARNING)) {
+      return
+    }
+
+    original.apply(console, args as [])
+  }
+
+  try {
+    return build()
+  } finally {
+    console.warn = original
+  }
+}
+
 function gitFor(cwd, gitBin) {
   // `gitBin` is resolved inside the Electron main process from known install
   // locations or PATH — never renderer/user input. simple-git's custom-binary
@@ -51,13 +79,18 @@ function gitFor(cwd, gitBin) {
   // For spaced paths, opt into simple-git's trusted-binary escape hatch instead
   // of falling back to PATH (often absent in GUI-launched apps, and PATH lookup
   // could resolve a repo-local git.exe).
-  return simpleGit({
-    baseDir: cwd,
-    binary: gitBin || 'git',
-    maxConcurrentProcesses: 4,
-    trimmed: false,
-    ...(gitBin && /\s/.test(gitBin) ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
-  })
+  const unsafeBinary = Boolean(gitBin && /\s/.test(gitBin))
+
+  const build = () =>
+    simpleGit({
+      baseDir: cwd,
+      binary: gitBin || 'git',
+      maxConcurrentProcesses: 4,
+      trimmed: false,
+      ...(unsafeBinary ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
+    })
+
+  return unsafeBinary ? withoutUnsafeBinaryWarning(build) : build()
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve

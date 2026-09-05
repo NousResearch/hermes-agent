@@ -403,7 +403,7 @@ def test_worker_log_rotation_preserves_hardened_mode(tmp_path):
     log_path.write_text("content that exceeds one byte\n")
     os.chmod(log_path, 0o644)
 
-    kb._rotate_worker_log(log_path, max_bytes=1, backup_count=2)
+    kbd._rotate_worker_log(log_path, max_bytes=1, backup_count=2)
 
     rotated = tmp_path / "worker.log.1"
     assert rotated.exists()
@@ -412,7 +412,7 @@ def test_worker_log_rotation_preserves_hardened_mode(tmp_path):
     # A second rotation shifts .1 to .2 — verify shift-up chmod too.
     log_path.write_text("more content for the next rotation cycle\n")
     os.chmod(log_path, 0o644)
-    kb._rotate_worker_log(log_path, max_bytes=1, backup_count=2)
+    kbd._rotate_worker_log(log_path, max_bytes=1, backup_count=2)
     rotated2 = tmp_path / "worker.log.2"
     assert rotated2.exists()
     assert stat.S_IMODE(rotated2.stat().st_mode) == 0o600

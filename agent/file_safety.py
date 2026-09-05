@@ -151,6 +151,8 @@ def _classify_write_denial(path: str) -> Optional[str]:
         for sub in _HERMES_PROTECTED_SUBPATHS:
             with suppress(Exception):
                 if _is_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
+                    if sub in ("state.db", "sessions"):
+                        return "session_state"
                     return "credential"
 
     safe_roots = get_safe_write_roots()
@@ -174,6 +176,8 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
             f"{verb} denied: '{path}' is outside HERMES_WRITE_SAFE_ROOT "
             f"({roots_display}). Unset the variable or add this path's directory prefix."
         )
+    if denial == "session_state":
+        return f"{verb} denied: '{path}' is internal session history / state storage and cannot be modified directly."
     return f"{verb} denied: '{path}' is a protected system/credential file." if denial else None
 
 

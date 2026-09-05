@@ -1,6 +1,7 @@
 import type { AppendMessage } from '@assistant-ui/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { zhHant } from '@/i18n/zh-hant'
 import type { ChatMessage } from '@/lib/chat-messages'
 
 import {
@@ -23,6 +24,7 @@ import {
   readFileDataUrlForAttach,
   RECENT_INTERRUPT_COOLDOWN_MS,
   releaseSubmitInFlight,
+  renderCommandsCatalog,
   renderRpcResult,
   SessionRecoveryAborted,
   shouldInterruptBeforeRewind,
@@ -414,6 +416,64 @@ describe('slashStatusText', () => {
 
   it('omits empty output', () => {
     expect(slashStatusText('/clear', '   ')).toBe('slash:/clear')
+  })
+})
+
+describe('renderCommandsCatalog', () => {
+  it('localizes built-in help copy while preserving syntax and extension copy', () => {
+    const rendered = renderCommandsCatalog(
+      {
+        categories: [
+          {
+            name: 'Session',
+            pairs: [
+              ['/new', 'Start a new session'],
+              ['/context', 'Show current context usage (usage: /context [all])']
+            ]
+          },
+          { name: 'User commands', pairs: [['/ship-it', 'Run release checklist']] }
+        ],
+        commands: {
+          '/context': { argument_mode: 'options', desktop: null },
+          '/new': { argument_mode: null, desktop: null }
+        },
+        pairs: [
+          ['/new', 'Start a new session'],
+          ['/context', 'Show current context usage (usage: /context [all])'],
+          ['/ship-it', 'Run release checklist']
+        ],
+        skill_count: 1
+      },
+      zhHant.desktop
+    )
+
+    expect(rendered).toContain('工作階段:')
+    expect(rendered).toContain('/new               開始新的桌面聊天')
+    expect(rendered).toContain('/context [all]')
+    expect(rendered).toContain('（用法：/context [all]）')
+    expect(rendered).toContain('使用者指令:')
+    expect(rendered).toContain('/ship-it           Run release checklist')
+  })
+
+  it('includes flat-only skill commands when categorized built-ins are present', () => {
+    const rendered = renderCommandsCatalog(
+      {
+        categories: [{ name: 'Session', pairs: [['/new', 'Start a new session']] }],
+        pairs: [
+          ['/new', 'Start a new session'],
+          ['/docx', 'Edit Word documents with the installed skill'],
+          ['/docx', 'Duplicate row must not render twice']
+        ],
+        skills: { '/docx': { usage: 1, origin: 'local' } },
+        skill_count: 1
+      },
+      zhHant.desktop
+    )
+
+    expect(rendered).toContain('工作階段:')
+    expect(rendered).toContain('技能:')
+    expect(rendered).toContain('/docx              Edit Word documents with the installed skill')
+    expect(rendered.match(/^\/docx\s+/gm)).toHaveLength(1)
   })
 })
 

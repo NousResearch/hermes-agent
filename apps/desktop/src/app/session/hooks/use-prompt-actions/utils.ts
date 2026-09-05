@@ -2,7 +2,13 @@ import type { AppendMessage } from '@assistant-ui/react'
 
 import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
+import {
+  canonicalDesktopSlashCommand,
+  type CommandsCatalogLike,
+  desktopSlashGroupLabel,
+  filterDesktopCommandsCatalog,
+  isDesktopSlashExtensionCommand
+} from '@/lib/desktop-slash-commands'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import type { ComposerAttachment } from '@/store/composer'
 
@@ -470,18 +476,46 @@ export function friendlyRemoteAttachError(err: unknown, label: string): Error {
 }
 
 export function renderCommandsCatalog(catalog: CommandsCatalogLike, copy: Translations['desktop']): string {
-  const desktopCatalog = filterDesktopCommandsCatalog(catalog)
+  const desktopCatalog = filterDesktopCommandsCatalog(catalog, copy.slashCommands)
+
+  const seenCommands = new Set(
+    (desktopCatalog.categories ?? []).flatMap(section =>
+      section.pairs.map(([command]) => canonicalDesktopSlashCommand(command))
+    )
+  )
+
+  const flatOnlyExtensions = (desktopCatalog.pairs ?? []).filter(([command]) => {
+    const canonical = canonicalDesktopSlashCommand(command)
+
+    if (seenCommands.has(canonical) || !isDesktopSlashExtensionCommand(command)) {
+      return false
+    }
+
+    seenCommands.add(canonical)
+
+    return true
+  })
 
   const sections = desktopCatalog.categories?.length
-    ? desktopCatalog.categories
+    ? desktopCatalog.categories.map(section => ({ ...section, pairs: [...section.pairs] }))
     : [{ name: copy.desktopCommands, pairs: desktopCatalog.pairs ?? [] }]
+
+  if (desktopCatalog.categories?.length && flatOnlyExtensions.length) {
+    const skills = sections.find(section => section.name === 'Skills')
+
+    if (skills) {
+      skills.pairs = [...skills.pairs, ...flatOnlyExtensions]
+    } else {
+      sections.push({ name: 'Skills', pairs: flatOnlyExtensions })
+    }
+  }
 
   const body = sections
     .filter(section => section.pairs.length > 0)
     .map(section => {
       const rows = section.pairs.map(([cmd, desc]) => `${cmd.padEnd(18)} ${desc}`)
 
-      return [`${section.name}:`, ...rows].join('\n')
+      return [`${desktopSlashGroupLabel(section.name, copy.slashCommands)}:`, ...rows].join('\n')
     })
     .join('\n\n')
 
@@ -492,7 +526,7 @@ export function renderCommandsCatalog(catalog: CommandsCatalogLike, copy: Transl
     .filter(Boolean)
     .join('\n')
 
-  return [body || 'No desktop commands available.', tail].filter(Boolean).join('\n\n')
+  return [body || copy.slashCommands.noCommands, tail].filter(Boolean).join('\n\n')
 }
 
 export function slashStatusText(command: string, output: string): string {

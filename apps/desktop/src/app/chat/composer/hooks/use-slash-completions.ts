@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect } from 'react'
 
 import type { HermesGateway } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
   type CommandsCatalogLike,
@@ -66,6 +67,8 @@ export function useSlashCompletions(options: {
   loading: boolean
 } {
   const { gateway, skinThemes, activeSkin } = options
+  const { locale, t } = useI18n()
+  const slashCopy = t.desktop.slashCommands
   const enabled = Boolean(gateway)
   const epoch = useStore($slashCompletionsEpoch)
 
@@ -99,12 +102,14 @@ export function useSlashCompletions(options: {
       const skinArg = /^\/skin\s+(.*)$/is.exec(text)
 
       if (skinArg && skinThemes) {
-        const items = desktopSkinSlashCompletions(skinThemes, activeSkin ?? '', skinArg[1] ?? '').map(entry => ({
-          text: entry.text,
-          display: entry.display,
-          meta: entry.meta,
-          group: 'Themes'
-        }))
+        const items = desktopSkinSlashCompletions(skinThemes, activeSkin ?? '', skinArg[1] ?? '', slashCopy).map(
+          entry => ({
+            text: entry.text,
+            display: entry.display,
+            meta: entry.meta,
+            group: 'Themes'
+          })
+        )
 
         return { items, query }
       }
@@ -142,7 +147,7 @@ export function useSlashCompletions(options: {
         // submitting it (Enter) still opens the overlay if the action is skipped.
         items.push({
           text: '/resume',
-          display: 'Browse all sessions…',
+          display: slashCopy.browseAllSessions,
           meta: '',
           group: 'Sessions',
           action: 'session-picker'
@@ -251,7 +256,7 @@ export function useSlashCompletions(options: {
         return { items: [], query }
       }
     },
-    [gateway, skinThemes, activeSkin]
+    [gateway, skinThemes, activeSkin, slashCopy]
   )
 
   const toItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {
@@ -298,5 +303,5 @@ export function useSlashCompletions(options: {
     [skinThemes]
   )
 
-  return useLiveCompletionAdapter({ enabled, epoch, fetcher, isCached, toItem })
+  return useLiveCompletionAdapter({ enabled, epoch: `${epoch}:${locale}`, fetcher, isCached, toItem })
 }

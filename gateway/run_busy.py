@@ -534,7 +534,8 @@ class GatewayBusySessionMixin:
         demoted_for_subagents: bool, demoted_for_compression: bool,
     ) -> str:
         from gateway.run import (
-            _AGENT_PENDING_SENTINEL, _hermes_home, _load_gateway_config, _platform_config_key
+            _AGENT_PENDING_SENTINEL, _format_iteration_progress, _hermes_home,
+            _load_gateway_config, _platform_config_key,
         )
         from gateway.display_config import resolve_display_setting
 
@@ -556,7 +557,9 @@ class GatewayBusySessionMixin:
                     status_parts.append(f"{elapsed_min} min elapsed")
                 if summary.get("max_iterations", 0):
                     status_parts.append(
-                        f"iteration {summary.get('api_call_count', 0)}/{summary.get('max_iterations', 0)}"
+                        _format_iteration_progress(
+                            summary.get("api_call_count", 0), summary.get("max_iterations", 0)
+                        )
                     )
                 if summary.get("current_tool"):
                     status_parts.append(f"running: {summary.get('current_tool')}")

@@ -8,7 +8,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import Dict, Optional, Set
 from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _make_redirect_header_stripper, _resolve_client_cert
-from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
+from tools.mcp_tool_lifecycle import _filter_mcp_children, _maybe_start_orphan_janitor, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_lifecycle as _lifecycle
@@ -189,6 +189,7 @@ class MCPServerTransportMixin:
         # Groups still alive stay registered on purpose, so the supervisor still reaps them if this
         # process dies before the orphan sweep runs.
         released_pgids: list = []
+        recorded_orphan = False
         with _core._lock:
             for pid in new_pids:
                 _stdio_pids.pop(pid, None)
@@ -196,10 +197,17 @@ class MCPServerTransportMixin:
                 if _pid_exists(pid) or _pgroup_alive(_stdio_pgids.get(pid)):
                     _orphan_stdio_pids.add(pid)
                     _orphan_stdio_pid_servers[pid] = self.name
+                    recorded_orphan = True
                 else:  # nothing to reap — drop the pgid so PID reuse can't surface stale pgroup state
                     dropped = _stdio_pgids.pop(pid, None)
                     if dropped is not None:
                         released_pgids.append(dropped)
+        if recorded_orphan:
+            # A just-recorded orphan needs the background janitor running
+            # so it is reaped mid-process instead of accumulating until
+            # this process exits (#81880). Outside _core._lock: the starter
+            # only takes the janitor lock.
+            _maybe_start_orphan_janitor()
         _core._update_death_supervisor("unregister", released_pgids)
 
     async def _run_stdio(self, config: dict):

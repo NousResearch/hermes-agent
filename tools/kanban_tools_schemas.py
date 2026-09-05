@@ -509,3 +509,16 @@ KANBAN_LINK_SCHEMA = _schema(
     },
     ["parent_id", "child_id"],
 )
+
+KANBAN_UNLINK_SCHEMA = _schema(
+    "kanban_unlink",
+    (
+        "Remove a parent→child dependency edge after both tasks already "
+        "exist. If the edge does not exist, no change is made."
+    ),
+    {
+        "parent_id": {"type": "string", "description": "Parent task id."},
+        "child_id":  {"type": "string", "description": "Child task id."},
+    },
+    ["parent_id", "child_id"],
+)

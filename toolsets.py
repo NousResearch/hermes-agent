@@ -30,7 +30,7 @@ _HERMES_CORE_TOOLS = [
     "kanban_complete", "kanban_block", "kanban_request_review",
     "kanban_request_changes",
     "kanban_heartbeat",
-    "kanban_comment", "kanban_create", "kanban_link",
+    "kanban_comment", "kanban_create", "kanban_link", "kanban_unlink",
     "kanban_unblock",
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
     "computer_use",

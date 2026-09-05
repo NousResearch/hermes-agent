@@ -23,6 +23,7 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
+    KANBAN_UNLINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
     KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
 
@@ -944,6 +945,18 @@ def _handle_link(args: dict, **kw) -> str:
         return _ok(parent_id=parent_id, child_id=child_id)
 
 
+@_kanban_handler("kanban_unlink")
+def _handle_unlink(args: dict, **kw) -> str:
+    """Remove a parent→child dependency edge, if present."""
+    _reject_delegated_child_mutation("kanban_unlink")
+    parent_id = args.get("parent_id")
+    child_id = args.get("child_id")
+    _check(parent_id and child_id, "both parent_id and child_id are required")
+    with _board(args.get("board")) as (kb, conn):
+        removed = kb.unlink_tasks(conn, parent_id=parent_id, child_id=child_id)
+        return _ok(parent_id=parent_id, child_id=child_id, removed=removed)
+
+
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
 # kanban_list / kanban_unblock route the board and are hidden from task workers.
@@ -962,7 +975,8 @@ _TOOLS = (
     ("kanban_attachments", KANBAN_ATTACHMENTS_SCHEMA, _handle_attachments, "📎"),
     ("kanban_create", KANBAN_CREATE_SCHEMA, _handle_create, "➕"),
     ("kanban_unblock", KANBAN_UNBLOCK_SCHEMA, _handle_unblock, "▶"),
-    ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"))
+    ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"),
+    ("kanban_unlink", KANBAN_UNLINK_SCHEMA, _handle_unlink, "🔗"))
 
 for _name, _sch, _handler, _emoji in _TOOLS:
     _gate = _check_kanban_orchestrator_mode if _name in _ORCHESTRATOR_TOOLS else _check_kanban_mode

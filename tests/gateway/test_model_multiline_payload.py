@@ -72,6 +72,7 @@ def _make_runner():
     adapter = MagicMock()
     adapter.send = AsyncMock()
     adapter._send_with_retry = AsyncMock()
+    adapter.send_slash_confirm = AsyncMock(return_value=None)  # no buttons → text fallback
     adapter._pending_messages = {}
     runner.adapters = {Platform.MATRIX: adapter}
     runner._voice_mode = {}
@@ -117,6 +118,9 @@ def _make_runner():
     runner._background_tasks = {}
     runner._background_task_counter = 0
     runner._session_model_overrides = {}
+    runner._session_reasoning_overrides = {}
+    runner._session_service_tier_overrides = {}
+    runner._pending_one_turn_model_restores = {}
     runner._pending_model_notes = {}
     runner._service_tier = None
     runner._fast_mode_by_session = {}
@@ -150,6 +154,16 @@ def _quiet_model_switch_guards(monkeypatch) -> None:
     monkeypatch.setattr(code_skew, "detect_code_skew", lambda *a, **k: None)
     monkeypatch.setattr(
         model_selection_guards, "combined_selection_warning", lambda *a, **k: None
+    )
+
+
+def _fire_selection_guard(monkeypatch) -> None:
+    """Make the selection guard fire for every model (cost-guard style warning)."""
+    import hermes_cli.model_selection_guards as model_selection_guards
+
+    warning = SimpleNamespace(title="Cost guard", message="This model is expensive.")
+    monkeypatch.setattr(
+        model_selection_guards, "combined_selection_warning", lambda *a, **k: warning
     )
 
 
@@ -286,3 +300,140 @@ async def test_model_command_without_payload_behaves_as_before(tmp_path, monkeyp
     assert "Model switched to `ollama-cloud/glm-5.1`" in result
     adapter.send.assert_not_awaited()
     runner._handle_message_with_agent.assert_not_awaited()
+
+
+# ---- Approval path: the payload survives a selection-guard confirmation ----
+
+
+async def test_model_inline_payload_routes_once_after_approval(tmp_path, monkeypatch):
+    """Guard fires on ``/model <name>\n<payload>``: /approve switches the model and routes the
+    original payload exactly once; a second /approve routes nothing."""
+    from tools import slash_confirm as slash_confirm_mod
+
+    _setup_isolated_home(tmp_path, monkeypatch)
+    _fire_selection_guard(monkeypatch)
+    seen_raw_inputs: list[str] = []
+    _fake_switch_model(monkeypatch, seen_raw_inputs=seen_raw_inputs)
+
+    runner, adapter = _make_runner()
+    session_key = runner._session_key_for_source(_make_source(thread_id="thread-1"))
+    slash_confirm_mod.clear(session_key)  # module-global confirm state; fresh per test
+
+    # Turn 1: the guard fires — nothing is committed and the payload is retained session-scoped.
+    prompt = await runner._handle_message(
+        _make_event("/model expensive-model\npayload body", thread_id="thread-1")
+    )
+    assert "Cost guard" in prompt
+    assert seen_raw_inputs == ["expensive-model"]
+    assert runner._session_model_overrides == {}
+    assert runner._model_inline_payload_stash() == {session_key: "payload body"}
+    pending = slash_confirm_mod.get_pending(session_key)
+    assert pending is not None and pending["command"] == "model"
+
+    # Turn 2: !approve commits the switch, delivers the confirmation out-of-band, and the
+    # retained payload runs as the user turn on the new model.
+    result = await runner._handle_message(_make_event("!approve", thread_id="thread-1"))
+    assert result == "agent reply"
+    assert runner._session_model_overrides[session_key]["model"] == "expensive-model"
+    adapter.send.assert_awaited_once()
+    assert "Model switched to `expensive-model`" in adapter.send.await_args.args[1]
+    runner._handle_message_with_agent.assert_awaited_once()
+    assert runner._handle_message_with_agent.await_args.args[0].text == "payload body"
+    assert runner._model_inline_payload_stash() == {}
+
+    # Turn 3: a second /approve routes nothing (confirm resolved, stash empty).
+    await runner._handle_message(_make_event("/approve", thread_id="thread-1"))
+    assert runner._handle_message_with_agent.await_count == 1
+    assert adapter.send.await_count == 1
+
+
+async def test_model_inline_payload_not_routed_on_cancel(tmp_path, monkeypatch):
+    """Cancel/deny drops the retained payload: nothing is routed and nothing is committed."""
+    from tools import slash_confirm as slash_confirm_mod
+
+    _setup_isolated_home(tmp_path, monkeypatch)
+    _fire_selection_guard(monkeypatch)
+    seen_raw_inputs: list[str] = []
+    _fake_switch_model(monkeypatch, seen_raw_inputs=seen_raw_inputs)
+
+    runner, adapter = _make_runner()
+    session_key = runner._session_key_for_source(_make_source(thread_id="thread-1"))
+    slash_confirm_mod.clear(session_key)
+
+    await runner._handle_message(
+        _make_event("/model expensive-model\npayload body", thread_id="thread-1")
+    )
+    result = await runner._handle_message(_make_event("!cancel", thread_id="thread-1"))
+
+    assert "cancelled" in result.lower()
+    assert runner._session_model_overrides == {}
+    assert runner._model_inline_payload_stash() == {}
+    adapter.send.assert_not_awaited()
+    runner._handle_message_with_agent.assert_not_awaited()
+
+
+async def test_model_inline_payload_dropped_when_approved_switch_fails(
+    tmp_path, monkeypatch
+):
+    """A switch that fails on approval drops the payload — no routing, no replay."""
+    from tools import slash_confirm as slash_confirm_mod
+
+    _setup_isolated_home(tmp_path, monkeypatch)
+    _fire_selection_guard(monkeypatch)
+    seen_raw_inputs: list[str] = []
+    _fake_switch_model(monkeypatch, seen_raw_inputs=seen_raw_inputs)
+
+    runner, adapter = _make_runner()
+    session_key = runner._session_key_for_source(_make_source(thread_id="thread-1"))
+    slash_confirm_mod.clear(session_key)
+
+    class _FailingAgent:
+        def __init__(self):
+            self.model = "old-model"
+            self.provider = "openrouter"
+
+        def switch_model(self, **kwargs):
+            # Mirrors agent_runtime_helpers.switch_model: the real method restores old
+            # state then re-raises; the gateway must surface the error, not commit.
+            raise RuntimeError("connection refused: bad base_url")
+
+    import threading
+
+    runner._agent_cache = {session_key: [_FailingAgent(), None]}
+    runner._agent_cache_lock = threading.Lock()
+    evicted = []
+    runner._evict_cached_agent = lambda sk: evicted.append(sk)
+
+    await runner._handle_message(
+        _make_event("/model expensive-model\npayload body", thread_id="thread-1")
+    )
+    result = await runner._handle_message(_make_event("!approve", thread_id="thread-1"))
+
+    assert "failed" in result.lower()
+    assert runner._handle_message_with_agent.await_count == 0
+    assert runner._model_inline_payload_stash() == {}
+    assert runner._session_model_overrides == {}
+    assert evicted == []
+    adapter.send.assert_not_awaited()
+
+
+async def test_new_clears_staged_model_inline_payload():
+    """The stash is conversation-scoped: /new clears it for the calling session only."""
+    runner, _adapter = _make_runner()
+    session_key = runner._session_key_for_source(_make_source())
+    # Reset-shaped store with the real async facade (the property rebuilds it), per
+    # test_session_model_reset.py.
+    session_entry = _session_entry()
+    runner.session_store._entries = {session_key: session_entry}
+    runner.session_store.reset_session.return_value = session_entry
+    runner.session_store._generate_session_key.return_value = session_key
+    runner._async_session_store = None
+    runner._session_db = None
+    stash = runner._model_inline_payload_stash()
+    stash[session_key] = "stale payload"
+    stash["other_key"] = "other payload"
+
+    await runner._handle_reset_command(_make_event("/new"))
+
+    assert session_key not in stash
+    assert stash["other_key"] == "other payload"

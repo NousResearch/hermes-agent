@@ -9,6 +9,7 @@ sessions reuse ``Group: <room_id>`` so a local-to-hosted migration keeps one tra
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 import time
 import uuid
@@ -148,6 +149,13 @@ class HostedRoomRuntime:
         self._blocked_rooms: set[str] = set()
         self._status_lock, self._current_tasks = threading.Lock(), {}
         self._room_schedule_cursor, self._cycles = 0, 0
+        # Persistent WAL keeper. The poll loop (and every other reader in this
+        # process) opens + closes the DB per call; on each close SQLite believes
+        # it is the last connection and unlinks -wal/-shm, which once stranded a
+        # peer process's long-lived connections on a deleted shm generation.
+        # While this keeper stays open, SQLite never deletes the sidecars on any
+        # other close.
+        self._wal_keeper: sqlite3.Connection | None = None
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
@@ -424,6 +432,13 @@ class HostedRoomRuntime:
             while not self._stop.is_set():
                 # Clear before work so a write racing the cycle forces a follow-up pass.
                 self._wake.clear()
+                # Keeper acquire is here, not in start(): a transient failure at
+                # startup must not silently defeat sidecar protection for the
+                # runtime's whole life — the next cycle retries. Only this
+                # thread (and its finally) touches the keeper, so no lock is
+                # taken around the sqlite I/O.
+                if self._wal_keeper is None:
+                    self._acquire_wal_keeper()
                 try:
                     self._run_cycle()
                 except Exception as exc:  # keep independent rooms serviceable
@@ -440,6 +455,41 @@ class HostedRoomRuntime:
                 for room_thread in room_threads:
                     room_thread.join(self.active_poll_interval_seconds)
             self._release_idle_leases()
+            self._release_wal_keeper()
+
+    def _acquire_wal_keeper(self) -> None:
+        """Open (once) the persistent connection that keeps the WAL sidecars alive.
+
+        Failure is non-fatal (old behaviour: no sidecar protection) and the
+        acquire is retried on the next ``start()`` — a transient failure must
+        not silently defeat the keeper for the process's remaining lifetime.
+        """
+        if self._wal_keeper is not None:
+            return
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=10)
+            # Touch the content: merely opening an fd does not join the WAL
+            # shared-memory index — SQLite registers a connection only on first
+            # content access, and an untouched keeper would be invisible to
+            # other connections, which would still unlink the sidecars on
+            # their own close.
+            conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+            self._wal_keeper = conn
+        except sqlite3.Error as exc:
+            if conn is not None:  # do not leak the half-opened connection
+                with suppress(Exception):
+                    conn.close()
+            # Inlined (not _record_error) — callers hold _status_lock, which
+            # _record_error also takes (non-reentrant) — a deadlock there.
+            # Leave _wal_keeper None so a later start() retries the acquire.
+            self._last_error = f"wal keeper unavailable: {exc}"
+
+    def _release_wal_keeper(self) -> None:
+        conn, self._wal_keeper = self._wal_keeper, None
+        if conn is not None:
+            with suppress(Exception):
+                conn.close()
 
     def _run_cycle(self) -> None:
         with self._status_lock:

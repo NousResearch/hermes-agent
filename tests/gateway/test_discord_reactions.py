@@ -140,3 +140,76 @@ async def test_reactions_disabled_via_env(adapter, monkeypatch):
     adapter.send.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_outbound_hook_fires_only_after_success_without_content(adapter):
+    async def handler(_event):
+        return "private response body"
+
+    outbound = AsyncMock()
+    adapter.set_message_handler(handler)
+    adapter.set_outbound_response_handler(outbound)
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="999"))
+    event = _make_event(
+        "5",
+        SimpleNamespace(add_reaction=AsyncMock(), remove_reaction=AsyncMock()),
+    )
+    event._hermes_turn_correlation = {
+        "turn_id": "turn-1",
+        "trace_id": "trace-1",
+        "observation_id": "observation-1",
+    }
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    outbound.assert_awaited_once()
+    assert outbound.await_args is not None
+    envelope, source = outbound.await_args.args
+    assert envelope["target_message_id"] == "999"
+    assert envelope["trace_id"] == "trace-1"
+    assert source is event.source
+    assert "private response body" not in repr(envelope)
+    assert not ({"content", "text", "response"} & set(envelope))
+
+
+@pytest.mark.asyncio
+async def test_outbound_hook_does_not_fire_for_failed_delivery(adapter):
+    async def handler(_event):
+        return "private response body"
+
+    outbound = AsyncMock()
+    adapter.set_message_handler(handler)
+    adapter.set_outbound_response_handler(outbound)
+    adapter.send = AsyncMock(return_value=SendResult(success=False, error="offline"))
+    event = _make_event(
+        "6",
+        SimpleNamespace(add_reaction=AsyncMock(), remove_reaction=AsyncMock()),
+    )
+    event._hermes_turn_correlation = {"turn_id": "turn-1", "trace_id": "trace-1"}
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    outbound.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_outbound_hook_observes_confirmed_streamed_delivery(adapter):
+    async def handler(event):
+        event._hermes_turn_correlation = {
+            "turn_id": "turn-stream",
+            "trace_id": "trace-stream",
+        }
+        event._hermes_streamed_message_ids = ["stream-message-1"]
+        return None
+
+    outbound = AsyncMock()
+    adapter.set_message_handler(handler)
+    adapter.set_outbound_response_handler(outbound)
+    event = _make_event(
+        "7",
+        SimpleNamespace(add_reaction=AsyncMock(), remove_reaction=AsyncMock()),
+    )
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    outbound.assert_awaited_once()
+    assert outbound.await_args.args[0]["target_message_id"] == "stream-message-1"

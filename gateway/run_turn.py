@@ -1340,7 +1340,7 @@ class GatewayTurnMixin:
                 await _typing_adapter.stop_typing(source.chat_id)
 
     async def _hmwa_shape_agent_response(
-        self, agent_result, source, history, session_entry, session_key,
+        self, event, agent_result, source, history, session_entry, session_key,
         _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
     ):
         """Turn the raw agent result into the outbound text: sentinel/silence handling, response
@@ -1351,6 +1351,13 @@ class GatewayTurnMixin:
             _is_gateway_hidden_reasoning_incomplete_turn, _normalize_empty_agent_response,
             _sanitize_gateway_final_response, _should_clear_resume_pending_after_turn,
         )
+        turn_id = str(agent_result.get("turn_id") or "")
+        if turn_id:
+            try:
+                from hermes_cli.lifecycle import take_turn_correlation
+                event._hermes_turn_correlation = take_turn_correlation(turn_id)
+            except Exception:
+                logger.debug("turn correlation lookup failed", exc_info=True)
         response = agent_result.get("final_response") or ""
         # Hidden-reasoning-only retry exhaustion: the loop's sentinel text doubles as final_response
         # and would be delivered verbatim (peer agents would ingest it as a completed turn).
@@ -1729,6 +1736,12 @@ class GatewayTurnMixin:
         # Streamed responses still need MEDIA: files delivered (chunks carry the tags verbatim). Never
         # skip when the agent failed: the error text is new content streaming didn't show.
         if agent_result.get("already_sent") and not agent_result.get("failed"):
+            streamed_message_ids = agent_result.get("delivered_message_ids")
+            if isinstance(streamed_message_ids, (list, tuple)):
+                event._hermes_streamed_message_ids = [
+                    str(message_id) for message_id in streamed_message_ids
+                    if message_id and str(message_id) != "__no_edit__"
+                ]
             if response and adapter:
                 await self._deliver_media_from_response(response, event, adapter)
             # Streaming delivered the body, but the footer was held back (`not already_sent` gate).
@@ -1974,7 +1987,7 @@ class GatewayTurnMixin:
                 return None
 
             response, _intentional_silence, agent_messages = await self._hmwa_shape_agent_response(
-                agent_result, source, history, session_entry, session_key,
+                event, agent_result, source, history, session_entry, session_key,
                 _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
             )
             response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
@@ -3557,6 +3570,8 @@ class GatewayTurnMixin:
             logger.warning(fail_result, _sk, getattr(_res, "error", None))
             return
         response["already_sent"] = True
+        if _sc.message_id and _sc.message_id != "__no_edit__":
+            response["delivered_message_ids"] = [str(_sc.message_id)]
         logger.info(*ok)
 
     async def _run_agent_mark_streamed_delivery(self, response: Any, turn_ctx: TurnContext) -> None:
@@ -3847,4 +3862,10 @@ class GatewayTurnMixin:
 
         await self._run_agent_mark_streamed_delivery(response, turn_ctx)
         self._run_agent_schedule_bubble_cleanup(response, _cleanup_adapter, turn_ctx)
+        _sc = turn_ctx.stream_consumer_holder[0]
+        if (
+            isinstance(response, dict) and response.get("already_sent")
+            and _sc is not None and _sc.message_id and _sc.message_id != "__no_edit__"
+        ):
+            response["delivered_message_ids"] = [str(_sc.message_id)]
         return response

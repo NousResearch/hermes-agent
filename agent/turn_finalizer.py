@@ -535,6 +535,7 @@ def finalize_turn(
 
     result = {
         "final_response": final_response,
+        "turn_id": turn_id,
         "last_reasoning": _last_turn_reasoning(messages),
         "messages": messages,
         "api_calls": api_call_count,

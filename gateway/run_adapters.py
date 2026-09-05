@@ -1048,6 +1048,9 @@ class GatewayAdapterLifecycleMixin:
             authorization_check or self._make_adapter_auth_check(adapter.platform)
         )
         adapter.set_platform_event_handler(platform_event_handler or self._primary_platform_event_handler())
+        _set_outbound = getattr(adapter, "set_outbound_response_handler", None)
+        if callable(_set_outbound):
+            _set_outbound(self._handle_gateway_outbound_response)
         adapter._busy_text_mode = (self._busy_text_mode if busy_text_mode is None else busy_text_mode)
 
     def _configure_profile_adapter(
@@ -1353,13 +1356,119 @@ class GatewayAdapterLifecycleMixin:
     def _multiplex_on(self) -> bool:
         return bool(getattr(self.config, "multiplex_profiles", False))
 
+    def _handle_gateway_outbound_response(self, event: Dict[str, Any], source: SessionSource) -> None:
+        """Dispatch one authorized post-success correlation envelope."""
+        with _log_suppressed(logging.DEBUG, "[Gateway] outbound response hook failed", exc_info=True):
+            if not self._is_user_authorized_for_source(source, allow_adapter_delegation=False):
+                return
+            required = (
+                "platform", "target_chat_id", "target_message_id", "turn_id", "trace_id", "timestamp",
+            )
+            if not isinstance(event, dict) or "target_thread_id" not in event or any(
+                key not in event for key in required
+            ):
+                return
+
+            def _bounded(value: Any) -> Optional[str]:
+                if not isinstance(value, str) or not 0 < len(value) <= 256:
+                    return None
+                return None if any(ord(char) < 32 or ord(char) == 127 for char in value) else value
+
+            source_platform = str(getattr(source.platform, "value", source.platform))
+            if _bounded(event["platform"]) != source_platform:
+                return
+            if any(_bounded(event[key]) is None for key in (
+                "target_chat_id", "target_message_id", "turn_id", "trace_id",
+            )):
+                return
+            observation_id = event.get("observation_id")
+            if observation_id is not None and _bounded(observation_id) is None:
+                return
+            timestamp = event["timestamp"]
+            if not isinstance(timestamp, str) or len(timestamp) > 64:
+                return
+            parsed_timestamp = datetime.fromisoformat(timestamp)
+            if parsed_timestamp.tzinfo is None:
+                return
+            if event["target_chat_id"] != str(source.chat_id):
+                return
+            expected_thread_id = str(source.thread_id) if source.thread_id else None
+            if event["target_thread_id"] != expected_thread_id:
+                return
+            payload = {
+                "platform": event["platform"], "turn_id": event["turn_id"],
+                "trace_id": event["trace_id"], "timestamp": event["timestamp"],
+            }
+            if observation_id is not None:
+                payload["observation_id"] = observation_id
+            from gateway.run import _gateway_hook_pseudonym_key, _pseudonymize_gateway_id
+            pseudonym_key = _gateway_hook_pseudonym_key()
+            if pseudonym_key is not None:
+                payload["target_chat_id"] = _pseudonymize_gateway_id("chat", event["target_chat_id"], pseudonym_key)
+                payload["target_message_id"] = _pseudonymize_gateway_id(
+                    "message", event["target_message_id"], pseudonym_key
+                )
+                if event["target_thread_id"] is not None:
+                    payload["target_thread_id"] = _pseudonymize_gateway_id(
+                        "thread", event["target_thread_id"], pseudonym_key
+                    )
+            from hermes_cli import lifecycle
+            lifecycle.invoke_hook("gateway_outbound_response", **payload)
+
     async def _handle_gateway_platform_event(self, event: dict, source) -> None:
-        """Authorize and publish one normalized adapter event to plugin hooks."""
+        """Authorize and publish normalized events; Discord exposes reactions only."""
         # Observer failures must never break the adapter's update loop.
         with _log_suppressed(logging.DEBUG, "gateway_platform_event hook dispatch failed", exc_info=True):
             from hermes_cli.lifecycle import has_hook, invoke_hook
-            if has_hook("gateway_platform_event") and self._is_user_authorized_for_source(source):
+            if not has_hook("gateway_platform_event") or not self._is_user_authorized_for_source(source):
+                return
+            if not isinstance(event, dict):
+                return
+            if event.get("platform") != "discord":
                 invoke_hook("gateway_platform_event", **event)
+                return
+            if event.get("event_type") != "reaction" or not isinstance(event.get("payload"), dict):
+                return
+            raw_payload = event["payload"]
+
+            def _bounded(value: Any, *, maximum: int = 256) -> Optional[str]:
+                if not isinstance(value, str) or not 0 < len(value) <= maximum:
+                    return None
+                return None if any(ord(char) < 32 or ord(char) == 127 for char in value) else value
+
+            target_chat_id = _bounded(raw_payload.get("target_chat_id"))
+            target_message_id = _bounded(raw_payload.get("target_message_id"))
+            actor_id = _bounded(raw_payload.get("actor_id"))
+            target_thread_id = raw_payload.get("target_thread_id")
+            if target_thread_id is not None:
+                target_thread_id = _bounded(target_thread_id)
+            emoji = _bounded(raw_payload.get("emoji"), maximum=128)
+            action = raw_payload.get("action")
+            timestamp = raw_payload.get("timestamp")
+            if (
+                target_chat_id is None or target_message_id is None or actor_id is None or emoji is None
+                or action not in {"add", "remove"} or raw_payload.get("bot_authored_target") is not True
+                or not isinstance(timestamp, str) or len(timestamp) > 64
+            ):
+                return
+            parsed_timestamp = datetime.fromisoformat(timestamp)
+            if parsed_timestamp.tzinfo is None or target_chat_id != str(source.chat_id):
+                return
+            expected_thread_id = str(source.thread_id) if source.thread_id else None
+            if target_thread_id != expected_thread_id or actor_id != str(source.user_id):
+                return
+            payload: Dict[str, Any] = {
+                "emoji": emoji, "action": action, "timestamp": timestamp, "bot_authored_target": True,
+            }
+            from gateway.run import _gateway_hook_pseudonym_key, _pseudonymize_gateway_id
+            pseudonym_key = _gateway_hook_pseudonym_key()
+            if pseudonym_key is not None:
+                payload["target_chat_id"] = _pseudonymize_gateway_id("chat", target_chat_id, pseudonym_key)
+                payload["target_message_id"] = _pseudonymize_gateway_id("message", target_message_id, pseudonym_key)
+                payload["actor_id"] = _pseudonymize_gateway_id("actor", actor_id, pseudonym_key)
+                if target_thread_id is not None:
+                    payload["target_thread_id"] = _pseudonymize_gateway_id("thread", target_thread_id, pseudonym_key)
+            invoke_hook("gateway_platform_event", platform="discord", event_type="reaction", payload=payload)
 
     def _make_profile_platform_event_handler(self, profile_name: str):
         """Bind platform-event auth and hook dispatch to one multiplex profile."""

@@ -230,6 +230,70 @@ are intentionally excluded.
 Observers can use these hooks to model nested trajectories while keeping child
 agent execution linked to the parent turn that spawned it.
 
+### Gateway delivery and Discord feedback
+
+Gateway adapters expose two backend-neutral observer boundaries. The runner is
+the security boundary: it performs central actor authorization. For Discord
+feedback it additionally validates the reaction envelope and constructs a new
+subscriber payload rather than forwarding adapter data verbatim. Other
+platforms retain their existing normalized `gateway_platform_event` contracts.
+
+| Hook | When it fires |
+| --- | --- |
+| `gateway_outbound_response` | Once for every successfully delivered response message ID (including every Discord split chunk) correlated to its originating turn/trace. |
+| `gateway_platform_event` | For an authorized Discord reaction added to or removed from a message verified as bot-authored. No edit, delete, thread-create, or thread-update events are registered or published. |
+
+Discord actor/chat/thread/message IDs are never sent raw to subscriber hooks.
+Set the dedicated profile-scoped secret
+`HERMES_GATEWAY_HOOK_PSEUDONYM_KEY` (at least 16 UTF-8 bytes, normally in the
+profile `.env` or process environment). Each ID is replaced by a deterministic,
+field-separated `hmac-sha256:<hex>` value. The same key must be available when
+outbound and reaction hooks run for their message pseudonyms to correlate. If
+the key is absent, too short, or unavailable in the active profile scope, all
+platform ID fields are omitted. The outbound `trace_id` and `turn_id` remain so
+trace correlation fails closed without losing non-platform operational metadata.
+
+The exact `gateway_outbound_response` subscriber kwargs are:
+
+```text
+platform: str
+target_chat_id: str              # optional HMAC pseudonym
+target_thread_id: str            # optional HMAC pseudonym
+target_message_id: str           # optional HMAC pseudonym
+turn_id: str
+trace_id: str
+observation_id: str              # optional
+timestamp: timezone-aware ISO 8601 str
+```
+
+The exact Discord reaction `gateway_platform_event` subscriber kwargs are:
+
+```text
+platform: "discord"
+event_type: "reaction"
+payload:
+  target_chat_id: str            # optional HMAC pseudonym
+  target_thread_id: str          # optional HMAC pseudonym
+  target_message_id: str         # optional HMAC pseudonym
+  actor_id: str                  # optional HMAC pseudonym
+  emoji: str
+  action: "add" | "remove"
+  timestamp: timezone-aware ISO 8601 str
+  bot_authored_target: true
+```
+
+The envelopes contain no message text, display names, raw platform objects, or
+raw Discord IDs and assign no sentiment to emoji. Hermes drops malformed events,
+bot actors, unauthorized actors, and reactions whose target was not verified as
+a message authored by the connected bot. Hook failures are best-effort and
+cannot fail message delivery or the Discord event loop. Consumers must treat
+duplicate notifications as harmless.
+
+These hooks are correlation and notification primitives only. Platform
+adapters do not write scores or credentials to an observability backend;
+deployments that convert feedback into scores should use a separate,
+least-privilege consumer.
+
 ## Payload Safety
 
 Observer payloads are designed for telemetry consumers, not raw object access.

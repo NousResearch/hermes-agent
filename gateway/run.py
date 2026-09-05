@@ -12,6 +12,8 @@ except ModuleNotFoundError:
 import asyncio
 import concurrent.futures
 import dataclasses
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -63,6 +65,26 @@ _STALL_NOTIFY_SEND_TIMEOUT_SECONDS = 15.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 _GATEWAY_HYGIENE_PLATFORM = "gateway_hygiene"
+_GATEWAY_HOOK_PSEUDONYM_ENV = "HERMES_GATEWAY_HOOK_PSEUDONYM_KEY"
+_GATEWAY_HOOK_PSEUDONYM_MIN_BYTES = 16
+
+
+def _gateway_hook_pseudonym_key() -> Optional[bytes]:
+    """Resolve the profile-scoped hook pseudonym key, failing closed."""
+    try:
+        from agent.secret_scope import get_secret
+        value = get_secret(_GATEWAY_HOOK_PSEUDONYM_ENV)
+    except Exception:
+        return None
+    if not isinstance(value, str):
+        return None
+    encoded = value.encode("utf-8")
+    return encoded if len(encoded) >= _GATEWAY_HOOK_PSEUDONYM_MIN_BYTES else None
+
+
+def _pseudonymize_gateway_id(kind: str, value: str, key: bytes) -> str:
+    digest = hmac.new(key, f"{kind}:{value}".encode("utf-8"), hashlib.sha256)
+    return f"hmac-sha256:{digest.hexdigest()}"
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not gateway chats

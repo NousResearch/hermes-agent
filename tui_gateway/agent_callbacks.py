@@ -178,7 +178,7 @@ def _wire_callbacks(sid: str):
     # An MCP server asking for a value mid-tool-call is the same interaction as the agent asking one, so it
     # reuses the clarify prompt rather than introducing a second kind of question. Surfaces that don't wire
     # this decline the request, which is what every surface did before.
-    from tools.mcp_tool import set_elicitation_input_callback
+    from tools.mcp_tool_sampling import set_elicitation_input_callback
     set_elicitation_input_callback(lambda question, choices: _clarify_block(sid, question, choices))
 
 

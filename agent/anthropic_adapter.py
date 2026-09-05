@@ -41,6 +41,19 @@ def _get_anthropic_sdk():
             _lazy_ensure("provider.anthropic", prompt=False)
         try:
             import anthropic as _sdk
+            # Apply multi-byte UTF-8 streaming fix for Thai/Lao/Devanagari/
+            # Arabic/Hebrew combining marks that the SDK's strict
+            # splitlines-then-decode approach corrupts when SSE chunk
+            # boundaries land mid-multi-byte-sequence. The patch is
+            # idempotent and no-op when not applicable. See
+            # ``agent.thai_streaming_patch`` for the full rationale and
+            # the upstream bug references.
+            try:
+                from agent import thai_streaming_patch as _tsp
+                _tsp.apply_patch()
+            except ImportError:
+                # Patch module missing — degrade gracefully.
+                pass
             _anthropic_sdk = _sdk
         except ImportError:
             _anthropic_sdk = None

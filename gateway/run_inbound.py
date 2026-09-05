@@ -350,8 +350,19 @@ class GatewayInboundMixin:
                     logger.debug("Failed to resume typing after clarify response", exc_info=True)
             return ""
         if _text_outcome == _clarify_mod.TEXT_REJECTED_SELECTION:
-            # Selection-shaped but invalid (out-of-range number, bad comma-list): keep the clarify
-            # armed for retry — don't cancel, don't treat as an unrelated follow-up.
+            # Selection-shaped but invalid (out-of-range number, bad comma-list,
+            # ambiguous abbreviation): keep the clarify armed and give the user
+            # an immediate retry path.
+            _clarify_adapter = self._adapter_for_source(source)
+            if _clarify_adapter:
+                try:
+                    await _clarify_adapter.send(
+                        source.chat_id,
+                        _clarify_mod._selection_retry_message(_pending_clarify),
+                        reply_to=event.message_id,
+                    )
+                except Exception:
+                    logger.debug("Failed to send clarify selection retry hint", exc_info=True)
             return _retain("invalid selection attempt")
         if _text_outcome == _clarify_mod.TEXT_REJECTED_PROSE:
             # Native-choice prompts reject unmatched prose so it continues through normal busy

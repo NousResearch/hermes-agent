@@ -1145,7 +1145,44 @@ def run_doctor(args):
             fixed_count += 1
         else:
             check_warn(f"{_DHH}/{subdir_name}/ not found", "(will be created on first use)")
-    
+
+    # Session storage availability probe: a symlinked sessions directory whose
+    # target is unavailable (e.g. a dangling link into an unmounted external
+    # volume) must surface as a DISTINCT failing state naming the configured
+    # path and its intended target — not collapse into the opaque EEXIST that
+    # mkdir(exist_ok=True) raises on the dangling link, and never silently
+    # create a fresh empty tree over the mount point.
+    from gateway.session import session_storage_health
+
+    _storage = session_storage_health(hermes_home / "sessions")
+    if _storage["status"] == "ok":
+        if _storage["reason"] == "valid_symlink":
+            check_ok(
+                f"{_DHH}/sessions/ symlink resolves",
+                f"(target: {_storage['target']})",
+            )
+        elif _storage["reason"] == "missing":
+            check_info(_storage["detail"])
+        else:
+            check_ok(f"{_DHH}/sessions/ directory available")
+    elif _storage["status"] == "unavailable":
+        _fail_and_issue(
+            f"{_DHH}/sessions/ storage unavailable",
+            f"({_storage['detail']})",
+            "Session storage unavailable — mount or restore the backing volume "
+            "for the symlink target above (do NOT let Hermes create a fresh "
+            "empty sessions tree over the mount point)",
+            issues,
+        )
+    else:
+        _fail_and_issue(
+            f"{_DHH}/sessions/ storage error",
+            f"({_storage['detail']})",
+            "Session storage misconfigured — resolve the path above so it is a "
+            "directory or a symlink to one",
+            issues,
+        )
+
     # Check for SOUL.md persona file
     soul_path = hermes_home / "SOUL.md"
     if soul_path.exists():

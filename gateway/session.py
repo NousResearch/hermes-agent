@@ -22,6 +22,209 @@ from typing import Dict, List, Optional, Any
 logger = logging.getLogger(__name__)
 
 
+class SessionStorageUnavailableError(RuntimeError):
+    """Raised when the session-storage directory cannot be used because its
+    backing storage is unavailable — e.g. ``~/.hermes/sessions`` is a symlink
+    whose target lives on an unmounted volume. Distinct from the bare
+    ``FileExistsError`` (EEXIST) that ``mkdir(exist_ok=True)`` raises on a
+    dangling symlink, which gives operators no hint that storage — not the
+    directory entry itself — is the problem."""
+
+
+def session_storage_health(sessions_dir: Path) -> Dict[str, Any]:
+    """Probe session-storage availability without mutating anything.
+
+    Returns a dict describing the configured session-storage path and its
+    resolved or intended target, so health surfaces (``hermes doctor``,
+    dashboards) can report a DISTINCT failing state for unavailable storage
+    instead of collapsing it into the opaque ``FileExistsError`` (EEXIST)
+    that ``mkdir(exist_ok=True)`` raises on a dangling symlink — or, worse,
+    silently creating a fresh empty sessions tree over an unmounted mount
+    point.
+
+    No path, username, or mount location is hard-coded: the caller supplies
+    ``sessions_dir`` (normally ``get_hermes_home() / "sessions"``), and all
+    target information comes from the symlink metadata itself.
+
+    Keys:
+      status   — "ok" | "unavailable" | "error"
+      path     — str of the configured sessions directory
+      target   — symlink target (str) when the path is a symlink, else None
+      reason   — machine-stable code: "directory" | "valid_symlink" |
+                 "dangling_symlink" | "dangling_symlink_in_parent_chain" |
+                 "missing" | "not_a_directory" | "probe_failed"
+      detail   — human-readable explanation
+    """
+    result: Dict[str, Any] = {
+        "status": "ok",
+        "path": str(sessions_dir),
+        "target": None,
+        "reason": "directory",
+        "detail": "session storage directory is available",
+    }
+
+    if sessions_dir.is_symlink():
+        try:
+            target = os.readlink(sessions_dir)
+        except OSError:
+            target = None
+        result["target"] = target
+        if not sessions_dir.exists():
+            intended = target or str(sessions_dir)
+            result.update(
+                status="unavailable",
+                reason="dangling_symlink",
+                detail=(
+                    f"session storage unavailable: {sessions_dir} is a symlink "
+                    f"to {intended}, which does not exist (e.g. backing volume "
+                    f"not mounted)"
+                ),
+            )
+            return result
+        if not sessions_dir.is_dir():
+            result.update(
+                status="error",
+                reason="not_a_directory",
+                detail=(
+                    f"session storage error: {sessions_dir} resolves to "
+                    f"{target or 'a non-directory'} which is not a directory"
+                ),
+            )
+            return result
+        result.update(
+            reason="valid_symlink",
+            detail=f"session storage symlink resolves to {target}",
+        )
+        return result
+
+    if sessions_dir.exists():
+        if sessions_dir.is_dir():
+            return result
+        result.update(
+            status="error",
+            reason="not_a_directory",
+            detail=f"session storage error: {sessions_dir} exists but is not a directory",
+        )
+        return result
+
+    # Absent: either simply not created yet (fine — mkdir will make it), or
+    # blocked by a dangling symlink somewhere in the parent chain (storage
+    # unavailable — mkdir would fail with ENOENT/ENOTDIR).
+    probe = sessions_dir.parent
+    while True:
+        if probe.is_symlink() and not probe.exists():
+            try:
+                target = os.readlink(probe)
+            except OSError:
+                target = None
+            result["target"] = target
+            intended = target or str(probe)
+            result.update(
+                status="unavailable",
+                reason="dangling_symlink_in_parent_chain",
+                detail=(
+                    f"session storage unavailable: parent path {probe} is a "
+                    f"symlink to {intended}, which does not exist"
+                ),
+            )
+            return result
+        if probe.exists() or probe.parent == probe:
+            break
+        probe = probe.parent
+    else:  # pragma: no cover - loop always exits via break/return
+        pass
+
+    try:
+        if not sessions_dir.parent.exists():
+            result.update(
+                status="error",
+                reason="probe_failed",
+                detail=(
+                    f"session storage error: cannot probe {sessions_dir} — "
+                    f"parent {sessions_dir.parent} is unavailable"
+                ),
+            )
+            return result
+    except OSError as exc:  # pragma: no cover - defensive
+        result.update(
+            status="error",
+            reason="probe_failed",
+            detail=f"session storage error probing {sessions_dir}: {exc}",
+        )
+        return result
+
+    result.update(
+        reason="missing",
+        detail="session storage directory not created yet (will be created on first use)",
+    )
+    return result
+
+
+def _ensure_sessions_dir(path: Path) -> None:
+    """Ensure the session-storage directory exists, failing clearly when its
+    backing storage is unavailable.
+
+    A symlink whose target cannot be resolved (dangling symlink — classically
+    a ``~/.hermes`` or ``sessions`` link into an unmounted external volume)
+    makes ``Path.mkdir(exist_ok=True)`` raise a bare ``FileExistsError``
+    because the symlink itself "exists". Detect that case first and raise a
+    clear error naming the unresolved target, so the failure surfaces as
+    "session storage unavailable at <target>" instead of EEXIST.
+
+    Mirrors the unavailable-storage posture of report-ingest's
+    ``validate_artifact_roots`` (fail before scanning when a configured root is
+    unavailable): verify the storage directly rather than tolerating it as a
+    per-entry race.
+    """
+    if path.is_symlink() and not path.exists():
+        # Dangling symlink: the link itself exists, but its target does not.
+        try:
+            target = os.readlink(path)
+        except OSError:
+            target = str(path)
+        raise SessionStorageUnavailableError(
+            f"session storage unavailable at {target} "
+            f"(dangling symlink: {path})"
+        )
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except FileExistsError as exc:
+        # exist_ok=True only tolerates an existing *directory*. This branch
+        # catches: (a) a symlink whose target disappeared between the check
+        # above and mkdir, (b) a dangling symlink *in the parent chain* when
+        # parents=True recurses (pathlib re-raises EEXIST while creating
+        # parents), and (c) any other non-directory entry at this path.
+        if path.is_symlink() and not path.exists():
+            try:
+                target = os.readlink(path)
+            except OSError:
+                target = str(path)
+            raise SessionStorageUnavailableError(
+                f"session storage unavailable at {target} "
+                f"(dangling symlink: {path})"
+            ) from exc
+        if not path.exists():
+            # Storage failure in the parent chain (e.g. a dangling symlink
+            # above this path): the target cannot be materialized at all.
+            raise SessionStorageUnavailableError(
+                f"session storage unavailable at {path} ({exc.strerror or type(exc).__name__})"
+            ) from exc
+        # A plain non-directory file sits at this path: preserve the original
+        # error, which already names the conflicting file.
+        raise
+    except (NotADirectoryError, OSError) as exc:
+        # A dangling symlink *above* this path in the tree (or other storage
+        # failure) surfaces here as ENOENT/ENOTDIR-style errors even with
+        # parents=True. Wrap with context unless it is already our clear error.
+        if isinstance(exc, SessionStorageUnavailableError):
+            raise
+        if not path.exists():
+            raise SessionStorageUnavailableError(
+                f"session storage unavailable at {path} ({exc.strerror or type(exc).__name__})"
+            ) from exc
+        raise
+
+
 def _now() -> datetime:
     """Return the current local time."""
     return datetime.now()
@@ -814,7 +1017,7 @@ class SessionStore:
         if self._loaded:
             return
 
-        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_sessions_dir(self.sessions_dir)
         sessions_file = self.sessions_dir / "sessions.json"
 
         if sessions_file.exists():
@@ -851,7 +1054,7 @@ class SessionStore:
     def _save(self) -> None:
         """Save sessions index to disk (kept for session key -> ID mapping)."""
         import tempfile
-        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_sessions_dir(self.sessions_dir)
         sessions_file = self.sessions_dir / "sessions.json"
 
         data = {key: entry.to_dict() for key, entry in self._entries.items()}

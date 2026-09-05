@@ -24,7 +24,7 @@ describe('directiveFrameHeight', () => {
 })
 
 describe('withInlineChrome', () => {
-  const prelude = themePrelude({ '--foreground': '#eee' }, 'Inter')
+  const prelude = themePrelude({ '--foreground': '#eee' }, 'Inter', 'dark')
 
   it('puts the theme prelude FIRST so page styles override it', () => {
     const doc = '<html><head><style>body{color:red}</style></head><body><h1>hi</h1></body></html>'
@@ -52,8 +52,16 @@ describe('withInlineChrome', () => {
 })
 
 describe('themePrelude', () => {
+  it.each(['light', 'dark'] as const)('sets the iframe document color scheme to %s', colorScheme => {
+    expect(themePrelude({}, '', colorScheme)).toContain(`color-scheme:${colorScheme}`)
+  })
+
   it('carries resolved tokens, transparent background, and the app font', () => {
-    const prelude = themePrelude({ '--foreground': 'oklch(0.9 0 0)', '--accent': '#7aa2f7' }, 'Inter, sans-serif')
+    const prelude = themePrelude(
+      { '--foreground': 'oklch(0.9 0 0)', '--accent': '#7aa2f7' },
+      'Inter, sans-serif',
+      'dark'
+    )
 
     expect(prelude).toContain('--foreground:oklch(0.9 0 0)')
     expect(prelude).toContain('--accent:#7aa2f7')
@@ -62,7 +70,7 @@ describe('themePrelude', () => {
   })
 
   it('omits the font rule when no font resolved', () => {
-    expect(themePrelude({}, '')).not.toContain('font-family')
+    expect(themePrelude({}, '', 'light')).not.toContain('font-family')
   })
 })
 

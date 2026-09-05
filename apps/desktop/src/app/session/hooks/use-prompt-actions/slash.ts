@@ -187,7 +187,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
   const compressInFlightRef = useRef(new Set<string>())
 
   return useCallback(
-    async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean }) => {
+    async (
+      rawCommand: string,
+      options?: { sessionId?: string; recordInput?: boolean; attachments?: SubmitTextOptions['attachments'] }
+    ) => {
       // Resolve the session this command targets through the SHARED ladder that
       // submit.ts uses. A slash command runs backend commands against a runtime
       // session, and per-session state (`/goal`, `/usage`, `/status`) is keyed by
@@ -359,7 +362,9 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             // whichever chat is now in front.
             const queueKey = resolveComposerSessionKey(storedSessionId, $sessions.get()) || storedSessionId || sessionId
 
-            if (enqueueQueuedPrompt(queueKey, { attachments: [], text: message, displayText })) {
+            if (
+              enqueueQueuedPrompt(queueKey, { attachments: options?.attachments ?? [], text: message, displayText })
+            ) {
               renderSlashOutput('session busy — message queued to send when the current turn finishes')
             } else {
               renderSlashOutput('session busy — /interrupt the current turn before sending this command')
@@ -376,7 +381,12 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // its kickoff as a user message into whatever conversation was on
           // screen. Every other target the dispatcher serves (tile, background
           // queue drain, a session created by this very call) had the same leak.
-          await submitPromptText(message, { sessionId, storedSessionId, displayText })
+          await submitPromptText(message, {
+            sessionId,
+            storedSessionId,
+            displayText,
+            attachments: options?.attachments
+          })
         }
 
         try {

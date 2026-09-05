@@ -8,6 +8,7 @@ from .method_ctx import HandlerRegistry
 
 import contextlib
 import importlib
+import logging
 import os
 import threading
 
@@ -194,6 +195,7 @@ def _room_method(
     (only ``ReplicaError`` when ``replica_only``) to a client error with ``{"reason"}`` data
     when ``with_reason``; anything else maps to ``code``."""
     error_class = _room_error_class  # closure cell: handlers run under server.py globals
+    failure_logger = logging.getLogger(__name__)
 
     def dec(fn):
         def handler(rid, params: dict) -> dict:
@@ -209,6 +211,10 @@ def _room_method(
             try:
                 return fn(*args)
             except Exception as exc:
+                status = getattr(exc, "status_code", None)
+                failure_logger.warning(
+                    "Group Chat RPC refused: method=%s type=%s status=%s",
+                    name, type(exc).__name__, status if type(status) is int else None)
                 if room_code is not None and isinstance(exc, error_class(replica_only)):
                     reason = getattr(exc, "reason", None) if with_reason else None
                     return _err(rid, room_code, str(exc), {"reason": reason} if reason else None)

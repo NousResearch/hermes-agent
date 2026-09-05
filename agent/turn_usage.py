@@ -81,9 +81,10 @@ def record_response_usage(
             # pending verdict so later readings aren't charged to it and
             # preflight deferral isn't latched indefinitely.
             compressor.update_from_response({})
+        from agent.log_context import model_provider_fields
         logger.info(
-            "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable",
-            agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,
+            "API call #%d: %s in=? out=? total=? latency=%.1fs usage=unavailable",
+            agent.session_api_calls, model_provider_fields(agent), api_duration,
         )
         return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
 
@@ -175,9 +176,10 @@ def record_response_usage(
     _cache_pct = ""
     if canonical_usage.cache_read_tokens and prompt_tokens:
         _cache_pct = f" cache={canonical_usage.cache_read_tokens}/{prompt_tokens} ({100*canonical_usage.cache_read_tokens/prompt_tokens:.0f}%)"
+    from agent.log_context import model_provider_fields
     logger.info(
-        "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s",
-        agent.session_api_calls, agent.model, agent.provider or "unknown",
+        "API call #%d: %s in=%d out=%d total=%d latency=%.1fs%s",
+        agent.session_api_calls, model_provider_fields(agent),
         prompt_tokens, completion_tokens, total_tokens,
         api_duration, _cache_pct,
     )

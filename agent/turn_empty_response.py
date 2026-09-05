@@ -65,9 +65,10 @@ def _retry_empty(
     agent._empty_content_retries += 1
     n = agent._empty_content_retries
     wait_time = jittered_backoff(n, base_delay=5.0, max_delay=60.0)
+    from agent.log_context import model_provider_fields
     logger.warning(
-        "Empty response (no content or reasoning) — retry %d/%d in %.1fs (model=%s)",
-        n, budget, wait_time, agent.model,
+        "Empty response (no content or reasoning) — retry %d/%d in %.1fs. %s",
+        n, budget, wait_time, model_provider_fields(agent),
     )
     _budget_note = (
         " — high-cost request, reduced retry budget"
@@ -111,11 +112,10 @@ def _terminal_empty(agent: Any, assistant_message: Any, finish_reason: str, mess
     append_message(messages, assistant_msg)
 
     if not reasoning_text:
+        from agent.log_context import model_provider_fields
         logger.warning(
-            "Empty response (no content or reasoning) after %d retries. No fallback available. "
-            "model=%s provider=%s",
-            agent._empty_content_retries, agent.model,
-            agent.provider,
+            "Empty response (no content or reasoning) after %d retries. No fallback available. %s",
+            agent._empty_content_retries, model_provider_fields(agent),
         )
         agent._emit_status(
             "❌ Model returned no content after all retries"

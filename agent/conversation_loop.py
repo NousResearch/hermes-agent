@@ -53,13 +53,16 @@ from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches
 
+from agent.log_context import model_provider_fields
+
 logger = logging.getLogger(__name__)
 
 # Must mirror _STALE_TOOL_CALL_MARKER_RE in hermes_state.py; kept local so importing
 # hermes_state (module-level DEFAULT_DB_PATH) is not forced at load time.
 _STALE_MARKER_RE = re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
 
-# Shared by _apply_active_turn_redirect and the api_messages ghost-row filter so both sites cannot drift.
+# Scaffold marker used by _apply_active_turn_redirect and the ghost-row filter
+# in the api_messages loop. Module-level so both sites can never drift.
 _INTERRUPT_SCAFFOLD_MARKER = "[This response was interrupted by a user correction.]"
 
 
@@ -381,11 +384,17 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
 
     model = getattr(agent, "model", "") or "the selected model"
     logger.warning(
-        "Ollama runtime context too small for Hermes tool use: model=%s provider=%s base_url=%s "
-        "runtime_context=%d minimum_context=%d estimated_request_tokens=%d tool_count=%d session=%s",
-        model, getattr(agent, "provider", "") or "unknown",
-        getattr(agent, "base_url", "") or "unknown base URL", runtime_ctx, MINIMUM_CONTEXT_LENGTH,
-        request_tokens, len(getattr(agent, "tools", None) or []),
+        "Ollama runtime context too small for Hermes tool use: "
+        "provider=%s base_url=%s model=%s runtime_context=%d "
+        "minimum_context=%d estimated_request_tokens=%d tool_count=%d "
+        "session=%s",
+        getattr(agent, "provider", "") or "unknown",
+        getattr(agent, "base_url", "") or "unknown base URL",
+        model,
+        runtime_ctx,
+        MINIMUM_CONTEXT_LENGTH,
+        request_tokens,
+        len(getattr(agent, "tools", None) or []),
         getattr(agent, "session_id", None) or "none",
     )
     return (
@@ -709,8 +718,9 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         stored_state = "stale_runtime"
         logger.info(
             "Stored system prompt for session %s has stale runtime identity; "
-            "rebuilding for model=%s provider=%s.",
-            agent.session_id, getattr(agent, "model", "") or "", getattr(agent, "provider", "") or "",
+            "rebuilding. %s",
+            agent.session_id,
+            model_provider_fields(agent),
         )
 
     if conversation_history and stored_state in ("null", "empty"):
@@ -1487,6 +1497,7 @@ def run_conversation(
         if _pg.action == "break":
             break
         if _pg.action == "continue":
+
             continue
         _run_phase(announce_api_call, agent, s)
 
@@ -1516,6 +1527,8 @@ def run_conversation(
             if _v.action == "return":
                 return _v.result
             if _v.action == "break":
+
+
                 break
             if _v.action == "continue":
                 continue

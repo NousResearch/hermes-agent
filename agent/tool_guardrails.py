@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass, field, fields
+import posixpath
 from typing import Any, Mapping
 
 from utils import safe_json_loads
@@ -64,11 +65,260 @@ _THRESHOLD_SOURCES: dict[str, tuple[str, str]] = {
     "exact_failure_block_after": ("hard_stop_after", "exact_failure"),
     "same_tool_failure_halt_after": ("hard_stop_after", "same_tool_failure"),
     "no_progress_block_after": ("hard_stop_after", "idempotent_no_progress"),
+    "mutating_no_progress_warn_after": ("warn_after", "mutating_no_progress"),
+    "mutating_no_progress_block_after": ("hard_stop_after", "mutating_no_progress"),
 }
 
 # Per-turn caps on runaway-prone tools (counters reset in reset_for_turn).
 _DEFAULT_MAX_WEB_SEARCHES_PER_TURN = 50
 _DEFAULT_MAX_SUBAGENTS_PER_TURN = 50
+# Shell commands that only inspect state. `terminal` is a mutating tool by
+# name, but most of what agents run through it is a read. A loop that reruns
+# `gh api .../reviews` 500 times with a byte-identical `[]` reply and exit 0
+# escapes both loop detectors: the no-progress one only looked at tools in
+# IDEMPOTENT_TOOL_NAMES, and the failure one only counts non-zero exits. So we
+# classify the *command*, not just the tool.
+#
+# Everything below is an allowlist and the default answer is "this writes": an
+# unrecognised command, subcommand, flag or redirection classifies as a write.
+# A miss therefore costs a later block (the mutating threshold still applies),
+# never a wrongly-blocked write.
+
+# Commands that read whatever their arguments are.
+READ_ONLY_SHELL_COMMANDS = frozenset(
+    {
+        "basename", "cat", "column", "cut", "date", "df", "dirname", "du",
+        "echo", "egrep", "env", "false", "fgrep", "file", "find", "grep",
+        "head", "hostname", "id", "jq", "less", "ls", "nl", "od", "printenv",
+        "printf", "ps", "pwd", "readlink", "realpath", "rg", "sleep", "sort",
+        "stat", "tail", "test", "tr", "true", "uname", "uniq", "wc", "whoami",
+        "yq",
+    }
+)
+
+# Flags that turn one of those readers into a writer. Scoped per command on
+# purpose: a global flag list conflates unrelated meanings (`-f` is
+# `--field` to gh but `--file` to grep, `-x` is `--method` to gh but
+# `--exclude-type` to df), which mislabels innocent reads as writes.
+# Flag names are compared lowercased and with any `=value` suffix stripped.
+_WRITE_FLAGS_BY_COMMAND = {
+    "find": frozenset(
+        {
+            "-delete", "-exec", "-execdir", "-fls", "-fprint", "-fprint0",
+            "-fprintf", "-ok", "-okdir",
+        }
+    ),
+    "gh": frozenset(
+        {"-x", "--method", "-f", "--field", "--raw-field", "--input"}
+    ),
+    "jq": frozenset({"-i", "--in-place"}),
+    "sort": frozenset({"-o", "--output"}),
+    "yq": frozenset({"-i", "--inplace", "--in-place"}),
+}
+
+# `<command> <subcommand>` pairs that read.
+READ_ONLY_SHELL_SUBCOMMANDS = {
+    "cargo": frozenset({"metadata", "tree"}),
+    "docker": frozenset({"images", "info", "inspect", "logs", "ps", "version"}),
+    "gh": frozenset({"api", "browse", "search", "status", "version"}),
+    "git": frozenset(
+        {
+            "blame", "cat-file", "count-objects", "describe", "diff",
+            "for-each-ref", "log", "ls-files", "ls-remote", "ls-tree",
+            "rev-list", "rev-parse", "shortlog", "show", "show-ref",
+            "status", "symbolic-ref", "var", "whatchanged",
+        }
+    ),
+    "kubectl": frozenset({"describe", "get", "logs", "version"}),
+    "npm": frozenset({"ls", "outdated", "view"}),
+    "pnpm": frozenset({"list", "ls", "outdated", "why"}),
+    "systemctl": frozenset({"is-active", "is-enabled", "show", "status"}),
+    "yarn": frozenset({"info", "list", "why"}),
+}
+
+# `<command> <noun> <verb>` triples that read. The noun alone cannot decide:
+# `gh pr view` reads, `gh pr merge` does not; `gh label list` reads,
+# `gh label create` does not.
+READ_ONLY_SHELL_NOUN_VERBS = {
+    "gh": frozenset({"checks", "diff", "list", "view"}),
+}
+
+# Subcommands where the flags, not the name, decide: `git config --get x`
+# reads while `git config x y` writes; `git branch` lists while
+# `git branch name` creates. Each entry is (flags that may appear,
+# subset of those that consume the following positional).
+_FLAG_DECIDED_SUBCOMMANDS = {
+    ("git", "config"): (
+        frozenset(
+            {
+                "--get", "--get-all", "--get-regexp", "--get-urlmatch",
+                "--list", "-l", "--global", "--local", "--system",
+                "--worktree", "--file", "--show-origin", "--show-scope",
+                "--null", "-z", "--name-only", "--type", "--default",
+            }
+        ),
+        frozenset({"--get", "--get-all", "--get-regexp", "--get-urlmatch"}),
+    ),
+    ("git", "branch"): (
+        frozenset(
+            {
+                "--list", "-l", "-a", "--all", "-r", "--remotes", "-v", "-vv",
+                "--verbose", "--contains", "--no-contains", "--merged",
+                "--no-merged", "--points-at", "--show-current", "--format",
+                "--sort", "-i", "--ignore-case", "--color", "--no-color",
+            }
+        ),
+        frozenset(
+            {"--contains", "--no-contains", "--merged", "--no-merged",
+             "--points-at", "--format", "--sort"}
+        ),
+    ),
+    ("git", "tag"): (
+        frozenset(
+            {
+                "-l", "--list", "-n", "--contains", "--no-contains",
+                "--points-at", "--merged", "--no-merged", "--format",
+                "--sort", "-i", "--ignore-case", "--color", "--no-color",
+            }
+        ),
+        frozenset(
+            {"-l", "--list", "--contains", "--no-contains", "--points-at",
+             "--merged", "--no-merged", "--format", "--sort"}
+        ),
+    ),
+}
+
+# Operators that separate commands. Every segment must read for the whole line
+# to read.
+_SHELL_SPLIT_TOKENS = ("&&", "||", ";", "|", "\n")
+
+
+def _segment_writes_to_file(segment: str) -> bool:
+    """True when a segment redirects output into a file (not a std stream).
+
+    `2>&1` and `2>/dev/null` are diagnostics that appear in almost every real
+    read command, so they do not disqualify; `> out` and `>> out` do.
+    """
+    rest = segment
+    while True:
+        idx = rest.find(">")
+        if idx == -1:
+            return False
+        after = rest[idx:].lstrip(">").strip()
+        # `2>&1`, `>&2` — duplicating a descriptor, not writing a file.
+        if after.startswith("&"):
+            rest = rest[idx + 1:]
+            continue
+        target = after.split()[0] if after.split() else ""
+        if target in {"/dev/null", "/dev/stdout", "/dev/stderr"}:
+            rest = rest[idx + 1:]
+            continue
+        return True
+
+
+def _flag_names(args: list[str]) -> set[str]:
+    """Lowercased flag names with any `=value` suffix removed."""
+    return {a.split("=", 1)[0].lower() for a in args if a.startswith("-")}
+
+
+def _segment_command_reads(name: str, args: list[str]) -> bool:
+    """True when a single command plus its arguments only inspects state."""
+    # `cd somewhere` is positional setup, not state we track.
+    if name == "cd":
+        return True
+
+    flags = _flag_names(args)
+    write_flags = _WRITE_FLAGS_BY_COMMAND.get(name)
+    if write_flags and flags & write_flags:
+        return False
+
+    if name in READ_ONLY_SHELL_COMMANDS:
+        return True
+
+    subcommands = READ_ONLY_SHELL_SUBCOMMANDS.get(name)
+    if subcommands is None:
+        return False
+
+    positional = [a for a in args if not a.startswith("-")]
+    if not positional:
+        return False
+    subcommand = positional[0]
+
+    mode = _FLAG_DECIDED_SUBCOMMANDS.get((name, subcommand))
+    if mode is not None:
+        read_flags, value_flags = mode
+        if flags - read_flags:
+            return False
+        # A positional past the subcommand is a name being acted on unless a
+        # read flag consumes it (`git config --get user.name`).
+        return len(positional) == 1 or bool(flags & value_flags)
+
+    if subcommand in subcommands:
+        return True
+
+    verbs = READ_ONLY_SHELL_NOUN_VERBS.get(name)
+    return bool(verbs and len(positional) >= 2 and positional[1] in verbs)
+
+
+def shell_command_is_read_only(command: Any) -> bool:
+    """True when every segment of a shell command only inspects state.
+
+    Used to decide whether a repeated `terminal` call earns the tight
+    read-only no-progress threshold instead of the looser mutating one.
+    """
+    if not isinstance(command, str):
+        return False
+    text = command.strip()
+    if not text:
+        return False
+    # Command substitution and subshells can hide anything.
+    if "$(" in text or "`" in text:
+        return False
+
+    segments = [text]
+    for token in _SHELL_SPLIT_TOKENS:
+        segments = [part for seg in segments for part in seg.split(token)]
+
+    saw_command = False
+    for segment in segments:
+        segment = segment.strip()
+        if not segment:
+            continue
+        if _segment_writes_to_file(segment):
+            return False
+        words = segment.split()
+        # Strip leading `VAR=value` assignments (`GH_PAGER=cat gh pr view`).
+        while words and "=" in words[0] and not words[0].startswith("-"):
+            words = words[1:]
+        if not words:
+            continue
+        if not _segment_command_reads(posixpath.basename(words[0]), words[1:]):
+            return False
+        saw_command = True
+
+    return saw_command
+
+
+MUTATING_TOOL_NAMES = frozenset(
+    {
+        "terminal",
+        "execute_code",
+        "write_file",
+        "patch",
+        "todo",
+        "memory",
+        "skill_manage",
+        "browser_click",
+        "browser_type",
+        "browser_press",
+        "browser_scroll",
+        "browser_navigate",
+        "send_message",
+        "cronjob",
+        "delegate_task",
+        "process",
+    }
+)
 
 # Interactive surfaces plus bounded supervised task loops (subagent stopped by its parent;
 # api_server has a live client) doing real edit -> re-run work keep the warn-only default.
@@ -117,8 +367,18 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    # A mutating call repeating byte-identical args AND output is also making no
+    # progress, just with a weaker signal than a read (a write can legitimately
+    # be retried while waiting on something external). Same detector, looser
+    # ceiling, so a runaway `gh pr merge` loop still terminates.
+    mutating_no_progress_warn_after: int = 4
+    mutating_no_progress_block_after: int = 12
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
+    # Tools whose read-only-ness depends on their arguments rather than name.
+    command_classified_tools: frozenset[str] = field(
+        default_factory=lambda: frozenset({"terminal"})
+    )
     loop_caps: LoopCapConfig = field(default_factory=LoopCapConfig)
 
     @classmethod
@@ -233,6 +493,10 @@ _DECISION_MESSAGES: dict[str, str] = {
         "Blocked {tool_name}: this read-only call returned the same result {count} times. "
         "Stop repeating it unchanged; use the result already provided or try a different query."
     ),
+    "repeated_identical_result_block": (
+        "Blocked {tool_name}: this mutating call returned the same result {count} times with "
+        "identical arguments. Retrying unchanged is not making progress; change strategy or explain the blocker."
+    ),
     "same_tool_failure_halt": (
         "Stopped {tool_name}: it failed {count} times this turn. "
         "Stop retrying the same failing tool path and choose a different approach."
@@ -332,9 +596,16 @@ class ToolCallGuardrailController:
         exact_count = 0 if self._progress_since_failure.get(signature) else self._exact_failure_counts.get(signature, 0)
         if exact_count >= self.config.exact_failure_block_after:
             return self._decide("block", "repeated_exact_failure_block", tool_name, exact_count, signature)
-        record = self._no_progress.get(signature) if self._is_idempotent(tool_name) else None
-        if record is not None and record[1] >= self.config.no_progress_block_after:
-            return self._decide("block", "idempotent_no_progress_block", tool_name, record[1], signature)
+        record = self._no_progress.get(signature) if self._is_idempotent(tool_name, args) else None
+        if record is not None:
+            _seen_hash, repeat_count = record
+            read_only = self._is_idempotent(tool_name, args)
+            if read_only:
+                limit, code = self.config.no_progress_block_after, "idempotent_no_progress_block"
+            else:
+                limit, code = self.config.mutating_no_progress_block_after, "repeated_identical_result_block"
+            if limit and repeat_count >= limit:
+                return self._decide("block", code, tool_name, repeat_count, signature)
         return allow
 
     def after_call(
@@ -385,20 +656,33 @@ class ToolCallGuardrailController:
         if tool_name in PROGRESS_RESET_TOOL_NAMES or file_mutation_result_landed(tool_name, result):
             self._progress_since_failure.update(dict.fromkeys(self._exact_failure_counts, True))
             self._same_tool_failure_counts.clear()
-        if not self._is_idempotent(tool_name):
-            self._no_progress.pop(signature, None)
-            return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
+        read_only = self._is_idempotent(tool_name, args)
         result_hash = _result_hash(result)
         previous = self._no_progress.get(signature)
         repeat_count = previous[1] + 1 if previous is not None and previous[0] == result_hash else 1
         self._no_progress[signature] = (result_hash, repeat_count)
-        if warnings and repeat_count >= self.config.no_progress_warn_after:
+        warn_after = (
+            self.config.no_progress_warn_after
+            if read_only
+            else self.config.mutating_no_progress_warn_after
+        )
+        if warnings and warn_after and repeat_count >= warn_after:
             return self._decide("warn", "idempotent_no_progress_warning", tool_name, repeat_count, signature)
         return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
 
-    def _is_idempotent(self, tool_name: str) -> bool:
-        return tool_name not in self.config.mutating_tools and tool_name in self.config.idempotent_tools
+    def _is_idempotent(self, tool_name: str, args: Mapping[str, Any] | None = None) -> bool:
+        """True when this specific call only reads state.
+
+        For tools in ``command_classified_tools`` the answer depends on the
+        arguments, not the tool name: `terminal` running `git status` reads,
+        `terminal` running `git push` writes.
+        """
+        if tool_name in self.config.command_classified_tools:
+            return shell_command_is_read_only(_coerce_args(args).get("command"))
+        if tool_name in self.config.mutating_tools:
+            return False
+        return tool_name in self.config.idempotent_tools
 
     def observe_call(
         self, tool_name: str, args: Mapping[str, Any] | None, result: str | None,

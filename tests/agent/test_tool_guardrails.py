@@ -98,6 +98,43 @@ def test_non_interactive_hard_stop_can_be_disabled_explicitly():
     assert cfg.non_interactive_hard_stop_enabled is False
 
 
+def test_mutating_no_progress_thresholds_are_registered_in_shipped_defaults():
+    """The mutating knobs must sit in DEFAULT_CONFIG next to their siblings.
+
+    ``hermes config set`` validates dotted keys by walking DEFAULT_CONFIG, so a
+    threshold that only exists on the dataclass is inert from the CLI: the write
+    is reported as an unrecognized key and the operator can never move it off
+    the built-in 4 / 12.
+    """
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    guardrails = DEFAULT_CONFIG["tool_loop_guardrails"]
+    defaults = ToolCallGuardrailConfig()
+
+    assert (
+        guardrails["warn_after"]["mutating_no_progress"]
+        == defaults.mutating_no_progress_warn_after
+    )
+    assert (
+        guardrails["hard_stop_after"]["mutating_no_progress"]
+        == defaults.mutating_no_progress_block_after
+    )
+    # Shipped defaults must round-trip to the dataclass defaults unchanged.
+    assert ToolCallGuardrailConfig.from_mapping(guardrails) == defaults
+
+
+def test_config_parses_nested_mutating_no_progress_thresholds():
+    cfg = ToolCallGuardrailConfig.from_mapping(
+        {
+            "warn_after": {"mutating_no_progress": 6},
+            "hard_stop_after": {"mutating_no_progress": 20},
+        }
+    )
+
+    assert cfg.mutating_no_progress_warn_after == 6
+    assert cfg.mutating_no_progress_block_after == 20
+
+
 def test_default_repeated_identical_failed_call_warns_without_blocking():
     controller = ToolCallGuardrailController()
     args = {"query": "same"}
@@ -282,10 +319,27 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
     assert decision.should_halt is True
 
 
+# ── Read-only shell commands must be loop-detected (#loop-517) ──────────────
+# A session repeated `gh api .../reviews` 517 times, each returning an identical
+# empty `[]` with exit 0. `terminal` is in MUTATING_TOOL_NAMES, so the
+# no-progress detector never looked at it, and exit 0 meant the failure
+# detector never fired either. Nothing stopped it until max_iterations.
 
 
+def test_read_only_shell_command_repeating_identical_output_is_blocked():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=3)
+    )
+    args = {"command": "cd ~/repo && gh api repos/o/r/pulls/1/reviews 2>&1", "timeout": 15}
+    result = '{"output": "[]", "exit_code": 0, "error": null}'
 
+    for _ in range(3):
+        assert controller.before_call("terminal", args).allows_execution
+        controller.after_call("terminal", args, result, failed=False)
 
+    decision = controller.before_call("terminal", args)
+    assert decision.action == "block"
+    assert decision.code == "idempotent_no_progress_block"
 
 
 
@@ -376,3 +430,77 @@ def test_supervised_task_platforms_keep_warning_only_default():
     for platform in ("telegram", "discord", "cron", "kanban"):
         cfg = ToolCallGuardrailConfig.from_mapping({}, platform=platform)
         assert cfg.hard_stop_enabled is True, platform
+
+
+def test_mutating_shell_command_repeating_identical_output_is_not_blocked():
+    # `git push` succeeding identically twice is not evidence of a loop, and
+    # blocking a write would be worse than letting it through.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=2)
+    )
+    args = {"command": "git push origin main", "timeout": 30}
+    result = '{"output": "Everything up-to-date", "exit_code": 0, "error": null}'
+
+    for _ in range(4):
+        assert controller.before_call("terminal", args).allows_execution
+        controller.after_call("terminal", args, result, failed=False)
+
+
+def test_read_only_classification_covers_common_inspection_commands():
+    from agent.tool_guardrails import shell_command_is_read_only
+
+    assert shell_command_is_read_only("gh api repos/o/r/pulls/1/reviews 2>&1")
+    assert shell_command_is_read_only("cd ~/repo && git status")
+    assert shell_command_is_read_only("ls -la /tmp")
+    assert shell_command_is_read_only("  GH_PAGER=cat gh pr view 1 ")
+    assert shell_command_is_read_only("git ls-files | wc -l")
+    assert shell_command_is_read_only("ls -la /tmp 2>/dev/null")
+
+    assert not shell_command_is_read_only("gh pr merge 1 --merge")
+    assert not shell_command_is_read_only("cd ~/repo && git push")
+    assert not shell_command_is_read_only("rm -rf /tmp/x")
+    assert not shell_command_is_read_only("git status && git commit -m x")
+    assert not shell_command_is_read_only("git diff > patch.txt")
+    assert not shell_command_is_read_only("ls $(rm -rf /tmp/x)")
+    assert not shell_command_is_read_only("")
+    assert not shell_command_is_read_only(None)
+
+
+def test_write_flags_are_scoped_per_command_not_global():
+    # A global mutating-flag list conflates unrelated meanings: `-f` is
+    # `--field` to gh but `--file` to grep, `-x` is `--method` to gh but
+    # `--exclude-type` to df. Scoping per command keeps readers readable.
+    from agent.tool_guardrails import shell_command_is_read_only
+
+    assert shell_command_is_read_only("grep -f patterns.txt file")
+    assert shell_command_is_read_only("df -x tmpfs")
+    assert shell_command_is_read_only("test -f /tmp/x")
+    assert shell_command_is_read_only("ps -f")
+
+    assert not shell_command_is_read_only("gh api -f key=value repos/o/r")
+    assert not shell_command_is_read_only("gh api -X POST repos/o/r/issues")
+
+
+def test_read_only_subcommands_do_not_leak_their_write_siblings():
+    # An allowlisted noun is not enough: `git config --get` reads while
+    # `git config k v` writes, `gh label list` reads while `gh label create`
+    # does not, and `find` writes when told to `-delete` or `-exec`.
+    from agent.tool_guardrails import shell_command_is_read_only
+
+    assert shell_command_is_read_only("git config --get user.name")
+    assert shell_command_is_read_only("git config --list")
+    assert shell_command_is_read_only("git branch")
+    assert shell_command_is_read_only("git branch --contains HEAD")
+    assert shell_command_is_read_only("git tag --list 'v1*'")
+    assert shell_command_is_read_only("gh label list")
+    assert shell_command_is_read_only("sort in.txt")
+
+    assert not shell_command_is_read_only("git config user.name someone")
+    assert not shell_command_is_read_only("git config --unset user.name")
+    assert not shell_command_is_read_only("git branch newbranch")
+    assert not shell_command_is_read_only("git branch -D feature")
+    assert not shell_command_is_read_only("git tag v1.0")
+    assert not shell_command_is_read_only("gh label create bug")
+    assert not shell_command_is_read_only("find . -delete")
+    assert not shell_command_is_read_only("find . -exec rm {} ;")
+    assert not shell_command_is_read_only("sort -o out.txt in.txt")

@@ -3504,10 +3504,33 @@ class TelegramAdapter(BasePlatformAdapter):
             self._last_overflow_preview.pop(_preview_key, None)
         try:
             if not finalize:
-                await self._edit_text(chat_id, message_id, content)
-                if _saturated_preview:
-                    self._last_overflow_preview[_preview_key] = content
-                return SendResult(success=True, message_id=message_id)
+                # Streaming tick: try MarkdownV2 so the message stays formatted
+                # while new content arrives.  format_message escapes unmatched
+                # markers (e.g. unclosed **bold), so it virtually never triggers
+                # a BadRequest.  Other errors (flood, network) propagate to the
+                # outer handler so the consumer can back off or enter fallback.
+                # Saturated-preview dedup (above) still applies here: cache the
+                # sent content on every successful exit so the next identical
+                # truncated frame is skipped instead of re-tripping flood control.
+                try:
+                    await self._edit_text(chat_id, message_id, self.format_message(content), ParseMode.MARKDOWN_V2)
+                    if _saturated_preview:
+                        self._last_overflow_preview[_preview_key] = content
+                    return SendResult(success=True, message_id=message_id)
+                except Exception as _mdv2_err:
+                    _mdv2_s = str(_mdv2_err).lower()
+                    if "not modified" in _mdv2_s:
+                        if _saturated_preview:
+                            self._last_overflow_preview[_preview_key] = content
+                        return SendResult(success=True, message_id=message_id)
+                    if self._is_bad_request_error(_mdv2_err):
+                        # MarkdownV2 rejected this frame — send plain text for
+                        # this tick; next tick will try MarkdownV2 again.
+                        await self._edit_text(chat_id, message_id, content)
+                        if _saturated_preview:
+                            self._last_overflow_preview[_preview_key] = content
+                        return SendResult(success=True, message_id=message_id)
+                    raise  # flood / network — propagate to outer handler
             await self._edit_markdown_or_plain(
                 chat_id, message_id, self.format_message(content), _strip_mdv2(content) if content else content,
                 "[%s] MarkdownV2 edit failed, falling back to plain text: %s")

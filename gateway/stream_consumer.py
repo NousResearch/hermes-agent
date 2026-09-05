@@ -728,8 +728,21 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             elapsed = time.monotonic() - self._last_edit_time
             # buffer_threshold is a codepoint debounce heuristic, not a
             # platform-limit check (_len_fn is for overflow).
+            # Guard: require at least 1 second REGARDLESS of edit_interval so
+            # fast LLMs can't fire the threshold faster than platforms'
+            # per-chat edit rate limits. A fixed constant, not min()/max()
+            # against _current_edit_interval: for a long configured interval
+            # (e.g. 10s, to pace gently) this still lets a big buffer flush
+            # early at the 1s mark instead of waiting the full interval —
+            # the whole point of this early-fire branch, see
+            # TestBufferThresholdFloor — while for a short interval (e.g.
+            # 0.1s) it actually floors at 1s instead of collapsing straight
+            # back to `interval` the way min(interval, 1.0) did, which let a
+            # sub-second interval blow straight through the stated
+            # one-second protection.
             should_edit = bool((elapsed >= self._current_edit_interval and self._accumulated)
-                               or len(self._accumulated) >= self.cfg.buffer_threshold)
+                               or (len(self._accumulated) >= self.cfg.buffer_threshold
+                                   and elapsed >= 1.0))
         # Defer mid-stream edits while the buffer could still resolve to a silence
         # marker ("NO"→"NO_REPLY"); got_done always resolves the buffer.
         return should_edit and not _is_partial_silence_marker(

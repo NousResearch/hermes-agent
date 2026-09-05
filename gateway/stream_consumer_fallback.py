@@ -120,6 +120,7 @@ class StreamFallbackMixin:
                 edit_result = await self._edit_message(
                     message_id=stale_message_id,
                     content=final_text,
+                    finalize=True,
                 )
                 if getattr(edit_result, "success", False):
                     self._message_id = stale_message_id

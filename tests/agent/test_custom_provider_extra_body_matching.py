@@ -53,7 +53,7 @@ class TestExtraBodyResolution:
         assert got == {"service_tier": "flex"}
 
     def test_non_catalog_model_gets_no_override(self):
-        entry = _entry(model="gpt-5.5", models={"gpt-5.5": {}})
+        entry = _entry(models={"gpt-5.5": {}})
         got = _custom_provider_extra_body_for_agent(
             provider="custom", model="gpt-4o",
             base_url=BASE, custom_providers=[entry],
@@ -67,3 +67,17 @@ class TestExtraBodyResolution:
             base_url=BASE, custom_providers=[entry],
         )
         assert got is None
+
+    def test_unresolved_provider_and_model_match_by_url(self):
+        got = _custom_provider_extra_body_for_agent(
+            provider="", model="", base_url=BASE,
+            custom_providers=[_entry(model="gpt-5.6-terra")],
+        )
+        assert got == {"service_tier": "flex"}
+
+    def test_unprefixed_provider_name_matches_entry_identity(self):
+        got = _custom_provider_extra_body_for_agent(
+            provider="openai", model="gpt-5.6-terra", base_url=BASE,
+            custom_providers=[_entry(model="gpt-5.6-terra")],
+        )
+        assert got == {"service_tier": "flex"}

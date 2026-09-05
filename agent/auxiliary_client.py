@@ -5924,6 +5924,24 @@ def _merge_aux_extra_body(
     return merged_extra
 
 
+def _custom_provider_extra_body_for_aux(
+    provider: str, model: str, base_url: str,
+) -> Optional[Dict[str, Any]]:
+    """Resolve route-scoped provider body fields without carrying them across fallback routes."""
+    try:
+        from agent.agent_init import _custom_provider_extra_body_for_agent
+        from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+
+        config = load_config_readonly()
+        return _custom_provider_extra_body_for_agent(
+            provider=provider, model=model, base_url=base_url,
+            custom_providers=get_compatible_custom_providers(config),
+        )
+    except Exception:
+        logger.debug("aux custom-provider extra_body resolution failed", exc_info=True)
+        return None
+
+
 def _build_call_kwargs(
     provider: str, model: str, messages: list, temperature: Optional[float] = None,
     max_tokens: Optional[int] = None, tools: Optional[list] = None, timeout: float = 30.0,
@@ -5949,6 +5967,11 @@ def _build_call_kwargs(
         kwargs.update(auxiliary_max_tokens_param(max_tokens, model=model))  # picks max_completion_tokens where needed
     if tools:
         kwargs["tools"] = _dedupe_tool_names(tools, provider, model)
+    if inherited_extra := _custom_provider_extra_body_for_aux(
+        provider, model, effective_base,
+    ):
+        inherited_extra.update(extra_body or {})
+        extra_body = inherited_extra
     # Provider profiles are the source of truth for reasoning wire shapes (top-level, nested body,
     # or extra_body.reasoning); providers without a reasoning-aware profile keep the generic
     # ``extra_body.reasoning`` fallback.

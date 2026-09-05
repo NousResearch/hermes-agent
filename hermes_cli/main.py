@@ -746,6 +746,7 @@ from hermes_cli.main_desktop import (  # frozen updater surface: update_cmd*.py 
     _desktop_dist_exists,
     _desktop_macos_relaunchable_fixup,
     _desktop_packaged_executable,
+    _register_linux_desktop_entry,
 )
 from hermes_cli.main_web_build import (
     _sweep_stale_bytecode_if_checkout_changed,

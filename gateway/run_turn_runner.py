@@ -1252,7 +1252,10 @@ class TurnRunner:
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=_build_exec_approval_metadata(ctx._status_thread_metadata, approval_data), **flags,
+                        description=desc, metadata=_build_exec_approval_metadata(
+                            {**(ctx._status_thread_metadata or {}), "requester_user_id": ctx.source.user_id},
+                            approval_data,
+                        ), **flags,
                     ),
                     "send_exec_approval scheduling error",
                 )
@@ -1288,10 +1291,14 @@ class TurnRunner:
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )
-            if fut is not None:
-                fut.result(timeout=15)
+            if fut is None:
+                raise RuntimeError("approval fallback send: loop unavailable")
+            result = fut.result(timeout=15)
+            if result is not None and getattr(result, "success", True) is False:
+                raise RuntimeError(str(getattr(result, "error", "") or "approval fallback send failed"))
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)
+            raise
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

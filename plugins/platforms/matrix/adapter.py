@@ -338,6 +338,9 @@ class _MatrixApprovalPrompt:
         self.summary: str = ""
         self.summary_task: object | None = None
         self.presentation_lock = asyncio.Lock()
+        self.terminal_visible = False
+        self.terminal_choice: str | None = None
+        self.terminal_actor = ""
 
 
 @dataclass
@@ -1590,7 +1593,7 @@ class MatrixAdapter(BasePlatformAdapter):
             return result
         prompt = make_prompt(
             result.message_id, str((metadata or {}).get("requester_user_id") or "") or None,
-            time.monotonic() + max(self._approval_timeout_seconds, 0))
+            (metadata or {}).get("expires_at", time.monotonic() + max(self._approval_timeout_seconds, 0)))
         registry[result.message_id] = prompt
         for emoji in emojis:
             try:
@@ -2354,6 +2357,7 @@ class MatrixAdapter(BasePlatformAdapter):
             if count:
                 prompt.resolved = True
                 prompt.state = "resolved_core_delivered"
+                prompt.terminal_choice, prompt.terminal_actor = choice, sender
                 consume_gateway_approval_outcome(prompt.session_key, prompt.approval_id)
                 logger.info(
                     "Matrix reaction resolved %d approval(s) for session %s (choice=%s, user=%s)",
@@ -2428,11 +2432,13 @@ class MatrixAdapter(BasePlatformAdapter):
             return False
         return True
 
-    async def _send_invalid_reaction_feedback(self, room_id: str, target_event_id: str, text: str) -> None:
+    async def _send_invalid_reaction_feedback(self, room_id: str, target_event_id: str, text: str) -> bool:
         try:
-            await self.send(room_id, text, reply_to=target_event_id)
+            result = await self.send(room_id, text, reply_to=target_event_id)
+            return bool(result and result.success and result.message_id)
         except Exception as exc:
             logger.debug("Matrix: failed to send invalid reaction feedback: %s", exc)
+            return False
 
     def _forget_matrix_approval_prompt(
         self,
@@ -2550,8 +2556,8 @@ class MatrixAdapter(BasePlatformAdapter):
         """Terminal card compaction after resolve/expire.
 
         Core resolution and UI terminalization are separate. The registry entry
-        is retained until a terminal m.replace succeeds (or bounded retries
-        exhaust), so a failed edit remains retryable.
+        is retained until a terminal m.replace or visible failure notice succeeds.
+        Each attempt is bounded; failed delivery remains retryable.
         """
         task = getattr(prompt, "summary_task", None)
         self._cancel_approval_summary_task(prompt)
@@ -2564,16 +2570,16 @@ class MatrixAdapter(BasePlatformAdapter):
                 pass
             except Exception as exc:
                 logger.debug("Matrix: approval summary task failed during finalize: %s", exc)
-        if not getattr(prompt, "command", ""):
-            self._forget_matrix_approval_prompt(target_event_id, prompt)
-            return
         from plugins.platforms.matrix.approval_cards import format_terminal_compact
 
         async with prompt.presentation_lock:
-            if str(getattr(prompt, "state", "")).startswith("terminal_"):
+            if prompt.terminal_visible:
                 # Already compacted (e.g. watcher + reaction both fired).
                 self._forget_matrix_approval_prompt(target_event_id, prompt)
                 return
+            if prompt.terminal_choice is None:
+                prompt.terminal_choice, prompt.terminal_actor = choice, actor
+            choice, actor = prompt.terminal_choice, prompt.terminal_actor
             prompt.state = "terminal_edit_pending"
             body, html_body = format_terminal_compact(
                 choice=choice,
@@ -2604,6 +2610,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     )
                     result = None
                 if result is not None and getattr(result, "success", False):
+                    prompt.terminal_visible = True
                     prompt.state = f"terminal_{choice}"
                     prompt.generation += 1
                     self._forget_matrix_approval_prompt(target_event_id, prompt)
@@ -2618,22 +2625,25 @@ class MatrixAdapter(BasePlatformAdapter):
                     )
                 if attempt < max_attempts:
                     await asyncio.sleep(min(0.5 * attempt, 2.0))
-            # Bounded cleanup after exhaustion so entries do not linger forever.
+            # Forget only after the user can see the terminal delivery failure.
             logger.error(
                 "Matrix: terminal approval edit exhausted retries for %s: %s",
                 target_event_id,
                 last_error,
             )
             try:
-                await self._send_invalid_reaction_feedback(
+                visible = await self._send_invalid_reaction_feedback(
                     room_id,
                     target_event_id,
-                    "Approval was recorded, but updating the Matrix card failed. "
-                    "The decision still stands.",
+                    f"Approval outcome: {choice}. Updating the Matrix card failed. "
+                    "This prompt is no longer actionable.",
                 )
             except Exception:
-                pass
-            self._forget_matrix_approval_prompt(target_event_id, prompt)
+                visible = False
+            if visible:
+                prompt.terminal_visible = True
+                prompt.state = "terminal_notice_delivered"
+                self._forget_matrix_approval_prompt(target_event_id, prompt)
 
 
     def _schedule_approval_resolution_watch(self, prompt: "_MatrixApprovalPrompt") -> None:
@@ -2655,7 +2665,7 @@ class MatrixAdapter(BasePlatformAdapter):
             grace_seconds = 5.0
             poll = 0.5
             while True:
-                if prompt.resolved and str(getattr(prompt, "state", "")).startswith("terminal_"):
+                if prompt.terminal_visible:
                     return
                 now = time.monotonic()
                 expires_at = getattr(prompt, "expires_at", None)
@@ -2668,9 +2678,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 except Exception:
                     pending = True
                 if not pending or past_deadline:
-                    if str(getattr(prompt, "state", "")).startswith("terminal_"):
+                    if prompt.terminal_visible:
                         return
-                    choice = consume_gateway_approval_outcome(
+                    choice = prompt.terminal_choice or consume_gateway_approval_outcome(
                         prompt.session_key,
                         prompt.approval_id,
                     )
@@ -2678,11 +2688,14 @@ class MatrixAdapter(BasePlatformAdapter):
                         # Reaction/typed path already consumed the outcome and
                         # owns terminalization. Do not stamp Expired over it.
                         if getattr(prompt, "resolved", False):
-                            return
+                            await asyncio.sleep(poll)
+                            continue
                         if pending and not past_deadline:
                             await asyncio.sleep(poll)
                             continue
                         choice = "expired"
+                    if prompt.terminal_choice is None:
+                        prompt.terminal_choice = choice
                     if not prompt.resolved:
                         prompt.resolved = True
                         prompt.state = "resolved_core_delivered"
@@ -2695,9 +2708,13 @@ class MatrixAdapter(BasePlatformAdapter):
                         prompt.message_id,
                         prompt,
                         choice=choice,
-                        actor="",
+                        actor=prompt.terminal_actor,
                     )
-                    return
+                    if prompt.terminal_visible:
+                        return
+                    # Retry delivery without forgetting the already-recorded decision.
+                    await asyncio.sleep(5.0)
+                    continue
                 await asyncio.sleep(poll)
 
         loop.create_task(_watch())
@@ -2710,6 +2727,8 @@ class MatrixAdapter(BasePlatformAdapter):
         prompt: "_MatrixApprovalPrompt",
     ) -> None:
         prompt.resolved = True
+        if prompt.terminal_choice is None:
+            prompt.terminal_choice = "expired"
         self._cancel_approval_summary_task(prompt)
         await self._redact_bot_approval_reactions(room_id, prompt)
         await self._finalize_matrix_approval_prompt(

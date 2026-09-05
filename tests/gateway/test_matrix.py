@@ -1270,6 +1270,43 @@ class TestMatrixSyncLoop:
 
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("initial", [False, True])
+    async def test_absorb_sync_drops_left_room_events_without_mutating_response(self, initial):
+        """Fresh sync after a cursor reset must not dispatch departed-room history."""
+        adapter = _make_adapter()
+        payload = {
+            "next_batch": "s-fresh",
+            "rooms": {
+                "join": {"!joined:example.org": {"timeline": {"events": []}}},
+                "invite": {"!invited:example.org": {"invite_state": {"events": []}}},
+                "leave": {"!left:example.org": {"timeline": {"events": [
+                    {"type": "m.room.member", "state_key": "@bot:example.org",
+                     "content": {"membership": "leave"}},
+                ]}}},
+            },
+            "to_device": {"events": [{"type": "m.room_key", "content": {}}]},
+            "device_lists": {"changed": ["@alice:example.org"]},
+        }
+        client = types.SimpleNamespace(
+            handle_sync=MagicMock(return_value=[]),
+            sync_store=types.SimpleNamespace(put_next_batch=AsyncMock()),
+        )
+        adapter._client = client
+        with patch.object(adapter, "_refresh_dm_cache", AsyncMock()), \
+             patch.object(adapter, "_schedule_pending_invite_joins") as schedule:
+            token = await adapter._absorb_sync(client, payload, initial=initial)
+        forwarded = client.handle_sync.call_args.args[0]
+        assert "leave" not in forwarded["rooms"]
+        assert "leave" in payload["rooms"]
+        assert forwarded["rooms"]["join"] == payload["rooms"]["join"]
+        assert forwarded["rooms"]["invite"] == payload["rooms"]["invite"]
+        assert forwarded["to_device"] == payload["to_device"]
+        assert forwarded["device_lists"] == payload["device_lists"]
+        assert token == "s-fresh"
+        client.sync_store.put_next_batch.assert_awaited_once_with(token)
+        schedule.assert_called_once_with(payload)
+
+    @pytest.mark.asyncio
     async def test_dispatch_sync_accepts_async_handle_sync(self):
         """Some fake clients expose handle_sync as an async dispatcher."""
         adapter = _make_adapter()
@@ -1639,7 +1676,6 @@ class TestMatrixSyncLoop:
         class MixedStatusAuthError(Exception):
             http_status = "n/a"
             status_code = 401
-            errcode = "M_UNKNOWN_TOKEN"
 
         mock_sync_store = MagicMock()
         mock_sync_store.get_next_batch = AsyncMock(return_value="s-current")

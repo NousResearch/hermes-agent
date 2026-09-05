@@ -1804,11 +1804,7 @@ class MatrixAdapter(BasePlatformAdapter):
             return status == 403 or errcode == "M_FORBIDDEN"
 
         async def _reset_rejected_sync_cursor(error: Any) -> bool:
-            """Clear a rejected incremental cursor and retry once class.
-
-            Returns True when the loop should continue after reset, False when
-            the reset budget is exhausted and the sync loop should stop.
-            """
+            """Clear the cursor and back off; return False when the lifetime budget is exhausted."""
             nonlocal next_batch, cursor_resets
             cursor_resets += 1
             if cursor_resets > max_cursor_resets:
@@ -1830,43 +1826,25 @@ class MatrixAdapter(BasePlatformAdapter):
             try:
                 await client.sync_store.put_next_batch(None)
             except Exception as store_exc:
-                logger.warning(
-                    "Matrix: failed to persist cleared sync cursor: %s",
-                    store_exc,
-                )
+                logger.warning("Matrix: failed to persist cleared sync cursor: %s", store_exc)
             await asyncio.sleep(5)
             return True
 
         while not self._closing:
             try:
-                # Wrap in asyncio.wait_for to guard against TCP-level hangs
-                # that the Matrix long-poll timeout cannot catch. Long-poll
-                # is 30s, so 45s gives 15s slack for network drain.
-                sync_data = await asyncio.wait_for(
-                    client.sync(
-                        since=next_batch,
-                        timeout=30000,
-                    ),
-                    timeout=45.0,
-                )
+                # 45s outer cap guards TCP-level hangs the 30s long-poll timeout can't catch.
+                sync_data = await asyncio.wait_for(client.sync(since=next_batch, timeout=30000), timeout=45.0)
 
-                # nio returns SyncError objects (not exceptions) for auth
-                # failures like M_UNKNOWN_TOKEN.  Detect and stop immediately.
+                # Some client wrappers return error objects instead of raising.
                 if _is_permanent_sync_auth_error(sync_data):
-                    logger.error(
-                        "Matrix: permanent auth error from sync: %s — stopping",
-                        sync_data,
-                    )
+                    logger.error("Matrix: permanent auth error from sync: %s — stopping", sync_data)
                     return
                 if _is_forbidden_sync_error(sync_data):
                     if next_batch:
                         if await _reset_rejected_sync_cursor(sync_data):
                             continue
                         return
-                    logger.error(
-                        "Matrix: permanent permission error from sync: %s — stopping",
-                        sync_data,
-                    )
+                    logger.error("Matrix: permanent permission error from sync: %s — stopping", sync_data)
                     return
 
                 if isinstance(sync_data, dict):
@@ -1878,9 +1856,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 if self._closing:
                     return
                 if _is_permanent_sync_auth_error(exc):
-                    logger.error(
-                        "Matrix: permanent auth error: %s — stopping sync", exc
-                    )
+                    logger.error("Matrix: permanent auth error: %s — stopping sync", exc)
                     return
                 if _is_forbidden_sync_error(exc):
                     if next_batch:
@@ -1921,6 +1897,11 @@ class MatrixAdapter(BasePlatformAdapter):
         client = self._client
         if not client or not hasattr(client, "handle_sync"):
             return
+        # Cursor recovery can replay departed-room timelines. Do not dispatch
+        # those events, but keep joined rooms, invites and E2EE to-device data.
+        rooms = sync_data.get("rooms", {})
+        if "leave" in rooms:
+            sync_data = {**sync_data, "rooms": {key: value for key, value in rooms.items() if key != "leave"}}
         tasks = client.handle_sync(sync_data)
         if inspect.isawaitable(tasks):
             tasks = await tasks

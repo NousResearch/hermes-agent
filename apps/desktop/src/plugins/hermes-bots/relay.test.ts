@@ -592,6 +592,60 @@ describe('the drain loop wires drain → deliver → reply', () => {
   })
 })
 
+describe('spawn-starvation backoff (#102913)', () => {
+  const drainsFor = (calls: RelayCall[], id: string) =>
+    calls.filter(call => call.method === 'bot_relay.outbox.drain' && call.connectionId === id)
+
+  it('cools down a starving connection’s polls after a slot-timeout, then retries', async () => {
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain' && call.connectionId === 'b') {
+        throw new Error('Local backend start for "secretary" timed out while waiting for a free slot.')
+      }
+
+      return { envelopes: [] }
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle()
+    expect(drainsFor(calls, 'b')).toHaveLength(1)
+
+    // Next tick: b is cooling down (no new spawn), a polls as before.
+    await pushAndSettle()
+    expect(drainsFor(calls, 'b')).toHaveLength(1)
+    expect(drainsFor(calls, 'a').length).toBeGreaterThan(1)
+
+    // After the 5min cooldown the poll resumes instead of staying dark.
+    await vi.advanceTimersByTimeAsync(300_000)
+    await pushAndSettle()
+    expect(drainsFor(calls, 'b').length).toBeGreaterThan(1)
+
+    stopBotRelay()
+  })
+
+  it('leaves transient failures on the fast retry path — only starvation cools', async () => {
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain' && call.connectionId === 'b') {
+        throw new Error('socket blip')
+      }
+
+      return { envelopes: [] }
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle()
+    await pushAndSettle()
+
+    // A blip is not a full pool: b is asked again on the very next drain.
+    expect(drainsFor(calls, 'b')).toHaveLength(2)
+
+    stopBotRelay()
+  })
+})
+
 describe('stop halts both loops', () => {
   it('leaves no timer able to reach the gateway after teardown', async () => {
     const calls = respondWith(() => ({ envelopes: [] }))

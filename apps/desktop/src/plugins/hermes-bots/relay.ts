@@ -128,6 +128,54 @@ interface RelayEnvelope {
   target_profile?: string
 }
 
+// #102913: relay polls must not spawn-storm a full local pool. Both polls
+// below are read-only, but they ride the ensure-spawn socket path, so every
+// tick re-queues a doomed spawn per starving profile (slot-timeout at
+// POOL_SLOT_WAIT_MS) — forever. Cool down exactly that failure signature per
+// connection+method; anything else (transient blip, unknown-method on older
+// backends) retries on the next tick as before, and a success clears it.
+// ponytail: fixed 5min cooldown; go exponential if starvation outlives it.
+const RELAY_SPAWN_COOLDOWN_MS = 300_000
+const relaySpawnCooldown = new Map<string, number>()
+
+function isSpawnStarvation(error: unknown): boolean {
+  const message = String((error as { message?: unknown })?.message ?? error ?? '')
+
+  return /free local slot|Local backend start/i.test(message)
+}
+
+/** requestProfile for the read-only polls: starvation failures back off, successes reset. */
+async function requestRelayPoll<T>(
+  connection: RelayConnection,
+  method: string,
+  params: Record<string, unknown>
+): Promise<T> {
+  const key = `${connection.id}::${method}`
+  const until = relaySpawnCooldown.get(key)
+
+  if (until !== undefined) {
+    if (until <= Date.now()) {
+      relaySpawnCooldown.delete(key)
+    } else {
+      throw new Error(`relay poll for "${connection.id}" (${method}) cooling down after a spawn timeout`)
+    }
+  }
+
+  try {
+    const res = await host.requestProfile<T>(connection.route, method, params)
+
+    relaySpawnCooldown.delete(key)
+
+    return res
+  } catch (error) {
+    if (isSpawnStarvation(error)) {
+      relaySpawnCooldown.set(key, Date.now() + RELAY_SPAWN_COOLDOWN_MS)
+    }
+
+    throw error
+  }
+}
+
 /** Reconcile retention with the CURRENT connection set: pin new connections,
  *  release removed ones. Runs on every drain/roster connection fetch. */
 function syncRelayRetention(connections: RelayConnection[]) {
@@ -208,7 +256,7 @@ async function relayConnections(): Promise<RelayConnection[]> {
  *  definitively offline → false runtime_offline refusals (#93091 item 2). */
 async function relayAgentsOn(connection: RelayConnection): Promise<RelayAgentRow[] | null> {
   try {
-    const res = await host.requestProfile<{ profiles?: RosterRow[] }>(connection.route, 'profiles.list', {
+    const res = await requestRelayPoll<{ profiles?: RosterRow[] }>(connection, 'profiles.list', {
       include_sessions: false
     })
 
@@ -346,8 +394,8 @@ async function drainRelayOutboxes() {
       let envelopes: RelayEnvelope[] = []
 
       try {
-        const res = await host.requestProfile<{ envelopes?: RelayEnvelope[] }>(
-          sender.route,
+        const res = await requestRelayPoll<{ envelopes?: RelayEnvelope[] }>(
+          sender,
           'bot_relay.outbox.drain',
           {}
         )
@@ -490,6 +538,8 @@ export function stopBotRelay() {
   // Unpin every relay-retained socket (#93594): with the relay stopped the
   // pooled entries return to dispose-at-refcount-0 semantics.
   releaseRelayRetention()
+  // A stale spawn cooldown must not delay the first poll after re-enable.
+  relaySpawnCooldown.clear()
 
   if (relay.rosterTimer !== null) {
     clearInterval(relay.rosterTimer)

@@ -260,9 +260,12 @@ def _custom_provider_extra_body_for_agent(
     *, provider: str, model: str, base_url: str, custom_providers: List[Dict[str, Any]]
 ) -> Optional[Dict[str, Any]]:
     provider_norm = (provider or "").strip().lower()
-    if provider_norm != "custom" and not provider_norm.startswith("custom:"):
-        return None
-    provider_key_filter = provider_norm.partition(":")[2].strip()
+    if provider_norm.startswith("custom:"):
+        provider_key_filter = provider_norm.partition(":")[2].strip()
+    elif provider_norm in {"", "auto", "custom"}:
+        provider_key_filter = ""
+    else:
+        provider_key_filter = provider_norm
     target_url = _normalized_custom_base_url(base_url)
     if not target_url:
         return None
@@ -282,7 +285,11 @@ def _custom_provider_extra_body_for_agent(
         extra_body = entry.get("extra_body")
         if not isinstance(extra_body, dict) or not extra_body:
             continue
-        if str(entry.get("model", "") or "").strip():
+        if not str(model or "").strip():
+            return dict(extra_body)
+        models = entry.get("models")
+        has_catalog = isinstance(models, (dict, list, tuple)) and bool(models)
+        if str(entry.get("model", "") or "").strip() or has_catalog:
             if _custom_provider_model_matches(model, entry):
                 return dict(extra_body)
         elif fallback is None:

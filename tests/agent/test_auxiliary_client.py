@@ -2510,6 +2510,34 @@ class TestAuxiliaryTaskExtraBody:
         kwargs = client.chat.completions.create.call_args.kwargs
         assert kwargs["extra_body"]["enable_thinking"] is True
 
+    def test_sync_call_inherits_matching_provider_extra_body(self):
+        client = MagicMock()
+        client.base_url = "https://proxy.example/v1"
+        response = MagicMock()
+        client.chat.completions.create.return_value = response
+        config = {
+            "auxiliary": {"approval": {"extra_body": {"shared": "task"}}},
+            "custom_providers": [{
+                "name": "proxy", "base_url": "https://proxy.example/v1",
+                "model": "proxy-model",
+                "extra_body": {"user": "proxy-user", "shared": "provider"},
+            }],
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), \
+             patch("hermes_cli.config.load_config_readonly", return_value=config), \
+             patch("agent.auxiliary_client._get_cached_client", return_value=(client, "proxy-model")):
+            result = call_llm(
+                task="approval", provider="custom:proxy", model="proxy-model",
+                base_url="https://proxy.example/v1", api_key="test-key",
+                messages=[{"role": "user", "content": "approve?"}],
+            )
+
+        assert result is response
+        assert client.chat.completions.create.call_args.kwargs["extra_body"] == {
+            "user": "proxy-user", "shared": "task",
+        }
+
 
 
 

@@ -766,14 +766,14 @@ _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS = (
     ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".config", ".azure", ".gcloud",
     "Library/Keychains")
 
-def _SQLITE_FILES(name: str) -> tuple[str, str, str]:
-    """A SQLite store plus its WAL/SHM sidecars."""
-    return (name, f"{name}-wal", f"{name}-shm")
+def _sqlite_files(name: str) -> tuple[str, ...]:
+    """A SQLite store plus its WAL/SHM/rollback-journal sidecars."""
+    return (name, f"{name}-wal", f"{name}-shm", f"{name}-journal")
 
 
 # Credential stores at the HERMES_HOME root, denied per-file so skills/, logs/ and agent-written
-# files stay deliverable (cache subdirs are allowlisted BEFORE this). Mirrors agent/file_safety.py
-# so exfil never trails the read guard. google_token.json's mtime bumps every turn (defeats the
+# files stay deliverable (cache subdirs are allowlisted BEFORE this). A superset of the
+# agent/file_safety.py read+write denies so exfil never trails the read guard. google_token.json's mtime bumps every turn (defeats the
 # recency window); pairing/ and mcp-tokens/ (live OAuth tokens) are denied as whole trees.
 _ROOT_CREDENTIAL_PATHS = (
     ".env", "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
@@ -783,7 +783,7 @@ _ROOT_CREDENTIAL_PATHS = (
     # Whole conversation history (every secret ever pasted into a chat) and the copied browser
     # cookie/login store; sessions/ is the legacy transcript dir. SQLite sidecars are listed
     # too: WAL mode touches state.db-wal on every write, so recency trust alone would leak them.
-    "sessions", "browser-profile", *_SQLITE_FILES("state.db"), *_SQLITE_FILES("kanban.db"))
+    "sessions", "browser-profile", *_sqlite_files("state.db"), *_sqlite_files("kanban.db"))
 
 
 def _profile_cache_roots() -> List[Path]:
@@ -803,20 +803,28 @@ def _profile_cache_roots() -> List[Path]:
     return [p / "cache" / subdir for p in profile_dirs for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS]
 
 
+def _kanban_root() -> Path:
+    """Kanban is root-shared across profiles by design (``kanban_db.kanban_home``)."""
+    return Path(os.environ.get("HERMES_KANBAN_HOME", "").strip() or _HERMES_ROOT).expanduser()
+
+
+def _kanban_board_dirs() -> List[Path]:
+    """Every directory under ``<root>/kanban/boards`` (lax on purpose: the DENY side must catch a
+    board whatever its name; the allow side filters further)."""
+    with contextlib.suppress(OSError):
+        return [p for p in (_kanban_root() / "kanban" / "boards").iterdir() if p.is_dir()]
+    return []
+
+
 def _kanban_attachment_roots() -> List[Path]:
     """Return durable Kanban attachment roots without importing kanban_db."""
     override = os.environ.get("HERMES_KANBAN_ATTACHMENTS_ROOT", "").strip()
     if override:
         return [Path(override).expanduser()]
-    home_override = os.environ.get("HERMES_KANBAN_HOME", "").strip()
-    root = Path(home_override).expanduser() if home_override else _HERMES_ROOT
-    roots = [root / "kanban" / "attachments"]
-    with contextlib.suppress(OSError):
-        board_dirs = [path for path in (root / "kanban" / "boards").iterdir()
-                      if path.is_dir() and not path.is_symlink()
-                      and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", path.name)
-                      and (path / "kanban.db").is_file()]
-        roots.extend(path / "attachments" for path in board_dirs)
+    roots = [_kanban_root() / "kanban" / "attachments"]
+    roots.extend(path / "attachments" for path in _kanban_board_dirs()
+                 if not path.is_symlink() and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", path.name)
+                 and (path / "kanban.db").is_file())
     return roots
 
 
@@ -841,14 +849,9 @@ def _media_delivery_recency_seconds() -> float:
 
 
 def _kanban_board_db_paths() -> List[Path]:
-    """Named-board ``kanban.db`` stores (+ sidecars) under ``<root>/kanban/boards/<slug>/`` — the
-    same board dirs ``_kanban_attachment_roots`` allowlists for ATTACHMENTS; the DB beside them
-    holds every task, comment and run transcript."""
-    root = Path(os.environ.get("HERMES_KANBAN_HOME", "").strip() or _HERMES_ROOT).expanduser()
-    with contextlib.suppress(OSError):
-        return [board / name for board in (root / "kanban" / "boards").iterdir() if board.is_dir()
-                for name in _SQLITE_FILES("kanban.db")]
-    return []
+    """Named-board ``kanban.db`` stores (+ sidecars): they sit beside the ATTACHMENTS dir
+    ``_kanban_attachment_roots`` allowlists and hold every task, comment and run transcript."""
+    return [board / name for board in _kanban_board_dirs() for name in _sqlite_files("kanban.db")]
 
 
 def _media_delivery_denied_paths() -> List[Path]:

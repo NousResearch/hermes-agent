@@ -463,8 +463,15 @@ def _profile_home(profile: str | None) -> Path | None:
         home = Path(profiles_mod.get_profile_dir(name))
     except Exception:
         return None
-    if home.resolve() == Path(_hermes_home).resolve() or not home.exists():
-        return None  # already the launch profile (no override needed), or no such profile
+    if home.resolve() == Path(_hermes_home).resolve():
+        return None  # already the launch profile; no override needed
+    # An isolated dashboard launched under a named profile still receives
+    # profile="default" from older Desktop clients. In that process,
+    # "default" means the launch profile, not the machine-root database.
+    if name == "default" and _process_is_profile_scoped():
+        return None
+    if not home.exists():
+        return None  # no such profile
     _served_profile_homes.add(home)  # the change watcher must stat every served sibling store too
     return home
 
@@ -472,6 +479,16 @@ def _profile_home(profile: str | None) -> Path | None:
 # Profile homes served besides the launch home — the only extra stores the sessions watcher
 # probes. Empty on single-profile installs, so their watcher stays byte-identical.
 _served_profile_homes: set[Path] = set()
+
+
+def _process_is_profile_scoped() -> bool:
+    """Return whether this process was launched outside the machine root."""
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        return Path(_hermes_home).resolve() != Path(get_default_hermes_root()).resolve()
+    except Exception:
+        return False
 
 
 def _profile_scoped(handler):

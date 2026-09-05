@@ -3719,6 +3719,10 @@ class TelegramAdapter(BasePlatformAdapter):
         await self._retrigger_typing(chat_id, metadata)
         return SendResult(
             success=True, message_id=delivered[0] if delivered else None,
+            # Extra ids from a split payload: without these the stream consumer's
+            # _last_edit_overflowed check never fires and a completed multi-chunk send gets a
+            # redundant finalize edit on message_id (the FIRST chunk), duplicating the reply (#51010).
+            continuation_message_ids=tuple(delivered[1:]) if len(delivered) > 1 else (),
             raw_response={
                 "message_ids": list(delivered), "requested_thread_id": requested_thread_id, "thread_fallback": used_thread_fallback})
 

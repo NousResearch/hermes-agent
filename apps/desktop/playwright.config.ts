@@ -36,7 +36,14 @@ export default defineConfig({
    * per test gives us headroom without masking real hangs. */
   timeout: 90_000,
   retries: process.env.CI ? 1 : 0,
-  /* Each test gets its own worker so the Electron process is fully isolated. */
+  /*
+   * Every spec launches a real Electron renderer and `hermes serve` backend.
+   * Letting Playwright use its default CI worker count starts a large burst of
+   * those stacks on the 32-core runner, which races application startup and
+   * makes the suite flaky. Keep the actual integration lane serial; each
+   * spec still gets a fresh app and sandbox from its fixtures.
+   */
+  workers: 1,
   fullyParallel: false,
   reporter: reporters,
   use: {

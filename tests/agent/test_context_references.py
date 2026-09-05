@@ -139,7 +139,9 @@ def test_oversized_text_file_falls_back_to_tool_readable_path(tmp_path: Path):
     assert "too large to inline safely" in result.message
     assert "read_file" in result.message
     assert "FULL-CONTENT-MARKER" not in result.message
-    assert any("tool-readable path instead" in warning for warning in result.warnings)
+    # The fallback block alone carries the message — a companion warning would
+    # repeat "too large to inline safely" under --- Context Warnings ---.
+    assert not result.warnings
 
 
 def test_file_line_range_is_applied_before_oversized_fallback(tmp_path: Path):

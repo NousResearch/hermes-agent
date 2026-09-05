@@ -1,4 +1,8 @@
-"""Dependency-free Host and Origin allowlist validation for the CUA bridge."""
+"""Dependency-free Host and Origin allowlist validation for the CUA bridge.
+
+An empty ``allowed_origins`` means no browser origins may connect:
+non-browser MCP clients send no Origin header at all, so the default is safe.
+"""
 
 from __future__ import annotations
 
@@ -22,7 +26,10 @@ def _valid_hostname(hostname: str) -> bool:
         and len(label) <= 63
         and label[0].isalnum()
         and label[-1].isalnum()
-        and all(character.isalnum() or character == "-" for character in label)
+        and all(
+            character.isascii() and (character.isalnum() or character == "-")
+            for character in label
+        )
         for label in labels
     )
 
@@ -82,4 +89,10 @@ def validate_security_allowlists(
         raise ValueError("allowed_hosts must contain valid host names with optional ports and no wildcards")
     if not all(isinstance(value, str) and _valid_origin_entry(value) for value in origins):
         raise ValueError("allowed_origins must contain valid HTTP(S) origins and no wildcards")
-    return hosts, origins
+    # Scheme, host and port are case-insensitive, and origins accept no path
+    # beyond "" or "/", so normalize to lowercase with no trailing slash.
+    # Return new lists — the caller's inputs are never mutated.
+    return (
+        [value.lower() for value in hosts],
+        [value.lower().rstrip("/") for value in origins],
+    )

@@ -338,10 +338,19 @@ async function completeWithModelConfirm(
 
   const defaults = await fetchProviderDefaultModel(preferredSlugs)
 
-  if (defaults) {
-    // Persist the chosen provider/model before the runtime gate so a stale
-    // config provider (e.g. anthropic from a prior failed setup) cannot make
-    // setup.runtime_check validate the wrong backend after a fresh OAuth login.
+  // Manual connect (Settings / model picker "Add provider" on an already-
+  // configured install): the global default must NOT change until the user
+  // explicitly confirms a model on the confirm card. checkRuntime below
+  // already passes preferredSlugs[0] as requestedProvider, so the runtime
+  // gate can validate the just-connected provider without persisting first.
+  // confirmOnboardingModel persists on Begin instead.
+  const manual = $desktopOnboarding.get().manual
+
+  if (defaults && !manual) {
+    // First-run only: persist the chosen provider/model before the runtime
+    // gate so a stale config provider (e.g. anthropic from a prior failed
+    // setup) cannot make setup.runtime_check validate the wrong backend
+    // after a fresh OAuth login. There's no prior default to protect here.
     try {
       const res = await setMainModelAssignment(
         {
@@ -965,15 +974,36 @@ export async function setOnboardingModel(model: string) {
   }
 }
 
-// User clicked "Start chatting" on the confirm card. Finalizes onboarding
-// — the model was already persisted by completeWithModelConfirm (or by
-// setOnboardingModel if they changed it), so all that's left is to mark
-// onboarding done and unblock the rest of the app.
-export function confirmOnboardingModel(ctx: OnboardingContext) {
-  const { flow } = $desktopOnboarding.get()
+// User clicked "Start chatting" on the confirm card. First-run: the model
+// was already persisted by completeWithModelConfirm (or by setOnboardingModel
+// if they changed it), so this only marks onboarding done. Manual connect
+// (Settings / "Add provider"): completeWithModelConfirm deliberately skipped
+// the persist so the previous default survives a dismiss, so this is where
+// the picked model finally gets written — the user just confirmed it.
+export async function confirmOnboardingModel(ctx: OnboardingContext) {
+  const { flow, manual } = $desktopOnboarding.get()
 
   if (flow.status !== 'confirming_model') {
     return
+  }
+
+  if (manual) {
+    // Best-effort: the overlay is already on its way out (cinematic exit
+    // choreography in the caller isn't gated on this), so a failure here is
+    // reported and swallowed rather than left blocking — same as the rest of
+    // this file's non-blocking gateway calls. The alternative (silently
+    // keeping the previous default) is still safer than the bug this fixes.
+    try {
+      const res = await setMainModelAssignment(
+        { provider: flow.providerSlug, model: flow.currentModel },
+        undefined,
+        { skipConfirmPrompt: true }
+      )
+
+      notifyGatewayTools(res.gateway_tools)
+    } catch (error) {
+      notifyError(error, 'Could not save the selected model.')
+    }
   }
 
   // No success toast here: the confirm-model screen already showed "<provider>

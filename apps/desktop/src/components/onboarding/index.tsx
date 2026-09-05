@@ -218,13 +218,13 @@ export function DesktopOnboardingOverlay({
     const reduce = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 
     if (reduce) {
-      confirmOnboardingModel(ctx)
+      void confirmOnboardingModel(ctx)
 
       return
     }
 
     setLeaving(true)
-    window.setTimeout(() => confirmOnboardingModel(ctx), ONBOARDING_EXIT_MS)
+    window.setTimeout(() => void confirmOnboardingModel(ctx), ONBOARDING_EXIT_MS)
   }
 
   useEffect(() => {

@@ -10,20 +10,25 @@ import os
 import re
 import smtplib
 import socket
+from collections.abc import Mapping
 import ssl
 import uuid
 from email.header import decode_header
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
+from email.message import Message
 from email.utils import formatdate
-from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.platforms.base import (BasePlatformAdapter, MessageEvent, MessageType, SendResult,
                                     cache_document_from_bytes, cache_image_from_bytes)
 from gateway.config import Platform, PlatformConfig
+from plugins.platforms.email.mime import (
+    MimeAttachment,
+    MimeSignature,
+    build_email_message,
+    prepare_signature,
+    render_markdown_html,
+)
 from utils import is_truthy_value
 from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port
 
@@ -52,6 +57,19 @@ _HTML_SUBS = ((re.compile(r"<br\s*/?>", re.IGNORECASE), "\n"), (re.compile(r"<p[
 # "method=result" tokens (``dmarc=pass``) and property values (``header.from=x``) in Authentication-Results.
 _AUTH_METHOD_RE = re.compile(r"\b(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
 _AUTH_PROP_RE = re.compile(r"\b(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*([^\s;]+)", re.IGNORECASE)
+
+def _signature_from_extra(extra: Dict[str, Any]) -> Optional[MimeSignature]:
+    """Read and validate the optional backend Email signature config."""
+    signature = extra.get("signature")
+    if signature is None:
+        return None
+    if not isinstance(signature, Mapping):
+        raise ValueError("email signature must be a mapping")
+    return prepare_signature(
+        enabled=is_truthy_value(signature.get("enabled"), default=False),
+        text=signature.get("text"),
+        html=signature.get("html"),
+    )
 
 
 def _esecret_int(name: str, default: int) -> int:
@@ -301,16 +319,6 @@ def _extract_attachments(msg: email_lib.message.Message, skip_attachments: bool 
     return attachments
 
 
-def _attach_file(msg: MIMEMultipart, path: Path, filename: str) -> None:
-    """Attach *path* to *msg* as base64 application/octet-stream."""
-    with open(path, "rb") as f:
-        part = MIMEBase("application", "octet-stream")
-        part.set_payload(f.read())
-        encoders.encode_base64(part)
-        part.add_header("Content-Disposition", f"attachment; filename={filename}")
-        msg.attach(part)
-
-
 class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
 
@@ -338,6 +346,19 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_tls_verify = tls_verify("EMAIL_SMTP_TLS_VERIFY", "smtp_tls_verify")
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
         self._skip_attachments = extra.get("skip_attachments", False)  # platforms.email.skip_attachments
+
+        # Rich HTML stays opt-in so existing installations retain their exact
+        # plain-text MIME envelope until explicitly enabled in config.yaml.
+        self._rich_html_enabled = is_truthy_value(extra.get("rich_html_enabled"), default=False)
+        try:
+            self._signature = _signature_from_extra(extra)
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "Invalid Email signature configuration; signature disabled: %s",
+                exc,
+            )
+            self._signature = None
+
         # Require an authenticated From: domain (SPF/DKIM/DMARC) before trusting it for authorization
         # (GHSA-rxqh-5572-8m77). Default ON; opt out via require_authenticated_sender: false / EMAIL_TRUST_FROM_HEADER=true.
         if "require_authenticated_sender" in extra:
@@ -648,24 +669,42 @@ class EmailAdapter(BasePlatformAdapter):
         """Domain for generated Message-IDs; ``localhost`` when EMAIL_ADDRESS lacks ``@``."""
         return (self._address.rsplit("@", 1)[-1] if "@" in self._address else "") or "localhost"
 
-    def _new_reply(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None, *,
-                   attach_empty_body: bool = False) -> Tuple[MIMEMultipart, str, str]:
-        """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``."""
-        msg, ctx = MIMEMultipart(), self._thread_context.get(to_addr, {})
+    def _build_reply_message(
+        self,
+        to_addr: str,
+        body: str,
+        *,
+        reply_to_msg_id: Optional[str] = None,
+        attachments: Tuple[MimeAttachment, ...] = (),
+        include_empty_body: bool = True,
+    ) -> Tuple[Message, str, str]:
+        """Build the legacy gateway reply envelope through the shared builder."""
+        ctx = self._thread_context.get(to_addr, {})
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
-        original_msg_id = reply_to_msg_id or ctx.get("message_id")
-        threading = (("In-Reply-To", original_msg_id), ("References", original_msg_id)) if original_msg_id else ()
-        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
-        for key, value in (("From", self._address), ("To", to_addr), ("Subject", subject), *threading,
-                           ("Date", formatdate(localtime=True)), ("Message-ID", msg_id)):
-            msg[key] = value
-        if body or attach_empty_body:
-            msg.attach(MIMEText(body, "plain", "utf-8"))
-        return msg, msg_id, subject
 
-    def _smtp_send(self, msg: MIMEMultipart) -> None:
+        original_msg_id = reply_to_msg_id or ctx.get("message_id")
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
+        html_body = render_markdown_html(body) if self._rich_html_enabled else None
+        message = build_email_message(
+            from_address=self._address,
+            to_address=to_addr,
+            subject=subject,
+            body=body,
+            date=formatdate(localtime=True),
+            message_id=msg_id,
+            in_reply_to=original_msg_id,
+            references=original_msg_id,
+            attachments=attachments,
+            html_body=html_body,
+            signature=self._signature,
+            force_multipart=True,
+            include_empty_body=include_empty_body,
+        )
+        return message, msg_id, subject
+
+    def _smtp_send(self, msg: Message) -> None:
         """Login, send, and always release the SMTP connection (quit, else close)."""
         smtp = self._connect_smtp()
         try:
@@ -679,21 +718,32 @@ class EmailAdapter(BasePlatformAdapter):
 
     def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None) -> str:
         """Send an email via SMTP. Runs in executor thread."""
-        msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True)
+        msg, msg_id, subject = self._build_reply_message(
+            to_addr,
+            body,
+            reply_to_msg_id=reply_to_msg_id,
+        )
         self._smtp_send(msg)
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id
 
     def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]], *, lenient: bool) -> str:
         """Send a reply with attachments; *lenient* logs-and-skips unattachable files instead of raising."""
-        msg, msg_id, _ = self._new_reply(to_addr, body)
+        attachments: List[MimeAttachment] = []
         for path, name in files:
             try:
-                _attach_file(msg, path, name)
+                with open(path, "rb") as handle:
+                    attachments.append(MimeAttachment(filename=name, content=handle.read()))
             except Exception as e:
                 if not lenient:
                     raise
                 logger.warning("[Email] Failed to attach %s: %s", path, e)
+        msg, msg_id, _ = self._build_reply_message(
+            to_addr,
+            body,
+            attachments=tuple(attachments),
+            include_empty_body=False,
+        )
         self._smtp_send(msg)
         return msg_id
 
@@ -757,10 +807,29 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     if not all([address, password, smtp_host]):
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
     try:
-        msg = MIMEText(message, "plain", "utf-8")
-        for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
-            msg[key] = value
-        server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
+        signature = _signature_from_extra(extra)
+        html_body = (
+            render_markdown_html(message)
+            if is_truthy_value(extra.get("rich_html_enabled"), default=False)
+            else None
+        )
+        msg = build_email_message(
+            from_address=address,
+            to_address=chat_id,
+            subject="Hermes Agent",
+            body=message,
+            date=formatdate(localtime=True),
+            html_body=html_body,
+            signature=signature,
+        )
+        server = _open_smtp(
+            smtp_host,
+            smtp_port,
+            smtp_security,
+            _tls_context(smtp_tls_verify, smtp_host),
+            smtplib.SMTP,
+            smtplib.SMTP_SSL,
+        )
         server.login(address, password)
         server.send_message(msg)
         server.quit()

@@ -8,8 +8,8 @@ description: "Set up Hermes Agent as an email assistant via IMAP/SMTP"
 
 Hermes can receive and reply to emails using standard IMAP and SMTP protocols. Send an email to the agent's address and it replies in-thread — no special client or bot API needed. Works with Gmail, Outlook, Yahoo, Fastmail, or any provider that supports IMAP/SMTP.
 
-:::info Gateway adapter only: no external dependencies
-This page covers the Email gateway adapter, which uses Python's built-in `imaplib`, `smtplib`, and `email` modules. No additional packages or external services are required for this gateway path.
+:::info Gateway adapter only: no external service
+This page covers the Email gateway adapter, which uses Python's built-in `imaplib`, `smtplib`, and `email` modules for transport. Optional rich HTML uses the bundled Markdown renderer and HTML sanitizer. No separate service or manual package installation is required.
 :::
 
 This is separate from the bundled [Himalaya email skill](/docs/user-guide/skills/bundled/email/email-himalaya), which lets the agent manage email through terminal commands and requires the external `himalaya` CLI plus a Himalaya config file.
@@ -145,7 +145,53 @@ Replies are sent via SMTP with proper email threading:
 - **In-Reply-To** and **References** headers maintain the thread
 - **Subject line** preserved with `Re:` prefix (no double `Re: Re:`)
 - **Message-ID** generated with the agent's domain
-- Responses are sent as plain text (UTF-8)
+- Responses are sent as plain text (UTF-8) by default
+
+### Rich HTML Replies
+
+Rich HTML is opt-in. Enable it in `config.yaml`:
+
+```yaml
+platforms:
+  email:
+    rich_html_enabled: true
+```
+
+When enabled, Hermes sends both the original Markdown as `text/plain` and a
+rendered `text/html` version in a `multipart/alternative` part. Messages with
+attachments keep a `multipart/mixed` root containing that alternative before
+the attachments. The rendered HTML is sanitized: active content, event
+attributes, unsafe URL protocols, styles, and remote images are removed.
+Relative links are also removed from the sanitized HTML because Email messages
+have no trusted base URL. Use absolute URLs, such as `https://example.com/docs`,
+for links that should remain clickable.
+
+### Backend Signature
+
+An optional signature can be configured directly in `config.yaml`:
+
+```yaml
+platforms:
+  email:
+    signature:
+      enabled: true
+      text: |
+        Hermes Agent
+        Internal assistant
+      html: |
+        <div style="color: #555">
+          <strong>Hermes Agent</strong><br>
+          Internal assistant
+        </div>
+```
+
+`signature.text` is required whenever the signature is enabled and is always
+used as the canonical plain-text fallback. `signature.html` is optional: when
+omitted, Hermes renders the text signature as sanitized HTML. When provided,
+it is sanitized with a separate signature policy that supports safe layout
+markup and filtered inline styles. Scripts, event attributes, unsafe URL
+protocols, and images are removed. The signature is appended once to each
+generated text or HTML body.
 
 ### File Attachments
 

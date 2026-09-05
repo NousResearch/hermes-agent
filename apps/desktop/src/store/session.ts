@@ -1448,6 +1448,34 @@ export const commitWorkspaceCwdForSelectedSession = (cwd: string) => {
 export const workspaceCwdBelongsToSelectedSession = (): boolean =>
   ($workspaceCwdOwner.get() ?? null) === ($selectedStoredSessionId.get() ?? null)
 
+/**
+ * Folder the Files pane should read.
+ *
+ * Ownership (#71254) still wins when the live path is claimed for the open
+ * chat — that is the path the agent may have `cd`'d into. If the lock is
+ * still released or names a previous chat, fall back to the selected
+ * session's listed `cwd` instead of painting "No project open". Tab switches
+ * across projects routinely miss the `session.info` re-claim; the sidebar
+ * row already knows the folder.
+ *
+ * A previous conversation's retained path stays hidden when the selected
+ * row has no cwd (genuinely detached).
+ */
+export const $filesPaneWorkspaceCwd = computed(
+  [$currentCwd, $selectedStoredSessionId, $workspaceCwdOwner, $sessions],
+  (cwd, selected, owner, sessions) => {
+    const current = cwd.trim()
+    if (current && (owner ?? null) === (selected ?? null)) {
+      return current
+    }
+    if (!selected) {
+      return ''
+    }
+    const row = sessions.find(session => sessionMatchesStoredId(session, selected))
+    return row?.cwd?.trim() || ''
+  }
+)
+
 export const setNewChatWorkspaceTarget = (next: NewChatWorkspaceTarget): number => {
   const generation = $newChatWorkspaceTargetGeneration.get() + 1
   $newChatWorkspaceTarget.set(next)

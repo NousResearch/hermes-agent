@@ -500,8 +500,23 @@ def _refresh_nous_pool_entry(pool: CredentialPool, entry: Any, pool_api_key: str
 def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: Dict[str, Any], explicit_api_key, explicit_base_url,
                        target_model) -> Optional[Dict[str, Any]]:
     """Runtime from the provider's credential pool, or None to continue down the ladder."""
-    should_use_pool = provider != "openrouter" or _openrouter_should_use_pool(requested_provider, model_cfg, explicit_api_key,
-                                                                             explicit_base_url)
+    configured_api_key = ""
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    if pconfig and pconfig.auth_type == "api_key" and provider != "copilot":
+        configured_api_key, _ = auth_mod._configured_api_key_provider_secret(provider)
+
+    # API-key providers can have an explicit inline key under
+    # ``providers.<id>``. It must take precedence over a credential-pool
+    # entry, which may have been seeded from an ambient environment variable.
+    should_use_pool = not configured_api_key and (
+        provider != "openrouter"
+        or _openrouter_should_use_pool(
+            requested_provider,
+            model_cfg,
+            explicit_api_key,
+            explicit_base_url,
+        )
+    )
     try:
         pool = load_pool(provider) if should_use_pool else None
     except Exception:

@@ -1690,6 +1690,13 @@ def _enforce_self_dm_guard(args) -> None:
     resolved profile equals it AND the target is the canonical "Bot Chat".
     Humans (no caller snapshot) and cross-profile relays are unaffected;
     --allow-self-bot-chat is the explicit escape hatch.
+
+    Resolution order is derived identity first: the profile named by the
+    POST-override HERMES_HOME (what `-p` actually selected), then the
+    inherited HERMES_PROFILE label, then the active profile. HERMES_PROFILE
+    is a launcher-inherited label that -p does not rewrite, so reading it
+    first misclassified a real cross-profile relay (forge running
+    `hermes -p elon chat …` resolved as forge == caller and was refused).
     """
     from tools.bot_mode_probe import BOT_CHAT_TITLE
 
@@ -1703,9 +1710,13 @@ def _enforce_self_dm_guard(args) -> None:
     if not caller:
         return  # human shell / non-agent context: never trip the guard
     from hermes_cli.profiles import get_active_profile_name
+    # Derived identity first: -p re-points HERMES_HOME but not the inherited
+    # HERMES_PROFILE label, so the post-override home names the actually
+    # selected profile. Label/env and active-profile are fallbacks for homes
+    # that don't resolve to a profile name (root installs, custom dirs).
     resolved = (
-        os.environ.get("HERMES_PROFILE")
-        or _profile_name_from_homes(os.environ.get("HERMES_HOME"))
+        _profile_name_from_homes(os.environ.get("HERMES_HOME"))
+        or os.environ.get("HERMES_PROFILE")
         or get_active_profile_name()
         or ""
     )

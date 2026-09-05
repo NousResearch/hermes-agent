@@ -22,7 +22,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter, MessageEvent, MessageType, SendResult,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_document_from_bytes_async)
 from .media_cache import ext_for_mime
-from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from gateway.platforms.helpers import compile_mention_patterns, split_markdown_paragraphs, strip_markdown
 from utils import TRUTHY_STRINGS
 
 # Historical BlueBubbles mime→ext maps, preserved verbatim as overrides for the shared dispatch in
@@ -361,7 +361,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not text:
             return SendResult(success=False, error="BlueBubbles send requires text")
         # Each paragraph becomes its own iMessage bubble; truncate any still too long.
-        paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()] or [text]
+        paragraphs = split_markdown_paragraphs(text) or [text]
         chunks = [c for para in paragraphs for c in (
             [para] if len(para) <= self.MAX_MESSAGE_LENGTH else self.truncate_message(para, self.MAX_MESSAGE_LENGTH))]
         last = SendResult(success=True)

@@ -672,7 +672,16 @@ def ensure_hermes_home():
         finally:
             os.umask(old_umask)
     else:
-        home.mkdir(parents=True, exist_ok=True)
+        # ~/.hermes may be a symlink to a real hermes directory (e.g. git-managed
+        # dotfiles). In that case home.is_dir() is True but mkdir would try to
+        # create the symlink itself and raise FileExistsError on some Python/
+        # pathlib versions (notably 3.13). Accept a symlink to a directory as
+        # valid and skip mkdir on the link.
+        if home.is_symlink():
+            if not home.is_dir():
+                raise RuntimeError(f"HERMES_HOME {home} is a broken symlink")
+        else:
+            home.mkdir(parents=True, exist_ok=True)
         _secure_dir(home)
         for subdir in _HERMES_HOME_SUBDIRS:
             d = home / subdir

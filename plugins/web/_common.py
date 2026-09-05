@@ -7,6 +7,9 @@ slots) lazily at call time so monkeypatching the source module keeps working.
 
 from __future__ import annotations
 
+import importlib.util
+import sys
+
 import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
@@ -167,16 +170,65 @@ def titled_rows(raw_results: List[Dict[str, Any]], description_key: str) -> List
     ]
 
 
-def lazy_ensure(feature: str) -> None:
-    """Best-effort ``tools.lazy_deps.ensure``: its own ImportError is benign and swallowed;
-    an install hint (any other error) is re-raised as ImportError."""
+def _sdk_importable(module_name: str) -> bool:
+    """True when ``import <module_name>`` would succeed.
+
+    ``sys.modules`` is checked first: an already-imported module is importable
+    by definition, and ``find_spec`` raises ``ValueError`` on entries with no
+    ``__spec__`` (which is how tests inject a stub SDK).
+    """
+    if module_name in sys.modules:
+        return True
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure(feature, prompt=False)
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+# Feature -> top-level import the factory actually needs (a prefix of the
+# feature id, matching the "search.<vendor>" convention).
+_FEATURE_MODULE_PREFIXES = ("search.", "extract.", "export.")
+
+
+def _feature_module(feature: str) -> str:
+    """The importable package a feature's factory needs, from the feature id.
+
+    ``search.parallel`` -> ``parallel``, ``search.firecrawl`` -> ``firecrawl``.
+    Kept as a table so a feature whose package name is NOT the vendor slug can
+    opt out instead of silently probing the wrong module.
+    """
+    return feature.split(".", 1)[-1] if feature.startswith(_FEATURE_MODULE_PREFIXES) else feature
+
+
+def lazy_ensure(feature: str) -> None:
+    """Try to install ``feature``'s packages; refuse only when the import would fail.
+
+    The import at the call site is the real gate: whether the SDK can be
+    installed is only interesting when it is not already importable.
+    ``tools.lazy_deps.ensure`` reports an unusable feature with
+    ``FeatureUnavailable`` (a ``RuntimeError``, not an ``ImportError``), so the
+    old ``except ImportError`` never caught the case it was written for, and
+    the broad ``except Exception`` turned "cannot install" into a hard failure
+    even when the SDK would have imported. On a host with
+    ``security.allow_lazy_installs=false`` that made the provider unusable
+    whether or not the package was present.
+
+    So: try to install, and if that is impossible, check whether we needed it.
+    Only a genuinely missing package raises, and it carries the install hint.
+    Unrelated faults still surface as ``ImportError`` for the caller.
+    """
+    try:
+        from tools.lazy_deps import FeatureUnavailable, ensure as _lazy_ensure
     except ImportError:
-        pass
-    except Exception as exc:  # noqa: BLE001
-        raise ImportError(str(exc))
+        return  # lazy-deps helper itself unavailable — let the import decide
+    try:
+        _lazy_ensure(feature, prompt=False)
+    except FeatureUnavailable as exc:
+        if not _sdk_importable(_feature_module(feature)):
+            raise ImportError(str(exc)) from exc
+        # Already importable; nothing needed installing.
+    except Exception as exc:  # noqa: BLE001 — surface real faults as ImportError
+        raise ImportError(str(exc)) from exc
 
 
 def cached_sdk_client(slot: str, env_var: str, missing_key_error: str, feature: str, factory: Callable[[str], Any]) -> Any:

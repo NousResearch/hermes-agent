@@ -63,3 +63,40 @@ describe('enhanced keyboard modifier parsing', () => {
     expect(right.key.super).toBe(true)
   })
 })
+
+describe('shifted letter decoding under enhanced keyboard reporting', () => {
+  // Terminals with modifyOtherKeys level 2 active (Ghostty since #23350's
+  // push was dropped for it, WezTerm, tmux, VS Code) re-encode EVERY
+  // Shift+letter as an escape sequence — some with the resulting (shifted)
+  // codepoint, some with the base key. The composer inserts `event.input`,
+  // so a lowercase reconstruction here silently disables capitalization.
+  it.each([
+    ['kitty CSI-u, unshifted codepoint', '\u001b[97;2u'],
+    ['kitty CSI-u, shifted codepoint', '\u001b[65;2u'],
+    ['xterm modifyOtherKeys, unshifted keycode', '\u001b[27;2;97~'],
+    ['xterm modifyOtherKeys, shifted keycode', '\u001b[27;2;65~']
+  ])('capitalizes %s (%j)', (_label, sequence) => {
+    const parsed = parseOne(sequence)
+    const event = new InputEvent(parsed)
+
+    expect(parsed.name).toBe('A')
+    expect(event.input).toBe('A')
+    expect(event.key.shift).toBe(true)
+    expect(event.key.ctrl).toBe(false)
+  })
+
+  it('keeps unmodified letters lowercase across protocols', () => {
+    expect(new InputEvent(parseOne('\u001b[97u')).input).toBe('a')
+    expect(new InputEvent(parseOne('a')).input).toBe('a')
+  })
+
+  it('keeps ctrl+shift+letter a lowercase control chord, not text', () => {
+    const parsed = parseOne('\u001b[100;6u')
+    const event = new InputEvent(parsed)
+
+    expect(parsed.name).toBe('d')
+    expect(event.key.ctrl).toBe(true)
+    expect(event.key.shift).toBe(true)
+    expect(event.input).toBe('d')
+  })
+})

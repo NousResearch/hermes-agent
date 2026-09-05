@@ -285,6 +285,11 @@ DEFAULT_CONFIG = {
         # Env vars passed into sandboxed terminal/execute_code (skill-declared
         # required_environment_variables pass through automatically).
         "env_passthrough": [],
+        # Biometric sudo (Linux): set HERMES_SUDO_BIOMETRIC=1 to route interactive-local
+        # sudo through a PTY (script -qec) so the platform PAM stack (pam_fprintd) drives
+        # fingerprint auth instead of the text password box. Opt-in; see
+        # tools/terminal_tool_sudo.py::_sudo_biometric_path_available for gating.
+        #
         # HOME for host tool subprocesses: "auto" = host keeps the real OS-user HOME, containers use
         # HERMES_HOME/home; "real" = force real HOME; "profile" = force HERMES_HOME/home when it
         # exists (strict per-profile isolation).

@@ -65,7 +65,7 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
     if not env:
         return {}
     if not isinstance(env, dict):
-        logger.warning("docker_env is not a dict: %r", env)
+        logger.warning("docker_env is not a dict: %s", type(env).__name__)
         return {}
     normalized: dict[str, str] = {}
     for key, value in env.items():
@@ -73,7 +73,7 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
             logger.warning("Ignoring invalid docker_env key: %r", key)
             continue
         if not isinstance(value, (str, int, float, bool)):
-            logger.warning("Ignoring non-string docker_env value for %r: %r", key.strip(), value)
+            logger.warning("Ignoring non-string docker_env value for %r: %s", key.strip(), type(value).__name__)
             continue
         normalized[key.strip()] = value if isinstance(value, str) else str(value)
     return normalized

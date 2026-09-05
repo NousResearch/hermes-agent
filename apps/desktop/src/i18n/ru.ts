@@ -2488,6 +2488,7 @@ export const ru = defineLocale({
       finishedUnread: 'Завершён — не прочитан',
       backgroundRunning: 'Фоновая задача выполняется',
       draftSession: 'Черновик — ещё ничего не отправлено',
+      expensiveChat: 'Этот чат стал дорогим — повторное чтение кэша обходится дорого. Начните новый чат по этой теме, чтобы сбросить его.',
       handoffOrigin: platform => `Передано из ${platform}`,
       ownedByProfile: profile => `Профиль: ${profile}`,
       renamed: 'Переименовано',

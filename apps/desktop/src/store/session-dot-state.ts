@@ -67,7 +67,35 @@ export const $delegatingSessionIds = computed(
   }
 )
 
-export type SessionDotState = 'background' | 'draft' | 'idle' | 'needs-input' | 'stalled' | 'unread' | 'working'
+export type SessionDotState =
+  | 'background'
+  | 'draft'
+  | 'expensive'
+  | 'idle'
+  | 'needs-input'
+  | 'stalled'
+  | 'unread'
+  | 'working'
+
+/**
+ * Cache-read tokens past which an otherwise-idle conversation is flagged as
+ * EXPENSIVE. A long-lived chat re-reads its whole cached prefix every turn, so
+ * `cache_read_tokens` climbs with conversation length regardless of the dollar
+ * cost the provider quotes — which is 0 on subscription/OAuth auth, so the
+ * per-session `*_cost_usd` fields cannot drive this. We flag off the token
+ * count instead.
+ *
+ * Reference: at Anthropic Opus cache-read pricing (~$1.50 / 1M tokens),
+ * 33,000,000 tokens ≈ $50 of cumulative cache re-reads. Tune here — this is the
+ * one number that decides when the dot turns red.
+ */
+export const EXPENSIVE_CACHE_READ_TOKENS = 33_000_000
+
+/** Whether a session row has accumulated enough cache-read tokens to be worth
+ *  flagging. Degrades gracefully: an undefined count (a backend predating the
+ *  field) is "no opinion", never expensive. */
+export const isExpensiveByCacheReads = (cacheReadTokens?: number): boolean =>
+  typeof cacheReadTokens === 'number' && cacheReadTokens >= EXPENSIVE_CACHE_READ_TOKENS
 
 /** The sidebar row's arc. A quiet turn is still authoritatively running, so
  *  `stalled` keeps it; a blocking prompt drops it, because the amber dot is the
@@ -84,7 +112,14 @@ export const hasLiveTurn = (state: SessionDotState): boolean => showsRunningArc(
 export type SessionStatusBucket = 'draft' | 'idle' | 'needs-input' | 'unread' | 'working'
 
 export const sessionStatusBucket = (state: SessionDotState = 'idle'): SessionStatusBucket =>
-  state === 'stalled' || state === 'background' ? 'working' : state
+  state === 'stalled' || state === 'background'
+    ? 'working'
+    : // An expensive session is by construction otherwise-idle (the claim is the
+      // weakest of all), so it sorts and filters as idle — the red is a hint on a
+      // quiet row, not a status of its own.
+      state === 'expensive'
+      ? 'idle'
+      : state
 
 const STATUS_RANK: Record<SessionStatusBucket, number> = {
   'needs-input': 0,
@@ -126,8 +161,24 @@ export const $sessionDotStateById = computed(
     // below IS the priority order. A blocking prompt outranks everything: it is
     // the only state that needs the user.
     //
-    // Draft is weakest of all: it says only "no turn has happened here yet", so
-    // the first thing that does happen speaks over it.
+    // Expensive is weakest of ALL — even weaker than draft — because it is a
+    // property of the conversation's accumulated cost, not of anything it is
+    // doing right now. It surfaces ONLY on a row nothing else claims (an idle
+    // session), so any real activity below speaks over it and an attention cue
+    // is never masked by a cost hint. Degrades gracefully: a row whose backend
+    // omits cache_read_tokens is never flagged (isExpensiveByCacheReads).
+    const expensive: string[] = []
+
+    for (const s of sessions) {
+      if (isExpensiveByCacheReads(s.cache_read_tokens)) {
+        expensive.push(s.id)
+      }
+    }
+
+    claim(expensive, 'expensive')
+
+    // Draft is weakest of the activity states: it says only "no turn has
+    // happened here yet", so the first thing that does happen speaks over it.
     claim(draft, 'draft')
     claim(unread, 'unread')
 

@@ -17,7 +17,9 @@ import {
   $delegatingSessionIds,
   $sessionDotStateById,
   $unreadSessionCount,
+  EXPENSIVE_CACHE_READ_TOKENS,
   hasLiveTurn,
+  isExpensiveByCacheReads,
   showsRunningArc,
   unreadSessionCount
 } from './session-dot-state'
@@ -162,6 +164,71 @@ describe('persisted unread (backend watermark)', () => {
     setSessions([storedRow('s1')])
 
     expect($sessionDotStateById.get()['s1'] ?? 'idle').not.toBe('unread')
+  })
+})
+
+describe('expensive cost dot (cache-read accumulation)', () => {
+  beforeEach(() => {
+    clearAllSessionStates()
+    $sessions.set([])
+    $unreadFinishedSessionIds.set([])
+    $unreadWriteGuard.set(new Map())
+  })
+
+  afterEach(() => {
+    clearAllSessionStates()
+    $sessions.set([])
+    $unreadFinishedSessionIds.set([])
+    $unreadWriteGuard.set(new Map())
+  })
+
+  it('isExpensiveByCacheReads: threshold, below, and undefined (graceful degrade)', () => {
+    expect(isExpensiveByCacheReads(EXPENSIVE_CACHE_READ_TOKENS)).toBe(true)
+    expect(isExpensiveByCacheReads(EXPENSIVE_CACHE_READ_TOKENS + 1)).toBe(true)
+    expect(isExpensiveByCacheReads(EXPENSIVE_CACHE_READ_TOKENS - 1)).toBe(false)
+    expect(isExpensiveByCacheReads(0)).toBe(false)
+    expect(isExpensiveByCacheReads(undefined)).toBe(false)
+  })
+
+  it('flags an otherwise-idle session with cache_read_tokens above threshold', () => {
+    setSessions([storedRow('s1', { cache_read_tokens: EXPENSIVE_CACHE_READ_TOKENS })])
+
+    expect($sessionDotStateById.get()['s1']).toBe('expensive')
+  })
+
+  it('does not flag a session just under the threshold', () => {
+    setSessions([storedRow('s1', { cache_read_tokens: EXPENSIVE_CACHE_READ_TOKENS - 1 })])
+
+    expect($sessionDotStateById.get()['s1'] ?? 'idle').not.toBe('expensive')
+  })
+
+  it('never flags when the backend omits cache_read_tokens (older runtime)', () => {
+    setSessions([storedRow('s1')])
+
+    expect($sessionDotStateById.get()['s1'] ?? 'idle').not.toBe('expensive')
+  })
+
+  it('does not mask a working session even with high cache_read_tokens', () => {
+    setSessions([storedRow('s1', { cache_read_tokens: EXPENSIVE_CACHE_READ_TOKENS * 2 })])
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true })
+
+    expect($sessionDotStateById.get()['s1']).toBe('working')
+  })
+
+  it('does not mask a needs-input session even with high cache_read_tokens', () => {
+    setSessions([storedRow('s1', { cache_read_tokens: EXPENSIVE_CACHE_READ_TOKENS * 2 })])
+    publishSessionState('rt1', {
+      ...createClientSessionState('s1'),
+      needsInput: true
+    })
+
+    expect($sessionDotStateById.get()['s1']).toBe('needs-input')
+  })
+
+  it('does not mask a persisted-unread session even with high cache_read_tokens', () => {
+    setSessions([storedRow('s1', { cache_read_tokens: EXPENSIVE_CACHE_READ_TOKENS, unread: true })])
+
+    expect($sessionDotStateById.get()['s1']).toBe('unread')
   })
 })
 

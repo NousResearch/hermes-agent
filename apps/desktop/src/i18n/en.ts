@@ -2451,6 +2451,7 @@ export const en: Translations = {
       finishedUnread: 'Finished — unread',
       backgroundRunning: 'Background task running',
       draftSession: 'Draft — nothing sent yet',
+      expensiveChat: 'This chat is expensive — cache re-reads are costing a lot. Start a fresh chat on this topic to reset it.',
       handoffOrigin: platform => `Handed off from ${platform}`,
       ownedByProfile: profile => `Profile: ${profile}`,
       renamed: 'Renamed',

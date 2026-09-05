@@ -2616,6 +2616,7 @@ export const zh: Translations = {
       finishedUnread: '已完成 — 未读',
       backgroundRunning: '后台任务运行中',
       draftSession: '草稿 — 尚未发送',
+      expensiveChat: '此对话开销较大 — 缓存重复读取的成本很高。请就此主题开启新对话以重置。',
       handoffOrigin: platform => `从 ${platform} 转接`,
       ownedByProfile: profile => `配置档：${profile}`,
       renamed: '已重命名',

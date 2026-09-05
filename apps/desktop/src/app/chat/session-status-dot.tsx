@@ -78,6 +78,17 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
     className: `${DOT_BASE} border border-(--ui-text-quaternary)`,
     title: r => r.draftSession
   },
+  // Red — this conversation has grown expensive to keep alive: its cached
+  // prefix is re-read every turn and the accumulated cache-read tokens have
+  // crossed the reference threshold. `bg-destructive` matches the StatusDot
+  // "bad" tone. Claimed only on an otherwise-idle row (weakest of all states),
+  // so this hint never masks an attention cue; the title says what to do.
+  expensive: {
+    ariaLabel: r => r.expensiveChat,
+    className: `${DOT_BASE} bg-destructive`,
+    role: 'status',
+    title: r => r.expensiveChat
+  },
   // Settled: the project color when there is one, else the faintest filled
   // grey. Every session shows SOME mark — a row with nothing in the lead slot
   // reads as broken next to its neighbours, so "no color" falls back to the

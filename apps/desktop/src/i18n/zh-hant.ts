@@ -2038,6 +2038,7 @@ export const zhHant = defineLocale({
       finishedUnread: '已完成 — 未讀',
       backgroundRunning: '背景任務執行中',
       draftSession: '草稿 — 尚未傳送',
+      expensiveChat: '此對話開銷較大 — 快取重複讀取的成本很高。請就此主題開啟新對話以重置。',
       handoffOrigin: platform => `從 ${platform} 轉接`,
       ownedByProfile: profile => `設定檔：${profile}`,
       renamed: '已重新命名',

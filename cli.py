@@ -4103,6 +4103,19 @@ def _run_quiet_single_query(cli, effective_query):
     # without this sync it would point at the ended parent after compression.
     _sync_cli_session_id_from_agent(cli)
     response = result.get("final_response", "") if isinstance(result, dict) else str(result)
+    # Terminal provider-wall guard (billing / credit / auth / rate-limit exhaustion):
+    # the early return above skips finalize_turn's kanban bookkeeping, so a dispatcher
+    # worker whose every model call failed would exit as plain text — rc=0 →
+    # protocol_violation → requeue loop. Block the card with the last provider error
+    # instead. The agent's own validated-response flag rides along on the result.
+    if os.environ.get("HERMES_KANBAN_TASK") and isinstance(result, dict):
+        from agent.kanban_stop import maybe_block_kanban_on_provider_failure
+        if maybe_block_kanban_on_provider_failure(
+            result,
+            received_provider_response=getattr(cli.agent, "_turn_received_provider_response", False) is True,
+        ):
+            print(f"Error: {result.get('error') or 'provider wall'}", file=sys.stderr)
+            sys.exit(1)
     # Surface backend errors that produced no visible output (e.g. invalid model slug
     # -> provider 4xx) on stderr so piped stdout stays clean.
     if (

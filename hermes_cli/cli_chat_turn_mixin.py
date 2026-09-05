@@ -309,6 +309,12 @@ class CLIChatTurnMixin:
                 stream_callback=turn.stream_callback, task_id=self.session_id,
                 persist_user_message=_persist_clean_user_message, moa_config=_moa_cfg,
             )
+            if os.environ.get("HERMES_KANBAN_TASK") and isinstance(turn.result, dict):
+                from agent.kanban_stop import maybe_block_kanban_on_provider_failure
+                maybe_block_kanban_on_provider_failure(
+                    turn.result,
+                    received_provider_response=getattr(self.agent, "_turn_received_provider_response", False) is True,
+                )
             if getattr(self, "_pending_moa_disable_after_turn", False):
                 _restore = getattr(self, "_pending_moa_restore_model", None) or {}
                 for _key, _value in _restore.items():
@@ -324,6 +330,9 @@ class CLIChatTurnMixin:
                 "final_response": f"Error: {_summary}", "messages": [], "api_calls": 0,
                 "completed": False, "failed": True, "error": _summary,
             }
+            if os.environ.get("HERMES_KANBAN_TASK"):
+                from agent.kanban_stop import maybe_block_kanban_on_provider_failure
+                maybe_block_kanban_on_provider_failure(turn.result)
         finally:
             if _one_turn_model_restore:
                 self._restore_model_runtime_snapshot(_one_turn_model_restore)

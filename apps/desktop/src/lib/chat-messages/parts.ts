@@ -72,8 +72,10 @@ export interface UnspokenTurnSpeech {
  * If `lastSpokenId` is missing or stale (session id assigned mid-turn,
  * live-tail rewrite missed), do **not** fall back to index -1 — that replays
  * every earlier assistant turn as one speech string. Bound to the current
- * turn (assistant bubbles after the last user message) instead. A slice with
- * no user row (mid-turn interims only) still collects those assistants.
+ * turn (assistant bubbles after the last user message) instead. Hidden user
+ * rows count: a widget intent or Bot Chat kickoff is a real turn for the
+ * agent even though no bubble renders. A slice with no user row (mid-turn
+ * interims only) still collects those assistants.
  */
 export function collectUnspokenTurnSpeech(
   messages: ChatMessage[],
@@ -82,7 +84,7 @@ export function collectUnspokenTurnSpeech(
   let spokenIndex = lastSpokenId ? messages.findLastIndex(m => m.id === lastSpokenId) : -1
 
   if (spokenIndex < 0) {
-    const lastUser = messages.findLastIndex(m => m.role === 'user' && !m.hidden)
+    const lastUser = messages.findLastIndex(m => m.role === 'user')
 
     if (lastUser >= 0) {
       spokenIndex = lastUser

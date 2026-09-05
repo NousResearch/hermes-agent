@@ -821,10 +821,9 @@ class TestCodexBuildKwargs:
             assert "reasoning" not in kw, f"{model} must not receive reasoning"
 
 
-class TestOpencodeReservedToolAliases:
-    """OpenCode /v1/responses reserves web_search / search_files as function
-    names (HTTP 400 "custom function name 'X' is reserved", #85589). The
-    transport aliases them on the wire and maps them back on dispatch."""
+class TestResponsesReservedToolAliases:
+    """Responses providers may reserve web_search / search_files as function
+    names. The transport aliases them on the wire and maps them back."""
 
     @pytest.fixture
     def transport(self):
@@ -844,6 +843,12 @@ class TestOpencodeReservedToolAliases:
             "name": "read_file", "description": "Read a file.",
             "parameters": {"type": "object",
                            "properties": {"path": {"type": "string"}}}}},
+    ]
+    _PERPLEXITY_ONLY_TOOLS = [
+        {"type": "function", "function": {
+            "name": name, "description": f"Client {name}.",
+            "parameters": {"type": "object", "properties": {}}}}
+        for name in ("fetch_url", "people_search", "finance_search")
     ]
 
     def _names(self, kw):
@@ -902,6 +907,73 @@ class TestOpencodeReservedToolAliases:
         assert "search_files" in names
         assert "web_search" in names
         assert "hermes_search_files" not in names
+
+    def test_perplexity_agent_api_aliases_reserved_names(self, transport, monkeypatch):
+        kw = transport.build_kwargs(
+            model="perplexity/sonar",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS) + list(self._PERPLEXITY_ONLY_TOOLS),
+            provider="custom",
+            base_url="https://api.perplexity.ai/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_search_files" in names
+        assert "hermes_web_search" in names
+        assert "search_files" not in names
+        assert "web_search" not in names
+        assert "hermes_fetch_url" in names
+        assert "hermes_people_search" in names
+        assert "hermes_finance_search" in names
+        assert "fetch_url" not in names
+        assert "people_search" not in names
+        assert "finance_search" not in names
+        assert "read_file" in names
+        assert transport._last_wire_aliases == {
+            "hermes_search_files": "search_files",
+            "hermes_web_search": "web_search",
+            "hermes_fetch_url": "fetch_url",
+            "hermes_people_search": "people_search",
+            "hermes_finance_search": "finance_search",
+        }
+
+        msg = SimpleNamespace(
+            content=None,
+            reasoning=None,
+            tool_calls=[SimpleNamespace(
+                id="call_1", call_id="call_1", response_item_id="fc_1",
+                function=SimpleNamespace(
+                    name="hermes_search_files",
+                    arguments='{"pattern":"README"}',
+                ),
+            )],
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            reasoning_details=None,
+        )
+        monkeypatch.setattr(
+            "agent.codex_responses_adapter._normalize_codex_response",
+            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+        )
+        normalized = transport.normalize_response(SimpleNamespace(output=[], status="completed"))
+        assert [tc.name for tc in normalized.tool_calls] == ["search_files"]
+
+    def test_perplexity_lookalike_host_keeps_original_names(self, transport):
+        for base_url in (
+            "https://sub.api.perplexity.ai/v1",
+            "https://api.perplexity.ai.example.com/v1",
+            "https://example.com/api.perplexity.ai/v1?host=api.perplexity.ai",
+        ):
+            kw = transport.build_kwargs(
+                model="perplexity/sonar",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=list(self._TOOLS),
+                provider="custom",
+                base_url=base_url,
+            )
+            names = self._names(kw)
+            assert "search_files" in names
+            assert "web_search" in names
+            assert "hermes_search_files" not in names
 
     def test_normalize_maps_reserved_aliases_back(self, transport, monkeypatch):
         msg = SimpleNamespace(

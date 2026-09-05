@@ -64,14 +64,21 @@ def _merge_extra_headers(kwargs: dict[str, Any], **headers: str) -> None:
 # (incomplete hang / HTTP 400); it goes on the wire under this alias.
 _XAI_CLIENT_WEB_SEARCH_ALIAS = "hermes_web_search"
 
-# OpenCode /v1/responses rejects client tools using these names (HTTP 400
-# "custom function name 'X' is reserved"); xAI reserves ``tool_search`` for
-# Grok's native Tool Search. Aliased as hermes_<name>.
+# Responses providers reject client functions whose names collide with native
+# tools (HTTP 400 "custom function name 'X' is reserved"). Alias them as
+# hermes_<name> and map them back before local dispatch.
 # OpenCode's /v1/responses endpoints (Zen and Go, including custom providers pointing at opencode.ai)
 # reserve certain function names server-side and reject client tools that use them with HTTP 400 ("custom
 # function name 'X' is reserved"). Same treatment as the xAI web_search collision: rename on the wire
 # (hermes_<name>), map back in normalize_response so Hermes dispatch is unaffected. See #85589.
 _OPENCODE_RESERVED_TOOL_NAMES = ("web_search", "search_files")
+_PERPLEXITY_RESERVED_TOOL_NAMES = (
+    "web_search",
+    "search_files",
+    "fetch_url",
+    "people_search",
+    "finance_search",
+)
 _XAI_RESERVED_TOOL_NAMES = ("tool_search",)
 _RESERVED_TOOL_ALIAS_PREFIX = "hermes_"
 
@@ -79,7 +86,7 @@ _RESERVED_TOOL_ALIAS_PREFIX = "hermes_"
 # built a request; real requests carry request-local ``_last_wire_aliases``.
 _LEGACY_ALIAS_FALLBACK = {
     f"{_RESERVED_TOOL_ALIAS_PREFIX}{name}": name
-    for name in (*_OPENCODE_RESERVED_TOOL_NAMES, *_XAI_RESERVED_TOOL_NAMES)
+    for name in (*_OPENCODE_RESERVED_TOOL_NAMES, *_PERPLEXITY_RESERVED_TOOL_NAMES, *_XAI_RESERVED_TOOL_NAMES)
 }
 _LEGACY_ALIAS_FALLBACK[_XAI_CLIENT_WEB_SEARCH_ALIAS] = "web_search"
 
@@ -97,6 +104,16 @@ def _is_opencode_responses_backend(params: dict[str, Any]) -> bool:
         from utils import base_url_hostname
 
         return base_url_hostname(str(params.get("base_url") or "")).lower() == "opencode.ai"
+    except Exception:
+        return False
+
+
+def _is_perplexity_responses_backend(params: dict[str, Any]) -> bool:
+    """True for Perplexity's Responses-compatible Agent API endpoint."""
+    try:
+        from utils import base_url_hostname
+
+        return base_url_hostname(str(params.get("base_url") or "")).lower() == "api.perplexity.ai"
     except Exception:
         return False
 
@@ -177,6 +194,11 @@ def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_respon
     if response_tools and _is_opencode_responses_backend(params):
         response_tools, _oc_aliases = _alias_reserved_tools(response_tools, _OPENCODE_RESERVED_TOOL_NAMES)
         wire_aliases.update(_oc_aliases)
+    # Perplexity's Agent API reserves the same names as server-side tools.
+    # Keep Hermes's client-side functions available under wire aliases.
+    if response_tools and _is_perplexity_responses_backend(params):
+        response_tools, _pplx_aliases = _alias_reserved_tools(response_tools, _PERPLEXITY_RESERVED_TOOL_NAMES)
+        wire_aliases.update(_pplx_aliases)
     # xAI server-side web search vs Hermes web providers. grok models on xAI's /v1/responses surface have a
     # *native*, server-executed web search. A client-side function literally named ``web_search`` collides
     # with that engine: declared as a plain ``function`` rather than ``{"type": "web_search"}``, the search

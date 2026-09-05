@@ -424,6 +424,8 @@ export const ja = defineLocale({
       toursDesc: '画面を暗くして各ステップを強調しながら、Hermes がアプリを案内します。',
       composerPopoutTitle: 'フローティング入力欄',
       composerPopoutDesc: '入力欄をドックからドラッグして外せるようにします。オフにすると画面下部に固定されます。',
+      composerTodoListTitle: '入力欄のタスクリスト',
+      composerTodoListDesc: '入力欄のステータススタックに todo / task list を表示するか切り替えます。バックグラウンド処理、goal、subagent は引き続き表示されます。',
       vibeHeartsTitle: 'バイブハート',
       vibeHeartsDesc:
         'ありがとう・愛してる・good bot・ハート絵文字のときに浮かぶハート。上のメッセージリアクションとは別です。',

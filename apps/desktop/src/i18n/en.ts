@@ -600,6 +600,9 @@ export const en: Translations = {
       toursDesc: 'Let Hermes walk you through the app, dimming the screen and spotlighting each step.',
       composerPopoutTitle: 'Floating Composer',
       composerPopoutDesc: 'Allow dragging the composer out of its dock. Turn this off to keep it locked at the bottom.',
+      composerTodoListTitle: 'Composer Task List',
+      composerTodoListDesc:
+        'Show or hide todo/task-list rows in the composer status stack. Background jobs, goals, and subagents still appear there.',
       vibeHeartsTitle: 'Vibe Hearts',
       vibeHeartsDesc:
         'Floating hearts when you say thanks, ily, good bot, or send a heart. Separate from Message Reactions above.',

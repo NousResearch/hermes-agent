@@ -585,6 +585,8 @@ export const zh: Translations = {
       toursDesc: '让 Hermes 带你熟悉应用：调暗界面并逐步高亮每个位置。',
       composerPopoutTitle: '悬浮输入框',
       composerPopoutDesc: '允许将输入框拖出底部停靠区。关闭后，输入框会锁定在底部。',
+      composerTodoListTitle: '输入框任务清单',
+      composerTodoListDesc: '控制是否在输入框上方的状态区显示 todo／task list。后台工作、goal、subagent 仍会照常显示。',
       vibeHeartsTitle: '心情爱心',
       vibeHeartsDesc: '当你说谢谢、爱你、good bot 或发送爱心时飘出的爱心。与上方的消息回应是两回事。',
       embedsTitle: '内嵌预览',

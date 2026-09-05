@@ -16,6 +16,7 @@ import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
+import { $composerTodosVisible, setComposerTodosVisible } from '@/store/composer-todos-visible'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { notifyError } from '@/store/notifications'
@@ -401,6 +402,7 @@ export function AppearanceSettings() {
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
   const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
+  const composerTodosVisible = useStore($composerTodosVisible)
   const translucency = useStore($translucency)
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
   const userBubbleTransparency = useStore($userBubbleTransparency)
@@ -806,6 +808,24 @@ export function AppearanceSettings() {
             description={a.composerPopoutDesc}
             label={a.composerPopoutTitle}
             onChange={setComposerPopoutGesturesEnabled}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setComposerTodosVisible(id === 'on')
+                }}
+                options={[
+                  { id: 'off', label: t.common.off },
+                  { id: 'on', label: t.common.on }
+                ]}
+                value={composerTodosVisible ? 'on' : 'off'}
+              />
+            }
+            description={a.composerTodoListDesc}
+            title={a.composerTodoListTitle}
           />
 
           <ResumeLastSessionSetting />

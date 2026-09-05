@@ -102,6 +102,8 @@ def _agent_cbs(sid: str) -> dict:
         "notice_clear_callback": lambda key: _emit("notification.clear", sid, {"key": key}),
         "clarify_callback": lambda q, c, multi_select=False, questions=None: (
             _clarify_block(sid, q, c, multi_select=multi_select, questions=questions)),
+        "user_input_callback": lambda request: _emit(
+            "user_input.request", sid, dict(request)),
         "read_terminal_callback": _read_block("terminal.read.request", 30),
         "read_preview_callback": _read_block("preview.read.request", 45),
         # drive_preview / annotate_preview (desktop GUI): same budget as the preview read it ends with.

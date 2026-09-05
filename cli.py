@@ -3202,6 +3202,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         """Dispatch a slash command; returns False to exit the REPL."""
         cmd_lower = command.lower().strip()  # lowercase only for matching; args keep their case
         cmd_original = command.strip()
+        if cmd_original.split(maxsplit=1)[0].lower() in {"/answer", "!answer"}:
+            self._handle_answer_command(cmd_original)
+            return True
 
         # Aliases resolve via the central registry (hermes_cli/commands.py).
         from hermes_cli.commands import resolve_command as _resolve_cmd

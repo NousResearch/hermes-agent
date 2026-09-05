@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import json
 import inspect
 import ipaddress
 import logging
@@ -2612,6 +2613,40 @@ class BasePlatformAdapter(ABC):
         else:
             text = f"❓ {question}"
         return await self.send(chat_id=chat_id, content=text, metadata=metadata)
+
+    async def send_user_input(
+        self, chat_id: str, request: Dict[str, Any], session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a durable, non-blocking request using the cross-platform text fallback.
+
+        Adapters may add richer controls later, but the protocol remains the same:
+        the user replies with an explicit ``/answer`` envelope containing the
+        request id and an answers object.
+        """
+        request = request if isinstance(request, dict) else {}
+        request_id = str(request.get("request_id") or "")
+        lines = ["📝 Hermes needs your input"]
+        if context := str(request.get("context") or "").strip():
+            lines.extend(("", context))
+        for question in request.get("questions") or []:
+            if not isinstance(question, dict):
+                continue
+            question_id = str(question.get("id") or "")
+            text = str(question.get("text") or "")
+            if not question_id or not text:
+                continue
+            lines.extend(("", f"{question_id}: {text}"))
+            options = question.get("options") or []
+            if options:
+                lines.extend(f"  {index}. {option}" for index, option in enumerate(options, 1))
+            if question.get("allow_free_text"):
+                lines.append("  Free text is allowed.")
+            if question.get("default") not in (None, ""):
+                lines.append(f"  Default: {question['default']}")
+        example = {str(q.get("id")): "your answer" for q in request.get("questions") or [] if isinstance(q, dict) and q.get("id")}
+        lines.extend(("", f"Reply with: /answer {request_id} {json.dumps(example, ensure_ascii=False)}"))
+        return await self.send(chat_id=chat_id, content="\n".join(lines), metadata=metadata)
 
     async def send_private_notice(
         self, chat_id: str, user_id: Optional[str], content: str, reply_to: Optional[str] = None,

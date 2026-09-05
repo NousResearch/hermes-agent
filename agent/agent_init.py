@@ -2160,7 +2160,7 @@ _GATEWAY_IDENTITY_PARAMS = (
 )
 _CALLBACK_PARAMS = (
     "tool_progress_callback", "tool_start_callback", "tool_complete_callback",
-    "thinking_callback", "reasoning_callback", "clarify_callback",
+    "thinking_callback", "reasoning_callback", "clarify_callback", "user_input_callback",
     "read_terminal_callback", "read_preview_callback", "drive_preview_callback",
     "read_window_below_callback", "setup_mcp_callback", "tour_callback",
     "step_callback", "stream_delta_callback", "interim_assistant_callback",
@@ -2183,7 +2183,7 @@ def init_agent(
     session_id: str = None, tool_progress_callback: callable = None,
     tool_start_callback: callable = None, tool_complete_callback: callable = None,
     thinking_callback: callable = None, reasoning_callback: callable = None,
-    clarify_callback: callable = None, read_terminal_callback: callable = None,
+    clarify_callback: callable = None, user_input_callback: callable = None, read_terminal_callback: callable = None,
     read_preview_callback: callable = None, drive_preview_callback: callable = None,
     read_window_below_callback: callable = None, setup_mcp_callback: callable = None,
     tour_callback: callable = None, step_callback: callable = None,
@@ -2212,6 +2212,7 @@ def init_agent(
       requested_provider: provider identity before runtime canonicalization.
       openrouter_min_coding_score: coding-score floor for ``openrouter/pareto-code`` only.
       clarify_callback: ``(question, choices) -> str``; None → the clarify tool errors.
+      user_input_callback: ``(request) -> None``; optional non-blocking request renderer.
       reasoning_config: None → ``{"enabled": True, "effort": "medium"}`` on OpenRouter.
       prefill_messages: priming history. Anthropic Sonnet/Opus 4.6+ 400 on a trailing
         assistant message — use structured outputs there instead.

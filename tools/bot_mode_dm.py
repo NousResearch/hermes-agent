@@ -437,8 +437,50 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None,
         except (ValueError, TypeError):
             parsed = {}
         proc_id = parsed.get("session_id") or ""
+        # A populated error wins over the approval branch below: the "blocked"
+        # response carries a real explanation, and status is "blocked" rather
+        # than "pending_approval", so nothing is lost by reporting it verbatim.
+        # Do not reorder these two checks.
         if parsed.get("error"):
             return _err(f"Delivery to {label} failed to start: {parsed['error']}")
+        # terminal_tool's approval gate returns status=pending_approval with
+        # error DELIBERATELY empty (#28323: "removes misleading error signal")
+        # and no session_id, so the falsy-error check above skips it and the
+        # generic no-process-id message below would blame the spawn for what is
+        # really an unanswered approval. Non-interactive turns (api_server,
+        # peer dm, cron) can never get that approval, so the distinction is
+        # load-bearing rather than cosmetic.
+        if not proc_id and (
+            parsed.get("approval_pending") or parsed.get("status") == "pending_approval"
+        ):
+            if dm_file is None:
+                # Relay: the envelope was queued before this waiter spawned and
+                # the Desktop drains it independently, so the message IS going
+                # to arrive — only the reply-wake is lost. Reporting a hard
+                # failure here makes the agent resend and duplicate the
+                # envelope, which is worse than the missing wake.
+                return json.dumps(
+                    {
+                        "status": "sent_no_reply_wake",
+                        "to": label,
+                        "detail": (
+                            f"Message queued for {label} and it will be delivered, but the "
+                            "reply waiter could not start: it needs terminal-command approval "
+                            "and none can be granted in this turn. You will NOT be woken when "
+                            "the reply lands — do NOT resend (that duplicates the message); "
+                            "check that agent's own chat for the reply instead."
+                        ),
+                        "sent_at": int(time.time()),
+                    }
+                )
+            # Local/peer DM: this spawn IS the delivery, so nothing was sent.
+            # Leaving `transferred` False lets the finally-block reclaim the
+            # plaintext DM file instead of orphaning it.
+            return _err(
+                f"Delivery to {label} needs terminal-command approval before it can start, "
+                "so nothing was sent. Approve the command (or add it to command_allowlist) "
+                "and send again."
+            )
         if not proc_id:
             return _err(f"Delivery to {label} failed to start: no process id returned")
         # From here the background runner owns the file (removed after the consumer finishes).

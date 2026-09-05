@@ -723,3 +723,127 @@ def test_dm_dir_rejects_precreated_symlink(tmp_path, monkeypatch):
 
     with pytest.raises(PermissionError, match="not a directory"):
         bot_mode_dm._dm_dir()
+
+
+# ── pending-approval spawn: report the truth, not "no process id" ─────────────
+#
+# terminal_tool's approval gate returns {"status": "pending_approval",
+# "approval_pending": True, "error": ""} with no session_id — `error` is empty
+# by design (#28323). _spawn_delivery's falsy-error check skipped it, so an
+# unanswerable approval was reported as a spawn failure. Worse, the relay path
+# had ALREADY queued the envelope, so the agent was told a delivered message
+# failed and would resend it.
+
+
+_PENDING_APPROVAL = json.dumps(
+    {
+        "output": "",
+        "exit_code": -1,
+        "error": "",
+        "status": "pending_approval",
+        "approval_pending": True,
+        "command": "python -c '...'",
+        "description": "command flagged",
+    }
+)
+
+
+def _fake_terminal(monkeypatch, payload):
+    import tools.terminal_tool as tt
+
+    monkeypatch.setattr(tt, "terminal_tool", lambda *a, **k: payload)
+
+
+def test_relay_waiter_pending_approval_reports_queued_not_failed(monkeypatch):
+    """Relay: the message is already queued, so this must NOT read as failure."""
+    _fake_terminal(monkeypatch, _PENDING_APPROVAL)
+
+    out = json.loads(
+        bot_mode_dm._spawn_delivery("cmd", "@chii on mac", dm_file=None, task_id=None, agent=None)
+    )
+
+    assert "error" not in out, "a queued relay message must not be reported as an error"
+    assert out["status"] == "sent_no_reply_wake"
+    assert "approval" in out["detail"].lower()
+    # The anti-duplicate instruction is the load-bearing part.
+    assert "do not resend" in out["detail"].lower()
+
+
+def test_local_dm_pending_approval_says_nothing_was_sent(monkeypatch, tmp_path):
+    """Local DM: the spawn IS the delivery, so nothing was sent — and the
+    plaintext DM file must be reclaimed rather than orphaned."""
+    _fake_terminal(monkeypatch, _PENDING_APPROVAL)
+    dm_file = tmp_path / "dm.txt"
+    dm_file.write_text("secret payload", encoding="utf-8")
+
+    out = json.loads(
+        bot_mode_dm._spawn_delivery("cmd", "@chii", dm_file=str(dm_file), task_id=None, agent=None)
+    )
+
+    assert "approval" in out["error"].lower()
+    assert "nothing was sent" in out["error"].lower()
+    assert not dm_file.exists(), "an undelivered DM's plaintext file must not linger"
+
+
+def test_populated_error_is_still_reported_verbatim(monkeypatch):
+    """Regression: a genuinely blocked command keeps its own message."""
+    _fake_terminal(
+        monkeypatch,
+        json.dumps({"error": "Command denied: rm -rf", "status": "blocked", "exit_code": -1}),
+    )
+
+    out = json.loads(bot_mode_dm._spawn_delivery("cmd", "@chii", dm_file=None, task_id=None, agent=None))
+
+    assert "Command denied: rm -rf" in out["error"]
+
+
+def test_missing_session_id_without_approval_still_generic(monkeypatch):
+    """Regression: a shapeless response keeps the original generic error."""
+    _fake_terminal(monkeypatch, json.dumps({"output": "", "exit_code": 0}))
+
+    out = json.loads(bot_mode_dm._spawn_delivery("cmd", "@chii", dm_file=None, task_id=None, agent=None))
+
+    assert "no process id returned" in out["error"]
+
+
+def test_successful_spawn_still_reports_sent(monkeypatch):
+    """Regression: the happy path is untouched."""
+    _fake_terminal(monkeypatch, json.dumps({"session_id": "proc_abc", "error": None}))
+
+    out = json.loads(bot_mode_dm._spawn_delivery("cmd", "@chii", dm_file=None, task_id=None, agent=None))
+
+    assert out["status"] == "sent"
+    assert out["process_id"] == "proc_abc"
+
+
+def test_pending_approval_contract_matches_terminal_tool():
+    """The literals `_spawn_delivery` keys off must still exist in terminal_tool.
+
+    `_spawn_delivery` restates terminal_tool's gate response inline
+    (`approval_pending`, `status == "pending_approval"`). If terminal_tool ever
+    renames either, this module silently degrades back to reporting a delivered
+    message as "no process id returned" — the exact bug this branch fixes, with
+    no test failing anywhere. Assert against the real source so a rename breaks
+    CI instead of a user's fleet.
+    """
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parents[2] / "tools" / "terminal_tool.py"
+    ).read_text(encoding="utf-8")
+
+    assert '"status": "pending_approval"' in src, (
+        "terminal_tool no longer emits status=pending_approval — update "
+        "_spawn_delivery's approval branch in tools/bot_mode_dm.py"
+    )
+    assert '"approval_pending": True' in src, (
+        "terminal_tool no longer emits approval_pending — update "
+        "_spawn_delivery's approval branch in tools/bot_mode_dm.py"
+    )
+    # And the reason the falsy-error check cannot catch it: that same response
+    # sets error to an empty string on purpose (#28323).
+    gate = src[src.index('"status": "pending_approval"') - 400 : src.index('"status": "pending_approval"') + 200]
+    assert '"error": ""' in gate, (
+        "the pending-approval response no longer empties `error` — the "
+        "falsy-error guard in _spawn_delivery may now be redundant; re-check it"
+    )

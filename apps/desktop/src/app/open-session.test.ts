@@ -96,11 +96,28 @@ describe('openSession', () => {
     $selectedStoredSessionId.set(null)
   })
 
-  it('in-place focuses an existing tile and does not navigate', () => {
+  it('in-place routes a TILE hit into main (#92926) — no more dead click', () => {
     focusOpenSession.mockReturnValue('tile')
     openSession('s1', navigate)
     expect(focusOpenSession).toHaveBeenCalledWith('s1', { workspaceMode: 'sessions' })
+    expect(navigate).toHaveBeenCalledWith('/c/s1')
+    expect(openSessionTile).not.toHaveBeenCalled()
+  })
+
+  it('tab intent still fronts an existing tile without navigating', () => {
+    focusOpenSession.mockReturnValue('tile')
+    openSession('s1', navigate, 'tab')
     expect(navigate).not.toHaveBeenCalled()
+    expect(openSessionTile).not.toHaveBeenCalled()
+  })
+
+  it('stack spends a blank main even when the session already sits in a tile', () => {
+    // stack resolves against main occupancy BEFORE the tile check: with a
+    // blank draft on main it becomes in-place, so the #92926 tile-route
+    // applies (fronting the tile would leave the blank main showing).
+    focusOpenSession.mockReturnValue('tile')
+    openSession('s1', navigate, 'stack')
+    expect(navigate).toHaveBeenCalledWith('/c/s1')
     expect(openSessionTile).not.toHaveBeenCalled()
   })
 

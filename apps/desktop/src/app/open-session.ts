@@ -161,11 +161,18 @@ export function openSession(
     return
   }
 
-  // Already on screen (open tile, or the main session)? Jump to its tab;
-  // otherwise load it into main. From a full page (artifacts, skills, …) a
-  // `'main'` hit still has to route back: fronting the workspace tab alone
-  // leaves the page showing.
-  if (focusedSessionNeedsRoute(focusOpenSession(storedSessionId, workspaceScope), $workspaceIsPage.get())) {
+  // Already the main session? Front its workspace tab; from a full page
+  // (artifacts, skills, …) that still has to route back: fronting the tab
+  // alone leaves the page showing.
+  //
+  // A TILE hit routes into main too (#92926): a sidebar click means "open
+  // this chat in main", and fronting a tab elsewhere in the tree reads as a
+  // dead click — the main column never changes. Routing binds the
+  // conversation to main and resumeSession closes the now-redundant tile.
+  // (`tab`/`stack` opens keep the front-only jump: those intents asked for a
+  // tab beside, not a takeover of main.)
+  const focused = focusOpenSession(storedSessionId, workspaceScope)
+  if (focused === 'tile' || focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {
     navigate(sessionRoute(storedSessionId))
   }
 }

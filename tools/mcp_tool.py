@@ -301,7 +301,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         "_recycled_reason", "initialize_result", "_ping_unsupported", "_list_cache_meta",
         "_reconnect_retries", "_session_proven", "_was_parked", "_inflight_tasks", "_reconnecting",
         "_suspect_reason", "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
-        "_ever_connected")
+        "_ever_connected", "_dropped_tools")
 
     def __init__(self, name: str):
         self.name = name
@@ -314,6 +314,9 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         self._reconnect_event = asyncio.Event()
         self._tools: list = []
         self._registered_tool_names: list[str] = []
+        # Tools the server offered but the tool-listing guard discarded because their definition
+        # fails the SDK's wire schema: ``{tool_name: reason}``. Reset on every (re)discovery.
+        self._dropped_tools: Dict[str, str] = {}
         self._config: dict = {}
         self._error: Optional[Exception] = None
         self._sampling: Optional[SamplingHandler] = None

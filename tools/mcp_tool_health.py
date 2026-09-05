@@ -139,6 +139,7 @@ class MCPServerHealthMixin:
         async with self._refresh_lock:
             old_tool_names = set(self._registered_tool_names)
             async with self._rpc_lock:
+                self._dropped_tools = {}
                 new_mcp_tools = await _core._paginate_full_list(self.session.list_tools, "tools", self.name)
             # Remove only stale names first — no nuke-and-repave: live turns may hold tool-call
             # IDs pointing at existing handlers; in-place replacement avoids "not connected" races.

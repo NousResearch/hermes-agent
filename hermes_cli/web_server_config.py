@@ -480,7 +480,12 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     """Flatten a dict-form ``model`` to its string form (the schema is built from
     DEFAULT_CONFIG where ``model`` is a string) and surface ``model_context_length``
     as a top-level field (0 = auto-detect)."""
-    config = dict(config)
+    # JSON numbers are parsed as IEEE-754 doubles by browsers. Opaque numeric
+    # IDs (notably Discord snowflakes) can exceed Number.MAX_SAFE_INTEGER, so
+    # put them on the wire as strings before JavaScript can round them.
+    from hermes_cli.config import _stringify_integer_identifier_leaves
+
+    config = _stringify_integer_identifier_leaves(config)
     model_val = config.get("model")
     if isinstance(model_val, dict):
         ctx_len = model_val.get("context_length", 0)

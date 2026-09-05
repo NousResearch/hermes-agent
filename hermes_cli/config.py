@@ -3185,6 +3185,74 @@ def _default_value_for_key(dotted_key: str):
     return None if isinstance(node, dict) else node
 
 
+_SCALAR_MESSAGING_ID_LEAVES = frozenset({
+    "chat_id", "guild_id", "thread_id", "user_id", "scope_id",
+})
+_MESSAGING_PLATFORM_KEYS = frozenset({
+    "discord", "telegram", "slack", "mattermost", "matrix", "whatsapp", "signal",
+    "feishu", "wecom", "weixin", "bluebubbles", "qqbot", "yuanbao", "email", "sms",
+    "dingtalk",
+})
+
+
+def _is_identifier_config_key(dotted_key: str) -> bool:
+    """Whether a schema-known messaging/routing leaf is an opaque identifier."""
+    path = tuple(part.lower() for part in _split_key_path(dotted_key))
+    if not path or path[-1] not in _SCALAR_MESSAGING_ID_LEAVES:
+        return False
+    if "profile_routes" in path[:-1]:
+        return True
+    if len(path) < 3 or path[-2] != "home_channel":
+        return False
+    platform = path[-3]
+    return platform in _MESSAGING_PLATFORM_KEYS
+
+
+_PLATFORM_ID_LIST_KEYS: Dict[str, frozenset[str]] = {
+    "discord": frozenset({
+        "free_response_channels", "allowed_channels", "ignored_channels", "no_thread_channels",
+    }),
+    "slack": frozenset({
+        "free_response_channels", "allowed_channels", "require_mention_channels", "ignored_channels",
+    }),
+    "mattermost": frozenset({"free_response_channels", "allowed_channels"}),
+    "matrix": frozenset({"free_response_rooms", "allowed_rooms"}),
+    "telegram": frozenset({"allowed_chats", "group_allowed_chats", "allowed_topics"}),
+}
+
+
+def _is_platform_id_list_path(path: Tuple[str, ...]) -> bool:
+    """Whether *path* is a schema-known messaging-platform ID collection."""
+    if len(path) < 2:
+        return False
+    platform, leaf = path[-2].lower(), path[-1].lower()
+    return leaf in _PLATFORM_ID_LIST_KEYS.get(platform, ())
+
+
+def _stringify_integer_identifier_leaves(
+    value: Any, path: Tuple[str, ...] = (),
+) -> Any:
+    """Copy a config tree, converting integer IDs to JSON-safe strings."""
+    if isinstance(value, dict):
+        return {
+            child_key: _stringify_integer_identifier_leaves(
+                child, (*path, str(child_key)),
+            )
+            for child_key, child in value.items()
+        }
+    if isinstance(value, list):
+        stringify_items = _is_platform_id_list_path(path)
+        return [
+            str(child) if stringify_items and isinstance(child, int) and not isinstance(child, bool)
+            else _stringify_integer_identifier_leaves(child, path)
+            for child in value
+        ]
+    dotted_key = ".".join(path)
+    if _is_identifier_config_key(dotted_key) and isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    return value
+
+
 # Top-level keys that accept arbitrary user-supplied child keys (schema declares the dict, the
 # user populates it): any path below is accepted without deep checking.
 _OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
@@ -3329,7 +3397,7 @@ def _coerce_config_set_value(key: str, value: str) -> Any:
     String-typed settings (per ``DEFAULT_CONFIG``) are preserved verbatim so enum members such as
     ``approvals.mode="off"`` never become booleans. List/mapping literals are parsed so
     isinstance-gated readers see real structures; the trigger is conservative."""
-    if isinstance(_default_value_for_key(key), str):
+    if isinstance(_default_value_for_key(key), str) or _is_identifier_config_key(key):
         return value
     stripped = value.strip()
     lower = stripped.lower()

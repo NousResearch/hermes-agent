@@ -2551,6 +2551,79 @@ class TestConfigRoundTrip:
             "Shallow-merge regression: agent.x_dashboard_invisible_test_key " \
             "was wiped when the frontend sent a partial agent dict."
 
+    def test_round_trip_stringifies_integer_identifier_leaves(self):
+        """Config identifiers must cross JSON as strings so JavaScript cannot
+        round Discord snowflakes above Number.MAX_SAFE_INTEGER."""
+        from hermes_cli.config import read_raw_config, save_config
+
+        snowflake = 1484510452825456722
+        save_config({
+            "platforms": {
+                "discord": {
+                    "home_channel": {
+                        "platform": "discord",
+                        "chat_id": snowflake,
+                        "name": "Home",
+                    }
+                }
+            },
+            "profile_routes": [{
+                "platform": "discord",
+                "profile": "default",
+                "guild_id": snowflake,
+                "thread_id": snowflake,
+                "chat_id": snowflake,
+                "user_id": snowflake,
+                "scope_id": snowflake,
+            }],
+            "discord": {
+                "free_response_channels": [snowflake],
+                "allowed_channels": [snowflake],
+            },
+            "matrix": {"free_response_rooms": [snowflake]},
+            "custom_metrics": {
+                "event_count": snowflake,
+                "sample_values": [snowflake],
+                "chain_id": snowflake,
+                "id": snowflake,
+            },
+        })
+
+        web_config = self.client.get("/api/config").json()
+        assert web_config["platforms"]["discord"]["home_channel"]["chat_id"] \
+            == str(snowflake)
+        assert web_config["profile_routes"][0]["guild_id"] == str(snowflake)
+        assert web_config["profile_routes"][0]["thread_id"] == str(snowflake)
+        assert web_config["profile_routes"][0]["chat_id"] == str(snowflake)
+        assert web_config["profile_routes"][0]["user_id"] == str(snowflake)
+        assert web_config["profile_routes"][0]["scope_id"] == str(snowflake)
+        assert web_config["discord"]["free_response_channels"] == [str(snowflake)]
+        assert web_config["discord"]["allowed_channels"] == [str(snowflake)]
+        assert web_config["matrix"]["free_response_rooms"] == [str(snowflake)]
+        assert web_config["custom_metrics"]["event_count"] == snowflake
+        assert web_config["custom_metrics"]["sample_values"] == [snowflake]
+        assert web_config["custom_metrics"]["chain_id"] == snowflake
+        assert web_config["custom_metrics"]["id"] == snowflake
+
+        response = self.client.put("/api/config", json={"config": web_config})
+        assert response.status_code == 200
+
+        on_disk = read_raw_config()
+        home = on_disk["platforms"]["discord"]["home_channel"]
+        assert home["chat_id"] == str(snowflake)
+        assert on_disk["profile_routes"][0]["guild_id"] == str(snowflake)
+        assert on_disk["profile_routes"][0]["thread_id"] == str(snowflake)
+        assert on_disk["profile_routes"][0]["chat_id"] == str(snowflake)
+        assert on_disk["profile_routes"][0]["user_id"] == str(snowflake)
+        assert on_disk["profile_routes"][0]["scope_id"] == str(snowflake)
+        assert on_disk["discord"]["free_response_channels"] == [str(snowflake)]
+        assert on_disk["discord"]["allowed_channels"] == [str(snowflake)]
+        assert on_disk["matrix"]["free_response_rooms"] == [str(snowflake)]
+        assert on_disk["custom_metrics"]["event_count"] == snowflake
+        assert on_disk["custom_metrics"]["sample_values"] == [snowflake]
+        assert on_disk["custom_metrics"]["chain_id"] == snowflake
+        assert on_disk["custom_metrics"]["id"] == snowflake
+
     def test_schema_types_match_config_values(self):
         """Every schema field should have a matching-type value in the config."""
         config = self.client.get("/api/config").json()

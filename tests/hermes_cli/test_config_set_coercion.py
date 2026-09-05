@@ -54,6 +54,43 @@ class TestNumericCoercion:
         assert saved == client_id
         assert isinstance(saved, str)
 
+    @pytest.mark.parametrize(
+        "key,path",
+        [
+            (
+                "platforms.discord.home_channel.chat_id",
+                ("platforms", "discord", "home_channel", "chat_id"),
+            ),
+            (
+                "discord.home_channel.scope_id",
+                ("discord", "home_channel", "scope_id"),
+            ),
+        ],
+    )
+    def test_integer_identifier_leaves_stay_strings(
+        self, tmp_path, monkeypatch, key, path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        snowflake = "1484510452825456722"
+
+        cfg.set_config_value(key, snowflake)
+
+        saved = _read(tmp_path, *path)
+        assert saved == snowflake
+        assert isinstance(saved, str)
+
+    @pytest.mark.parametrize("key", ["plugins.example.chain_id", "mcp_servers.example.id"])
+    def test_arbitrary_identifier_named_leaves_remain_numeric(
+        self, tmp_path, monkeypatch, key
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        cfg.set_config_value(key, "42")
+
+        saved = _read(tmp_path, *key.split("."))
+        assert saved == 42
+        assert isinstance(saved, int)
+
 
 class TestNullCoercion:
     @pytest.mark.parametrize("token", ["null", "none", "None", "~"])

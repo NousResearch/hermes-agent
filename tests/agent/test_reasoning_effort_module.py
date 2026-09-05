@@ -25,6 +25,7 @@ from agent.reasoning_effort import (
     KIMI_K3_OVERRIDES,
     OPENAI_COMPAT_WIRE_EFFORTS,
     clamp_effort,
+    codex_supported_efforts,
     kimi_supported_efforts,
     requested_effort,
 )
@@ -136,12 +137,46 @@ class TestGlm52Vocabulary:
 
 
 class TestCodexVocabulary:
+    def test_astra_supports_max(self):
+        assert "max" in codex_supported_efforts("gpt-6-astra")
+
+    def test_astra_rejects_none(self):
+        # Astra speaks low..max (#103016) but, unlike gpt-5.6, rejects ``none``:
+        # the set must not offer it, and a configured none/minimal clamps to low
+        # instead of leaking to the wire and 400ing.
+        from agent.reasoning_effort import CODEX_ASTRA_EFFORTS
+
+        assert codex_supported_efforts("gpt-6-astra") is CODEX_ASTRA_EFFORTS
+        assert "none" not in CODEX_ASTRA_EFFORTS
+        assert clamp_effort("none", CODEX_ASTRA_EFFORTS) == "low"
+        assert clamp_effort("minimal", CODEX_ASTRA_EFFORTS) == "low"
+
+    def test_astra_whole_catalog_family_matches(self):
+        # The substring must cover the pro/fast/flex combinations the catalog
+        # ships (models_catalog_static) without matching on a bare "astra".
+        for model in (
+            "gpt-6-astra",
+            "gpt-6-astra-pro",
+            "openai/gpt-6-astra-pro-fast",
+            "openai/gpt-6-astra-flex",
+        ):
+            assert "max" in codex_supported_efforts(model), model
+
+    def test_astra_max_is_not_clamped(self):
+        assert clamp_effort("max", codex_supported_efforts("gpt-6-astra")) == "max"
+
+    def test_legacy_model_excludes_max(self):
+        assert "max" not in codex_supported_efforts("gpt-5.5")
+
+    def test_gpt_56_still_accepts_none(self):
+        assert "none" in codex_supported_efforts("gpt-5.6")
+
     def test_minimal_and_ultra(self):
         assert clamp_effort("minimal", CODEX_GPT56_EFFORTS) == "low"
         assert clamp_effort("ultra", CODEX_GPT56_EFFORTS) == "max"
 
     def test_per_model_max_support(self):
-        """Live-verified (Aug 2026, #68365): 'max' is gpt-5.6-only — gpt-5.5
+        """Live-verified (Aug 2026, #68365): gpt-5.6 accepts 'max', but gpt-5.5
         rejects it ("Supported values are: 'none','low','medium','high',
         'xhigh'"); 'minimal' is rejected by both generations."""
         from agent.reasoning_effort import (
@@ -171,3 +206,33 @@ class TestRequestedEffort:
         assert requested_effort({"enabled": False, "effort": "high"}) is None
         assert requested_effort("not-a-dict") is None
         assert requested_effort({"effort": ""}) is None
+
+
+class TestCodexTransportResolveReasoning:
+    """End-to-end through the Codex transport's real decision point (#103556).
+
+    ``_resolve_reasoning`` is where a stored session effort meets the wire on the
+    openai-codex route: it must keep astra's ``max`` (the reported bug) and demote
+    astra's unsupported ``none`` to ``low`` instead of leaking it to the wire.
+    """
+
+    def test_astra_max_reaches_the_wire(self):
+        from agent.transports.codex import _resolve_reasoning
+
+        effort, enabled = _resolve_reasoning(
+            "gpt-6-astra", {"reasoning_config": {"enabled": True, "effort": "max"}})
+        assert (effort, enabled) == ("max", True)
+
+    def test_astra_none_clamps_to_low_on_the_wire(self):
+        from agent.transports.codex import _resolve_reasoning
+
+        effort, enabled = _resolve_reasoning(
+            "gpt-6-astra", {"reasoning_config": {"enabled": True, "effort": "none"}})
+        assert (effort, enabled) == ("low", True)
+
+    def test_legacy_clamp_unchanged_through_transport(self):
+        from agent.transports.codex import _resolve_reasoning
+
+        effort, enabled = _resolve_reasoning(
+            "gpt-5.5", {"reasoning_config": {"enabled": True, "effort": "max"}})
+        assert (effort, enabled) == ("xhigh", True)

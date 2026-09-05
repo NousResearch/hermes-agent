@@ -27,10 +27,13 @@ EFFORT_LADDER: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "x
 #: Widest OpenAI-compatible wire vocabulary (OpenRouter, Nous Portal).
 OPENAI_COMPAT_WIRE_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
-#: OpenAI/Codex Responses per model generation (live-verified): ``minimal`` is rejected by
-#: both (clamps to low); ``max`` is gpt-5.6-only.
+#: OpenAI/Codex Responses per model generation: ``minimal`` is rejected by all of
+#: them (clamps to low); ``max`` needs gpt-5.6 or gpt-6-astra (#68365, #103016).
 CODEX_GPT56_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh", "max")
 CODEX_LEGACY_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh")
+#: Astra speaks low..max (#103016) but, unlike gpt-5.6, rejects ``none`` — a configured
+#: ``none``/``minimal`` clamps down to ``low`` instead of leaking to the wire and 400ing.
+CODEX_ASTRA_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 
 #: xAI Responses — Grok 4.6+ accepts xhigh; older Grok tops out at high.
 XAI_GROK46_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh")
@@ -79,8 +82,16 @@ META_AI_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 
 
 def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
-    """Supported effort set for an OpenAI/Codex Responses model."""
-    return CODEX_GPT56_EFFORTS if "gpt-5.6" in (model or "").lower() else CODEX_LEGACY_EFFORTS
+    """Supported effort set for an OpenAI/Codex Responses model.
+
+    The astra substring covers the whole catalog family — ``gpt-6-astra`` plus the
+    ``-pro``/``-fast``/``-flex`` combinations (see models_catalog_static) — without
+    matching on a bare ``astra`` that a future unrelated slug could contain.
+    """
+    m = (model or "").lower()
+    if "gpt-6-astra" in m:
+        return CODEX_ASTRA_EFFORTS
+    return CODEX_GPT56_EFFORTS if "gpt-5.6" in m else CODEX_LEGACY_EFFORTS
 
 
 def kimi_supported_efforts(model: Optional[str]) -> tuple[str, ...]:

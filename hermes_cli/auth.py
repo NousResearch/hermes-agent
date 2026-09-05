@@ -268,7 +268,11 @@ def _register_plugin_provider(pp: Any) -> None:
     if pp.auth_type == "external_process":
         pconfig = ProviderConfig(
             pp.name, pp.display_name or pp.name, "external_process", inference_base_url=pp.base_url)
-    elif pp.auth_type == "api_key" and pp.env_vars and pp.name not in _REGISTRY_PLUGIN_SKIP:
+    elif (
+        pp.auth_type == "api_key"
+        and (pp.env_vars or getattr(pp, "keyless", False))
+        and pp.name not in _REGISTRY_PLUGIN_SKIP
+    ):
         is_url = lambda v: v.endswith("_BASE_URL") or v.endswith("_URL")  # noqa: E731
         pconfig = _api_key_provider(
             pp.name, pp.display_name or pp.name, pp.base_url,
@@ -1773,6 +1777,17 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
+    # ProviderProfile is the source of truth for out-of-tree keyless gateways.
+    # Diagnostics must agree with runtime credential admission instead of
+    # demanding a secret that the provider explicitly does not use.
+    try:
+        from providers.base import keyless_provider_status_for_auth
+
+        keyless_status = keyless_provider_status_for_auth(provider_id, pconfig)
+        if keyless_status is not None:
+            return keyless_status
+    except Exception:
+        pass
     status = {
         "configured": True, "provider": provider_id, "name": pconfig.name, "key_source": "keyless",
         "base_url": pconfig.inference_base_url, "logged_in": True}
@@ -2005,6 +2020,15 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
             provider=provider_id, code="invalid_provider")
 
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
+    # Provider profiles own keyless admission. This lets an out-of-tree
+    # gateway opt in without another provider-name branch in core.
+    try:
+        from providers.base import apply_keyless_api_key
+
+        api_key, key_source = apply_keyless_api_key(provider_id, api_key, key_source)
+    except Exception:
+        # Provider discovery must not make ordinary API-key auth unavailable.
+        pass
     # No-auth LM Studio: a placeholder so runtime / auxiliary_client see the local server as
     # configured. doctor still reports unconfigured because the status path uses the raw secret.
     if not api_key and provider_id == "lmstudio":

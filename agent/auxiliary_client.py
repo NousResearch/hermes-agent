@@ -5862,6 +5862,7 @@ class _ProfileProjection(NamedTuple):
     reasoning_extra: Dict[str, Any]
     top_level: Dict[str, Any]
     handles_reasoning: bool
+    profile: Any | None
 
 
 def _project_provider_profile(
@@ -5872,6 +5873,7 @@ def _project_provider_profile(
     reasoning_extra: Dict[str, Any] = {}
     top_level: Dict[str, Any] = {}
     handles_reasoning = False
+    profile = None
     try:
         from providers import get_provider_profile
         from providers.base import ProviderProfile
@@ -5892,7 +5894,7 @@ def _project_provider_profile(
             )
     except Exception as exc:
         logger.debug("_build_call_kwargs: provider profile projection failed for %s: %s", provider, exc)
-    return _ProfileProjection(body, reasoning_extra, top_level, handles_reasoning)
+    return _ProfileProjection(body, reasoning_extra, top_level, handles_reasoning, profile)
 
 
 def _merge_aux_extra_body(
@@ -5954,7 +5956,16 @@ def _build_call_kwargs(
     # ``extra_body.reasoning`` fallback.
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config)
     kwargs.update(projection.top_level)
-    if merged_extra := _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm):
+    merged_extra = _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm)
+    normalize_extra_body = getattr(projection.profile, "normalize_auxiliary_extra_body", None)
+    if callable(normalize_extra_body):
+        merged_extra = normalize_extra_body(
+            merged_extra,
+            model=model,
+            base_url=effective_base,
+            reasoning_config=reasoning_config,
+        )
+    if merged_extra:
         kwargs["extra_body"] = merged_extra
     # Anthropic Messages adapters take reasoning via a private kwarg that plain OpenAI SDK clients
     # would reject; Portal Claude is dual-wire, so include it only when the catalog id selects

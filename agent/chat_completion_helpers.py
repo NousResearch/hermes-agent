@@ -2375,6 +2375,26 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
     )
 
 
+def _normalize_streamed_tool_name(agent, wire_name: str, api_kwargs: dict) -> str:
+    """Restore a complete streamed tool name before display callbacks see it."""
+    if not isinstance(wire_name, str) or not wire_name:
+        return wire_name
+    try:
+        from agent.transports.chat_completions import _normalize_response_tool_name
+        from providers import get_provider_profile
+
+        transport = agent._get_transport("chat_completions")
+        return _normalize_response_tool_name(
+            wire_name,
+            profile=get_provider_profile(getattr(agent, "provider", "") or ""),
+            phase="stream_delta",
+            model=api_kwargs.get("model") or getattr(agent, "model", None),
+            request_wire_aliases=getattr(transport, "_last_wire_aliases", None),
+        )
+    except Exception:
+        return wire_name
+
+
 # SSE error events from proxies (OpenRouter's {"error":{"message":"Network
 # connection lost."}}) surface as SDK APIError without a status_code (unlike
 # APIStatusError). They mean the upstream stream died: retry with a fresh
@@ -3015,6 +3035,7 @@ class _StreamingCall:
                 for tc_delta in delta_tool_calls:
                     name = tool_calls.feed(tc_delta)
                     if name is not None:
+                        name = _normalize_streamed_tool_name(self.agent, name, self.api_kwargs)
                         self._emit_tool_started(name)
                         # Lets the stub-builder warn if streaming dies before the args
                         # complete instead of silently discarding the action.

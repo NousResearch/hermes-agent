@@ -168,7 +168,16 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
 def _configured_api_mode(provider: str, model_cfg: Dict[str, Any]) -> Optional[str]:
     """Persisted ``model.api_mode`` when valid and recorded for this provider, else None."""
     configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-    return configured_mode if configured_mode and _provider_supports_explicit_api_mode(provider, _cfg_provider(model_cfg)) else None
+    if not configured_mode or not _provider_supports_explicit_api_mode(provider, _cfg_provider(model_cfg)):
+        return None
+    try:
+        from providers import get_provider_profile
+
+        if getattr(get_provider_profile(provider), "ignore_configured_api_mode", False):
+            return None
+    except Exception:
+        pass
+    return configured_mode
 
 
 def _effective_model(model_cfg: Dict[str, Any], target_model: Optional[str]) -> str:

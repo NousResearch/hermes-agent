@@ -172,16 +172,31 @@ def smooth_whitespace_for_tts(text: str) -> str:
 _THINK_BLOCK_RE = re.compile(r"<think[\s>].*?</think>", flags=re.DOTALL | re.IGNORECASE)
 _THINK_BLOCK_OPEN_RE = re.compile(r"<think[\s>].*\Z", flags=re.DOTALL | re.IGNORECASE)
 
+# Gateway reasoning DISPLAY blocks (gateway/run_turn.py `_hmwa_prepend_reasoning`) are prepended
+# to the response when `show_reasoning` is on. Three render styles, all display-only — never speech:
+#   subtext (Discord default): "-# 💭 Reasoning\n-# <line>…\n\n"
+#   blockquote:                "> 💭 **Reasoning:**\n> <line>…\n\n"
+#   code:                      "💭 **Reasoning:**\n```\n<line>…\n```\n\n"
+_REASONING_SUBTEXT_RE = re.compile(
+    r"^-#\s*💭\s*Reasoning\b[^\n]*\n(?:-#[^\n]*\n)+", re.MULTILINE | re.IGNORECASE)
+_REASONING_BLOCKQUOTE_RE = re.compile(
+    r"^>\s*💭\s*\*\*Reasoning:\*\*[^\n]*\n(?:>\s?[^\n]*\n)+", re.MULTILINE | re.IGNORECASE)
+_REASONING_CODE_RE = re.compile(
+    r"^💭\s*\*\*Reasoning:\*\*[^\n]*\n[ \t]*```[\s\S]*?```[ \t]*(?:\n|$)", re.MULTILINE | re.IGNORECASE)
+
 # run_agent.py's turn-end file-mutation verifier footer (a ``⚠️ File-mutation verifier:``
 # header line plus indented ``•`` bullets) is a UI affordance, not speech.
 _VERIFIER_FOOTER_RE = re.compile(r"^\s*⚠️?\s*File-mutation verifier:.*(?:\n[ \t]+•.*)*", flags=re.MULTILINE)
 
 
 def strip_nonspoken_blocks(text: str) -> str:
-    """Remove ``<think>`` reasoning blocks and the file-mutation verifier footer."""
+    """Remove reasoning/thinking blocks (``<think>`` XML and the gateway's display-block
+    styles) and the file-mutation verifier footer."""
     if not text:
         return ""
-    for pattern in (_THINK_BLOCK_RE, _THINK_BLOCK_OPEN_RE, _VERIFIER_FOOTER_RE):
+    for pattern in (_THINK_BLOCK_RE, _THINK_BLOCK_OPEN_RE,
+                    _REASONING_SUBTEXT_RE, _REASONING_BLOCKQUOTE_RE, _REASONING_CODE_RE,
+                    _VERIFIER_FOOTER_RE):
         text = pattern.sub(" ", text)
     return text
 

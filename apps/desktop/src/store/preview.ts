@@ -95,7 +95,12 @@ function isPreviewTab(value: unknown): value is PreviewTab {
 
   const r = value as Record<string, unknown>
 
-  return typeof r.id === 'string' && (r.id.startsWith('file:') || r.id.startsWith('url:')) && isPreviewTarget(r.target)
+  return (
+    typeof r.id === 'string' &&
+    (r.id.startsWith('file:') || r.id.startsWith('url:')) &&
+    isPreviewTarget(r.target) &&
+    (r.ownerSessionId === undefined || typeof r.ownerSessionId === 'string')
+  )
 }
 
 function isPdfFileTarget(target: PreviewTarget): boolean {

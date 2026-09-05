@@ -627,6 +627,42 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     scrollRef.current?.removeAttribute('data-editing')
   }, [scrollRef])
 
+  // The library's wheel handler matches overflow === 'auto'/'scroll', but
+  // this viewport computes to 'hidden auto'. Release its lock through the
+  // public API before streaming resize-follow pulls an upward reader down.
+  useEffect(() => {
+    const el = scrollRef.current
+
+    if (!el) {
+      return undefined
+    }
+
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY >= 0 || el.scrollHeight <= el.clientHeight) {
+        return
+      }
+
+      // A nested code/output scroller with room above owns the gesture.
+      for (
+        let node = event.target instanceof Element ? event.target : null;
+        node && node !== el;
+        node = node.parentElement
+      ) {
+        const { overflowY } = getComputedStyle(node)
+
+        if ((overflowY === 'auto' || overflowY === 'scroll') && node.scrollTop > 0) {
+          return
+        }
+      }
+
+      stopScroll()
+    }
+
+    el.addEventListener('wheel', onWheel, { passive: true })
+
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [scrollRef, stopScroll])
+
   // Inline edit grows a sticky bubble. Escape before focus/layout so the
   // resize-follow can't snap scrollTop; native anchoring holds the viewport.
   const beginEditHold = useCallback(() => {

@@ -357,6 +357,18 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.retryable is True
 
+    def test_zai_429_usage_limit_with_will_reset_at_stays_rate_limit(self):
+        e = MockAPIError(
+            "Error code: 429 - Usage limit reached for 5 hour. "
+            "Your limit will reset at 2026-09-04 19:01:25",
+            status_code=429,
+        )
+
+        result = classify_api_error(e, provider="zai", model="glm-5.2")
+
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
     def test_429_generic_quota_wall_is_billing(self):
         # Broadened from the narrow "usage limit" core to the full
         # _USAGE_LIMIT_PATTERNS: a bare "quota" / "limit exceeded" 429 with no

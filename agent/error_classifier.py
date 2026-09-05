@@ -132,7 +132,7 @@ _OVERLOADED_PATTERNS = (
 # the signals that mark such a limit as transient (periodic quota, not billing).
 _USAGE_LIMIT_PATTERNS = ("usage limit", "quota", "limit exceeded", "key limit exceeded")
 _USAGE_LIMIT_TRANSIENT_SIGNALS = (
-    "try again", "retry", "resets at", "reset in", "resets in", "reset after", "available in",
+    "try again", "retry", "resets at", "reset at", "reset in", "resets in", "reset after", "available in",
     "wait", "requests remaining", "periodic", "window", "per minute", "per second",
 )
 

@@ -485,6 +485,7 @@ export interface SessionCreateResponse {
   info?: SessionRuntimeInfo
   message_count?: number
   messages?: SessionMessage[]
+  messages_omitted?: boolean
   session_id: string
   stored_session_id?: string
 }

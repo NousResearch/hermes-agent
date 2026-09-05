@@ -8,6 +8,7 @@ predicates live together here as pure functions (no I/O, SDK or credentials) tha
 cycle.
 """
 
+import re
 from urllib.parse import urlparse
 
 from utils import base_url_host_matches, base_url_hostname
@@ -99,6 +100,22 @@ def _is_nous_portal_endpoint(base_url: str | None) -> bool:
         return False
     override_host = base_url_hostname(override) if override else ""
     return bool(override_host) and base_url_hostname(base_url or "") == override_host
+
+
+# Claude generations whose API keeps EVERY prior turn's thinking blocks in context (and in the prompt
+# cache) when they are passed back unchanged: Opus >= 4.5, Sonnet >= 4.6, and the Fable/Mythos
+# families. Earlier models (Sonnet <= 4.5, all Haiku) are "last turn only": the API strips older
+# blocks itself. Anything we cannot classify is treated as keep-all, because dropping a block the
+# API would have kept rewrites the cached prefix from that point (measured: ~80% of uncached input
+# in a 1,393-agent run), while passing back a block the API drops costs nothing.
+_LAST_TURN_ONLY_THINKING_RE = re.compile(
+    r"(haiku)|(sonnet[-_ ]?4[-_.]?[0-5]\b)|(opus[-_ ]?4[-_.]?[0-4]\b)|(claude[-_ ]?3)", re.IGNORECASE
+)
+
+
+def _model_keeps_all_thinking(model: str | None) -> bool:
+    """True when the API preserves prior-turn thinking blocks for this Claude model."""
+    return not _LAST_TURN_ONLY_THINKING_RE.search(model or "")
 
 
 def _requires_bearer_auth(base_url: str | None) -> bool:

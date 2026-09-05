@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.anthropic_endpoints import (
     _is_deepseek_anthropic_endpoint, _is_kimi_family_endpoint, _is_nous_portal_endpoint,
-    _is_third_party_anthropic_endpoint,
+    _is_third_party_anthropic_endpoint, _model_keeps_all_thinking,
 )
 
 logger = logging.getLogger(__name__)
@@ -554,18 +554,26 @@ def _keep_valid_latest_thinking(content: List[Any], signature_dead: bool) -> Lis
 
 
 def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | None, model: str | None) -> None:
-    """Strip or preserve thinking blocks per endpoint. Mutates ``result`` in place.
+    """Strip or preserve thinking blocks per endpoint and model. Mutates ``result`` in place.
 
     Anthropic signs thinking blocks against the full turn; any upstream mutation invalidates them
-    (400 "Invalid signature in thinking block"), so on direct Anthropic only the LATEST assistant
-    turn keeps signed blocks. Signatures are proprietary: third-party endpoints strip all thinking.
-    Kimi replays as-is; DeepSeek needs unsigned blocks round-tripped but rejects signed ones. Nous
-    Portal proxies Claude with sticky sessions and validates the same signatures, so it takes the
-    native path despite not being anthropic.com.
+    (400 "Invalid signature in thinking block"), so a turn that was mutated (orphan strip, merge)
+    has its blocks demoted to text. Signatures are proprietary: third-party endpoints strip all
+    thinking. Kimi replays as-is; DeepSeek needs unsigned blocks round-tripped but rejects signed
+    ones. Nous Portal proxies Claude with sticky sessions and validates the same signatures, so it
+    takes the native path despite not being anthropic.com.
+
+    On the native path, which prior turns keep their blocks depends on the model. Keep-all models
+    (Opus >= 4.5, Sonnet >= 4.6, Fable, Mythos) hold every prior turn's thinking in context and in
+    the prompt cache; deleting those blocks client-side rewrites the cached prefix from the first
+    deleted block onward on every call (measured at ~80% of all uncached input in a 1,393-agent
+    run), so they are passed back unchanged. Last-turn-only models (Sonnet <= 4.5, Haiku) strip
+    older blocks server-side, so only the latest assistant turn keeps them.
     """
     is_third_party = _is_third_party_anthropic_endpoint(base_url) and not _is_nous_portal_endpoint(base_url)
     is_kimi = _is_kimi_family_endpoint(base_url, model)
     is_deepseek = _is_deepseek_anthropic_endpoint(base_url)
+    keep_all = _model_keeps_all_thinking(model)
     last_assistant_idx = next((i for i in range(len(result) - 1, -1, -1) if result[i].get("role") == "assistant"), None)
     for idx, m in _assistant_block_lists(result):
         if is_kimi:
@@ -577,7 +585,7 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
                 if _block_type(b) not in _THINKING_TYPES or not (b.get("signature") or b.get("data"))
             ]
             m["content"] = new_content or [_text_block("(empty)")]
-        elif is_third_party or idx != last_assistant_idx:
+        elif is_third_party or (idx != last_assistant_idx and not keep_all):
             m["content"] = _strip_thinking(m["content"]) or [_text_block("(thinking elided)")]
         else:
             new_content = _keep_valid_latest_thinking(m["content"], bool(m.get("_thinking_signature_invalidated")))

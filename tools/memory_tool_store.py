@@ -322,14 +322,16 @@ class MemoryStore:
                 # store (#103419): a background consolidation that removes the
                 # last entry would otherwise commit an empty USER.md/MEMORY.md
                 # as a normal successful write. Refuse all-or-nothing so the
-                # model keeps at least one entry; a deliberate wipe is a manual
-                # file edit, not a consolidation side effect.
+                # model keeps at least one entry; deleting the final entry on
+                # purpose is what single remove() calls are for, not a
+                # consolidation side effect.
                 label = "USER.md" if target == "user" else "MEMORY.md"
                 return self._failure_with_entries(target, (
                     f"Refusing to empty {label}: this batch would remove every entry from a "
                     f"previously non-empty profile. Nothing was applied (batch is all-or-nothing). "
                     f"Keep at least one entry — merge overlapping entries into a shorter one instead "
-                    f"of removing the last one (see current_entries below)."))
+                    f"of removing the last one (see current_entries below). To delete the final entry "
+                    f"deliberately, use single remove() calls."))
             new_total = len(ENTRY_DELIMITER.join(working))  # budget check against the FINAL state only
             if new_total > limit:
                 return self._failure_with_entries(target, (

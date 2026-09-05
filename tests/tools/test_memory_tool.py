@@ -733,6 +733,7 @@ class TestBatchRefusesToEmptyNonEmptyStore:
 
         assert result["success"] is False
         assert "current_entries" in result  # actionable, counts toward degrade budget
+        assert "single remove()" in result["error"]  # points at the deliberate-wipe path
         assert seed in path.read_text(encoding="utf-8")  # nothing written
         assert path.read_text(encoding="utf-8") == before
         assert seed in store._entries_for(target)

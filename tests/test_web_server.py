@@ -255,6 +255,8 @@ def test_start_server_treats_posix_keyboardinterrupt_as_clean_shutdown(monkeypat
     """
     _stub_uvicorn(monkeypatch)
 
+    monkeypatch.setitem(sys.modules, "uvicorn._compat", None)
+
     def _raise_keyboard_interrupt(coro):
         coro.close()
         raise KeyboardInterrupt
@@ -338,3 +340,30 @@ def test_start_server_treats_windows_fallback_keyboardinterrupt_as_clean_shutdow
             "start_server must treat serve-time KeyboardInterrupt as a clean "
             "shutdown on the Windows pre-0.36 fallback, not propagate it"
         )
+
+
+def test_headless_token_page_serves_live_session_token(monkeypatch):
+    """Regression: the headless token page must serve the CURRENT session token.
+
+    ``mount_spa(app)`` runs at import time and binds the then-random
+    ``_SESSION_TOKEN`` in its closure.  ``hermes serve`` later swaps the
+    ``web_server`` module global via ``_apply_ssh_session_token()`` (start_server,
+    ``--ssh-session-token-file``).  The Desktop SSH handshake reads
+    ``window.__HERMES_SESSION_TOKEN__`` from this page and adopts it — serving
+    the stale closure token made every renderer /api call 401 (renderer adopted
+    a token the backend never accepted).
+    """
+    from fastapi import FastAPI
+    from starlette.testclient import TestClient
+
+    from hermes_cli import web_server_dashboard
+
+    monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
+    fresh_app = FastAPI()
+    web_server_dashboard.mount_spa(fresh_app)  # closure binds the token as of NOW
+
+    live_token = "t" * 64
+    monkeypatch.setattr(web_server, "_SESSION_TOKEN", live_token)  # start_server swap
+
+    html = TestClient(fresh_app).get("/").text
+    assert f'window.__HERMES_SESSION_TOKEN__="{live_token}"' in html

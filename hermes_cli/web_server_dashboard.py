@@ -110,6 +110,13 @@ def mount_spa(application: FastAPI):
 
         @application.get("/{full_path:path}")
         async def no_frontend(full_path: str):
+            # Read the session token at REQUEST time: mount_spa() captures the
+            # import-time random _SESSION_TOKEN in its closure, but hermes serve
+            # swaps in the --ssh-session-token-file value via
+            # _apply_ssh_session_token() AFTER mount_spa ran. Serving the stale
+            # closure token breaks the Desktop SSH handshake (renderer adopts
+            # the wrong token and every /api call 401s).
+            from hermes_cli.web_server import _SESSION_TOKEN
             # Desktop token handshake: the Electron shell boots by fetching `/` and reading
             # ``window.__HERMES_SESSION_TOKEN__`` for /api/ws auth. When headless 404'd every
             # path, a renderer whose spawn token no longer matched (e.g. after `hermes update`)

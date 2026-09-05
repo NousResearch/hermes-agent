@@ -1351,8 +1351,9 @@ DEFAULT_CONFIG = {
         "consolidate": False,
         # Also prune bundled built-ins (a suppression list stops `hermes update` restoring them);
         # hub-installed skills are NEVER pruned. A built-in's clock starts when the curator first
-        # sees it, so never a mass-prune on the first run. false = keep all.
-        "prune_builtins": True,
+        # sees it, so never a mass-prune on the first run. false = keep all (default: opt-in only,
+        # since bundled skills ship with Hermes and users may not have triggered every one yet).
+        "prune_builtins": False,
         # TTL purge of skills/.archive/: 0 = never; > 0 lets the explicit `hermes curator purge`
         # delete older archived skills (never automatic; logged in the ledger).
         "archive_ttl_days": 0,

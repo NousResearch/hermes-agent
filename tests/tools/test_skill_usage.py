@@ -514,11 +514,11 @@ def test_adopt_refuses_skills_the_user_does_not_own(skills_home, monkeypatch, ki
     """Adoption writes a provenance claim, so it must refuse anything with an
     external owner rather than stamping a lie onto the record.
 
-    ``prune_builtins`` is forced ON here — the shipped default — because that
-    is the configuration in which a bundled skill is otherwise curation-
-    eligible. With it off, ``mark_agent_created``'s own eligibility gate would
-    block the write and this test would pass without exercising adopt's guard
-    at all.
+    ``prune_builtins`` is forced ON here (opt-in; the shipped default is OFF)
+    because that is the configuration in which a bundled skill is otherwise
+    curation-eligible. With it off, ``mark_agent_created``'s own eligibility
+    gate would block the write and this test would pass without exercising
+    adopt's guard at all.
     """
     from tools import skill_usage
     from tools.skill_usage import adopt_skill, load_usage

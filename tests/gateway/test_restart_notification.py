@@ -104,10 +104,7 @@ async def test_sethome_updates_running_config_for_same_process_restart(tmp_path,
 
     saved = {}
 
-    def _fake_save_env_value(key, value):
-        saved[key] = value
-
-    monkeypatch.setattr("hermes_cli.config.save_env_value", _fake_save_env_value)
+    monkeypatch.setattr("gateway.home_channel_config._save_legacy_home", saved.update)
     monkeypatch.setattr("gateway.slash_commands.persist_home_channel", lambda home, **kwargs: None)
 
     runner, _adapter = make_restart_runner()
@@ -123,7 +120,7 @@ async def test_sethome_updates_running_config_for_same_process_restart(tmp_path,
     result = await runner._handle_set_home_command(event)
 
     home = runner.config.get_home_channel(Platform.TELEGRAM)
-    assert "Home channel set" in result
+    assert "This is now your Home chat" in result
     assert saved["TELEGRAM_HOME_CHANNEL"] == "home-42"
     assert home is not None
     assert home.chat_id == "home-42"
@@ -137,10 +134,7 @@ async def test_sethome_preserves_thread_target_for_same_process_restart(tmp_path
 
     saved = {}
 
-    def _fake_save_env_value(key, value):
-        saved[key] = value
-
-    monkeypatch.setattr("hermes_cli.config.save_env_value", _fake_save_env_value)
+    monkeypatch.setattr("gateway.home_channel_config._save_legacy_home", saved.update)
     monkeypatch.setattr("gateway.slash_commands.persist_home_channel", lambda home, **kwargs: None)
 
     runner, _adapter = make_restart_runner()
@@ -156,7 +150,7 @@ async def test_sethome_preserves_thread_target_for_same_process_restart(tmp_path
     result = await runner._handle_set_home_command(event)
 
     home = runner.config.get_home_channel(Platform.TELEGRAM)
-    assert "Home channel set" in result
+    assert "This is now your Home chat" in result
     assert saved["TELEGRAM_HOME_CHANNEL"] == "parent-42"
     assert saved["TELEGRAM_HOME_CHANNEL_THREAD_ID"] == "topic-7"
     assert home is not None
@@ -410,5 +404,3 @@ async def test_shutdown_notifications_are_fully_muted_when_flag_disabled():
     await runner._notify_active_sessions_of_shutdown()
 
     adapter.send.assert_not_awaited()
-
-

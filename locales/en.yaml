@@ -30,6 +30,31 @@ approval:
   blocklist_message: "This command is on the unconditional blocklist and cannot be approved."
 
 gateway:
+  group_home:
+    cancel_late: "Saving has already started, so consent may be saved. The chooser is cancelled. Use {command_prefix}sethome to reset consent."
+    saving: "Saving has already started. The old chooser is cancelled; wait for saving to finish, then run {command_prefix}group again."
+    stop_requested: "Stop requested. Check the Group Chat for its progress."
+    deny_requested: "Denial requested."
+    control_handled: "This control request was handled earlier. Check the outcome in an authorized private chat."
+    control_unavailable: "This control request could not be confirmed. Check Group Chats in an authorized private chat."
+    warning: "Everyone who can read this chat can see the Group Chat activity and files posted here, including people added later. Continue here?"
+    cancel: "Confirmation cancelled. Use an authorized private chat, or run {command_prefix}group here when ready."
+    expired: "This confirmation expired or the home changed. Run {command_prefix}group again."
+    failed: "The confirmation could not be saved. Try {command_prefix}group again. If it keeps failing, ask the person who manages Hermes for help."
+    identity: "This connection can’t verify who sent the command. Use your authorized private Hermes chat."
+    setup: "Your account can’t control Group Chats here yet. Use an authorized private Hermes chat, or ask the person who manages Hermes to give you access. Send {command_prefix}whoami to find your account ID."
+    binding: "Use the Home chat you already selected. To use this chat instead, send {command_prefix}sethome, then {command_prefix}group."
+    help: "Use {command_prefix}group to choose a Group Chat. Shared homes require an enrolled command admin, an exact {command_prefix}sethome selection, and audience confirmation. {command_prefix}sethome only chooses a delivery destination. Use {command_prefix}group cancel to cancel a confirmation; {command_prefix}group <number> stop stays available to authorized owners."
+    people: "Group Chat controls are only available to people."
+    edited: "Edited messages can’t run Group Chat commands. Send a new message."
+    continue: "Continue here"
+    private: "Use a private chat instead"
+    chooser: "Choose a Group Chat."
+    home_missing: "Home could not be saved. Choose a connected chat and try again."
+    home_connector: "This connector cannot verify a home destination. Use a connected native chat."
+    home_failed: "Home could not be saved. Try {command_prefix}sethome again. If it keeps failing, ask the person who manages Hermes for help."
+    home_saved: "This is now your Home chat for scheduled updates and cross-chat messages. Send {command_prefix}group to set up Group Chat controls. They need separate permission, and shared chats ask for confirmation before showing activity."
+
   # Messenger replies to slash commands and implicit state changes.
   approval_expired: "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
   draining:         "⏳ Draining {count} active agent(s) before restart..."

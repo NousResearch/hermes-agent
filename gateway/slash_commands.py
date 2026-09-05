@@ -570,6 +570,26 @@ class GatewaySlashCommandsMixin(
         reply = _execute("commands", args=event.get_command_args(), options={"page_size": page_size})
         return self._telegramized_command_reply(event, reply.text)
 
+    async def _handle_l_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /l — quick command menu card on Feishu, /commands elsewhere."""
+        source = event.source
+        if getattr(source, "platform", None) == Platform.FEISHU:
+            adapter = self._adapter_for_source(source)
+            if adapter is not None and getattr(type(adapter), "send_command_list", None) is not None:
+                metadata = self._thread_metadata_for_source(
+                    source, self._reply_anchor_for_event(event)
+                )
+                result = await adapter.send_command_list(
+                    chat_id=source.chat_id,
+                    session_key=self._session_key_for_source(source),
+                    metadata=metadata,
+                )
+                if result.success:
+                    return None  # Card sent — no text reply needed.
+                logger.warning("[Gateway] /l card send failed: %s", result.error)
+        # Non-Feishu (or card send failed): fall back to the /commands listing.
+        return await self._handle_commands_command(event)
+
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""
         from gateway.run import _home_target_env_var, _home_thread_env_var

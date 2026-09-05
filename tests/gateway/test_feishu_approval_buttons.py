@@ -664,3 +664,350 @@ class TestResolveUpdatePrompt:
         assert 3 in adapter._update_prompt_state
 
 
+# ===========================================================================
+# send_model_picker — interactive model picker card + callback validation
+# ===========================================================================
+
+def _make_select_action_data(
+    option_value: str,
+    chat_id: str = "oc_12345",
+    open_id: str = "ou_user1",
+    token: str = "tok_mp",
+) -> SimpleNamespace:
+    """Mock a Feishu select_static card action callback (option.value form)."""
+    return SimpleNamespace(
+        event=SimpleNamespace(
+            token=token,
+            context=SimpleNamespace(open_chat_id=chat_id),
+            operator=SimpleNamespace(open_id=open_id),
+            action=SimpleNamespace(
+                tag="select_static",
+                value={},
+                option=SimpleNamespace(value=option_value),
+            ),
+        ),
+    )
+
+
+class TestPickerValueScanShapes:
+    """The recursive scan must find the picker value in every callback shape."""
+
+    PREFIX = "hermes_model_picker:3:0"
+    TARGET = "hermes_model_picker:3:0"
+
+    def test_scan_finds_nested_string_in_action_value_dict(self):
+        # shape: action.value = {"selected_option": {"value": "<prefix...>"}}
+        adapter = _make_adapter()
+        action = SimpleNamespace(tag="select_static", value={"selected_option": {"value": self.TARGET}})
+        assert adapter._find_model_picker_option_value(action, action.value) == self.TARGET
+
+    def test_scan_finds_value_in_key_field(self):
+        # shape: action.value = {"key": "<prefix...>"}
+        adapter = _make_adapter()
+        action = SimpleNamespace(tag="select_static", value={"key": self.TARGET})
+        assert adapter._find_model_picker_option_value(action, action.value) == self.TARGET
+
+    def test_scan_finds_option_value_str(self):
+        # shape: action.option.value = "<prefix...>"
+        adapter = _make_adapter()
+        action = SimpleNamespace(
+            tag="select_static", value={}, option=SimpleNamespace(value=self.TARGET),
+        )
+        assert adapter._find_model_picker_option_value(action, action.value) == self.TARGET
+
+    def test_scan_finds_option_value_dict(self):
+        # shape: action.option = {"value": "<prefix...>"}
+        adapter = _make_adapter()
+        action = SimpleNamespace(tag="select_static", value={}, option={"value": self.TARGET})
+        assert adapter._find_model_picker_option_value(action, action.value) == self.TARGET
+
+    def test_scan_finds_bare_string_value(self):
+        # shape: action.value = "<prefix...>" directly
+        adapter = _make_adapter()
+        action = SimpleNamespace(tag="select_static", value=self.TARGET)
+        assert adapter._find_model_picker_option_value(action, action.value) == self.TARGET
+
+    def test_scan_finds_deeply_nested_list_shape(self):
+        # shape: action.value = {"options": [{"value": "<prefix...>"}]}
+        adapter = _make_adapter()
+        action = SimpleNamespace(tag="select_static", value={"options": [{"value": self.TARGET}]})
+        assert adapter._find_model_picker_option_value(action, action.value) == self.TARGET
+
+    def test_scan_returns_none_for_unrelated_payload(self):
+        adapter = _make_adapter()
+        action = SimpleNamespace(tag="select_static", value={"key": "some_other_value"})
+        assert adapter._find_model_picker_option_value(action, action.value) is None
+
+
+class TestFeishuModelPicker:
+    """Feishu model picker: card payload, state, callback validation."""
+
+    @pytest.mark.asyncio
+    async def test_curated_model_picker_config_wins(self):
+        """platforms.feishu.extra.model_picker replaces the full catalog."""
+        from gateway.config import PlatformConfig
+
+        config = PlatformConfig(enabled=True)
+        config.extra = {
+            "model_picker": {
+                "enabled": True,
+                "models": [
+                    {"label": "GPT-5.6 Terra", "model": "gpt-5.6-terra", "provider": "cc-switch-gpt-5-5"},
+                    {"label": "DeepSeek V4 Pro 0813", "model": "deepseek-v4-pro-0813", "provider": "cc-switch-deepseek-pro"},
+                    {"label": "GLM 5.3", "model": "glm-5.3", "provider": "cc-switch-glm"},
+                ],
+            }
+        }
+        adapter = FeishuAdapter(config)
+        adapter._client = MagicMock()
+
+        providers = [{
+            "slug": "cc-switch-gpt-5-5",
+            "name": "cc-switch gpt",
+            "models": ["gpt-5.6", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.6-luna"],
+        }]
+        mock_response = SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_mp1"))
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock, return_value=mock_response
+        ) as mock_send:
+            result = await adapter.send_model_picker(
+                chat_id="oc_1",
+                providers=providers,
+                current_model="glm-5.3",
+                current_provider="cc-switch-glm",
+                session_key="sk",
+                on_model_selected=AsyncMock(),
+                metadata={"curated_model_picker": True},
+            )
+
+        assert result.success is True
+        card = json.loads(mock_send.call_args[1]["payload"])
+        options = card["elements"][1]["actions"][0]["options"]
+        labels = [o["text"]["content"] for o in options]
+        assert len(labels) == 5
+        assert "cc-switch gpt · gpt-5.6" in labels
+
+    @pytest.mark.asyncio
+    async def test_send_model_picker_sends_dropdown_and_records_state(self):
+        adapter = _make_adapter()
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_mp_1"),
+        )
+        providers = [
+            {
+                "slug": "cc-switch-glm",
+                "name": "cc-switch glm",
+                "models": ["glm-5.3", "glm-5.2"],
+            },
+            {
+                "slug": "cc-switch-gpt-5-5",
+                "name": "cc-switch gpt",
+                "models": [{"model": "gpt-5.6-terra"}],
+            },
+            {
+                "slug": "cc-switch-deepseek-pro",
+                "name": "cc-switch deepseek",
+                "models": ["cc/deepseek-v4-pro"],
+            },
+        ]
+
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            result = await adapter.send_model_picker(
+                chat_id="oc_12345",
+                providers=providers,
+                current_model="glm-5.3",
+                current_provider="cc-switch-glm",
+                session_key="sess-mp",
+                on_model_selected=AsyncMock(),
+            )
+
+        assert result.success is True
+        kwargs = mock_send.call_args[1]
+        assert kwargs["msg_type"] == "interactive"
+
+        card = json.loads(kwargs["payload"])
+        assert "glm-5.3" in card["elements"][0]["content"]
+        select = card["elements"][1]["actions"][0]
+        assert select["tag"] == "select_static"
+        options = select["options"]
+        assert len(options) == 4  # 2 glm + 1 gpt + 1 cc/-prefixed deepseek
+        # Option values must be opaque refs (prefix:picker_id:index), never raw model ids
+        assert options[0]["value"].startswith("hermes_model_picker:1:")
+        # Labels must show the FULL model id — "cc/"-prefixed aliases stay
+        # distinguishable instead of collapsing to their last path segment.
+        labels = [o["text"]["content"] for o in options]
+        assert labels == [
+            "cc-switch glm · glm-5.3",
+            "cc-switch glm · glm-5.2",
+            "cc-switch gpt · gpt-5.6-terra",
+            "cc-switch deepseek · cc/deepseek-v4-pro",
+        ]
+
+        # State records server-side model entries for callback resolution
+        assert len(adapter._model_picker_state) == 1
+        state = adapter._model_picker_state[1]
+        assert state["chat_id"] == "oc_12345"
+        assert state["session_key"] == "sess-mp"
+        assert [e[1] for e in state["model_entries"]] == [
+            "glm-5.3", "glm-5.2", "gpt-5.6-terra", "cc/deepseek-v4-pro",
+        ]
+        assert [e[2] for e in state["model_entries"]] == [
+            "cc-switch-glm", "cc-switch-glm", "cc-switch-gpt-5-5",
+            "cc-switch-deepseek-pro",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_send_model_picker_returns_error_when_no_models(self):
+        adapter = _make_adapter()
+        result = await adapter.send_model_picker(
+            chat_id="oc_12345",
+            providers=[{"slug": "x", "name": "X", "models": []}],
+            current_model="m",
+            current_provider="x",
+            session_key="s",
+            on_model_selected=AsyncMock(),
+        )
+        assert result.success is False
+
+    def test_callback_resolves_selection_and_returns_inline_card(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_user1"}
+        adapter._model_picker_state[3] = {
+            "chat_id": "oc_12345",
+            "session_key": "sess-mp",
+            "on_model_selected": AsyncMock(return_value="switched to glm-5.3"),
+            "model_entries": [
+                ("cc-switch glm · glm-5.3", "glm-5.3", "cc-switch-glm"),
+                ("cc-switch gpt · gpt-5.6-terra", "gpt-5.6-terra", "cc-switch-gpt-5-5"),
+            ],
+        }
+        data = _make_select_action_data("hermes_model_picker:3:0", open_id="ou_user1")
+
+        submitted = {}
+
+        def _capture_submit(coro, loop):
+            submitted["coro"] = coro
+            return SimpleNamespace(add_done_callback=lambda *_a, **_k: None)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_capture_submit):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        assert response.card.type == "raw"
+        assert "glm-5.3" in response.card.data["elements"][0]["content"]
+
+        # One-time: picker state consumed immediately
+        assert 3 not in adapter._model_picker_state
+        # Scheduled coroutine carries the server-resolved model + provider
+        assert submitted, "selection dispatch was not scheduled"
+
+    def test_callback_rejects_tampered_index(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_user1"}
+        adapter._model_picker_state[7] = {
+            "chat_id": "oc_12345",
+            "session_key": "sess-mp",
+            "on_model_selected": AsyncMock(),
+            "model_entries": [("lbl", "glm-5.3", "cc-switch-glm")],
+        }
+        data = _make_select_action_data("hermes_model_picker:7:99", open_id="ou_user1")
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        assert 7 in adapter._model_picker_state  # not consumed
+        mock_submit.assert_not_called()
+
+    def test_callback_rejects_unauthorized_user(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_admin"}
+        adapter._model_picker_state[9] = {
+            "chat_id": "oc_12345",
+            "session_key": "sess-mp",
+            "on_model_selected": AsyncMock(),
+            "model_entries": [("lbl", "glm-5.3", "cc-switch-glm")],
+        }
+        data = _make_select_action_data("hermes_model_picker:9:0", open_id="ou_stranger")
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        assert 9 in adapter._model_picker_state
+        mock_submit.assert_not_called()
+
+    def test_callback_rejects_chat_mismatch(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_user1"}
+        adapter._model_picker_state[11] = {
+            "chat_id": "oc_expected",
+            "session_key": "sess-mp",
+            "on_model_selected": AsyncMock(),
+            "model_entries": [("lbl", "glm-5.3", "cc-switch-glm")],
+        }
+        data = _make_select_action_data("hermes_model_picker:11:0", chat_id="oc_other", open_id="ou_user1")
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        assert 11 in adapter._model_picker_state
+        mock_submit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_invokes_callback_and_posts_confirmation(self):
+        adapter = _make_adapter()
+        on_selected = AsyncMock(return_value="✅ 已切换到 glm-5.3")
+
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+        ) as mock_send:
+            await adapter._dispatch_model_picker_selection(
+                on_model_selected=on_selected,
+                chat_id="oc_12345",
+                model_id="glm-5.3",
+                provider_slug="cc-switch-glm",
+            )
+
+        on_selected.assert_awaited_once_with("oc_12345", "glm-5.3", "cc-switch-glm")
+        mock_send.assert_awaited_once()
+        sent = json.loads(mock_send.call_args[1]["payload"])
+        assert "glm-5.3" in sent["text"]
+
+    @pytest.mark.asyncio
+    async def test_dispatch_failure_still_reports_error(self):
+        adapter = _make_adapter()
+        on_selected = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+        ) as mock_send:
+            await adapter._dispatch_model_picker_selection(
+                on_model_selected=on_selected,
+                chat_id="oc_12345",
+                model_id="glm-5.3",
+                provider_slug="cc-switch-glm",
+            )
+
+        mock_send.assert_awaited_once()
+        sent = json.loads(mock_send.call_args[1]["payload"])
+        assert "失败" in sent["text"]
+
+

@@ -102,6 +102,14 @@ for call-site shadow or border inventions.
 Never hardcode `border-gray-*`, `bg-white`, `text-black`, etc. The white tile in
 `BrandMark` is the one sanctioned literal (the mark needs a fixed backdrop).
 
+Session status dots share one resolver and primitive across the sidebar, pane
+tabs, and switcher. Active subagents use filled `--ui-purple` with a localized
+active count in the tooltip and accessible label; queued children count as
+active. This takes priority over the parent turn's dot, but never over amber
+needs-input. The parent's running arc remains independent. Background terminal
+processes use the same filled purple dot when no subagents or parent turn own it;
+their tooltip and accessible label still identify background work.
+
 ## Buttons — one component
 
 `src/components/ui/button.tsx` is the single source. Pick a `variant` + `size`;

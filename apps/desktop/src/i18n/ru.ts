@@ -2487,6 +2487,8 @@ export const ru = defineLocale({
       waitingForAnswer: 'Ждёт вашего ответа',
       finishedUnread: 'Завершён — не прочитан',
       backgroundRunning: 'Фоновая задача выполняется',
+      activeSubagents: count =>
+        `${count} ${RU_PLURAL(count, 'активный субагент', 'активных субагента', 'активных субагентов')}`,
       draftSession: 'Черновик — ещё ничего не отправлено',
       handoffOrigin: platform => `Передано из ${platform}`,
       ownedByProfile: profile => `Профиль: ${profile}`,

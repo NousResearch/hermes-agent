@@ -1810,6 +1810,7 @@ export const ar = defineLocale({
       needsInput: 'تحتاج إدخالا',
       waitingForAnswer: 'بانتظار إجابة',
       backgroundRunning: 'تعمل في الخلفية',
+      activeSubagents: count => (count === 1 ? 'وكيل فرعي واحد نشط' : `${count} وكلاء فرعيون نشطون`),
       draftSession: 'مسودة — لم تُرسل بعد',
       finishedUnread: 'اكتملت وفيها جديد',
       hideTabBar: 'إخفاء شريط التبويبات',

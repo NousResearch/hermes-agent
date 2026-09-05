@@ -419,6 +419,7 @@ import {
 import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
+import { hasSystemTray, initSystemTray, destroySystemTray } from './system-tray'
 import {
   bindGeometryPersistence,
   computeWindowOptions,
@@ -18000,7 +18001,8 @@ app.whenReady().then(() => {
   void resumeManagedSshRecoveries()
   createWindow()
 
-  // Win/Linux cold start: the launching hermes:// URL is in our own argv.
+  // Initialise system tray (non-macOS: window hides to tray on close instead of quitting).
+  initSystemTray(mainWindow)
   const _coldStartLink = _extractDeepLink(process.argv)
 
   if (_coldStartLink) {
@@ -18238,6 +18240,13 @@ app.on('window-all-closed', () => {
   // full timeout and the user is left with an invisible app (or an uninstall
   // that appears to do nothing).
   if (process.platform !== 'darwin' || isQuittingForHandoff) {
+    // When the system tray is active, hide the window instead of quitting so
+    // the app lives in the tray. The user can still fully quit via the tray's
+    // "Quit Hermes" item or File > Quit.
+    if (hasSystemTray() && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.hide()
+      return
+    }
     app.quit()
   }
 })

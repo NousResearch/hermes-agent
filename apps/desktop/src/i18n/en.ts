@@ -894,6 +894,9 @@ export const en: Translations = {
       cloudConnectedTo: name => `Connected to ${name}.`,
       cloudAgentProvisioning: 'Provisioning…',
       cloudStatusLabel: status => `Status: ${status}`,
+      remoteComputerUseBridgeTitle: 'Use this Mac for Computer Use',
+      remoteComputerUseBridgeDesc:
+        'When connected to a remote gateway, Desktop starts a private local bridge so Computer Use can capture and control this machine instead of the remote host.',
       remoteUrlTitle: 'Remote URL',
       remoteUrlDesc: 'Base URL for the remote dashboard backend. Path prefixes are supported, for example /hermes.',
       probing: 'Checking how this gateway authenticates…',

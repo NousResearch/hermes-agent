@@ -406,25 +406,32 @@ def _check_certificates(should_fix: bool, f: Finding) -> None:
     check_certificates(should_fix=should_fix, issues=f.manual_issues)
 
 
-# (import name, display name, optional)
+# (import name, display name, pip install spec, optional). The pip spec is
+# spelled out because the install name diverges from the import name for several
+# packages (dotenv -> python-dotenv, yaml -> pyyaml, telegram ->
+# python-telegram-bot, discord -> discord.py), so a naive `pip install <module>`
+# would grab the wrong package or nothing useful (#89121).
 _PACKAGES = (
-    ("openai", "OpenAI SDK", False), ("rich", "Rich (terminal UI)", False), ("dotenv", "python-dotenv", False),
-    ("yaml", "PyYAML", False), ("httpx", "HTTPX", False),
-    ("croniter", "Croniter (cron expressions)", True), ("telegram", "python-telegram-bot", True), ("discord", "discord.py", True),
+    ("openai", "OpenAI SDK", "openai", False), ("rich", "Rich (terminal UI)", "rich", False),
+    ("dotenv", "python-dotenv", "python-dotenv", False),
+    ("yaml", "PyYAML", "pyyaml", False), ("httpx", "HTTPX", "httpx", False),
+    ("croniter", "Croniter (cron expressions)", "croniter", True),
+    ("telegram", "python-telegram-bot", "python-telegram-bot", True), ("discord", "discord.py", "discord.py", True),
 )
 
 
 @doctor_check()
 def _check_required_packages(should_fix: bool, f: Finding) -> None:
-    for module, name, optional in _PACKAGES:
+    install_cmd = _python_install_cmd()
+    for module, name, pip_spec, optional in _PACKAGES:
         try:
             __import__(module)
             check_ok(name, "(optional)" if optional else "")
         except ImportError:
             if optional:
-                check_warn(name, "(optional, not installed)")
+                check_warn(name, f"(optional, not installed) — install with: {install_cmd} {pip_spec}")
             else:
-                _fail_and_issue(name, "(missing)", f"Install {name}: {_python_install_cmd()} {module}", f.issues)
+                _fail_and_issue(name, "(missing)", f"Install {name}: {install_cmd} {pip_spec}", f.issues)
 
 
 @doctor_check()

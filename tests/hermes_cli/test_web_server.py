@@ -5125,6 +5125,29 @@ class TestHeadlessServeTokenPage:
             assert "web UI disabled" in resp.json()["error"]
             assert ws._SESSION_TOKEN not in resp.text
 
+    def test_root_serves_ssh_session_token_applied_after_mount(self, monkeypatch):
+        """Desktop SSH's `--ssh-session-token-file` applies the real token via
+        `_apply_ssh_session_token()` inside `start_server()`, which runs AFTER
+        `mount_spa(app)` already executed at module import (#103454). The page
+        must reflect that later token, not whatever `_SESSION_TOKEN` held at
+        mount time — otherwise Desktop adopts a token `_has_valid_session_token`
+        (checking the live global) will never accept, and every REST call 401s.
+        """
+        import re
+        import json as _json
+
+        client, ws = self._headless_client(monkeypatch, gated=False)
+        ws._apply_ssh_session_token("ssh-file-token")
+
+        resp = client.get("/")
+        assert resp.status_code == 200
+        match = re.search(
+            r'window\.__HERMES_SESSION_TOKEN__\s*=\s*("(?:\\.|[^"\\])*")',
+            resp.text,
+        )
+        assert match, resp.text
+        assert _json.loads(match.group(1)) == "ssh-file-token"
+
 
 class TestHashedAssetCacheHeaders:
     """Hashed /assets/* responses must be immutable-cacheable; index.html

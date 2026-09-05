@@ -17,9 +17,10 @@
  *
  * Usage:
  *   node bridge.js --port 3000 --session ~/.hermes/whatsapp/session
+ *   node bridge.js --port 3000 --session ~/.hermes/whatsapp/session --phone 15551234567   (pairing-code login, no QR)
  */
 
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser, Browsers } from '@whiskeysockets/baileys';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
@@ -407,7 +408,7 @@ async function startSocket() {
     auth: state,
     logger,
     printQRInTerminal: false,
-    browser: ['Hermes Agent', 'Chrome', '120.0'],
+    browser: Browsers.macOS('Safari'),
     syncFullHistory: false,
     markOnlineOnConnect: false,
     // Required for Baileys 7.x: without this, incoming messages that need
@@ -418,6 +419,25 @@ async function startSocket() {
       return { conversation: '' };
     },
   });
+
+  const pairPhone = getArg('phone', null);
+  if (pairPhone && !sock.authState.creds.registered) {
+    setTimeout(async () => {
+      try {
+        const cleanPhone = pairPhone.replace(/[^0-9]/g, '');
+        const code = await sock.requestPairingCode(cleanPhone);
+        const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
+        if (!PAIR_JSON) {
+          console.log(`\n==============================================`);
+          console.log(`📱 YOUR 8-DIGIT WHATSAPP PAIRING CODE: ${formattedCode}`);
+          console.log(`==============================================\n`);
+        }
+        emitPairEvent({ event: 'pairing_code', code: formattedCode });
+      } catch (err) {
+        console.error('Failed to request pairing code:', err);
+      }
+    }, 2500);
+  }
 
   sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
 

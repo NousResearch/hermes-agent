@@ -242,6 +242,19 @@ def _allow_private_urls() -> bool:
 
 
 def _resolve_allow_private_urls() -> bool:
-    """Read the browser private-URL toggle from the active config scope."""
+    """Read the browser private-URL toggle from the active config scope.
+
+    ``security.allow_private_urls`` is canonical (mirrors ``tools.url_safety``);
+    legacy ``browser.allow_private_urls`` still honored (#103277)."""
     _bt = _origin()
-    return _bt._browser_cfg("allow_private_urls", False, lambda v: is_truthy_value(v, default=False), "allow_private_urls from config")
+    if _bt._browser_cfg("allow_private_urls", False, lambda v: is_truthy_value(v, default=False),
+                        "allow_private_urls from config"):
+        return True
+    try:
+        from hermes_cli.config import read_raw_config
+        security = read_raw_config().get("security", {})
+        if isinstance(security, dict):
+            return is_truthy_value(security.get("allow_private_urls"), default=False)
+    except Exception as exc:
+        _bt.logger.debug("Could not read security.allow_private_urls: %s", exc)
+    return False

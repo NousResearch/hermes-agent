@@ -188,6 +188,14 @@ install_in_sandbox() {
   local log="$LOG_DIR/$tag.log"
   local args=(install --persistent)
   [ -n "$ref" ] && args+=(--install-ref "$ref")
+  # Serve the uv installer script from the sandbox's fixture root: astral.sh
+  # intermittently returns empty replies to GitHub runner egress IPs, which
+  # kills the install with a bare `curl: (52)` that looks like a broken
+  # installer. Prefetch it once on the runner (with retries) and let the MITM
+  # proxy serve the copy; the binary download it performs still goes upstream.
+  if [ -n "$UV_INSTALLER_FIXTURE" ]; then
+    args+=(--http-root "$UV_INSTALLER_FIXTURE")
+  fi
 
   # Installer flags have to match the installer being run, not this checkout's.
   # Older releases reject options added later ("Unknown option: --skip-browser"),
@@ -247,6 +255,45 @@ require_hermes_works() {
 }
 
 # ── install the earlier Hermes ─────────────────────────────────────────────
+# Prefetch the astral.sh uv installer AND binary so the sandbox serves them as
+# fixtures. astral.sh's CDN and the GitHub release mirror intermittently return
+# empty replies to GitHub runner egress IPs (curl 52), which fails the install
+# at its first step. Best-effort: if prefetching fails we proceed without the
+# fixture and let the in-sandbox curl try upstream itself.
+UV_INSTALLER_FIXTURE=""
+if command -v curl >/dev/null 2>&1; then
+  UV_FIXTURE_DIR="$LOG_DIR/http-fixture"
+  UV_SCRIPT="$UV_FIXTURE_DIR/astral.sh/uv/install.sh"
+  mkdir -p "$UV_FIXTURE_DIR/astral.sh/uv"
+  for _attempt in 1 2 3 4 5; do
+    if curl -fsSL --retry 3 --retry-delay 2 https://astral.sh/uv/install.sh \
+        -o "$UV_SCRIPT" 2>/dev/null && [ -s "$UV_SCRIPT" ]; then
+      UV_INSTALLER_FIXTURE="$UV_FIXTURE_DIR"
+      break
+    fi
+    sleep 3
+  done
+fi
+# Also cache the uv tarball for both download hosts the installer tries, keyed
+# by the version the fetched installer resolves to.
+if [ -n "$UV_INSTALLER_FIXTURE" ]; then
+  UV_VER="$(grep -om1 'releases/download/[0-9][0-9.]*' "$UV_SCRIPT" | cut -d/ -f3)"
+  if [ -n "$UV_VER" ]; then
+    _uv_rel="github/uv/releases/download/$UV_VER/uv-x86_64-unknown-linux-gnu.tar.gz"
+    mkdir -p "$UV_FIXTURE_DIR/releases.astral.sh/$(dirname "$_uv_rel")" \
+             "$UV_FIXTURE_DIR/github.com/astral-sh/$(dirname "${_uv_rel#github/}")"
+    curl -fsSL --retry 3 --retry-delay 2 \
+      "https://releases.astral.sh/$_uv_rel" \
+      -o "$UV_FIXTURE_DIR/releases.astral.sh/$_uv_rel" 2>/dev/null \
+      && cp "$UV_FIXTURE_DIR/releases.astral.sh/$_uv_rel" \
+         "$UV_FIXTURE_DIR/github.com/astral-sh/${_uv_rel#github/}" \
+      || echo "⚠ could not prefetch uv $UV_VER tarball; binary will fetch upstream" >&2
+  fi
+  ok "prefetched uv installer for sandbox fixture"
+else
+  echo "⚠ could not prefetch uv installer; install will fetch astral.sh directly" >&2
+fi
+
 step "installing upstream $INSTALL_REF (real curl | install.sh: uv, Python, Node, venv)"
 install_in_sandbox "install of upstream $INSTALL_REF" "$INSTALL_REF" install
 

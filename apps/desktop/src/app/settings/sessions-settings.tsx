@@ -17,8 +17,14 @@ import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
-import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd, setSessions } from '@/store/session'
-import { untombstoneSessions } from '@/store/session-removal'
+import {
+  applyConfiguredDefaultProjectDir,
+  ensureDefaultWorkspaceCwd,
+  sessionMatchesTarget,
+  sessionOwnerRouteFromRow,
+  setSessions
+} from '@/store/session'
+import { sessionRemovalIds, untombstoneSessions } from '@/store/session-removal'
 import { forgetSessionUnread } from '@/store/session-unread'
 import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
 
@@ -58,12 +64,15 @@ export function SessionsSettings() {
       setBusyId(session.id)
 
       try {
-        await setSessionArchived(session.id, false, session.profile)
-        setLocalSessions(prev => prev.filter(s => s.id !== session.id))
+        await setSessionArchived(session.id, false, sessionOwnerRouteFromRow(session) ?? session.profile)
+        const targetIds = sessionRemovalIds(session)
+        const isTarget = (candidate: SessionInfo) => targetIds.some(id => sessionMatchesTarget(candidate, session, id))
+
+        setLocalSessions(prev => prev.filter(candidate => !isTarget(candidate)))
         // Surface it again in the sidebar without waiting for a full refresh, and
         // lift any optimistic eviction so the grouped tree shows it again too.
-        untombstoneSessions([session.id, session._lineage_root_id])
-        setSessions(prev => [{ ...session, archived: false }, ...prev.filter(s => s.id !== session.id)])
+        untombstoneSessions([session])
+        setSessions(prev => [{ ...session, archived: false }, ...prev.filter(candidate => !isTarget(candidate))])
         triggerHaptic('selection')
         notify({ durationMs: 2_000, kind: 'success', message: s.restored })
       } catch (err) {
@@ -90,11 +99,14 @@ export function SessionsSettings() {
       setBusyId(session.id)
 
       try {
-        await deleteSession(session.id, session.profile)
+        await deleteSession(session.id, sessionOwnerRouteFromRow(session) ?? session.profile)
         // Permanent delete bypasses removeSession, so retire the persisted
         // unread state here too rather than leaving it to rot.
-        forgetSessionUnread([session.id, session._lineage_root_id], session.profile)
-        setLocalSessions(prev => prev.filter(s => s.id !== session.id))
+        const targetIds = sessionRemovalIds(session)
+        const isTarget = (candidate: SessionInfo) => targetIds.some(id => sessionMatchesTarget(candidate, session, id))
+
+        forgetSessionUnread(targetIds, session.profile)
+        setLocalSessions(prev => prev.filter(candidate => !isTarget(candidate)))
         triggerHaptic('warning')
       } catch (err) {
         notifyError(err, s.deleteFailed)

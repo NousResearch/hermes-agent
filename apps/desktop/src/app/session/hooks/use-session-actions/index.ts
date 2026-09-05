@@ -96,6 +96,7 @@ import {
   beginSessionMutation,
   endSessionMutation,
   isSessionRemovalPending,
+  sessionRemovalIds,
   tombstoneSessions,
   untombstoneSessions
 } from '@/store/session-removal'
@@ -870,12 +871,36 @@ export function useSessionActions({
 
   const resumeSession = useCallback(
     async (storedSessionId: string, replaceRoute = false, capturedOwner?: SessionProfileRoute) => {
+      // Resolve the synchronous owner hint before checking removal state. A
+      // same-id gateway-A row must remain resumable when only gateway B was
+      // tombstoned; a bare route stays fail-closed when ownership is unknown.
+      const hintedOwner = capturedOwner || getSessionOwnerHint(storedSessionId)
+      // The row lookup is the durable owner-resolution rung. It is intentionally
+      // before the pending check: runtime-gone/use-route-resume can arrive with
+      // only a stored id after one same-id owner was removed, while another
+      // owner remains healthy in the loaded session slices.
+      const storedForProfile = await resolveStoredSession(storedSessionId, hintedOwner)
+      const ownerRoute = hintedOwner || sessionOwnerRouteFromRow(storedForProfile)
+      const removalTarget = ownerRoute
+        ? {
+            connection_id: ownerRoute.connectionId,
+            id: storedSessionId,
+            profile: ownerRoute.targetProfile || ownerRoute.profile
+          }
+        : storedForProfile
+          ? {
+              connection_id: storedForProfile.connection_id,
+              id: storedSessionId,
+              profile: storedForProfile.profile
+            }
+          : storedSessionId
+
       // Delete/archive tombstones the durable id before the route flips, and
       // requestSessionResume already refuses to queue for a doomed id. This is
       // the actuator-side half of the same rule: a resume that was queued
       // BEFORE the tombstone (an idle-reap 4001 racing the delete) must not
       // re-select the chat and toast "Resume failed / Session not found".
-      if (isSessionRemovalPending(storedSessionId)) {
+      if (isSessionRemovalPending(removalTarget)) {
         return
       }
 
@@ -967,9 +992,8 @@ export function useSessionActions({
 
       // Swap the single live gateway to this session's profile before any
       // gateway call (no-op when it's already on that profile / single-profile).
-      // resolveStoredSession finds the row by id (cheap), so an uncached pasted
-      // id loads as fast as a sidebar click instead of hanging on a list scan.
-      const ownerRoute = capturedOwner || getSessionOwnerHint(storedSessionId)
+      // The durable row was resolved before the removal guard above, so an
+      // uncached pasted id already carries the owner result into this path.
       // A connection switch clears/reloads the session rows before this path
       // runs, so an untagged row belongs to the connection that supplied the
       // current list. Capture that source before the async metadata lookup. If
@@ -981,7 +1005,6 @@ export function useSessionActions({
       const ambientConnectionId =
         ambientConnection?.mode === 'remote' ? ambientConnection.connectionId?.trim() || '' : ''
 
-      const storedForProfile = await resolveStoredSession(storedSessionId, ownerRoute)
       const sessionProfile = storedForProfile?.profile
 
       if (resumeRequestRef.current !== requestId) {
@@ -2464,7 +2487,14 @@ export function useSessionActions({
       // Pins are keyed on the durable lineage-root id; the stored id may be the
       // live tip after compression. Drop both so the pin can't linger.
       const removedPinId = removed ? sessionPinId(removed) : storedSessionId
-      const removedIds = [storedSessionId, removed?.id, removed?._lineage_root_id]
+      const removalTarget = {
+        _lineage_ids: [storedSessionId, removed?.id, ...(removed?._lineage_ids ?? [])],
+        _lineage_root_id: removed?._lineage_root_id,
+        connection_id: removed?.connection_id,
+        id: storedSessionId,
+        profile: removed?.profile || profile
+      }
+      const removedIds = sessionRemovalIds(removalTarget)
 
       dropListedSession(storedSessionId, targetSession)
       $archivedSessions.set(previousArchived.filter(session => !matchesRemovedSession(session)))
@@ -2472,8 +2502,8 @@ export function useSessionActions({
       // still lists it until its next refresh), so grouped + flat views drop the
       // row in lockstep. Pin the tombstone against the projects.tree prune while
       // the delete RPC is in flight, so a racing refresh can't flash it back.
-      tombstoneSessions(removedIds)
-      beginSessionMutation(removedIds)
+      tombstoneSessions([removalTarget])
+      beginSessionMutation([removalTarget])
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== removedPinId))
 
       // Tear down before awaiting so the route effect can't resume the
@@ -2520,7 +2550,7 @@ export function useSessionActions({
         // Restore the archived-view row too (no-op when it wasn't archived).
         $archivedSessions.set(previousArchived)
 
-        untombstoneSessions(removedIds)
+        untombstoneSessions([removalTarget])
         $pinnedSessionIds.set(previousPinned)
 
         if (wasSelected) {
@@ -2547,7 +2577,7 @@ export function useSessionActions({
         // Release the tombstone to the normal projects.tree prune now the RPC has
         // settled (kept on success — the backend has deleted it; cleared on the
         // rollback above on failure).
-        endSessionMutation(removedIds)
+        endSessionMutation([removalTarget])
       }
     },
     [
@@ -2597,12 +2627,19 @@ export function useSessionActions({
       // Pins are keyed on the durable lineage-root id; the stored id may be the
       // live tip after compression. Drop both so the pin can't linger.
       const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
-      const archivedIds = [storedSessionId, archived?.id, archived?._lineage_root_id]
+      const removalTarget = {
+        _lineage_ids: [storedSessionId, archived?.id, ...(archived?._lineage_ids ?? [])],
+        _lineage_root_id: archived?._lineage_root_id,
+        connection_id: archived?.connection_id,
+        id: storedSessionId,
+        profile: archived?.profile || profile
+      }
+      const archivedIds = sessionRemovalIds(removalTarget)
 
       // Soft-hide: drop from every sidebar slice immediately, keep the data.
       dropListedSession(storedSessionId, targetSession)
-      tombstoneSessions(archivedIds)
-      beginSessionMutation(archivedIds)
+      tombstoneSessions([removalTarget])
+      beginSessionMutation([removalTarget])
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
 
       if (wasSelected) {
@@ -2630,11 +2667,11 @@ export function useSessionActions({
           restoreListedSession(archived, listed?.slice, targetSession)
         }
 
-        untombstoneSessions(archivedIds)
+        untombstoneSessions([removalTarget])
         $pinnedSessionIds.set(previousPinned)
         notifyError(err, copy.archiveFailed)
       } finally {
-        endSessionMutation(archivedIds)
+        endSessionMutation([removalTarget])
       }
     },
     [

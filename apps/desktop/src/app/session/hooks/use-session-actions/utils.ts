@@ -9,6 +9,7 @@ import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
+import { isSessionRemovalPending } from '@/store/session-removal'
 import {
   $cronSessions,
   $currentCwd,
@@ -1438,10 +1439,24 @@ export function cachedSessionRow(storedSessionId: string): SessionInfo | undefin
     ...projectTreeSessions()
   ].filter(session => sessionMatchesStoredId(session, storedSessionId))
 
+  // A same-id row from the owner currently being deleted can still be present
+  // in the cache while its RPC is in flight. Prefer a surviving owner before
+  // resolving an unscoped resume; falling back to the first candidate below
+  // preserves the fail-closed result when every known owner is pending.
+  const available = candidates.filter(
+    session =>
+      !isSessionRemovalPending({
+        connection_id: session.connection_id,
+        id: storedSessionId,
+        profile: session.profile
+      })
+  )
+  const eligible = available.length ? available : candidates
+
   return (
-    candidates.find(session => session.connection_id?.trim()) ??
-    candidates.find(session => session.profile?.trim()) ??
-    candidates[0]
+    eligible.find(session => session.connection_id?.trim()) ??
+    eligible.find(session => session.profile?.trim()) ??
+    eligible[0]
   )
 }
 

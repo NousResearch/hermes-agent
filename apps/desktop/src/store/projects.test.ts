@@ -34,6 +34,8 @@ import {
   $sessionMutationsInFlight,
   beginSessionMutation,
   endSessionMutation,
+  hasSessionRemovalKey,
+  pruneSessionRemovalState,
   tombstoneSessions
 } from './session-removal'
 
@@ -55,6 +57,7 @@ vi.mock('@/lib/desktop-fs', () => ({
 vi.mock('@/store/gateway', () => ({
   $gateway: atom(null),
   activeGateway: vi.fn(),
+  activeGatewayConnectionId: vi.fn(() => null),
   ensureActiveGatewayOpen: vi.fn()
 }))
 
@@ -78,6 +81,7 @@ const selectDesktopPaths = vi.mocked(fs.selectDesktopPaths)
 
 const gw = await import('@/store/gateway')
 const activeGateway = vi.mocked(gw.activeGateway)
+const activeGatewayConnectionId = vi.mocked(gw.activeGatewayConnectionId)
 const gatewayAtom = gw.$gateway
 
 const git = await import('@/lib/desktop-git')
@@ -888,6 +892,8 @@ describe('tombstone pruning', () => {
   beforeEach(() => {
     $removedSessionIds.set(new Set())
     $sessionMutationsInFlight.set(new Set())
+    $activeGatewayProfile.set('default')
+    activeGatewayConnectionId.mockReturnValue(null)
   })
 
   it('keeps an in-flight delete tombstone even when the backend snapshot omits it', async () => {
@@ -901,7 +907,7 @@ describe('tombstone pruning', () => {
     openGatewayReturning([])
     await refreshProjectTree()
 
-    expect($removedSessionIds.get().has('sess-1')).toBe(true)
+    expect(hasSessionRemovalKey($removedSessionIds.get(), 'sess-1')).toBe(true)
   })
 
   it('prunes the tombstone once the mutation settles and scope no longer lists it', async () => {
@@ -914,6 +920,37 @@ describe('tombstone pruning', () => {
     endSessionMutation(['sess-1'])
     await refreshProjectTree()
 
-    expect($removedSessionIds.get().has('sess-1')).toBe(false)
+    expect(hasSessionRemovalKey($removedSessionIds.get(), 'sess-1')).toBe(false)
+  })
+
+  it('does not prune a same-id tombstone owned by another gateway', async () => {
+    const gatewayB = { connection_id: 'gateway-b', id: 'same-id', profile: 'default' }
+
+    activeGatewayConnectionId.mockClear()
+    tombstoneSessions([gatewayB])
+    beginSessionMutation([gatewayB])
+    endSessionMutation([gatewayB])
+    expect([...$sessionMutationsInFlight.get()]).toEqual([])
+
+    activeGatewayConnectionId.mockReturnValue('gateway-a')
+    openGatewayReturning([])
+    await refreshProjectTree()
+
+    expect(hasSessionRemovalKey($removedSessionIds.get(), gatewayB)).toBe(true)
+
+    activeGatewayConnectionId.mockReturnValue('gateway-b')
+    openGatewayReturning([])
+    await refreshProjectTree()
+
+    expect(hasSessionRemovalKey($removedSessionIds.get(), gatewayB)).toBe(false)
+  })
+
+  it('keeps exact owner tombstones during an all-profile id-only prune', () => {
+    const gatewayB = { connection_id: 'gateway-b', id: 'same-id', profile: 'default' }
+    tombstoneSessions([gatewayB])
+
+    const pending = pruneSessionRemovalState(new Set())
+
+    expect(hasSessionRemovalKey(pending, gatewayB)).toBe(true)
   })
 })

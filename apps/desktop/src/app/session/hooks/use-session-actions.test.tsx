@@ -65,7 +65,13 @@ import {
   setSessions,
   setTurnStartedAt
 } from '@/store/session'
-import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-removal'
+import {
+  $removedSessionIds,
+  $sessionMutationsInFlight,
+  beginSessionMutation,
+  hasSessionRemovalKey,
+  tombstoneSessions
+} from '@/store/session-removal'
 import { requestForSessionProfile, type SessionProfileRoute } from '@/store/session-request-router'
 import { $sessionTiles, sessionTileOwnerRoute } from '@/store/session-states'
 import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
@@ -117,6 +123,7 @@ type HarnessHandle = Pick<
   | 'createBackendSessionForSend'
   | 'openNewSessionTile'
   | 'removeSession'
+  | 'resumeSession'
   | 'selectSidebarItem'
   | 'startFreshSessionDraft'
 >
@@ -1103,6 +1110,47 @@ describe('resumeSession failure recovery', () => {
     expect(requestGateway).not.toHaveBeenCalled()
     expect($resumeFailedSessionId.get()).toBeNull()
     expect($selectedStoredSessionId.get()).toBeNull()
+  })
+
+  it('resumes gateway A when only the same-id gateway B twin is being removed', async () => {
+    const gatewayA = storedSession({ connection_id: 'gateway-a', id: 'same-id', profile: 'default' })
+    const gatewayB = storedSession({ connection_id: 'gateway-b', id: 'same-id', profile: 'default' })
+    setSessions([gatewayA, gatewayB])
+    tombstoneSessions([gatewayB])
+    beginSessionMutation([gatewayB])
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'same-id' } as never)
+    vi.mocked(requestGatewayForAgent).mockResolvedValue({
+      info: {},
+      message_count: 0,
+      messages: [],
+      resumed: 'same-id',
+      running: false,
+      session_id: 'runtime-a',
+      session_key: 'same-id'
+    } as never)
+
+    let resume:
+      null | ((storedSessionId: string, replaceRoute?: boolean, ownerRoute?: SessionProfileRoute) => Promise<unknown>) =
+      null
+    const ambientRequest = vi.fn(async () => ({}) as never)
+
+    render(<ResumeHarness onReady={ready => (resume = ready)} requestGateway={ambientRequest} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    await act(async () => {
+      await resume!('same-id', true, { connectionId: 'gateway-a', profile: 'default' })
+    })
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'gateway-a',
+      'default',
+      'session.resume',
+      expect.objectContaining({ session_id: 'same-id' })
+    )
+    expect(ambientRequest).not.toHaveBeenCalled()
+    expect(hasSessionRemovalKey($removedSessionIds.get(), gatewayB)).toBe(true)
+    expect(hasSessionRemovalKey($removedSessionIds.get(), gatewayA)).toBe(false)
   })
 
   it.each([
@@ -4218,6 +4266,40 @@ describe('removeSession / archiveSession profile routing (#78836)', () => {
     expect($sessions.get()).toEqual([gatewayA])
   })
 
+  it('resumes the surviving twin after an actual owner-scoped removal', async () => {
+    mockDeleteSession.mockResolvedValue({ ok: true })
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'same-id' } as never)
+    vi.mocked(requestGatewayForAgent).mockResolvedValue({
+      info: {},
+      message_count: 0,
+      messages: [],
+      resumed: 'same-id',
+      running: false,
+      session_id: 'runtime-a',
+      session_key: 'same-id'
+    } as never)
+
+    const gatewayA = storedSession({ connection_id: 'gateway-a', id: 'same-id', profile: 'default' })
+    const gatewayB = storedSession({ connection_id: 'gateway-b', id: 'same-id', profile: 'default' })
+    setSessions([gatewayA, gatewayB])
+
+    const handle = await readyActions()
+    await act(async () => {
+      await handle.removeSession(gatewayB.id, gatewayB)
+      await handle.resumeSession('same-id', true)
+    })
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'gateway-a',
+      'default',
+      'session.resume',
+      expect.objectContaining({ session_id: 'same-id' })
+    )
+    expect($sessions.get()).toEqual(expect.arrayContaining([gatewayA]))
+    expect(hasSessionRemovalKey($removedSessionIds.get(), gatewayB)).toBe(true)
+    expect(hasSessionRemovalKey($removedSessionIds.get(), gatewayA)).toBe(false)
+  })
+
   it('archives only the clicked same-id gateway twin', async () => {
     mockSetSessionArchived.mockResolvedValue({ ok: true })
     const gatewayA = storedSession({ connection_id: 'gateway-a', id: 'same-id', profile: 'default' })
@@ -4307,8 +4389,8 @@ describe('removeSession / archiveSession profile routing (#78836)', () => {
     expect($messagingSessions.get().map(session => session.id)).toEqual(['tg-roll'])
     expect($sessions.get()).toEqual([])
     expect($pinnedSessionIds.get()).toEqual(['tg-roll'])
-    expect($removedSessionIds.get().has('tg-roll')).toBe(false)
-    expect($sessionMutationsInFlight.get().has('tg-roll')).toBe(false)
+    expect(hasSessionRemovalKey($removedSessionIds.get(), 'tg-roll')).toBe(false)
+    expect(hasSessionRemovalKey($sessionMutationsInFlight.get(), 'tg-roll')).toBe(false)
   })
 
   it('archives a messaging row against its owning profile', async () => {
@@ -4404,8 +4486,8 @@ describe('removeSession / archiveSession profile routing (#78836)', () => {
     expect($pinnedSessionIds.get()).toEqual(['tg-unresolved'])
     expect($sessionSeenCounts.get().winefox?.['tg-unresolved']).toBe(3)
     expect($unreadFinishedMarkers.get().winefox).toEqual(['tg-unresolved'])
-    expect($removedSessionIds.get().has('tg-unresolved')).toBe(false)
-    expect($sessionMutationsInFlight.get().has('tg-unresolved')).toBe(false)
+    expect(hasSessionRemovalKey($removedSessionIds.get(), 'tg-unresolved')).toBe(false)
+    expect(hasSessionRemovalKey($sessionMutationsInFlight.get(), 'tg-unresolved')).toBe(false)
   })
 
   it('fails closed when a listed profile-less messaging archive cannot resolve an owner', async () => {

@@ -400,7 +400,15 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
     if (
       !shouldResumeSessionTile({
         gatewayOpen,
-        removalPending: isSessionRemovalPending(storedSessionId),
+        removalPending: isSessionRemovalPending(
+          ownerRoute
+            ? {
+                connection_id: ownerRoute.connectionId,
+                id: storedSessionId,
+                profile: ownerRoute.targetProfile || ownerRoute.profile
+              }
+            : storedSessionId
+        ),
         resuming: resumingRef.current,
         runtimeId,
         tileError: tile?.error

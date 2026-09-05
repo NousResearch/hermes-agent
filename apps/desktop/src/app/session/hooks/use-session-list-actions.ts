@@ -37,7 +37,7 @@ import {
   setSessions,
   setSessionsLoading
 } from '@/store/session'
-import { $removedSessionIds } from '@/store/session-removal'
+import { $removedSessionIds, hasSessionRemovalKey } from '@/store/session-removal'
 import { $sessionTiles, $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
 
 import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions'
@@ -64,9 +64,7 @@ const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
 function dropTombstoned(sessions: SessionInfo[]): SessionInfo[] {
   const tombstones = $removedSessionIds.get()
 
-  return tombstones.size
-    ? sessions.filter(s => !tombstones.has(s.id) && !(s._lineage_root_id && tombstones.has(s._lineage_root_id)))
-    : sessions
+  return tombstones.size ? sessions.filter(session => !hasSessionRemovalKey(tombstones, session)) : sessions
 }
 
 // Rows a session refresh must preserve even if the aggregator omits them:

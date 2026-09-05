@@ -14,7 +14,7 @@ import { persistBoolean, persistString, readJson, storedBoolean, storedString, w
 import { syncCronModelImpactConnection } from '@/store/cron-model-impact-scope'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
-import { isSessionRemovalPending } from './session-removal'
+import { isSessionRemovalPending, type SessionRemovalInput } from './session-removal'
 import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
 
@@ -1335,6 +1335,62 @@ export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($message
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
 
+function sessionResumeRemovalRoute(
+  sessionId: string,
+  requestedRoute?: SessionOwnerRoute
+): { input: SessionRemovalInput; ownerRoute?: SessionOwnerRoute } {
+  const hintedRoute = requestedRoute || getSessionOwnerHint(sessionId)
+
+  if (hintedRoute) {
+    return {
+      input: {
+        connection_id: hintedRoute.connectionId,
+        id: sessionId,
+        profile: hintedRoute.targetProfile || hintedRoute.profile
+      },
+      ownerRoute: hintedRoute
+    }
+  }
+
+  // Runtime-gone and other background callers only have the durable id. Use
+  // every already-loaded session slice to recover an exact owner before the
+  // pending check, preferring a same-id twin that is not being removed. If all
+  // known twins are pending, retain the ambiguous bare-id fail-closed result.
+  const candidates = ownerLookupSessionRows().filter(candidate => sessionMatchesStoredId(candidate, sessionId))
+  const candidate =
+    candidates.find(row => {
+      const input: SessionRemovalInput = {
+        connection_id: row.connection_id,
+        id: sessionId,
+        profile: row.profile
+      }
+
+      return !isSessionRemovalPending(input)
+    }) ?? candidates[0]
+
+  if (!candidate) {
+    return { input: sessionId }
+  }
+
+  const input: SessionRemovalInput = {
+    connection_id: candidate.connection_id,
+    id: sessionId,
+    profile: candidate.profile
+  }
+  const connectionId = candidate.connection_id?.trim()
+
+  if (!connectionId) {
+    return { input }
+  }
+
+  const profile = candidate.profile?.trim() || 'default'
+
+  return {
+    input,
+    ownerRoute: { connectionId, profile, targetProfile: profile }
+  }
+}
+
 export const requestSessionResume = (sessionId: string, ownerRoute?: SessionOwnerRoute) => {
   const id = sessionId.trim()
 
@@ -1346,18 +1402,22 @@ export const requestSessionResume = (sessionId: string, ownerRoute?: SessionOwne
   // (markRuntimeGone) and the RPC seam both queue a resume off a 4001, and an
   // idle reap can land one in the same tick as a delete — that queued request
   // then resumes a tombstoned id, 404s, and toasts "Resume failed / Session
-  // not found" for a chat the user deliberately removed. Filtering at the
-  // producer means no consumer has to re-derive "is this id doomed".
-  if (isSessionRemovalPending(id)) {
+  // not found" for a chat the user deliberately removed. Recover a known row
+  // owner before checking the tombstone so a gateway-B twin cannot block a
+  // healthy gateway-A recovery. An unresolved request remains deliberately
+  // fail-closed across every owner of the id.
+  const removalRoute = sessionResumeRemovalRoute(id, ownerRoute)
+
+  if (isSessionRemovalPending(removalRoute.input)) {
     return
   }
 
-  if (ownerRoute) {
-    setSessionOwnerHint(id, ownerRoute)
+  if (removalRoute.ownerRoute) {
+    setSessionOwnerHint(id, removalRoute.ownerRoute)
   }
 
   $sessionResumeRequest.set({
-    ...(ownerRoute ? { ownerRoute: { ...ownerRoute } } : {}),
+    ...(removalRoute.ownerRoute ? { ownerRoute: { ...removalRoute.ownerRoute } } : {}),
     sequence: ++sessionResumeRequestSequence,
     sessionId: id
   })

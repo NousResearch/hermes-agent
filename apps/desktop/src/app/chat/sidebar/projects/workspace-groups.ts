@@ -1,6 +1,8 @@
 import type { HermesGitWorktree } from '@/global'
 import type { ProjectInfo, SessionInfo } from '@/hermes'
 import { normalize } from '@/lib/text'
+import { hasSessionRemovalKey } from '@/store/session-removal'
+import { sessionIdentityKey } from '@/store/session'
 
 import { rankSessions } from '../order'
 
@@ -449,7 +451,9 @@ export function sessionProjectColor(session: SessionInfo, projects: ProjectInfo[
 }
 
 const upsertSession = (rows: SessionInfo[], session: SessionInfo): SessionInfo[] =>
-  [session, ...rows.filter(row => row.id !== session.id)].sort((a, b) => sessionRecency(b) - sessionRecency(a))
+  [session, ...rows.filter(row => sessionIdentityKey(row) !== sessionIdentityKey(session))].sort(
+    (a, b) => sessionRecency(b) - sessionRecency(a)
+  )
 
 /** A live row's placement path, with an exact repo-root fallback when cwd is absent. */
 function livePathForRepo(repoRoot: string, session: SessionInfo): string {
@@ -521,7 +525,7 @@ export function overlayRepoLanes(
       return { ...g, sessions: [...g.sessions] }
     }
 
-    const kept = g.sessions.filter(s => !removed.has(s.id))
+    const kept = g.sessions.filter(s => !hasSessionRemovalKey(removed, s))
 
     changed ||= kept.length !== g.sessions.length
 
@@ -531,7 +535,7 @@ export function overlayRepoLanes(
   for (const session of live) {
     const sessionPath = livePathForRepo(repo.path ?? '', session)
 
-    if (removed.has(session.id) || !sessionPath) {
+    if (hasSessionRemovalKey(removed, session) || !sessionPath) {
       continue
     }
 
@@ -603,7 +607,7 @@ export function overlayRepoLanes(
     // under both groups until the next backend tree refresh).
     for (const g of lanes) {
       if (g !== lane) {
-        const idx = g.sessions.findIndex(s => s.id === session.id)
+        const idx = g.sessions.findIndex(s => sessionIdentityKey(s) === sessionIdentityKey(session))
 
         if (idx >= 0) {
           g.sessions = [...g.sessions.slice(0, idx), ...g.sessions.slice(idx + 1)]
@@ -638,8 +642,8 @@ function overlayHomeLane(
   removed: ReadonlySet<string>
 ): SidebarProjectTree {
   const lane = project.repos[0]?.groups[0]
-  const detached = live.filter(session => isDetachedSession(session) && !removed.has(session.id))
-  const kept = (lane?.sessions ?? []).filter(session => !removed.has(session.id))
+  const detached = live.filter(session => isDetachedSession(session) && !hasSessionRemovalKey(removed, session))
+  const kept = (lane?.sessions ?? []).filter(session => !hasSessionRemovalKey(removed, session))
 
   if (!detached.length && kept.length === (lane?.sessions.length ?? 0)) {
     return project
@@ -755,8 +759,8 @@ export function reconcileEnteredProjectSessions(
     return live
   }
 
-  const liveIds = new Set(live.map(session => session.id))
-  const missingPreviews = previewSessions.filter(session => !liveIds.has(session.id))
+  const liveIds = new Set(live.map(session => sessionIdentityKey(session)))
+  const missingPreviews = previewSessions.filter(session => !liveIds.has(sessionIdentityKey(session)))
 
   return missingPreviews.length ? [...live, ...missingPreviews] : live
 }
@@ -778,7 +782,7 @@ export function overlayLivePreviews(
   const byProject = new Map<string, SessionInfo[]>()
 
   for (const session of live) {
-    if (removed.has(session.id)) {
+    if (hasSessionRemovalKey(removed, session)) {
       continue
     }
 
@@ -798,7 +802,7 @@ export function overlayLivePreviews(
 
   for (const node of projects) {
     const liveRows = byProject.get(node.id) ?? []
-    const base = (node.previewSessions ?? []).filter(session => !removed.has(session.id))
+    const base = (node.previewSessions ?? []).filter(session => !hasSessionRemovalKey(removed, session))
 
     if (!liveRows.length && !base.length) {
       continue
@@ -808,8 +812,10 @@ export function overlayLivePreviews(
     const map = new Map<string, SessionInfo>()
 
     for (const session of [...liveRows, ...base]) {
-      if (!map.has(session.id)) {
-        map.set(session.id, session)
+      const identity = sessionIdentityKey(session)
+
+      if (!map.has(identity)) {
+        map.set(identity, session)
       }
     }
 

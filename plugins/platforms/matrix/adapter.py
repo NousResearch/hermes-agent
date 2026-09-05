@@ -62,6 +62,8 @@ from gateway.platforms.base import (
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard)
 from gateway.platforms.helpers import ThreadParticipationTracker
 
+from plugins.platforms.matrix.thread_replies import resolve_thread_reply_target
+
 logger = logging.getLogger(__name__)
 
 _MATRIX_VOICE_WAVEFORM_BINS = 30
@@ -1313,9 +1315,13 @@ class MatrixAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=True)
         last_event_id = None
+        effective_reply_to = reply_to
+        thread_id = str((metadata or {}).get("thread_id") or "")
+        if thread_id and not effective_reply_to:
+            effective_reply_to = await resolve_thread_reply_target(self._client, chat_id, thread_id)
         for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
             msg_content = self._build_text_message_content(chunk)
-            self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
+            self._apply_relation_metadata(msg_content, reply_to=effective_reply_to, metadata=metadata)
             try:
                 last_event_id = await self._send_room_message(chat_id, msg_content)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
@@ -1330,6 +1336,8 @@ class MatrixAdapter(BasePlatformAdapter):
                 except Exception as retry_exc:
                     logger.error("Matrix: failed to send to %s after retry: %s", chat_id, retry_exc)
                     return SendResult(success=False, error=str(retry_exc))
+            if thread_id:
+                effective_reply_to = last_event_id
         return SendResult(success=True, message_id=last_event_id)
 
     async def _send_room_message(self, chat_id: str, msg_content: Dict[str, Any]) -> str:
@@ -1685,7 +1693,16 @@ class MatrixAdapter(BasePlatformAdapter):
                 msg_content["info"]["duration"] = audio_metadata["duration"]
             if audio_metadata:
                 msg_content["org.matrix.msc1767.audio"] = audio_metadata
-        self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
+
+        effective_reply_to = reply_to
+        thread_id = str((metadata or {}).get("thread_id") or "")
+        if thread_id and not effective_reply_to:
+            effective_reply_to = await resolve_thread_reply_target(self._client, room_id, thread_id)
+        self._apply_relation_metadata(
+            msg_content,
+            reply_to=effective_reply_to,
+            metadata=metadata,
+        )
         return await self._send_content_event(room_id, msg_content)
 
     async def _room_needs_encrypted_upload(self, room_id: str) -> bool:

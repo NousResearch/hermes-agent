@@ -1609,3 +1609,63 @@ class TestMacOSTCCGrants:
         out = capsys.readouterr().out
         assert "could not read code-signing requirement" in out
         assert "stable" not in out
+
+
+def test_run_doctor_recognises_plugin_model_providers(monkeypatch, tmp_path):
+    # F2 (#65982 independent verification): `claude-agent-sdk` ships as a
+    # plugins/model-providers/ profile, not a PROVIDER_REGISTRY entry —
+    # doctor flagged a working config as unknown and steered users off it.
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n  provider: claude-agent-sdk\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "model.provider 'claude-agent-sdk' is not a recognised provider" not in out
+    assert "model.provider 'claude-agent-sdk' is unknown" not in out
+
+
+def test_claude_agent_sdk_doctor_row_names_the_pm_install_command(monkeypatch, capsys):
+    # The SDK is a PM opt-in extra: when it is absent the row names PM's install
+    # command (a pip spec is no longer how Hermes installs extras); when it is
+    # present the row says nothing about installing.
+    import pm
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import doctor_auth
+
+    monkeypatch.setattr(auth_mod, "get_claude_agent_sdk_auth_status",
+                        lambda: {"logged_in": True, "source": "test"})
+    monkeypatch.setattr(pm, "available", lambda extra: False)
+    doctor_auth._check_claude_agent_sdk_auth(False)
+    missing = capsys.readouterr().out
+    assert "claude-agent-sdk package not installed" in missing
+    assert "hermes pm install --extra claude-agent-sdk" in missing
+
+    monkeypatch.setattr(pm, "available", lambda extra: extra == "claude-agent-sdk")
+    doctor_auth._check_claude_agent_sdk_auth(False)
+    assert "package not installed" not in capsys.readouterr().out

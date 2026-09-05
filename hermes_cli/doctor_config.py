@@ -170,6 +170,16 @@ def _known_provider_ids(cfg: dict) -> tuple[set, list, object, object, object]:
     with warn_on_error(""):
         from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider as resolve_auth
         known = set(PROVIDER_REGISTRY.keys()) | {"openrouter", "custom", "auto", "moa"}
+    # Pluggable model providers (plugins/model-providers/<name>/, e.g. claude-agent-sdk) are valid
+    # model.provider values without a PROVIDER_REGISTRY entry: shipping the profile is enough, same
+    # philosophy as the API-key health list.
+    with warn_on_error(""):
+        from providers import list_providers
+        for profile in list_providers():
+            name = getattr(profile, "name", None)
+            if name:
+                known.add(str(name).strip().lower())
+            known.update(str(alias).strip().lower() for alias in getattr(profile, "aliases", None) or () if alias)
     with warn_on_error(""):
         from hermes_cli.config import get_compatible_custom_providers
         from hermes_cli.providers import custom_provider_aliases as aliases, normalize_provider as normalize, resolve_provider_full as resolve_full

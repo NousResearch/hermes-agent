@@ -13,6 +13,7 @@ relative import.
 from __future__ import annotations
 
 import importlib.util
+import json
 import logging
 import sys
 from pathlib import Path
@@ -50,7 +51,7 @@ SCHEMA = {
 }
 
 
-def handle_anchored_patch(args: Dict[str, Any]) -> Dict[str, Any]:
+def handle_anchored_patch(args: Dict[str, Any]) -> str:
     try:
         path = args["path"]
         old_string = args["old_string"]
@@ -97,14 +98,45 @@ def handle_anchored_patch(args: Dict[str, Any]) -> Dict[str, Any]:
         logger.debug("anchored_patch write error (%s): %s", path, exc)
         return _tool_error(f"anchored_patch: write failed: {path}", code="500", details={"error": str(exc)})
 
-    return {"applied": True, "occurrence": occurrence, "hashline": expected_hashline}
+    return _tool_result({"applied": True, "occurrence": occurrence, "hashline": expected_hashline})
 
 
-def _tool_error(message: str, code: str = "500", details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    return {
-        "applied": False,
-        "error": {"code": code, "message": message, "details": details or {}},
-    }
+def _tool_result(data=None, **kwargs) -> str:
+    """Return a JSON result string, using Hermes core helper when importable.
+
+    Falls back to plain json.dumps so the plugin's standalone tests (which
+    do not have the hermes-agent core on sys.path) still produce valid JSON
+    strings matching the tool-handler contract.
+    """
+    try:
+        from tools.registry import tool_result
+
+        return tool_result(data, **kwargs)
+    except ImportError:
+        payload = data if data is not None else kwargs
+        return json.dumps(payload, ensure_ascii=False)
+
+
+def _tool_error(message: str, code: str = "500", details: Optional[Dict[str, Any]] = None) -> str:
+    """Return a JSON error string (Hermes core helper when available).
+
+    The payload always carries ``applied: False`` so consumers of the
+    anchored_patch envelope can distinguish a blocked/errored call from a
+    successful one regardless of which serialization path was used.
+    """
+    try:
+        from tools.registry import tool_error
+
+        return tool_error(
+            message, applied=False, error_type="hashline_guard",
+            code=code, details=details or {},
+        )
+    except ImportError:
+        payload = {
+            "applied": False,
+            "error": {"code": code, "message": message, "details": details or {}},
+        }
+        return json.dumps(payload, ensure_ascii=False)
 
 
 def _context_snippet(file_text: str, old_string: str, occurrence_index: int, window: int = 2) -> str:
@@ -119,7 +151,7 @@ def _context_snippet(file_text: str, old_string: str, occurrence_index: int, win
     return "\n".join(lines[start:end])
 
 
-def hashline_compute(args: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
+def hashline_compute(args: Dict[str, Any], **kwargs: Any) -> str:
     try:
         path = args.get("path")
         old_string = args.get("old_string")
@@ -130,7 +162,7 @@ def hashline_compute(args: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
         matches = find_all(text, old_string)
         if not matches:
-            return {"hashlines": [], "count": 0}
+            return _tool_result({"hashlines": [], "count": 0})
 
         out = []
         for idx in range(len(matches)):
@@ -141,7 +173,7 @@ def hashline_compute(args: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
                 "hashline": hl,
                 "context": _context_snippet(text, old_string, idx, window=window),
             })
-        return {"hashlines": out, "count": len(out)}
+        return _tool_result({"hashlines": out, "count": len(out)})
     except Exception as exc:
         logger.debug("hashline_compute failed: %s", exc)
         return _tool_error(f"hashline_compute failed: {type(exc).__name__}: {exc}", code="500", details={})

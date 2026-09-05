@@ -6,6 +6,7 @@ primitives (find_all, compute_hashline, verify_anchor_by_hash, canonicalization)
 import importlib.util
 import os
 import hashlib
+import json
 
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 CORE_PATH = os.path.join(PLUGIN_DIR, "..", "src", "hashline_core.py")
@@ -186,8 +187,7 @@ def test_hashline_compute_returns_all_occurrences(tmp_path):
         raise AssertionError("hashline_compute not yet implemented — RED phase expected")
     f = tmp_path / "f.txt"
     f.write_text("alpha\nbeta\ngamma\nbeta\ndelta\n")
-    result = plugin.hashline_compute({"path": str(f), "old_string": "beta", "window": 2})
-    assert isinstance(result, dict)
+    result = json.loads(plugin.hashline_compute({"path": str(f), "old_string": "beta", "window": 2}))
     assert result["count"] == 2
     assert len(result["hashlines"]) == 2
     assert result["hashlines"][0]["line"] == 2
@@ -205,7 +205,7 @@ def test_hashline_compute_context_snippet(tmp_path):
         raise AssertionError("hashline_compute not yet implemented — RED phase expected")
     f = tmp_path / "f.txt"
     f.write_text("alpha\nbeta\ngamma\nbeta\ndelta\n")
-    result = plugin.hashline_compute({"path": str(f), "old_string": "beta", "window": 2})
+    result = json.loads(plugin.hashline_compute({"path": str(f), "old_string": "beta", "window": 2}))
     first = result["hashlines"][0]
     ctx = first["context"]
     assert "alpha" in ctx

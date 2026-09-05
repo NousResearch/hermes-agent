@@ -1,5 +1,6 @@
 import hashlib
 import importlib.util
+import json
 import tempfile
 from pathlib import Path
 
@@ -51,13 +52,13 @@ def main() -> int:
 
     # Step 3 pin occurrence 1 (first beta, line 2) -> replace with B1
     before_step3 = _bytes(TARGET)
-    res3 = plugin.handle_anchored_patch({
+    res3 = json.loads(plugin.handle_anchored_patch({
         'path': str(TARGET),
         'old_string': 'beta',
         'new_string': 'B1',
         'expected_hashline': h0,
         'window': 2,
-    })
+    }))
     if not res3.get('applied'):
         failures.append(f'step3 not applied: {res3}')
     if res3.get('occurrence') != 0:
@@ -72,13 +73,13 @@ def main() -> int:
     # occurrence 1 patch changed surrounding context/line numbers.
     h1 = core.compute_hashline(TARGET.read_text(encoding='utf-8'), 'beta', 0)
     before_step4 = _bytes(TARGET)
-    res4 = plugin.handle_anchored_patch({
+    res4 = json.loads(plugin.handle_anchored_patch({
         'path': str(TARGET),
         'old_string': 'beta',
         'new_string': 'B2',
         'expected_hashline': h1,
         'window': 2,
-    })
+    }))
     if not res4.get('applied'):
         failures.append(f'step4 not applied: {res4}')
     if res4.get('occurrence') != 0:
@@ -91,13 +92,13 @@ def main() -> int:
 
     # Step 5 wrong hashline -> block, file unchanged
     before_step5 = _bytes(TARGET)
-    res5 = plugin.handle_anchored_patch({
+    res5 = json.loads(plugin.handle_anchored_patch({
         'path': str(TARGET),
         'old_string': 'beta',
         'new_string': 'B2',
         'expected_hashline': '0' * 64,
         'window': 2,
-    })
+    }))
     if res5.get('applied'):
         failures.append('step5 should have blocked on wrong hashline')
     if _bytes(TARGET) != before_step5:
@@ -112,13 +113,13 @@ def main() -> int:
     h0_crlf = core.compute_hashline(text_crlf, 'beta', 0)
     h1_crlf = core.compute_hashline(text_crlf, 'beta', 1)
     before_step6 = _bytes(TARGET)
-    res6 = plugin.handle_anchored_patch({
+    res6 = json.loads(plugin.handle_anchored_patch({
         'path': str(TARGET),
         'old_string': 'beta',
         'new_string': 'B1',
         'expected_hashline': h0_crlf,
         'window': 2,
-    })
+    }))
     if not res6.get('applied'):
         failures.append(f'step6 not applied on CRLF-normalized file: {res6}')
     if _bytes(TARGET) == before_step6:

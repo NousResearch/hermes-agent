@@ -88,7 +88,7 @@ class FakeWebSocket {
   static CLOSED = 3
   // Flipped by the test: 'open' = next socket connects; 'fail' = next socket
   // errors (a dead remote). Mirrors a VPS going away after the first connect.
-  static mode: 'open' | 'fail' = 'open'
+  static mode: 'open' | 'fail' | 'pending' = 'open'
   static instances: FakeWebSocket[] = []
   // Ping behavior: 'pong' answers with a healthy pong frame; 'silent' swallows
   // the request (the half-open-socket simulation — connection looks OPEN but
@@ -98,11 +98,17 @@ class FakeWebSocket {
   static pingMode: 'pong' | 'silent' | 'method-not-found' = 'pong'
 
   readyState = 0
+  closeCalls = 0
   private listeners: Record<string, Set<Listener>> = {}
 
   constructor(public url: string) {
     FakeWebSocket.instances.push(this)
     const willOpen = FakeWebSocket.mode === 'open'
+
+    if (FakeWebSocket.mode === 'pending') {
+      return
+    }
+
     // Resolve on the next microtask/macrotask so connect()'s promise wiring is
     // in place before open/error fires (matches real async socket handshake).
     setTimeout(() => {
@@ -125,6 +131,7 @@ class FakeWebSocket {
   }
 
   close() {
+    this.closeCalls += 1
     this.readyState = FakeWebSocket.CLOSED
     this.emit('close', {})
   }
@@ -987,6 +994,23 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     // Backend B's list replaced A's — the rail survives the switch instead of
     // painting the previous backend's (or an empty) universe.
     expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'cloud-eric'])
+  })
+
+  it('HMR cleanup stashes a connecting gateway instead of closing it', async () => {
+    FakeWebSocket.mode = 'pending'
+    render(<Harness />)
+    await flushAsync()
+
+    expect($gatewayState.get()).toBe('connecting')
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    const gateway = FakeWebSocket.instances[0]
+
+    cleanup()
+
+    const survivor = takeGatewaySurvivor()
+    expect(survivor).not.toBeNull()
+    expect(survivor?.gateway).toBeDefined()
+    expect(gateway.closeCalls).toBe(0)
   })
 
   it('a remote that drops post-boot keeps looping with NO boot.error (the dead-end CONNECTING combo)', async () => {

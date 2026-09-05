@@ -104,33 +104,19 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 
 ### Navigate Markdown before reading sections
 
-`read_file({"path":"spec.md","mode":"outline"})` returns heading text,
-level (1–6), and 1-based source line numbers. Select a section, then read its
-body with the normal `offset` and `limit`. No summary/model call is involved;
-ordinary reads are unchanged.
+`read_file({"path":"spec.md","mode":"outline"})` returns heading text, level
+(1–6), and 1-based source line numbers instead of body content; pick a section
+and read it with the normal `offset`/`limit`. ATX and Setext headings are
+recognized, fenced code is skipped, and duplicate headings keep their own
+positions. Ordinary reads are unchanged.
 
-Outline mode recognizes ATX and Setext headings, excludes fenced code, and
-retains duplicate headings at their own positions. This is line-oriented
-navigation, not a complete CommonMark renderer: multi-line Setext paragraphs
-use the line immediately preceding the underline.
-
-Both work and output are bounded: at most 64 KiB is read per call, with at
-most 500 headings and a 90,000-character serialized-heading budget. Titles
-use the existing file-read redaction policy before being capped at 150
-characters (`heading_truncated` indicates this).
-
-When `scan_complete` is false, pass `next_cursor` as `cursor` on the same
-path and task, including when the page contains no headings. Totals are
-reported only on completion. Initial `offset` selects a heading ordinal;
-`limit` caps headings per page. Cursors expire after ten minutes, retain at
-most eight checkpoints per task, and reject changes to the file. Restart
-without a cursor after expiry or a file change.
-
-Existing access guards still apply. An outline does not count as a body read
-or refresh edit-staleness checks. Non-Markdown inputs return a note; binary
-inputs and physical lines larger than 64 KiB return an explicit error. Use
-ordinary paginated reads for oversized text lines. No new dependency, service,
-or tool is needed.
+Scanning and output are bounded: up to 2 MiB per call (256 KiB backend
+windows), 500 headings, and a 90,000-character page. When `scan_complete` is
+false, pass `next_cursor` as `cursor` on the same path; cursors expire after
+ten minutes and reject a changed file. Titles go through the file-read
+redaction policy. An outline never counts as a body read for
+read-before-write checks. Markdown only; binary input and physical lines over
+256 KiB return an explicit error.
 
 ## `homeassistant` toolset
 

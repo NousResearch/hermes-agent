@@ -9,7 +9,7 @@
 
 import { host } from '@hermes/plugin-sdk'
 
-import type { BotMeta, ProfileRoute, RosterRow } from './types'
+import type { BotMeta, GroupMessageAuthor, ProfileRoute, RosterRow } from './types'
 
 export function botRouteKey(route: ProfileRoute): string {
   return `${route.connectionId}::${route.profile}`
@@ -421,4 +421,40 @@ export function botRosterMeta(bot: RosterRow, metaByName: Record<string, BotMeta
   }
 
   return own
+}
+
+/** Group Chat member-descriptor title (#101382). Same owner-aware lookup as
+ *  the sidebar — never clear remote titles just because `remoteSource` is set. */
+export function groupMemberDescriptorTitle(member: RosterRow, allMeta: Record<string, BotMeta>): string {
+  return String(botRosterMeta(member, allMeta)?.title || member.title || '')
+}
+
+/** Group Chat transcript speaker meta (#101382 / #96432). Owner-aware: a
+ *  source-qualified line looks up the matched member via botRosterMeta, never
+ *  `allMeta[name]` and never `null` just because `entry.from.source` is set. */
+export function groupTranscriptSpeakerMeta(
+  entry: { from?: GroupMessageAuthor } | null | undefined,
+  members: RosterRow[],
+  allMeta: Record<string, BotMeta>
+): BotMeta | null | undefined {
+  if (!entry?.from || entry.from.kind === 'user') {
+    return null
+  }
+
+  const member =
+    members.find(
+      bot =>
+        bot.name === entry.from?.name &&
+        (entry.from.source ? (bot.connectionLabel || bot.connectionId) === entry.from.source : !bot.remoteSource)
+    ) || null
+
+  if (member) {
+    return botRosterMeta(member, allMeta)
+  }
+
+  if (entry.from.source) {
+    return null
+  }
+
+  return allMeta?.[entry.from.name] || null
 }

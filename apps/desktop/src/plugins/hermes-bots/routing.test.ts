@@ -21,6 +21,8 @@ import {
   beginAliasRouteIndex,
   botConnectionRoute,
   botRosterMeta,
+  groupMemberDescriptorTitle,
+  groupTranscriptSpeakerMeta,
   indexAliasRoutes,
   requestForBot,
   resolveBotConnectionRoute
@@ -284,5 +286,59 @@ describe('requestForBot rides the bot’s own source', () => {
     expect(error).toBeInstanceOf(Error)
     expect(typeof (error as Error).name).toBe('string')
     expect((error as Error).message).toBe('profile busy')
+  })
+})
+
+describe('group chat remote titles and avatars (#101382)', () => {
+  const localDefault = { name: 'default' } as RosterRow
+  const remoteSpider = {
+    connectionId: 'HermesDocker',
+    connectionLabel: 'HermesDocker',
+    name: 'spider',
+    remoteSource: true,
+    sourceScoped: true
+  } as RosterRow
+  const remoteDefault = {
+    connectionId: 'HermesDocker',
+    connectionLabel: 'HermesDocker',
+    name: 'default',
+    remoteSource: true,
+    sourceScoped: true
+  } as RosterRow
+  const allMeta = {
+    default: { image: 'local.png', title: 'Local Hermes' },
+    'HermesDocker::default': { image: 'remote-default.png', title: 'Remote Hermes' },
+    'HermesDocker::spider': { image: 'spider.png', title: '织网蛛' }
+  }
+
+  it('keeps the configured title on remote member descriptors', () => {
+    expect(groupMemberDescriptorTitle(remoteSpider, allMeta)).toBe('织网蛛')
+    expect(displayName(remoteSpider, botRosterMeta(remoteSpider, allMeta))).toBe('织网蛛')
+  })
+
+  it('gives user lines no bot meta', () => {
+    expect(groupTranscriptSpeakerMeta({ from: { kind: 'user', name: 'You' } }, [localDefault, remoteDefault], allMeta)).toBeNull()
+  })
+
+  it('keeps local meta for a local same-name speaker', () => {
+    const meta = groupTranscriptSpeakerMeta(
+      { from: { kind: 'member', name: 'default' } },
+      [localDefault, remoteDefault],
+      allMeta
+    )
+
+    expect(meta?.image).toBe('local.png')
+    expect(meta?.title).toBe('Local Hermes')
+  })
+
+  it('keeps owner meta for a remote same-name speaker instead of null or the local twin', () => {
+    const meta = groupTranscriptSpeakerMeta(
+      { from: { kind: 'member', name: 'default', source: 'HermesDocker' } },
+      [localDefault, remoteDefault],
+      allMeta
+    )
+
+    expect(meta?.image).toBe('remote-default.png')
+    expect(meta?.title).toBe('Remote Hermes')
   })
 })

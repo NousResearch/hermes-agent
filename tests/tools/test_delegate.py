@@ -2233,5 +2233,124 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIn("missing-acp-binary", str(ctx.exception))
 
 
+class TestDelegationFallbackChain(unittest.TestCase):
+    """Delegation fallback chain: delegation.fallback_providers overrides parent inheritance.
+
+    Mirrors the auxiliary fallback pattern: the delegation config's fallback
+    chain takes precedence over the parent's _fallback_chain. When empty, the
+    legacy pinned-vs-inherit rules apply (#80450).
+    """
+
+    def _capture_fallback(self, parent, delegation_cfg, override_provider=None):
+        """Helper: build child and return captured fallback_model kwarg."""
+        patch_target = "tools.delegate_tool._load_config"
+        with patch(patch_target, return_value=delegation_cfg):
+            with patch("run_agent.AIAgent") as MockAgent:
+                MockAgent.return_value = MagicMock()
+                kwargs = {}
+                if override_provider is not None:
+                    kwargs["override_provider"] = override_provider
+                _build_child_agent(
+                    task_index=0,
+                    goal="test delegation fallback",
+                    context=None,
+                    toolsets=None,
+                    model=None,
+                    max_iterations=10,
+                    parent_agent=parent,
+                    task_count=1,
+                    **kwargs,
+                )
+                return MockAgent.call_args[1].get("fallback_model")
+
+    def test_pinned_provider_empty_delegation_fallback_is_none(self):
+        """Backward compat: pinned provider + empty delegation fallback => None."""
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = [{"provider": "openrouter", "model": "gpt-4o-mini"}]
+        delegation_cfg = {"provider": "minimax", "fallback_providers": []}
+        fb = self._capture_fallback(parent, delegation_cfg, override_provider="minimax")
+        self.assertIsNone(fb)
+
+    def test_pinned_provider_delegation_fallback_chain_used(self):
+        """Pinned provider + delegation chain => child fallback equals delegation chain."""
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = [{"provider": "openrouter", "model": "gpt-4o-mini"}]
+        delegation_chain = [
+            {"provider": "openrouter", "model": "gpt-4o-mini"},
+            {"provider": "nous", "model": "hermes-4-405b"},
+        ]
+        delegation_cfg = {"provider": "minimax", "fallback_providers": delegation_chain}
+        fb = self._capture_fallback(parent, delegation_cfg, override_provider="minimax")
+        self.assertEqual(fb, delegation_chain)
+
+    def test_unpinned_inherits_parent_when_delegation_fallback_empty(self):
+        """Unpinned (inherit) + parent chain + empty delegation fallback => parent chain."""
+        parent = _make_mock_parent(depth=0)
+        parent_chain = [{"provider": "openrouter", "model": "gpt-4o-mini"}]
+        parent._fallback_chain = parent_chain
+        delegation_cfg = {"fallback_providers": []}
+        fb = self._capture_fallback(parent, delegation_cfg)
+        self.assertEqual(fb, parent_chain)
+
+    def test_unpinned_inherits_none_when_both_empty(self):
+        """Unpinned + no parent chain + empty delegation => None."""
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = []
+        delegation_cfg = {}
+        fb = self._capture_fallback(parent, delegation_cfg)
+        self.assertIsNone(fb)
+
+    def test_delegation_fallback_precedence_over_parent(self):
+        """Delegation fallback takes precedence when both delegation and parent have chains."""
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = [{"provider": "openrouter", "model": "gpt-4o-mini"}]
+        delegation_chain = [{"provider": "nous", "model": "hermes-4-405b"}]
+        delegation_cfg = {"fallback_providers": delegation_chain}
+        fb = self._capture_fallback(parent, delegation_cfg)
+        self.assertEqual(fb, delegation_chain)
+        self.assertNotEqual(fb, parent._fallback_chain)
+
+    def test_delegation_fallback_precedence_when_pinned_and_both_present(self):
+        """Pinned + both present => delegation chain wins (not None, not parent)."""
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = [{"provider": "openrouter", "model": "gpt-4o-mini"}]
+        delegation_chain = [{"provider": "nous", "model": "hermes-4-405b"}]
+        delegation_cfg = {"provider": "minimax", "fallback_providers": delegation_chain}
+        fb = self._capture_fallback(parent, delegation_cfg, override_provider="minimax")
+        self.assertEqual(fb, delegation_chain)
+
+    def test_delegation_fallback_chain_alias(self):
+        """delegation.fallback_chain (list) is honoured."""
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = []
+        delegation_chain = [{"provider": "nous", "model": "hermes-4-405b"}]
+        delegation_cfg = {"fallback_chain": delegation_chain}
+        fb = self._capture_fallback(parent, delegation_cfg)
+        self.assertEqual(fb, delegation_chain)
+
+    def test_delegation_fallback_model_legacy_dict(self):
+        """Legacy single-dict fallback_model inside delegation is honoured."""
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = []
+        delegation_cfg = {"fallback_model": {"provider": "nous", "model": "hermes-4-405b"}}
+        fb = self._capture_fallback(parent, delegation_cfg)
+        self.assertEqual(fb, [{"provider": "nous", "model": "hermes-4-405b"}])
+
+    def test_get_delegation_fallback_chain_helper_empty(self):
+        """_get_delegation_fallback_chain returns None for empty/missing config."""
+        from tools.delegate_tool import _get_delegation_fallback_chain
+        self.assertIsNone(_get_delegation_fallback_chain({}))
+        self.assertIsNone(_get_delegation_fallback_chain({"fallback_providers": []}))
+        self.assertIsNone(_get_delegation_fallback_chain(None))
+
+    def test_get_delegation_fallback_chain_normalizes(self):
+        """_get_delegation_fallback_chain normalizes provider/model entries."""
+        from tools.delegate_tool import _get_delegation_fallback_chain
+        chain = _get_delegation_fallback_chain(
+            {"fallback_providers": [{"provider": "nous", "model": "hermes-4-405b"}]}
+        )
+        self.assertEqual(chain, [{"provider": "nous", "model": "hermes-4-405b"}])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -54,6 +54,30 @@ def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def merge_fallback_keys(
+    config: dict[str, Any] | None, keys: tuple[str, ...]
+) -> list[dict[str, Any]]:
+    """Merge fallback entries across a caller-selected ordered set of config keys.
+
+    Entries keep key-priority order with per-route dedup (provider/model/
+    base_url); the returned list always contains fresh dict copies. Callers
+    choose which keys participate: the top-level chain uses
+    (``fallback_providers``, ``fallback_model``), delegation additionally
+    honors its ``fallback_chain`` alias — without making that alias a
+    recognized top-level key.
+    """
+    config = config or {}
+    chain: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for key in keys:
+        for entry in _iter_fallback_entries(config.get(key)):
+            identity = _entry_identity(entry)
+            if identity not in seen:
+                seen.add(identity)
+                chain.append(entry)
+    return chain
+
+
 def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Return the effective fallback chain merged across old and new config keys.
 
@@ -62,13 +86,4 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     provider/model/base_url route as an earlier entry. The returned list always contains fresh dict
     copies.
     """
-    config = config or {}
-    chain: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str]] = set()
-    for key in ("fallback_providers", "fallback_model"):
-        for entry in _iter_fallback_entries(config.get(key)):
-            identity = _entry_identity(entry)
-            if identity not in seen:
-                seen.add(identity)
-                chain.append(entry)
-    return chain
+    return merge_fallback_keys(config, ("fallback_providers", "fallback_model"))

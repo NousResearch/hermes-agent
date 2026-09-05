@@ -1246,6 +1246,20 @@ DEFAULT_CONFIG = {
         # notifications to the PARENT; false suppresses them (the child's result is the
         # deliverable). Async-delegation results are NEVER suppressed.
         "surface_child_process_notifications": False,
+        # Fallback providers for delegation subagents — tried when the pinned
+        # delegation provider fails with rate-limit/overload/auth errors.
+        # Empty (default) preserves the legacy behavior: a pinned
+        # delegation.provider disables the parent's fallback_providers chain
+        # (no silent reroute). When set, this list is passed as the child's
+        # fallback_model, exactly like the top-level fallback_providers chain
+        # but scoped to delegation. Each entry needs provider + model;
+        # base_url / api_mode / key_env are optional.
+        # Aliases fallback_chain / fallback_model are also honored (merged via
+        # the shared merge_fallback_keys() helper with delegation's key set;
+        # top-level fallback semantics are unchanged).
+        "fallback_providers": [],
+        "fallback_chain": [],
+        "fallback_model": None,
     },
     # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of
     # every API call for few-shot priming. Never saved to sessions/logs/trajectories.

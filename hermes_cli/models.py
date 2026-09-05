@@ -1516,6 +1516,13 @@ def _normalized_cache_slug(provider: Optional[str]) -> str:
     return requested if requested == "ollama" else (normalize_provider(provider) or (provider or ""))
 
 
+def _model_requires_account_discovery(provider: Optional[str], model: str) -> bool:
+    """Astra names cannot confer API/OAuth entitlement through picker state."""
+    return _normalized_cache_slug(provider) in {"openai", "openai-codex"} and str(model or "").strip().lower().rsplit("/", 1)[-1] in {
+        "gpt-6-astra", "gpt-6-astra-900k",
+    }
+
+
 def cached_provider_model_ids(
     provider: Optional[str], *, force_refresh: bool = False,
     ttl_seconds: int = _PROVIDER_MODELS_CACHE_TTL) -> list[str]:
@@ -1532,8 +1539,14 @@ def cached_provider_model_ids(
     fp = _credential_fingerprint(normalized)
     entry = cache.get(normalized)
     now = time.time()
+    # Even a credential-matched fresh disk cache predates the current account's
+    # entitlement check. Revalidate gated entries before offering them again.
+    cached_models = entry.get("models") if isinstance(entry, dict) else None
+    gated_cache = isinstance(cached_models, list) and any(
+        _model_requires_account_discovery(normalized, model) for model in cached_models
+    )
 
-    if not force_refresh and _cache_entry_valid(entry, fp, allow_empty=is_ollama):
+    if not force_refresh and not gated_cache and _cache_entry_valid(entry, fp, allow_empty=is_ollama):
         age = now - entry["at"]
         if age < ttl_seconds:
             return list(entry["models"])
@@ -1562,7 +1575,7 @@ def cached_provider_model_ids(
         return []
     # Live returned nothing: a stale same-fingerprint entry beats an empty result.
     if _cache_entry_valid(entry, fp):
-        return list(entry["models"])
+        return [model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)]
     return []
 
 

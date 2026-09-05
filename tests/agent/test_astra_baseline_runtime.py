@@ -68,13 +68,43 @@ def test_astra_900k_opt_in_preserves_live_limits_and_wire_contract(monkeypatch, 
     assert metadata.get_model_context_length("gpt-6-astra", api_key="test-token", **route) == advertised
     assert codex_supported_efforts("gpt-6-astra-900k") == CODEX_ASTRA_EFFORTS
 
-    for config, expected_effort in [({"effort": "max"}, "max"), ({"enabled": False}, "low")]:
-        kwargs = ResponsesApiTransport().build_kwargs(
-            model="gpt-6-astra-900k", messages=[{"role": "user", "content": "Hi"}], tools=[],
+    for config in ({"effort": "max"}, {"enabled": False}):
+        params = dict(
+            messages=[{"role": "user", "content": "Hi"}], tools=[],
             is_codex_backend=True, reasoning_config=config,
             request_overrides={"temperature": 0.5, "logprobs": True}, **route,
         )
+        kwargs = ResponsesApiTransport().build_kwargs(model="gpt-6-astra-900k", **params)
         assert kwargs["model"] == "gpt-6-astra"
-        assert kwargs["reasoning"]["effort"] == expected_effort
-        assert "temperature" not in kwargs and "logprobs" not in kwargs
+        assert kwargs == ResponsesApiTransport().build_kwargs(model="gpt-6-astra", **params)
         assert "prompt_cache_options" not in kwargs
+
+
+@pytest.mark.parametrize("provider,model", [
+    ("openai-codex", "gpt-6-astra"), ("openai-codex", "gpt-6-astra-900k"), ("openai", "gpt-6-astra"),
+])
+def test_picker_revalidates_cached_astra_and_never_injects_saved_entitlement(monkeypatch, tmp_path, provider, model):
+    from hermes_cli import models
+    from hermes_cli.inventory import ConfigContext, _append_unconfigured_rows
+    from hermes_cli.model_switch_providers import _finalize_picker_rows
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(models, "_credential_fingerprint", lambda _: "synthetic-account")
+    models.update_provider_cache_entry(provider, ["gpt-5.6-sol", model])
+    live = []
+    calls = []
+
+    def discover(slug, **kwargs):
+        calls.append(slug)
+        return list(live)
+
+    monkeypatch.setattr(models, "provider_model_ids", discover)
+    assert models.cached_provider_model_ids(provider) == ["gpt-5.6-sol"]
+    assert calls == [provider]
+    row = {"slug": provider, "is_current": True, "models": ["gpt-5.6-sol"], "total_models": 1}
+    assert model not in _finalize_picker_rows([row], {}, model)[0]["models"]
+    ctx = ConfigContext(provider, model, "", {}, [])
+    assert _append_unconfigured_rows([], ctx, current_only=True)[0]["models"] == []
+
+    live[:] = ["gpt-5.6-sol", model]
+    assert model in models.cached_provider_model_ids(provider)

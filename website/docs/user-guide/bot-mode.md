@@ -17,7 +17,7 @@ There is no new primitive to learn: a Bot **is** a Hermes profile — isolated c
 
 The roster shows one row per agent profile: avatar, latest-message preview, and timestamp.
 
-- **Click a Bot** to land in its chat — every Bot has a canonical, persistent **Bot Chat** conversation that is created (and pinned) the moment the Bot is born.
+- **Click a Bot** to land in its chat — every Bot has a canonical, persistent **Bot Chat** conversation that is created (and pinned) the moment the Bot is born. A row click always opens that Bot Chat (the same conversation the row previews), even when you have other tabs open for the Bot; those tabs stay open beside it. In the tab strip the Bot Chat is captioned with the Bot's name, so two open Bots are told apart at a glance.
 - **Active now** — a presence strip above the roster shows every Bot currently working: the gateway-busy profile plus any Bot that wrote within the last 90 seconds. Each chip opens that Bot's chat. The strip never reorders the roster and disappears when the fleet is idle.
 - **Search** filters the roster as you type.
 - **Hide a Bot** — right-click a row → **Hide Bot** to take a Bot you don't use out of the roster and the Active-now strip. Hiding is display-only: @mentions still resolve, group-chat memberships are untouched, and routines keep running. Once at least one Bot is hidden, an **eye toggle** appears in the pane header — click it to reveal hidden Bots dimmed in place, then right-click → **Unhide Bot** to bring one back. Hidden Bots never toast, but they accumulate unread activity silently and the eye badges a dot so you know something happened. Hidden state is saved in the Bot's profile metadata, so it follows the Bot to every desktop connected to that backend.
@@ -25,6 +25,17 @@ The roster shows one row per agent profile: avatar, latest-message preview, and 
 :::note The canonical Bot Chat is a forever-chat
 Typing `/new` (or `/reset`) inside a Bot's canonical chat would fork the relationship into a scratch session — the one thing Bot Mode promises never happens. The composer reroutes it to `/compact` instead: fresh working context, same conversation. Regular sessions on the same profile keep full `/new` freedom.
 :::
+
+### Organize bots into sections
+
+Sections are folders you make yourself — **Clients**, **Team**, whatever fits — as a second axis beside the automatic per-gateway grouping. With no sections created the roster is the plain list it always was.
+
+- **Create one** from the pane's **+** menu → **New section**, or right-click a Bot → **Move to section** → **New section…** (that files the Bot into it as you create it).
+- **File a Bot** by dragging its row onto a section — the target highlights while you hover, and **Esc** cancels the drag — or right-click → **Move to section** and pick one. **Remove from section** puts it back in **Unassigned**.
+- **Rename, reorder, or delete** a section from its heading's right-click menu (or the **⋯** that appears on hover); double-click a heading to rename. Headings fold like the gateway headings do.
+- **Deleting a section never deletes Bots** — they return to **Unassigned**, and the toast offers **Undo**. No confirmation is asked.
+
+Membership is stored in each Bot's profile metadata (`ui_meta`), so a Bot's section follows it to every desktop connected to that backend. When the roster shows more than one gateway, sections nest inside each gateway's bucket.
 
 ## Creating a Bot
 

@@ -212,7 +212,6 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
   // Whole-turn duration and completion timestamp are set once at settlement,
   // so these selectors stay stable across the 30 Hz delta stream.
   const turnDurationS = useAuiState(s => s.message.metadata?.custom?.durationS as number | undefined)
-
   const turnCompletedAt = useAuiState(s => {
     const value = s.message.metadata?.custom?.timelineCompletedAt
 

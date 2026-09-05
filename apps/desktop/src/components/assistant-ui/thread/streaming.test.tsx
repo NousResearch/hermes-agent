@@ -573,8 +573,6 @@ describe('assistant-ui streaming renderer', () => {
     const actions = container.querySelector('[data-slot="aui_msg-actions"]')
     const finished = container.querySelector('[data-slot="aui_turn-finished-at"]')
 
-    // Same row as the always-mounted action bar: adding the completion clock
-    // does not grow the settled message footer.
     expect(completion).toBeTruthy()
     expect(completion?.parentElement).toBe(actions?.parentElement)
     expect(container.querySelector('[data-slot="aui_turn-duration"]')?.textContent).toContain('12s')

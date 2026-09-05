@@ -185,14 +185,14 @@ def _emit_and_capture(stub, monkeypatch):
 
 
 def test_gating_enabled_prints_summary(monkeypatch):
-    import cli as cli_module
+    import hermes_cli.cli_status_bar_mixin as status_bar_module
 
     class FixedDateTime(datetime):
         @classmethod
         def now(cls, tz=None):
             return cls(2026, 8, 31, 9, 6, tzinfo=tz)
 
-    monkeypatch.setattr(cli_module, "datetime", FixedDateTime)
+    monkeypatch.setattr(status_bar_module, "datetime", FixedDateTime)
 
     stub = _make_cli()
     printed = _emit_and_capture(stub, monkeypatch)

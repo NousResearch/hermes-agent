@@ -17,6 +17,10 @@ plugins override bundled plugins on name collision (last-writer-wins), so
 third parties can monkey-patch or replace any built-in profile without
 editing the repo.
 
+Third-party plugins are gated on the same ``plugins.enabled`` /
+``plugins.disabled`` config the PluginManager enforces — see
+:func:`_discover_providers` for which step honours which list.
+
 For backward compatibility, ``providers/*.py`` files (other than ``base.py``
 and ``__init__.py``) are still discovered via ``pkgutil.iter_modules``.
 This lets out-of-tree users drop a single-file profile into an editable
@@ -124,13 +128,19 @@ def _installed_plugins_dir() -> Path | None:
         return None
 
 
-def _declares_model_provider_kind(plugin_dir: Path) -> bool:
-    """Whether ``plugin_dir``'s manifest declares ``kind: model-provider``.
+_MANIFEST_FIELDS = ("kind", "name")
 
-    Only that kind is imported from the flat install directory — every other
-    plugin there belongs to ``PluginManager``, which owns its lifecycle and
-    consent flow. Parsed with PyYAML when available, falling back to a line
-    scan so provider discovery never hard-depends on it.
+
+def _manifest_fields(plugin_dir: Path) -> dict[str, str]:
+    """``kind`` and ``name`` from ``plugin_dir``'s manifest (``{}`` when absent).
+
+    ``kind`` decides what the flat install directory hands to provider
+    discovery — every other kind there belongs to ``PluginManager``, which owns
+    its lifecycle and consent flow. ``name`` is what ``hermes plugins
+    enable|disable`` writes into config for such a directory, so discovery can
+    gate on the key the PluginManager gates on. Parsed with PyYAML when
+    available, falling back to a line scan so provider discovery never
+    hard-depends on it.
     """
     for filename in ("plugin.yaml", "plugin.yml"):
         manifest = plugin_dir / filename
@@ -139,24 +149,57 @@ def _declares_model_provider_kind(plugin_dir: Path) -> bool:
         try:
             text = manifest.read_text(encoding="utf-8", errors="replace")
         except Exception:
-            return False
+            return {}
         try:
             import yaml
 
             data = yaml.safe_load(text)
             if isinstance(data, dict):
-                return str(data.get("kind", "")).strip() == "model-provider"
+                return {k: str(data.get(k, "")).strip() for k in _MANIFEST_FIELDS}
         except Exception:
             pass
+        fields: dict[str, str] = {}
         for line in text.splitlines():
             stripped = line.strip()
             if stripped.startswith("#") or ":" not in stripped:
                 continue
             key, _, value = stripped.partition(":")
-            if key.strip() == "kind":
-                return value.strip().strip("\"'") == "model-provider"
-        return False
-    return False
+            key = key.strip()
+            if key in _MANIFEST_FIELDS and key not in fields:
+                fields[key] = value.strip().strip("\"'")
+        return fields
+    return {}
+
+
+def _plugin_gate() -> tuple[set[str] | None, set[str]]:
+    """The PluginManager's ``plugins.enabled`` allow-list and ``plugins.disabled``
+    deny-list, read once per discovery sweep.
+
+    ``None`` for the allow-list means the key is missing or malformed — "nothing
+    enabled yet", the opt-in default. An unavailable config layer degrades to
+    that same closed state rather than loading everything.
+    """
+    try:
+        from hermes_cli.plugins import _get_disabled_plugins, _get_enabled_plugins
+
+        return _get_enabled_plugins(), _get_disabled_plugins()
+    except Exception:  # pragma: no cover — config layer unavailable
+        return None, set()
+
+
+def _config_keys(plugin_dir: Path, fields: dict[str, str], prefix: str = "") -> set[str]:
+    """Every key ``plugins.enabled``/``plugins.disabled`` can carry for a plugin dir.
+
+    Mirrors ``hermes_cli.plugins_discovery.gate_manifest``, which matches a
+    manifest against both its path-derived key (``model-providers/<dir>`` for a
+    nested plugin, the bare manifest name for a flat one) and its manifest name.
+    The directory name is accepted too, for a manifest that declares no name.
+    """
+    name = fields.get("name") or plugin_dir.name
+    keys = {plugin_dir.name, name}
+    if prefix:
+        keys.add(f"{prefix}/{plugin_dir.name}")
+    return keys
 
 
 def _import_plugin_dir(plugin_dir: Path, source: str) -> None:
@@ -197,7 +240,7 @@ def _import_plugin_dir(plugin_dir: Path, source: str) -> None:
         sys.modules.pop(module_name, None)
 
 
-def _discover_entry_point_providers() -> None:
+def _discover_entry_point_providers(enabled: set[str] | None, disabled: set[str]) -> None:
     """Import pip-installed provider plugins via the ``hermes_agent.plugins``
     entry-point group so they self-register.
 
@@ -237,13 +280,6 @@ def _discover_entry_point_providers() -> None:
 
     # Same opt-in gate as the general PluginManager: only entry points named
     # in ``plugins.enabled`` load, and ``plugins.disabled`` always wins.
-    try:
-        from hermes_cli.plugins import _get_disabled_plugins, _get_enabled_plugins
-
-        enabled = _get_enabled_plugins()  # None = nothing enabled yet (opt-in default)
-        disabled = _get_disabled_plugins()
-    except Exception:  # pragma: no cover — config layer unavailable
-        enabled, disabled = None, set()
     if not enabled:
         return
 
@@ -331,11 +367,19 @@ def _discover_providers() -> None:
 
     Each step imports its plugins, which call ``register_provider()`` at
     module-level. Later steps win on name collision.
+
+    Steps 0, 2 and 2b honour the PluginManager's ``plugins.disabled``
+    deny-list: importing a plugin executes its code, so a plugin the user has
+    disabled must not be reached. Steps 0 and 2b additionally require the
+    ``plugins.enabled`` allow-list — installed is not loaded. Step 1 is
+    first-party code shipped with the release and has no config key at all.
     """
     global _discovered
     if _discovered:
         return
     _discovered = True
+
+    enabled, disabled = _plugin_gate()
 
     # 0. Pip-installed plugins — entry points in the ``hermes_agent.plugins``
     #    group (the same group the general PluginManager uses). The manager
@@ -351,7 +395,7 @@ def _discover_providers() -> None:
     #    third-party package from silently hijacking a first-party provider
     #    name (e.g. ``openrouter``) while still letting pip packages add
     #    genuinely new providers.
-    _discover_entry_point_providers()
+    _discover_entry_point_providers(enabled, disabled)
 
     # 1. Bundled plugins — shipped with hermes-agent.
     if _BUNDLED_PLUGINS_DIR.is_dir():
@@ -363,10 +407,24 @@ def _discover_providers() -> None:
     # 2. User plugins — under $HERMES_HOME/plugins/model-providers/<name>/.
     #    These can override any bundled profile of the same name (last-writer-wins
     #    in register_provider()).
+    #
+    #    Placing a directory here is the opt-in, so no ``plugins.enabled`` check
+    #    (config migration 21 grandfathered the flat install directory into that
+    #    allow-list, never this one — requiring it would drop every existing
+    #    profile). ``plugins.disabled`` still applies: PluginManager lists these
+    #    as ``model-providers/<dir>`` and `hermes plugins disable` accepts them,
+    #    so an explicit disable has to stop the import.
     user_dir = _user_plugins_dir()
     if user_dir is not None:
         for child in sorted(user_dir.iterdir()):
             if not child.is_dir() or child.name.startswith(("_", ".")):
+                continue
+            # ``disabled`` is empty for almost every install — check it before
+            # paying for a manifest read per directory.
+            if disabled and disabled & _config_keys(
+                child, _manifest_fields(child), "model-providers"
+            ):
+                logger.debug("user provider plugin %r skipped: disabled in config", child.name)
                 continue
             _import_plugin_dir(child, "user")
 
@@ -378,6 +436,12 @@ def _discover_providers() -> None:
     #     silently half-works — the CLI reports success and the provider does
     #     not exist. Only manifests declaring that kind are imported; every
     #     other plugin in this directory belongs to PluginManager.
+    #
+    #     Routed here does not mean ungated: these arrive through `hermes plugins
+    #     install`, which prompts "Enable now?" and otherwise tells the user to
+    #     run `hermes plugins enable <name>`. So the same opt-in contract the
+    #     pip entry-point scan enforces applies — a clone is never imported just
+    #     because it is on disk, and an explicit disable always wins.
     installed_dir = _installed_plugins_dir()
     if installed_dir is not None:
         for child in sorted(installed_dir.iterdir()):
@@ -385,7 +449,14 @@ def _discover_providers() -> None:
                 continue
             if child.name == "model-providers":
                 continue  # handled by step 2
-            if not _declares_model_provider_kind(child):
+            fields = _manifest_fields(child)
+            if fields.get("kind") != "model-provider":
+                continue
+            keys = _config_keys(child, fields)
+            if not enabled or not keys & enabled or keys & disabled:
+                logger.debug(
+                    "installed provider plugin %r skipped: not enabled in config", child.name
+                )
                 continue
             _import_plugin_dir(child, "user")
 

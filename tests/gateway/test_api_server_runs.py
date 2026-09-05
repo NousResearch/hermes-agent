@@ -599,6 +599,226 @@ class TestRunEvents:
                 attacker_interrupted.set()
 
 
+def test_run_stream_bounds_replay_evicts_slow_clients_and_seals_terminal():
+    """The run stream is a bounded, contiguous, terminal-sealed state machine."""
+    from gateway.platforms.api_server_runs import (
+        _RUN_STREAM_SUBSCRIBER_OVERFLOW,
+        _RunStream,
+    )
+
+    stream = _RunStream()
+    slow_subscriber, _ = stream.attach()
+    for index in range(_RunStream.BACKLOG_LIMIT + 2):
+        stream.put_nowait({"event": "message.delta", "delta": str(index)})
+    stream.put_nowait({"event": "run.completed"})
+    stream.put_nowait(None)
+    sealed_next_seq = stream.next_seq
+    stream.put_nowait({"event": "message.delta", "delta": "late"})
+
+    assert slow_subscriber not in stream.subscribers
+    assert slow_subscriber.qsize() == 1
+    _, control = slow_subscriber.get_nowait()
+    assert control is _RUN_STREAM_SUBSCRIBER_OVERFLOW
+    replay_subscriber, replay = stream.attach()
+    stream.detach(replay_subscriber)
+
+    assert stream.terminal
+    assert stream.next_seq == sealed_next_seq
+    assert len(replay) == _RunStream.BACKLOG_LIMIT
+    assert [sequence for sequence, _ in replay] == list(
+        range(sealed_next_seq - _RunStream.BACKLOG_LIMIT, sealed_next_seq)
+    )
+    assert replay[-2][1]["event"] == "run.completed"
+    assert replay[-1][1] is None
+    assert all(
+        event is None or event.get("delta") != "late" for _, event in replay
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_events_response_boundary_preserves_events_and_cleans_transport(adapter):
+    """The response boundary neither loses terminal events nor leaks subscribers."""
+    from gateway.platforms.api_server_runs import _RunStream
+
+    run_id = "run_prepare_failure"
+    stream = _RunStream()
+    adapter._run_streams[run_id] = stream
+    adapter._run_streams_created[run_id] = time.time()
+    request = MagicMock()
+    request.match_info = {"run_id": run_id}
+    request.headers = {}
+    request.query = {}
+    adapter._run_owners[run_id] = adapter._run_idempotency_scope(request)
+
+    with patch.object(
+        web.StreamResponse,
+        "prepare",
+        side_effect=ConnectionResetError("client disconnected during prepare"),
+    ):
+        with pytest.raises(ConnectionResetError):
+            await adapter._handle_run_events(request)
+
+    assert not stream.subscribers
+    assert run_id not in adapter._run_stream_subscribers
+    assert adapter._run_streams[run_id] is stream
+
+    terminal_run_id = "run_terminal_during_prepare"
+    terminal_stream = _RunStream()
+    adapter._run_streams[terminal_run_id] = terminal_stream
+    adapter._run_streams_created[terminal_run_id] = time.time()
+    terminal_request = MagicMock()
+    terminal_request.match_info = {"run_id": terminal_run_id}
+    terminal_request.headers = {}
+    terminal_request.query = {}
+    adapter._run_owners[terminal_run_id] = adapter._run_idempotency_scope(
+        terminal_request
+    )
+
+    class TerminalDuringPrepareResponse:
+        instance = None
+
+        def __init__(self, *args, **kwargs):
+            self.writes = []
+            self.__class__.instance = self
+
+        async def prepare(self, request):
+            terminal_stream.put_nowait(
+                {"event": "message.delta", "delta": "during prepare"}
+            )
+            terminal_stream.put_nowait({"event": "run.completed"})
+            terminal_stream.put_nowait(None)
+
+        async def write(self, data):
+            self.writes.append(data.decode())
+
+    with patch(
+        "gateway.platforms.api_server_runs.web.StreamResponse",
+        TerminalDuringPrepareResponse,
+    ):
+        await adapter._handle_run_events(terminal_request)
+
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for write in TerminalDuringPrepareResponse.instance.writes
+        for line in write.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert [event["event"] for event in events] == [
+        "message.delta",
+        "run.completed",
+    ]
+    assert not terminal_stream.subscribers
+
+    blocked_run_id = "run_blocked_writer"
+    blocked_stream = _RunStream()
+    blocked_stream.put_nowait({"event": "message.delta", "delta": "blocked"})
+    adapter._run_streams[blocked_run_id] = blocked_stream
+    adapter._run_streams_created[blocked_run_id] = 0
+    blocked_request = MagicMock()
+    blocked_request.match_info = {"run_id": blocked_run_id}
+    blocked_request.headers = {}
+    blocked_request.query = {}
+    adapter._run_owners[blocked_run_id] = adapter._run_idempotency_scope(
+        blocked_request
+    )
+
+    class BlockedResponse:
+        instance = None
+
+        def __init__(self, *args, **kwargs):
+            self.force_closed = False
+            self.__class__.instance = self
+
+        async def prepare(self, request):
+            return None
+
+        async def write(self, data):
+            await asyncio.Event().wait()
+
+        def force_close(self):
+            self.force_closed = True
+
+    with (
+        patch(
+            "gateway.platforms.api_server_runs.web.StreamResponse",
+            BlockedResponse,
+        ),
+        patch(
+            "gateway.platforms.api_server_runs._RUN_STREAM_WRITE_TIMEOUT",
+            0.01,
+            create=True,
+        ),
+    ):
+        await asyncio.wait_for(
+            adapter._handle_run_events(blocked_request), timeout=0.2
+        )
+
+    assert BlockedResponse.instance.force_closed
+    assert not blocked_stream.subscribers
+    assert blocked_run_id not in adapter._run_stream_subscribers
+
+    adapter._sweep_orphaned_runs_once(adapter._RUN_STREAM_TTL + 1)
+
+    assert blocked_run_id not in adapter._run_streams
+    assert blocked_run_id not in adapter._run_streams_created
+
+    class CapturingResponse:
+        instance = None
+
+        def __init__(self, *args, **kwargs):
+            self.writes = []
+            self.__class__.instance = self
+
+        async def prepare(self, request):
+            return None
+
+        async def write(self, data):
+            self.writes.append(data.decode())
+
+    for cursor in ("0", None):
+        truncation_run_id = f"run_truncated_replay_{cursor or 'no_cursor'}"
+        truncation_stream = _RunStream()
+        for index in range(_RunStream.BACKLOG_LIMIT + 2):
+            truncation_stream.put_nowait(
+                {"event": "message.delta", "delta": str(index)}
+            )
+        truncation_stream.put_nowait(None)
+        adapter._run_streams[truncation_run_id] = truncation_stream
+        adapter._run_streams_created[truncation_run_id] = time.time()
+        truncation_request = MagicMock()
+        truncation_request.match_info = {"run_id": truncation_run_id}
+        truncation_request.headers = (
+            {} if cursor is None else {"Last-Event-ID": cursor}
+        )
+        truncation_request.query = {}
+        adapter._run_owners[truncation_run_id] = adapter._run_idempotency_scope(
+            truncation_request
+        )
+
+        with patch(
+            "gateway.platforms.api_server_runs.web.StreamResponse",
+            CapturingResponse,
+        ):
+            await adapter._handle_run_events(truncation_request)
+
+        notice_frame = CapturingResponse.instance.writes[0]
+        assert not any(
+            line.startswith("id: ") for line in notice_frame.splitlines()
+        )
+        notice = next(
+            json.loads(line.removeprefix("data: "))
+            for line in notice_frame.splitlines()
+            if line.startswith("data: ")
+        )
+        assert notice["event"] == "replay.truncated"
+        assert notice["oldest_retained_seq"] == truncation_stream.backlog[0][0]
+        assert "seq" not in notice
+        if cursor is None:
+            assert "requested_seq" not in notice
+        else:
+            assert notice["requested_seq"] == int(cursor)
+
+
 # ---------------------------------------------------------------------------
 # POST /v1/runs/{run_id}/steer — steer a running agent
 # ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from agent.redact import redact_sensitive_text
-from tools.file_tools_read_tracking import _read_tracker_lock, _task_data
+from tools.file_tools_read_tracking import _read_tracker, _read_tracker_lock, _task_data
 
 WINDOW_BYTES = 256 * 1024       # one backend read; also the longest physical line
 CALL_BYTES = 2 * 1024 * 1024    # scanning budget per tool call before a cursor is issued
@@ -113,7 +113,8 @@ def outline_page(ops, path, identity, task_id, start, limit, cursor):
         return {"mode": "outline", "outline": [], "body_read": False,
                 "note": "Outline supports Markdown only; use an ordinary read for this file"}
     with _read_tracker_lock:
-        cache = _task_data(task_id).setdefault("outline_cursors", {})
+        task_data = _task_data(task_id)
+        cache = task_data.setdefault("outline_cursors", {})
         now = time.monotonic()
         for token in list(cache):
             if now - cache[token][0] >= CURSOR_SECONDS:
@@ -152,11 +153,14 @@ def outline_page(ops, path, identity, task_id, start, limit, cursor):
     else:
         token = secrets.token_urlsafe(18)
         with _read_tracker_lock:
+            if _read_tracker.get(task_id) is not task_data:
+                return {"error": "Outline task ended during the read; restart without cursor"}
             while len(cache) >= CURSOR_COUNT:
                 del cache[next(iter(cache))]
             cache[token] = (time.monotonic(), identity, position, start)
         result.update(next_cursor=token, _hint=(
-            "Outline incomplete: continue with mode='outline', the same path, and "
-            "cursor=next_cursor (a page may contain no headings). Cursors expire after "
-            "10 minutes. Read selected bodies with ordinary line offset/limit."))
+            "If a relevant heading is already listed, read its body with ordinary line "
+            "offset/limit; you need not finish the outline. For more headings, call "
+            "mode='outline' again with the same path and cursor=next_cursor (a page may "
+            "contain no headings). Cursors expire after 10 minutes."))
     return result

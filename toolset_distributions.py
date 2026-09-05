@@ -2,7 +2,8 @@
 """Toolset distributions for batch data-generation runs.
 
 A distribution maps toolset names to the % chance each is enabled for a prompt
-(sampled independently, so several toolsets can be active at once).
+(sampled independently, so several toolsets can be active at once). A key may
+be a "+"-grouped compound ("browser+search") that rolls once for all members.
 """
 
 from typing import Dict, List, Optional
@@ -30,10 +31,11 @@ DISTRIBUTIONS = {
     "reasoning": _dist("Heavy research/reasoning distribution with minimal other tools", web=90, file=60, terminal=20),
     "browser_use": _dist("Full browser-based web interaction with search, vision, and page control", browser=100, web=80, vision=70),
     "browser_only": _dist("Only browser automation tools for pure web interaction tasks", browser=100),
-    # browser-use-tasks.jsonl: the browser toolset includes web_search since Google blocks direct browser searches
+    # browser-use-tasks.jsonl: one grouped roll keeps web_search (for finding URLs) coupled to browser
+    # at the original 97% now that `browser` no longer bundles it (#64503).
     "browser_tasks": _dist(
-        "Browser-focused distribution (browser toolset includes web_search for finding URLs since Google blocks direct browser searches)",
-        browser=97, vision=12, terminal=15,
+        "Browser-focused distribution with web_search for finding URLs (Google blocks direct browser searches)",
+        **{"browser+search": 97}, vision=12, terminal=15,
     ),
     # nous-terminal-tasks.jsonl
     "terminal_tasks": _dist("Terminal-focused distribution with high terminal/file availability, occasional other tools",
@@ -57,25 +59,37 @@ def validate_distribution(distribution_name: str) -> bool:
     return distribution_name in DISTRIBUTIONS
 
 
-def sample_toolsets_from_distribution(distribution_name: str) -> List[str]:
-    """Sample toolset names, each included independently with its % probability.
+def _entry_members(entry: str) -> List[str]:
+    """Toolsets named by a distribution entry: a bare name or a "+"-grouped compound."""
+    return [name.strip() for name in entry.split("+")]
 
-    Falls back to the highest-probability toolset when nothing was rolled.
+
+def sample_toolsets_from_distribution(distribution_name: str) -> List[str]:
+    """Sample toolset names, each entry included independently with its % probability.
+
+    An entry may be a single toolset or a "+"-grouped compound like
+    "browser+search": one roll selects (or skips) every member together, so
+    co-occurrence guarantees survive that independent rolls would break
+    (two independent 97% rolls co-occur only ~94% of the time).
+    Falls back to the highest-probability entry when nothing was rolled.
     Raises ValueError for an unknown distribution.
     """
     dist = get_distribution(distribution_name)
     if not dist:
         raise ValueError(f"Unknown distribution: {distribution_name}")
     selected_toolsets = []
-    for toolset_name, probability in dist["toolsets"].items():
-        if not validate_toolset(toolset_name):
-            print(f"⚠️  Warning: Toolset '{toolset_name}' in distribution '{distribution_name}' is not valid")
+    for entry, probability in dist["toolsets"].items():
+        members = _entry_members(entry)
+        invalid = [name for name in members if not validate_toolset(name)]
+        if invalid:
+            print(f"⚠️  Warning: Toolset '{'+'.join(invalid)}' in distribution '{distribution_name}' is not valid")
         elif random.random() * 100 < probability:
-            selected_toolsets.append(toolset_name)
+            selected_toolsets.extend(members)
     if not selected_toolsets and dist["toolsets"]:
-        highest_prob_toolset = max(dist["toolsets"].items(), key=lambda x: x[1])[0]
-        if validate_toolset(highest_prob_toolset):
-            selected_toolsets.append(highest_prob_toolset)
+        highest_prob_entry = max(dist["toolsets"].items(), key=lambda x: x[1])[0]
+        members = _entry_members(highest_prob_entry)
+        if all(validate_toolset(name) for name in members):
+            selected_toolsets.extend(members)
     return selected_toolsets
 
 

@@ -254,7 +254,7 @@ _file_ops_cache: dict = {}
 def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     """Build the terminal environment for *task_id* via the shared ``_create_configured_env``,
     so a file tool that runs before any terminal command still gets the configured backend."""
-    from tools.terminal_tool_config import _CONTAINER_BACKENDS
+    from tools.terminal_tool_config import _is_container_backend
     from tools.terminal_tool import (
         _create_configured_env, _get_env_config, _is_unusable_container_cwd,
         _resolve_task_host_cwd, _select_image, get_session_cwd, resolve_task_overrides)
@@ -276,7 +276,7 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     # reaches ``docker run -w <host-path>`` and the container starts in a directory that doesn't exist
     # inside the sandbox, so search_files and friends silently return empty results (#54447). Sanitize it
     # back to the already-validated config["cwd"] so the override can't bypass the guard.
-    if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
+    if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd):
         if cwd != config["cwd"]:
             logger.info(
                 "Ignoring host/relative cwd override %r for %s backend "

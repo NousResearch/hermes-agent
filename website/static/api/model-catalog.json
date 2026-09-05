@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-03T07:08:39Z",
+  "updated_at": "2026-09-05T09:33:43Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -43,6 +43,30 @@
         {
           "id": "anthropic/claude-haiku-4.5",
           "description": ""
+        },
+        {
+          "id": "openai/gpt-6-astra",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-6-astra-fast",
+          "description": "2x price, priority tier"
+        },
+        {
+          "id": "openai/gpt-6-astra-flex",
+          "description": "0.5x price, flex tier"
+        },
+        {
+          "id": "openai/gpt-6-astra-pro",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-6-astra-pro-fast",
+          "description": "2x price, priority tier"
+        },
+        {
+          "id": "openai/gpt-6-astra-pro-flex",
+          "description": "0.5x price, flex tier"
         },
         {
           "id": "openai/gpt-5.6-sol",
@@ -105,15 +129,11 @@
           "description": "dated snapshot of v4-pro"
         },
         {
-          "id": "deepseek/deepseek-v4-flash",
-          "description": ""
-        },
-        {
           "id": "deepseek/deepseek-v4-flash-0731",
           "description": "dated snapshot of v4-flash"
         },
         {
-          "id": "qwen/qwen3.8-max",
+          "id": "qwen/qwen3.8-max-0902",
           "description": ""
         },
         {
@@ -248,6 +268,24 @@
           "id": "anthropic/claude-haiku-4.5"
         },
         {
+          "id": "openai/gpt-6-astra"
+        },
+        {
+          "id": "openai/gpt-6-astra-fast"
+        },
+        {
+          "id": "openai/gpt-6-astra-flex"
+        },
+        {
+          "id": "openai/gpt-6-astra-pro"
+        },
+        {
+          "id": "openai/gpt-6-astra-pro-fast"
+        },
+        {
+          "id": "openai/gpt-6-astra-pro-flex"
+        },
+        {
           "id": "openai/gpt-5.6-sol"
         },
         {
@@ -293,13 +331,10 @@
           "id": "deepseek/deepseek-v4-pro-0813"
         },
         {
-          "id": "deepseek/deepseek-v4-flash"
-        },
-        {
           "id": "deepseek/deepseek-v4-flash-0731"
         },
         {
-          "id": "qwen/qwen3.8-max"
+          "id": "qwen/qwen3.8-max-0902"
         },
         {
           "id": "qwen/qwen3.8-flash"

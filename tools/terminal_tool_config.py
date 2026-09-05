@@ -9,6 +9,7 @@ so ``tools.terminal_tool.<name>`` keeps resolving (and monkeypatching) as before
 import logging
 import json
 import os
+import re
 from contextlib import contextmanager
 from typing import Any
 
@@ -51,9 +52,14 @@ def _safe_getcwd() -> str:
         return _tenv("TERMINAL_CWD") or os.path.expanduser("~")
 
 
-# Host-cwd prefixes that cannot exist inside a container sandbox (POSIX user
-# dirs and Windows drive paths as they leak toward a Linux ``-w`` flag).
-_HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
+# Host-cwd shapes that cannot exist inside a container sandbox: POSIX user dirs and ANY Windows
+# drive path (``D:\\...``, ``e:/...``) as they leak toward a Linux ``-w`` flag.
+_HOST_CWD_PREFIXES = ("/Users/", "/home/")
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _is_host_cwd(path: str) -> bool:
+    return path.startswith(_HOST_CWD_PREFIXES) or bool(_WINDOWS_DRIVE_RE.match(path))
 
 _CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
 _BUILTIN_BACKENDS = _CONTAINER_BACKENDS | {"local", "ssh", "managed_modal"}
@@ -94,7 +100,7 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
     workdir: ``docker run -w`` needs an absolute in-sandbox path, otherwise the
     container fails to start (exit 125). Windows drive paths aren't ``isabs``
     on POSIX, so they're caught by the prefix check."""
-    return bool(cwd) and (cwd.startswith(_HOST_CWD_PREFIXES) or not os.path.isabs(cwd))
+    return bool(cwd) and (_is_host_cwd(cwd) or not os.path.isabs(cwd))
 
 
 def _tenv(name: str, default: str = "") -> str:

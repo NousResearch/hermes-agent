@@ -539,10 +539,31 @@ def _load_secrets_config(home_path: Path) -> dict:
 
 
 def _process_hermes_home() -> Path:
-    """The HERMES_HOME the shared config cache is keyed to."""
-    try:
-        from hermes_constants import get_hermes_home
+    """The HERMES_HOME the running process was launched under.
 
-        return get_hermes_home()
+    Must be the *true* process home, ignoring any context-local
+    ``set_hermes_home_override`` a per-request task has installed. Both
+    callers depend on that:
+
+    * ``_reapply_terminal_config_bridge`` guards "only re-bridge config into
+      the shared ``os.environ`` when THIS load is for the process's own
+      profile". If this followed the task override, a per-turn handler scoped
+      to a *secondary* profile (the multiplex dashboard serving every profile
+      from one process) would satisfy the guard and bridge that profile's
+      ``terminal.backend`` into the shared env — e.g. a ``local`` sibling
+      profile clobbering the launch profile's ``TERMINAL_ENV=ssh`` while
+      leaving its ``TERMINAL_SSH_*`` untouched, so the session silently runs
+      commands locally (cross-profile terminal-backend leak).
+    * ``_load_secrets_config`` uses it to decide whether the shared
+      (mtime,size)-keyed config cache is safe to reuse; under an override it
+      must fall through to an isolated parse of the scoped profile.
+
+    ``hermes_constants.get_process_hermes_home()`` is the override-immune
+    resolver built for exactly this; delegate to it.
+    """
+    try:
+        from hermes_constants import get_process_hermes_home
+
+        return get_process_hermes_home()
     except Exception:
         return Path.home() / ".hermes"

@@ -1797,8 +1797,10 @@ def _fallback_reason_text(reason: "FailoverReason | None") -> str:
 
 
 def _is_anthropic_wire_url(url: str) -> bool:
-    """Same host match as determine_api_mode() / _detect_api_mode_for_url()."""
-    return url.rstrip("/").lower().endswith("/anthropic") or base_url_hostname(url) == "api.anthropic.com"
+    """Same Messages-only host match as determine_api_mode() / _detect_api_mode_for_url(): api.anthropic.com,
+    a /anthropic suffix, or Kimi Code's api.kimi.com/coding (its /chat/completions 404s — #77256)."""
+    from hermes_cli.providers import host_mandated_api_mode
+    return host_mandated_api_mode(url) == "anthropic_messages"
 
 
 def _fallback_api_mode_hint(fb: dict, fb_provider: str, fb_base_url_hint: Optional[str]) -> tuple[bool, str]:
@@ -2925,18 +2927,12 @@ class _StreamingCall:
         role = "assistant"
         _diag = self._new_diag()
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
+        from agent.chat_completion_helpers_relay import RelayChatAccumulator
+        relay_response = RelayChatAccumulator()
 
         def _open_stream(next_api_kwargs: dict[str, Any]):
             timeout = _httpx.Timeout(connect=conn_cap, read=read_timeout, write=base_timeout, pool=conn_cap)
             return self._open_chat_stream({**next_api_kwargs, "stream": True, "timeout": timeout})
-
-        def _relay_final_response() -> dict[str, Any]:
-            tool_calls.materialize()
-            message = {"role": role, "content": "".join(content_parts) or None,
-                "reasoning_content": "".join(reasoning_parts) or None,
-                "tool_calls": [tool_calls_acc[i] for i in sorted(tool_calls_acc)] or None}
-            return {"model": model_name, "usage": usage_obj,
-                "choices": [{"message": message, "finish_reason": finish_reason or "stop"}]}
 
         def _flush_pending_stream_text():
             pending_parts = list(pending_text_parts)
@@ -2946,8 +2942,8 @@ class _StreamingCall:
 
         from agent import relay_llm
         stream = self._set_managed_stream(relay_llm.stream(self.api_kwargs, _open_stream,
-            **_relay_stream_identity(self.agent, "provider"), finalizer=_relay_final_response,
-            on_stream_created=self._chat_stream_created,
+            **_relay_stream_identity(self.agent, "provider"), finalizer=relay_response.finalize,
+            on_stream_created=self._chat_stream_created, on_chunk=relay_response.observe,
             accept_chunk=lambda chunk: self._accept_chat_chunk(stream_attempt_id, chunk),
             completed_response_predicate=lambda value: hasattr(value, "choices"),
             metadata=_relay_stream_metadata(self.agent, "chat_completions"), defer_logical_completion=True))

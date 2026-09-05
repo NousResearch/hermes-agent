@@ -100,10 +100,14 @@ TOOLSETS = {
         "instructions and knowledge",
         ["skills_list", "skill_view", "skill_manage"],
     ),
+    # web_search belongs to `web`/`search` only. Listing it here too let
+    # `disabled_toolsets: [browser]` (headless/Docker deployments) strip
+    # web_search from every session, because disabled toolsets are a strict
+    # end-of-pipeline subtraction (#17309, #64503).
     "browser": _ts(
         "Browser automation for web interaction (navigate, click, type, scroll, "
-        "iframes, hold-click) with web search for finding URLs",
-        [t for t in _HERMES_CORE_TOOLS if t.startswith("browser_")] + ["web_search"],
+        "iframes, hold-click)",
+        [t for t in _HERMES_CORE_TOOLS if t.startswith("browser_")],
     ),
     "cronjob": _ts(
         "Cronjob management tool - create, list, update, pause, resume, remove, and "

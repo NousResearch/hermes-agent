@@ -117,11 +117,38 @@ class TestDenyOrdering:
         assert result["approved"] is False
         assert result.get("user_deny") is True
 
-    def test_container_backend_skips_deny(self, deny_config, clean_env):
-        """Isolated container backends bypass the whole guard stack (existing
-        contract) — deny rules protect the host, containers can't touch it."""
-        deny_config(["git push --force*"])
-        result = mod.check_dangerous_command("git push --force origin main", "docker")
+    @pytest.mark.parametrize(
+        "guard",
+        [mod.check_dangerous_command, mod.check_all_command_guards],
+    )
+    @pytest.mark.parametrize(
+        "env_type",
+        ["docker", "singularity", "modal", "daytona", "vercel_sandbox"],
+    )
+    def test_container_backend_cannot_skip_deny(
+            self, guard, env_type, deny_config, clean_env, monkeypatch):
+        deny_config(["*chmod*"], mode="off")
+        monkeypatch.setattr(mod, "_YOLO_MODE_FROZEN", True)
+
+        result = guard("chmod 600 /tmp/hermes-approval-deny-test", env_type)
+
+        assert result["approved"] is False
+        assert result.get("user_deny") is True
+
+    @pytest.mark.parametrize(
+        "guard",
+        [mod.check_dangerous_command, mod.check_all_command_guards],
+    )
+    @pytest.mark.parametrize(
+        "env_type",
+        ["docker", "singularity", "modal", "daytona", "vercel_sandbox"],
+    )
+    def test_container_backend_still_skips_non_denied_command(
+            self, guard, env_type, deny_config, clean_env):
+        deny_config(["*chmod*"])
+
+        result = guard("rm -rf build/", env_type)
+
         assert result["approved"] is True
 
     def test_benign_command_unaffected(self, deny_config, clean_env):

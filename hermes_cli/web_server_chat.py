@@ -49,6 +49,15 @@ PTY_REGISTRY = PtySessionRegistry(
     ttl=30 * 60, max_sessions=16, buffer_cap=1 * 1024 * 1024, read_timeout=_PTY_READ_CHUNK_TIMEOUT)
 
 
+async def _close_stalled_pty_input(ws: "WebSocket", *, path: str) -> None:
+    """Close only the terminal socket when its child stops accepting input."""
+    _log.warning("pty input stalled path=%s; recycling terminal session", path)
+    try:
+        await ws.close(code=1013, reason="PTY input stalled")
+    except Exception:
+        pass
+
+
 async def _legacy_pump(ws: "WebSocket", bridge) -> None:
     """Original 1:1 socket<->PTY pump: stream until disconnect, then close the
     bridge. Used when no ``?attach=`` token is supplied (keep-alive opt-in).
@@ -108,7 +117,9 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
             if match and match.end() == len(raw):
                 bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
                 continue
-            bridge.write(raw)
+            if not await bridge.write(raw):
+                await _close_stalled_pty_input(ws, path="legacy")
+                break
     except WebSocketDisconnect:
         pass
     finally:

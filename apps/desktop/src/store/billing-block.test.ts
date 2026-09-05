@@ -2,8 +2,10 @@ import type { BillingBlock } from '@hermes/shared'
 import { beforeEach, expect, test, vi } from 'vitest'
 
 vi.mock('@/lib/external-link', () => ({ openExternalLink: vi.fn() }))
+vi.mock('@/store/notifications', () => ({ dismissNotification: vi.fn() }))
 
 import { openExternalLink } from '@/lib/external-link'
+import { dismissNotification } from '@/store/notifications'
 
 import {
   $billingBlock,
@@ -52,6 +54,7 @@ test('clearBillingBlock with no arg clears any active block', () => {
   setBillingBlock('s1', makeBlock())
   clearBillingBlock()
   expect($billingBlock.get()).toBeNull()
+  expect(dismissNotification).toHaveBeenCalledWith('billing-block:openai')
 })
 
 test('runBillingRecovery routes Nous to in-app Settings, never an external link', () => {

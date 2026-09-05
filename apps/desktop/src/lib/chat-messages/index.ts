@@ -13,7 +13,11 @@ export {
   textPart
 } from './parts'
 export type { UnspokenTurnSpeech } from './parts'
-export { branchGroupForUser, preserveLocalAssistantErrors } from './reconciliation'
+export {
+  assistantLooksSuccessfullySettled,
+  branchGroupForUser,
+  preserveLocalAssistantErrors
+} from './reconciliation'
 export {
   restorePendingClarifyToolCall,
   sealOpenToolParts,

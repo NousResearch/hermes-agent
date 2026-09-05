@@ -28,7 +28,22 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     (r'system\s+prompt\s+override', "sys_prompt_override", "all"),
     (rf'disregard\s+{_FILLER}(your|all|any)\s+{_FILLER}(instructions|rules|guidelines)', "disregard_rules", "all"),
     (rf'act\s+as\s+(if|though)\s+{_FILLER}you\s+{_FILLER}(have\s+no|don\'t\s+have)\s+{_FILLER}(restrictions|limits|rules)', "bypass_restrictions", "all"),
-    (r'<!--[^>]{0,512}(?:ignore|override|system|secret|hidden)[^>]{0,512}-->', "html_comment_injection", "all"),
+    # "system" was a bare-word trigger here until 2026-08-26 -- it fired on
+    # any HTML comment mentioning "system" at all, including mundane
+    # documentation (e.g. "...tier of the system prompt" in a user's own
+    # AGENTS.md), silently blocking the whole file with no visible error.
+    # Per this module's own stated philosophy above ("anchor on unambiguous
+    # attack behavior, NOT bossy English"), a bare noun with no imperative
+    # verb nearby isn't unambiguous. "ignore"/"override" stay bare (they're
+    # inherently imperative and much less likely as innocuous prose);
+    # "secret"/"hidden" now require an actual suspicious paired object.
+    (
+        rf'<!--[^>]{{0,512}}(?:ignore|override'
+        rf'|secret\s+{_FILLER}(?:instructions?|command|password|key|prompt|code)'
+        rf'|hidden\s+{_FILLER}(?:instructions?|command|prompt|agenda|message)'
+        rf')[^>]{{0,512}}-->',
+        "html_comment_injection", "all",
+    ),
     (r'<\s*div\s+style\s*=\s*["\'][^>]{0,2048}display\s*:\s*none', "hidden_div", "all"),
     (r'translate\s+[^\n]{0,512}\s+into\s+[^\n]{0,512}\s+and\s+(execute|run|eval)', "translate_execute", "all"),
     (rf'do\s+not\s+{_FILLER}tell\s+{_FILLER}the\s+user', "deception_hide", "all"),

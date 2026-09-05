@@ -672,6 +672,60 @@ describe('preserveLocalAssistantErrors', () => {
     ])
   })
 
+  it('does not re-append a stale orphan error when a later turn has committed', () => {
+    // 429-style failure: the failed turn's assistant error row exists only
+    // locally (the gateway never persisted it), and the user has since sent a
+    // NEW turn whose reply committed. Re-appending the orphan error to the
+    // tail would stick the red error below the fresh answer.
+    const nextMessages: ChatMessage[] = [
+      {
+        id: 'stored-user',
+        parts: [{ text: 'earlier', type: 'text' }],
+        role: 'user'
+      },
+      {
+        id: 'stored-assistant',
+        parts: [{ text: 'earlier reply', type: 'text' }],
+        role: 'assistant'
+      },
+      {
+        id: 'user-456',
+        parts: [{ text: 'follow-up', type: 'text' }],
+        role: 'user'
+      },
+      {
+        id: 'assistant-456',
+        parts: [{ text: 'the follow-up answer', type: 'text' }],
+        role: 'assistant'
+      }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      ...nextMessages.slice(0, 2),
+      {
+        id: 'user-123',
+        parts: [{ text: 'prompt that hit 429', type: 'text' }],
+        role: 'user'
+      },
+      {
+        error: 'HTTP 429: rate limit exceeded',
+        id: 'assistant-error-1',
+        parts: [],
+        role: 'assistant'
+      },
+      ...nextMessages.slice(2)
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+
+    expect(merged.map(message => message.id)).toEqual([
+      'stored-user',
+      'stored-assistant',
+      'user-456',
+      'assistant-456'
+    ])
+  })
+
   it('keeps local assistant error when hydrated message reuses same id', () => {
     const nextMessages: ChatMessage[] = [
       {

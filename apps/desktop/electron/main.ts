@@ -5632,7 +5632,10 @@ function canonicalTitleCacheKey(rawUrl) {
 
     return `${host}${pathname}${url.search || ''}`
   } catch {
-    return value
+    // Not a parseable URL (e.g. leaked `@url:` markup, #93893): an empty key
+    // makes every consumer bail out instead of feeding the string to curl or
+    // the hidden title window's loadURL().
+    return ''
   }
 }
 
@@ -5836,6 +5839,18 @@ function usableTitle(value: string): string {
 
 function fetchLinkTitle(rawUrl) {
   const url = String(rawUrl || '').trim()
+
+  // Scheme gate (#93893): only real http(s) URLs enter the title pipeline.
+  // Anything else — leaked `@url:` markup, placeholders, garbage — must never
+  // reach curl or the hidden title window's loadURL(), where it surfaces as a
+  // repeating `Failed to load URL: @url:… ERR_NAME_NOT_RESOLVED` loop. The
+  // canonicalTitleCacheKey '' return below is the second layer of the same
+  // guard; this check keeps non-URLs out even when a parseable-but-wrong
+  // scheme (file:, mailto:) would still build a cache key.
+  if (!/^https?:\/\//i.test(url)) {
+    return Promise.resolve('')
+  }
+
   const key = canonicalTitleCacheKey(url)
 
   if (!key) {

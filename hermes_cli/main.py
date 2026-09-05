@@ -1739,7 +1739,7 @@ def cmd_gateway(args):
 
     from hermes_cli.gateway import gateway_command
 
-    gateway_command(args)
+    return gateway_command(args)
 
 
 def cmd_proxy(args):
@@ -1752,12 +1752,12 @@ def cmd_proxy(args):
         raise SystemExit(rc)
 
 
-def _forward_command(name: str, module: str, attr: str, *, forward_return: bool = False, doc: str = ""):
+def _forward_command(name: str, module: str, attr: str, *, forward_return: bool = True, doc: str = ""):
     """A ``hermes <cmd>`` handler that hands ``args`` to ``<module>.<attr>``.
 
     Imports at CALL time so fast paths never pay for it and
     ``patch("<module>.<attr>")`` keeps intercepting. ``forward_return``
-    surfaces the return code to ``main()`` (only kanban/project propagate).
+    surfaces the return code to ``main()``.
     """
 
     def _cmd(args):

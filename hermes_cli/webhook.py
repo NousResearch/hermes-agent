@@ -95,20 +95,21 @@ def webhook_command(args):
     if not sub:
         print("Usage: hermes webhook {subscribe|list|remove|test}")
         print("Run 'hermes webhook --help' for details.")
-        return
+        return 1
     if not _is_webhook_enabled():
         print(_setup_hint())
-        return
+        return 1
     handler = _ACTIONS.get(sub)
     if handler is not None:
-        handler(args)
+        return handler(args) or 0
+    return 1
 
 
 def _cmd_subscribe(args):
     name = args.name.strip().lower().replace(" ", "-")
     if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
         print(f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores.")
-        return
+        return 1
 
     subs = _load_subscriptions()
     is_update = name in subs
@@ -128,7 +129,7 @@ def _cmd_subscribe(args):
             print(
                 "Error: --deliver-only requires --deliver to be a real target "
                 "(telegram, discord, slack, github_comment, etc.) — not 'log'.")
-            return
+            return 1
         route["deliver_only"] = True
     script = (getattr(args, "script", "") or "").strip()
     if script:
@@ -153,6 +154,7 @@ def _cmd_subscribe(args):
     print("\n  Configure your service to POST to the URL above.")
     print("  Use the secret for HMAC-SHA256 signature validation.")
     print("  The gateway must be running to receive events (hermes gateway run).\n")
+    return 0
 
 
 def _cmd_list(args):
@@ -160,7 +162,7 @@ def _cmd_list(args):
     if not subs:
         print("  No dynamic webhook subscriptions.")
         print("  Create one with: hermes webhook subscribe <name>")
-        return
+        return 0
 
     base_url = _get_webhook_base_url()
     print(f"\n  {len(subs)} webhook subscription(s):\n")
@@ -179,6 +181,7 @@ def _cmd_list(args):
         if route.get("script"):
             print(f"    Script:  {route['script']}")
         print()
+    return 0
 
 
 def _cmd_remove(args):
@@ -187,10 +190,11 @@ def _cmd_remove(args):
     if name not in subs:
         print(f"  No subscription named '{name}'.")
         print("  Note: Static routes from config.yaml cannot be removed here.")
-        return
+        return 1
     del subs[name]
     _save_subscriptions(subs)
     print(f"  Removed webhook subscription: {name}")
+    return 0
 
 
 def _cmd_test(args):
@@ -199,7 +203,7 @@ def _cmd_test(args):
     subs = _load_subscriptions()
     if name not in subs:
         print(f"  No subscription named '{name}'.")
-        return
+        return 1
     secret = subs[name].get("secret", "")
     url = f"{_get_webhook_base_url()}/webhooks/{name}"
     payload = args.payload or '{"test": true, "event_type": "test", "message": "Hello from hermes webhook test"}'
@@ -214,9 +218,13 @@ def _cmd_test(args):
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = resp.read().decode()
             print(f"  Response ({resp.status}): {body}")
+            if resp.status >= 400:
+                return 1
+            return 0
     except Exception as e:
         print(f"  Error: {e}")
         print("  Is the gateway running? (hermes gateway run)")
+        return 1
 
 
 _ACTIONS = {

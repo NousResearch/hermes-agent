@@ -2261,28 +2261,43 @@ export const ja = defineLocale({
     images: '画像…',
     pasteImage: '画像を貼り付け',
     url: 'URL…',
-    promptSnippets: 'プロンプトスニペット…',
+    promptTemplates: 'プロンプトテンプレート…',
     tipPre: 'ヒント: ',
     tipPost: ' と入力してファイルをインラインで参照。',
-    snippetsTitle: 'プロンプトスニペット',
-    snippetsDesc: 'スターターのプロンプトをコンポーザーに挿入します。',
+    templatesTitle: 'プロンプトテンプレート',
+    templatesDesc: 'コンポーザーに挿入するスタータープロンプトを選択します。',
+    templateAdd: 'テンプレートを追加',
+    templateEdit: '編集',
+    templateDelete: '削除',
+    templateMoveUp: '上に移動',
+    templateMoveDown: '下に移動',
+    templateReset: 'デフォルトに戻す',
+    templateResetConfirm:
+      'すべてのテンプレートを3つの組み込みデフォルトに戻しますか？カスタムテンプレートは失われます。',
+    templateLabelPlaceholder: 'ラベル',
+    templateDescPlaceholder: '説明（任意）',
+    templateTextPlaceholder: 'プロンプトテキスト',
+    templateSave: '保存',
+    templateCancel: 'キャンセル',
+    templateEmpty: 'テンプレートがありません。追加して始めましょう。',
+    templateConfirmDelete: 'このテンプレートを削除しますか？',
     dropFiles: 'ファイルをドロップして添付',
     dropSession: 'ドロップしてこのチャットをリンク',
-    snippets: {
+    templates: {
       codeReview: {
         label: 'コードレビュー',
-        description: '回帰、エッジケースの欠落、テストの欠如を確認します。',
-        text: 'バグ、回帰、テストの欠如を確認してください。'
+        description: '最近の変更の回帰と未テストのエッジケースを確認。',
+        text: '共有したコードをレビューし、バグ、回帰、不足しているテスト、リスクのあるパターンを指摘してください。行番号と修正案を含めてください。'
       },
       implementationPlan: {
         label: '実装計画',
-        description: 'コードに手をつける前にアプローチを概説して、差分を集中させます。',
-        text: 'コードを変更する前に簡潔な実装計画を立ててください。'
+        description: 'コードを書く前にステップバイステップの計画を立てる。',
+        text: 'コードを書く前に、このタスクの実装ステップを概説してください。変更するファイル、各ファイルのアプローチ、リスクとトレードオフを含めてください。'
       },
       explainThis: {
-        label: 'これを説明する',
-        description: '選択したコードがどのように機能するかを説明し、主要なファイルにリンクします。',
-        text: 'これがどのように機能するか説明し、主要なファイルを教えてください。'
+        label: '説明して',
+        description: 'コードの動作を順を追って説明。',
+        text: 'このコードがどのように動作するか、順を追って説明してください。重要な設計判断と、最も重要なファイルや関数を指摘してください。'
       }
     }
   },

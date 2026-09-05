@@ -2210,12 +2210,26 @@ export interface Translations {
     images: string
     pasteImage: string
     url: string
-    promptSnippets: string
+    promptTemplates: string
     tipPre: string
     tipPost: string
-    snippetsTitle: string
-    snippetsDesc: string
-    snippets: Record<string, { label: string; description: string; text: string }>
+    templatesTitle: string
+    templatesDesc: string
+    templates: Record<string, { label: string; description: string; text: string }>
+    templateAdd: string
+    templateEdit: string
+    templateDelete: string
+    templateMoveUp: string
+    templateMoveDown: string
+    templateReset: string
+    templateResetConfirm: string
+    templateLabelPlaceholder: string
+    templateDescPlaceholder: string
+    templateTextPlaceholder: string
+    templateSave: string
+    templateCancel: string
+    templateEmpty: string
+    templateConfirmDelete: string
     dropFiles: string
     dropSession: string
     mcpSuggestions: {

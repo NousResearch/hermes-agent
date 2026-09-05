@@ -2763,11 +2763,25 @@ export const zh: Translations = {
     images: '图片…',
     pasteImage: '粘贴图片',
     url: 'URL…',
-    promptSnippets: '提示词片段…',
+    promptTemplates: '提示词模板…',
     tipPre: '提示：输入 ',
     tipPost: ' 以内联引用文件。',
-    snippetsTitle: '提示词片段',
-    snippetsDesc: '选择一个起始提示词放入输入框。',
+    templatesTitle: '提示词模板',
+    templatesDesc: '选择一个起始提示词放入输入框。',
+    templateAdd: '添加模板',
+    templateEdit: '编辑',
+    templateDelete: '删除',
+    templateMoveUp: '上移',
+    templateMoveDown: '下移',
+    templateReset: '恢复默认',
+    templateResetConfirm: '将所有模板恢复为三个内置默认值？自定义模板将丢失。',
+    templateLabelPlaceholder: '标签',
+    templateDescPlaceholder: '描述（可选）',
+    templateTextPlaceholder: '提示词文本',
+    templateSave: '保存',
+    templateCancel: '取消',
+    templateEmpty: '还没有模板。添加一个开始吧。',
+    templateConfirmDelete: '删除此模板？',
     dropFiles: '拖放文件以附加',
     dropSession: '拖放以链接此对话',
     mcpSuggestions: {
@@ -2807,21 +2821,21 @@ export const zh: Translations = {
       done: '已标记为定时任务',
       doneTip: '发送后由智能体创建任务'
     },
-    snippets: {
+    templates: {
       codeReview: {
         label: '代码审查',
-        description: '审查当前更改是否存在回归、遗漏的边界情况和缺失的测试。',
-        text: '请审查这部分是否存在缺陷、回归和缺失的测试。'
+        description: '检查近期改动是否有回归和未覆盖的边界情况。',
+        text: '审查我分享的代码，指出缺陷、回归、缺失的测试或有风险的模式。请给出具体行号和修复建议。'
       },
       implementationPlan: {
         label: '实现计划',
-        description: '在动代码之前先勾勒方案，让 diff 保持聚焦。',
-        text: '请在修改代码前制定一个简洁的实现计划。'
+        description: '写代码前先列出分步方案。',
+        text: '在写代码之前，先列出这个任务的实现步骤：要改哪些文件、每个文件的改法、以及潜在风险和取舍。'
       },
       explainThis: {
         label: '解释这段',
-        description: '讲解所选代码的工作方式，并链接到关键文件。',
-        text: '请解释这是如何工作的，并指给我关键文件。'
+        description: '逐步讲解某段代码的工作原理。',
+        text: '逐步讲解这段代码是如何工作的，解释关键设计决策，并指出最重要的文件和函数。'
       }
     }
   },

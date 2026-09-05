@@ -214,58 +214,171 @@ def _strip_reply_fallback(body: str) -> str:
 
 
 class _MatrixHtmlSanitizer(HTMLParser):
-    """Allowlist sanitizer for Matrix-compatible formatted HTML."""
+    """Allowlist sanitizer for Matrix-compatible formatted HTML.
 
-    _ALLOWED_TAGS = {
-        "a", "b", "blockquote", "br", "code", "del", "em", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "li", "ol",
-        "p", "pre", "s", "strike", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul"}
-    _VOID_TAGS = {"br", "hr"}
+    The allowlist and attribute rules mirror Matrix Client-Server API v1.19:
+    https://spec.matrix.org/v1.19/client-server-api/#mroommessage-msgtypes
+    """
+
+    _SPEC_ALLOWED_TAGS = {
+        "a", "b", "blockquote", "br", "caption", "code", "del", "details",
+        "div", "em", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "img",
+        "li", "ol", "p", "pre", "s", "span", "strong", "sub", "summary", "sup",
+        "table", "tbody", "td", "th", "thead", "tr", "u", "ul",
+    }
+    # Compatibility with HTML previously emitted by Hermes. Canonicalizing the
+    # obsolete tag keeps the sanitized output within the v1.19 allowlist.
+    _COMPAT_TAG_ALIASES = {"strike": "s"}
+    _VOID_TAGS = {"br", "hr", "img"}
+    _SKIP_CONTENT_TAGS = {"mx-reply", "script", "style"}
+    _MAX_DEPTH = 100
+    _SPEC_LINK_SCHEMES = {"ftp", "http", "https", "magnet", "mailto"}
+    # Compatibility divergence: Matrix URI deep links were supported by the
+    # previous Hermes sanitizer, but are not named in v1.19's recommended list.
+    _COMPAT_LINK_SCHEMES = {"matrix"}
+    _COLOR_ATTRIBUTES = {"data-mx-bg-color", "data-mx-color"}
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=False)
         self._parts: list[str] = []
-        self._skip_depth = 0
+        self._skip_tags: list[str] = []
+        self._open_tags: list[tuple[str, bool]] = []
+        self._render_depth = 0
 
-    @staticmethod
-    def _safe_url(value: str) -> str:
+    @classmethod
+    def _safe_link_url(cls, value: str) -> str:
         stripped = re.sub(r"[\x00-\x1f\x7f]+", "", value or "").strip()
         match = re.match(r"^([A-Za-z][A-Za-z0-9+.-]*):", stripped)
         scheme = match.group(1).lower() if match else ""
-        if scheme and scheme not in {"http", "https", "matrix", "mailto"}:
+        allowed_schemes = cls._SPEC_LINK_SCHEMES | cls._COMPAT_LINK_SCHEMES
+        return stripped if scheme in allowed_schemes else ""
+
+    @staticmethod
+    def _safe_mxc_url(value: str) -> str:
+        stripped = re.sub(r"[\x00-\x1f\x7f]+", "", value or "").strip()
+        try:
+            parsed = urlsplit(stripped)
+            port = parsed.port
+        except ValueError:
             return ""
-        return stripped
+        return stripped if (
+            parsed.scheme.lower() == "mxc"
+            and re.fullmatch(
+                r"(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?",
+                parsed.netloc,
+            )
+            and port != 0
+            and not parsed.query
+            and not parsed.fragment
+            and re.fullmatch(r"/[A-Za-z0-9_-]+", parsed.path)
+        ) else ""
 
     def _safe_attrs(self, tag: str, attrs: list[tuple[str, str | None]]) -> str:
         safe: list[str] = []
+        seen: set[str] = set()
         for key, value in attrs:
             attr = str(key or "").lower()
+            if not attr or attr in seen:
+                continue
+            seen.add(attr)
             raw_value = "" if value is None else str(value)
             if tag == "a" and attr == "href":
-                href = self._safe_url(raw_value)
+                href = self._safe_link_url(raw_value)
                 if href:
                     safe.append(f' href="{_html_escape(href, quote=True)}"')
-            elif tag == "code" and attr == "class" and re.fullmatch(r"language-[A-Za-z0-9_+.-]{1,64}", raw_value):
-                safe.append(f' class="{_html_escape(raw_value, quote=True)}"')
+            elif tag == "a" and attr == "target":
+                safe.append(f' target="{_html_escape(raw_value, quote=True)}"')
+            elif tag == "code" and attr == "class":
+                classes = [
+                    item
+                    for item in raw_value.split()
+                    if re.fullmatch(r"language-[A-Za-z0-9_+.-]{1,64}", item)
+                ]
+                if classes:
+                    safe.append(
+                        f' class="{_html_escape(" ".join(classes), quote=True)}"'
+                    )
+            elif tag == "div" and attr == "data-mx-maths":
+                safe.append(
+                    f' data-mx-maths="{_html_escape(raw_value, quote=True)}"'
+                )
+            elif tag == "img" and attr == "src":
+                src = self._safe_mxc_url(raw_value)
+                if src:
+                    safe.append(f' src="{_html_escape(src, quote=True)}"')
+            elif tag == "img" and attr in {"alt", "title"}:
+                safe.append(f' {attr}="{_html_escape(raw_value, quote=True)}"')
+            elif (
+                tag == "img"
+                and attr in {"height", "width"}
+                and re.fullmatch(r"[0-9]+", raw_value)
+            ):
+                safe.append(f' {attr}="{raw_value}"')
+            elif (
+                tag == "ol"
+                and attr == "start"
+                and re.fullmatch(r"[+-]?[0-9]+", raw_value)
+            ):
+                safe.append(f' start="{raw_value}"')
+            elif tag == "span" and attr in self._COLOR_ATTRIBUTES:
+                if re.fullmatch(r"#[0-9A-Fa-f]{6}", raw_value):
+                    safe.append(f' {attr}="{raw_value}"')
+            elif tag == "span" and attr in {"data-mx-maths", "data-mx-spoiler"}:
+                safe.append(f' {attr}="{_html_escape(raw_value, quote=True)}"')
         return "".join(safe)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
-        if tag in {"script", "style"}:
-            self._skip_depth += 1
-        elif not self._skip_depth and tag in self._ALLOWED_TAGS:
-            self._parts.append(f"<{tag}>" if tag in self._VOID_TAGS else f"<{tag}{self._safe_attrs(tag, attrs)}>")
+        if self._skip_tags:
+            if tag == self._skip_tags[-1]:
+                self._skip_tags.append(tag)
+            return
+        if tag in self._SKIP_CONTENT_TAGS:
+            self._skip_tags.append(tag)
+            return
+        tag = self._COMPAT_TAG_ALIASES.get(tag, tag)
+        if tag not in self._SPEC_ALLOWED_TAGS:
+            return
+        if tag in self._VOID_TAGS:
+            if self._render_depth < self._MAX_DEPTH:
+                self._parts.append(f"<{tag}{self._safe_attrs(tag, attrs)}>")
+            return
+        rendered = self._render_depth < self._MAX_DEPTH
+        self._open_tags.append((tag, rendered))
+        if rendered:
+            self._parts.append(f"<{tag}{self._safe_attrs(tag, attrs)}>")
+            self._render_depth += 1
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
-        if tag in {"script", "style"} and self._skip_depth:
-            self._skip_depth -= 1
+        if self._skip_tags:
+            if tag == self._skip_tags[-1]:
+                self._skip_tags.pop()
             return
-        if self._skip_depth or tag not in self._ALLOWED_TAGS or tag in self._VOID_TAGS:
+        tag = self._COMPAT_TAG_ALIASES.get(tag, tag)
+        if tag not in self._SPEC_ALLOWED_TAGS or tag in self._VOID_TAGS:
             return
-        self._parts.append(f"</{tag}>")
+
+        match_index = next(
+            (
+                index
+                for index in range(len(self._open_tags) - 1, -1, -1)
+                if self._open_tags[index][0] == tag
+            ),
+            None,
+        )
+        if match_index is None:
+            return
+
+        closing = self._open_tags[match_index:]
+        del self._open_tags[match_index:]
+        for open_tag, rendered in reversed(closing):
+            if rendered:
+                self._parts.append(f"</{open_tag}>")
+                self._render_depth -= 1
 
     def _emit(self, text: str) -> None:
-        if not self._skip_depth:
+        if not self._skip_tags:
             self._parts.append(text)
 
     def handle_data(self, data: str) -> None:
@@ -278,6 +391,11 @@ class _MatrixHtmlSanitizer(HTMLParser):
         self._emit(f"&#{name};")
 
     def get_html(self) -> str:
+        for tag, rendered in reversed(self._open_tags):
+            if rendered:
+                self._parts.append(f"</{tag}>")
+        self._open_tags.clear()
+        self._render_depth = 0
         return "".join(self._parts)
 
 
@@ -2642,8 +2760,12 @@ class MatrixAdapter(BasePlatformAdapter):
             msg_content["m.mentions"] = {"user_ids": mention_user_ids}
         if self._allow_room_mentions and self._has_outbound_room_mention(text):
             msg_content.setdefault("m.mentions", {})["room"] = True
-        html = self._markdown_to_html(self._inject_outbound_mention_links(text))
-        if html and html != text:
+
+        html_source = self._inject_outbound_mention_links(text)
+        html = self._markdown_to_html(html_source)
+        # Raw HTML can be unchanged by conversion but still requires the
+        # formatted_body field for Matrix clients to render it as HTML.
+        if html and (html != text or ("<" in html_source and ">" in html_source)):
             msg_content["format"] = "org.matrix.custom.html"
             msg_content["formatted_body"] = html
         return msg_content
@@ -2747,20 +2869,33 @@ class MatrixAdapter(BasePlatformAdapter):
             return mxc_url
         return f"{self._homeserver}/_matrix/client/v1/media/download/{mxc_url[6:]}"
 
-    def _markdown_to_html(self, text: str) -> str:
+    @staticmethod
+    def _markdown_to_html(text: str) -> str:
         """Markdown → org.matrix.custom.html via ``markdown`` when installed, else the regex fallback."""
         text = _pre_sanitize_matrix_markdown(text)
         with suppress(ImportError):
             import markdown as _md
-            md = _md.Markdown(extensions=["fenced_code", "tables", "nl2br", "sane_lists"])
-            if "html_block" in md.preprocessors:
-                md.preprocessors.deregister("html_block")
+
+            md = _md.Markdown(
+                extensions=["fenced_code", "tables", "nl2br", "sane_lists"],
+            )
+
+            # Keep raw HTML enabled so Matrix-supported structures such as
+            # <details> survive conversion. The final sanitizer below remains
+            # the security boundary for all Markdown and raw HTML output.
             html = md.convert(text)
             md.reset()
-            if html.count("<p>") == 1:
-                html = html.replace("<p>", "").replace("</p>", "")
+
+            if (
+                html.startswith("<p>")
+                and html.endswith("</p>")
+                and html.count("<p>") == 1
+                and html.count("</p>") == 1
+            ):
+                html = html[3:-4]
             return _sanitize_matrix_html(html)
-        return _sanitize_matrix_html(self._markdown_to_html_fallback(text))
+
+        return _sanitize_matrix_html(MatrixAdapter._markdown_to_html_fallback(text))
 
     @staticmethod
     def _sanitize_link_url(url: str) -> str:
@@ -2864,11 +2999,11 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         url = f"{homeserver}/_matrix/client/v3/rooms/{quote(chat_id, safe='')}/send/m.room.message/{txn_id}"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         payload = {"msgtype": "m.text", "body": message}
-        with suppress(ImportError):
-            import markdown as _md
-            html = _md.markdown(message, extensions=["fenced_code", "tables"])
+        html = MatrixAdapter._markdown_to_html(message)
+        if html:
             payload["format"] = "org.matrix.custom.html"
-            payload["formatted_body"] = re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html)
+            payload["formatted_body"] = html
+
         # asyncio.wait_for, not aiohttp.ClientTimeout: cron invokes this via
         # run_coroutine_threadsafe ("Timeout context manager should be used inside a task").
         async with aiohttp.ClientSession() as session:

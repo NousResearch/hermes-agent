@@ -1881,7 +1881,7 @@ def test_worker_memory_limit_uses_configured_ceiling(monkeypatch):
     gib = 1024 * 1024 * 1024
     monkeypatch.setattr(
         cfg_mod,
-        "read_raw_config",
+        "load_config_readonly",
         lambda: {"terminal": {"worker_memory_max_mb": 8192}},
     )
     monkeypatch.setattr(
@@ -1906,7 +1906,7 @@ def test_worker_memory_limit_keeps_stricter_cgroup_bound(monkeypatch):
     gib = 1024 * 1024 * 1024
     monkeypatch.setattr(
         cfg_mod,
-        "read_raw_config",
+        "load_config_readonly",
         lambda: {"terminal": {"worker_memory_max_mb": 8192}},
     )
     monkeypatch.setattr(

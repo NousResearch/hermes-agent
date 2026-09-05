@@ -88,9 +88,9 @@ _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
 def _worker_memory_max_cap_bytes() -> int:
     """Configured worker ceiling, falling back to the historical 4 GiB cap."""
     try:
-        from hermes_cli.config import DEFAULT_CONFIG, cfg_get, read_raw_config
+        from hermes_cli.config import DEFAULT_CONFIG, cfg_get, load_config_readonly
 
-        configured = cfg_get(read_raw_config(), "terminal", "worker_memory_max_mb")
+        configured = cfg_get(load_config_readonly(), "terminal", "worker_memory_max_mb")
         if configured is None:
             configured = DEFAULT_CONFIG["terminal"]["worker_memory_max_mb"]
         parsed = int(configured) * 1024 * 1024

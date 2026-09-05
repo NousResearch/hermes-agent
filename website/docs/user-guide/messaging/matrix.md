@@ -915,3 +915,14 @@ For more information on securing your Hermes Agent deployment, see the [Security
 - **Auto-join**: The bot automatically accepts room invites and joins. It starts responding immediately after joining.
 - **Media support**: Hermes can send and receive images, audio, video, and file attachments. Media is uploaded to your homeserver using the Matrix content repository API.
 - **Native voice messages (MSC3245)**: The Matrix adapter automatically tags outgoing voice messages with the `org.matrix.msc3245.voice` flag. This means TTS responses and voice audio are rendered as **native voice bubbles** in Element and other clients that support MSC3245, rather than as generic audio file attachments. Incoming voice messages with the MSC3245 flag are also correctly identified and routed to speech-to-text transcription. No configuration is needed — this works automatically.
+
+## Exec approval cards
+
+Dangerous-command approvals on Matrix use standard `m.room.message` text/HTML plus reactions (`✅` / session / always / deny) and typed `!approve` / `!deny` commands.
+
+- t0 shows the force-redacted command expanded
+- optional async advisory summary may collapse the command into HTML `details` while keeping audit text
+- terminal resolution replaces the card with a compact one-line outcome via `m.replace`
+- concurrent approvals use exact `approval_id` identity rather than last-card-wins
+
+Summary routing can be disabled or constrained (including local-only) via Matrix approval summary config.

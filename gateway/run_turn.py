@@ -2170,7 +2170,37 @@ class GatewayTurnMixin:
                 finally:
                     self._cleanup_agent_resources(agent)
 
-            result = await self._run_in_executor_with_context(run_sync)
+            from tools.approval import register_gateway_notify, unregister_gateway_notify
+            from tools.approval_context import reset_current_session_key, set_current_session_key
+            from gateway.approval_bridge import _make_gateway_approval_notifier
+
+            approval_session_key = task_id
+            command_session_key = self._session_key_for_source(source)
+            # Reuse source+event_message_id metadata so Telegram DM topic reply
+            # anchors and other platform thread fields survive completion sends.
+            approval_notify = _make_gateway_approval_notifier(
+                adapter=adapter,
+                chat_id=str(source.chat_id or ""),
+                session_key=approval_session_key,
+                metadata=_thread_metadata,
+                requester_user_id=getattr(source, "user_id", None),
+                loop=asyncio.get_running_loop(),
+                pause_typing=False,
+            )
+            approval_token = set_current_session_key(approval_session_key)
+            try:
+                register_gateway_notify(
+                    approval_session_key,
+                    approval_notify,
+                    command_session_key=command_session_key,
+                )
+                try:
+                    result = await self._run_in_executor_with_context(run_sync)
+                finally:
+                    unregister_gateway_notify(approval_session_key)
+            finally:
+                reset_current_session_key(approval_token)
+
 
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):

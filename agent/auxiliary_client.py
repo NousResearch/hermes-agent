@@ -6455,6 +6455,7 @@ def _resolve_call_client(
     api_key: Optional[str], resolved_provider: str, resolved_model: Optional[str],
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str], main_runtime: Optional[Dict[str, Any]], async_mode: bool,
+    allow_provider_fallback: bool = True,
 ) -> _ResolvedAuxRoute:
     """Resolve the client for one aux call: vision chain, or cached text client with the
     explicit-provider fallback_chain / auto-chain rescue; RuntimeError when nothing is configured."""
@@ -6465,7 +6466,7 @@ def _resolve_call_client(
             model=resolved_model or model, base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key, async_mode=async_mode, main_runtime=main_runtime,
         )
-        if client is None and resolved_provider != "auto" and not resolved_base_url:
+        if allow_provider_fallback and client is None and resolved_provider != "auto" and not resolved_base_url:
             logger.warning("Vision provider %s unavailable, falling back to auto vision backends",
                            resolved_provider)
             effective_provider, client, final_model = resolve_vision_provider_client(
@@ -6483,7 +6484,7 @@ def _resolve_call_client(
             # Explicit provider with no credentials: honor the task fallback_chain before
             # raising (fallback entries may use OAuth / credential-pool auth).
             _explicit = (resolved_provider or "").strip().lower()
-            if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
+            if allow_provider_fallback and _explicit and _explicit not in {"auto", "openrouter", "custom"}:
                 fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
                     task, _explicit)
                 if fb_client is None:
@@ -6499,7 +6500,7 @@ def _resolve_call_client(
                 effective_provider = resolved_provider
             # Auto/custom with no credentials: walk the full auto chain (not just OpenRouter).
             # model=None so each provider uses its own default.
-            if client is None and not resolved_base_url:
+            if allow_provider_fallback and client is None and not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
                 client, final_model = _get_cached_client(
@@ -6526,6 +6527,7 @@ def _prepare_aux_request(
     timeout: Optional[float], extra_body: Optional[dict], reasoning_config: Optional[dict],
     extra_headers: Optional[Dict[str, str]], api_mode: Optional[str],
     route_info: Optional[Dict[str, str]], async_mode: bool,
+    allow_provider_fallback: bool = True,
 ) -> _PreparedAuxRequest:
     """Shared head of call_llm/async_call_llm: resolve route + client, publish it, build request kwargs.
     Sync-only: compression fast lane, per-request ``extra_headers``, and ``base_info`` falling
@@ -6540,8 +6542,7 @@ def _prepare_aux_request(
         task, provider=provider, model=model, base_url=base_url, api_key=api_key,
         resolved_provider=resolved_provider, resolved_model=resolved_model,
         resolved_base_url=resolved_base_url, resolved_api_key=resolved_api_key,
-        resolved_api_mode=resolved_api_mode, main_runtime=main_runtime, async_mode=async_mode,
-    )
+        resolved_api_mode=resolved_api_mode, main_runtime=main_runtime, async_mode=async_mode, allow_provider_fallback=allow_provider_fallback)
     effective_timeout = _effective_aux_timeout(task, timeout)
     request_provider = effective_provider or resolved_provider
     fast_compression_cap = None
@@ -6855,6 +6856,7 @@ def _aux_recovery_ladder(
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str], final_model: Optional[str], max_tokens: Optional[int],
     main_runtime: Optional[Dict[str, Any]], route_info: Optional[Dict[str, str]],
+    allow_provider_fallback: bool = True,
 ):
     """Ordered recovery rungs after the primary request failed (generator): parameter
     strips → Nous heal/refresh → credential refresh/pool rotation → provider fallback.
@@ -6875,9 +6877,10 @@ def _aux_recovery_ladder(
     resp, first_err = yield from _ladder_credential_rungs(first_err, route, kwargs, client_is_nous)
     if first_err is None:
         return resp
-    resp = yield from _ladder_provider_fallback(first_err, route)
-    if resp is not None:
-        return resp
+    if allow_provider_fallback:
+        resp = yield from _ladder_provider_fallback(first_err, route)
+        if resp is not None:
+            return resp
     # Connection/timeout errors poison the cached client (closed transport, half-read
     # stream); evict so the next aux call rebuilds a fresh one.
     # Drop it from the cache regardless of whether we found a fallback above so the next auxiliary call
@@ -6943,6 +6946,7 @@ def call_llm(
     extra_headers: Optional[Dict[str, str]] = None, api_mode: str = None, stream: bool = False,
     stream_options: dict = None, route_info: Optional[Dict[str, str]] = None,
     latency_info: Optional[Dict[str, int]] = None,
+    allow_provider_fallback: bool = True,
 ) -> Any:
     """Run an auxiliary LLM request, applying the configured task limit."""
     queue_started_at = time.monotonic()
@@ -6970,8 +6974,7 @@ def call_llm(
                 main_runtime=main_runtime, messages=messages, temperature=temperature,
                 max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
                 reasoning_config=reasoning_config, extra_headers=extra_headers, api_mode=api_mode,
-                stream=stream, stream_options=stream_options, route_info=route_info,
-            )
+                stream=stream, stream_options=stream_options, route_info=route_info, allow_provider_fallback=allow_provider_fallback)
         if stream and semaphore is not None:
             stream_semaphore = semaphore
             semaphore = None
@@ -7004,6 +7007,7 @@ def _plan_aux_call(
     timeout: Optional[float], extra_body: Optional[dict], reasoning_config: Optional[dict],
     extra_headers: Optional[Dict[str, str]], api_mode: Optional[str],
     route_info: Optional[Dict[str, str]],
+    allow_provider_fallback: bool = True,
 ) -> Tuple[_PreparedAuxRequest, Dict[str, Any], Dict[str, Any]]:
     """Shared head of both call impls: prepare the request and bundle the kwargs the recovery
     drivers pass to ``_retry_same_provider_*`` / ``_call_fallback_candidate_*``. One immutable
@@ -7015,8 +7019,7 @@ def _plan_aux_call(
         main_runtime=main_runtime, messages=messages, temperature=temperature,
         max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
         reasoning_config=reasoning_config, extra_headers=extra_headers,
-        api_mode=api_mode, route_info=route_info, async_mode=async_mode,
-    )
+        api_mode=api_mode, route_info=route_info, async_mode=async_mode, allow_provider_fallback=allow_provider_fallback)
     candidate_kwargs = dict(
         task=task, messages=messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, effective_timeout=req.effective_timeout,
@@ -7058,6 +7061,7 @@ def _ladder_step_call(
 def _start_recovery_ladder(
     first_err: Exception, req: _PreparedAuxRequest, retry_kwargs: Dict[str, Any], *,
     task: Optional[str], async_mode: bool, route_info: Optional[Dict[str, str]],
+    allow_provider_fallback: bool = True,
 ):
     """Build the recovery-ladder generator for a failed primary request."""
     return _aux_recovery_ladder(
@@ -7066,7 +7070,7 @@ def _start_recovery_ladder(
         resolved_model=req.resolved_model, resolved_base_url=req.resolved_base_url,
         resolved_api_key=req.resolved_api_key, resolved_api_mode=req.resolved_api_mode,
         final_model=req.final_model, max_tokens=retry_kwargs["max_tokens"],
-        main_runtime=retry_kwargs["main_runtime"], route_info=route_info)
+        main_runtime=retry_kwargs["main_runtime"], route_info=route_info, allow_provider_fallback=allow_provider_fallback)
 
 
 def _call_llm_impl(
@@ -7076,6 +7080,7 @@ def _call_llm_impl(
     timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
     extra_headers: Optional[Dict[str, str]] = None, api_mode: str = None, stream: bool = False,
     stream_options: dict = None, route_info: Optional[Dict[str, str]] = None,
+    allow_provider_fallback: bool = True,
 ) -> Any:
     """Centralized synchronous LLM call: resolve provider/model, auth, kwargs, fallbacks.
     task: aux task whose provider:model comes from config (ignored if provider set); api_mode
@@ -7088,6 +7093,7 @@ def _call_llm_impl(
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=timeout,
         extra_body=extra_body, reasoning_config=reasoning_config,
         extra_headers=extra_headers, api_mode=api_mode, route_info=route_info,
+        allow_provider_fallback=allow_provider_fallback,
     )
     client, kwargs, request_provider = req.client, req.kwargs, req.request_provider
     # Streaming path (MoA aggregator): return the raw SDK stream, skipping validation and
@@ -7158,7 +7164,8 @@ def _call_llm_impl(
                 return _retry_same_provider_sync(**kw)
             return _call_fallback_candidate_sync(*args, **kw)
         result = _drive_ladder(
-            _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=False, route_info=route_info),
+            _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=False, route_info=route_info,
+                                   allow_provider_fallback=allow_provider_fallback),
             _perform)
         if result is _RERAISE_ORIGINAL:
             raise
@@ -7241,6 +7248,7 @@ async def async_call_llm(
     temperature: Optional[float] = None, max_tokens: int = None, tools: list = None,
     timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
     route_info: Optional[Dict[str, str]] = None,
+    allow_provider_fallback: bool = True,
 ) -> Any:
     """Run an asynchronous auxiliary LLM request under the configured limit."""
     semaphore = _acquire_async_aux_semaphore(task)
@@ -7251,8 +7259,7 @@ async def async_call_llm(
             task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
             main_runtime=main_runtime, messages=messages, temperature=temperature,
             max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
-            reasoning_config=reasoning_config, route_info=route_info,
-        )
+            reasoning_config=reasoning_config, route_info=route_info, allow_provider_fallback=allow_provider_fallback)
     finally:
         if semaphore is not None:
             semaphore.release()
@@ -7264,6 +7271,7 @@ async def _async_call_llm_impl(
     temperature: Optional[float] = None, max_tokens: int = None, tools: list = None,
     timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
     route_info: Optional[Dict[str, str]] = None,
+    allow_provider_fallback: bool = True,
 ) -> Any:
     """Centralized asynchronous LLM call; see call_llm() for full documentation.
     No per-request header / api_mode override on the async entry point."""
@@ -7273,6 +7281,7 @@ async def _async_call_llm_impl(
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=timeout,
         extra_body=extra_body, reasoning_config=reasoning_config,
         extra_headers=None, api_mode=None, route_info=route_info,
+        allow_provider_fallback=allow_provider_fallback,
     )
     client, kwargs, request_provider = req.client, req.kwargs, req.request_provider
     try:
@@ -7314,7 +7323,8 @@ async def _async_call_llm_impl(
             fb_client, _ = _to_async_client(fb_client, fb_model or "", is_vision=(task == "vision"))
             return await _call_fallback_candidate_async(fb_client, fb_model, fb_label, **kw)
         result = await _drive_ladder_async(
-            _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=True, route_info=route_info),
+            _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=True, route_info=route_info,
+                                   allow_provider_fallback=allow_provider_fallback),
             _perform)
         if result is _RERAISE_ORIGINAL:
             raise

@@ -23,6 +23,7 @@ from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import strip_stale_dangerous_confirmations
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
+from gateway.matrix_tool_activity import matrix_tool_activity_bodies
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
@@ -416,6 +417,7 @@ class TurnRunner:
         _progress_len_fn: Any
         _PROGRESS_TEXT_LIMIT: int
         _edit_accepts_metadata: bool
+        is_matrix: bool = False
 
     def _progress_edit_state(self, adapter) -> "TurnRunner._ProgressEditState":
         ctx = self._ctx
@@ -432,6 +434,7 @@ class TurnRunner:
                 len_fn = adapter.message_len_fn_for_chat(ctx.source.chat_id)
         return self._ProgressEditState(
             adapter=adapter, progress_lines=[], progress_msg_id=None,
+            is_matrix=(getattr(adapter, "name", "") == "matrix" or ctx.source.platform == Platform.MATRIX),
             # "separate" = one message per tool (pre-v0.9 behavior)
             can_edit=ctx.progress_grouping != "separate",
             _progress_len_fn=len_fn,
@@ -446,7 +449,9 @@ class TurnRunner:
         kwargs = {"chat_id": ctx.source.chat_id, "message_id": message_id, "content": content}
         if getattr(st.adapter, "REQUIRES_EDIT_FINALIZE", False):
             kwargs["finalize"] = True
-        if st._edit_accepts_metadata:
+        if st.is_matrix:
+            kwargs["content"], kwargs["metadata"] = self._matrix_progress_payload(st.progress_lines)
+        elif st._edit_accepts_metadata:
             kwargs["metadata"] = ctx._progress_metadata
         return await st.adapter.edit_message(**kwargs)
 
@@ -466,10 +471,19 @@ class TurnRunner:
             current = candidate
         return groups + ([current] if current else [])
 
+    def _matrix_progress_payload(self, lines):
+        body, html = matrix_tool_activity_bodies(lines)
+        return body, {**(self._ctx._progress_metadata or {}), "matrix_formatted_body": html,
+                      "matrix_formatted_body_unprefixed": True, "_interim_send": True}
+
     async def _send_progress_text(self, st, text: str):
         ctx = self._ctx
+        metadata = ctx._progress_metadata
+        # Native task-card fallback shares this sender but has no editable-list state.
+        if isinstance(st, self._ProgressEditState) and st.is_matrix:
+            text, metadata = self._matrix_progress_payload(st.progress_lines)
         result = await st.adapter.send(
-            chat_id=ctx.source.chat_id, content=text, reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata,
+            chat_id=ctx.source.chat_id, content=text, reply_to=ctx._progress_reply_to, metadata=metadata,
         )
         self._track_progress_result(result)
         return result
@@ -480,7 +494,7 @@ class TurnRunner:
         Returns True when it delivered/split the buffer or a transient edit failure left it
         intact for retry — either way the caller skips the normal send/edit path this tick.
         """
-        if not st.progress_lines or not st.can_edit:
+        if st.is_matrix or not st.progress_lines or not st.can_edit:
             return False
         groups = self._split_progress_groups(st, st.progress_lines)
         if len(groups) <= 1:
@@ -565,6 +579,9 @@ class TurnRunner:
             result = await self._edit_progress_message(st, st.progress_msg_id, "\n".join(st.progress_lines))
             if result.success:
                 return True
+            # Never turn a failed Matrix edit into a stream of new roots.
+            if st.is_matrix:
+                return False
             if getattr(result, "retryable", False):
                 logger.debug("[%s] Transient edit failure — keeping can_edit=True", st.adapter.name)
                 return False
@@ -587,6 +604,9 @@ class TurnRunner:
             return
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
             await self._send_native_task_card_progress(adapter)
+            return
+        if ctx.matrix_activity_pane is not None and ctx.matrix_activity_pane.coalescing_enabled:
+            await self._send_matrix_activity_progress()
             return
         # Skip tool progress for platforms that can't edit messages (e.g. iMessage/BlueBubbles):
         # each update would be a separate bubble. getattr, not attribute access: duck-typed
@@ -635,6 +655,66 @@ class TurnRunner:
             except Exception as e:
                 logger.error("Progress message error: %s", e)
                 await asyncio.sleep(1)
+
+    async def _send_matrix_activity_progress(self) -> None:
+        """Drain Matrix tool labels through the turn's shared activity pane."""
+
+        ctx = self._ctx
+        pane = ctx.matrix_activity_pane
+        if pane is None:
+            return
+
+        # Heartbeat and queue updates share this throttle; idle polling flushes
+        # pending snapshots even when no later tool arrives.
+        pane.publish_interval = 1.5
+
+        async def _publish(raw: Any) -> None:
+            if isinstance(raw, tuple) and raw and raw[0] == "__reset__":
+                # Matrix has one root for the whole turn, including across
+                # streamed content segment boundaries.
+                return
+            if (
+                isinstance(raw, tuple)
+                and len(raw) == 3
+                and raw[0] == "__dedup__"
+            ):
+                _, base_msg, count = raw
+                await pane.replace_activity(
+                    str(base_msg),
+                    f"{base_msg} (×{count + 1})",
+                )
+                return
+            await pane.append_activity(str(raw))
+
+        try:
+            while True:
+                if not ctx._run_still_current():
+                    return
+                try:
+                    raw = ctx.progress_queue.get_nowait()
+                except queue.Empty:
+                    if not self._agent_interrupted():
+                        await pane.flush()
+                    await asyncio.sleep(0.1)
+                    continue
+                if ctx._run_still_current() and not self._agent_interrupted():
+                    await _publish(raw)
+                # Yield under a continuously replenished queue, without emitting
+                # one replacement per queued label.
+                await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            while True:
+                try:
+                    raw = ctx.progress_queue.get_nowait()
+                except queue.Empty:
+                    break
+                except Exception:
+                    break
+                if ctx._run_still_current() and not self._agent_interrupted():
+                    await _publish(raw)
+            return
+        except Exception:
+            logger.debug("Matrix activity progress failed", exc_info=True)
 
     # ── ID-bearing lifecycle callbacks (agent thread) ───────────────────────────────────────
 
@@ -771,6 +851,10 @@ class TurnRunner:
                 ctx.source.platform.value if ctx.source.platform else "unknown", event_type,
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
+            return
+        if (ctx.matrix_activity_pane is not None and ctx.matrix_activity_pane.coalescing_enabled
+                and ctx.progress_queue is not None):
+            ctx.progress_queue.put(prepared)
             return
         fut = self._schedule(
             _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),

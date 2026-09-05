@@ -3540,6 +3540,12 @@ class GatewayTurnMixin:
                     # A background task that died of a real error must not abort the cleanup path.
                     logger.debug("background turn task failed during cleanup", exc_info=True)
 
+        if turn_ctx.matrix_activity_pane is not None:
+            await turn_ctx.matrix_activity_pane.close()
+            root_id = turn_ctx.matrix_activity_pane.root_event_id
+            if turn_ctx._cleanup_progress and root_id and root_id not in turn_ctx._cleanup_msg_ids:
+                turn_ctx._cleanup_msg_ids.append(root_id)
+
     async def _run_agent_edit_streamed_message(
         self, _sc, source, response, content, *, _sk, ok, fail_result, fail_exc,
     ) -> None:
@@ -3691,6 +3697,15 @@ class GatewayTurnMixin:
         turn_ctx._progress_metadata, turn_ctx._progress_reply_to, _status_thread_metadata = (
             self._run_agent_progress_threading(source, event_message_id, _native_slack_task_cards)
         )
+        adapter = self._adapter_for_source(source)
+        if turn_ctx.tool_progress_enabled and adapter is not None and (
+            getattr(adapter, "name", "") == "matrix" or source.platform == Platform.MATRIX
+        ):
+            from gateway.matrix_activity_pane import MatrixActivityPane
+            turn_ctx.matrix_activity_pane = MatrixActivityPane(
+                adapter=adapter, chat_id=source.chat_id, reply_to=turn_ctx._progress_reply_to,
+                metadata=turn_ctx._progress_metadata,
+            )
         # Bridges: sync step/event/status callbacks → async hooks.emit and adapter.send.
         turn_ctx._loop_for_step = asyncio.get_running_loop()
         turn_ctx._hooks_ref = self.hooks
@@ -3753,6 +3768,9 @@ class GatewayTurnMixin:
             )
             try:
                 _notify_res = None
+                if turn_ctx.matrix_activity_pane is not None:
+                    await turn_ctx.matrix_activity_pane.set_footer(_heartbeat_text)
+                    continue
                 if _heartbeat_msg_id:
                     try:
                         _notify_res = await _notify_adapter.edit_message(source.chat_id, _heartbeat_msg_id, _heartbeat_text)
@@ -3836,6 +3854,13 @@ class GatewayTurnMixin:
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
             pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
             if pending_event or pending:
+                if turn_ctx.matrix_activity_pane is not None:
+                    if progress_task:
+                        progress_task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await progress_task
+                        progress_task = None
+                    await turn_ctx.matrix_activity_pane.close()
                 return await self._run_agent_queued_followup(
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,
                 )

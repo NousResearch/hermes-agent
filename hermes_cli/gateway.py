@@ -3210,7 +3210,9 @@ def systemd_restart(system: bool = False):
         _escalate_wedged_gateway(pid)
         svc = get_service_name()
         _run_systemctl(["reset-failed", svc], system=system, check=False, timeout=30)
-        _run_systemctl(["restart", svc], system=system, check=False, timeout=90)
+        _run_systemctl(
+            ["--no-block", "restart", svc], system=system, check=False, timeout=90
+        )
         _wait_for_systemd_service_restart(system=system, previous_pid=pid)
         return
     if pid is not None:
@@ -3278,7 +3280,10 @@ def _systemd_reset_and_run(action: str, *, system: bool, previous_pid) -> None:
     svc = get_service_name()
     _run_systemctl(["reset-failed", svc], system=system, check=False, timeout=30)
     try:
-        _run_systemctl([action, svc], system=system, check=True, timeout=90)
+        systemctl_args = [action, svc]
+        if action == "restart":
+            systemctl_args.insert(0, "--no-block")
+        _run_systemctl(systemctl_args, system=system, check=True, timeout=90)
     except subprocess.CalledProcessError as exc:
         if _systemd_error_indicates_start_limit(exc) or _systemd_service_is_start_limited(system=system):
             _print_systemd_start_limit_wait(system=system)

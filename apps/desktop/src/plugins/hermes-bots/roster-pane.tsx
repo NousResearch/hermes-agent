@@ -256,6 +256,28 @@ export function BotsPane() {
   const { data, error, isLoading, refetch } = useRoster()
   const gatewayState = useValue(host.state.gateway)
   const gatewayUp = gatewayState === 'open'
+  const gatewayConnection = useValue(host.state.gatewayConnection)
+
+  // #101195: what the waiting card names. Prefer the live WS target (it is
+  // re-minted per dial, so it names the endpoint CURRENTLY being retried);
+  // fall back to the HTTP baseUrl for early-boot (pre-dial) frames. Hide
+  // credentials embedded in query strings.
+  const connectionEndpoint = (() => {
+    const raw = gatewayConnection?.wsUrl || gatewayConnection?.baseUrl || ''
+
+    if (!raw) {return null}
+
+    try {
+      const url = new URL(raw)
+      url.search = ''
+      url.hash = ''
+
+      return url.toString()
+    } catch {
+      return raw
+    }
+  })()
+
   const activeProfile = (useValue(host.state.profile) || 'default').trim() || 'default'
   const [createOpen, setCreateOpen] = useState(false)
   const [groupCreateOpen, setGroupCreateOpen] = useState(false)
@@ -898,6 +920,15 @@ export function BotsPane() {
               ? b.roster.rosterUnavailable(error instanceof Error ? error.message : 'gateway error')
               : b.roster.waitingForGateway}
           </div>
+          {!gatewayUp && connectionEndpoint ? (
+            // #101195: the forever-"Waiting…" card hid WHERE it was trying.
+            // Name the endpoint being retried so a connection pointing at
+            // the wrong host/port (the reporter's OpenClaw port collision)
+            // is diagnosable from the UI instead of a silent banner.
+            <div className="font-mono text-[0.6875rem] break-all text-(--ui-text-quaternary)">
+              {connectionEndpoint}
+            </div>
+          ) : null}
           <Button className="justify-self-start" onClick={() => void refetch()} size="sm" variant="secondary">
             {b.roster.retryNow}
           </Button>

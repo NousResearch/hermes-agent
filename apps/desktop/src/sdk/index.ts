@@ -42,6 +42,7 @@ import {
 import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
+import type { HermesConnection } from '@/global'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
 import {
   $gateway,
@@ -618,6 +619,22 @@ export const host = {
     focusedUsage: readonlyAtom<null | UsageStats>($focusedUsage),
     /** Gateway socket state: 'idle' | 'connecting' | 'open' | …. Not turn-busy. */
     gateway: readonlyAtom<string>($gatewayState),
+    /**
+     * Transport descriptor of the active gateway connection, for
+     * diagnostics. Derived from $connection — the resolved
+     * HermesConnection the boot / reconnect paths publish BEFORE opening
+     * the WebSocket — so it is available while the gateway is still
+     * 'connecting' or retrying: exactly when a stuck-connection surface
+     * needs to name WHERE it is trying (#101195 — the indefinite
+     * 'Waiting for the gateway connection…' card hid the endpoint, so a
+     * user whose active connection pointed at the wrong host/port saw a
+     * silent forever-banner instead of an addressable failure).
+     *
+     * wsUrl is the live transport target; baseUrl the HTTP API root;
+     * mode / remoteHost identify what kind of connection is being
+     * retried. Null before the first descriptor is published.
+     */
+    gatewayConnection: readonlyAtom<HermesConnection | null>($connection),
     /** Current main model slug. */
     model: readonlyAtom<string>($currentModel),
     /** Profile the live gateway is routed to. */

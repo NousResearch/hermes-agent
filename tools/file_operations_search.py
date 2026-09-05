@@ -445,8 +445,12 @@ class SearchMixin:
             merged = self._search_files(pattern, existing, limit, offset, order)
         else:
             merged = SearchResult()
+            page_end = offset + limit
             for root in existing:
-                sub = self._search_content(pattern, root, file_glob, limit, offset, output_mode, context)
+                # Apply pagination once, after combining the root prefixes. An
+                # extra row lets the combined result report a truncated page.
+                root_limit, root_offset = (limit, offset) if output_mode == "count" else (page_end + 1, 0)
+                sub = self._search_content(pattern, root, file_glob, root_limit, root_offset, output_mode, context)
                 if sub.error:
                     return sub
                 merged.matches.extend(sub.matches)
@@ -454,8 +458,10 @@ class SearchMixin:
                 merged.counts.update(sub.counts)
                 merged.total_count += sub.total_count
                 merged.truncated = merged.truncated or sub.truncated
-            merged.matches = merged.matches[:limit]
-            merged.files = merged.files[:limit]
+            if output_mode != "count":
+                merged.truncated = merged.truncated or merged.total_count > page_end
+            merged.matches = merged.matches[offset:page_end]
+            merged.files = merged.files[offset:page_end]
         note = f"path contained {len(parts)} entries; searched {len(existing)} that exist"
         if missing:
             note += "; skipped missing: " + ", ".join(missing[:3])

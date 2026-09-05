@@ -635,6 +635,40 @@ def test_run_stream_bounds_replay_evicts_slow_clients_and_seals_terminal():
     )
 
 
+def test_sweep_expires_overflowed_subscriber_but_retains_active_stream(adapter):
+    """The sweeper trusts live stream membership over stale handler bookkeeping."""
+    from gateway.platforms.api_server_runs import _RunStream
+
+    overflowed_run = "run_overflowed_subscriber"
+    overflowed_stream = _RunStream()
+    overflowed_subscriber, _ = overflowed_stream.attach()
+    active_run = "run_active_subscriber"
+    active_stream = _RunStream()
+    active_stream.attach()
+
+    for run_id, stream in (
+        (overflowed_run, overflowed_stream),
+        (active_run, active_stream),
+    ):
+        adapter._run_streams[run_id] = stream
+        adapter._run_streams_created[run_id] = 0
+        adapter._run_stream_subscribers.add(run_id)
+
+    for index in range(_RunStream.SUBSCRIBER_QUEUE_LIMIT + 1):
+        overflowed_stream.put_nowait(
+            {"event": "message.delta", "delta": str(index)}
+        )
+    assert overflowed_subscriber not in overflowed_stream.subscribers
+
+    adapter._sweep_orphaned_runs_once(adapter._RUN_STREAM_TTL + 1)
+
+    assert overflowed_run not in adapter._run_streams
+    assert overflowed_run not in adapter._run_streams_created
+    assert overflowed_run not in adapter._run_stream_subscribers
+    assert adapter._run_streams[active_run] is active_stream
+    assert active_run in adapter._run_stream_subscribers
+
+
 @pytest.mark.asyncio
 async def test_run_events_response_boundary_preserves_events_and_cleans_transport(adapter):
     """The response boundary neither loses terminal events nor leaks subscribers."""

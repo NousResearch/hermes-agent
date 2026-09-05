@@ -395,7 +395,13 @@ def _retire_live_run(self, run_id: str) -> None:
 
 
 def _drop_run_transport(self, run_id: str) -> None:
-    _forget_run(self, run_id, self._run_streams, self._run_streams_created)
+    _forget_run(
+        self,
+        run_id,
+        self._run_streams,
+        self._run_streams_created,
+        self._run_stream_subscribers,
+    )
 
 
 async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Response":
@@ -929,7 +935,13 @@ def _sweep_orphaned_runs_once(self, now: Optional[float] = None) -> None:
     if now is None:
         now = time.time()
     for run_id, created_at in list(self._run_streams_created.items()):
-        if now - created_at <= self._RUN_STREAM_TTL or run_id in self._run_stream_subscribers:
+        stream = self._run_streams.get(run_id)
+        has_live_subscribers = (
+            bool(stream.subscribers)
+            if isinstance(stream, _RunStream)
+            else run_id in self._run_stream_subscribers
+        )
+        if now - created_at <= self._RUN_STREAM_TTL or has_live_subscribers:
             continue
         logger.debug("[api_server] sweeping expired run transport %s", run_id)
         task = self._active_run_tasks.get(run_id)

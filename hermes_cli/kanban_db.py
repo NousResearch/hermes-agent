@@ -1352,6 +1352,28 @@ def create_task(
                 )
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
+                if initial_status == "blocked":
+                    # The sticky-block gate (_has_sticky_block, #28712) keys on
+                    # the latest "blocked"/"unblocked" event row. A task born
+                    # blocked via --initial-status carried only the status
+                    # column, so recompute_ready treated it as event-less and
+                    # auto-promoted it on the next dispatch tick — spawning an
+                    # assignee past the activation gate the caller set up
+                    # (#91178). Emit the block transition atomically with the
+                    # create so the task stays blocked until an explicit
+                    # unblock, exactly like a post-create `kanban block`.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": None,
+                            "kind": None,
+                            "recurrences": 0,
+                            "source_status": "blocked",
+                            "initial": True,
+                        },
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:

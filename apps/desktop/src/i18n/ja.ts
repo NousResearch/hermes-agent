@@ -2730,11 +2730,14 @@ export const ja = defineLocale({
           system_prompt: 'システムプロンプト',
           tool_definitions: 'ツール定義'
         },
+        details: 'コンテキストの詳細',
         empty: 'コンテキストデータはまだありません',
         loading: '内訳を読み込み中…',
         percentFull: percent => `${percent}% 使用中`,
+        skills: 'スキル',
         title: 'コンテキスト使用状況',
-        tokenSummary: (used, max) => `${used} / ${max} Tokens`
+        tokenSummary: (used, max) => `${used} / ${max} Tokens`,
+        toolsets: 'ツールセット'
       },
       session: 'セッション',
       yoloOn: 'YOLO オン — 危険なコマンドを自動承認中。Shift+クリックで全体に切り替え。',

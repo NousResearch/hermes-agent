@@ -16,8 +16,8 @@ export function toggleStatusbarVisible() {
 // bar's job is to answer "is the backend healthy, where am I, what's it doing" —
 // route shortcuts (cron/webhooks/agents), the terminal toggle, and the approval
 // pill are navigation, not status, so they start out of the way. The per-turn
-// session readouts (running/session timers, context meter, cache hit rate,
-// tokens/sec) are diagnostics most users don't watch, so they start hidden too
+// session readouts (running/session timers, context meter, cumulative tokens,
+// cache hit rate, tokens/sec) are diagnostics most users don't watch, so they start hidden too
 // and the bar stays quiet mid-turn.
 export const STATUSBAR_HIDDEN_BY_DEFAULT: readonly string[] = [
   'agents',
@@ -27,6 +27,7 @@ export const STATUSBAR_HIDDEN_BY_DEFAULT: readonly string[] = [
   'cron',
   'running-timer',
   'session-timer',
+  'session-tokens',
   'system-resources',
   'terminal',
   'tokens-per-second',

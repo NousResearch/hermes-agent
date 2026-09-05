@@ -797,12 +797,30 @@ export interface ContextUsageCategory {
   tokens: number
 }
 
+export interface ContextDetailSkill {
+  index_tokens: number
+  name: string
+  skill_md_tokens: number | null
+}
+
+export interface ContextDetailToolset {
+  schema_tokens: number
+  tool_count: number
+  toolset: string
+}
+
+export interface ContextBreakdownDetails {
+  skills: ContextDetailSkill[]
+  toolsets: ContextDetailToolset[]
+}
+
 export interface ContextBreakdown {
   categories: ContextUsageCategory[]
   context_max: number
   context_percent: number
   context_used: number
   estimated_total: number
+  details?: ContextBreakdownDetails
   model?: string
 }
 

@@ -2624,11 +2624,13 @@ export interface Translations {
       toggleContextUsage: string
       toggleRunningTimer: string
       toggleSessionTimer: string
+      toggleSessionTokens: string
       toggleTerminal: string
       toggleTokensPerSecond: string
       toggleVersion: string
       toggleWorkspace: string
       cacheHitRateTitle: string
+      sessionTokensTitle: string
       tokensPerSecondTitle: string
       agents: string
       closeAgents: string
@@ -2664,11 +2666,14 @@ export interface Translations {
           system_prompt: string
           tool_definitions: string
         }
+        details: string
         empty: string
         loading: string
         percentFull: (percent: number) => string
+        skills: string
         title: string
         tokenSummary: (used: string, max: string) => string
+        toolsets: string
       }
       session: string
       yoloOn: string

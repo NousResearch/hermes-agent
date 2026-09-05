@@ -144,6 +144,7 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]]
         "context_used": context_used,
         "estimated_total": estimated_total,
         "model": getattr(agent, "model", "") or "",
+        "details": compute_context_details(agent),
     }
 
 

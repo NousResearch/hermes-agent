@@ -113,4 +113,24 @@ describe('ContextUsagePanel', () => {
 
     expect(screen.getByText('No context data yet')).toBeTruthy()
   })
+
+  it('shows expanded per-skill and per-toolset context details', () => {
+    render(
+      <ContextUsagePanel
+        breakdown={{
+          ...breakdown,
+          details: {
+            skills: [{ name: 'hermes-agent', index_tokens: 20, skill_md_tokens: 320 }],
+            toolsets: [{ toolset: 'terminal', tool_count: 1, schema_tokens: 80 }]
+          }
+        }}
+        loading={false}
+        usage={usage}
+      />
+    )
+
+    expect(screen.getByText('Context details')).toBeTruthy()
+    expect(screen.getByText('hermes-agent')).toBeTruthy()
+    expect(screen.getByText(/terminal/)).toBeTruthy()
+  })
 })

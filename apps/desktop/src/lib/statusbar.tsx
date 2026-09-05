@@ -62,6 +62,13 @@ export function contextBarLabel(usage: UsageStats): string {
 /** `87%` for a reported hit rate; '' when the backend omitted it (no cache
  *  reads yet, or a provider that doesn't report them). The backend already
  *  clamps and rounds, so this only guards a malformed/absent field. */
+export function sessionTokenLabels(usage: UsageStats): { input: string; output: string } {
+  return {
+    input: compactNumber(usage.input),
+    output: compactNumber(usage.output)
+  }
+}
+
 export function cacheHitLabel(usage: UsageStats): string {
   const pct = usage.cache_hit_pct
 

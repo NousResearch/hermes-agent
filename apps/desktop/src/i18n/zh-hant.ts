@@ -2629,11 +2629,14 @@ export const zhHant = defineLocale({
           system_prompt: '系統提示詞',
           tool_definitions: '工具定義'
         },
+        details: '上下文詳細資料',
         empty: '尚無上下文資料',
         loading: '正在載入明細…',
         percentFull: percent => `已用 ${percent}%`,
+        skills: '技能',
         title: '上下文使用量',
-        tokenSummary: (used, max) => `${used} / ${max} Tokens`
+        tokenSummary: (used, max) => `${used} / ${max} Tokens`,
+        toolsets: '工具集'
       },
       session: '工作階段',
       yoloOn: 'YOLO 已開啟 — 自動核准危險指令。Shift+點擊可全域切換。',

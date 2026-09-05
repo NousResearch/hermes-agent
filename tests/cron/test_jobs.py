@@ -1256,6 +1256,49 @@ class TestSaveJobOutput:
         assert output_file.read_text() == "# Results\nEverything ok."
         assert "test123" in str(output_file)
 
+    def test_concurrent_structured_runs_never_collide_or_cross_pair(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        from concurrent.futures import ThreadPoolExecutor
+
+        import cron.jobs as jobs_mod
+
+        frozen = datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr(jobs_mod, "_hermes_now", lambda: frozen)
+        responses = [f"response {i}\n## Response\n```\nbody {i}\n```" for i in range(8)]
+
+        def save(i):
+            return save_job_output(
+                "test123", f"markdown {i}", response=responses[i]
+            )
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            outputs = list(pool.map(save, range(8)))
+
+        assert len(set(outputs)) == 8
+        assert all(path.name.endswith(".run.md") for path in outputs)
+        for i, output in enumerate(outputs):
+            assert output.read_text(encoding="utf-8") == f"markdown {i}"
+            assert jobs_mod.read_job_output_response(output) == (True, responses[i])
+
+    def test_reclaims_only_old_uncommitted_sidecars(self, tmp_cron_dir):
+        import os
+        import time
+
+        output_dir = tmp_cron_dir / "cron" / "output" / "test123"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        old_orphan = output_dir / "old.run.response.json"
+        fresh_orphan = output_dir / "fresh.run.response.json"
+        old_orphan.write_text("{}", encoding="utf-8")
+        fresh_orphan.write_text("{}", encoding="utf-8")
+        old = time.time() - 7200
+        os.utime(old_orphan, (old, old))
+
+        save_job_output("test123", "current", response="current")
+
+        assert not old_orphan.exists()
+        assert fresh_orphan.exists()
+
 
 class TestCronOutputRetention:
     """Per-run cron output must self-prune so long deploys don't fill the disk (#52383)."""
@@ -1274,6 +1317,45 @@ class TestCronOutputRetention:
         names = self._seed(d, 10)
         assert _prune_job_output(d, keep=3) == 7
         assert sorted(p.name for p in d.glob("*.md")) == names[-3:]
+
+    def test_prune_removes_matching_structured_sidecar(self, tmp_path):
+        from cron.jobs import _prune_job_output
+
+        output_dir = tmp_path / "job"
+        output_dir.mkdir()
+        outputs = [
+            output_dir / f"2026-06-25_10-00-0{i}.run.md"
+            for i in range(3)
+        ]
+        sidecars = []
+        for output in outputs:
+            output.write_text("markdown", encoding="utf-8")
+            sidecar = output.with_suffix(".response.json")
+            sidecar.write_text('{"response": "exact"}', encoding="utf-8")
+            sidecars.append(sidecar)
+
+        assert _prune_job_output(output_dir, keep=2) == 1
+        assert not outputs[0].exists()
+        assert not sidecars[0].exists()
+        assert all(path.exists() for path in outputs[1:])
+        assert all(path.exists() for path in sidecars[1:])
+
+    @pytest.mark.parametrize("keep", [0, -1])
+    def test_non_positive_keep_preserves_orphan_sidecars(self, tmp_path, keep):
+        import os
+        import time
+
+        from cron.jobs import _prune_job_output
+
+        output_dir = tmp_path / "job"
+        output_dir.mkdir()
+        orphan = output_dir / "old.run.response.json"
+        orphan.write_text("{}", encoding="utf-8")
+        old = time.time() - 7200
+        os.utime(orphan, (old, old))
+
+        assert _prune_job_output(output_dir, keep=keep) == 0
+        assert orphan.exists()
 
 
 # =========================================================================

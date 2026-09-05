@@ -25,8 +25,8 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         fr = final if silent_marker_in is None else silent_marker_in
         return (success, output, fr, error)
 
-    def fake_save(jid, out):
-        calls.append(("save", jid))
+    def fake_save(jid, out, response):
+        calls.append(("save", jid, response))
         return f"/tmp/{jid}.txt"
 
     def fake_deliver(job, content, adapters=None, loop=None, **kwargs):
@@ -76,6 +76,21 @@ def test_run_one_job_success_sequence(monkeypatch):
     assert ok is True
     assert [c[0] for c in calls] == ["run_job", "save", "deliver", "mark"]
     assert calls[-1] == ("mark", "j2", True)
+
+
+def test_run_one_job_publishes_failure_as_chaining_context(monkeypatch):
+    """A downstream job should receive the useful error, not an empty response."""
+    calls = _patch_pipeline(
+        monkeypatch,
+        success=False,
+        final="",
+        error="upstream feed returned HTTP 503",
+    )
+
+    ok = s.run_one_job({"id": "j2", "name": "t"})
+
+    assert ok is True
+    assert ("save", "j2", "upstream feed returned HTTP 503") in calls
 
 
 def test_run_one_job_exception_delivers_failure_alert(monkeypatch):
@@ -252,7 +267,9 @@ def test_run_one_job_exception_after_delivery_does_not_redeliver(monkeypatch):
         "run_job",
         lambda *_a, **_kw: (True, "out", "final response", None),
     )
-    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(
+        s, "save_job_output", lambda jid, out, response: f"/tmp/{jid}.txt"
+    )
     monkeypatch.setattr(
         s,
         "_deliver_result",
@@ -358,7 +375,9 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
         return None
 
     monkeypatch.setattr(s, "run_job", fake_run_job)
-    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(
+        s, "save_job_output", lambda jid, out, response: f"/tmp/{jid}.txt"
+    )
     monkeypatch.setattr(s, "_deliver_result", fake_deliver)
     monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
 
@@ -376,5 +395,31 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     assert scope_during_delivery["base_url"] == "https://openrouter.ai/api/v1"
     # And it was torn down after the full lifecycle returned (no leak).
     assert ss.current_secret_scope() is None
+
+
+def test_run_one_job_persists_exact_response_frame(monkeypatch):
+    saves = []
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda job, *, defer_agent_teardown=None, extra_prompt=None, execution_id=None: (
+            True,
+            "human-readable markdown",
+            "lead\n## Response\ntail",
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        s,
+        "save_job_output",
+        lambda jid, out, response: saves.append((jid, out, response)) or "/tmp/out.md",
+    )
+    monkeypatch.setattr(s, "_deliver_result", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(s, "mark_job_run", lambda *_args, **_kwargs: None)
+
+    assert s.run_one_job({"id": "j-frame", "name": "framed"}) is True
+    assert saves == [
+        ("j-frame", "human-readable markdown", "lead\n## Response\ntail")
+    ]
 
 

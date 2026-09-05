@@ -238,6 +238,15 @@ describe('manualPickRemoved', () => {
     expect(manualPickRemoved(providers, 'anthropic', 'claude-sonnet-4.6')).toBe(false)
   })
 
+  it('flags a missing virtual MoA provider when the catalog is populated', () => {
+    expect(manualPickRemoved(providers, 'moa', 'default')).toBe(true)
+  })
+
+  it('keeps a MoA pick while the catalog is unavailable', () => {
+    expect(manualPickRemoved(undefined, 'moa', 'default')).toBe(false)
+    expect(manualPickRemoved([], 'moa', 'default')).toBe(false)
+  })
+
   it('never clobbers when the provider has an empty model list (re-auth)', () => {
     expect(manualPickRemoved(providers, 'nous', 'hermes-4')).toBe(false)
   })

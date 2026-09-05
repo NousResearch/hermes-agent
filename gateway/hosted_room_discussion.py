@@ -642,9 +642,15 @@ def _make_task_plan(
 def _pending_discussion(validated: Sequence[_ValidatedEvent]) -> _ValidatedEvent | None:
     """Oldest latest-per-thread user message not stopped and not yet completed."""
     stopped_through_seq = max((event.seq for event in validated if event.kind == "room.stop_requested"), default=0)
+    committed_through = {
+        str(event.payload["discussion_event_id"]): event.seq for event in validated
+        if event.kind == "turn.settled" and event.payload.get("message_event_id") is not None}
     completed_discussion_ids = {
         str(event.payload["discussion_event_id"]) for event in validated
-        if event.kind == "room.activity" and event.payload.get("status") in {"settled", "bounded"}}
+        if event.kind == "room.activity" and (
+            event.payload.get("status") == "bounded"
+            or (event.payload.get("status") == "settled"
+                and event.seq >= committed_through.get(str(event.payload["discussion_event_id"]), 0)))}
     latest_by_thread = {
         str(event.payload["thread_id"]): event for event in validated if event.kind == "message.user"}
     return next((

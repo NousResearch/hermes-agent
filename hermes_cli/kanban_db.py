@@ -2596,6 +2596,13 @@ def complete_task(
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
+        else:
+            # Run-identity CAS: no expected run means the row must STILL be
+            # unclaimed at the write. ``None`` never compiles to a
+            # predicate-free UPDATE — "no proof" is "IS NULL", not "anyone"
+            # (probe-before-mutation window; see _claim_run_identity_probe
+            # in tools/kanban_tools.py).
+            sql += " AND current_run_id IS NULL"
         if conn.execute(sql, params).rowcount != 1:
             return False
         if isinstance(metadata, dict):
@@ -2953,6 +2960,10 @@ def block_task(
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
+        else:
+            # Run-identity CAS: None means "row still unclaimed at the write",
+            # never a predicate-free UPDATE (see complete_task).
+            sql += " AND current_run_id IS NULL"
         if conn.execute(sql, params).rowcount != 1:
             return False
         run_id = _end_or_synthesize_run(
@@ -3062,7 +3073,16 @@ def request_review(
                 )
         reviewer = _canonical_assignee(reviewer)
         assignee_sql = ", assignee = ?" if reviewer is not None else ""
-        run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
+        if expected_run_id is not None:
+            run_guard = " AND current_run_id = ?"
+        elif not force:
+            # Run-identity CAS: None binds the write to an unclaimed row
+            # instead of omitting the ownership predicate (see complete_task).
+            # force=True skips it: that is the explicit human override of a
+            # live claim, and IS NULL would contradict its contract.
+            run_guard = " AND current_run_id IS NULL"
+        else:
+            run_guard = ""
         params: tuple[Any, ...] = (
             *(() if reviewer is None else (reviewer,)), task_id,
             *(() if expected_run_id is None else (int(expected_run_id),)),

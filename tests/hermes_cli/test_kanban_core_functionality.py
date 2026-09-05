@@ -495,8 +495,13 @@ def test_migration_backfills_inflight_run_for_legacy_db(kanban_home):
             task = kb.get_task(conn2, tid)
             assert task.current_run_id == runs[0].id
 
-            # Subsequent complete closes the backfilled run cleanly.
-            kb.complete_task(conn2, tid, result="done", summary="ok")
+            # Subsequent complete closes the backfilled run cleanly. The
+            # completing caller proves ownership of the backfilled run —
+            # a run-id-less caller is refused by the run-identity CAS
+            # (expected_run_id=None binds the write to current_run_id IS NULL).
+            assert kb.complete_task(
+                conn2, tid, result="done", summary="ok",
+                expected_run_id=task.current_run_id) is True
             r = kb.latest_run(conn2, tid)
             assert r.outcome == "completed"
             assert r.summary == "ok"
@@ -1140,9 +1145,9 @@ def test_complete_can_retry_after_phantom_rejection(kanban_home):
         # Two parallel completing tasks so we can exercise both retry
         # shapes without status interference.
         parent_a = kb.create_task(conn, title="retry-empty", assignee="alice")
-        kb.claim_task(conn, parent_a)
+        claim_a = kb.claim_task(conn, parent_a)
         parent_b = kb.create_task(conn, title="retry-corrected", assignee="alice")
-        kb.claim_task(conn, parent_b)
+        claim_b = kb.claim_task(conn, parent_b)
         real = kb.create_task(
             conn, title="real-child", assignee="x", created_by="alice",
         )
@@ -1161,6 +1166,7 @@ def test_complete_can_retry_after_phantom_rejection(kanban_home):
             conn, parent_a,
             summary="retry without claims",
             created_cards=[],
+            expected_run_id=claim_a.current_run_id,
         )
         assert ok is True
         assert kb.get_task(conn, parent_a).status == "done"
@@ -1179,6 +1185,7 @@ def test_complete_can_retry_after_phantom_rejection(kanban_home):
             conn, parent_b,
             summary="retry with corrected list",
             created_cards=[real],
+            expected_run_id=claim_b.current_run_id,
         )
         assert ok is True
         assert kb.get_task(conn, parent_b).status == "done"

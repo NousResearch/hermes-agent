@@ -9,6 +9,7 @@ import {
   isQueueParked,
   parkQueuedPrompts
 } from '@/store/composer-queue'
+import { setSessionsLoading } from '@/store/session'
 
 import type { QueueEditState } from '../composer-utils'
 import type { ChatBarProps } from '../types'
@@ -57,6 +58,7 @@ describe('useComposerQueue park integration', () => {
     window.localStorage.clear()
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
+    setSessionsLoading(false)
   })
 
   afterEach(() => {
@@ -64,6 +66,7 @@ describe('useComposerQueue park integration', () => {
     vi.restoreAllMocks()
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
+    setSessionsLoading(true)
   })
 
   it('auto-drains an unparked queue once idle', async () => {
@@ -194,5 +197,37 @@ describe('useComposerQueue park integration', () => {
 
     expect(isQueueParked(SESSION_KEY)).toBe(false)
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+  })
+
+  it('does not auto-drain restored queues while the session list is still loading', async () => {
+    setSessionsLoading(true)
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'wait for session list' })
+
+    const { onSubmit } = renderQueueHook()
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+  })
+
+  it('auto-drains a restored queue once the session list finishes loading', async () => {
+    setSessionsLoading(true)
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'send after load' })
+
+    const { hook, onSubmit } = renderQueueHook()
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    setSessionsLoading(false)
+    hook.rerender({ busy: false })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
   })
 })

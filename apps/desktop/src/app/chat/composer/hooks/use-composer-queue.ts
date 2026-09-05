@@ -22,6 +22,7 @@ import {
   updateQueuedPrompt
 } from '@/store/composer-queue'
 import { notify } from '@/store/notifications'
+import { $sessionsLoading } from '@/store/session'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { useComposerScope } from '../scope'
@@ -80,6 +81,7 @@ export function useComposerQueue({
   // is fine; the auto-drain effect below reads it as a gate.
   const parkedSessions = useStore($parkedQueueSessions)
   const queueParked = Boolean(activeQueueSessionKey && parkedSessions[activeQueueSessionKey])
+  const sessionsLoading = useStore($sessionsLoading)
 
   const [queueEdit, setQueueEdit] = useState<QueueEditState | null>(null)
   queueEditRef.current = queueEdit
@@ -385,10 +387,17 @@ export function useComposerQueue({
   // strand them. A park (explicit Stop/Esc) is the one gate: those entries wait
   // for the user. To cancel queued turns, the user deletes them from the panel.
   useEffect(() => {
+    // Same boot gate as the background drainer: restored localStorage entries
+    // must not burn their retry budget (and toast) before the session list
+    // has loaded and runtimes can be resumed.
+    if (sessionsLoading) {
+      return
+    }
+
     if (shouldAutoDrain({ isBusy: busy, parked: queueParked, queueLength: queuedPrompts.length })) {
       autoDrainNext()
     }
-  }, [autoDrainNext, busy, queueParked, queuedPrompts.length])
+  }, [autoDrainNext, busy, queueParked, queuedPrompts.length, sessionsLoading])
 
   // Queue-edit cleanup: on session swap the scope effect already stashed the
   // edit snapshot; only restore into the composer when still on the same scope.

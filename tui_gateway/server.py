@@ -1485,7 +1485,8 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         healed = None
         try:
             from hermes_cli.runtime_provider import canonical_custom_identity
-            healed = canonical_custom_identity(base_url=base_url or None, model=model or None)
+            healed = canonical_custom_identity(base_url=base_url or None, model=model or None,
+                                               api_mode=api_mode or None)
         except Exception:
             logger.debug("custom provider identity recovery failed", exc_info=True)
         if healed:
@@ -1520,7 +1521,8 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
         # identity (api_key is never persisted): recover ``custom:<name>`` from the endpoint URL.
         try:
             from hermes_cli.runtime_provider import canonical_custom_identity
-            provider = canonical_custom_identity(base_url=base_url, model=model or None) or provider
+            provider = canonical_custom_identity(base_url=base_url, model=model or None,
+                                                 api_mode=attr("api_mode") or None) or provider
         except Exception:
             logger.debug("custom provider identity lookup failed", exc_info=True)
     reasoning_config = getattr(agent, "reasoning_config", None)

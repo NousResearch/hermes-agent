@@ -1132,9 +1132,13 @@ def _log_safe_path(path: str) -> str:
 
 
 def _validated_delivery_path(raw_path, session_key: str, label: str) -> Optional[str]:
-    """``validate_media_delivery_path`` plus the shared "Skipping unsafe ..." warning."""
+    """``validate_media_delivery_path`` plus the shared "Skipping unsafe ..." warning. A path the
+    host cannot see is retried against the active remote sandbox (ssh/modal/...; #466)."""
     raw = str(raw_path)
     safe_path = validate_media_delivery_path(raw, session_key=session_key)
+    if not safe_path:
+        from gateway.media_fetch import fetch_remote_media
+        safe_path = fetch_remote_media(raw)
     if not safe_path:
         logger.warning("Skipping unsafe %s: %s", label, _log_safe_path(raw))
     return safe_path

@@ -756,9 +756,7 @@ class GatewayStartupMixin:
 
     def _start_check_access_policy(self) -> bool:
         """Warn about missing allowlists; return True when startup must be refused."""
-        from gateway.run import (
-            _OWN_POLICY_OPEN_ENV, _own_policy_open_startup_violation, _write_runtime_status_quiet
-        )
+        from gateway.run import _own_policy_open_violations, _write_runtime_status_quiet
         # Plugin platforms declare their own allowed_users_env / allow_all_env.
         allowed_vars = list(self._BUILTIN_ALLOWED_USERS_VARS)
         allow_all_vars = ["GATEWAY_ALLOW_ALL_USERS", *self._BUILTIN_ALLOW_ALL_VARS]
@@ -776,21 +774,42 @@ class GatewayStartupMixin:
                 "TELEGRAM_ALLOWED_USERS=your_id) or explicitly opt in with GATEWAY_ALLOW_ALL_USERS=true "
                 "plus dm_policy/group_policy: open on the platform."
             )
-        reason = _own_policy_open_startup_violation(self.config)
-        if reason:
-            platform_value = reason.split(":", 1)[0]
-            allow_all_env = next(
-                (env[2] for p, env in _OWN_POLICY_OPEN_ENV.items() if p.value == platform_value), None
-            )
+        violations = _own_policy_open_violations(self.config)
+        if not violations:
+            return False
+        # Quarantine rather than abort. The gate stays fail-closed where it matters — the offending
+        # platform is disabled, so it accepts nothing — but the consequence lands on that platform
+        # instead of the whole process: one enabled-but-unpaired transport used to take every other
+        # platform down with it, and Restart=always then crash-looped the unit.
+        for platform, allow_all_env in violations:
+            flag = allow_all_env or "a platform allow-all flag"
             logger.error(
-                "Refusing to start: %s has dm_policy/group_policy set to 'open' "
-                "but neither GATEWAY_ALLOW_ALL_USERS nor %s is enabled.", platform_value,
-                allow_all_env or "a platform allow-all flag",
+                "Disabling %s: dm_policy/group_policy is set to 'open' but neither "
+                "GATEWAY_ALLOW_ALL_USERS nor %s is enabled. Set the opt-in flag or move the policy "
+                "off 'open' to re-enable it; the remaining platforms continue to start.",
+                platform.value, flag,
             )
-            _write_runtime_status_quiet(gateway_state="startup_failed", exit_reason=reason)
-            self._request_clean_exit(reason)
-            return True
-        return False
+            self.config.platforms[platform].enabled = False
+            # Record *why* it is down: without this the runtime status keeps whatever the adapter
+            # last reported, so a previously-healthy platform would still read "connected" after
+            # being quarantined — actively misleading rather than merely stale.
+            self._update_platform_runtime_status(
+                platform.value, platform_state="disabled", error_code="open_policy_no_opt_in",
+                error_message=(
+                    "Disabled at startup: dm_policy/group_policy is 'open' but neither "
+                    f"GATEWAY_ALLOW_ALL_USERS nor {flag} is enabled."
+                ),
+            )
+        if any(getattr(pc, "enabled", False)
+               for pc in getattr(self.config, "platforms", {}).values()):
+            return False
+        # Every enabled platform failed the gate. Quarantining them all would leave a gateway
+        # running with no transports at all, so the original refuse-to-start path still applies.
+        reason = f"{violations[0][0].value}: open policy without allow-all opt-in"
+        logger.error("Refusing to start: every enabled platform failed the open-policy gate.")
+        _write_runtime_status_quiet(gateway_state="startup_failed", exit_reason=reason)
+        self._request_clean_exit(reason)
+        return True
 
     @staticmethod
     def _start_register_plugins_relay_hooks() -> None:

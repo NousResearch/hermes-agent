@@ -18,6 +18,25 @@ Hermes Agent supports Google Gemini as a native provider using the **Google AI S
 Set `GOOGLE_API_KEY` or `GEMINI_API_KEY`. Hermes checks both names for the `gemini` provider.
 :::
 
+## Authentication and Billing Boundaries
+
+Google offers several products with Gemini branding, but their credentials, quotas, and billing are separate:
+
+| Product | Authentication and billing | Hermes support |
+|---------|----------------------------|----------------|
+| Gemini app / Google AI Pro or Ultra | Consumer subscription benefits; may include access to the AI Studio UI, but Hermes calls do not use subscription limits | Does not authenticate Hermes |
+| Gemini CLI "Login with Google" | Starting June 18, 2026, Google stopped serving consumer tiers through Gemini CLI; Gemini Code Assist Standard and Enterprise subscriptions are unaffected | Hermes does not import or reuse Gemini CLI OAuth credentials |
+| Google AI Studio / Gemini API | API key with API-specific quota; paid-tier billing is managed separately | Yes — `provider: gemini` |
+| Vertex AI | Google Cloud service account or Application Default Credentials (ADC), with GCP quota and billing | Yes — `provider: vertex` |
+
+:::warning A Google AI subscription does not replace API setup
+Google AI Pro and Ultra [may include access to the AI Studio UI](https://support.google.com/googleone/answer/16105039), but the subscription alone does **not** authenticate the Hermes `gemini` provider. Hermes still requires a [Gemini API key](https://ai.google.dev/gemini-api/docs/api-key). Requests use that key's [API quota and, on paid tiers, separate API billing](https://ai.google.dev/gemini-api/docs/billing), not consumer-subscription limits.
+
+Hermes keeps these routes explicit: `gemini` only reads an AI Studio API key, while `vertex` uses Google Cloud credentials. It never silently substitutes Gemini CLI OAuth, Antigravity, or Vertex credentials for `gemini`.
+:::
+
+Google [ended consumer-account access in Gemini CLI on June 18, 2026](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals). Its [Gemini CLI FAQ](https://geminicli.com/docs/resources/faq/#why-cant-i-use-third-party-software-like-claude-code-openclaw-or-opencode-with-gemini-cli) says the supported, secure methods for third-party coding agents are a Google AI Studio API key or Vertex AI, not reused Gemini CLI OAuth credentials.
+
 ## Quick Start
 
 ```bash
@@ -206,6 +225,15 @@ GEMINI_API_KEY=...
 ```
 
 Then run `hermes model` again.
+
+### "Unknown provider 'gemini-oauth'", "google-gemini-cli", or "google-antigravity"
+
+These provider IDs are unsupported. Remove them from your configuration and choose one of the supported routes:
+
+- `provider: gemini` with `GOOGLE_API_KEY` or `GEMINI_API_KEY` for Google AI Studio
+- `provider: vertex` with Google Cloud credentials for Vertex AI
+
+Do not copy Gemini CLI or Antigravity OAuth tokens into Hermes. Google directs third-party agents to AI Studio or Vertex AI in the [Gemini CLI FAQ](https://geminicli.com/docs/resources/faq/#why-cant-i-use-third-party-software-like-claude-code-openclaw-or-opencode-with-gemini-cli). For accounts governed by the linked [Antigravity terms](https://antigravity.google/terms), Google states that using third-party software, tools, or services to access Antigravity breaches the agreement.
 
 ### "This Google API key is on the free tier"
 

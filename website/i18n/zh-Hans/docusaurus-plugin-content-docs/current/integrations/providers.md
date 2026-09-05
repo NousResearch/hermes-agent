@@ -41,10 +41,15 @@ sidebar_position: 1
 | **DeepSeek** | `~/.hermes/.env` 中的 `DEEPSEEK_API_KEY`（provider: `deepseek`） |
 | **Hugging Face** | `~/.hermes/.env` 中的 `HF_TOKEN`（provider: `huggingface`，别名：`hf`） |
 | **Google / Gemini** | `~/.hermes/.env` 中的 `GOOGLE_API_KEY`（或 `GEMINI_API_KEY`）（provider: `gemini`） |
+| **Google Vertex AI** | `hermes model` → "Google Vertex AI"（provider: `vertex`；通过服务账号 JSON 或 ADC 使用 OAuth2，采用 GCP 计费） |
 | **LM Studio** | `hermes model` → "LM Studio"（provider: `lmstudio`，可选 `LM_API_KEY`） |
 | **自定义端点** | `hermes model` → 选择"Custom endpoint"（保存在 `config.yaml`） |
 
 官方 API key 路径请参见专属的 [Google Gemini 指南](/guides/google-gemini)。
+
+:::warning Google 身份验证与计费彼此独立
+Google AI Pro 和 Ultra 订阅无法为 Hermes 的 `gemini` provider 完成身份验证。该 provider 使用 Google AI Studio API 密钥的配额；若密钥属于付费层级，则 API 费用单独结算。`vertex` 使用独立的 Google Cloud 凭据和计费。Hermes 不导入 Gemini CLI OAuth 凭据，也不将 Antigravity 用作 provider。Google 已于 [2026 年 6 月 18 日终止 Gemini CLI 的消费者账号访问](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals)。完整说明请参见 [Google Gemini 指南](/guides/google-gemini)。
+:::
 
 :::tip 模型 key 别名
 在 `model:` 配置节中，可以使用 `default:` 或 `model:` 作为模型 ID 的键名。`model: { default: my-model }` 和 `model: { model: my-model }` 效果完全相同。

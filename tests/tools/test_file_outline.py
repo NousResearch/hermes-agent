@@ -47,7 +47,7 @@ def test_structure_then_targeted_body_read(document):
 
 @pytest.mark.parametrize("fence", ["`", "~"])
 def test_chunk_boundaries_keep_fences_and_utf8(document, monkeypatch, fence):
-    monkeypatch.setattr(file_outline, "SCAN_BYTES", 32)
+    monkeypatch.setattr(file_outline, "WINDOW_BYTES", 32)
     document.write_bytes((f"{fence * 4}\r\n{fence * 3}\r\n# Hidden\r\n{fence * 4}\r\n"
                           "标题\r\n===\r\n###### Last ###").encode())
     result = list(pages(document))
@@ -57,9 +57,11 @@ def test_chunk_boundaries_keep_fences_and_utf8(document, monkeypatch, fence):
 
 
 def test_empty_pages_continue_and_totals_are_not_premature(document, monkeypatch):
-    monkeypatch.setattr(file_outline, "SCAN_BYTES", 32)
+    monkeypatch.setattr(file_outline, "WINDOW_BYTES", 32)
+    monkeypatch.setattr(file_outline, "CALL_BYTES", 32)
     document.write_text("body\n" * 30 + "# End\n", encoding="utf-8")
     result = list(pages(document))
+    assert len(result) > 4 and all("_warning" not in p for p in result)
     assert not result[0]["outline"] and not result[0]["scan_complete"]
     assert all("total_headings" not in p for p in result[:-1])
     assert result[-1]["total_headings"] == 1
@@ -137,11 +139,10 @@ def test_nonmarkdown_binary_and_guarded_files(document):
     assert "Access denied" in call(blocked, mode="outline")["error"]
 
 
-def test_overlong_line_fails_explicitly(document):
-    document.write_text("# " + "x" * (64 * 1024), encoding="utf-8")
-    first = call(document, mode="outline")
-    second = call(document, mode="outline", cursor=first["next_cursor"])
-    assert "ordinary offset/limit" in second["error"]
+def test_overlong_line_fails_explicitly(document, monkeypatch):
+    monkeypatch.setattr(file_outline, "WINDOW_BYTES", 1024)
+    document.write_text("# ok\n# " + "x" * 2048 + "\n", encoding="utf-8")
+    assert "ordinary offset/limit" in call(document, mode="outline")["error"]
 
 
 def test_encoded_output_budget_has_lossless_continuation(document, monkeypatch):
@@ -161,3 +162,19 @@ def test_initial_heading_offset_and_literal_source_lines(document):
 def test_invalid_options_are_errors(document):
     assert "mode" in call(document, mode="other")["error"]
     assert "cursor" in call(document, cursor="not-for-body")["error"]
+
+
+def test_one_call_spans_many_backend_windows(document, monkeypatch):
+    monkeypatch.setattr(file_outline, "WINDOW_BYTES", 32)
+    document.write_text("".join(f"# H{i}\nbody text line\n" for i in range(40)), encoding="utf-8")
+    page = call(document, mode="outline")
+    assert page["scan_complete"] and "next_cursor" not in page
+    assert [e["heading"] for e in page["outline"]] == [f"H{i}" for i in range(40)]
+
+
+def test_repeated_first_page_of_unchanged_file_is_deduplicated(document):
+    document.write_text("# Same\n", encoding="utf-8")
+    assert call(document, mode="outline")["outline"]
+    assert call(document, mode="outline")["dedup"] is True
+    document.write_text("# Changed\n", encoding="utf-8")
+    assert call(document, mode="outline")["outline"][0]["heading"] == "Changed"

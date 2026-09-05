@@ -483,8 +483,12 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             resets.append((set_current_session_key(run.approval_session_key), reset_current_session_key))
             # chat_id carries the raw session id like _run_agent() does; without it
             # tools.async_delegation sees no HERMES_SESSION_CHAT_ID and forces delegations sync.
+            # user_id: the X-Hermes-Session-Key the client sent — the only per-caller identity a
+            # /v1/runs turn has. session_key is the per-run approval key, so without this a
+            # pre_tool_call plugin cannot tell which end user it is acting for.
             session_tokens = self._bind_api_server_session(
                 chat_id=session_id or "", session_key=run.approval_session_key, session_id=session_id or "",
+                user_id=run.gateway_session_key or "",
                 browser_control_principal=run.browser_control_principal,
                 browser_control_transport_family=run.browser_control_transport_family)
             if session_tokens:

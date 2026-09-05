@@ -249,6 +249,91 @@ class TestStartRun:
             "runs route must bind chat_id so delegation dispatch sees a wake target"
         )
 
+    @pytest.mark.asyncio
+    async def test_start_binds_gateway_session_key_as_user_id(self, auth_adapter):
+        """/v1/runs binds the caller's X-Hermes-Session-Key as HERMES_SESSION_USER_ID for the
+        duration of the turn. HERMES_SESSION_KEY on this route is the per-run approval key
+        (the run id), so without this binding a pre_tool_call plugin or a tool has no way to
+        tell which end user it is acting for. The webhook adapter already does the same with
+        ``webhook:<route>``."""
+        # X-Hermes-Session-Key is only honoured when an API key is configured (see _parse_session_key_header).
+        adapter = auth_adapter
+        app = _create_runs_app(adapter)
+        captured = {}
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+
+                def _capture_run(user_message=None, conversation_history=None, task_id=None):
+                    from gateway.session_context import get_session_env
+
+                    captured["user_id"] = get_session_env("HERMES_SESSION_USER_ID", "")
+                    captured["platform"] = get_session_env("HERMES_SESSION_PLATFORM", "")
+                    captured["session_key"] = get_session_env("HERMES_SESSION_KEY", "")
+                    return {"final_response": "done"}
+
+                mock_agent.run_conversation.side_effect = _capture_run
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "runs-user-sid"},
+                    headers={"Authorization": "Bearer sk-secret", "X-Hermes-Session-Key": "webui:dm:user-42"},
+                )
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                for _ in range(40):
+                    status = await (await cli.get(f"/v1/runs/{run_id}", headers={"Authorization": "Bearer sk-secret"})).json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert captured.get("platform") == "api_server"
+        assert captured.get("user_id") == "webui:dm:user-42", (
+            "runs route must expose the gateway session key as HERMES_SESSION_USER_ID"
+        )
+        # The approval key stays the run id — user identity must not leak into it.
+        assert captured.get("session_key") == run_id
+
+    @pytest.mark.asyncio
+    async def test_start_without_session_key_leaves_user_id_empty(self, adapter):
+        """No X-Hermes-Session-Key → HERMES_SESSION_USER_ID stays empty (not the run id, not the
+        session id): callers must not mistake a transcript scope for a user identity."""
+        app = _create_runs_app(adapter)
+        captured = {}
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+
+                def _capture_run(user_message=None, conversation_history=None, task_id=None):
+                    from gateway.session_context import get_session_env
+
+                    captured["user_id"] = get_session_env("HERMES_SESSION_USER_ID", "")
+                    return {"final_response": "done"}
+
+                mock_agent.run_conversation.side_effect = _capture_run
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello", "session_id": "runs-anon-sid"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+                for _ in range(40):
+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert captured.get("user_id") == ""
+
 
     @pytest.mark.asyncio
     async def test_start_rejects_conflicting_route_and_request_provider(self):

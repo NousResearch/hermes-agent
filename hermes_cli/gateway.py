@@ -781,6 +781,17 @@ def find_profile_gateway_processes(exclude_pids: set | None = None, *, strict: b
     return processes
 
 
+def _scheduled_task_gateway_supervisor_services() -> frozenset[str]:
+    """SCM services that supervise every Scheduled Task on the host, not Hermes.
+
+    A gateway started by a Hermes Scheduled Task (`hermes gateway install` on Windows)
+    keeps the Task Scheduler service in its ancestor chain while the task's bootstrap
+    is alive. These services can never be the gateway's dedicated supervisor, and the
+    updater must not `sc.exe stop` them (protected Windows services — Access denied).
+    """
+    return frozenset({"Schedule"})
+
+
 def find_windows_gateway_services(
     *, psutil_module=None, profile_processes: list[ProfileGatewayProcess] | None = None
 ) -> list[WindowsGatewayService]:
@@ -820,6 +831,12 @@ def find_windows_gateway_services(
             if service_status != "running":
                 if service_pid > 0:
                     indeterminate_services_by_pid.setdefault(service_pid, []).append((service_name, service_status))
+                continue
+            if service_name in _scheduled_task_gateway_supervisor_services():
+                # Task Scheduler's own SCM service supervises every scheduled task's
+                # bootstrap on this host — a Task-launched gateway reaches it by ancestry
+                # alone, so treating it as the gateway's supervisor makes the updater
+                # `sc.exe stop` a protected Windows service (Access denied) and abort.
                 continue
             if service_pid <= 0:
                 raise RuntimeError(f"Running SCM service {service_name} has no valid process ID")

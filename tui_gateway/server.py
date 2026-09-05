@@ -672,10 +672,15 @@ def _status_update(sid: str, kind: str, text: str | None = None):
     if not (body := (text if text is not None else kind).strip()):
         return
     out_kind = kind if text is not None else "status"
-    # Auto-compaction arrives as a generic "lifecycle" status; re-tag so drivers can show a
-    # summarizing indicator — otherwise idle/preflight compaction looks like a hung turn.
-    # See #97239.
-    if out_kind == "lifecycle":
+    # Compaction has its own status key so chat adapters can update one isolated bubble; the TUI
+    # protocol keeps its two semantic edges because desktop clients set and clear the per-session
+    # compaction fence from them (gateway-event/status.ts). Older runtime/plugin emitters still send
+    # it as a generic "lifecycle" status; re-tag so drivers can show a summarizing indicator —
+    # otherwise idle/preflight compaction looks like a hung turn (#97239).
+    if out_kind == "compaction":
+        from agent.conversation_compression import COMPACTION_DONE_STATUS
+        out_kind = "compacted" if body == COMPACTION_DONE_STATUS else "compacting"
+    elif out_kind == "lifecycle":
         from agent.conversation_compression import is_compaction_progress_status
         if is_compaction_progress_status(body):
             out_kind = "compacting"

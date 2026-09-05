@@ -10,6 +10,7 @@ from gateway.config import Platform
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 from tools import approval as approval_mod
+from tools import approval_session_notify as session_notify
 from tools import slash_confirm as slash_confirm_mod
 from tools.approval import approve_session, enable_session_yolo, is_approved, is_session_yolo_enabled
 from tools.approval_gateway_wait import _ApprovalEntry
@@ -19,6 +20,7 @@ from tools.approval_gateway_wait import _ApprovalEntry
 def _clear_approval_state():
     approval_mod._gateway_queues.clear()
     approval_mod._gateway_notify_cbs.clear()
+    session_notify._session_notify_cbs.clear()
     approval_mod._session_approved.clear()
     approval_mod._session_yolo.clear()
     approval_mod._permanent_approved.clear()
@@ -27,6 +29,7 @@ def _clear_approval_state():
     yield
     approval_mod._gateway_queues.clear()
     approval_mod._gateway_notify_cbs.clear()
+    session_notify._session_notify_cbs.clear()
     approval_mod._session_approved.clear()
     approval_mod._session_yolo.clear()
     approval_mod._permanent_approved.clear()
@@ -213,3 +216,27 @@ def test_clear_session_boundary_security_state_wakes_blocked_approvals():
     assert other_entry.result is None
     assert session_key not in approval_mod._gateway_queues
     assert other_key in approval_mod._gateway_queues
+
+
+def test_clear_session_boundary_removes_session_scoped_approver():
+    """W8: the session-scoped approval notify entry (which deliberately
+    survives turn teardown so background SDK turns can page the operator)
+    must die at the conversation boundary — a retained entry would page a
+    session the user rotated away from. Scoped: other sessions keep theirs."""
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner._pending_approvals = {}
+    runner._update_prompt_pending = {}
+
+    source = _make_source()
+    session_key = build_session_key(source)
+    other_key = "agent:main:telegram:dm:other-chat"
+
+    session_notify.register_session_notify(session_key, lambda data: None)
+    session_notify.register_session_notify(other_key, lambda data: None)
+
+    runner._clear_session_boundary_security_state(session_key)
+
+    assert session_key not in session_notify._session_notify_cbs
+    assert other_key in session_notify._session_notify_cbs

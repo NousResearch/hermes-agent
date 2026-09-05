@@ -1075,6 +1075,12 @@ def _build_replay_entry(
             if (_rval is None) if _rkey == "reasoning_content" else (not _rval):
                 continue
             entry[_rkey] = _rval
+        # Keep projected SDK background-result rows identifiable while the
+        # gateway rebuilds provider history.  The marker is intentionally
+        # absent from API payloads; the SDK continuity digest uses it to avoid
+        # presenting the agent's own already-delivered answer a second time.
+        if msg.get("display_kind"):
+            entry["display_kind"] = msg["display_kind"]
     if preserve_timestamp and msg.get("timestamp"):
         entry["timestamp"] = msg["timestamp"]
     return entry
@@ -2035,6 +2041,7 @@ from gateway.run_notifications import GatewayNotificationsMixin
 from gateway.run_inbound import GatewayInboundMixin
 from gateway.run_goals import GatewayGoalsMixin
 from gateway.run_agent_cache import GatewayAgentCacheMixin
+from gateway.run_background_results import GatewayBackgroundResultsMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -2936,7 +2943,7 @@ def _drain_gateway_watch_events(completion_queue) -> "list[dict]":
         if evt_type in {
             "watch_match", "watch_disabled", "watch_overflow_tripped", "watch_overflow_released"}:
             watch_events.append(evt)
-        elif evt_type == "async_delegation":
+        elif evt_type in {"async_delegation", "sdk_background_result"}:
             requeue.append(evt)
         # else: process completion events are handled by the watcher task
     for evt in requeue:
@@ -3228,8 +3235,8 @@ class GatewayRunner(
     GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin,
     GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
-    GatewaySessionWatchersMixin, GatewayNotificationsMixin, GatewayInboundMixin, GatewayGoalsMixin,
-    GatewayAgentCacheMixin):
+    GatewaySessionWatchersMixin, GatewayNotificationsMixin, GatewayBackgroundResultsMixin, GatewayInboundMixin,
+    GatewayGoalsMixin, GatewayAgentCacheMixin):
     """Main gateway controller: manages adapter lifecycles, routes messages to/from the agent."""
 
     # Class-level defaults so partial construction in tests doesn't blow up on attribute access.

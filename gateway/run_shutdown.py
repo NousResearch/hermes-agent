@@ -1648,6 +1648,15 @@ class GatewayShutdownMixin:
         cancel_completion_batches = getattr(self, "_cancel_process_completion_batch_tasks", None)
         if cancel_completion_batches is not None:
             await cancel_completion_batches()
+        # SDK background work can retain a session-scoped approval notifier
+        # between foreground turns.  Drop those closures while transports are
+        # still intact, before their adapter/loop references become stale.
+        with _log_suppressed(
+            logging.DEBUG, "Session approval notifier cleanup failed: %s"
+        ):
+            from tools.approval_session_notify import clear_all_session_notify
+
+            clear_all_session_notify()
         for platform, adapter in list(self.adapters.items()):
             await self._bounded_adapter_teardown(adapter, platform)
         # Disconnect secondary-profile adapters (multiplex mode).

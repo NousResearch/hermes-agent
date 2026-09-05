@@ -1979,6 +1979,8 @@ DEFAULT_CONFIG = {
     # Automatic cleanup of ~/.hermes/state.db, which otherwise grows without bound and slows FTS5
     # inserts, /resume listing, and insights queries.
     "sessions": {
+        # Newest API-error request dumps to keep; <= 0 disables pruning.
+        "request_dump_retention": 20,
         # Prune ENDED sessions inactive for retention_days (activity = latest message, else
         # creation) about once per min_interval_hours at startup. Open, pinned, or mid-turn sessions
         # are never deleted; stale automation sessions whose process died are *closed*, then get a

@@ -206,7 +206,7 @@ def _mode_for_write(path: Path, create_mode: "int | None", preserve: bool = True
 
 
 def atomic_write_text(path: Union[str, Path], content: str, *, encoding: str = "utf-8", tmp_prefix: str = ".tmp_",
-                      preserve_mode: bool = False, create_mode: "int | None" = None) -> None:
+                      preserve_mode: bool = False, create_mode: "int | None" = None, mode: "int | None" = None) -> None:
     """Write *content* to *path* via temp file + fsync + atomic rename.
 
     The target is never left partially written on crash/interrupt. Shared by every destructive
@@ -214,7 +214,88 @@ def atomic_write_text(path: Union[str, Path], content: str, *, encoding: str = "
     """
     path = Path(path)
     _atomic_write(path, lambda f: f.write(content), prefix=tmp_prefix, encoding=encoding,
-                  mode=_mode_for_write(path, create_mode, preserve=preserve_mode), preserve_owner=preserve_mode)
+                  mode=mode if mode is not None else _mode_for_write(path, create_mode, preserve=preserve_mode),
+                  preserve_owner=preserve_mode)
+
+
+def open_private_append(
+    path: Union[str, Path],
+    *,
+    encoding: str = "utf-8",
+    mode: int = 0o600,
+    tighten_existing: bool = False,
+):
+    """Append text, applying exact ``mode`` only to a newly created inode.
+
+    Exclusive creation distinguishes a new inode from an existing one, so
+    ``mode`` lands on files this call creates and an existing file keeps its
+    own permissions. ``fchmod`` on the new fd applies the mode exactly rather
+    than umask-narrowed, matching ``atomic_write_text(create_mode=...)``:
+    managed installs need the group-write bit of ``0o660`` to survive an
+    interactive user's ``0o022`` umask, or the service UID cannot append to a
+    transcript the user's UID started.
+
+    Symlinks are followed, as ``atomic_replace`` does (#16743) -- a managed
+    deployment may symlink an artifact path into a profile package, including
+    before its target exists. POSIX modes are advisory on Windows.
+    Internal writers may opt into tightening owned regular files before append;
+    explicit outputs keep their existing permissions. Linked or foreign-owned
+    files are reported rather than chmodded through.
+    """
+    def _create(target: str, flags: int) -> int:
+        fd = os.open(target, flags, mode)
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, mode)
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    def _opener(target: str, flags: int) -> int:
+        try:
+            return _create(target, flags | os.O_CREAT | os.O_EXCL)
+        except FileExistsError:
+            pass
+        try:
+            existing_flags = flags & ~(os.O_CREAT | os.O_EXCL)
+            if not tighten_existing or os.name != "posix":
+                return os.open(target, existing_flags)
+            try:
+                fd = os.open(target, existing_flags | os.O_NOFOLLOW)
+            except OSError as exc:
+                if exc.errno != errno.ELOOP:
+                    raise
+                logger.warning("Private artifact %s is symlinked; verify its target permissions", target)
+                return os.open(target, existing_flags)
+            try:
+                tighten_private_fd(fd, mode, target)
+            except BaseException:
+                os.close(fd)
+                raise
+            return fd
+        except FileNotFoundError:
+            # A dangling symlink: O_EXCL reports EEXIST for the link itself,
+            # but reopening without O_CREAT hits the missing target. Create
+            # through it, as a plain open would, at the requested mode.
+            return _create(target, flags | os.O_CREAT)
+
+    return open(Path(path), "a", encoding=encoding, opener=_opener)
+
+
+def tighten_private_fd(fd: int, mode: int, path: Union[str, Path]) -> None:
+    """Tighten an owned artifact inode; never chmod foreign or multiply-linked files."""
+    if os.name != "posix":
+        return
+    info = os.fstat(fd)
+    if not info.st_mode & 0o777 & ~mode:
+        return
+    if info.st_uid != os.geteuid() or (stat.S_ISREG(info.st_mode) and info.st_nlink != 1):  # windows-footgun: ok — POSIX-only above
+        logger.warning("Private artifact %s has broad permissions and cannot safely be tightened; review its ownership and links", path)
+        return
+    if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+        raise OSError(errno.EINVAL, "Not a regular private artifact", str(path))
+    os.fchmod(fd, (stat.S_IMODE(info.st_mode) & mode) | (info.st_mode & stat.S_ISGID))
 
 
 def atomic_json_write(path: Union[str, Path], data: Any, *, indent: int = 2, mode: int | None = None, **dump_kwargs: Any) -> None:

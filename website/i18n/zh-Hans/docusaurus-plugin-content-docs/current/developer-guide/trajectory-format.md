@@ -2,12 +2,20 @@
 
 Hermes Agent 以 ShareGPT 兼容的 JSONL 格式保存对话轨迹，用于训练数据、调试产物和强化学习数据集。
 
-源文件：`agent/trajectory.py`、`run_agent.py`（搜索 `_save_trajectory`）、`batch_runner.py`
+源文件：`agent/trajectory.py`、`agent/session_persistence.py`（搜索 `_save_trajectory`）、`batch_runner.py`
 
 
 ## 文件命名规范
 
-轨迹写入当前工作目录下的文件：
+未提供显式文件名时，轨迹会写入当前 profile 的 Hermes home 下，按规范化当前
+工作目录分桶：
+
+`<HERMES_HOME>/trajectories/<cwd-basename>-<path-digest>/`
+
+短摘要用于区分同名目录；同一目录的多次保存会追加到同一个数据集。不会自动
+搬移工作目录中的旧文件。显式 `filename=` 仍完全按调用者指定的路径写入，包含
+相对路径和符号链接。
+`--save_sample` 生成的 UUID 命名 JSON 也会写入这个私有目录。
 
 | 文件 | 时机 |
 |------|------|
@@ -18,6 +26,19 @@ Hermes Agent 以 ShareGPT 兼容的 JSONL 格式保存对话轨迹，用于训�
 （例如 `batch_001_output.jsonl`），并附带额外的元数据字段。
 
 可通过 `save_trajectory()` 的 `filename` 参数覆盖文件名。
+
+### 私有文件与升级
+
+POSIX 系统中新建的对话文件和目录采用 `0600`/`0700`；托管安装采用共享组的
+`0660`/`0770`，并保留继承的 setgid。默认 trajectory/MoA 路径在追加前会收紧
+当前用户拥有、仅有一个硬链接的旧文件权限；内部导出目录也会在使用前收紧。
+通过 `filename=` 或 `/save ... <filename>` 显式选择的文件保留已有权限。
+对于符号链接或其他用户拥有的旧文件，不会穿透修改权限，而是记录警告，
+提醒管理员检查目标权限。
+
+轨迹仍保留训练与回放需要的完整对话和工具内容；请求诊断、上传 trace 和元数据
+另外脱敏。POSIX 权限位不等于 Windows ACL，Windows 的保密性依赖 profile 目录
+的 ACL。不会迁移或删除已有的 CWD 导出文件。
 
 
 ## JSONL 条目格式
@@ -184,7 +205,7 @@ def load_trajectories(path: str):
     return entries
 
 # Filter to successful completions only
-successful = [e for e in load_trajectories("trajectory_samples.jsonl")
+successful = [e for e in load_trajectories("/path/to/trajectory_samples.jsonl")
               if e.get("completed")]
 
 # Extract just the conversations for training
@@ -205,15 +226,8 @@ ds = load_dataset("json", data_files="trajectory_samples.jsonl")
 
 ## 控制轨迹保存
 
-在 CLI 中，轨迹保存通过以下方式控制：
-
-```yaml
-# config.yaml
-agent:
-  save_trajectories: true  # default: false
-```
-
-或通过 `--save-trajectories` 标志。当 agent 以 `save_trajectories=True` 初始化时，
+轨迹保存由 `run_agent.py` 的 `save_trajectories` 参数控制；也可以使用
+`--save_trajectories` 标志。当 agent 以 `save_trajectories=True` 初始化时，
 `_save_trajectory()` 方法在每次对话轮次结束时调用。
 
 批量运行器始终保存轨迹（这是其主要用途）。

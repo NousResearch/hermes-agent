@@ -1,10 +1,12 @@
 """Tests for gateway/shutdown_flush.py — pending message durability (#72680)."""
 
+import errno
 import json
 import os
 import stat
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -169,6 +171,108 @@ def test_get_flush_dir_uses_get_hermes_home(tmp_path, monkeypatch):
     assert result == tmp_path / "pending_messages"
 
 
+
+
+def test_unmanaged_flush_dir_and_payload_are_owner_only(tmp_path, monkeypatch):
+    if os.name != "posix":
+        pytest.skip("POSIX permission-bit semantics required")
+
+    from gateway.shutdown_flush import _get_flush_dir, _write_payload
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+    previous_umask = os.umask(0o022)
+    try:
+        flush_dir = _get_flush_dir()
+        payload_path = _write_payload(flush_dir, {"message": "private"})
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(flush_dir.stat().st_mode) & 0o077 == 0
+    assert stat.S_IMODE(payload_path.stat().st_mode) == 0o600
+
+
+def test_managed_flush_preserves_group_access_without_chmod(tmp_path, monkeypatch):
+    if os.name != "posix":
+        pytest.skip("POSIX permission-bit semantics required")
+
+    import gateway.shutdown_flush as shutdown_flush
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_MANAGED", "nixos")
+    os.chmod(tmp_path, 0o2770)
+
+    def reject_chmod(*_args, **_kwargs):
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    shutdown_os = SimpleNamespace(**vars(shutdown_flush.os))
+    monkeypatch.setattr(shutdown_flush, "os", shutdown_os)
+    monkeypatch.setattr(shutdown_flush.os, "chmod", reject_chmod)
+    previous_umask = os.umask(0o007)
+    try:
+        flushed = shutdown_flush.flush_pending_to_file(
+            {"agent:main:telegram:dm:1": "managed message"}
+        )
+    finally:
+        os.umask(previous_umask)
+
+    flush_dir = tmp_path / "pending_messages"
+    mode = stat.S_IMODE(flush_dir.stat().st_mode)
+    payload_paths = list(flush_dir.glob("pending-*.json"))
+
+    assert mode & 0o070 == 0o070
+    assert mode & 0o007 == 0
+    assert flushed == 1
+    assert len(payload_paths) == 1
+    payload = json.loads(payload_paths[0].read_text(encoding="utf-8"))
+    assert payload["data"]["text"] == "managed message"
+
+
+def test_managed_legacy_directory_is_upgraded_best_effort(tmp_path, monkeypatch):
+    if os.name != "posix":
+        pytest.skip("POSIX permission-bit semantics required")
+    import gateway.shutdown_flush as shutdown_flush
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_MANAGED", "nixos")
+    os.chmod(tmp_path, 0o2770)
+    flush_dir = tmp_path / "pending_messages"
+    flush_dir.mkdir(mode=0o700)
+    os.chmod(flush_dir, 0o700)
+    result = shutdown_flush._get_flush_dir()
+    assert result == flush_dir
+    assert stat.S_IMODE(flush_dir.stat().st_mode) & 0o070 == 0o070
+
+
+def test_unmanaged_flush_survives_permission_reconciliation_failure(
+    tmp_path, monkeypatch
+):
+    if os.name != "posix":
+        pytest.skip("POSIX permission-bit semantics required")
+
+    import gateway.shutdown_flush as shutdown_flush
+    import hermes_cli.config as hermes_config
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+
+    def reject_reconciliation(*_args, **_kwargs):
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    shutdown_os = SimpleNamespace(**vars(shutdown_flush.os))
+    monkeypatch.setattr(shutdown_flush, "os", shutdown_os)
+    monkeypatch.setattr(shutdown_flush.os, "chmod", reject_reconciliation)
+    monkeypatch.setattr(hermes_config, "_secure_dir", reject_reconciliation)
+
+    flushed = shutdown_flush.flush_pending_to_file(
+        {"agent:main:telegram:dm:1": "unmanaged message"}
+    )
+
+    payload_paths = list((tmp_path / "pending_messages").glob("pending-*.json"))
+    assert flushed == 1
+    assert len(payload_paths) == 1
+    payload = json.loads(payload_paths[0].read_text(encoding="utf-8"))
+    assert payload["data"]["text"] == "unmanaged message"
 
 
 # ── FIFO overflow tail durability (#99882) ─────────────────────────────

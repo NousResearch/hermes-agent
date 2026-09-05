@@ -443,9 +443,12 @@ def _conv_path(context_id: str) -> Path:
 def persist_message(context_id: str, role: str, text: str, task_id: str = "") -> None:
     """Append one message to the context's on-disk conversation log. Never raises."""
     try:
+        from hermes_cli.config import artifact_file_mode, secure_artifact_dir
+        from utils import open_private_append
+
         path = _conv_path(context_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
+        secure_artifact_dir(path.parent, tighten_existing=True)
+        with open_private_append(path, mode=artifact_file_mode(), tighten_existing=True) as fh:
             fh.write(json.dumps({"ts": time.time(), "role": role, "text": text, "task_id": task_id}, ensure_ascii=False) + "\n")
     except Exception:
         pass

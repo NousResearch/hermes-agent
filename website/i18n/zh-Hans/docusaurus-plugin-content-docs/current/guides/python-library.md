@@ -151,7 +151,8 @@ agent = AIAgent(
 )
 
 agent.chat("Write a Python function to sort a list")
-# 以 ShareGPT 格式保存到 trajectory_samples.jsonl
+# 未提供 filename= 时，写入 <HERMES_HOME>/trajectories/<cwd-basename>-<path-digest>/；
+# 显式 filename= 仍按调用者指定的路径写入。
 ```
 
 每次对话以单行 JSONL 的形式追加写入，便于从自动化运行中收集数据集。

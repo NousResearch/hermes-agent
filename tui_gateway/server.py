@@ -2950,14 +2950,18 @@ def _pet_is_cancelled(token: str) -> bool:
 
 
 def _spawn_trees_root():
+    from hermes_cli.config import secure_artifact_dir
+
     root = get_hermes_home() / "spawn-trees"
-    root.mkdir(parents=True, exist_ok=True)
+    secure_artifact_dir(root, tighten_existing=True)
     return root
 
 
 def _spawn_tree_session_dir(session_id: str):
+    from hermes_cli.config import secure_artifact_dir
+
     d = _spawn_trees_root() / ("".join(c if c.isalnum() or c in "-_" else "_" for c in session_id) or "unknown")
-    d.mkdir(parents=True, exist_ok=True)
+    secure_artifact_dir(d, tighten_existing=True)
     return d
 
 
@@ -2969,8 +2973,11 @@ _SPAWN_TREE_INDEX = "_index.jsonl"
 
 
 def _append_spawn_tree_index(session_dir, entry: dict) -> None:
+    from hermes_cli.config import artifact_file_mode
+    from utils import open_private_append
+
     try:
-        with (session_dir / _SPAWN_TREE_INDEX).open("a", encoding="utf-8") as f:
+        with open_private_append(session_dir / _SPAWN_TREE_INDEX, mode=artifact_file_mode(), tighten_existing=True) as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except OSError as exc:
         logger.debug("spawn_tree index append failed: %s", exc)  # never block the save

@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_cli.config import artifact_file_mode, secure_artifact_dir
+from utils import open_private_append
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +91,8 @@ def save_moa_turn(
     if base is None:
         return
     try:
-        base.mkdir(parents=True, exist_ok=True)
+        internal = base == get_hermes_home() / "moa-traces"
+        secure_artifact_dir(base, tighten_existing=internal)
         path = base / f"{_sanitize_session_id(session_id)}.jsonl"
         if not aggregator_streamed:
             output_location = "inline"
@@ -109,7 +112,7 @@ def save_moa_turn(
                 "streamed": aggregator_streamed, "output_location": output_location,
             },
         }
-        with path.open("a", encoding="utf-8") as f:
+        with open_private_append(path, mode=artifact_file_mode(), tighten_existing=internal) as f:
             f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
     except Exception as exc:  # pragma: no cover - tracing must never break a turn
         logger.debug("MoA trace write failed (session=%s): %s", session_id, exc)

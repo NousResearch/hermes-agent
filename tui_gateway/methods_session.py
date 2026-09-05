@@ -1802,7 +1802,9 @@ def _(rid, params: dict, session: dict) -> dict:
     # Classic CLI /save: under the profile home, with the system prompt (dashboard parity).
     saved_dir = get_hermes_home() / "sessions" / "saved"
     try:
-        saved_dir.mkdir(parents=True, exist_ok=True)
+        from hermes_cli.config import secure_artifact_dir
+
+        secure_artifact_dir(saved_dir, tighten_existing=True)
     except Exception as e:
         return _err(rid, 5011, f"failed to create save directory {saved_dir}: {e}")
     path = saved_dir / f"hermes_conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -1814,12 +1816,14 @@ def _(rid, params: dict, session: dict) -> dict:
         created_at = session.get("created_at")
         started = datetime.fromtimestamp(created_at) if isinstance(created_at, (int, float)) else None
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"model": getattr(agent, "model", ""),
-                       "session_id": getattr(agent, "session_id", None) or session.get("session_key") or "",
-                       "session_start": started.isoformat() if started else "",
-                       "system_prompt": getattr(agent, "_cached_system_prompt", "") or "",
-                       "messages": messages}, f, indent=2, ensure_ascii=False)
+        from hermes_cli.config import artifact_file_mode
+        from utils import atomic_json_write
+
+        atomic_json_write(path, {"model": getattr(agent, "model", ""),
+                                "session_id": getattr(agent, "session_id", None) or session.get("session_key") or "",
+                                "session_start": started.isoformat() if started else "",
+                                "system_prompt": getattr(agent, "_cached_system_prompt", "") or "",
+                                "messages": messages}, mode=artifact_file_mode())
     except Exception as e:
         return _err(rid, 5011, str(e))
     return _ok(rid, {"file": str(path)})
@@ -2055,7 +2059,10 @@ def _(rid, params: dict) -> dict:
     meta = {"session_id": session_id, "started_at": float(started_at) if started_at else None,
             "finished_at": finished_at, "label": label}
     try:
-        path.write_text(json.dumps({**meta, "subagents": subagents}, ensure_ascii=False), encoding="utf-8")
+        from hermes_cli.config import artifact_file_mode
+        from utils import atomic_json_write
+
+        atomic_json_write(path, {**meta, "subagents": subagents}, mode=artifact_file_mode())
     except OSError as exc:
         return _err(rid, 5000, f"spawn_tree.save failed: {exc}")
     _append_spawn_tree_index(d, {"path": str(path), **meta, "count": len(subagents)})

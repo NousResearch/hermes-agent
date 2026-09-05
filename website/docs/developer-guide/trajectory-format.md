@@ -8,7 +8,17 @@ Source files: `agent/trajectory.py`, `agent/session_persistence.py` (search for 
 
 ## File Naming Convention
 
-Trajectories are written to files in the current working directory:
+When no explicit filename is supplied, trajectories are stored under the active
+profile's Hermes home, in a stable bucket for the canonical current working
+directory:
+
+`<HERMES_HOME>/trajectories/<cwd-basename>-<path-digest>/`
+
+The digest keeps same-named directories separate while repeated saves from one
+directory append to the same dataset. Existing files in the working directory
+are not moved. An explicit `filename=` remains authoritative, including
+relative paths and symlinks.
+The `--save_sample` option also stores its UUID-named JSON in this private bucket.
 
 | File | When |
 |------|------|
@@ -19,6 +29,21 @@ The batch runner (`batch_runner.py`) writes to a custom output file per batch
 (e.g., `batch_001_output.jsonl`) with additional metadata fields.
 
 You can override the filename via the `filename` parameter in `save_trajectory()`.
+
+### Private artifacts and upgrades
+
+On POSIX, new transcript artifacts use owner-only files/directories (`0600`/`0700`).
+Managed installations use shared-group files/directories (`0660`/`0770`) and preserve
+inherited setgid. Default trajectory and MoA paths tighten excess access on existing
+owned, singly-linked files before appending; private export directories are similarly
+tightened before use. Files selected explicitly with `filename=` or `/save ... <filename>`
+retain their existing permissions. Symlinked or foreign-owned legacy artifacts are not
+chmodded through: a warning asks the operator to review their target permissions.
+
+These are full-fidelity exports: conversation/tool content remains intact for training
+and replay. Diagnostic request dumps and outbound trace/metadata paths are redacted
+separately. POSIX modes do not enforce Windows ACLs; Windows confidentiality depends
+on the profile directory's ACL. Existing CWD exports are not migrated or deleted.
 
 
 ## JSONL Entry Format
@@ -194,7 +219,7 @@ def load_trajectories(path: str):
     return entries
 
 # Filter to successful completions only
-successful = [e for e in load_trajectories("trajectory_samples.jsonl")
+successful = [e for e in load_trajectories("/path/to/trajectory_samples.jsonl")
               if e.get("completed")]
 
 # Extract just the conversations for training

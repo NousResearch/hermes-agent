@@ -360,7 +360,8 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
     window.addEventListener('keydown', onKeyDown)
 
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [state.error])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only the failed/not-failed transition matters, not error text changes
+  }, [Boolean(state.error)])
 
   // The choice remains mounted while main hands off to local bootstrap. Once
   // a manifest/failure takes ownership (or a later repair presents a fresh

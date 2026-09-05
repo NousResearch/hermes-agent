@@ -263,6 +263,10 @@ def _build_model_owned_agent(*, model: str = _SESSION_MODEL, reasoning=None):
             self._transport_cache = {}
             self._fallback_activated = False
             self._runtime_override = {}
+            # Distinguishable pre-override value so the restore test can prove
+            # the cached system prompt is invalidated mid-scope and restored on
+            # exit (its context-file caps depend on context_length).
+            self._cached_system_prompt = "session-system-prompt"
 
         def _anthropic_prompt_cache_policy(self, *, provider=None, base_url=None,
                                            api_mode=None, model=None):
@@ -317,6 +321,9 @@ class TestModelOwnedProjection:
             # The session compressor is untouched mid-scope.
             assert session_cc.model == _SESSION_MODEL
             assert session_cc.threshold_tokens == 170_000  # int(200000 * 0.85)
+            # The cached system prompt is invalidated so the next build re-scales
+            # its context-file caps to the override model's context window.
+            assert agent._cached_system_prompt is None
 
     def test_scope_restore_is_exact(self, monkeypatch):
         _patch_model_owned_resolution(monkeypatch)
@@ -342,6 +349,9 @@ class TestModelOwnedProjection:
         # Fields the shared projection writes are restored too.
         assert agent._config_context_length == 200_000
         assert agent._custom_providers is session_custom_providers
+        # The invalidated cached system prompt is restored to its pre-override
+        # bytes, so the session's prefix-cache reuse survives the override.
+        assert agent._cached_system_prompt == "session-system-prompt"
 
     def test_scope_restore_is_exact_on_exception(self, monkeypatch):
         _patch_model_owned_resolution(monkeypatch)

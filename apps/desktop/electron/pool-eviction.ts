@@ -56,3 +56,38 @@ export function selectPoolEvictions<K>(
 
   return evictions
 }
+
+/**
+ * Demand displacement victim for the hard local-backend spawn cap (#102163).
+ *
+ * selectPoolEvictions() spares keepalive-fresh backends, so a fast A→B→C→D
+ * profile switch converges nothing and the 4th spawn queued behind full
+ * slots until its ticket expired ("timed out while waiting for a free
+ * slot"). A real profile switch outranks background pressure: displace the
+ * stalest RUNNING backend (its session persists; reopening respawns) so the
+ * pool converges instead of erroring. Only entries holding a child process
+ * free a coordinator slot — starting/queued/descriptor entries are never
+ * victims, nor is the incoming spawn itself (`exclude`).
+ */
+export function selectSlotDisplacementVictim<K>(
+  entries: Iterable<[K, PoolEvictionEntry]>,
+  exclude: K
+): K | null {
+  let victim: K | null = null
+  let victimAt = Number.POSITIVE_INFINITY
+
+  for (const [key, entry] of entries) {
+    if (key === exclude || !entry.process) {
+      continue
+    }
+
+    const at = typeof entry.lastActiveAt === 'number' ? entry.lastActiveAt : 0
+
+    if (at < victimAt) {
+      victim = key
+      victimAt = at
+    }
+  }
+
+  return victim
+}

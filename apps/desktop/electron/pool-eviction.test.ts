@@ -151,3 +151,14 @@ test('#95189: a backend genuinely idle for minutes IS evicted (#95189 long-windo
   // keep=1, idle is over the cap AND past the fresh window → evicted.
   assert.deepEqual(selectPoolEvictions(entries, 1, NOW, FRESH_MS), ['idle'])
 })
+
+test('slot displacement picks stalest running backend, never self or starters', async () => {
+  const { selectSlotDisplacementVictim } = await import('./pool-eviction')
+  const entries: [string, ReturnType<typeof spawned>][] = [
+    ['a', spawned(9_000)],
+    ['b', spawned(3_000)],
+    ['d', spawned(0)]
+  ]
+  assert.equal(selectSlotDisplacementVictim(entries, 'd'), 'a')
+  assert.equal(selectSlotDisplacementVictim([['d', spawned(0)]], 'd'), null)
+})

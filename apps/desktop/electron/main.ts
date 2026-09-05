@@ -284,7 +284,7 @@ import {
   localRouteFallbackProfiles,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
-import { selectPoolEvictions } from './pool-eviction'
+import { selectPoolEvictions, selectSlotDisplacementVictim } from './pool-eviction'
 import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
 import {
   LocalBackendSpawnCoordinator,
@@ -12304,6 +12304,31 @@ function evictLruPoolBackends(keep) {
   }
 }
 
+// Demand displacement for the hard spawn cap (#102163). evictLruPoolBackends()
+// only evicts backends idle past the keepalive window, so a fast A→B→C→D
+// switch (every holder still fresh) converges nothing and the 4th spawn queued
+// behind full slots until its 30s ticket expired. A real profile switch
+// outranks background pressure: stop the stalest RUNNING backend and wait for
+// its slot, so the coordinator hands it to the waiter below instead of timing
+// out. Starting/queued entries are never victims (preempting a mid-boot spawn
+// just moves the error to an earlier click); with no running victim this is a
+// no-op and genuine capacity pressure still surfaces the queue timeout.
+// ponytail: single displacement per spawn; a many-way concurrent boot storm
+// with zero running backends still funnels through the queue timeout — widen
+// to a drain loop only if that path is ever observed in the wild.
+async function displaceStalestPoolBackendForSlot(excludeKey) {
+  const victim = selectSlotDisplacementVictim(backendPool.entries(), excludeKey)
+
+  if (victim === null) {
+    return false
+  }
+
+  rememberLog(`Profile backend "${excludeKey}" displacing stalest pool backend "${victim}" for a free local slot`)
+  await stopPoolBackend(victim)
+
+  return true
+}
+
 function startPoolIdleReaper() {
   if (poolIdleReaper) {
     return
@@ -12441,6 +12466,9 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     rememberLog(
       `Profile backend "${profile}" waiting for a free local slot (${localBackendSpawnCoordinator.activeCount}/${poolMaxBackends()} busy, ${localBackendSpawnCoordinator.queuedCount} queued)`
     )
+    // Demand displacement (#102163): converge the pool now instead of riding
+    // the queue to its timeout — see displaceStalestPoolBackendForSlot.
+    await displaceStalestPoolBackendForSlot(poolKey)
   }
 
   entry.releaseLocalBackendSlot = await spawnRequest.acquired

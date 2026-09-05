@@ -9,7 +9,7 @@ Usage:
   python google_api.py gmail search "is:unread" [--max 10]
   python google_api.py gmail get MESSAGE_ID
   python google_api.py gmail send --to user@example.com --subject "Hi" --body "Hello"
-  python google_api.py gmail reply MESSAGE_ID --body "Thanks"
+  python google_api.py gmail reply MESSAGE_ID --body "Thanks" [--html] [--no-quote-original]
   python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary]
   python google_api.py calendar create --summary "Meeting" --start DATETIME --end DATETIME
   python google_api.py drive search "budget report" [--max 10]
@@ -37,6 +37,11 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _hermes_home import get_hermes_home
+from gmail_reply_formatting import (
+    build_references,
+    compose_quoted_reply,
+    extract_reply_bodies,
+)
 
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
@@ -359,14 +364,20 @@ def gmail_send(args):
 
 
 def gmail_reply(args):
+    quote_original = not getattr(args, "no_quote_original", False)
+    message_format = "full" if quote_original else "metadata"
+    metadata_headers = [
+        "From", "Subject", "Date", "Message-ID", "In-Reply-To", "References",
+    ]
+
     if _gws_binary():
         original = _run_gws(
             ["gmail", "users", "messages", "get"],
             params={
                 "userId": "me",
                 "id": args.message_id,
-                "format": "metadata",
-                "metadataHeaders": ["From", "Subject", "Message-ID"],
+                "format": message_format,
+                **({"metadataHeaders": metadata_headers} if not quote_original else {}),
             },
         )
         headers = _headers_dict(original)
@@ -375,14 +386,35 @@ def gmail_reply(args):
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
 
-        message = MIMEText(args.body)
+        body_text = args.body
+        use_html = getattr(args, "html", False)
+        if quote_original:
+            def fetch_attachment(message_id, attachment_id):
+                return _run_gws(
+                    ["gmail", "users", "messages", "attachments", "get"],
+                    params={"userId": "me", "messageId": message_id, "id": attachment_id},
+                )
+
+            original_plain, original_html = extract_reply_bodies(original, fetch_attachment)
+            body_text, use_html = compose_quoted_reply(
+                args.body,
+                reply_is_html=use_html,
+                original_plain=original_plain,
+                original_html=original_html,
+                original_from=headers.get("from", ""),
+                original_date=headers.get("date", ""),
+            )
+
+        message = MIMEText(body_text, "html" if use_html else "plain", "utf-8")
         message["To"] = headers.get("from", "")
         message["Subject"] = subject
         if args.from_header:
             message["From"] = args.from_header
         if headers.get("message-id"):
             message["In-Reply-To"] = headers["message-id"]
-            message["References"] = headers["message-id"]
+        references = build_references(headers)
+        if references:
+            message["References"] = references
 
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
         result = _run_gws(
@@ -395,8 +427,8 @@ def gmail_reply(args):
 
     service = build_service("gmail", "v1")
     original = service.users().messages().get(
-        userId="me", id=args.message_id, format="metadata",
-        metadataHeaders=["From", "Subject", "Message-ID"],
+        userId="me", id=args.message_id, format=message_format,
+        **({"metadataHeaders": metadata_headers} if not quote_original else {}),
     ).execute()
     headers = _headers_dict(original)
 
@@ -404,14 +436,34 @@ def gmail_reply(args):
     if not subject.startswith("Re:"):
         subject = f"Re: {subject}"
 
-    message = MIMEText(args.body)
+    body_text = args.body
+    use_html = getattr(args, "html", False)
+    if quote_original:
+        def fetch_attachment(message_id, attachment_id):
+            return service.users().messages().attachments().get(
+                userId="me", messageId=message_id, id=attachment_id,
+            ).execute()
+
+        original_plain, original_html = extract_reply_bodies(original, fetch_attachment)
+        body_text, use_html = compose_quoted_reply(
+            args.body,
+            reply_is_html=use_html,
+            original_plain=original_plain,
+            original_html=original_html,
+            original_from=headers.get("from", ""),
+            original_date=headers.get("date", ""),
+        )
+
+    message = MIMEText(body_text, "html" if use_html else "plain", "utf-8")
     message["To"] = headers.get("from", "")
     message["Subject"] = subject
     if args.from_header:
         message["From"] = args.from_header
     if headers.get("message-id"):
         message["In-Reply-To"] = headers["message-id"]
-        message["References"] = headers["message-id"]
+    references = build_references(headers)
+    if references:
+        message["References"] = references
 
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
     body = {"raw": raw, "threadId": original["threadId"]}
@@ -1082,6 +1134,8 @@ def main():
     p.add_argument("message_id", help="Message ID to reply to")
     p.add_argument("--body", required=True)
     p.add_argument("--from", dest="from_header", default="", help="Custom From header (e.g. '\"Agent Name\" <user@example.com>')")
+    p.add_argument("--html", action="store_true", help="Treat the new reply body as HTML")
+    p.add_argument("--no-quote-original", action="store_true", help="Do not include visible quoted history")
     p.set_defaults(func=gmail_reply)
 
     p = gmail_sub.add_parser("labels")

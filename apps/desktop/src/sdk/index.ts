@@ -48,6 +48,7 @@ import {
   activeGatewayConnectionId,
   openGatewayForAgent,
   openGatewayForProfile,
+  openSecondaryCount,
   requestGatewayForAgent,
   requestGatewayForProfile,
   retainGatewayForAgent,
@@ -55,6 +56,7 @@ import {
   retireLocalProfileGateways
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { $poolLimits } from '@/store/pool-limits'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
@@ -653,6 +655,14 @@ export const host = {
     const name = (profile ?? '').trim()
 
     if (!name || name === $activeGatewayProfile.get()) {
+      return
+    }
+
+    // Same saturation guard as the rail's prewarmProfileBackend (#91545):
+    // a speculative spawn that pushes the pool past its cap makes Electron
+    // LRU-evict a warm backend, turning the warm into churn. Skip once every
+    // slot holds an open socket; the real click still spawns on demand.
+    if (openSecondaryCount() + 1 > $poolLimits.get().maxBackends) {
       return
     }
 

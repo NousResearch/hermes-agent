@@ -16,6 +16,11 @@ vi.mock('@/components/pane-shell/tree/store', async () => {
 vi.mock('@/contrib/events', () => ({ onGatewayEvent: vi.fn() }))
 vi.mock('@/hermes', () => ({ deleteProfile: vi.fn(), getLogs: vi.fn(), getStatus: vi.fn(), hermesApi: vi.fn() }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
+vi.mock('@/store/pool-limits', async () => {
+  const { atom } = await import('nanostores')
+
+  return { $poolLimits: atom({ idleMs: 600_000, maxBackends: 3 }) }
+})
 vi.mock('@/store/system-actions', () => ({ runGatewayRestart: vi.fn() }))
 vi.mock('@/store/session', async () => {
   const { atom } = await import('nanostores')
@@ -104,6 +109,7 @@ vi.mock('@/store/gateway', async () => {
     ensureGatewayForAgent: vi.fn(),
     openGatewayForAgent: vi.fn(),
     openGatewayForProfile: vi.fn(),
+    openSecondaryCount: vi.fn(() => 0),
     requestGatewayForAgent: vi.fn(
       async (connectionId: string, profile: string, method: string, params: Record<string, unknown>) => ({
         connectionId,
@@ -130,6 +136,7 @@ const {
   activeGatewayConnectionId,
   openGatewayForAgent,
   openGatewayForProfile,
+  openSecondaryCount,
   requestGatewayForAgent,
   requestGatewayForProfile,
   retireLocalProfileGateways
@@ -222,6 +229,28 @@ describe('connection-aware plugin host APIs', () => {
     // A leftover Bot Mode tile would restore on relaunch and dial the deleted
     // profile's backend, re-creating its HERMES_HOME (#94235).
     expect(dropTilesForProfile).toHaveBeenCalledWith('worker', undefined)
+  })
+
+  it('pre-warm skips a speculative spawn when the pool is saturated (#91545)', () => {
+    // Roster-row hover shares the rail's guard: once every slot holds an open
+    // socket, a speculative spawn would LRU-evict a warm backend — the churn
+    // the guard exists to prevent. The real click still spawns on demand.
+    $activeGatewayProfile.set('default')
+    vi.mocked(openSecondaryCount).mockReturnValue(3)
+
+    host.warmProfile('hover-worker')
+
+    expect(openGatewayForProfile).not.toHaveBeenCalled()
+  })
+
+  it('pre-warm dials while pool slots are free', async () => {
+    $activeGatewayProfile.set('default')
+    vi.mocked(openSecondaryCount).mockReturnValue(2)
+    vi.mocked(openGatewayForProfile).mockResolvedValueOnce(undefined)
+
+    host.warmProfile('hover-worker')
+
+    await vi.waitFor(() => expect(openGatewayForProfile).toHaveBeenCalledWith('hover-worker'))
   })
 
   it('pins an ambient SSH profile delete to the active connection and target profile', async () => {

@@ -36,7 +36,10 @@ function shimUrl(globalKey: keyof typeof GLOBALS): string {
     // only emit it when the namespace actually has named exports.
     (names.length ? `export const { ${names.join(', ')} } = m;\n` : '')
 
-  return URL.createObjectURL(new Blob([source], { type: 'text/javascript' }))
+  // data: URL, not blob: — some Electron/Chromium builds fail to resolve the
+  // default export of a blob: module that itself imports another blob: module
+  // (nested blob imports). data: URLs import cleanly and need no revocation.
+  return 'data:text/javascript,' + encodeURIComponent(source)
 }
 
 let cached: Record<string, string> | null = null

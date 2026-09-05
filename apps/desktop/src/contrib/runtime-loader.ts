@@ -126,19 +126,32 @@ export async function loadRuntimePlugin(
       )
     }
 
-    const url = URL.createObjectURL(new Blob([rewriteSpecifiers(source)], { type: 'text/javascript' }))
+    // data: URL, not blob: — matches the shim modules (see sdk/runtime.ts) so
+    // the runtime plugin and its shims import through the same mechanism that
+    // works reliably in Electron. Blob: modules importing other blob: modules
+    // can fail to resolve their default export in some Chromium builds.
+    const url = 'data:text/javascript,' + encodeURIComponent(rewriteSpecifiers(source))
 
     let mod: { default?: HermesPlugin }
 
     try {
       mod = await import(/* @vite-ignore */ url)
-    } finally {
-      URL.revokeObjectURL(url)
+    } catch (importError) {
+      console.error(`[plugins] ${origin} import rejected`, importError)
+      throw importError
     }
 
     const plugin = mod.default
 
     if (!plugin?.id || typeof plugin.register !== 'function') {
+      console.error(`[plugins] ${origin} loaded but default export invalid`, {
+        namespaceKeys: Object.keys(mod ?? {}),
+        defaultType: typeof plugin,
+        defaultIsNull: plugin === null,
+        defaultKeys: plugin && typeof plugin === 'object' ? Object.keys(plugin) : null,
+        id: (plugin as any)?.id,
+        registerType: typeof (plugin as any)?.register
+      })
       throw new Error(`${origin} has no valid default HermesPlugin export`)
     }
 

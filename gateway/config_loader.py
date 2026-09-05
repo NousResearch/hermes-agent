@@ -201,7 +201,7 @@ _SHARED_KEYS: tuple = (
     ("allowed_chats", _TELEGRAM, None),
     ("group_allowed_chats", _TELEGRAM, None),
     ("allowed_topics", _TELEGRAM, None),
-    *_plain("free_response_channels", "mention_patterns", "exclusive_bot_mentions"),
+    *_plain("free_response_channels", "mention_patterns", "exclusive_bot_mentions", "ignore_human_mentions"),
     ("observe_unmentioned_group_messages", _TELEGRAM, None),
     *_plain(
         "dm_policy", "allow_from", "allow_admin_from", "user_allowed_commands",

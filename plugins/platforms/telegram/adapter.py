@@ -5056,6 +5056,18 @@ class TelegramAdapter(BasePlatformAdapter):
             "bots_require_mention", "TELEGRAM_BOTS_REQUIRE_MENTION", "false"
         )
 
+    def _telegram_ignore_human_mentions(self) -> bool:
+        """Return whether group messages that @mention humans (but not this bot) are ignored.
+
+        Opt-in via ``telegram.ignore_human_mentions`` in config.yaml. Defaults to
+        False, preserving the existing respond-by-default behaviour (#64388)."""
+        configured = self.config.extra.get("ignore_human_mentions")
+        if configured is None:
+            return False
+        if isinstance(configured, str):
+            return configured.strip().lower() in {"true", "1", "yes", "on"}
+        return bool(configured)
+
     def _telegram_free_response_chats(self) -> set[str]:
         return self._extra_str_set("free_response_chats", "TELEGRAM_FREE_RESPONSE_CHATS")
 
@@ -5343,6 +5355,46 @@ class TelegramAdapter(BasePlatformAdapter):
         if bot_username:
             return bot_username in self._extract_bot_mention_usernames(message, bot_username)
         return False
+
+    def _message_mentions_human_only(self, message: Message) -> bool:
+        """Return True when the message @mentions human users and does not address this bot.
+
+        Human mentions come from ``mention`` entities whose handle is neither this
+        bot nor another bot (``...bot``), or from ``text_mention`` entities whose
+        target user is not a bot. ``_message_mentions_bot`` already covers this-bot
+        addressing via ``mention``/``text_mention``/``/cmd@botname``, so a message
+        that also addresses the bot returns False here (mixed mentions preserve the
+        direct-address exception)."""
+        # Forwarded messages carry the original sender's entities: a mention inside
+        # forwarded content reflects the original author's addressing, not the
+        # forwarder's, so never treat it as a human-only mention.
+        if getattr(message, "forward_origin", None) is not None or getattr(message, "forward_from", None) is not None:
+            return False
+        if not self._bot:
+            return False
+        bot_username = (self._current_bot_username() or "").lstrip("@").lower()
+        bot_id = getattr(self._bot, "id", None)
+        mentions_human = False
+        for source_text, entities in self._entity_sources(message):
+            for entity in entities:
+                entity_type = self._entity_type(entity)
+                if entity_type == "text_mention":
+                    user = getattr(entity, "user", None)
+                    if user and getattr(user, "id", None) != bot_id and not getattr(user, "is_bot", False):
+                        mentions_human = True
+                    continue
+                if entity_type != "mention":
+                    continue
+                span = self._entity_span(source_text, entity)
+                if span is None:
+                    continue
+                handle = span.strip().lstrip("@").lower()
+                if not handle or handle == bot_username:
+                    continue
+                if re.fullmatch(r"[a-z0-9_]{2,29}bot", handle, re.IGNORECASE):
+                    continue  # another bot, not a human
+                mentions_human = True
+        return mentions_human and not self._message_mentions_bot(message)
 
     def _schedule_bot_identity_recheck(self) -> None:
         """Fire a TTL-guarded identity refresh in the background when routing is about to discard a
@@ -5640,6 +5692,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         if not self._is_group_chat(message):
             return True
+        if self._telegram_ignore_human_mentions() and not self._is_reply_to_bot(message) and self._message_mentions_human_only(message):
+            return False
         thread_id = self._effective_message_thread_id(message)
         if self._topic_gates_pass(thread_id, warn_non_numeric=True) is False:
             return False

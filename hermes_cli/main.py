@@ -721,6 +721,7 @@ from hermes_cli.main_install_repair import (  # frozen updater surface: update_c
     _clear_marker_file,
     _clear_update_incomplete_marker,
     _install_python_dependencies_with_optional_fallback,
+    _load_installable_optional_extras,
     _is_termux_env,
     _is_windows,
     _is_windows_npm_path,
@@ -765,14 +766,26 @@ from hermes_cli.main_tui_launch import (
 
 
 def _is_termux_startup_environment(env: dict[str, str] | None = None) -> bool:
-    """Import-safe Termux check for cold-start-sensitive CLI paths."""
+    """Import-safe detection for native Termux and Termux-hosted PRoot."""
     check = env or os.environ
     prefix = str(check.get("PREFIX", ""))
-    return bool(
+    if (
         check.get("TERMUX_VERSION")
         or "com.termux/files/usr" in prefix
         or prefix.startswith("/data/data/com.termux/")
-    )
+    ):
+        return True
+
+    # proot-distro reports PRoot through uname while exposing the Termux host dir.
+    try:
+        uts = os.uname()
+        if ("PRoot" in uts.release or "PRoot" in uts.version) and os.path.isdir(
+            "/data/data/com.termux"
+        ):
+            return True
+    except (OSError, AttributeError):
+        pass
+    return False
 
 
 def _read_packed_ref(common_dir: Path, ref: str) -> str | None:
@@ -2043,6 +2056,112 @@ _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
 _FROZEN_ATTR_SOURCES: dict[str, str] = {
     attr: module for module, attrs in _FROZEN_UPDATER_SURFACE.items() for attr in attrs
 }
+
+
+def _is_android_python() -> bool:
+    return sys.platform == "android"
+
+
+def _ensure_pip_for_update(pip_cmd: list[str]) -> None:
+    """Restore pip in the active interpreter before dependency reinstall."""
+    try:
+        subprocess.run(
+            pip_cmd + ["--version"],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError:
+        subprocess.run(
+            [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+            cwd=PROJECT_ROOT,
+            check=True,
+        )
+
+
+def _install_python_dependencies_with_optional_fallback(
+    install_cmd_prefix: list[str], *, env: dict[str, str] | None = None,
+    group: str = "all", raise_on_failed_extras: bool = False,
+) -> None:
+    """Expose the install-repair helper through the legacy ``main`` surface."""
+    from hermes_cli import main_install_repair as repair
+
+    patchable = (
+        "_is_windows",
+        "_venv_scripts_dir",
+        "_run_install_with_heartbeat",
+        "_load_installable_optional_extras",
+    )
+    originals = {name: getattr(repair, name) for name in patchable}
+    try:
+        for name in patchable:
+            setattr(repair, name, globals()[name])
+        repair._install_python_dependencies_with_optional_fallback(
+            install_cmd_prefix,
+            env=env,
+            group=group,
+            raise_on_failed_extras=raise_on_failed_extras,
+        )
+    finally:
+        for name, value in originals.items():
+            setattr(repair, name, value)
+
+
+def _install_checkout_python_dependencies_for_update() -> tuple[
+    list[str], dict[str, str] | None
+]:
+    """Install checkout dependencies with shared Termux/PRoot uv-to-pip recovery."""
+    from hermes_cli.managed_uv import ensure_uv, managed_python_env, update_managed_uv
+    from hermes_cli.update_cmd_deps import (
+        _ensure_uv_for_termux,
+        _install_psutil_android_compat,
+    )
+
+    update_managed_uv()
+    pip_cmd = [sys.executable, "-m", "pip"]
+    uv_bin = ensure_uv() or _ensure_uv_for_termux(pip_cmd)
+    install_group = "all"
+    deps_installed = False
+
+    if uv_bin:
+        uv_env = managed_python_env()
+        uv_env["VIRTUAL_ENV"] = str(PROJECT_ROOT / "venv")
+        if _is_termux_env(uv_env):
+            uv_env.pop("PYTHONPATH", None)
+            uv_env.pop("PYTHONHOME", None)
+            install_group = "termux-all"
+            print("  → Termux detected: using uv + curated termux-all optional profile...")
+        if _is_termux_env(uv_env) and _is_android_python():
+            print(
+                "  → Termux/Android detected: prebuilding psutil with Linux source path compatibility..."
+            )
+            _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
+        try:
+            _install_python_dependencies_with_optional_fallback(
+                [uv_bin, "pip"],
+                env=uv_env,
+                group=install_group,
+                raise_on_failed_extras=_is_termux_env(uv_env),
+            )
+            deps_installed = True
+        except subprocess.CalledProcessError as exc:
+            if not _is_termux_env(uv_env):
+                raise
+            print("  ⚠ uv install failed on Termux/PRoot, falling back to pip...")
+            logger.debug("uv install failed on Termux/PRoot: %s", exc)
+
+    if deps_installed:
+        assert uv_bin is not None
+        return [uv_bin, "pip"], uv_env
+
+    _ensure_pip_for_update(pip_cmd)
+    install_group = "termux-all" if _is_termux_env() else "all"
+    if _is_termux_env():
+        print("  → Termux detected: using pip + curated termux-all optional profile...")
+    _install_python_dependencies_with_optional_fallback(
+        pip_cmd, group=install_group
+    )
+    return pip_cmd, None
 
 
 def __getattr__(name):

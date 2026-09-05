@@ -562,8 +562,7 @@ def _repair_venv_on_current_checkout(
     if venv_python_missing and repair_uv:
         print("→ Recreating virtual environment...")
         subprocess.run([repair_uv, "venv", "venv"], cwd=_m().PROJECT_ROOT, check=False)
-    repair_prefix, repair_env = _pip_install_prefix(repair_uv)
-    _m()._install_python_dependencies_with_optional_fallback(repair_prefix, env=repair_env, group="all")
+    repair_prefix, repair_env = _m()._install_checkout_python_dependencies_for_update()
     _m()._refresh_active_lazy_features(repair_prefix, env=repair_env, features=active_lazy_features)
     _m()._restore_active_tool_dependencies(active_tool_dependencies, repair_prefix, env=repair_env)
     # Core ``.[all]`` install finished. Clear the generic core breadcrumb before the lazy-refresh phase —

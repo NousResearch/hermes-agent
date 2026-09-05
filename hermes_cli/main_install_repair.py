@@ -260,15 +260,9 @@ def _recover_core_update_marker_locked() -> None:
             "succeeds)...")
         _repair_venv_via_import_probes(install_prefix, env=install_env)
     try:
-        from hermes_cli import _install_repair as _ir
+        from hermes_cli.main import _install_checkout_python_dependencies_for_update
 
-        # ensure_uv bootstraps uv itself when missing (the early pass's stdlib-only lookup
-        # cannot), so a venv whose uv vanished mid-update still heals.
-        from hermes_cli.managed_uv import ensure_uv
-        ensure_uv()
-        # Shared stdlib executor: late path and pre-import early pass run exactly the same
-        # reinstall. Its own stdout→stderr redirect nests harmlessly inside ours.
-        _ir.run_core_install(PROJECT_ROOT)
+        _install_checkout_python_dependencies_for_update()
         _clear_update_incomplete_marker()
         print("✓ Dependency installation recovered — your install is healthy again.")
     except Exception as exc:
@@ -914,7 +908,8 @@ def _interpreter_scripts_dir() -> Path | None:
 
 
 def _install_python_dependencies_with_optional_fallback(
-    install_cmd_prefix: list[str], *, env: dict[str, str] | None = None, group: str = "all"
+    install_cmd_prefix: list[str], *, env: dict[str, str] | None = None, group: str = "all",
+    raise_on_failed_extras: bool = False,
 ) -> None:
     """Install base deps plus as many optional extras as the environment supports.
 
@@ -974,6 +969,12 @@ def _install_python_dependencies_with_optional_fallback(
         print(f"  ✓ Reinstalled optional extras individually: {', '.join(installed_extras)}")
     if failed_extras:
         print(f"  ⚠ Skipped optional extras that still failed: {', '.join(failed_extras)}")
+        if raise_on_failed_extras:
+            raise subprocess.CalledProcessError(
+                1,
+                install_cmd_prefix
+                + ["install", "-e", f".[{','.join(failed_extras)}]"],
+            )
     # uv's incremental resolver has left newly added base deps silently missing on a half-stale
     # venv, surfacing hours later as a downstream ModuleNotFoundError. Verify here instead.
     _verify_core_dependencies_installed(install_cmd_prefix, env=env, group=group)

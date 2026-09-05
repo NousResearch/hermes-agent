@@ -11,6 +11,7 @@ and an ``__init__.py`` exposing ``register(ctx)``. Plugins register callbacks fo
 from __future__ import annotations
 
 import asyncio
+import atexit
 import importlib.metadata
 import inspect
 import json
@@ -834,6 +835,31 @@ class PluginContext:
         logger.debug("Plugin %s registered %s handler factory: %s", self.manifest.name, key,
                      getattr(factory, "__name__", repr(factory)))
 
+    def register_api_server_credential_authorizer(self, authorizer: Any) -> PluginRegistration:
+        """Register the plugin's API Bearer credential authorizer.
+
+        The ``authorize`` method must be ``async def``; sync implementations are rejected here
+        rather than at adapter startup so the error is surfaced at plugin load time.
+
+        The API server accepts exactly one live registration. Registrations are retained here
+        rather than replaced so an ambiguous configuration can fail server startup closed.
+        The object receives one ``CredentialAuthorizationRequest`` via ``authorize`` and returns
+        an exact ``AuthorizedAPICredential`` or ``None``.
+        """
+        if not inspect.iscoroutinefunction(getattr(authorizer, "authorize", None)):
+            raise self._refuse(
+                "an API credential authorizer whose authorize method is not async "
+                "(async def authorize is required)"
+            )
+        entry = (authorizer, self.plugin_id)
+        self._manager._register_api_credential_authorizer(entry)
+        handle = self._track(
+            "api_credential_authorizer", self.plugin_id,
+            lambda: self._manager._remove_api_credential_authorizer(entry),
+        )
+        logger.info("Plugin %s registered an API credential authorizer", self.manifest.name)
+        return handle
+
     def register_telegram_handler(self, factory: Callable) -> None:
         """``register_platform_handler("telegram", factory)``. PTB dispatches only the FIRST matching
         handler per group and core registers a catch-all ``CallbackQueryHandler`` — always scope with
@@ -1139,6 +1165,12 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._approval_transports: Dict[str, Any] = {}
         self._slack_action_handlers: List[tuple] = []
         self._platform_handler_factories: Dict[str, List[tuple]] = {}
+        self._api_credential_authorizers: List[tuple[Any, str]] = []
+        self._api_credential_authorizer_generation = 0
+        self._api_credential_authorizer_lock = threading.RLock()
+        self._api_credential_authorizer_runner: Any = None
+        self._api_credential_authorizer_runner_lock = threading.Lock()
+        self._shutdown = False
         # Event bus: owner-tagged subscriptions (unload removes zombies); one daemon worker keeps
         # registration order while emitters never block; per-worker chain depth caps mutual emitters.
         self._subscriptions: Dict[str, List[_EventSubscription]] = {}
@@ -1420,6 +1452,69 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         adapter)`` at connect (see :meth:`PluginContext.register_platform_handler`)."""
         return list(self._platform_handler_factories.get((platform or "").strip().lower(), []))
 
+    def _register_api_credential_authorizer(self, entry: tuple[Any, str]) -> None:
+        with self._api_credential_authorizer_lock:
+            self._api_credential_authorizers.append(entry)
+            self._api_credential_authorizer_generation += 1
+
+    def _remove_api_credential_authorizer(self, entry: tuple[Any, str]) -> None:
+        with self._api_credential_authorizer_lock:
+            if self._remove_identity(self._api_credential_authorizers, entry):
+                self._api_credential_authorizer_generation += 1
+
+    def get_api_server_credential_authorizer_snapshot(self):
+        """Return ``(generation, sole authorizer)`` or raise for ambiguous live authority."""
+        with self._api_credential_authorizer_lock:
+            if len(self._api_credential_authorizers) > 1:
+                raise RuntimeError("multiple API credential authorizers are registered")
+            authorizer = (
+                self._api_credential_authorizers[0][0]
+                if self._api_credential_authorizers else None
+            )
+            return self._api_credential_authorizer_generation, authorizer
+
+    def admit_api_server_credential_authorizer(self, generation: int, authorizer: Any) -> bool:
+        """Linearize handler admission against registration removal or replacement."""
+        with self._api_credential_authorizer_lock:
+            return (
+                self._api_credential_authorizer_generation == generation
+                and len(self._api_credential_authorizers) == 1
+                and self._api_credential_authorizers[0][0] is authorizer
+            )
+
+    def get_api_server_credential_authorizer(self):
+        """Return the sole live registration, ``None``, or raise on ambiguous authority."""
+        return self.get_api_server_credential_authorizer_snapshot()[1]
+
+    def get_api_server_credential_authorizer_runner(self, *, capacity: int, factory: Callable[[int], Any]):
+        """Process-scoped runner singleton for API credential authorizers.
+
+        Concurrency-safe: the lock ensures exactly one runner is created even when two adapters
+        call this simultaneously during startup.  The runner is never replaced or destroyed by
+        plugin unload or adapter disconnect; only process shutdown may close it.
+        """
+        with self._api_credential_authorizer_runner_lock:
+            if self._shutdown:
+                raise RuntimeError("PluginManager is shut down")
+            runner = self._api_credential_authorizer_runner
+            if runner is None:
+                runner = factory(capacity)
+                self._api_credential_authorizer_runner = runner
+            return runner
+
+    def shutdown(self) -> None:
+        """Idempotently close manager-owned process resources; unlike ``unload``, terminal."""
+        with self._api_credential_authorizer_runner_lock:
+            if self._shutdown:
+                return
+            self._shutdown = True
+            runner = self._api_credential_authorizer_runner
+        if runner is not None:
+            try:
+                runner.close()
+            except Exception:
+                logger.debug("API credential authorizer runner shutdown failed", exc_info=True)
+
     def get_telegram_handler_factories(self) -> List[tuple]:
         """Back-compat alias for ``get_platform_handler_factories("telegram")``."""
         return self.get_platform_handler_factories("telegram")
@@ -1534,6 +1629,7 @@ def _reset_plugin_managers_for_tests() -> None:
         for manager in managers:
             _clear_plugin_submodules(manager)
             try:
+                manager.shutdown()
                 manager.unload()
             except Exception:
                 logger.debug("test plugin-manager unload failed", exc_info=True)
@@ -1546,6 +1642,19 @@ def _reset_plugin_managers_for_tests() -> None:
         clear_providers()
     except Exception:
         logger.debug("dashboard-auth registry clear failed", exc_info=True)
+
+
+def shutdown_plugin_managers() -> None:
+    """Terminal process teardown for every profile manager; safe to call repeatedly."""
+    with _plugin_managers_lock:
+        managers = list(dict.fromkeys(_plugin_managers_by_home.values()))
+        if _plugin_manager is not None and _plugin_manager not in managers:
+            managers.append(_plugin_manager)
+    for manager in managers:
+        manager.shutdown()
+
+
+atexit.register(shutdown_plugin_managers)
 
 
 def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:

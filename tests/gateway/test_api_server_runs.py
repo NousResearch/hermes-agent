@@ -155,6 +155,48 @@ def auth_adapter():
 
 class TestStartRun:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("room_scoped", [False, True], ids=["static", "room"])
+    async def test_static_and_room_implicit_session_remains_the_run_id(
+        self, monkeypatch, room_scoped
+    ):
+        """Legacy static and room callers address the transcript by the returned run ID."""
+        adapter = _make_adapter(api_key="static-key" if room_scoped else "")
+        if room_scoped:
+            claims = {
+                "room_id": "room", "home_install_id": "home", "authority_gateway_id": "gw",
+                "authority_epoch": 1, "member_id": "member", "target_install_id": "target",
+                "target_profile": "default", "expires_at": time.time() + 60,
+            }
+            monkeypatch.setattr(adapter, "_room_grant_token", lambda _request: "grant")
+            monkeypatch.setattr(adapter, "_room_grant_claims", lambda _request, permission: claims)
+            monkeypatch.setattr(
+                adapter, "_normalize_room_dispatch",
+                AsyncMock(side_effect=lambda _request, body: (body, None)),
+            )
+
+        seen = {}
+        agent = MagicMock()
+        agent.run_conversation.return_value = {"final_response": "done"}
+        agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+
+        def create_agent(**kwargs):
+            seen.update(kwargs)
+            return agent
+
+        monkeypatch.setattr(adapter, "_create_agent", create_agent)
+        headers = {"Authorization": "HermesRoom grant"} if room_scoped else {}
+        async with TestClient(TestServer(_create_runs_app(adapter))) as cli:
+            response = await cli.post("/v1/runs", json={"input": "hello"}, headers=headers)
+            body = await response.json()
+            task = adapter._active_run_tasks.get(body.get("run_id"))
+            if task is not None:
+                await asyncio.wait_for(task, timeout=1)
+
+        assert response.status == 202
+        assert body["session_id"] == body["run_id"]
+        assert seen["session_id"] == body["run_id"]
+
+    @pytest.mark.asyncio
     async def test_room_auth_is_validated_before_body_parse_or_work_reservation(
         self, auth_adapter
     ):

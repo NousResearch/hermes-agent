@@ -53,11 +53,13 @@ _PEER_SELECT_HEAD = """
 """
 _PEER_BY_KEY_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.session_key = ?
                   AND s.source = ?
+                  AND s.credential_owner IS ?
                   AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL}))
                   AND NOT EXISTS (
                       SELECT 1 FROM sessions b
                       WHERE b.session_key = s.session_key
                         AND b.source = s.source
+                        AND b.credential_owner IS ?
                         AND b.ended_at IS NOT NULL
                         AND b.end_reason IN ({_RESET_END_REASONS_SQL})
                         AND b.ended_at
@@ -197,6 +199,7 @@ class SessionGatewayMixin:
 
     def record_gateway_session_peer(
         self, session_id: str, *, source: str, user_id: str = None, session_key: str = None,
+        credential_owner: str = None,
         chat_id: str = None, chat_type: str = None, thread_id: str = None, display_name: str = None,
         origin_json: str = None, include_compression_ancestors: bool = False) -> None:
         """Persist the gateway routing peer for an existing session row. ``display_name`` / ``origin_json``:
@@ -212,17 +215,28 @@ class SessionGatewayMixin:
         """
         if not session_id or not session_key:
             return
-        identity = (session_key, source, user_id, chat_id, chat_type, thread_id, display_name, origin_json)
+        identity = (
+            session_key,
+            source,
+            user_id,
+            credential_owner,
+            chat_id,
+            chat_type,
+            thread_id,
+            display_name,
+            origin_json,
+        )
         ancestors = include_compression_ancestors
         query_params = [session_id, *identity] if ancestors else [*identity, session_id]
         def _do(conn):
             conn.execute(
                 f"""{_COMPRESSION_LINEAGE_CTE if ancestors else ""}
-                   UPDATE sessions
-                   SET session_key = ?, source = ?, user_id = ?, chat_id = ?,
-                       chat_type = ?, thread_id = ?,
-                       display_name = COALESCE(?, display_name),
-                       origin_json = COALESCE(?, origin_json)
+                    UPDATE sessions
+                    SET session_key = ?, source = ?, user_id = ?,
+                        credential_owner = COALESCE(?, credential_owner), chat_id = ?,
+                        chat_type = ?, thread_id = ?,
+                        display_name = COALESCE(?, display_name),
+                        origin_json = COALESCE(?, origin_json)
                    {"WHERE id IN (SELECT id FROM compression_lineage)" if ancestors else "WHERE id = ?"}""",
                 query_params,
             )
@@ -232,22 +246,34 @@ class SessionGatewayMixin:
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
                 conn.execute(
                     """INSERT INTO sessions (
-                               id, source, user_id, session_key, chat_id,
+                               id, source, user_id, credential_owner, session_key, chat_id,
                                chat_type, thread_id, display_name, origin_json,
                                profile_name, started_at
-                           )
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            )
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                            ON CONFLICT(id) DO UPDATE SET
-                               session_key = COALESCE(sessions.session_key, excluded.session_key),
-                               chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
+                                session_key = COALESCE(sessions.session_key, excluded.session_key),
+                                chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
                                chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
                                thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
                                display_name = COALESCE(sessions.display_name, excluded.display_name),
                                origin_json = COALESCE(sessions.origin_json, excluded.origin_json)""",
                     # Same ownership stamp as _insert_session_row: an unowned (NULL) row
                     # vanishes from profile-keyed consumers.
-                    (session_id, source, user_id, session_key, chat_id, chat_type, thread_id, display_name,
-                     origin_json, self._own_profile_name(), time.time()),
+                    (
+                        session_id,
+                        source,
+                        user_id,
+                        credential_owner,
+                        session_key,
+                        chat_id,
+                        chat_type,
+                        thread_id,
+                        display_name,
+                        origin_json,
+                        self._own_profile_name(),
+                        time.time(),
+                    ),
                 )
         self._execute_write(_do)
 
@@ -380,6 +406,7 @@ class SessionGatewayMixin:
     def find_latest_gateway_session_for_peer(
         self, *, source: str, user_id: Optional[str] = None, session_key: Optional[str] = None,
         chat_id: Optional[str] = None, chat_type: Optional[str] = None, thread_id: Optional[str] = None,
+        credential_owner: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Find the latest recoverable gateway session for a routing peer. The durable ``session_key`` on the row rebuilds a missing/pruned ``sessions.json`` mapping. Rows
         ended only by the old ``agent_close`` bug or a mistaken TUI ``ws_orphan_reap`` are recoverable;
@@ -403,7 +430,15 @@ class SessionGatewayMixin:
         if not session_key:
             return None
         with self._read_ctx() as conn:
-            row = conn.execute(_PEER_BY_KEY_SQL, (session_key, source)).fetchone()
+            row = conn.execute(
+                _PEER_BY_KEY_SQL,
+                (
+                    session_key,
+                    source,
+                    credential_owner,
+                    credential_owner,
+                ),
+            ).fetchone()
             if row is not None:
                 return self._session_row_dict(row)
             if chat_id is None or chat_type is None:

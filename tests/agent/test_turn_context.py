@@ -468,6 +468,7 @@ class _TitlingAgent:
         self.api_mode = "chat_completions"
         self._session_db = MagicMock()
         self._session_db_created = True
+        self._credential_owner = "api-credential:owner-a"
 
 
 def _title_turn(platform, message="Fix the login button"):
@@ -485,6 +486,11 @@ def _title_turn(platform, message="Fix the login button"):
 @pytest.mark.parametrize("platform", ["cli", "telegram", "desktop", "acp", None])
 def test_prologue_titles_the_surfaces_a_person_reads(platform):
     assert _title_turn(platform).called
+
+
+def test_prologue_captures_exact_credential_owner_for_background_title():
+    titler = _title_turn("api_server")
+    assert titler.call_args.kwargs["expected_credential_owner"] == "api-credential:owner-a"
 
 
 @pytest.mark.parametrize("platform", ["cron", "CRON", "subagent"])

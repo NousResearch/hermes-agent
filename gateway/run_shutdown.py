@@ -1662,6 +1662,7 @@ class GatewayShutdownMixin:
     def _stop_release_runtime_state(self, ctx: "GatewayShutdownMixin._StopContext") -> None:
         """Cancel background tasks, flush pending messages, clear per-session state, final tool kill."""
         from gateway.run import GatewayRunner
+        from hermes_cli.plugins import shutdown_plugin_managers
         for _task in list(self._background_tasks):
             # _restart_task awaits _stop_task: cancelling it would tunnel into _stop_impl and skip _shutdown_event.set().
             if _task is self._stop_task or _task is self._restart_task:
@@ -1672,6 +1673,7 @@ class GatewayShutdownMixin:
         # self-terminates anyway.
         self._background_tasks.clear()
         self.adapters.clear()
+        shutdown_plugin_managers()
         for _session_key in list(self._running_agents):
             self._release_running_agent_state(_session_key)
         # Flush pending messages before clearing: under FTS5 corruption they are the only surviving copy.

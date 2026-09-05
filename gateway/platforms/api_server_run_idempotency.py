@@ -59,15 +59,36 @@ class RunIdempotencyStore:
     @property
     def durable(self) -> bool:
         """Whether reservations survive this process."""
-        return self._db_path is not None
-    def __init__(self, db_path: str = None):
+        return self._durability_state == "durable"
+
+    @property
+    def durability_state(self) -> str:
+        """Return ``durable``, intentional ``memory``, or failed-open ``degraded`` storage."""
+        return self._durability_state
+
+    @classmethod
+    def in_memory(cls) -> "RunIdempotencyStore":
+        """Create intentional process-memory storage (tests/explicit embedders only)."""
+        return cls(":memory:", _intentional_memory=True)
+
+    def __init__(self, db_path: str = None, *, _intentional_memory: bool = False):
+        provenance_failed = False
         if db_path is None:
             try:
                 from hermes_cli.config import get_hermes_home
                 db_path = str(get_hermes_home() / "runs_idempotency.db")
             except Exception:
                 db_path = ":memory:"
-        self._db_path = None if db_path == ":memory:" else db_path
+                provenance_failed = True
+        sqlite_memory_or_temp = not db_path or db_path == ":memory:"
+        intentional_memory = bool(_intentional_memory and db_path == ":memory:")
+        requested_durable = not sqlite_memory_or_temp
+        self._db_path = db_path if requested_durable else None
+        self._durability_state = (
+            "memory" if intentional_memory
+            else "degraded" if provenance_failed or sqlite_memory_or_temp
+            else "durable"
+        )
         try:
             self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
         except Exception as exc:
@@ -80,6 +101,7 @@ class RunIdempotencyStore:
                 "process memory, so replay will not survive a restart: %s", exc)
             self._conn = sqlite3.connect(":memory:", check_same_thread=False)
             self._db_path = None
+            self._durability_state = "degraded"
         from hermes_state_wal import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="runs_idempotency.db")
         self._conn.execute(
@@ -208,6 +230,14 @@ class RunIdempotencyStore:
             changed = self._conn.execute(_EXTEND_RETENTION_BY_RUN, (checked_until, scope, run_id)).rowcount
             self._conn.commit()
         return changed == 1
+
+    def has_run_id(self, run_id: str) -> bool:
+        """Return whether any retained idempotency record owns *run_id*, regardless of scope."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM run_idempotency WHERE run_id=?", (run_id,)
+            ).fetchone()
+        return row is not None
 
     def owns_run(self, scope: str, run_id: str) -> bool:
         with self._lock:

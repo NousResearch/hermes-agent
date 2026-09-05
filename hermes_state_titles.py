@@ -18,6 +18,7 @@ logger = logging.getLogger("hermes_state")
 _TITLE_CONTROL_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 _TITLE_INVISIBLE_RE = re.compile(r'[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufffc\ufff9-\ufffb]')
 _NUMBERED_TITLE_RE = re.compile(r'^(.*?) #(\d+)$')
+_EXPECTED_CREDENTIAL_OWNER_UNSET = object()
 
 
 class SessionTitlesMixin:
@@ -65,7 +66,10 @@ class SessionTitlesMixin:
             SELECT 1 FROM ancestors WHERE id = ? AND id != ? LIMIT 1
             """, (descendant_id, ancestor_id, descendant_id)).fetchone() is not None
 
-    def _set_session_title(self, session_id: str, title: str, *, source: str) -> bool:
+    def _set_session_title(
+        self, session_id: str, title: str, *, source: str,
+        expected_credential_owner: Any = _EXPECTED_CREDENTIAL_OWNER_UNSET,
+    ) -> bool:
         """Write a title, enforcing provenance precedence. A ``user`` write always lands;
         ``derived``/``llm`` land only when the row is untitled or holds strictly lower
         authority (derived upgrades to llm exactly once, nothing overwrites a user name,
@@ -78,9 +82,14 @@ class SessionTitlesMixin:
 
         def _do(conn):
             current = conn.execute(
-                "SELECT title, title_source, hidden FROM sessions WHERE id = ?", (session_id,),
+                "SELECT title, title_source, hidden, credential_owner FROM sessions WHERE id = ?", (session_id,),
             ).fetchone()
             if current is None:
+                return 0
+            if (
+                expected_credential_owner is not _EXPECTED_CREDENTIAL_OWNER_UNSET
+                and current["credential_owner"] != expected_credential_owner
+            ):
                 return 0
             # The canonical Bot Chat's NAME is its identity (Bot Mode resolves it by
             # exact-title lookup on every open), so a rename orphans the conversation. Hidden
@@ -97,7 +106,8 @@ class SessionTitlesMixin:
                 return 0
             if title:
                 conflict = conn.execute(
-                    "SELECT id FROM sessions WHERE title = ? AND id != ?", (title, session_id),
+                    "SELECT id FROM sessions WHERE title = ? AND credential_owner IS ? AND id != ?",
+                    (title, current["credential_owner"], session_id),
                 ).fetchone()
                 if conflict:
                     conflict_id = conflict["id"]
@@ -109,10 +119,16 @@ class SessionTitlesMixin:
                         raise ValueError(f"Title '{title}' is already in use by session {conflict_id}")
             # CAS on the values just read (``IS`` is NULL-safe): a concurrent write between
             # the SELECT and here loses instead of being overwritten.
-            return conn.execute(
-                "UPDATE sessions SET title = ?, title_source = ? WHERE id = ? AND title IS ? AND title_source IS ?",
-                (title, source if title else None, session_id, current["title"], current["title_source"]),
-            ).rowcount
+            sql = (
+                "UPDATE sessions SET title = ?, title_source = ? "
+                "WHERE id = ? AND title IS ? AND title_source IS ?"
+            )
+            params = [title, source if title else None, session_id,
+                      current["title"], current["title_source"]]
+            if expected_credential_owner is not _EXPECTED_CREDENTIAL_OWNER_UNSET:
+                sql += " AND credential_owner IS ?"
+                params.append(expected_credential_owner)
+            return conn.execute(sql, params).rowcount
 
         return self._execute_write(_do) > 0
 
@@ -121,11 +137,17 @@ class SessionTitlesMixin:
         ValueError on conflict or validation failure."""
         return self._set_session_title(session_id, title, source=self.TITLE_SOURCE_USER)
 
-    def set_auto_title(self, session_id: str, title: str, *, source: str) -> bool:
+    def set_auto_title(
+        self, session_id: str, title: str, *, source: str,
+        expected_credential_owner: Any = _EXPECTED_CREDENTIAL_OWNER_UNSET,
+    ) -> bool:
         """Set an automatic title; False (untouched) when a higher-authority title holds the row."""
         if source not in (self.TITLE_SOURCE_DERIVED, self.TITLE_SOURCE_LLM):
             raise ValueError(f"invalid automatic title source: {source!r}")
-        return self._set_session_title(session_id, title, source=source)
+        return self._set_session_title(
+            session_id, title, source=source,
+            expected_credential_owner=expected_credential_owner,
+        )
 
     def get_session_title(self, session_id: str) -> Optional[str]:
         """Get the title for a session, or None."""
@@ -146,32 +168,34 @@ class SessionTitlesMixin:
             "UPDATE sessions SET title_source = ? WHERE id = ? AND title IS NOT NULL", (source, session_id)
         ) > 0
 
-    def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
-        """Look up a session by exact title. Returns session dict or None."""
+    def get_session_by_title(
+        self, title: str, *, credential_owner: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Look up an exact title in one owner scope; legacy callers use unowned rows."""
         row = self._read_one(
             "SELECT s.*, COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
             "FROM sessions s LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
-            "WHERE s.title = ?", (title,))
+            "WHERE s.title = ? AND s.credential_owner IS ?", (title, credential_owner))
         return self._session_row_dict(row) if row else None
 
-    def resolve_session_by_title(self, title: str) -> Optional[str]:
-        """Resolve a title to a session ID, preferring the latest "title #N" continuation."""
-        exact = self.get_session_by_title(title)
+    def resolve_session_by_title(self, title: str, *, credential_owner: Optional[str] = None) -> Optional[str]:
+        """Resolve a title within one owner scope, preferring its latest numbered continuation."""
+        exact = self.get_session_by_title(title, credential_owner=credential_owner)
         # Escape LIKE wildcards so "%"/"_" in titles cannot false-match.
         numbered = self._read_all(
             "SELECT id, title, started_at FROM sessions "
-            "WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
-            (f"{_escape_like(title)} #%",))
+            "WHERE title LIKE ? ESCAPE '\\' AND credential_owner IS ? ORDER BY started_at DESC",
+            (f"{_escape_like(title)} #%", credential_owner))
         return numbered[0]["id"] if numbered else (exact["id"] if exact else None)
 
-    def get_next_title_in_lineage(self, base_title: str) -> str:
+    def get_next_title_in_lineage(self, base_title: str, *, credential_owner: Optional[str] = None) -> str:
         """Next title in a lineage ("my session" -> "my session #2"): strip any " #N" suffix,
-        then increment the highest existing number."""
+        then increment the highest existing number in the exact owner scope."""
         match = _NUMBERED_TITLE_RE.match(base_title)
         base = match.group(1) if match else base_title
         rows = self._read_all(
-            "SELECT title FROM sessions WHERE title = ? OR title LIKE ? ESCAPE '\\'",
-            (base, f"{_escape_like(base)} #%"))
+            "SELECT title FROM sessions WHERE (title = ? OR title LIKE ? ESCAPE '\\') AND credential_owner IS ?",
+            (base, f"{_escape_like(base)} #%", credential_owner))
         if not rows:
             return base
         # The unnumbered original counts as #1.

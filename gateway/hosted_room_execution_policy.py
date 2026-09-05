@@ -102,6 +102,11 @@ def reset_room_execution_policy(token: Token) -> None:
     _CURRENT_POLICY.reset(token)
 
 
+def _clear_room_execution_policy_unconditionally() -> None:
+    """Set the executor-safe empty baseline without relying on a reset token."""
+    _CURRENT_POLICY.set(None)
+
+
 def current_room_execution_policy() -> RoomExecutionPolicy | None:
     return _CURRENT_POLICY.get()
 

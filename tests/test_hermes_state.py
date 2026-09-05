@@ -1819,6 +1819,32 @@ class TestSchemaInit:
                     f"but missing from live DB. Live columns: {live_cols}"
                 )
 
+    def test_migration_adds_nullable_credential_owner_without_reinterpreting_user_id(self, tmp_path):
+        db_path = tmp_path / "state.db"
+        seed = SessionDB(db_path=db_path)
+        try:
+            seed.create_session("legacy", "telegram", user_id="12345")
+            seed.set_session_title("legacy", "Legacy Title")
+        finally:
+            seed.close()
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("DROP INDEX IF EXISTS idx_sessions_owned_title_unique")
+            conn.execute("DROP INDEX IF EXISTS idx_sessions_title_unique")
+            conn.execute("ALTER TABLE sessions DROP COLUMN credential_owner")
+            conn.commit()
+        finally:
+            conn.close()
+
+        db = SessionDB(db_path=db_path)
+        try:
+            row = db.get_session("legacy")
+            assert row["user_id"] == "12345"
+            assert row.get("credential_owner") is None
+        finally:
+            db.close()
+
 
 class TestReconcileColumnsErrorHandling:
     """_reconcile_columns must not bury migration failures (#79531/#80037).
@@ -2309,6 +2335,28 @@ class TestTitleLineage:
         db.create_session("s1", "cli")
         db.set_session_title("s1", "my project")
         assert db.resolve_session_by_title("my project") == "s1"
+
+    def test_title_reads_default_to_legacy_scope_and_allow_exact_owner(self, db):
+        db.create_session("owned", "api_server", user_id="12345", credential_owner="credential-owner")
+        db.set_session_title("owned", "Bot Chat")
+        db.create_session("owned-numbered", "api_server", user_id="12345", credential_owner="credential-owner")
+        db.set_session_title("owned-numbered", "Bot Chat #99")
+        db.create_session("legacy", "telegram", user_id="67890")
+        db.set_session_title("legacy", "Bot Chat")
+
+        assert db.get_session_by_title("Bot Chat")["id"] == "legacy"
+        assert db.resolve_session_by_title("Bot Chat") == "legacy"
+        assert db.get_next_title_in_lineage("Bot Chat") == "Bot Chat #2"
+        assert db.get_session_by_title("Bot Chat", credential_owner="credential-owner")["id"] == "owned"
+        assert db.resolve_session_by_title("Bot Chat", credential_owner="credential-owner") == "owned-numbered"
+        assert db.get_next_title_in_lineage("Bot Chat", credential_owner="credential-owner") == "Bot Chat #100"
+
+    def test_legacy_title_uniqueness_ignores_user_id_when_credential_owner_is_null(self, db):
+        db.create_session("legacy-a", "telegram", user_id="111")
+        db.set_session_title("legacy-a", "Global")
+        db.create_session("legacy-b", "telegram", user_id="222")
+        with pytest.raises(ValueError, match="already in use"):
+            db.set_session_title("legacy-b", "Global")
 
 
 
@@ -4609,6 +4657,53 @@ def test_gateway_session_peer_round_trip_and_recovery(db):
         chat_type="dm",
     )
     assert recovered["id"] == "gw-session"
+
+
+def test_legacy_declared_key_lookup_ignores_newer_owned_row(db):
+    key = "api-server:declared:shared"
+    db.create_session("legacy", "api_server", session_key=key)
+    db.append_message("legacy", "user", "legacy context")
+    db.create_session(
+        "owned", "api_server", session_key=key, credential_owner="api-credential:foreign"
+    )
+    db.append_message("owned", "user", "owned context")
+    db._execute_write(
+        lambda conn: conn.execute(
+            "UPDATE sessions SET last_activity_at = CASE id "
+            "WHEN 'legacy' THEN 1 WHEN 'owned' THEN 2 END "
+            "WHERE id IN ('legacy', 'owned')"
+        )
+    )
+
+    recovered = db.find_latest_gateway_session_for_peer(
+        source="api_server", session_key=key, credential_owner=None
+    )
+
+    assert recovered["id"] == "legacy"
+
+
+def test_owned_reset_boundary_does_not_fence_legacy_declared_key(db):
+    key = "api-server:declared:shared"
+    db.create_session("legacy", "api_server", session_key=key)
+    db.append_message("legacy", "user", "legacy context")
+    db.create_session(
+        "owned-reset", "api_server", session_key=key, credential_owner="api-credential:foreign"
+    )
+    db.end_session("owned-reset", "session_reset")
+    db._execute_write(
+        lambda conn: conn.execute(
+            "UPDATE sessions SET last_activity_at = CASE id "
+            "WHEN 'legacy' THEN 1 WHEN 'owned-reset' THEN 2 END, "
+            "ended_at = CASE WHEN id = 'owned-reset' THEN 2 ELSE ended_at END "
+            "WHERE id IN ('legacy', 'owned-reset')"
+        )
+    )
+
+    recovered = db.find_latest_gateway_session_for_peer(
+        source="api_server", session_key=key, credential_owner=None
+    )
+
+    assert recovered["id"] == "legacy"
 
 
 @pytest.mark.parametrize(

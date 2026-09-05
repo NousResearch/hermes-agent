@@ -22,10 +22,10 @@ from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 
-def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
+def _make_adapter(monkeypatch: pytest.MonkeyPatch, *, mode: str = "cloud") -> PhotonAdapter:
     monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")
-    cfg = PlatformConfig(enabled=True, token="", extra={})
+    cfg = PlatformConfig(enabled=True, token="", extra={"imessage_mode": mode})
     return PhotonAdapter(cfg)
 
 
@@ -147,3 +147,30 @@ async def test_send_clarify_with_choices_sends_native_poll(
     assert marked == ["clar-1"]
 
 
+@pytest.mark.asyncio
+async def test_local_send_clarify_uses_numbered_text_without_poll_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch, mode="local")
+    poll_calls = _stub_sidecar_poll(adapter, monkeypatch)
+    text_sends = _stub_sidecar_text(adapter, monkeypatch)
+
+    import tools.clarify_gateway as cg
+
+    monkeypatch.setattr(cg, "mark_awaiting_text", lambda _cid: None)
+
+    result = await adapter.send_clarify(
+        chat_id="+155****4567",
+        question="Pick one",
+        choices=["A", "B"],
+        clarify_id="clar-local",
+        session_key="sess-local",
+    )
+
+    assert result.success
+    assert poll_calls == []
+    assert len(text_sends) == 1
+    assert text_sends[0][0] == "+155****4567"
+    assert "Pick one" in text_sends[0][1]
+    assert "1. A" in text_sends[0][1]
+    assert "2. B" in text_sends[0][1]

@@ -1535,6 +1535,31 @@ class TestWebServerEndpoints:
 
 
 
+    def test_photon_exposes_local_mode_control_metadata(self):
+        resp = self.client.get("/api/messaging/platforms")
+
+        assert resp.status_code == 200
+        photon = next(
+            platform
+            for platform in resp.json()["platforms"]
+            if platform["id"] == "photon"
+        )
+        fields = {field["key"]: field for field in photon["env_vars"]}
+        mode = fields["PHOTON_IMESSAGE_MODE"]
+
+        assert mode["default_value"] == "cloud"
+        assert mode["options"] == [
+            {"value": "cloud", "label": "Photon cloud"},
+            {"value": "local", "label": "Local Mac"},
+        ]
+        assert "Full Disk Access" in mode["description"]
+        assert "~/Library/Messages/chat.db" in mode["description"]
+        assert "config_key" not in mode
+        assert fields["PHOTON_PROJECT_ID"]["visible_when"] == {
+            "key": "PHOTON_IMESSAGE_MODE",
+            "values": ["cloud"],
+        }
+
 
 
 
@@ -1582,6 +1607,285 @@ class TestWebServerEndpoints:
 
 
 
+    def test_update_messaging_platform_rejects_invalid_option(self):
+        resp = self.client.put(
+            "/api/messaging/platforms/photon",
+            json={"env": {"PHOTON_IMESSAGE_MODE": "carrier-pigeon"}},
+        )
+
+        assert resp.status_code == 400
+        assert "cloud, local" in resp.json()["detail"]
+
+    def test_update_messaging_platform_saves_photon_mode_to_config(self):
+        from hermes_cli.config import load_config, load_env
+
+        resp = self.client.put(
+            "/api/messaging/platforms/photon",
+            json={"env": {"PHOTON_IMESSAGE_MODE": "local"}},
+        )
+
+        assert resp.status_code == 200
+        assert load_config()["photon"]["imessage_mode"] == "local"
+        assert "PHOTON_IMESSAGE_MODE" not in load_env()
+
+        status = self.client.get("/api/messaging/platforms").json()["platforms"]
+        photon = next(platform for platform in status if platform["id"] == "photon")
+        mode = next(field for field in photon["env_vars"] if field["key"] == "PHOTON_IMESSAGE_MODE")
+        assert mode["value"] == "local"
+
+    def test_update_messaging_platform_saves_slack_allowed_users(self):
+        from hermes_cli.config import load_env
+
+        resp = self.client.put(
+            "/api/messaging/platforms/slack",
+            json={"env": {"SLACK_ALLOWED_USERS": "U01ABC2DEF3,U04XYZ5LMN6"}},
+        )
+
+        assert resp.status_code == 200
+        assert load_env()["SLACK_ALLOWED_USERS"] == "U01ABC2DEF3,U04XYZ5LMN6"
+
+    def test_update_messaging_platform_rejects_swapped_slack_bot_token(self):
+        resp = self.client.put(
+            "/api/messaging/platforms/slack",
+            json={"env": {"SLACK_BOT_TOKEN": "xapp-wrong-token-type"}},
+        )
+
+        assert resp.status_code == 400
+        assert "xoxb-" in resp.json()["detail"]
+
+    def test_update_messaging_platform_rejects_swapped_slack_app_token(self):
+        resp = self.client.put(
+            "/api/messaging/platforms/slack",
+            json={"env": {"SLACK_APP_TOKEN": "xoxb-wrong-token-type"}},
+        )
+
+        assert resp.status_code == 400
+        assert "xapp-" in resp.json()["detail"]
+
+    def test_update_messaging_platform_rejects_invalid_slack_allowed_users(self):
+        resp = self.client.put(
+            "/api/messaging/platforms/slack",
+            json={"env": {"SLACK_ALLOWED_USERS": "U01ABC2DEF3,not-a-user"}},
+        )
+
+        assert resp.status_code == 400
+        assert "member IDs" in resp.json()["detail"]
+
+    def test_update_messaging_platform_accepts_slack_allowed_users_wildcard(self):
+        # "*" is the gateway's allow-all wildcard (gateway/platforms/slack.py),
+        # so the dashboard must accept it rather than rejecting it as malformed.
+        from hermes_cli.config import load_env
+
+        resp = self.client.put(
+            "/api/messaging/platforms/slack",
+            json={"env": {"SLACK_ALLOWED_USERS": "*"}},
+        )
+
+        assert resp.status_code == 200
+        assert load_env()["SLACK_ALLOWED_USERS"] == "*"
+
+    def test_update_messaging_platform_accepts_slack_allowed_users_trailing_comma(self):
+        # The gateway drops empty entries (gateway/platforms/slack.py), so a
+        # trailing/interior comma must not be rejected by the dashboard.
+        from hermes_cli.config import load_env
+
+        resp = self.client.put(
+            "/api/messaging/platforms/slack",
+            json={"env": {"SLACK_ALLOWED_USERS": "U01ABC2DEF3,,W04XYZ5LMN6,"}},
+        )
+
+        assert resp.status_code == 200
+        assert load_env()["SLACK_ALLOWED_USERS"] == "U01ABC2DEF3,,W04XYZ5LMN6,"
+
+    def test_messaging_platform_test_reports_missing_required_setup(self):
+        resp = self.client.put("/api/messaging/platforms/discord", json={"enabled": True})
+        assert resp.status_code == 200
+
+        resp = self.client.post("/api/messaging/platforms/discord/test")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["state"] == "not_configured"
+        assert "DISCORD_BOT_TOKEN" in data["message"]
+
+    def test_telegram_onboarding_worker_request_uses_httpx(self, monkeypatch):
+        import httpx
+        import hermes_cli.web_server as ws
+
+        calls = {}
+
+        def fail_urlopen(*_args, **_kwargs):
+            raise AssertionError("Telegram onboarding should not use urllib")
+
+        class FakeHttpxClient:
+            def __init__(self, *args, **kwargs):
+                calls["client_kwargs"] = kwargs
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc_info):
+                return False
+
+            def request(self, method, url, **kwargs):
+                calls["request"] = (method, url, kwargs)
+                return httpx.Response(
+                    201,
+                    json={"ok": True},
+                    request=httpx.Request(method, url),
+                )
+
+        monkeypatch.setenv("TELEGRAM_ONBOARDING_URL", "https://worker.example")
+        monkeypatch.setattr(ws.urllib.request, "urlopen", fail_urlopen)
+        monkeypatch.setattr(httpx, "Client", FakeHttpxClient)
+
+        payload = ws._telegram_onboarding_request_sync(
+            "POST",
+            "/v1/telegram/pairings",
+            body={"bot_name": "Hermes Agent"},
+            bearer_token="poll-secret",
+        )
+
+        assert payload == {"ok": True}
+        method, url, kwargs = calls["request"]
+        assert method == "POST"
+        assert url == "https://worker.example/v1/telegram/pairings"
+        assert kwargs["json"] == {"bot_name": "Hermes Agent"}
+        assert kwargs["headers"]["Accept"] == "application/json"
+        assert kwargs["headers"]["Authorization"] == "Bearer poll-secret"
+        assert kwargs["headers"]["Content-Type"] == "application/json"
+        assert kwargs["headers"]["User-Agent"].startswith("HermesDashboard/")
+
+    def test_telegram_onboarding_worker_request_maps_unexpected_errors(
+        self, monkeypatch
+    ):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setenv("TELEGRAM_ONBOARDING_URL", "not a valid url")
+
+        with pytest.raises(ws.HTTPException) as exc:
+            ws._telegram_onboarding_request_sync(
+                "POST",
+                "/v1/telegram/pairings",
+                body={"bot_name": "Hermes Agent"},
+            )
+
+        assert exc.value.status_code == 502
+        assert (
+            exc.value.detail
+            == "Telegram setup service is unavailable. Try again shortly."
+        )
+
+    def test_telegram_onboarding_start_strips_poll_token(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        with ws._telegram_onboarding_lock:
+            ws._telegram_onboarding_pairings.clear()
+
+        calls = []
+
+        def fake_request(method, path, *, body=None, bearer_token=None):
+            calls.append((method, path, body, bearer_token))
+            return {
+                "pairing_id": "pair123",
+                "poll_token": "poll-secret",
+                "suggested_username": "hermes_pair123_bot",
+                "deep_link": "https://t.me/newbot/HermesSetupBot/hermes_pair123_bot",
+                "qr_payload": "https://t.me/newbot/HermesSetupBot/hermes_pair123_bot",
+                "expires_at": "2027-05-18T00:00:00.000Z",
+            }
+
+        monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
+
+        resp = self.client.post(
+            "/api/messaging/telegram/onboarding/start",
+            json={"bot_name": "Hosted Hermes"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["pairing_id"] == "pair123"
+        assert "poll_token" not in data
+        assert calls == [
+            (
+                "POST",
+                "/v1/telegram/pairings",
+                {"bot_name": "Hosted Hermes"},
+                None,
+            )
+        ]
+
+    def test_telegram_onboarding_ready_and_apply_never_returns_bot_token(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        from hermes_cli.config import load_config, load_env
+
+        with ws._telegram_onboarding_lock:
+            ws._telegram_onboarding_pairings.clear()
+
+        def fake_request(method, path, *, body=None, bearer_token=None):
+            if method == "POST":
+                return {
+                    "pairing_id": "pair-ready",
+                    "poll_token": "poll-secret",
+                    "suggested_username": "hermes_pair_ready_bot",
+                    "deep_link": "https://t.me/newbot/HermesSetupBot/hermes_pair_ready_bot",
+                    "qr_payload": "https://t.me/newbot/HermesSetupBot/hermes_pair_ready_bot",
+                    "expires_at": "2027-05-18T00:00:00.000Z",
+                }
+            assert method == "GET"
+            assert path == "/v1/telegram/pairings/pair-ready"
+            assert bearer_token == "poll-secret"
+            return {
+                "status": "ready",
+                "bot_username": "hermes_pair_ready_bot",
+                "owner_user_id": 123456789,
+                "token": "123456:SECRET",
+            }
+
+        monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
+        ws._ACTION_PROCS.pop("gateway-restart", None)
+        restart_calls = []
+
+        class FakeRestartProc:
+            pid = 4242
+
+        def fake_spawn_action(subcommand, name):
+            restart_calls.append((subcommand, name))
+            return FakeRestartProc()
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn_action)
+
+        start = self.client.post("/api/messaging/telegram/onboarding/start", json={})
+        assert start.status_code == 200
+
+        ready = self.client.get("/api/messaging/telegram/onboarding/pair-ready")
+        assert ready.status_code == 200
+        ready_data = ready.json()
+        assert ready_data["status"] == "ready"
+        assert ready_data["owner_user_id"] == "123456789"
+        assert "token" not in ready_data
+
+        applied = self.client.post(
+            "/api/messaging/telegram/onboarding/pair-ready/apply",
+            json={"allowed_user_ids": ["123456789", "123456789"]},
+        )
+        assert applied.status_code == 200
+        applied_data = applied.json()
+        assert applied_data == {
+            "ok": True,
+            "platform": "telegram",
+            "bot_username": "hermes_pair_ready_bot",
+            "needs_restart": False,
+            "restart_started": True,
+            "restart_action": "gateway-restart",
+            "restart_pid": 4242,
+        }
+        assert restart_calls == [(["gateway", "restart"], "gateway-restart")]
+        env = load_env()
+        assert env["TELEGRAM_BOT_TOKEN"] == "123456:SECRET"
+        assert env["TELEGRAM_ALLOWED_USERS"] == "123456789"
+        assert load_config()["platforms"]["telegram"]["enabled"] is True
 
     def test_telegram_onboarding_apply_reports_restart_failure_after_save(
         self, monkeypatch

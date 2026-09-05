@@ -164,6 +164,26 @@ async def test_stop_typing_resets_cooldown(
     assert starts == 2
 
 
+@pytest.mark.asyncio
+async def test_local_typing_is_not_sent_to_noop_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    adapter._imessage_mode = "local"
+    calls: list[Dict[str, Any]] = []
+
+    async def _fake_call(path: str, payload: Dict[str, Any]) -> Any:
+        calls.append(payload)
+        return {"ok": True}
+
+    monkeypatch.setattr(adapter, "_sidecar_call", _fake_call)
+
+    await adapter.send_typing("chat-1")
+    await adapter.stop_typing("chat-1")
+
+    assert calls == []
+
+
 # -- Gap 3: sidecar crash detection -----------------------------------------
 
 class _EofStdout:

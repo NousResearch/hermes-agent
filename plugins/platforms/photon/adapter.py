@@ -266,20 +266,87 @@ def _reinstall_sidecar_deps() -> None:
 
 def validate_config(cfg: PlatformConfig) -> bool:
     extra = cfg.extra or {}
-    if (extra.get("project_id") or _get_scoped_secret("PHOTON_PROJECT_ID")) and (
-            extra.get("project_secret") or _get_scoped_secret("PHOTON_PROJECT_SECRET")):
+    if _imessage_mode(extra) == "local":
         return True
-    stored_id, stored_sec = load_project_credentials()  # auth.json fallback
-    return bool(stored_id and stored_sec)
+    project_id = extra.get("project_id") or os.getenv("PHOTON_PROJECT_ID")
+    project_secret = extra.get("project_secret") or _get_scoped_secret("PHOTON_PROJECT_SECRET")
+    if not project_id or not project_secret:
+        # Fall back to auth.json
+        stored_id, stored_sec = load_project_credentials()
+        return bool(stored_id and stored_sec)
+    return True
 
 
 def is_connected(cfg: PlatformConfig) -> bool:
-    return validate_config(cfg)
+    if validate_config(cfg):
+        return True
+
+    # The gateway setup menu checks plugin status with a synthetic config,
+    # before load_gateway_config() has copied plugin YAML into ``extra``.
+    # Consult the canonical behavior setting so a completed local setup is
+    # immediately shown as configured and the wizard offers to start/install
+    # the gateway.
+    if not cfg.extra:
+        try:
+            from hermes_cli.config import load_config
+
+            photon = load_config().get("photon")
+            if isinstance(photon, dict) and photon.get("imessage_mode") == "local":
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _imessage_mode(extra: Optional[dict] = None) -> str:
+    """Return ``local`` for the on-device macOS Messages transport."""
+    raw = (extra or {}).get("imessage_mode") or os.getenv("PHOTON_IMESSAGE_MODE")
+    return "local" if str(raw or "cloud").strip().lower() == "local" else "cloud"
+
+
+def _apply_yaml_config(yaml_cfg: dict, photon_cfg: dict) -> Optional[dict]:
+    """Bridge the Photon transport mode from config.yaml into adapter config."""
+    candidates: list[Any] = []
+    if isinstance(photon_cfg, dict):
+        if "imessage_mode" in photon_cfg:
+            candidates.append(photon_cfg.get("imessage_mode"))
+        extra = photon_cfg.get("extra")
+        if isinstance(extra, dict) and "imessage_mode" in extra:
+            candidates.append(extra.get("imessage_mode"))
+    for section_name in ("gateway", "platforms"):
+        section = yaml_cfg.get(section_name)
+        platforms = section.get("platforms") if section_name == "gateway" and isinstance(section, dict) else section
+        if not isinstance(platforms, dict):
+            continue
+        nested = platforms.get("photon")
+        if not isinstance(nested, dict):
+            continue
+        if "imessage_mode" in nested:
+            candidates.append(nested.get("imessage_mode"))
+        extra = nested.get("extra")
+        if isinstance(extra, dict) and "imessage_mode" in extra:
+            candidates.append(extra.get("imessage_mode"))
+    if not candidates:
+        return None
+    return {"imessage_mode": _imessage_mode({"imessage_mode": candidates[0]})}
 
 
 def _env_enablement() -> Optional[dict]:
-    """Seed PlatformConfig.extra from env so env-only setups appear in status
-    (``home_channel`` becomes a ``HomeChannel`` via the core plugin hook)."""
+    """Seed PlatformConfig.extra from env so env-only setups appear in status.
+
+    The special ``home_channel`` key is handled by the core plugin hook and
+    becomes a proper ``HomeChannel`` on ``PlatformConfig``.
+    """
+    if _imessage_mode() == "local":
+        seed: dict = {"imessage_mode": "local"}
+        home = os.getenv("PHOTON_HOME_CHANNEL", "").strip()
+        if home:
+            seed["home_channel"] = {
+                "chat_id": home,
+                "name": os.getenv("PHOTON_HOME_CHANNEL_NAME", "Home"),
+            }
+        return seed
+
     project_id, project_secret = load_project_credentials()
     if not (project_id and project_secret):
         return None
@@ -475,12 +542,20 @@ class PhotonAdapter(BasePlatformAdapter):
     """Bidirectional bridge to Photon Spectrum via the Node spectrum-ts sidecar."""
 
     MAX_MESSAGE_LENGTH = _MAX_MESSAGE_LENGTH
-    SUPPORTS_MESSAGE_EDITING = False  # no edit API: streaming must not leave a stale cursor (▉)
+    splits_long_messages = True
+    # Photon (iMessage) has no real edit API for already-sent messages.
+    # Mark it explicitly so streaming suppresses the visible cursor instead
+    # of leaving a stale tofu square (▉) behind when edit attempts fail.
+    SUPPORTS_MESSAGE_EDITING = False
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("photon"))
         extra = config.extra or {}
-        # Project credentials: env wins, then config.extra, then auth.json.
+        self._imessage_mode = _imessage_mode(extra)
+
+        # Project credentials (env wins, then config.extra, then auth.json).
+        # ``project_id`` here is the project's spectrumProjectId — the value
+        # the spectrum-ts SDK authenticates with.
         stored_id, stored_sec = load_project_credentials()
         self._project_id: str = _get_scoped_secret("PHOTON_PROJECT_ID") or extra.get("project_id") or stored_id or ""
         self._project_secret: str = (
@@ -564,7 +639,9 @@ class PhotonAdapter(BasePlatformAdapter):
         if not HTTPX_AVAILABLE:
             self._set_fatal_error("MISSING_DEP", "httpx not installed", retryable=False)
             return False
-        if not self._project_id or not self._project_secret:
+        if self._imessage_mode != "local" and (
+            not self._project_id or not self._project_secret
+        ):
             self._set_fatal_error(
                 "MISSING_CREDENTIALS",
                 "PHOTON_PROJECT_ID and PHOTON_PROJECT_SECRET are required. Run: hermes photon setup",
@@ -755,6 +832,18 @@ class PhotonAdapter(BasePlatformAdapter):
         timestamp = _parse_timestamp(event.get("timestamp") or "")
         message_id = event.get("messageId")
         ctype = content.get("type")
+        reply_to_message_id: Optional[str] = None
+        reply_to_text: Optional[str] = None
+        reply_to_is_own_message = False
+        if ctype == "reply":
+            reply_to_message_id = content.get("targetMessageId") or None
+            reply_to_text = content.get("targetText") or None
+            reply_to_is_own_message = content.get("targetDirection") == "outbound" or bool(
+                reply_to_message_id and reply_to_message_id in self._sent_message_ids
+            )
+            inner_content = content.get("content")
+            content = inner_content if isinstance(inner_content, dict) else {}
+            ctype = content.get("type")
 
         def _event(text: str, mtype: MessageType = MessageType.TEXT, **kwargs: Any) -> MessageEvent:
             source = self.build_source(chat_id=space_id, chat_name=space_id, chat_type=chat_type,
@@ -820,7 +909,15 @@ class PhotonAdapter(BasePlatformAdapter):
                 return
             text = self._clean_mention_text(text)
         self._record_recent_richlink(space_id, _richlink_url_from_content(content) or text)
-        await self.handle_message(_event(text, mtype, media_urls=media_urls, media_types=media_types))
+        await self.handle_message(_event(
+            text,
+            mtype,
+            media_urls=media_urls,
+            media_types=media_types,
+            reply_to_message_id=reply_to_message_id,
+            reply_to_text=reply_to_text,
+            reply_to_is_own_message=reply_to_is_own_message,
+        ))
 
     # -- Sidecar lifecycle ---------------------------------------------------------
 
@@ -905,40 +1002,41 @@ class PhotonAdapter(BasePlatformAdapter):
                     f"Photon sidecar deps could not be installed into "
                     f"{_sidecar_dir()} (see log for the npm error). "
                     f"Run: cd {_sidecar_dir()} && npm ci   (or `hermes photon setup`)",
-                    code="SIDECAR_DEPS_MISSING", retryable=False)
-        # `hermes update` bumps the lockfile without reinstalling node_modules; the sidecar
-        # would spawn against stale deps and die on every reconnect.
+                    code="SIDECAR_DEPS_MISSING",
+                    retryable=False,
+                )
+        # A `hermes update` that bumps the spectrum-ts pin rewrites
+        # package-lock.json but never reinstalls node_modules, so the sidecar
+        # may spawn against stale dependencies and die on every reconnect.
+        # Self-heal by reinstalling when the lockfile is newer than npm's
+        # install marker. The install runs off the event loop so it cannot
+        # freeze every other platform's traffic.
         if _sidecar_deps_stale():
             logger.warning("[photon] sidecar deps are stale (lockfile newer than install); reinstalling before start")
             await asyncio.to_thread(_reinstall_sidecar_deps)
-
-    async def _apply_spectrum_patch(self, hide_flags: int) -> None:
-        """Run the mixed-attachment patch script (best-effort, off the loop: up to 10s, every reconnect)."""
-        try:
-            patch = await asyncio.to_thread(
-                subprocess.run,  # noqa: S603
-                [self._node_bin, str(_sidecar_dir() / "patch-spectrum-mixed-attachments.mjs"), str(_sidecar_dir())],
-                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10, check=False,
-                creationflags=hide_flags)
-            if patch.returncode != 0:
-                raise RuntimeError((patch.stderr or patch.stdout or "").strip())
-            if patch.stderr.strip():
-                logger.debug("[photon] %s", patch.stderr.strip())
-        except Exception as exc:
-            logger.warning("[photon] failed to apply Spectrum mixed attachment patch: %s", exc)
-
     async def _start_sidecar(self) -> None:
         await self._ensure_sidecar_deps()
         await self._reap_stale_sidecar()
+
         env = os.environ.copy()
-        env.update({
-            "PHOTON_PROJECT_ID": self._project_id, "PHOTON_PROJECT_SECRET": self._project_secret,
-            "PHOTON_SIDECAR_PORT": str(self._sidecar_port), "PHOTON_SIDECAR_BIND": self._sidecar_bind,
-            "PHOTON_SIDECAR_TOKEN": self._sidecar_token,
-            # Exit on stdin EOF so ANY gateway death (incl. SIGKILL) can't orphan it on the port.
-            "PHOTON_SIDECAR_WATCH_STDIN": "1"})
-        from hermes_cli._subprocess_compat import windows_hide_flags  # hide child console on Windows
-        await self._apply_spectrum_patch(windows_hide_flags())
+        env["PHOTON_IMESSAGE_MODE"] = self._imessage_mode
+        if self._imessage_mode == "local":
+            env.pop("PHOTON_PROJECT_ID", None)
+            env.pop("PHOTON_PROJECT_SECRET", None)
+        else:
+            env["PHOTON_PROJECT_ID"] = self._project_id
+            env["PHOTON_PROJECT_SECRET"] = self._project_secret
+        env["PHOTON_SIDECAR_PORT"] = str(self._sidecar_port)
+        env["PHOTON_SIDECAR_BIND"] = self._sidecar_bind
+        env["PHOTON_SIDECAR_TOKEN"] = self._sidecar_token
+        # The sidecar exits when its stdin (the pipe below) hits EOF, so a
+        # gateway death of ANY kind — including SIGKILL, where disconnect()
+        # never runs — can't leave it orphaned on the port.
+        env["PHOTON_SIDECAR_WATCH_STDIN"] = "1"
+
+        # Windows: hide the child console (0 elsewhere). Same helper the
+        # discord/whatsapp adapters use for their sidecar spawns.
+        from hermes_cli._subprocess_compat import windows_hide_flags
         try:
             self._sidecar_proc = subprocess.Popen(  # noqa: S603
                 [self._node_bin, str(_sidecar_dir() / "index.mjs")],
@@ -1130,16 +1228,43 @@ class PhotonAdapter(BasePlatformAdapter):
 
     # -- Outbound ------------------------------------------------------------------
 
-    async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
-                   metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        return await self._sidecar_send(chat_id, self.format_message(content))
+    async def send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        formatted = self.format_message(content)
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        if len(chunks) == 1:
+            return await self._sidecar_send(chat_id, chunks[0])
+
+        sent_message_ids: list[str] = []
+        last_result: Optional[SendResult] = None
+        for chunk in chunks:
+            result = await self._sidecar_send(chat_id, chunk)
+            if not result.success:
+                return result
+            last_result = result
+            if result.message_id:
+                sent_message_ids.append(str(result.message_id))
+
+        return SendResult(
+            success=True,
+            message_id=last_result.message_id if last_result else None,
+            continuation_message_ids=tuple(sent_message_ids[:-1]),
+            raw_response={"message_ids": sent_message_ids},
+        )
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
                            session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Multiple-choice renders as a native poll; the vote comes back as a `poll_option`
-        event that _dispatch_inbound turns into plain text, so the clarify is flipped into
-        text-capture mode like the base fallback."""
+        """Use a native cloud poll, or the numbered-text fallback in local mode."""
         if not choices:  # open-ended: base plain-text behaviour is right
+            return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
+        # Spectrum 12.7 exports the generic poll builder in both runtimes, but
+        # @spectrum-ts/imessage-local rejects poll content when it is sent.
+        if self._imessage_mode == "local":
             return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
         from tools.clarify_gateway import mark_awaiting_text
         mark_awaiting_text(clarify_id)
@@ -1195,6 +1320,9 @@ class PhotonAdapter(BasePlatformAdapter):
             return False
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
+        # The 12.7 local provider accepts typing content only as a no-op.
+        if self._imessage_mode == "local":
+            return
         now = time.time()
         if now - self._typing_last_sent.get(chat_id, 0.0) < _TYPING_COOLDOWN_SECONDS:
             return
@@ -1203,6 +1331,8 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def stop_typing(self, chat_id: str) -> None:
         self._typing_last_sent.pop(chat_id, None)
+        if self._imessage_mode == "local":
+            return
         await self._sidecar_try("/typing", {"spaceId": chat_id, "state": "stop"}, "stop_typing")
 
     # -- Reactions (tapbacks). Lifecycle hooks (👀 while processing, 👍/👎 on completion)
@@ -1249,7 +1379,9 @@ class PhotonAdapter(BasePlatformAdapter):
         return True
 
     def _reactions_enabled(self) -> bool:
-        return _get_scoped_secret("PHOTON_REACTIONS", "false").strip().lower() in {"true", "1", "yes", "on"}
+        return self._imessage_mode != "local" and (
+            _get_scoped_secret("PHOTON_REACTIONS", "false").strip().lower() in {"true", "1", "yes", "on"}
+        )
 
     async def _add_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Tapback ``emoji`` onto a message. Soft-fails (False), never raises."""
@@ -1267,6 +1399,8 @@ class PhotonAdapter(BasePlatformAdapter):
     async def add_reaction(self, chat_id: str, emoji: str, message_id: Optional[str] = None) -> Dict[str, Any]:
         """Tapback ``emoji`` onto a message (default: the chat's latest inbound). iMessage
         maps ❤️👍👎😂‼️❓ to native tapbacks; anything else is a custom-emoji reaction."""
+        if self._imessage_mode == "local":
+            return {"success": False, "error": "reactions are not supported by local iMessage"}
         target = message_id or self._last_inbound_by_chat.get(self._normalize_chat_key(chat_id))
         if not target:
             return {"success": False, "error": "no message to react to — pass message_id (no "
@@ -1277,6 +1411,8 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def remove_reaction(self, chat_id: str, message_id: Optional[str] = None) -> Dict[str, Any]:
         """Retract our tapback from a message (best-effort)."""
+        if self._imessage_mode == "local":
+            return {"success": False, "error": "reactions are not supported by local iMessage"}
         target = message_id or self._last_inbound_by_chat.get(self._normalize_chat_key(chat_id))
         if not target:
             return {"success": False, "error": "no message to unreact — pass message_id"}
@@ -1597,12 +1733,23 @@ def register(ctx) -> None:
         install_hint=(
             "Run: hermes photon setup  (logs in via device flow, creates a "
             "Spectrum project, links your phone number, installs the "
-            "spectrum-ts sidecar)."),
-        setup_fn=_cli.gateway_setup,  # surfaces Photon in the unified `hermes gateway setup` wizard
-        env_enablement_fn=_env_enablement, cron_deliver_env_var="PHOTON_HOME_CHANNEL",
-        standalone_sender_fn=_standalone_send, allowed_users_env="PHOTON_ALLOWED_USERS",
-        allow_all_env="PHOTON_ALLOW_ALL_USERS", max_message_length=_MAX_MESSAGE_LENGTH, emoji="📱",
-        pii_safe=True,  # E.164 phone numbers: redact session descriptions before they reach the LLM
+            "spectrum-ts sidecar)."
+        ),
+        # Surfaces Photon in `hermes gateway setup` alongside every other
+        # channel — same unified onboarding wizard, no Photon-only detour.
+        setup_fn=_cli.gateway_setup,
+        env_enablement_fn=_env_enablement,
+        apply_yaml_config_fn=_apply_yaml_config,
+        cron_deliver_env_var="PHOTON_HOME_CHANNEL",
+        standalone_sender_fn=_standalone_send,
+        allowed_users_env="PHOTON_ALLOWED_USERS",
+        allow_all_env="PHOTON_ALLOW_ALL_USERS",
+        max_message_length=_MAX_MESSAGE_LENGTH,
+        emoji="📱",
+        # iMessage carries E.164 phone numbers — treat session descriptions
+        # as PII-sensitive so they get redacted before reaching the LLM
+        # (matches the BlueBubbles iMessage channel in _PII_SAFE_PLATFORMS).
+        pii_safe=True,
         allow_update_command=True,
         platform_hint=(
             "You are communicating via Photon Spectrum (iMessage). "

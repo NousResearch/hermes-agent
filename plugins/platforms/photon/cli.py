@@ -1,7 +1,20 @@
-"""``hermes photon ...`` CLI subcommands (registered via ``ctx.register_cli_command()``):
-setup (device login + project + user + sidecar), status, install-sidecar (npm install in
-the sidecar dir), telemetry [on|off]. Device login is the first step of ``setup`` (no
-standalone ``login`` verb); inbound is the gRPC stream, so there are no webhook subcommands.
+"""
+``hermes photon ...`` CLI subcommands — registered by the plugin via
+``ctx.register_cli_command()``.
+
+Subcommands:
+
+    setup              first-time local or managed-cloud setup
+    status             show login + project + sidecar dep state
+    install-sidecar    npm install inside plugins/platforms/photon/sidecar/
+    telemetry          show or toggle Spectrum SDK telemetry (on/off)
+
+The device-code login runs automatically as the first step of ``setup``;
+there is no standalone ``login`` verb (matching how every other Hermes
+gateway channel onboards through a single setup surface).
+
+Photon uses the spectrum-ts gRPC stream for inbound — there is no webhook
+to register, so there are no webhook subcommands.
 """
 from __future__ import annotations
 
@@ -24,9 +37,20 @@ import contextlib
 def register_cli(parser: argparse.ArgumentParser) -> None:
     """Wire up `hermes photon ...` subcommands."""
     subs = parser.add_subparsers(dest="photon_command", required=False)
-    p_setup = subs.add_parser("setup", help="First-time setup (device login + project + user + sidecar)")
-    p_setup.add_argument("--project-name", default=None, help="Project name (default: 'Hermes Agent')")
-    p_setup.add_argument("--phone", default=None, help="Your E.164 phone number (e.g. +15551234567)")
+    p_setup = subs.add_parser(
+        "setup",
+        help="First-time local or managed-cloud iMessage setup",
+    )
+    p_setup.add_argument("--project-name", default=None,
+                         help="Project name (default: 'Hermes Agent')")
+    p_setup.add_argument("--phone", default=None,
+                         help="Your E.164 phone number (e.g. +15551234567)")
+    p_setup.add_argument(
+        "--mode",
+        choices=("cloud", "local"),
+        default="cloud",
+        help="iMessage connection mode (default: cloud)",
+    )
     p_setup.add_argument("--first-name", default=None)
     p_setup.add_argument("--last-name", default=None)
     p_setup.add_argument("--email", default=None)
@@ -151,7 +175,9 @@ def _setup_credentials(token: str, dashboard_id: str, name: str) -> Optional[str
     return secret
 
 
-def _cmd_setup(args: argparse.Namespace) -> int:
+def _cmd_setup_cloud(args: argparse.Namespace) -> int:
+    if not _save_imessage_mode("cloud"):
+        return 1
     name = args.project_name or photon_auth.DEFAULT_PROJECT_NAME
     token = _setup_token(args)
     dashboard_id = token and _setup_project(token, name)
@@ -224,6 +250,82 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _save_imessage_mode(mode: str) -> bool:
+    """Persist the selected connection mode as behavioral configuration."""
+    try:
+        from hermes_cli.config import load_config, save_config
+
+        config = load_config()
+        photon = config.get("photon")
+        if not isinstance(photon, dict):
+            photon = {}
+            config["photon"] = photon
+        photon["imessage_mode"] = mode
+        save_config(config)
+        return True
+    except Exception as e:
+        print(f"could not save Photon iMessage mode: {e}", file=sys.stderr)
+        return False
+
+
+def _cmd_setup_local(args: argparse.Namespace) -> int:
+    """Configure the dedicated local macOS iMessage provider."""
+    print()
+    print(color("Local Mac iMessage setup", Colors.CYAN, Colors.BOLD))
+    print("  Local iMessage does not use Spectrum project credentials.")
+    print("  This Mac must be signed into Messages.")
+    print("  The process that starts Hermes may need Full Disk Access to read")
+    print("  ~/Library/Messages/chat.db.")
+    print()
+
+    if sys.platform != "darwin":
+        print("Local iMessage requires macOS.", file=sys.stderr)
+        return 1
+
+    phone = args.phone or _prompt(
+        color(
+            "[1/2] Your phone number to allow (E.164, e.g. +15551234567; optional): ",
+            Colors.CYAN,
+        )
+    )
+    if phone and not photon_auth.E164_RE.fullmatch(phone):
+        print(
+            f"invalid phone number: expected E.164 (e.g. +15551234567); got {phone!r}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if not _save_imessage_mode("local"):
+        return 1
+    if phone:
+        _autoconfigure_access(phone)
+    else:
+        print("      Skipped allowlist/home channel setup; configure them later.")
+
+    if args.skip_sidecar_install:
+        print("[2/2] Skipping sidecar npm install (--skip-sidecar-install)")
+    else:
+        print("[2/2] Installing Node sidecar deps (Spectrum local provider)...")
+        rc = _install_sidecar()
+        if rc != 0:
+            return rc
+
+    print()
+    print("✓ Photon local iMessage setup complete.")
+    print("  Start the gateway:  hermes gateway start")
+    return 0
+
+
+def _cmd_setup(args: argparse.Namespace) -> int:
+    mode = str(getattr(args, "mode", "cloud") or "cloud").strip().lower()
+    if mode == "local":
+        return _cmd_setup_local(args)
+    if mode == "cloud":
+        return _cmd_setup_cloud(args)
+    print("iMessage mode must be 'cloud' or 'local'.", file=sys.stderr)
+    return 2
+
+
 def _autoconfigure_access(phone: str) -> None:
     """Set PHOTON_ALLOWED_USERS and PHOTON_HOME_CHANNEL to the operator's number, each only
     when unset so a hand-tuned value is never clobbered on re-run."""
@@ -256,8 +358,9 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     # credential-derived strings (keeps cli.py taint-free for CodeQL).
     photon_auth.print_credential_summary(print)
     node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node")
-    print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
-    print(f"  sidecar deps        : {'✓ installed' if sidecar_deps_installed() else '✗ run `hermes photon install-sidecar`'}")
+    sidecar_installed = sidecar_deps_installed()
+    print(f"  node binary         : {node_bin or '✗ missing (install Node 20+)'}")
+    print(f"  sidecar deps        : {'✓ installed' if sidecar_installed else '✗ run `hermes photon install-sidecar`'}")
     print(f"  telemetry           : {'on' if _telemetry_enabled() else 'off'} (`hermes photon telemetry on|off`)")
     return 0
 
@@ -292,7 +395,11 @@ def _cmd_telemetry(args: argparse.Namespace) -> int:
 def _install_sidecar() -> int:
     npm = shutil.which("npm") or "npm"
     if not shutil.which(npm):
-        print("npm is not on PATH. Install Node.js 18+ (https://nodejs.org/) and re-run.", file=sys.stderr)
+        print(
+            "npm is not on PATH. Install Node.js 20+ (https://nodejs.org/) "
+            "and re-run.",
+            file=sys.stderr,
+        )
         return 1
     # spectrum-ts is pinned exactly (the SDK ships breaking majors); upgrades are deliberate —
     # never `@latest` (see README "Upgrading spectrum-ts"). `npm ci` installs the lockfile
@@ -322,17 +429,44 @@ def _install_sidecar() -> int:
     return proc.returncode
 
 
+# ---------------------------------------------------------------------------
+# Gateway-setup entry point
+#
+# `hermes gateway setup` discovers platforms via the registry and calls each
+# entry's zero-arg ``setup_fn``. Photon registers this function so it appears
+# in the unified setup wizard alongside every other channel — same onboarding
+# surface, no Photon-specific detour. It first asks for local or managed-cloud
+# delivery, then runs the corresponding ``hermes photon setup`` flow with
+# interactive defaults (phone is prompted when stdin is a TTY).
+
+def gateway_setup() -> None:
+    """Run Photon first-time setup from the `hermes gateway setup` wizard."""
+    print()
+    print("  Choose how Hermes should connect to iMessage:")
+    print("    cloud  Photon-managed delivery (requires a Photon account)")
+    print("    local  This Mac's signed-in Messages account")
+    mode = (_prompt("  Connection mode [cloud]: ") or "cloud").lower()
+    while mode not in {"cloud", "local"}:
+        print("  Enter 'cloud' or 'local'.")
+        mode = (_prompt("  Connection mode [cloud]: ") or "cloud").lower()
+
+    args = argparse.Namespace(
+        photon_command="setup",
+        mode=mode,
+        project_name=None,
+        phone=None,
+        first_name=None,
+        last_name=None,
+        email=None,
+        no_browser=False,
+        skip_sidecar_install=False,
+    )
+    _cmd_setup(args)
+
+
 _COMMANDS = {
     "setup": _cmd_setup, "status": _cmd_status, "install-sidecar": lambda _args: _install_sidecar(),
     "telemetry": _cmd_telemetry}
-
-
-def gateway_setup() -> None:
-    """Run Photon first-time setup from the unified `hermes gateway setup` wizard (same flow
-    as ``hermes photon setup``; phone is prompted when stdin is a TTY)."""
-    _cmd_setup(argparse.Namespace(
-        photon_command="setup", project_name=None, phone=None, first_name=None, last_name=None,
-        email=None, no_browser=False, skip_sidecar_install=False))
 
 
 def _prompt(prompt: str, *, secret: bool = False) -> str:

@@ -1191,3 +1191,42 @@ class TestContextFileReadTimeout:
 
         with pytest.raises(FileNotFoundError):
             _read_text_with_timeout(tmp_path / "missing.md", timeout=1.0)
+
+    def test_repeated_stuck_context_reads_do_not_leak_unbounded_threads(self):
+        # A permanently blocked read_text() can never be cancelled, so this
+        # runs in a subprocess: the leaked daemon threads it deliberately
+        # creates must not contaminate the rest of the pytest run.
+        import subprocess
+        import sys as _sys
+        import textwrap
+
+        probe = textwrap.dedent(
+            """
+            import threading
+            from agent.prompt_builder import _read_text_with_timeout, _MAX_CONCURRENT_CONTEXT_READS
+            never = threading.Event()
+
+            class PermanentlyStuckPath:
+                name = "AGENTS.md"
+                def read_text(self, *args, **kwargs):
+                    never.wait()
+                def __str__(self):
+                    return "PermanentlyStuckPath(AGENTS.md)"
+
+            before = sum(t.name.startswith("context-read:") for t in threading.enumerate())
+            for _ in range(12):
+                assert _read_text_with_timeout(PermanentlyStuckPath(), timeout=0.002) is None
+            after = sum(t.name.startswith("context-read:") for t in threading.enumerate())
+            leaked = after - before
+            print(f"stuck_context_reader_threads={leaked}")
+            raise SystemExit(0 if leaked <= _MAX_CONCURRENT_CONTEXT_READS else 23)
+            """
+        )
+        completed = subprocess.run(
+            [_sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stdout + completed.stderr

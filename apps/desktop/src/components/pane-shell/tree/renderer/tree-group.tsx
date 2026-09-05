@@ -330,6 +330,9 @@ export function TreeGroup({
   // the keystroke and the screen always agree about which way "toggle" points.
   const stripVisible = tabStripVisibleForZone({
     active: activeId,
+    // Reactive snapshot of the same atom tabStripVisibleForGroup reads via
+    // `.get()`, so the rendered strip and imperative toggle cannot diverge.
+    hasCloser: id => panesWithCloser.has(id),
     isCollapsePane,
     mode: node.tabStrip,
     paneFor,

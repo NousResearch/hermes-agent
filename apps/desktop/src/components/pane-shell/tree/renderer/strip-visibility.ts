@@ -9,7 +9,8 @@
  * a function of what it currently holds plus one deliberate choice.
  */
 
-import type { Contribution } from '@/contrib/types'
+import { isPluginSource } from '@/contrib/plugin-source'
+import type { Contribution, ContributionSource } from '@/contrib/types'
 import { effectiveTabStripMode } from '@/store/tabstrip-prefs'
 
 import type { TabStripMode } from '../model'
@@ -19,12 +20,18 @@ import { paneChrome } from './track-model'
 export interface StripPane {
   /** A tool panel (terminal / logs) that collapses rather than closes. */
   collapsePane: boolean
+  /** An app-owned close route can make a structurally uncloseable pane's TAB
+   *  closeable (the workspace empties into the next session / a fresh draft). */
+  hasCloser?: boolean
   /** Standing chrome (sessions / Bots) whose only handle is the strip:
    *  show/hide replaces Close, and the Show/Hide rows live on the strip. */
   hideOnly?: boolean
   /** Contribution placement — `'main'` marks a docked tile (session, page,
    *  preview) as opposed to standing side chrome. */
   placement?: string
+  /** Runtime-plugin provenance. A contributed pane has no guaranteed core
+   *  titlebar toggle, so its tab is the host-owned Close surface. */
+  source?: ContributionSource
   /** Panes that never leave the tree (the workspace). */
   uncloseable?: boolean
 }
@@ -44,7 +51,11 @@ export interface StripZone {
  * its handle: a lone closeable tile needs its ✕, a lone tool panel needs a chip
  * to grab, hide-only chrome (sessions / Bots) needs the chip that show/hide
  * lives on. The uncloseable workspace is not strandable — it cannot be closed
- * or lost, so a lone chat is free to be chromeless.
+ * or lost, so a lone chat is free to be chromeless. An app-owned close route
+ * (the workspace empties into the next session / a fresh draft) makes even a
+ * structurally fixed pane's TAB actionable, and a runtime-plugin pane has no
+ * core titlebar toggle to fall back on — both keep the strip as the last
+ * handle (#96852).
  *
  * This outranks an explicit `never` on purpose. "Hide the strip" is a request
  * about chrome, never a request to make a surface unreachable, and a zone that
@@ -58,6 +69,19 @@ export interface StripZone {
  * accumulates tabs: unscoped, one session tab in main pinned the strip on and
  * both the menu row and ⌘⌥T became silent no-ops.
  */
+function closeNeedsStrip(pane: StripPane): boolean {
+  const closeable = !pane.hideOnly && (!pane.uncloseable || pane.hasCloser)
+
+  if (!closeable) {
+    return false
+  }
+
+  // Main tenants are tabs by design. Runtime plugins also need host chrome:
+  // unlike core sidebars, they have no guaranteed titlebar/palette toggle to
+  // replace the tab's Close action when they become a lone side pane.
+  return pane.placement === 'main' || isPluginSource(pane.source)
+}
+
 function stranded(shown: readonly StripPane[]): boolean {
   // Hide-only chrome is stranded at ANY count: it has no close verb at all, and
   // both the chips and the Show/Hide rows that replace one live on the strip.
@@ -71,7 +95,11 @@ function stranded(shown: readonly StripPane[]): boolean {
 
   const [only] = shown
 
-  return only.collapsePane || (!only.uncloseable && only.placement === 'main')
+  // Lone-pane rungs (scoped per 2c5294597 — a multi-tab stack answers cycling
+  // and ⌘1…⌘9, so its strip is chrome, not a handle): a lone collapsing panel
+  // needs its chip, and a lone pane whose tab carries Close (closeable tile,
+  // workspace with an app-owned closer, runtime-plugin pane) needs its ✕.
+  return only.collapsePane || closeNeedsStrip(only)
 }
 
 export function resolveTabStripVisible(zone: StripZone): boolean {
@@ -108,6 +136,7 @@ export function resolveTabStripVisible(zone: StripZone): boolean {
 export function tabStripVisibleForZone(zone: {
   /** The zone's ACTIVE pane. */
   active: string
+  hasCloser: (id: string) => boolean
   isCollapsePane: (id: string) => boolean
   /** The zone's own choice, before the app default applies. */
   mode: TabStripMode | undefined
@@ -119,12 +148,15 @@ export function tabStripVisibleForZone(zone: {
     headerVeto: paneChrome(zone.paneFor(zone.active)).headerVeto,
     mode: effectiveTabStripMode(zone.mode),
     shown: zone.shown.map(id => {
-      const chrome = paneChrome(zone.paneFor(id))
+      const pane = zone.paneFor(id)
+      const chrome = paneChrome(pane)
 
       return {
         collapsePane: zone.isCollapsePane(id),
+        hasCloser: zone.hasCloser(id),
         hideOnly: chrome.hideOnly,
         placement: chrome.placement,
+        source: pane?.source,
         uncloseable: chrome.uncloseable
       }
     })

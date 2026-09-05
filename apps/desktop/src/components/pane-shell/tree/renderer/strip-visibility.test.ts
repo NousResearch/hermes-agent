@@ -11,6 +11,19 @@ const toolPanel = (): StripPane => ({ collapsePane: true, placement: 'bottom' })
 const sideChrome = (): StripPane => ({ collapsePane: false, placement: 'right' })
 const hideOnlyChrome = (): StripPane => ({ collapsePane: false, hideOnly: true, placement: 'left' })
 
+const pluginSidePane = (): StripPane => ({
+  collapsePane: false,
+  placement: 'right',
+  source: 'plugin:custom-plugin'
+})
+
+const closableWorkspace = (): StripPane => ({
+  collapsePane: false,
+  hasCloser: true,
+  placement: 'main',
+  uncloseable: true
+})
+
 describe('auto (no stored choice)', () => {
   it('gives a lone workspace no strip and a stack of two a strip', () => {
     expect(resolveTabStripVisible({ shown: [workspace()] })).toBe(false)
@@ -52,9 +65,18 @@ describe('no dead zone', () => {
     expect(resolveTabStripVisible({ mode: 'never', shown: [hideOnlyChrome(), hideOnlyChrome()] })).toBe(true)
   })
 
+  it('keeps the host-owned Close surface for a lone runtime-plugin side pane', () => {
+    expect(resolveTabStripVisible({ mode: 'never', shown: [pluginSidePane()] })).toBe(true)
+  })
+
+  it('keeps a main tab whose app-owned closer overrides structural uncloseability', () => {
+    expect(resolveTabStripVisible({ mode: 'never', shown: [closableWorkspace()] })).toBe(true)
+  })
+
   it('still hides a zone that cannot strand anything', () => {
-    // The workspace is uncloseable, and a stack is reachable by tab cycling —
-    // the invariant protects handles, it does not veto hiding as such.
+    // A workspace without an app-owned closer is uncloseable, and a stack is
+    // reachable by tab cycling — the invariant protects handles, it does not
+    // veto hiding as such.
     expect(resolveTabStripVisible({ mode: 'never', shown: [workspace()] })).toBe(false)
     expect(resolveTabStripVisible({ mode: 'never', shown: [toolPanel(), toolPanel()] })).toBe(false)
   })
@@ -109,6 +131,7 @@ describe('tabStripVisibleForZone', () => {
   const visible = (shown: string[], mode?: 'always' | 'never') =>
     tabStripVisibleForZone({
       active: shown[0],
+      hasCloser: () => false,
       isCollapsePane: id => id === 'terminal',
       mode,
       paneFor: id => contributions[id],

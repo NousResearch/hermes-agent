@@ -42,9 +42,9 @@ def resolve_passthrough_env(explicit_forward: Iterable[str] = (),
     profile_home = boundary.target_home if boundary is not None else None
     passthrough_keys = get_all_passthrough(profile_home=profile_home)
     forward_keys = {
-        k for k in explicit_forward if not _is_hermes_internal_secret(k)
+        k for k in explicit_forward if not _is_hermes_internal_secret(k, profile_home=profile_home)
     } | {k for k in passthrough_keys
-         if not _is_hermes_internal_secret(k) and not _is_blocked_provider_env(k)}
+         if not _is_hermes_internal_secret(k, profile_home=profile_home) and not _is_blocked_provider_env(k)}
     forward_keys = {k for k in forward_keys if _SHELL_ENV_NAME_RE.fullmatch(k)}
     target_values = boundary.compiled_target_values() if boundary is not None else None
     hermes_env = hermes_env_loader() if forward_keys and boundary is None else {}

@@ -159,14 +159,8 @@ def test_cold_profile_hydrates_external_source_without_global_env(
     )
     monkeypatch.delenv("TEST_PROVIDER_API_KEY", raising=False)
     monkeypatch.delenv("EXPLICIT_API_KEY", raising=False)
-    monkeypatch.setattr(
-        env_loader,
-        "_load_secrets_config",
-        lambda home: (
-            {"fake-source": {"enabled": True}}
-            if Path(home).resolve() == profile.resolve()
-            else {}
-        ),
+    (profile / "config.yaml").write_text(
+        "secrets:\n  fake-source:\n    enabled: true\n", encoding="utf-8"
     )
 
     calls = {"count": 0}

@@ -427,10 +427,13 @@ def _profile_external_secret_snapshot(home: Path, *, fail_closed: bool):
 
         snapshot = env_loader.get_external_secret_snapshot(home)
         initial_status = snapshot.status
-        if initial_status in {"not_hydrated", "stale", "failed"}:
-            # ``failed`` homes are deliberately not admitted to env_loader's
-            # once-per-home set, so the next boundary construction is the
-            # retry point for a transient source/config outage.  Do not retry
+        if initial_status in {"not_hydrated", "stale", "failed"} or (
+            initial_status == "degraded" and snapshot.generation > 0
+        ):
+            # Generation-zero legacy projections are not retryable authority.
+            # Private hydration revokes startup error-suppression leases, so
+            # the next boundary construction is the retry point for a
+            # transient source/config outage.  Do not retry
             # twice inside one construction: a not_hydrated/stale refresh that
             # records failure must still fail this attempt.
             env_loader.hydrate_profile_secret_sources(home)
@@ -625,7 +628,14 @@ def get_profile_owned_secret_names(
             fail_closed=fail_closed_external,
         )
     )
-    observed_names = {name for name in observed_names if not _is_global_env(name)}
+    return record_profile_owned_secret_names(home, observed_names)
+
+
+def record_profile_owned_secret_names(
+    hermes_home: str | os.PathLike, names,
+) -> frozenset[str]:
+    """Retain names at profile-source ingestion, before ambient values outlive it."""
+    observed_names = {name for name in names if not _is_global_env(name)}
 
     # Ownership is monotonic for the life of the process. A profile can remove
     # a name from its current sources while its old value remains in
@@ -633,7 +643,7 @@ def get_profile_owned_secret_names(
     # value as ambient and allow it to cross a later profile boundary. Clearing
     # this history is legal only after a separately verified process-global
     # removal event, which Hermes does not currently expose.
-    history_key = str(home.resolve())
+    history_key = str(Path(hermes_home).resolve())
     with _PROFILE_OWNED_NAME_HISTORY_LOCK:
         history = _PROFILE_OWNED_NAME_HISTORY.setdefault(history_key, set())
         history.update(observed_names)

@@ -212,7 +212,7 @@ def _is_terminal_first_party_env(name: str) -> bool:
 _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME")
 
 
-def _is_hermes_internal_secret(key: str) -> bool:
+def _is_hermes_internal_secret(key: str, *, profile_home=None) -> bool:
     """True for Hermes-internal secrets injected under *dynamic* names the static
     blocklist cannot enumerate: ``AUXILIARY_<TASK>_API_KEY``/``_BASE_URL`` (per-task
     side-LLM credentials) and ``GATEWAY_RELAY_*_SECRET``/``_KEY``/``_TOKEN`` (relay
@@ -229,17 +229,21 @@ def _is_hermes_internal_secret(key: str) -> bool:
         return True
     if "BWS" in upper and upper.endswith("_TOKEN"):
         return True
-    return upper in {"BWS_ACCESS_TOKEN", _get_configured_bws_token_env().upper()}
+    return upper in {"BWS_ACCESS_TOKEN", _get_configured_bws_token_env(profile_home).upper()}
 
 
-def _get_configured_bws_token_env() -> str:
+def _get_configured_bws_token_env(profile_home=None) -> str:
     """Resolve the exact configured Bitwarden bootstrap token name."""
     try:
+        from pathlib import Path
         from hermes_cli.config import cfg_get, read_raw_config
+        from hermes_cli.env_loader import _load_secrets_config
 
-        configured = cfg_get(
-            read_raw_config(), "secrets", "bitwarden", "access_token_env"
+        secrets_cfg = (
+            _load_secrets_config(Path(profile_home), strict=True)
+            if profile_home is not None else read_raw_config().get("secrets", {})
         )
+        configured = cfg_get(secrets_cfg, "bitwarden", "access_token_env")
     except Exception as exc:
         raise RuntimeError("Bitwarden token policy unavailable") from exc
     if isinstance(configured, str) and configured.strip():

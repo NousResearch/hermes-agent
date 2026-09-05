@@ -76,7 +76,7 @@ def test_external_secret_snapshot_distinguishes_not_hydrated_absent_and_failed(
 
     env_loader.reset_secret_source_cache()
 
-    def _fail_config(_home):
+    def _fail_config(_home, *, strict=False):
         raise RuntimeError("unreadable config")
 
     monkeypatch.setattr(env_loader, "_load_secrets_config", _fail_config)

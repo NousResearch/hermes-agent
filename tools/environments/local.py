@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -116,7 +116,9 @@ def _msys_to_windows_path(cwd: str) -> str:
     """``/c/Users/x`` / ``/cygdrive/c/..`` / ``/mnt/c/..`` -> native ``C:\\Users\\x`` so
     ``isdir``/``Popen(cwd=)`` find it. No-op off Windows, for empty input and for
     multi-segment POSIX paths like ``/home/x``; idempotent on native paths."""
-    m = _IS_WINDOWS and cwd and re.match(r'^/(?:(?:cygdrive|mnt)/)?([a-zA-Z])(/.*)?$', cwd)
+    if not _IS_WINDOWS or not cwd:
+        return cwd
+    m = re.match(r'^/(?:(?:cygdrive|mnt)/)?([a-zA-Z])(/.*)?$', cwd)
     if not m:
         return cwd
     tail = (m.group(2) or "").replace('/', '\\')
@@ -149,7 +151,9 @@ def _resolve_local_initial_cwd(cwd: str) -> str:
 def _windows_to_msys_path(cwd: str) -> str:
     """Native ``C:\\Users\\x`` -> Git Bash ``/c/Users/x`` so ``builtin cd`` resolves
     it. No-op off Windows / for non-drive paths."""
-    m = _IS_WINDOWS and cwd and re.match(r'^([a-zA-Z]):[\\/]*(.*)$', cwd)
+    if not _IS_WINDOWS or not cwd:
+        return cwd
+    m = re.match(r'^([a-zA-Z]):[\\/]*(.*)$', cwd)
     if not m:
         return cwd
     tail = (m.group(2) or "").replace('\\', '/').lstrip('/')
@@ -246,10 +250,15 @@ def _filter_secret_env(
     dropped. Blocklisted names survive only via env_passthrough registration or as
     context-entitled first-party ``BUZZ_*`` vars; the latter are used directly, never
     scope-resolved (UnscopedSecretError under multiplex)."""
+    is_pass: Callable[[str], bool]
+    resolve_value: Callable[[str, str | None], str | None]
     try:
-        from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value
+        from tools import env_passthrough
+        is_pass = env_passthrough.is_env_passthrough
+        resolve_value = env_passthrough.resolve_passthrough_value
     except Exception:
-        is_env_passthrough, resolve_passthrough_value = (lambda _: False), (lambda _n, fb: fb)
+        is_pass = lambda _name: False
+        resolve_value = lambda _name, fallback: fallback
     for key, value in items.items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             if not unwrap_force:
@@ -261,11 +270,11 @@ def _filter_secret_env(
         if _is_hermes_internal_secret(key) or key in plugin_strip:
             continue
         first_party = _is_terminal_first_party_env(key)
-        passthrough = is_env_passthrough(key)
+        passthrough = is_pass(key)
         if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not (passthrough or first_party):
             continue
         if passthrough and not first_party:
-            value = resolve_passthrough_value(key, value)
+            value = resolve_value(key, value)
         if value is not None:
             out[key] = value
 
@@ -315,7 +324,7 @@ def _materialize_target_passthrough_values(env, boundary, *, is_passthrough, plu
     for key, value in boundary.compiled_target_values().items():
         if not is_passthrough(key):
             continue
-        if _is_hermes_internal_secret(key) or key in plugin_strip:
+        if _is_hermes_internal_secret(key, profile_home=boundary.target_home) or key in plugin_strip:
             continue
         if _is_blocked_provider_env(key):
             continue
@@ -324,7 +333,8 @@ def _materialize_target_passthrough_values(env, boundary, *, is_passthrough, plu
 
 
 def _finalize_child_env_policy(
-    env, is_passthrough, explicit_force_targets=(), *, enforce_password_policy=False
+    env, is_passthrough, explicit_force_targets=(), *, enforce_password_policy=False,
+    profile_home=None,
 ):
     plugin_strip = {
         _credential_target_env_name(name).upper()
@@ -338,7 +348,7 @@ def _finalize_child_env_policy(
         allowed = target_upper in force_targets or is_passthrough(target_key)
         if key.upper().startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             env.pop(key, None)
-        elif _is_hermes_internal_secret(target_key):
+        elif _is_hermes_internal_secret(target_key, profile_home=profile_home):
             env.pop(key, None)
         elif target_upper in always_strip or target_upper in plugin_strip:
             env.pop(key, None)
@@ -376,8 +386,11 @@ def _sanitize_subprocess_env(
                 f"to spawn with ambient environment: {exc}"
             ) from exc
     cross_profile = bool(boundary and boundary.source_home != boundary.target_home)
+    policy_home = boundary.target_home if boundary is not None else profile_home
+    resolve_value: Callable[[str, str | None], str | None]
     try:
         from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value
+        resolve_value = resolve_passthrough_value
         is_pass = (
             (lambda name: is_env_passthrough(name, profile_home=profile_home))
             if profile_home is not None
@@ -385,7 +398,7 @@ def _sanitize_subprocess_env(
         )
     except Exception:
         is_pass = lambda _name: False
-        resolve_passthrough_value = lambda _name, fallback: fallback
+        resolve_value = lambda _name, fallback: fallback
     plugin_strip = _plugin_terminal_env_strip_keys()
     out = {}
     explicit_force = set()
@@ -398,9 +411,9 @@ def _sanitize_subprocess_env(
                 key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
                 explicit_force.add(key)
                 forced = True
-                if _is_hermes_internal_secret(key):
+                if _is_hermes_internal_secret(key, profile_home=policy_home):
                     continue
-            if _is_hermes_internal_secret(key) or key in plugin_strip:
+            if _is_hermes_internal_secret(key, profile_home=policy_home) or key in plugin_strip:
                 continue
             first_party = _is_terminal_first_party_env(key)
             passthrough = is_pass(key)
@@ -410,7 +423,7 @@ def _sanitize_subprocess_env(
                 continue
             resolved = value
             if passthrough and not first_party:
-                resolved = resolve_passthrough_value(key, value)
+                resolved = resolve_value(key, value)
             if resolved is not None:
                 out[key] = resolved
     if boundary is not None:
@@ -419,7 +432,8 @@ def _sanitize_subprocess_env(
             out, boundary, is_passthrough=is_pass, plugin_strip=plugin_strip
         )
     out = _finalize_child_env_policy(
-        out, is_pass, explicit_force, enforce_password_policy=cross_profile
+        out, is_pass, explicit_force, enforce_password_policy=cross_profile,
+        profile_home=policy_home,
     )
     if profile_home is not None:
         out["HERMES_HOME"] = str(profile_home)
@@ -455,7 +469,7 @@ def hermes_subprocess_env(
     for key in list(env):
         target = _credential_target_env_name(key)
         if (target.upper() in strip or key.upper().startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX)
-                or _is_hermes_internal_secret(target)
+                or _is_hermes_internal_secret(target, profile_home=boundary.target_home if boundary else None)
                 or (not inherit_credentials and _is_blocked_provider_env(target))
                 or (boundary is not None and boundary.source_home != boundary.target_home
                     and _is_credential_shaped_password(target))):
@@ -699,12 +713,14 @@ def _make_run_env(env: dict) -> dict:
     run_env = _sanitize_subprocess_env(os.environ.copy(), env)
     from agent.secret_scope import is_multiplex_active
     if is_multiplex_active():
+        is_pass: Callable[[str], bool]
         try:
             from tools.env_passthrough import is_env_passthrough
+            is_pass = is_env_passthrough
         except Exception:
-            is_env_passthrough = lambda _name: False
+            is_pass = lambda _name: False
         for key in list(run_env):
-            if _is_credential_shaped_password(key) and not is_env_passthrough(key):
+            if _is_credential_shaped_password(key) and not is_pass(key):
                 run_env.pop(key, None)
     path_key = _path_env_key(run_env)
     if path_key is not None:

@@ -431,3 +431,24 @@ def test_cross_session_failed_verify_does_not_clear_stale(tmp_path, monkeypatch)
 
     status = verification_status(session_id="conversation", cwd=tmp_path)
     assert status["status"] == "stale"
+
+
+def test_cross_session_full_terminal_run_does_not_clear_stale(tmp_path, monkeypatch):
+    """Only verify-kind events clear staleness across sessions. Terminal runs
+    reach scope="full" via the _looks_like_target heuristic — a filtered run
+    like `pnpm test --filter=web` reads as full but covers a subset, so it
+    must not upgrade another session's ledger to green."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    _verified_then_edited(tmp_path)
+
+    record_terminal_result(
+        command="pnpm test --filter=web",
+        cwd=tmp_path,
+        session_id="other-session",
+        exit_code=0,
+        output="green",
+    )
+
+    status = verification_status(session_id="conversation", cwd=tmp_path)
+    assert status["status"] == "stale"

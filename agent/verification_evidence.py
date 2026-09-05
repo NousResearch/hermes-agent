@@ -568,11 +568,14 @@ def verification_status(*, session_id: str | None, cwd: str | Path | None) -> di
         if event is not None and state["last_edit_at"] and state["last_edit_at"] > event["created_at"]:
             # Session-keyed evidence is stale, but a shell-run `hermes verify`
             # records under session "default" (#103271) — the editing session's
-            # ledger never sees it. A passing full-scope run of this root after
-            # the edit proves the workspace green regardless of who ran it.
+            # ledger never sees it. A passing full-scope `hermes verify` of this
+            # root after the edit proves the workspace green regardless of who
+            # ran it. Only verify-kind events qualify: terminal runs reach
+            # scope="full" through the `_looks_like_target` heuristic, so a
+            # filtered run like `pnpm test --filter=web` can read as full.
             workspace_pass = conn.execute(
                 "SELECT * FROM verification_events"
-                " WHERE root = ? AND status = 'passed' AND scope = 'full' AND created_at > ?"
+                " WHERE root = ? AND kind = 'verify' AND status = 'passed' AND scope = 'full' AND created_at > ?"
                 " ORDER BY id DESC LIMIT 1",
                 (root, state["last_edit_at"]),
             ).fetchone()

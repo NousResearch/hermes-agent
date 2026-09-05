@@ -7,12 +7,17 @@ when ``~/.bash_profile`` contained ``exec /bin/zsh -l``.
 
 import os
 import platform
+import shutil
 import subprocess
 from unittest.mock import patch
 
 import pytest
 
-from tools.environments.local import _find_bash, _find_shell
+from tools.environments.local import (
+    _find_bash,
+    _find_shell,
+    _windows_bash_candidates,
+)
 
 
 class TestFindShellPrefersUserShell:
@@ -275,3 +280,53 @@ class TestMacosLoginShellSwallowRegression:
             stdin=subprocess.DEVNULL, capture_output=True, text=True,
         )
         assert marker.exists(), f"_find_shell()={shell} swallowed the command"
+
+
+class TestWindowsBashCandidatesExcludeWslStub:
+    """#103398: the bash.exe stub in the Windows system directory is the WSL
+    launcher. It passes _bash_starts (it is a working bash *inside WSL*),
+    but /c/... and /d/... do not exist there, so selecting it makes every
+    snapshot command fail with ENOENT. The which("bash") fallback must skip
+    it and let the structured "Git Bash not found" error surface instead."""
+
+    @staticmethod
+    def _fake_roots(tmp_path, monkeypatch):
+        """Point every known Git root and %SystemRoot% at an empty tmp tree."""
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "lad"))
+        monkeypatch.setenv("ProgramFiles", str(tmp_path / "pf"))
+        monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path / "pf86"))
+        monkeypatch.setenv("SystemRoot", str(tmp_path / "sysroot"))
+        monkeypatch.delenv("WINDIR", raising=False)
+
+    def test_which_fallback_wsl_stub_is_excluded(self, tmp_path, monkeypatch):
+        self._fake_roots(tmp_path, monkeypatch)
+        stub = tmp_path / "sysroot" / "System32" / "bash.exe"
+        stub.parent.mkdir(parents=True)
+        stub.touch()
+        monkeypatch.setattr(shutil, "which", lambda _: str(stub))
+
+        assert _windows_bash_candidates(None) == []
+
+    def test_git_bash_candidate_kept_while_wsl_stub_dropped(
+        self, tmp_path, monkeypatch
+    ):
+        self._fake_roots(tmp_path, monkeypatch)
+        git_bash = tmp_path / "git" / "bin" / "bash.exe"
+        git_bash.parent.mkdir(parents=True)
+        git_bash.touch()
+        stub = tmp_path / "sysroot" / "System32" / "bash.exe"
+        stub.parent.mkdir(parents=True)
+        stub.touch()
+        monkeypatch.setenv("HERMES_GIT_BASH_PATH", str(git_bash))
+        monkeypatch.setattr(shutil, "which", lambda _: str(stub))
+
+        assert _windows_bash_candidates(str(git_bash)) == [str(git_bash)]
+
+    def test_path_bash_kept_when_not_the_wsl_stub(self, tmp_path, monkeypatch):
+        self._fake_roots(tmp_path, monkeypatch)
+        other_bash = tmp_path / "tools" / "bash.exe"
+        other_bash.parent.mkdir(parents=True)
+        other_bash.touch()
+        monkeypatch.setattr(shutil, "which", lambda _: str(other_bash))
+
+        assert _windows_bash_candidates(None) == [str(other_bash)]

@@ -6,6 +6,10 @@ init_session() failure handling, and the CWD marker contract.
 
 from unittest.mock import MagicMock
 
+import os
+
+import pytest
+
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _BoundedOutputCollector
 
@@ -471,3 +475,104 @@ class TestSanitizeTaskIdForPath:
         )
         target.mkdir(parents=True)
         assert target.is_dir()
+
+
+class TestWaitForProcessDrain:
+    """Regression tests for the POSIX stdout-drain path in _wait_for_process.
+
+    Covers #94928 (select() ValueError when a pipe fd exceeds FD_SETSIZE) and
+    the #8340 backgrounded-grandchild case (drain must terminate shortly after
+    bash exits even when a grandchild still holds the pipe open).
+    """
+
+    pytestmark = pytest.mark.skipif(
+        os.name != "posix", reason="POSIX-only drain path (needs /bin/bash)"
+    )
+
+    def _run(self, bash_script):
+        import subprocess
+
+        proc = subprocess.Popen(
+            ["/bin/bash", "-c", bash_script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+        )
+        return _TestableEnv(cwd="/tmp", timeout=20)._wait_for_process(
+            proc, timeout=15
+        )
+
+    def test_drain_captures_output_when_stdout_fd_above_fd_setsize(self):
+        """#94928: a pipe fd >= 1024 must still be drained.
+
+        Before the fix the POSIX drain used select.select(), which raises
+        ValueError for fds >= FD_SETSIZE (1024); the handler mistook that for
+        EOF and silently returned empty output with a correct exit code.
+        """
+        import resource
+
+        # Raise the soft fd limit so we can push a pipe fd past 1024.  Skip on
+        # hosts whose hard limit cannot reach 2048 (the bug cannot manifest).
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, 2048), hard))
+        except (ValueError, OSError):
+            pytest.skip("cannot raise RLIMIT_NOFILE past FD_SETSIZE")
+
+        held = []
+        try:
+            # Hold fds open until the next allocation lands at >= 1024.
+            while True:
+                fd = os.open("/dev/null", os.O_RDONLY)
+                held.append(fd)
+                if fd >= 1024:
+                    break
+
+            result = self._run('printf "high-fd-output\\n"')
+            assert result["returncode"] == 0
+            assert "high-fd-output" in result["output"], result["output"]
+        finally:
+            for fd in held:
+                os.close(fd)
+            # Restore the original process-wide fd limit (do not leak the
+            # raised policy to later tests in the same worker).
+            try:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+            except (ValueError, OSError):
+                pass
+
+    def test_drain_captures_output_at_normal_fd(self):
+        """Low-fd path keeps capturing full stdout (no regression)."""
+        result = self._run("echo line-one; echo line-two")
+        assert result["returncode"] == 0
+        assert result["output"] == "line-one\nline-two\n", result["output"]
+
+    def test_drain_terminates_with_backgrounded_grandchild(self):
+        """#8340: bash exits but a grandchild holds the pipe open — the drain
+        must stop shortly after bash exits instead of hanging."""
+        result = self._run(
+            "echo before-bg; (sleep 30 &) 2>/dev/null; disown; echo after-bg"
+        )
+        assert result["returncode"] == 0
+        assert "before-bg" in result["output"], result["output"]
+
+    def test_drain_falls_back_to_read_when_selector_register_fails(self):
+        """If the selector cannot register the fd (e.g. EPERM for a regular
+        file, or an already-closed fd), the drain must fall back to a direct
+        non-blocking polling read instead of silently dropping all output."""
+        import selectors as _selectors
+        from unittest import mock
+
+        class _RejectingSelector:
+            def register(self, fd, flags):
+                raise OSError("EPERM: operation not permitted")
+
+            def close(self):
+                pass
+
+        with mock.patch.object(
+            _selectors, "DefaultSelector", lambda: _RejectingSelector()
+        ):
+            result = self._run('printf "fallback-output\\n"')
+        assert result["returncode"] == 0
+        assert "fallback-output" in result["output"], result["output"]

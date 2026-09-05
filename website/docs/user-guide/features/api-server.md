@@ -598,6 +598,8 @@ X-Hermes-Session-Key: agent:main:webui:dm:user-42
 
 Rules: max 256 chars, control characters (`\r`, `\n`, `\x00`) are rejected, and the value is echoed back on responses (JSON + SSE). `/v1/capabilities` advertises support via `"session_key_header": "X-Hermes-Session-Key"`. Without the key, Honcho's `per-session` strategy produces a different scope per `session_id` — exactly the behavior Hermes had before.
 
+On `/v1/runs` the key is also bound as `HERMES_SESSION_USER_ID` for the duration of the turn (readable with `gateway.session_context.get_session_env`), the same slot the webhook adapter fills with `webhook:<route>`. Plugins and tools can use it to tell which end user a run is acting for — e.g. a `pre_tool_call` hook that pins a tenant id onto tool calls — since `HERMES_SESSION_KEY` on this route is the per-run approval key, not a user identity. Absent the header it stays empty.
+
 ## System Prompt Handling
 
 When a frontend sends a `system` message (Chat Completions) or `instructions` field (Responses API), hermes-agent **layers it on top** of its core system prompt. Your agent keeps all its tools, memory, and skills — the frontend's system prompt adds extra instructions.

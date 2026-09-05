@@ -282,7 +282,7 @@ Read the `vision_analyze` description from the sidecar `references/NN-ref-{slug}
 
 Edit example (replace paths with verified sources and save the full prompt/arguments first; use only arguments advertised by the exposed schema):
 
-```python
+```text
 image_generate(prompt="Simplify this diagram, retaining its exact labels and the recorded palette.", aspect_ratio="landscape", image_url="/absolute/references/diagram.png", reference_image_urls=["/absolute/references/style.png"])
 ```
 

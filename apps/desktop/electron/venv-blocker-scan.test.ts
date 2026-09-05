@@ -206,6 +206,65 @@ describe('parseVenvBlockerScanOutput', () => {
     assert.equal(o.result.processes[0]?.safeToStop, false)
   })
 
+  it('classifies scanner-identified leftover serve processes as stoppable pool backends', () => {
+    const o = parseVenvBlockerScanOutput(
+      ok({
+        blocked: true,
+        processes: [
+          {
+            pid: 4242,
+            name: 'python.exe',
+            cmdline: 'python.exe -m hermes_cli.main --profile writer serve',
+            kind: 'pool-backend',
+            safeToStop: true,
+            label: 'serve',
+            createTime: 1722798000.25
+          }
+        ]
+      })
+    )
+
+    assert.equal(o.kind, 'blocked')
+
+    if (o.kind !== 'blocked') {
+      return
+    }
+
+    assert.deepEqual(o.result.processes[0], {
+      pid: 4242,
+      name: 'python.exe',
+      cmdline: 'python.exe -m hermes_cli.main --profile writer serve',
+      kind: 'pool-backend',
+      safeToStop: true,
+      label: 'serve',
+      createTime: 1722798000.25
+    })
+  })
+
+  it('does not trust a serve command line without scanner identity metadata', () => {
+    const o = parseVenvBlockerScanOutput(
+      ok({
+        blocked: true,
+        processes: [
+          {
+            pid: 4242,
+            name: 'python.exe',
+            cmdline: 'python.exe -m hermes_cli.main serve'
+          }
+        ]
+      })
+    )
+
+    assert.equal(o.kind, 'blocked')
+
+    if (o.kind !== 'blocked') {
+      return
+    }
+
+    assert.equal(o.result.processes[0]?.kind, 'other')
+    assert.equal(o.result.processes[0]?.safeToStop, false)
+  })
+
   it('never marks an arbitrary Python process safe to stop', () => {
     const o = parseVenvBlockerScanOutput(
       ok({
@@ -403,5 +462,43 @@ describe('stopSafeVenvBlockers', () => {
       }
     ])
     assert.deepEqual(outcome, { stopped: [47484], failed: [] })
+  })
+
+  it('stops leftover pool backends the scanner marked safe', async () => {
+    const calls: Array<{ command: string; args: string[] }> = []
+
+    const exec = (async (command: string, args: string[]) => {
+      calls.push({ command, args })
+
+      return { stdout: '', stderr: '' }
+    }) as any
+
+    const outcome = await stopSafeVenvBlockers(
+      '/update/root',
+      {
+        blocked: true,
+        processes: [
+          {
+            pid: 4242,
+            name: 'python.exe',
+            cmdline: 'python.exe -m hermes_cli.main serve',
+            kind: 'pool-backend',
+            safeToStop: true,
+            label: 'serve',
+            createTime: 1722798000.25
+          }
+        ]
+      },
+      exec,
+      () => 'C:\\Hermes\\venv\\Scripts\\python.exe'
+    )
+
+    assert.deepEqual(calls, [
+      {
+        command: 'C:\\Hermes\\venv\\Scripts\\python.exe',
+        args: ['-m', 'hermes_cli._scan_venv_blockers', '--terminate-safe', '4242', '1722798000.25']
+      }
+    ])
+    assert.deepEqual(outcome, { stopped: [4242], failed: [] })
   })
 })

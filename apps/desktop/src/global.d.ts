@@ -660,7 +660,7 @@ export interface DesktopUpdateBlocker {
   pid: number
   name: string
   cmdline: string
-  kind: 'local-preview' | 'other'
+  kind: 'local-preview' | 'other' | 'pool-backend'
   safeToStop: boolean
   label?: string
   port?: number
@@ -669,7 +669,7 @@ export interface DesktopUpdateBlocker {
 
 export interface DesktopUpdateApplyOptions {
   dirtyStrategy?: DesktopUpdateDirtyStrategy
-  /** User confirmed that Desktop may stop freshly re-scanned safe local preview servers. */
+  /** User confirmed that Desktop may stop freshly re-scanned safe local preview servers and leftover pool backends. */
   stopSafeBlockers?: boolean
 }
 

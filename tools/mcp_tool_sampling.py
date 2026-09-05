@@ -1,10 +1,14 @@
 """MCP client-side handlers for server-initiated requests: sampling
 (sampling/createMessage, text and tool-use results) and elicitation."""
 
+from __future__ import annotations
+
 import asyncio
+import functools
 import json
 import logging
 import time
+from contextvars import Context
 from typing import Callable, List, Optional
 from tools.mcp_tool_common import _MISSING, _exc_str, _safe_numeric, _sanitize_error, mcp_field, _core
 from tools.mcp_tool_schema import _normalize_mcp_input_schema
@@ -250,12 +254,14 @@ class ElicitationHandler:
     # consent answer -> (ElicitResult action, metric); anything else declines.
     _ANSWER_RESULTS = {"accept": ("accept", "accepted"), "cancel": ("cancel", "errors")}
 
-    def __init__(self, server_name: str, config: dict, owner: Optional["MCPServerTask"] = None):
+    def __init__(self, server_name: str, config: dict,
+                 call_context: Optional[Callable[[], Optional[Context]]] = None):
         self.server_name = server_name
         # 5 min mirrors the gateway approval default so async surfaces (Telegram, Slack) can respond.
         self.timeout = _safe_numeric(config.get("timeout", 300), 300, float)
-        # Back-reference for the agent's contextvars snapshot; optional for isolated unit tests.
-        self.owner = owner
+        # Returns the owning MCPServerTask's contextvars snapshot for the in-flight tool call (None
+        # between calls). A thunk, not the task: the task module imports this one.
+        self._call_context = call_context
         self.metrics = {"requests": 0, "accepted": 0, "declined": 0, "errors": 0}
 
     def session_kwargs(self) -> dict:
@@ -268,16 +274,15 @@ class ElicitationHandler:
         return _core.ElicitResult(action=action, **({"content": {}} if action == "accept" else {}))
 
     def _consent_thunk(self, message: str, description: str) -> Callable[[], str]:
-        """Sync consent call replaying the agent's contextvars snapshot when the owner captured one
+        """Sync consent call replaying the agent's contextvars snapshot when the owning task captured one
         (the recv-loop task does NOT inherit them; gateway-platform detection needs them).
         ``Context.run`` runs a context once, so it is copied per elicitation."""
         from tools.approval_prompt import request_elicitation_consent
 
-        kwargs = {"timeout_seconds": int(self.timeout), "surface": f"mcp-elicitation/{self.server_name}"}
-        captured = getattr(self.owner, "_pending_call_context", None) if self.owner else None
-        if captured is None:
-            return lambda: request_elicitation_consent(message, description, **kwargs)
-        return lambda: captured.copy().run(request_elicitation_consent, message, description, **kwargs)
+        consent = functools.partial(request_elicitation_consent, message, description,
+                                    timeout_seconds=int(self.timeout), surface=f"mcp-elicitation/{self.server_name}")
+        captured = self._call_context() if self._call_context else None
+        return consent if captured is None else (lambda: captured.copy().run(consent))
 
     async def __call__(self, context, params):
         """SDK elicitation callback (``ElicitationFnT``). Returns ElicitResult or ErrorData."""

@@ -206,7 +206,7 @@ class TestElicitationHandlerWiring:
 class TestElicitationHandlerContextBridge:
     """The MCP recv-loop task that fires elicitation callbacks does NOT
     inherit the agent's contextvars (HERMES_SESSION_PLATFORM etc.). The
-    handler reads ``owner._pending_call_context`` -- a snapshot captured
+    handler reads the ``call_context`` thunk's snapshot -- a snapshot captured
     by the MCP tool wrapper around ``session.call_tool`` -- and replays
     it before invoking the approval router so gateway-session detection
     survives the task hop. Regression tests for that bridge."""
@@ -217,7 +217,6 @@ class TestElicitationHandlerContextBridge:
         gateway-platform detection in approval.py sees an empty platform
         string and falls back to the CLI path (the bug this fixes)."""
         import contextvars
-        from types import SimpleNamespace
 
         probe: contextvars.ContextVar[str] = contextvars.ContextVar(
             "elicitation_test_probe", default=""
@@ -238,8 +237,7 @@ class TestElicitationHandlerContextBridge:
             "context, otherwise the test would pass even without replay."
         )
 
-        owner = SimpleNamespace(_pending_call_context=captured)
-        handler = ElicitationHandler("pay", {"timeout": 5}, owner=owner)
+        handler = ElicitationHandler("pay", {"timeout": 5}, call_context=lambda: captured)
         params = _form_params()
 
         with patch("tools.approval_prompt.request_elicitation_consent", side_effect=fake_consent):
@@ -252,11 +250,11 @@ class TestElicitationHandlerContextBridge:
         )
 
     def test_missing_captured_context_falls_back_to_direct_call(self):
-        """Without an owner (or with an owner that hasn't entered a tool
+        """Without a call_context (or one whose task hasn't entered a tool
         call) the handler must still invoke the consent router -- just
         without the contextvar replay. Otherwise CLI/TUI sessions, which
         don't set HERMES_SESSION_PLATFORM, would break."""
-        handler = ElicitationHandler("pay", {"timeout": 5}, owner=None)
+        handler = ElicitationHandler("pay", {"timeout": 5}, call_context=None)
         params = _form_params()
 
         with patch("tools.approval_prompt.request_elicitation_consent", return_value="accept") as m:
@@ -267,12 +265,9 @@ class TestElicitationHandlerContextBridge:
 
 
     def test_pending_call_context_none_does_not_crash(self):
-        """``owner._pending_call_context`` is set to None between tool
+        """The ``call_context`` thunk returns None between tool
         calls. An elicitation arriving in that window must not crash."""
-        from types import SimpleNamespace
-
-        owner = SimpleNamespace(_pending_call_context=None)
-        handler = ElicitationHandler("pay", {"timeout": 5}, owner=owner)
+        handler = ElicitationHandler("pay", {"timeout": 5}, call_context=lambda: None)
         params = _form_params()
 
         with patch("tools.approval_prompt.request_elicitation_consent", return_value="decline"):

@@ -7,7 +7,7 @@ so users never received the final response.
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from gateway.run import GatewayRunner
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 
 
 @pytest.fixture

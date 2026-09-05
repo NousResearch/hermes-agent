@@ -2,12 +2,14 @@
 stripping, thread participation tracking, GFM table → bullets, mention-pattern
 compilation, and fence-aware markdown chunking."""
 
+from __future__ import annotations
+
 import json
 import logging
 import re
 import time
 from pathlib import Path
-
+from gateway.platforms.event import MessageEvent
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -554,14 +556,14 @@ class TextBatchAggregator:
         self._batch_delay = batch_delay
         self._split_delay = split_delay
         self._split_threshold = split_threshold
-        self._pending: Dict[str, "MessageEvent"] = {}
+        self._pending: Dict[str, MessageEvent] = {}
         self._pending_tasks: Dict[str, asyncio.Task] = {}
 
     def is_enabled(self) -> bool:
         """Return True if batching is active (delay > 0)."""
         return self._batch_delay > 0
 
-    def enqueue(self, event: "MessageEvent", key: str) -> None:
+    def enqueue(self, event: MessageEvent, key: str) -> None:
         """Add *event* to the pending batch for *key*."""
         chunk_len = len(event.text or "")
         existing = self._pending.get(key)

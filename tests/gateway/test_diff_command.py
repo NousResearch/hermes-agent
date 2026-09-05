@@ -14,7 +14,7 @@ import pytest
 import gateway.run as gateway_run
 import tools.checkpoint_manager as cpm
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 pytestmark = pytest.mark.skipif(

@@ -39,8 +39,10 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, MessageEvent, MessageType, SendResult,
-    _ssrf_redirect_guard, cache_document_from_bytes_async, cache_image_from_bytes_async)
+    gateway_trust_env, BasePlatformAdapter, SendResult,
+    _ssrf_redirect_guard, cache_document_from_bytes_async, cache_image_from_bytes_async,
+)
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import strip_markdown
 from gateway.platforms.media_cache import ext_for_mime
 

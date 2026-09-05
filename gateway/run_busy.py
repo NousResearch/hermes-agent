@@ -16,7 +16,8 @@ import os
 import time
 from agent.i18n import t
 from gateway.config import Platform
-from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
+from gateway.platforms.base import EphemeralReply
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from typing import Any, Dict, Optional, Union
 

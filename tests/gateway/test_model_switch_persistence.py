@@ -232,7 +232,7 @@ class TestOneTurnNeverPersisted:
 
     @staticmethod
     def _event(text):
-        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.event import MessageEvent, MessageType
 
         return MessageEvent(
             text=text,

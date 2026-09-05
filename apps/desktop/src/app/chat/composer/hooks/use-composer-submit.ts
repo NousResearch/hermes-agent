@@ -100,7 +100,11 @@ export function useComposerSubmit({
 
     void Promise.resolve(
       attachments
-        ? onSubmit(submittedText, { attachments, composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
+        ? onSubmit(submittedText, {
+            attachments,
+            composerScope: submittedScope,
+            ...(displayKind ? { displayKind } : {})
+          })
         : onSubmit(submittedText, { composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
     )
       .then(accepted => {

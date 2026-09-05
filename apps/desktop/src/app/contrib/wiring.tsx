@@ -88,8 +88,6 @@ import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { closeWorkspaceTab } from '../chat/close-tab'
 import { requestComposerInsert } from '../chat/composer/focus'
-import { insertMessageReply } from '../chat/composer/message-reply'
-import { composerTargetAtPoint } from '../chat/composer/selection-target'
 import { useComposerActions } from '../chat/hooks/use-composer-actions'
 import { CommandPalette } from '../command-palette'
 import { triggerAndRefreshCronJobs } from '../cron/cron-actions'
@@ -223,15 +221,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       navigate(CRON_ROUTE)
     }
   }, [cronReviewRequest, navigate])
-
-  useEffect(() => {
-    const unsubscribe = window.hermesDesktop?.onComposerAppendSelection?.(({ text, x, y }) => {
-      insertMessageReply(text, { target: composerTargetAtPoint(x, y) })
-    })
-
-    return () => unsubscribe?.()
-  }, [])
-
   const freshDraftReady = useStore($freshDraftReady)
   const resumeFailedSessionId = useStore($resumeFailedSessionId)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)

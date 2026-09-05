@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
-
 import { encodeComposerQuote } from '@/lib/composer-quote'
+import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 
 import { insertInlineRefsIntoEditor } from './inline-refs'
 import {
@@ -76,7 +75,7 @@ describe('renderComposerContents', () => {
 
     renderComposerContents(editor, raw)
     document.body.append(editor)
-    caretIn(editor)
+    placeCaretAtEnd(editor)
 
     expect(deleteChipBeforeCaret(editor)).toBe(true)
     expect(composerPlainText(editor)).toBe('')

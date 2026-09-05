@@ -6,17 +6,16 @@
 // supplied, matching how onDismissError/onRestoreToMessage already behave.
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
+import { onComposerInsertRequest } from '@/app/chat/composer/focus'
+import { ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '@/app/chat/composer/scope'
+import { expandComposerQuotes } from '@/lib/composer-quote'
 import { $displayTimestamps } from '@/store/display-timestamps'
 
 import { stubThreadEnvironment } from '../test-utils'
 
 import { formatTimelineRange, formatTimelineTimestamp } from './timestamp'
-
-import { onComposerInsertRequest } from '@/app/chat/composer/focus'
-import { ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '@/app/chat/composer/scope'
-import { expandComposerQuotes } from '@/lib/composer-quote'
 
 import { Thread } from '.'
 
@@ -163,11 +162,13 @@ describe('message Reply composer routing', () => {
     const replyButtons = await screen.findAllByRole('button', { name: 'Reply' })
 
     expect(replyButtons).toHaveLength(2)
+
     for (const button of replyButtons) {
       expect(button.getAttribute('data-size')).toBe('icon-xs')
       expect(button.getAttribute('title')).toBeNull()
       expect(button.querySelector('svg')).not.toBeNull()
     }
+
     fireEvent.click(replyButtons[0]!)
     fireEvent.click(replyButtons[1]!)
 

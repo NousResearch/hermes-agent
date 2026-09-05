@@ -11,14 +11,16 @@ forwards to the real host:
   sandbox is isolated from the *host*, not from the internet: a real install
   still has to reach PyPI and npm.
 
-HTTPS is intercepted by minting a per-host certificate from the sandbox's own
-throwaway CA, which the payload trusts via CURL_CA_BUNDLE / SSL_CERT_FILE.
+HTTPS fixture hosts are intercepted with certificates from the sandbox's
+throwaway CA. Other CONNECT streams remain end-to-end TLS, so the payload's CA
+bundle combines the throwaway CA with the host's real public roots.
 
 Usage: proxy.py <fixture-root> <certs-dir> <real-ca-bundle>
 """
 
 import os
 import pathlib
+import selectors
 import socket
 import ssl
 import subprocess
@@ -32,6 +34,29 @@ LISTEN_ADDRESS = ('127.0.0.1', 8080)
 MAX_REQUEST_BYTES = 65536
 UPSTREAM_TIMEOUT_SECONDS = 30
 CERT_VALIDITY_DAYS = 2
+PEM_CERT_END = b'-----END CERTIFICATE-----'
+
+
+def prepare_client_ca_bundle():
+    """Trust both fixture certificates and real TLS used by raw tunnels.
+
+    ``ca.pem`` starts with the sandbox's one throwaway CA. Preserve only that
+    first certificate, then append the current host CA bundle. Rebuilding from
+    the first certificate keeps persistent sandbox restarts idempotent and
+    avoids retaining stale copies of the public roots.
+    """
+    client_ca = CERTS / 'ca.pem'
+    existing = client_ca.read_bytes()
+    certificate_end = existing.find(PEM_CERT_END)
+    if certificate_end < 0:
+        raise RuntimeError(f'sandbox CA is not a PEM certificate: {client_ca}')
+    sandbox_ca = existing[:certificate_end + len(PEM_CERT_END)].rstrip() + b'\n'
+    combined = sandbox_ca + REAL_CA.read_bytes().lstrip()
+    if existing == combined:
+        return
+    temporary = CERTS / f'ca.pem.{os.getpid()}.tmp'
+    temporary.write_bytes(combined)
+    os.replace(temporary, client_ca)
 
 
 def read_request(conn):
@@ -150,6 +175,39 @@ def relay(source, destination):
         destination.sendall(chunk)
 
 
+def tunnel_connect(conn, host, port):
+    """Relay a CONNECT stream unchanged when the host has no fixtures.
+
+    npm opens many concurrent, persistent HTTPS connections. Intercepting those
+    connections needlessly terminates TLS in this proxy and creates a fresh
+    upstream TLS session for every request, which can exhaust or race the npm
+    registry/CDN and surface as repeated ``SSLEOFError`` handshakes. Hosts with
+    no fixture content do not need interception, so preserve their native TLS
+    connection end to end.
+    """
+    with socket.create_connection((host, port), timeout=UPSTREAM_TIMEOUT_SECONDS) as upstream:
+        upstream.settimeout(None)
+        conn.sendall(b'HTTP/1.1 200 Connection Established\r\n\r\n')
+        with selectors.DefaultSelector() as ready:
+            ready.register(conn, selectors.EVENT_READ, 'client')
+            ready.register(upstream, selectors.EVENT_READ, 'upstream')
+            while True:
+                for key, _ in ready.select():
+                    source = key.fileobj
+                    destination = upstream if key.data == 'client' else conn
+                    chunk = source.recv(MAX_REQUEST_BYTES)
+                    if chunk:
+                        destination.sendall(chunk)
+                        continue
+                    if key.data == 'upstream':
+                        return
+                    ready.unregister(conn)
+                    try:
+                        upstream.shutdown(socket.SHUT_WR)
+                    except OSError:
+                        return
+
+
 def forward_https(conn, host, port, request):
     context = ssl.create_default_context(cafile=str(REAL_CA))
     with socket.create_connection((host, port), timeout=UPSTREAM_TIMEOUT_SECONDS) as raw:
@@ -169,9 +227,12 @@ def forward_http(conn, host, port, request, target):
 
 
 def handle_connect(conn, target):
-    """Intercept a CONNECT tunnel, terminating TLS with a minted cert."""
+    """Intercept fixture hosts; tunnel every other CONNECT unchanged."""
     host, _, port_text = target.rpartition(':')
     port = int(port_text or '443')
+    if not (ROOT / host).is_dir():
+        tunnel_connect(conn, host, port)
+        return
     conn.sendall(b'HTTP/1.1 200 Connection Established\r\n\r\n')
     cert, key = cert_for(host)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -224,6 +285,7 @@ def handle(conn):
 
 
 def main():
+    prepare_client_ca_bundle()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind(LISTEN_ADDRESS)

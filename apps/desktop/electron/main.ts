@@ -231,6 +231,11 @@ import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
+import {
+  getInstallMutationSet,
+  type InstallResourceLocks,
+  probeInstallResourceLocks
+} from './install-mutation-set'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
@@ -436,6 +441,11 @@ import {
   probeWindowsRemote,
   terminateOwnedWindowsDashboardForUpdate
 } from './windows-remote-lifecycle'
+import {
+  listRestartManagerHoldersForResources,
+  RESTART_MANAGER_DEFAULT_TIMEOUT_MS,
+  type RestartManagerHolder
+} from './windows-restart-manager'
 import {
   alreadyHasNoSandbox,
   buildNoSandboxRelaunchArgs,
@@ -3385,6 +3395,68 @@ function isShimLocked(shimPath) {
   }
 }
 
+// The files the updater will replace or delete: every native module, DLL,
+// and executable under venv\. This is what pip/uv actually needs free. The
+// shim alone only proves the uv launcher is gone; the real interpreter runs
+// from .hermes-runtime and keeps site-packages .pyd files mapped without
+// touching hermes.exe, so a shim-only probe let the handoff proceed into the
+// July 2026 brotlicffi/_sodium.pyd half-updated venv.
+function installLockResources(updateRoot) {
+  return getInstallMutationSet(updateRoot)
+}
+
+// Exclusive-open probe over the mutation set, split into files only our
+// link can lock (definite) and uv-shared hard links that need per-process
+// attribution. Falls back to the shim probe on a checkout without a venv.
+function probeInstallLocks(updateRoot): InstallResourceLocks {
+  const resources = installLockResources(updateRoot)
+
+  if (resources.length === 0) {
+    const shim = venvHermesShimPath(updateRoot)
+
+    return { definite: isShimLocked(shim) ? [shim] : [], shared: [] }
+  }
+
+  return probeInstallResourceLocks(resources)
+}
+
+// Holders proven by the kernel: Restart Manager over the locked files, with
+// per-process module attribution for uv-shared files so a foreign venv that
+// maps the same wheel through its own hard link is never listed.
+async function attributedInstallHolders(
+  updateRoot,
+  timeoutMs = RESTART_MANAGER_DEFAULT_TIMEOUT_MS
+): Promise<RestartManagerHolder[]> {
+  const locks = probeInstallLocks(updateRoot)
+
+  if (locks.definite.length === 0 && locks.shared.length === 0) {return []}
+
+  return listRestartManagerHoldersForResources(locks.definite, {
+    shared: locks.shared,
+    // Attribute against the venv, the only tree the sync rewrites: a process
+    // that maps runtime DLLs but no venv file is not a holder of this update.
+    attributionRoot: path.join(updateRoot, 'venv'),
+    timeoutMs
+  })
+}
+
+async function isAnyInstallResourceLocked(updateRoot): Promise<boolean> {
+  const locks = probeInstallLocks(updateRoot)
+
+  if (locks.definite.length > 0) {return true}
+
+  if (locks.shared.length === 0) {return false}
+
+  return (await attributedInstallHolders(updateRoot)).length > 0
+}
+
+function formatAttributedHolders(updateRoot, holders: readonly RestartManagerHolder[]): string {
+  return holders
+    .slice(0, 10)
+    .map(holder => `  PID ${holder.pid}  ${holder.name}  holds ${path.relative(updateRoot, holder.resource)}`)
+    .join('\n')
+}
+
 // Kill only Hermes-OWNED venv daemons (the memory plugin's hindsight daemon:
 // exe under venv\Scripts AND cmdline referencing hindsight_api.main). The
 // daemon is spawned DETACHED, so it outlives the backend tree-kill and keeps
@@ -3762,7 +3834,7 @@ async function releaseBackendLockForUpdate(updateRoot) {
 //
 // `tag` only flavors the log lines. No-op off Windows (POSIX has no mandatory
 // locks — the before-quit SIGTERM + the cleanup script's own PID-wait suffice).
-async function releaseBackendLock(updateRoot, tag) {
+async function releaseBackendLock(updateRoot, tag): Promise<{ unlocked: boolean; holders?: RestartManagerHolder[] }> {
   if (!IS_WINDOWS) {
     return { unlocked: true }
   }
@@ -3818,7 +3890,10 @@ async function releaseBackendLock(updateRoot, tag) {
   const gate = await waitForBackendRelease(
     initialPids,
     {
-      isShimLocked: () => Boolean(isShimLocked(shim)),
+      // Prove the whole mutation set, not just the shim: a holder that maps a
+      // site-packages .pyd without touching hermes.exe used to pass this gate
+      // and break the venv sync later inside the detached updater.
+      isShimLocked: () => isAnyInstallResourceLocked(updateRoot),
       isPidAlive: isPidAliveWindows,
       collectStragglerPids: () => {
         const stragglers = []
@@ -3856,11 +3931,21 @@ async function releaseBackendLock(updateRoot, tag) {
   // imports broken (the July 2026 brotlicffi/_sodium.pyd incidents). Failing
   // the update loudly and keeping the app running is strictly better than a
   // bricked install that needs manual venv surgery.
+  let holders: RestartManagerHolder[] = []
+
+  try {
+    holders = await attributedInstallHolders(updateRoot)
+  } catch {
+    holders = []
+  }
+
   rememberLog(
-    `[${tag}] venv shim still locked after 15s; aborting hand-off (something outside this app holds the venv)`
+    `[${tag}] install files still locked after 15s; aborting hand-off. Holders: ${
+      holders.map(holder => `PID ${holder.pid} ${holder.name} (${path.relative(updateRoot, holder.resource)})`).join('; ') || 'none attributable'
+    }`
   )
 
-  return { unlocked: false }
+  return { unlocked: false, holders }
 }
 
 // applyUpdates — hand off to the installer's --update flow, then exit.
@@ -3990,9 +4075,13 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       // guarantees a half-updated venv — abort loudly instead and let the
       // user close the holder and retry. Restart our own backend so the app
       // keeps working after the failed attempt.
+      const holderLines = formatAttributedHolders(updateRoot, lock.holders ?? [])
+
       const message =
-        'Update aborted: another process is holding the Hermes install open ' +
-        '(a second Hermes window or a terminal running hermes?). Close it and retry.'
+        'Update aborted: another process is holding the Hermes install open. ' +
+        (holderLines
+          ? `Close these and retry:\n${holderLines}`
+          : 'Close any other Hermes window or terminal running hermes, then retry.')
 
       emitUpdateProgress({ stage: 'error', message, percent: null })
       startHermes().catch(() => {})
@@ -4047,7 +4136,18 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       }
 
       if (scanOutcome.kind === 'blocked') {
-        const message = formatBlockerMessage(scanOutcome.result)
+        let message = formatBlockerMessage(scanOutcome.result)
+
+        try {
+          const scannerPids = new Set(scanOutcome.result.processes.map(process => process.pid))
+          const unnamed = (await attributedInstallHolders(updateRoot)).filter(holder => !scannerPids.has(holder.pid))
+
+          if (unnamed.length > 0) {
+            message += `\n\nOther processes holding install files (Restart Manager):\n${formatAttributedHolders(updateRoot, unnamed)}`
+          }
+        } catch {
+          void 0
+        }
 
         rememberLog(`[updates] venv-blocked: ${scanOutcome.result.processes.length} process(es) hold the install`)
         emitUpdateProgress({ stage: 'error', message, percent: null })

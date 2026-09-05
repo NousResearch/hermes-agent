@@ -5,6 +5,7 @@ documents raise :class:`ExtractionError`; callers fall back to text/binary handl
 
 from __future__ import annotations
 
+import codecs
 import contextlib
 import functools
 import importlib
@@ -18,6 +19,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import xml.parsers.expat
 import zipfile
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
@@ -40,6 +42,12 @@ _NS_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _NS_S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _NS_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _NS_PKG_REL = "http://schemas.openxmlformats.org/package/2006/relationships"
+
+
+# Precompiled regex that matches DOCTYPE or ENTITY declarations in an XML
+# prolog/Dtd. This is used to reject billion-laughs / XXE payloads before the
+# stdlib parser is invoked, without adding a hard dependency on defusedxml.
+_DTD_ENTITY_RE = re.compile(rb"<!\s*(DOCTYPE|ENTITY)\b", re.IGNORECASE)
 
 
 class ExtractionError(Exception):
@@ -447,10 +455,96 @@ def _open_zip(path: str, kind: str) -> Iterator[zipfile.ZipFile]:
         raise ExtractionError(f"Not a valid {kind}: {exc}" if bad_zip else str(exc)) from exc
 
 
+# Byte-order marks for XML encodings that Python/Expat need to know about.
+_BOMS = (
+    (codecs.BOM_UTF8, "utf-8"),
+    (codecs.BOM_UTF16_LE, "utf-16-le"),
+    (codecs.BOM_UTF16_BE, "utf-16-be"),
+    (codecs.BOM_UTF32_LE, "utf-32-le"),
+    (codecs.BOM_UTF32_BE, "utf-32-be"),
+)
+
+# XML declaration encoding attribute (UTF-16/UTF-32 files are detected by BOM
+# rather than by scanning the declaration, whose bytes are interleaved with NULs).
+_XML_DECL_RE = re.compile(
+    rb'''<\?xml[^?]*?encoding=([A-Za-z0-9._-]+)''',
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Remove the encoding attribute from the XML declaration after we've decoded
+# with it, so ElementTree gets bytes whose declared encoding matches the data.
+_XML_DECL_ENCODING_RE = re.compile(
+    r'''\s+encoding=(["'])([^"']*?)\1''',
+    re.IGNORECASE,
+)
+
+
+def _normalize_to_utf8(data: bytes) -> bytes:
+    """Return ``data`` decoded and re-encoded as UTF-8.
+
+    Uses the BOM or ``<?xml ... encoding="..."?>`` declaration to decide the
+    source encoding. The encoding attribute is stripped from the declaration
+    so callers see consistent UTF-8 bytes.
+    """
+    encoding = "utf-8"
+    for bom, enc in _BOMS:
+        if data.startswith(bom):
+            encoding = enc
+            data = data[len(bom):]
+            break
+    else:
+        m = _XML_DECL_RE.search(data[:256])
+        if m:
+            encoding = m.group(1).decode("ascii")
+    try:
+        text = data.decode(encoding)
+    except (LookupError, UnicodeError) as exc:
+        raise ET.ParseError(f"Unsupported or malformed XML encoding {encoding!r}: {exc}")
+    text = _XML_DECL_ENCODING_RE.sub("", text, count=1)
+    return text.encode("utf-8")
+
+
+def _parse_xml(data: bytes) -> ET.Element:
+    """Parse XML bytes, rejecting documents that declare a DTD or entity.
+
+    ``xml.etree.ElementTree`` does not safely handle internal/external
+    entity expansion by default (S314 / billion-laughs / XXE). We first
+    normalize every payload to UTF-8, then pre-screen it for
+    ``<!DOCTYPE ...>`` / ``<!ENTITY ...>`` declarations. Any match is confirmed
+    by a short Expat pass that distinguishes real declarations from the same
+    substring appearing in escaped text or comments. Documents without
+    declarations are parsed normally.
+    """
+    utf8_data = _normalize_to_utf8(data)
+    if _DTD_ENTITY_RE.search(utf8_data):
+        _confirm_no_dtd_or_entity(utf8_data)
+    return ET.fromstring(utf8_data)
+
+
+def _confirm_no_dtd_or_entity(data: bytes) -> None:
+    """Raise ``ET.ParseError`` if the data declares a DTD or entity."""
+    class _UnsafeXML(Exception):
+        pass
+
+    def _reject(*_args, **_kwargs):
+        raise _UnsafeXML()
+
+    parser = xml.parsers.expat.ParserCreate()
+    parser.StartDoctypeDeclHandler = _reject
+    parser.EntityDeclHandler = _reject
+    try:
+        parser.Parse(data, True)
+    except _UnsafeXML:
+        raise ET.ParseError("XML DTD/entity declarations are not supported")
+    except xml.parsers.expat.ExpatError:
+        # Let ElementTree surface the real parse-error details.
+        return
+
+
 def _zip_xml(zf: zipfile.ZipFile, name: str, optional: bool = False) -> Any:
     """Parse a package part; ``optional`` parts yield an empty element when absent or malformed."""
     try:
-        return ET.fromstring(zf.read(name))
+        return _parse_xml(zf.read(name))
     except (KeyError, ET.ParseError) as exc:
         if optional:
             return ET.Element("missing")
@@ -502,7 +596,7 @@ def _col_index(ref: str) -> int:
 
 
 def _sheet_rows(xml_bytes: bytes, shared: list[str]) -> list[list[str]]:
-    root = ET.fromstring(xml_bytes)
+    root = _parse_xml(xml_bytes)
     s = f"{{{_NS_S}}}"
     rows: list[list[str]] = []
     for row in itertools.islice(root.iter(f"{s}row"), _MAX_XLSX_ROWS_PER_SHEET):

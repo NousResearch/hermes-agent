@@ -7,6 +7,7 @@ import {
   isCronJobsRequestCurrent,
   isCronJobsScopeCurrent
 } from '@/store/cron'
+import { observeCronCompletions } from '@/store/cron-completion-notifications'
 
 export interface CronTriggerRefreshResult {
   jobs: CronJob[] | null
@@ -29,6 +30,10 @@ async function refreshForGeneration(profile: string, request: CronJobsRequest): 
     if (!commitCronJobsRequest(request, jobs)) {
       return { jobs: null, refreshError: null, stale: true }
     }
+
+    // Compare only authoritative, request-fenced snapshots. The observer
+    // hydrates silently, then resolves the exact run session for click-through.
+    void observeCronCompletions(request.scope, jobs)
 
     return { jobs, refreshError: null, stale: false }
   } catch (refreshError) {

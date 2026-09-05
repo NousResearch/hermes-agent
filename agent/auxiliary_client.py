@@ -3909,6 +3909,10 @@ def _try_configured_fallback_chain(
             continue
         fb_model = fb_model_raw or None
         label = f"fallback_chain[{i}]({fb_provider})"
+        if _is_provider_unhealthy(_normalize_chain_label(fb_provider)):
+            _log_skip_unhealthy(_normalize_chain_label(fb_provider), task)
+            tried.append(f"{label} (unhealthy)")
+            continue
         try:
             fb_client, resolved_model = _resolve_fallback_entry(entry)
         except Exception:

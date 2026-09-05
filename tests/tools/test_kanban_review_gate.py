@@ -798,3 +798,72 @@ def test_scoped_paths_inline_code_trailing_backtick(tmp_path: Path) -> None:
     parsed = ktools._scoped_test_paths_from_body(body, ws)
     assert parsed == ["tests/test_ws.py"], parsed
     assert all(not p.endswith("`") for p in parsed)
+
+
+def test_scoped_paths_multiple_paths_venv_prefix(tmp_path: Path) -> None:
+    """A venv-prefixed AC naming MULTIPLE test paths selects exactly those.
+
+    Regression (t_6fa75c84 / t_eafe2bd3): the extractor regex only matched a
+    SINGLE path, so a card whose AC runs
+    ``.venv/bin/python -m pytest tests/test_worker_pool.py
+    tests/test_worker_pool_regressions.py -q`` was NOT matched and the gate
+    silently degraded to the diff-derived fallback, sweeping in out-of-scope
+    red tests (test_search_backend.py) and bouncing a card whose scoped AC was
+    green.  The multi-path invocation must yield both paths, in order, and the
+    rung must run exactly those.
+    """
+    from tools import kanban_tools as ktools
+
+    ws = tmp_path / "ws"
+    (ws / "tests").mkdir(parents=True)
+    (ws / "tests" / "test_worker_pool.py").write_text("")
+    (ws / "tests" / "test_worker_pool_regressions.py").write_text("")
+    (ws / "tests" / "test_search_backend.py").write_text("")
+    body = (
+        "### Acceptance criteria\n"
+        "`.venv/bin/python -m pytest tests/test_worker_pool.py "
+        "tests/test_worker_pool_regressions.py -q` exits 0\n"
+        "- Do NOT modify `backend/app/search.py` or its scoped tests.\n"
+    )
+    parsed = ktools._scoped_test_paths_from_body(body, ws)
+    assert parsed == [
+        "tests/test_worker_pool.py",
+        "tests/test_worker_pool_regressions.py",
+    ], parsed
+    assert "tests/test_search_backend.py" not in parsed
+
+
+def test_scoped_paths_multiple_paths_one_absent_keeps_resolvable(tmp_path: Path) -> None:
+    """A multi-file AC with one stale pointer keeps the resolvable path.
+
+    The resolve-under-worktree guard drops only the missing path — it must NOT
+    drop the whole invocation (which would degrade to the diff fallback and
+    lose the card's real scope).  The guard is per-path, not all-or-nothing.
+    """
+    from tools import kanban_tools as ktools
+
+    ws = tmp_path / "ws"
+    (ws / "tests").mkdir(parents=True)
+    (ws / "tests" / "test_present.py").write_text("")
+    body = (
+        "`python -m pytest tests/test_present.py tests/test_ghost.py -q` "
+        "exits 0"
+    )
+    parsed = ktools._scoped_test_paths_from_body(body, ws)
+    assert parsed == ["tests/test_present.py"], parsed
+
+
+def test_scoped_paths_multiple_paths_all_absent_degrades_empty(tmp_path: Path) -> None:
+    """A multi-file AC where ALL paths are absent degrades to [] -> diff fallback.
+
+    A fully-stale multi-path command must degrade cleanly (not crash).
+    """
+    from tools import kanban_tools as ktools
+
+    ws = tmp_path / "ws"
+    (ws / "tests").mkdir(parents=True)
+    body = (
+        "`pytest tests/test_ghost.py tests/test_spectre.py -q` exits 0"
+    )
+    parsed = ktools._scoped_test_paths_from_body(body, ws)
+    assert parsed == [], parsed

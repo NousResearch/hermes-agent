@@ -1057,7 +1057,11 @@ _PYTEST_CACHE: dict[str, bool] = {}
 
 
 _FOCUSED_TEST_CMD_RE = re.compile(
-    r"pytest\s+(?P<path>[^\s`\"';()][^\s`\"';()]*/[^\s`\"';()]*?)\s+-(?P<flags>[qx])"
+    r"pytest\s+"
+    r"(?P<paths>"
+    r"[^\s`\"';()][^\s`\"';()]*/[^\s`\"';()]*"
+    r"(?:\s+[^\s`\"';()][^\s`\"';()]*/[^\s`\"';()]*)*"
+    r")\s+-(?P<flags>[qx])"
 )
 
 
@@ -1090,7 +1094,15 @@ def _scoped_test_paths_from_body(body: Optional[str], ws_root: Path) -> list[str
     for line in body.splitlines():
         m = _FOCUSED_TEST_CMD_RE.search(line)
         if m:
-            found.append(m.group("path"))
+            # A single body AC may invoke pytest on MULTIPLE space-separated
+            # test paths (e.g. t_eafe2bd3's
+            # ``-m pytest tests/test_worker_pool.py tests/test_worker_pool_regressions.py -q``).
+            # Collect them all, in order of appearance, so the scoped rung runs
+            # exactly the card's declared files rather than degrading to the
+            # diff-derived fallback (which sweeps in out-of-scope red baseline
+            # tests).  Each token is a root-relative path that must carry a
+            # ``/`` and contain no spaces/backticks/quotes.
+            found.extend(m.group("paths").split())
     # De-dupe while preserving order, then keep only paths that exist under
     # the worktree.
     seen: set[str] = set()

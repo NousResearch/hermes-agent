@@ -1215,7 +1215,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
         # Pre-content is read only for extensions in the UNION of in-process lint and
         # LSP coverage (keeps the hot path fast for binaries).
-        want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
+        want_pre = ext in LINTERS_INPROC or self._lsp_will_handle(path)
         has_bom, pre_content, original_ending = self._probe_write_target(path, pre_content, want_pre)
         # read_file strips the BOM and models send bare-LF text, so a round-trip would
         # otherwise normalize CRLF files and drop the BOM (prepend only when absent).

@@ -36,10 +36,12 @@ def _client(workspace: Path, script: str = "clean") -> LSPClient:
 async def test_client_lifecycle_clean(tmp_path: Path):
     """Full lifecycle: spawn, initialize, open, get clean diagnostics, shutdown."""
     f = tmp_path / "x.py"
-    f.write_text("print('hi')\n")
+    f.write_text("print('hi')\n", encoding="utf-8")
 
     client = _client(tmp_path, "clean")
     await client.start()
+    proc = client._proc
+    assert proc is not None
     try:
         assert client.is_running
         version = await client.open_file(str(f), language_id="python")
@@ -50,12 +52,13 @@ async def test_client_lifecycle_clean(tmp_path: Path):
     finally:
         await client.shutdown()
     assert not client.is_running
+    assert proc.returncode == 0
 
 
 @pytest.mark.asyncio
 async def test_client_receives_published_errors(tmp_path: Path):
     f = tmp_path / "x.py"
-    f.write_text("print('hi')\n")
+    f.write_text("print('hi')\n", encoding="utf-8")
 
     client = _client(tmp_path, "errors")
     await client.start()
@@ -98,7 +101,7 @@ async def test_reader_failure_retires_client_and_rejects_later_work(
     tmp_path: Path, script: str
 ):
     f = tmp_path / "x.py"
-    f.write_text("print('hi')\n")
+    f.write_text("print('hi')\n", encoding="utf-8")
 
     client = _client(tmp_path, script)
     await client.start()

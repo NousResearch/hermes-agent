@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,7 +34,7 @@ DIAGNOSTICS_DOCUMENT_WAIT = 5.0
 DIAGNOSTICS_FULL_WAIT = 10.0
 DIAGNOSTICS_REQUEST_TIMEOUT = 3.0
 PUSH_DEBOUNCE = 0.15
-SHUTDOWN_GRACE = 1.0  # seconds between SIGTERM and SIGKILL
+SHUTDOWN_GRACE = 1.0  # seconds for clean exit, then again between SIGTERM and SIGKILL
 # Retry policy for transient ContentModified errors: 0.5, 1.0, 2.0s.
 MAX_CONTENT_MODIFIED_RETRIES = 3
 RETRY_BASE_DELAY = 0.5
@@ -86,14 +87,13 @@ def uri_to_path(uri: str) -> str:
 
 
 def _end_position(text: str) -> Dict[str, int]:
-    """LSP Position at the end of ``text`` (for a whole-document replace range)."""
-    if not text:
-        return {"line": 0, "character": 0}
-    lines = text.splitlines(keepends=False)
-    # splitlines drops a trailing newline: the end is then the start of the next (empty) line.
-    if text.endswith(("\n", "\r")):
-        return {"line": len(lines), "character": 0}
-    return {"line": len(lines) - 1, "character": len(lines[-1])}
+    """UTF-16 LSP position at the end of ``text`` for a whole-document replacement."""
+    lines = re.split(r"\r\n|\r|\n", text)
+    # The client advertises UTF-16 positions. Python's len() counts Unicode code
+    # points, so non-BMP characters would otherwise leave old text behind when an
+    # incremental-sync server applies this replacement range.
+    units = len(lines[-1].encode("utf-16-le")) // 2
+    return {"line": len(lines) - 1, "character": units}
 
 
 @dataclass
@@ -312,6 +312,12 @@ class LSPClient:
                     await self._send_notification("exit", None)
                 except Exception:  # noqa: BLE001
                     pass
+                proc = self._proc
+                if proc is not None and proc.returncode is None:
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
+                    except asyncio.TimeoutError:
+                        pass
         finally:
             self._state = "stopped"
             await self._cleanup_process()
@@ -484,16 +490,18 @@ class LSPClient:
         doc = self._docs.get(abs_path)
         if doc is not None and doc.version < 0:
             doc = None  # never opened (relatedDocuments spillover): treat as new
-        # FileChangeType: 1 = CREATED, 2 = CHANGED.
-        await self._send_notification(
-            "workspace/didChangeWatchedFiles", {"changes": [{"uri": uri, "type": 1 if doc is None else 2}]}
-        )
         if doc is None:
             # Fresh state: anything a pre-open push stashed under this path (relatedDocuments spillover) is discarded.
             self._docs[abs_path] = _DocState(version=0, text=text)
             await self._send_notification(
                 "textDocument/didOpen",
                 {"textDocument": {"uri": uri, "languageId": language_id, "version": 0, "text": text}},
+            )
+            # Notify file watchers after synchronizing the buffer. Servers that
+            # reload from disk on this notification must not apply didOpen or
+            # didChange a second time to the newly reloaded content.
+            await self._send_notification(
+                "workspace/didChangeWatchedFiles", {"changes": [{"uri": uri, "type": 1}]}
             )
             return 0
         change: Dict[str, Any] = {"text": text}
@@ -503,6 +511,9 @@ class LSPClient:
         await self._send_notification(
             "textDocument/didChange",
             {"textDocument": {"uri": uri, "version": new_version}, "contentChanges": [change]},
+        )
+        await self._send_notification(
+            "workspace/didChangeWatchedFiles", {"changes": [{"uri": uri, "type": 2}]}
         )
         # Bumping the version is the whole invalidation story (see _DocState).
         doc.version, doc.text = new_version, text

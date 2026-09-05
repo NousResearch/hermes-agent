@@ -196,6 +196,52 @@ lsp:
   `initializationOptions` payload sent in the `initialize`
   handshake. Server-specific; consult the language server's docs.
 
+### Custom language servers
+
+Register a stdio language server that isn't built in by adding a new ID
+under `lsp.servers` in your profile's `config.yaml`:
+
+```yaml
+lsp:
+  servers:
+    my-markdown-server:
+      command: ["/absolute/path/to/markdown-server", "--stdio"]
+      extensions: [".md", ".markdown"]
+      language_id: markdown
+      root_markers: [".markdown-project", "package.json"]
+      initialization_options: {}
+```
+
+Replace the example command with your server's actual stdio command.
+Install the server yourself; Hermes does not auto-install custom servers.
+The executable can be an absolute path (including `~`), a command on PATH,
+or a binary in `<HERMES_HOME>/lsp/bin/`. Each argument is a separate list
+item, so paths and arguments containing spaces need no shell escaping.
+
+Custom IDs require `command` and a non-empty `extensions` list. Use dotted
+extensions such as `.md`, or exact extensionless filenames such as
+`Dockerfile`. Extensions are case-insensitive; filenames are case-sensitive.
+Optional `language_id` sets the LSP `didOpen` language ID for all matched
+files. If omitted, Hermes uses its existing extension-to-language mapping,
+falling back to `plaintext` for unknown extensions.
+
+Optional `root_markers` lists exact file or directory names (no globs).
+Hermes uses the nearest matching ancestor inside the Git workspace,
+falling back to the workspace root if no marker matches. The existing Git
+workspace gate still applies. `disabled`, `env` and
+`initialization_options` work the same way as for built-in servers.
+
+Custom servers take precedence over built-ins for matching files. If
+multiple custom servers match, the first entry in YAML order wins.
+Disabling that server disables diagnostics for its matching files; it
+does not select a different server. Built-in IDs retain their existing
+override behavior; use a new ID to replace their file matching or root
+detection. Malformed custom entries are skipped with a warning in the logs.
+
+`hermes lsp list`, `hermes lsp status` and `hermes lsp which <id>` include
+custom servers. Restart your Hermes process after changing the configuration
+so the LSP service picks up the new definitions.
+
 ## Installation locations
 
 When `install_strategy: auto`, Hermes installs binaries into

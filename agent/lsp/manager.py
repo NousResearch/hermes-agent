@@ -20,7 +20,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agent.lsp import eventlog
 from agent.lsp.client import DIAGNOSTICS_DOCUMENT_WAIT, LSPClient, _diagnostic_key as _diag_key
-from agent.lsp.servers import ServerContext, ServerDef, find_server_for_file, language_id_for
+from agent.lsp.config import configured_servers
+from agent.lsp.servers import SERVERS, ServerContext, ServerDef, find_server_for_file, language_id_for
 from agent.lsp.workspace import clear_cache, resolve_workspace_for_file
 
 logger = logging.getLogger("agent.lsp.manager")
@@ -103,6 +104,7 @@ class LSPService:
         init_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
         disabled_servers: Optional[List[str]] = None,
         idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
+        server_definitions: Optional[List[ServerDef]] = None,
     ) -> None:
         self._enabled = enabled
         self._wait_mode = wait_mode if wait_mode in {"document", "full"} else "document"
@@ -113,6 +115,7 @@ class LSPService:
         self._init_overrides = init_overrides or {}
         self._disabled_servers = set(disabled_servers or [])
         self._idle_timeout = idle_timeout
+        self._servers = list(SERVERS if server_definitions is None else server_definitions)
 
         self._loop = _BackgroundLoop()
         if self._enabled:
@@ -165,6 +168,7 @@ class LSPService:
                             if isinstance(c.get("initialization_options"), dict)},
             disabled_servers=[n for n, c in servers.items() if c.get("disabled")],
             idle_timeout=idle_timeout,
+            server_definitions=configured_servers(servers_cfg),
         )
 
     # ---- public API ----
@@ -190,7 +194,7 @@ class LSPService:
     def enabled_for(self, file_path: str) -> bool:
         """True iff LSP should run for this file: registered non-disabled server, git workspace,
         and pair not broken (a failed server costs nothing until ``hermes lsp restart`` / exit)."""
-        srv = find_server_for_file(file_path) if self._enabled else None
+        srv = find_server_for_file(file_path, self._servers) if self._enabled else None
         if srv is None or srv.server_id in self._disabled_servers:
             return False
         key = self._broken_key(srv, file_path)
@@ -224,7 +228,7 @@ class LSPService:
         """
         if not self.enabled_for(file_path):
             return []
-        server_id = find_server_for_file(file_path).server_id  # enabled_for guarantees a match
+        server_id = find_server_for_file(file_path, self._servers).server_id  # enabled_for guarantees a match
         try:
             t = timeout if timeout is not None else self._wait_timeout + 2.0
             diags = self._loop.run(self._open_and_wait_async(file_path), timeout=t)
@@ -276,7 +280,7 @@ class LSPService:
         The outer ``_loop.run`` timeout cancels the in-flight spawn before ``_get_or_spawn`` could record
         the failure; without this every later write would re-pay the full timeout.  Also kills any
         half-initialized client and logs the failure once."""
-        srv = find_server_for_file(file_path)
+        srv = find_server_for_file(file_path, self._servers)
         key = self._broken_key(srv, file_path) if srv is not None else None
         if key is None:
             return
@@ -338,7 +342,8 @@ class LSPService:
         if client is None:
             return None
         try:
-            version = await client.open_file(file_path, language_id=language_id_for(file_path))
+            srv = find_server_for_file(file_path, self._servers)
+            version = await client.open_file(file_path, language_id=srv.language_id or language_id_for(file_path))
             if not snapshot:
                 await client.save_file(file_path)
             fresh = await client.wait_for_diagnostics(
@@ -355,15 +360,15 @@ class LSPService:
 
     async def _current_diags_async(self, file_path: str) -> _Diags:
         ws, gated = resolve_workspace_for_file(file_path)
-        srv = find_server_for_file(file_path)
+        srv = find_server_for_file(file_path, self._servers)
         if not (ws and gated and srv):
             return []
         with self._state_lock:
-            client = self._clients.get(_client_key(srv, ws))
+            client = self._clients.get(_client_key(srv, srv.resolve_root(file_path, ws) or ws))
         return list(client.diagnostics_for(file_path, fresh_only=True)) if client else []
 
     async def _get_or_spawn(self, file_path: str) -> Optional[LSPClient]:
-        srv = find_server_for_file(file_path)
+        srv = find_server_for_file(file_path, self._servers)
         if srv is None:
             return None
         if srv.server_id in self._disabled_servers:

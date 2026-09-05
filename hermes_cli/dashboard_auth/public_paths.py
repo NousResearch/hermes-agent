@@ -25,3 +25,10 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # carries its own short-lived NAS-minted JWT (purpose=cron_fire), which the
     # handler verifies — the JWT, not this allowlist, is the security boundary.
     "/api/cron/fire"})
+
+
+def is_public_api_path(path: str, *, status_auth_required: bool = False) -> bool:
+    """Return whether an exact API path bypasses dashboard authentication."""
+    if path == "/api/status" and status_auth_required:
+        return False
+    return path in PUBLIC_API_PATHS

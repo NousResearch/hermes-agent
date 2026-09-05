@@ -24,7 +24,7 @@ from hermes_cli.dashboard_auth.cookies import (
     read_session_provider, read_sso_attempt_cookie, set_session_cookies,
     set_session_provider_cookie, set_sso_attempt_cookie)
 from hermes_cli.dashboard_auth.prefix import prefix_from_request
-from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
+from hermes_cli.dashboard_auth.public_paths import is_public_api_path
 from hermes_cli.dashboard_auth.request_utils import (
     access_token_max_age as _expires_in_seconds, client_ip as _client_ip,
     extract_bearer as _extract_bearer, is_safe_next_path, scan_session_providers,
@@ -41,11 +41,14 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/assets/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/")
 
 
-def _path_is_public(path: str) -> bool:
-    """:data:`PUBLIC_API_PATHS` (shared with the legacy middleware) matched exactly so
+def _path_is_public(path: str, *, status_auth_required: bool = False) -> bool:
+    """Shared API paths matched exactly so
     ``/api/status`` never exposes ``/api/status/extension``; :data:`_GATE_PUBLIC_PREFIXES`
     prefix-matched."""
-    return path in PUBLIC_API_PATHS or any(
+    return is_public_api_path(
+        path,
+        status_auth_required=status_auth_required,
+    ) or any(
         path == p or path.startswith(p) for p in _GATE_PUBLIC_PREFIXES)
 
 
@@ -152,7 +155,12 @@ async def gated_auth_middleware(
         return await call_next(request)
     # Already authenticated by the token-auth seam (service caller on a registered token
     # route): not a cookie session, must not bounce to /login.
-    if getattr(request.state, "token_authenticated", False) or _path_is_public(request.url.path):
+    if getattr(request.state, "token_authenticated", False) or _path_is_public(
+        request.url.path,
+        status_auth_required=bool(
+            getattr(request.app.state, "status_auth_required", False)
+        ),
+    ):
         return await call_next(request)
     # RFC 8252 native-app bearer path: the same provider-minted access token the cookie flow
     # stores, verified with the same provider stack, no cookie read or set. A presented-but-

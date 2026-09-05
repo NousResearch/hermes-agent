@@ -44,6 +44,10 @@ describe('desktop i18n runtime translator', () => {
     setRuntimeI18nLocale('zh-hant')
     expect(translateNow('settings.appearance.title')).toBe('外觀')
     expect(translateNow('settings.nav.providerApiKeys')).toBe('API 金鑰')
+    expect(translateNow('settings.nav.plugins')).toBe('外掛程式')
+    expect(translateNow('settings.sections.browser')).toBe('瀏覽器')
+    expect(translateNow('settings.config.attachmentSizeTitle')).toBe('預覽與圖片載入大小上限')
+    expect(translateNow('settings.config.attachmentSizeLabel')).toBe('預覽與圖片載入大小上限（MB）')
 
     setRuntimeI18nLocale('ar')
     expect(translateNow('settings.appearance.reasoningCollapsedTitle')).toBe('طي التفكير افتراضيًا')

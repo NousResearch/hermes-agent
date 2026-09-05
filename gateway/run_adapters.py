@@ -541,6 +541,59 @@ class GatewayAdapterLifecycleMixin:
                     if not task.done():
                         task.cancel()
 
+    async def _project_session_mirror_watcher(self, interval: Optional[float] = None) -> None:
+        """Mirror project-linked sessions as threads in their project channel.
+
+        Every ``interval`` seconds (default from
+        ``discord.project_channels.poll_interval``), finds sessions whose cwd
+        resolves to a project with a bound Discord channel and which have no
+        mirrored thread yet, creates one per session, then relays any new turns
+        into it. This is what makes a project channel show its sessions as
+        threads, and keep them current, without the user running any command.
+
+        Discord-native sessions are skipped by ``sessions_needing_threads``:
+        auto-thread already gave them their own thread, so mirroring would
+        duplicate them.
+
+        An idle pass touches only local SQLite + JSON (no HTTP), so a short
+        interval costs ~0.07% of one core and never hits Discord's rate limit.
+
+        Runs off the event loop (blocking HTTP + SQLite) and never propagates —
+        a Discord outage or a revoked permission must not kill the watcher.
+        """
+        # Let the gateway finish connecting before the first pass.
+        await asyncio.sleep(20)
+        while self._running:
+            sleep_for = float(interval) if interval else 15.0
+            try:
+                from gateway import project_channels as _pc
+
+                _s = _pc.settings()
+                if interval is None:
+                    sleep_for = float(_s.get("poll_interval") or 15)
+                if _pc.is_enabled() and self._session_db is not None:
+                    db = getattr(self._session_db, "_db", self._session_db)
+                    results = await asyncio.to_thread(
+                        _pc.mirror_sessions_to_threads, db
+                    )
+                    made = [t for _s, t in results if t]
+                    if made:
+                        logger.info(
+                            "project_channels: mirrored %d session(s) as threads",
+                            len(made),
+                        )
+                    # Copy any new turns from those sessions into their thread
+                    # so a desktop/TUI conversation shows up in Discord live.
+                    relayed = await asyncio.to_thread(_pc.relay_new_messages, db)
+                    if relayed:
+                        logger.info(
+                            "project_channels: relayed %d message(s) to Discord",
+                            relayed,
+                        )
+            except Exception as exc:
+                logger.warning("project_session_mirror: pass failed: %s", exc)
+            await asyncio.sleep(sleep_for)
+
     def _on_reconnect_watcher_gave_up(self, name: str = "") -> None:
         """Own the reconnect invariant once supervision gives up: while running with queued
         platforms, a watcher is live or a bounded respawn is scheduled (no later event can notice

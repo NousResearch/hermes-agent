@@ -74,9 +74,11 @@ _BRANCH_SAFE_RE = re.compile(r"[^a-z0-9._-]+")
 _INITIALIZED_PATHS: set[str] = set()
 # TEXT columns added to `projects` after v1; re-applied idempotently on every open so a legacy DB
 # upgrades in place.
-_OPTIONAL_PROJECT_COLUMNS = ("board_slug", "primary_path", "icon", "color")
+# `discord_channel_id` is the Discord channel mirroring the project (see gateway/project_channels.py);
+# TEXT because Discord snowflakes exceed SQLite's signed-64-bit comfort range in some drivers.
+_OPTIONAL_PROJECT_COLUMNS = ("board_slug", "primary_path", "icon", "color", "discord_channel_id")
 # Nullable TEXT columns that may be absent from a legacy row.
-_OPTIONAL_ROW_FIELDS = ("description", "icon", "color", "board_slug", "primary_path")
+_OPTIONAL_ROW_FIELDS = ("description", "icon", "color", "board_slug", "primary_path", "discord_channel_id")
 _ACTIVE_META_KEY = "active_id"
 _DISCOVERY_POLICY_META_KEY = "repo_discovery_policy"
 
@@ -174,6 +176,7 @@ class Project:
     color: Optional[str] = None
     board_slug: Optional[str] = None
     primary_path: Optional[str] = None
+    discord_channel_id: Optional[str] = None
     archived: bool = False
     folders: List[ProjectFolder] = field(default_factory=list)
 
@@ -189,11 +192,15 @@ def _load_project(conn: sqlite3.Connection, row: sqlite3.Row) -> Project:
         "SELECT path, label, is_primary, added_at FROM project_folders WHERE project_id = ? ORDER BY is_primary DESC, added_at ASC",
         (row["id"],),
     ).fetchall()
+    opt = {f: row[f] for f in _OPTIONAL_ROW_FIELDS if f in keys}
+    if opt.get("discord_channel_id") is not None:
+        # Stored as TEXT, but coerce so int-typed rows from legacy writers still compare as str.
+        opt["discord_channel_id"] = str(opt["discord_channel_id"])
     return Project(
         id=row["id"], slug=row["slug"], name=row["name"], created_at=row["created_at"],
         archived=bool(row["archived"]) if "archived" in keys else False,
         folders=[ProjectFolder(r["path"], r["label"], bool(r["is_primary"]), r["added_at"]) for r in folders],
-        **{f: row[f] for f in _OPTIONAL_ROW_FIELDS if f in keys},
+        **opt,
     )
 
 
@@ -280,20 +287,25 @@ def get_project(conn: sqlite3.Connection, id_or_slug: str) -> Optional[Project]:
 def update_project(
     conn: sqlite3.Connection, project_id: str, *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, board_slug: Optional[str] = None,
+    discord_channel_id: Optional[str] = None,
 ) -> bool:
-    """Patch top-level project fields; only provided (non-None) fields change. ``icon``, ``color`` and
-    ``board_slug`` take ``""`` to clear (store NULL) — ``None`` leaves the field untouched."""
+    """Patch top-level project fields; only provided (non-None) fields change. ``icon``, ``color``,
+    ``board_slug`` and ``discord_channel_id`` take ``""`` to clear (store NULL) — ``None`` leaves the
+    field untouched."""
     if name is not None:
         name = str(name).strip()
         if not name:
             raise ValueError("project name must not be empty")
     if board_slug is not None:
         board_slug = normalize_slug(board_slug) if board_slug.strip() else ""
-    # (column, provided value, stored value) — "" clears icon/color/board_slug to NULL.
+    if discord_channel_id is not None:
+        discord_channel_id = str(discord_channel_id).strip()
+    # (column, provided value, stored value) — "" clears icon/color/board_slug/discord_channel_id to NULL.
     fields = [
         (col, given, stored) for col, given, stored in (
             ("name", name, name), ("description", description, description), ("icon", icon, icon or None),
             ("color", color, color or None), ("board_slug", board_slug, board_slug or None),
+            ("discord_channel_id", discord_channel_id, discord_channel_id or None),
         ) if given is not None
     ]
     if not fields:
@@ -482,6 +494,29 @@ def project_for_path(conn: sqlite3.Connection, path: str, *, include_archived: b
 
     owners = [row for row in conn.execute(sql).fetchall() if owns(row["folder"])]
     return get_project(conn, max(owners, key=lambda r: len(r["folder"]))["pid"]) if owners else None
+
+
+def project_for_channel(
+    conn: sqlite3.Connection, channel_id: str, *, include_archived: bool = False
+) -> Optional[Project]:
+    """Return the project bound to a Discord ``channel_id``, if any.
+
+    The inverse of :func:`project_for_path`: given the channel a gateway message arrived in, resolve
+    which project it mirrors. Comparison is on the TEXT snowflake so an int-typed caller still matches.
+    """
+    cid = str(channel_id or "").strip()
+    if not cid:
+        return None
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(projects)")}
+    if "discord_channel_id" not in cols:
+        # Legacy DB opened without the migration (defensive; connect() applies it).
+        # Nothing can be bound yet, so there is no match to find.
+        return None
+    sql = "SELECT id FROM projects WHERE discord_channel_id = ?"
+    if not include_archived:
+        sql += " AND archived = 0"
+    row = conn.execute(sql, (cid,)).fetchone()
+    return None if row is None else get_project(conn, row["id"])
 
 
 def branch_name_for(project: Project, task_id: str, *, title: str = "") -> str:

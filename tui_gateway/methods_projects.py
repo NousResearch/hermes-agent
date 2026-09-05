@@ -95,6 +95,15 @@ def _(rid, params, pdb, conn) -> dict:
         **_pick(params, "slug", "primary_path", "description", "icon", "color", "board_slug"))
     if params.get("use"):
         pdb.set_active(conn, pid)
+    # Mirror as a Discord channel when the feature is on. Best-effort: a Discord failure must not
+    # fail project creation. Pass the open conn so the binding write joins this request's connection.
+    try:
+        from gateway import project_channels as _pc
+
+        if _pc.is_enabled():
+            _pc.provision_project(pid, conn=conn)
+    except Exception:
+        pass
     proj = pdb.get_project(conn, pid)
     return _ok(rid, {"project": proj.to_dict() if proj else None})
 

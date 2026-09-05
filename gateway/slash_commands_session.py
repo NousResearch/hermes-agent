@@ -970,10 +970,44 @@ class GatewaySessionCommandsMixin:
         if not self._session_db:
             return self._session_db_unavailable_reply()
         from hermes_cli.session_listing import (
-            format_gateway_session_listing, parse_session_listing_args, query_session_listing)
+            format_gateway_session_listing, format_project_session_listing,
+            parse_project_listing_args, parse_session_listing_args, query_session_listing,
+            query_sessions_by_project)
+        raw_args = event.get_command_args().strip()
+
+        # `/sessions project [slug]` — group by the project owning each
+        # session's cwd. Handled before the generic parser because it renders a
+        # different SHAPE (grouped) rather than a flat list, and it is
+        # deliberately NOT origin-scoped: projects are a local, single-user
+        # concept and the rows shown are the caller's own sessions on this
+        # machine.
+        _project_mode = parse_project_listing_args(raw_args)
+        if _project_mode is not None:
+            _, _slug = _project_mode
+            try:
+                groups = await asyncio.to_thread(
+                    query_sessions_by_project,
+                    getattr(self._session_db, "_db", self._session_db),
+                    slug=_slug,
+                )
+            except Exception as exc:
+                logger.debug("sessions-by-project listing failed: %s", exc)
+                return f"Could not list sessions by project: {exc}"
+            if _slug and not groups:
+                return f"No project matches '{_slug}'. Try `/sessions project`."
+            _name_fn = None
+            try:
+                from gateway import project_channels as _pc
+
+                if _pc.is_enabled():
+                    _name_fn = _pc.channel_name_for
+            except Exception:
+                _name_fn = None
+            return format_project_session_listing(groups, channel_name_fn=_name_fn)
+
         try:
             include_all, include_unnamed, target, search_query = parse_session_listing_args(
-                event.get_command_args().strip())
+                raw_args)
         except ValueError as exc:
             return t("gateway.resume.parse_error", error=exc)
         if search_query == "":
@@ -1007,6 +1041,84 @@ class GatewaySessionCommandsMixin:
             title = "Sessions" if include_unnamed else "Named Sessions"
         return format_gateway_session_listing(rows, include_source=cross_origin, title=title,
                                               notice=scope_notice)
+
+    # ----------------------------------------------------------------------- /project
+
+    async def _handle_project_command(self, event: MessageEvent) -> str:
+        """Handle /project [create <name>|list] — manage Hermes projects.
+
+        Projects created here get their folder under the configured
+        ``projects_root`` (Discord can't supply a path) and a mirrored channel.
+        """
+        try:
+            from gateway import project_channels as _pc
+            from hermes_cli import projects_db as pdb
+        except Exception as exc:
+            return f"Projects are unavailable: {exc}"
+
+        raw = event.get_command_args().strip()
+        parts = raw.split(None, 1)
+        sub = (parts[0].lower() if parts else "list")
+        rest = (parts[1].strip() if len(parts) > 1 else "")
+
+        if sub in {"list", "ls", ""}:
+            try:
+                with pdb.connect_closing() as conn:
+                    projects = await asyncio.to_thread(pdb.list_projects, conn)
+            except Exception as exc:
+                return f"Could not list projects: {exc}"
+            if not projects:
+                return "No projects yet. Create one with `/project create <name>`."
+            lines = ["📁 **Projects**", ""]
+            for p in projects:
+                chan = (
+                    f" · <#{p.discord_channel_id}>" if p.discord_channel_id else ""
+                )
+                lines.append(f"• **{p.name}** (`{p.slug}`){chan}")
+                if p.primary_path:
+                    lines.append(f"  `{p.primary_path}`")
+            lines.append("")
+            lines.append("Sessions per project: `/sessions project`")
+            return "\n".join(lines)
+
+        if sub in {"create", "new", "add"}:
+            if not rest:
+                return "Usage: `/project create <name>`"
+            if not _pc.is_enabled():
+                return (
+                    "Discord project channels are disabled.\n"
+                    "Enable with `hermes config set "
+                    "discord.project_channels.enabled true`."
+                )
+            res = await asyncio.to_thread(_pc.create_project_from_discord, rest)
+            if not res.get("ok"):
+                return f"❌ {res.get('error') or 'Project creation failed.'}"
+            if res.get("already_existed"):
+                chan = (
+                    f" (<#{res['channel_id']}>)" if res.get("channel_id") else ""
+                )
+                return (
+                    f"Project **{res['name']}** already exists{chan}.\n"
+                    f"`{res['folder']}`"
+                )
+            lines = [f"✅ Created project **{res['name']}** (`{res['slug']}`)"]
+            lines.append(
+                f"📂 Folder{' created' if res.get('created_folder') else ''}: "
+                f"`{res['folder']}`"
+            )
+            if res.get("channel_id"):
+                lines.append(f"💬 Channel: <#{res['channel_id']}>")
+            else:
+                lines.append(
+                    "⚠️ Channel not created — check the bot's MANAGE_CHANNELS "
+                    "permission, then run `hermes project sync-discord`."
+                )
+            return "\n".join(lines)
+
+        return (
+            f"Unknown project action: `{sub}`\n"
+            "Usage: `/project list` or `/project create <name>`"
+        )
 
     # ----------------------------------------------------------------------- /branch
 

@@ -52,8 +52,9 @@ what a hardware upgrade would unlock.
 
 ## How memory management works
 
-Local models live or die by memory placement, so Hermes manages it
-end-to-end and exposes no knobs:
+Local models live or die by memory placement, so Hermes manages the
+hardware policy end-to-end without global tuning knobs. Optional per-model
+upper bounds are available for memory-constrained systems:
 
 - **Models start at a context window that fully fits your GPU** and grow
   toward their native maximum as your conversation needs more room. You

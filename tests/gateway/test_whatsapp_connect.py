@@ -315,6 +315,8 @@ class TestBridgeRuntimeFailure:
 class TestKillPortProcess:
     """Verify _kill_port_process uses platform-appropriate commands."""
 
+    SESSION = Path("/tmp/hermes-whatsapp-session")
+
     @pytest.mark.windows_only
     def test_uses_netstat_and_taskkill_on_windows(self):
         """``windows_only``: netstat/taskkill are Windows binaries. The old
@@ -339,8 +341,10 @@ class TestKillPortProcess:
 
         with patch("plugins.platforms.whatsapp.adapter.subprocess.run", side_effect=run_side_effect) as mock_run, \
              patch("plugins.platforms.whatsapp.adapter._pid_looks_like_node_bridge",
+                   return_value=True), \
+             patch("plugins.platforms.whatsapp.adapter._bridge_pid_is_ours",
                    return_value=True):
-            _kill_port_process(3000)
+            _kill_port_process(3000, self.SESSION)
 
         # netstat called
         assert any(
@@ -371,7 +375,7 @@ class TestKillPortProcess:
         with patch("plugins.platforms.whatsapp.adapter.subprocess.run", side_effect=run_side_effect) as mock_run, \
              patch("plugins.platforms.whatsapp.adapter._pid_looks_like_node_bridge",
                    return_value=False):
-            _kill_port_process(3000)
+            _kill_port_process(3000, self.SESSION)
 
         assert not any(
             call.args[0][0] == "taskkill" for call in mock_run.call_args_list
@@ -397,9 +401,11 @@ class TestKillPortProcess:
                    return_value=[55555]) as mock_listeners, \
              patch("plugins.platforms.whatsapp.adapter._pid_looks_like_node_bridge",
                    return_value=True), \
+             patch("plugins.platforms.whatsapp.adapter._bridge_pid_is_ours",
+                   return_value=True), \
              patch("plugins.platforms.whatsapp.adapter.os.kill",
                    side_effect=lambda pid, sig: kills.append((pid, sig))):
-            wa._kill_port_process(3000)
+            wa._kill_port_process(3000, self.SESSION)
 
         mock_listeners.assert_called_once_with(3000)
         assert kills == [(55555, signal.SIGTERM)]
@@ -416,8 +422,32 @@ class TestKillPortProcess:
                    return_value=False), \
              patch("plugins.platforms.whatsapp.adapter.os.kill",
                    side_effect=lambda pid, sig: kills.append((pid, sig))):
-            wa._kill_port_process(3000)
+            wa._kill_port_process(3000, self.SESSION)
 
+        assert kills == []
+
+    @pytest.mark.linux_only
+    def test_another_sessions_bridge_is_never_killed(self):
+        """A node bridge on the port that belongs to a different session must survive.
+
+        ``_pid_looks_like_node_bridge`` alone accepts any node process, so a second Hermes
+        profile holding the port was force-killed and its live WhatsApp session dropped.
+        Ownership is what decides the kill, not "looks like a bridge".
+        """
+        from plugins.platforms.whatsapp import adapter as wa
+
+        kills = []
+        with patch("plugins.platforms.whatsapp.adapter._listener_pids_on_port",
+                   return_value=[55555]), \
+             patch("plugins.platforms.whatsapp.adapter._pid_looks_like_node_bridge",
+                   return_value=True), \
+             patch("plugins.platforms.whatsapp.adapter._bridge_pid_is_ours",
+                   return_value=False) as mock_ours, \
+             patch("plugins.platforms.whatsapp.adapter.os.kill",
+                   side_effect=lambda pid, sig: kills.append((pid, sig))):
+            wa._kill_port_process(3000, self.SESSION)
+
+        mock_ours.assert_called_once_with(55555, self.SESSION, None)
         assert kills == []
 
 

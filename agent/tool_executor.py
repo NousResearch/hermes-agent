@@ -614,7 +614,7 @@ def _pre_tool_block(agent, ref: _ToolCallRef):
     try:
         from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
 
-        block_msg, modified_args = _dispatch_pre_tool_call_hooks(
+        block_msg, modified_args, _ = _dispatch_pre_tool_call_hooks(
             ref.name,
             ref.args,
             **tool_hook_ids(agent, ref.task_id, ref.call_id),

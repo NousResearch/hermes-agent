@@ -1435,7 +1435,7 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"path": "/safe/dir"}}
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _ = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/unsafe/dir", "content": "x"}
         )
         assert block_msg is None
@@ -1450,7 +1450,7 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"content": "fixed"}},
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _ = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/unsafe", "content": "original"}
         )
         assert block_msg is None
@@ -1465,7 +1465,7 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"path": "/second"}},
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _ = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/original"}
         )
         assert modified == {"path": "/second"}
@@ -1479,7 +1479,7 @@ class TestPreToolCallModify:
                 {"action": "block", "message": "still blocked"},
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _ = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/unsafe"}
         )
         assert block_msg == "still blocked"
@@ -1494,7 +1494,7 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"path": "/invisible"}},
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _ = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/original"}
         )
         assert block_msg == "stopped"
@@ -1508,7 +1508,7 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"path": "/safe"}}
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks("write_file", None)
+        block_msg, modified, _ = _dispatch_pre_tool_call_hooks("write_file", None)
         assert block_msg is None
         assert modified == {"path": "/safe"}
 
@@ -1518,7 +1518,7 @@ class TestPreToolCallModify:
             "hermes_cli.plugins.invoke_hook",
             lambda hook_name, **kwargs: [],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _ = _dispatch_pre_tool_call_hooks(
             "terminal", {"cmd": "ls"}
         )
         assert block_msg is None
@@ -1534,10 +1534,57 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"path": "/real"}},
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _ = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/original"}
         )
         assert modified == {"path": "/real"}
+
+
+class TestPreToolCallServe:
+    """`pre_tool_call` serve directive — supply a tool result without executing the tool."""
+
+    def test_serve_returns_result(self, monkeypatch):
+        """A serve directive returns its result as the third tuple element."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "serve", "result": "cached"}],
+        )
+        block_msg, modified, served = _dispatch_pre_tool_call_hooks("read_file", {"path": "/x"})
+        assert block_msg is None
+        assert modified is None
+        assert served == "cached"
+
+    def test_serve_without_result_key_is_ignored(self, monkeypatch):
+        """A serve without a result key is ignored (fail-open to normal execution)."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "serve"}],
+        )
+        block_msg, _, served = _dispatch_pre_tool_call_hooks("read_file", {"path": "/x"})
+        assert block_msg is None
+        assert served is None
+
+    def test_serve_result_is_json_string(self, monkeypatch):
+        """Tool results are JSON strings; serve passes them through verbatim."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "serve", "result": '{"content": "hi"}'}],
+        )
+        _, _, served = _dispatch_pre_tool_call_hooks("read_file", {"path": "/x"})
+        assert served == '{"content": "hi"}'
+
+    def test_serve_beats_block_on_first_wins(self, monkeypatch):
+        """First valid directive wins — a serve before a block short-circuits."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "serve", "result": "cached"},
+                {"action": "block", "message": "should not reach"},
+            ],
+        )
+        block_msg, _, served = _dispatch_pre_tool_call_hooks("read_file", {"path": "/x"})
+        assert served == "cached"
+        assert block_msg is None
 
 
 class TestGetPreVerifyContinueMessage:

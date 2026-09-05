@@ -1752,6 +1752,7 @@ class _PreToolCallDirective:
     message: Optional[str] = None
     rule_key: Optional[str] = None
     modified_args: Optional[Dict[str, Any]] = None
+    result: Any = None  # ``serve`` directive: the pre-supplied tool result (skip execution)
 
 
 def set_thread_tool_whitelist(
@@ -1799,6 +1800,14 @@ def _get_pre_tool_call_directive_details(
                 modified_args = {**(modified_args if modified_args is not None else
                                     (args if isinstance(args, dict) else {})), **partial}
             continue
+        if action == "serve":
+            # "serve" — supply the tool result without executing the tool (e.g. a
+            # cache hit). ``result`` is the pre-supplied result, returned as-is to
+            # the caller; the tool never runs. A serve without a result key is
+            # ignored (same fail-open posture as a block without a message).
+            if "result" not in result:
+                continue
+            return _PreToolCallDirective(action="serve", result=result["result"], modified_args=modified_args)
         if action not in ("block", "approve"):
             continue
         message = result.get("message")
@@ -1871,13 +1880,15 @@ def _resolve_block_from_details(
 
 def _dispatch_pre_tool_call_hooks(
     tool_name: str, args: Optional[Dict[str, Any]], **hook_kwargs: Any
-) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
-    """Invoke ``pre_tool_call`` hooks once; return ``(block_message, modified_args)`` — the resolved
-    block/approve message (``None`` to proceed) and merged ``modify`` args (``None`` if none)."""
+) -> Tuple[Optional[str], Optional[Dict[str, Any]], Any]:
+    """Invoke ``pre_tool_call`` hooks once; return ``(block_message, modified_args, served_result)`` —
+    the resolved block/approve message (``None`` to proceed), merged ``modify`` args (``None`` if
+    none), and a ``serve`` directive's pre-supplied result (``None`` if none)."""
     details = _get_pre_tool_call_directive_details(tool_name, args, **hook_kwargs)
     block_msg = _resolve_block_from_details(
         details, tool_name, **{k: hook_kwargs.get(k, "") for k in ("turn_id", "tool_call_id", "session_id")})
-    return (block_msg, details.modified_args)
+    served = details.result if details.action == "serve" else None
+    return (block_msg, details.modified_args, served)
 
 
 def get_pre_verify_continue_message(

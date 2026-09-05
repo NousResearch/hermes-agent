@@ -7,6 +7,7 @@ knobs _SESSION_TTL_S, _REAPER_SCAN_S, _EXIT_FLUSH_BUDGET_S and _INCREMENTAL_FLUS
 from __future__ import annotations
 
 import contextlib
+import os
 import secrets
 import threading
 
@@ -281,6 +282,103 @@ def _reaper_daemon_timer(delay: float, fn, fail_log: str, level: str = "debug") 
 def _schedule_session_cap_enforcement() -> None:
     """Run the LRU sweep off the response path (eviction can call agent.close)."""
     _reaper_daemon_timer(0.1, _enforce_session_cap, "session cap enforcement failed")
+
+
+# ── Cross-process auto-yield watcher (#auto-yield patch) ────────────────
+# A requester refused with SESSION_NOT_OWNED by THIS process (e.g. the root backend
+# relaying a phone send, while this per-profile backend hosts the idle desktop tab)
+# writes a request file under the lease registry's runtime dir. This watcher honors
+# fresh requests whose lease still matches (pid + process_start_time), closing the
+# idle session through the same ws_orphan_reap teardown the desktop already handles.
+_YIELD_WATCH_INTERVAL_S = max(0.25, env_float("HERMES_YIELD_WATCH_INTERVAL_S", 1.5))
+_yield_watcher_started = False
+_yield_watcher_lock = threading.Lock()
+
+
+def _yield_watch_homes() -> list:
+    """Root home + every profile home (mirrors release_orphaned_leases' sweep)."""
+    from hermes_constants import get_default_hermes_root
+    root = get_default_hermes_root()
+    homes = [root]
+    with contextlib.suppress(OSError):
+        homes.extend(p for p in (root / "profiles").iterdir()
+                     if p.is_dir() and not p.name.startswith("."))
+    return homes
+
+
+def _honor_yield_requests() -> None:
+    from hermes_cli.active_sessions import poll_yield_requests
+    for home in _yield_watch_homes():
+        try:
+            requests = poll_yield_requests(registry_home=home)
+        except Exception:
+            continue
+        for req in requests:
+            _yield_session_for_request(home, req)
+
+
+def _yield_session_for_request(home, req: dict) -> None:
+    """Close the idle session a yield request names, if this process still owns it idle."""
+    wanted = str(req.get("session_id") or "")
+    if not wanted:
+        return
+    # The lease must still exist in THIS registry and still belong to this process:
+    # the request carries the holder identity from claim time, and a session whose
+    # ownership moved on since must not be closed by a stale request.
+    try:
+        from hermes_cli.active_sessions import _read_entries, _state_path, _pid_liveness
+    except Exception:
+        return
+    state_path = _state_path(home)
+    try:
+        entries = [e for e in _read_entries(state_path)
+                   if str(e.get("session_id") or "") == wanted
+                   and int(e.get("pid") or 0) == os.getpid()]
+    except Exception:
+        return
+    if not entries:
+        return
+    holder_start = req.get("holder_process_start_time")
+    if holder_start is not None:
+        if _pid_liveness(os.getpid(), float(holder_start)) is not True:
+            return  # request was minted for a previous incarnation of this pid
+    closed = False
+    with _sessions_lock:
+        candidates = [
+            (sid, sess) for sid, sess in _sessions.items()
+            if str(sess.get("session_key") or "") == wanted
+            and not sess.get("running")
+        ]
+    for sid, _sess in candidates:
+        if _close_session_by_id(
+                sid, end_reason="ws_orphan_reap",
+                predicate=lambda sess, w=wanted: (
+                    str(sess.get("session_key") or "") == w
+                    and not sess.get("running"))):
+            closed = True
+            logger.info(
+                "Auto-yield: honored cross-surface yield request for session %s (closed idle tab %s)",
+                wanted, sid)
+    if not closed:
+        logger.debug("Auto-yield: request for session %s matched no idle local session", wanted)
+
+
+def _start_yield_watcher() -> None:
+    """Daemon thread polling yield-request dirs (mtime-gated: no requests = no stat storm)."""
+    global _yield_watcher_started
+    with _yield_watcher_lock:
+        if _yield_watcher_started:
+            return
+        _yield_watcher_started = True
+
+    def _loop() -> None:
+        import time as _time
+        while True:
+            _time.sleep(_YIELD_WATCH_INTERVAL_S)
+            with contextlib.suppress(Exception):
+                _honor_yield_requests()
+
+    threading.Thread(target=_loop, daemon=True, name="auto-yield-watcher").start()
 
 
 # ── Startup sweep for orphaned session rows ──────────────────────────────

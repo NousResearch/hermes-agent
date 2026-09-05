@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 
 import contextlib
+import time
 
 from .method_ctx import bind_module
 
@@ -71,15 +72,54 @@ def _yield_local_desktop_owner(session_key: str) -> bool:
             and not sess.get("running")))
 
 
+def _await_cross_process_yield(refusal, session: dict, sid: str, claim) -> str | None:
+    """#auto-yield patch: ask a LIVE same-machine owner (another backend process) to close
+    its idle session, then poll for the lease to clear. Returns None when the slot was
+    claimed for us; the original refusal otherwise. ``claim`` is a zero-arg callable
+    returning the same ``(lease, refusal)`` pair as _claim_active_session_slot."""
+    holder = getattr(refusal, "holder_entry", None)
+    if not isinstance(holder, dict):
+        return refusal
+    holder_pid = holder.get("pid")
+    try:
+        holder_pid = int(holder_pid or 0)
+    except (TypeError, ValueError):
+        return refusal
+    if holder_pid <= 0:
+        return refusal
+    key = str(session.get("session_key") or "")
+    profile_home = session.get("profile_home")
+    from hermes_cli.active_sessions import request_cross_surface_yield, YIELD_REQUEST_TTL_S
+    if not request_cross_surface_yield(key, holder, registry_home=profile_home):
+        return refusal
+    deadline = time.time() + min(YIELD_REQUEST_TTL_S - 1.0, 8.0)
+    while time.time() < deadline:
+        time.sleep(1.0)
+        lease, limit_message = claim()
+        if limit_message is None:
+            logger.info(
+                "Auto-yield: cross-process owner (pid %s) released session %s; turn admitted",
+                holder_pid, key or sid)
+            session["active_session_lease"] = lease
+            return None
+        if getattr(limit_message, "reason", None) != "SESSION_NOT_OWNED":
+            return limit_message  # a different problem appeared; surface it
+    return refusal
+
+
 def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     """Claim this session's cap slot on its first real turn; None when ok. session.create/resume deliberately
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
     that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible."""
     if session.get("active_session_lease") is not None:
         return None
-    lease, limit_message = _claim_active_session_slot(
-        str(session.get("session_key") or ""), live_session_id=sid,
-        surface=_session_source(session), profile_home=session.get("profile_home"))
+
+    def _claim():
+        return _claim_active_session_slot(
+            str(session.get("session_key") or ""), live_session_id=sid,
+            surface=_session_source(session), profile_home=session.get("profile_home"))
+
+    lease, limit_message = _claim()
     if limit_message is None:
         session["active_session_lease"] = lease
         return None
@@ -89,15 +129,17 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     refusal_reason = getattr(limit_message, "reason", None)
     if refusal_reason == SESSION_NOT_OWNED and _yield_local_desktop_owner(
             str(session.get("session_key") or "")):
-        lease, limit_message = _claim_active_session_slot(
-            str(session.get("session_key") or ""), live_session_id=sid,
-            surface=_session_source(session), profile_home=session.get("profile_home"))
+        lease, limit_message = _claim()
         if limit_message is None:
             logger.info(
                 "Auto-yield: closed local desktop owner for session %s; cross-surface turn admitted",
                 session.get("session_key") or sid)
             session["active_session_lease"] = lease
             return None
+    # #auto-yield patch: the holder is another LIVE process on this machine (per-profile
+    # desktop backend). Ask it to yield an idle session and wait briefly.
+    if refusal_reason == SESSION_NOT_OWNED:
+        return _await_cross_process_yield(limit_message, session, sid, _claim)
     return limit_message
 
 

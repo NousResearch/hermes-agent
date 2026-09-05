@@ -116,15 +116,101 @@ SESSION_COORDINATION_UNAVAILABLE = "SESSION_COORDINATION_UNAVAILABLE"
 # enforcement without this file changing.
 PER_SESSION_EXCLUSIVE_SUBMIT = True
 
+# --- Cross-surface yield requests (#auto-yield patch) -----------------------------
+# A requester refused with SESSION_NOT_OWNED by a LIVE pid on the same machine asks
+# that owner to close its idle session by writing a sidecar request file next to the
+# lease registry. The holder backend's yield watcher honors fresh requests for idle
+# sessions (never mid-turn), then the requester re-claims. Requests are one-shot,
+# expire after YIELD_REQUEST_TTL_S, and the pid+create-time pair in the request must
+# match the current lease entry, so a stale or forged request cannot fence a live
+# session out of its own ownership.
+YIELD_REQUEST_FILENAME = "yield_requests"
+YIELD_REQUEST_TTL_S = 15.0
+
+
+def _yield_request_dir(registry_home: str | Path | None = None) -> Path:
+    return _registry_home(registry_home) / "runtime" / YIELD_REQUEST_FILENAME
+
+
+def request_cross_surface_yield(
+    session_id: str, entry: dict[str, Any], *, registry_home: str | Path | None = None,
+) -> bool:
+    """Ask the live owner in ``entry`` to close its idle session for ``session_id``.
+
+    Returns True when a request file was written. The holder honors it only while the
+    request stays fresh (TTL) and the lease still matches pid + process_start_time —
+    a request can never close a session that changed owners since it was written.
+    """
+    target = str(session_id or "")
+    holder_pid = entry.get("pid")
+    holder_start = _optional_float(entry.get("process_start_time"))
+    if not target or holder_pid is None:
+        return False
+    req_dir = _yield_request_dir(registry_home)
+    try:
+        req_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "session_id": target,
+            "holder_pid": int(holder_pid),
+            "holder_process_start_time": holder_start,
+            "requested_at": time.time(),
+        }
+        tmp = req_dir / f".{int(holder_pid)}.{uuid.uuid4().hex}.tmp"
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, req_dir / f"{int(holder_pid)}-{uuid.uuid4().hex[:8]}.json")
+        return True
+    except Exception:
+        logger.debug("cross-surface yield request write failed", exc_info=True)
+        return False
+
+
+def poll_yield_requests(
+    *, registry_home: str | Path | None = None, max_age_s: float = YIELD_REQUEST_TTL_S,
+) -> list[dict[str, Any]]:
+    """Fresh, well-formed requests targeting THIS process; expired files are removed."""
+    req_dir = _yield_request_dir(registry_home)
+    mine: list[dict[str, Any]] = []
+    try:
+        candidates = list(req_dir.glob("*.json"))
+    except Exception:
+        return mine
+    now = time.time()
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = None
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        if not isinstance(payload, dict):
+            continue
+        if now - float(payload.get("requested_at") or 0.0) > max_age_s:
+            continue
+        try:
+            if int(payload.get("holder_pid") or 0) != os.getpid():
+                continue
+        except (TypeError, ValueError):
+            continue
+        mine.append(payload)
+    return mine
+
 
 class ActiveSessionRefusal(str):
-    """Refusal message (a ``str``, so callers are untouched) with a machine-readable ``reason``."""
+    """Refusal message (a ``str``, so callers are untouched) with a machine-readable ``reason``.
+
+    #auto-yield patch: ``holder_entry`` carries the blocking lease entry (when known) so a
+    same-machine requester can ask the live owner to yield an idle session instead of failing.
+    """
 
     reason: str
+    holder_entry: Optional[dict[str, Any]]
 
-    def __new__(cls, message: str, reason: str) -> "ActiveSessionRefusal":
+    def __new__(cls, message: str, reason: str, holder_entry: Optional[dict[str, Any]] = None):
         obj = super().__new__(cls, message)
         obj.reason = reason
+        obj.holder_entry = holder_entry
         return obj
 
 
@@ -484,10 +570,10 @@ def try_acquire_active_session(
         if pruned:
             logger.info("Pruned %d stale active session lease(s)", pruned)
 
-        def refuse(message: str, reason: str, log: str, *args) -> tuple[None, ActiveSessionRefusal]:
+        def refuse(message: str, reason: str, log: str, *args, holder_entry: Optional[dict[str, Any]] = None) -> tuple[None, ActiveSessionRefusal]:
             _write_entries(state_path, entries)  # persist the prune even when refusing
             logger.info(log, *args)
-            return None, ActiveSessionRefusal(message, reason)
+            return None, ActiveSessionRefusal(message, reason, holder_entry=holder_entry)
 
         # Correctness first, under the same lock that just pruned dead owners.
         # An empty key is exempt: treating "" as an identity would make every
@@ -508,7 +594,7 @@ def try_acquire_active_session(
                     session_already_owned_message(key, existing), SESSION_NOT_OWNED,
                     "Refused active session %s: already held by pid=%s surface=%s",
                     key, existing.get("pid"), existing.get("surface"),
-                )
+                    holder_entry=existing)
 
         # Capacity second, and only when an operator asked for one.
         if max_sessions is not None and len(entries) >= max_sessions:

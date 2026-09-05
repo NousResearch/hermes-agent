@@ -365,6 +365,10 @@ def _start_idle_reaper() -> None:
             with contextlib.suppress(Exception):
                 _reap_idle_sessions()
     threading.Thread(target=_loop, daemon=True).start()
+    # #auto-yield patch: honor cross-surface yield requests from other backends.
+    with contextlib.suppress(Exception):
+        from tui_gateway.session_reaper import _start_yield_watcher
+        _start_yield_watcher()
 
 
 atexit.register(_shutdown_sessions)

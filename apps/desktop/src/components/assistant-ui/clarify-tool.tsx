@@ -389,13 +389,26 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
     return <ToolFallback {...props} />
   }
 
-  // Batch: the gateway request carries qid-keyed questions. Args alone can't
-  // drive the form (no qids to respond with), so batch waits for the request.
-  if (request?.questions?.length || fromArgs.questions) {
+  const requestQuestionCount = request?.questions?.length ?? 0
+  const argsQuestionCount = fromArgs.questions?.length ?? 0
+
+  // A one-entry `questions` payload is still one question to the person using
+  // Desktop. Render the compact single-question card while retaining its qid
+  // below for the batch wire protocol. Only true multi-question payloads use
+  // the all-at-once form.
+  if (requestQuestionCount > 1 || argsQuestionCount > 1) {
     return <ClarifyToolBatchPending onAnswered={() => setAnswered(true)} request={request} />
   }
 
-  return <ClarifyToolSinglePending fromArgs={fromArgs} onAnswered={() => setAnswered(true)} request={request} />
+  const singleQuestionArgs = fromArgs.questions?.[0]
+
+  return (
+    <ClarifyToolSinglePending
+      fromArgs={singleQuestionArgs ?? fromArgs}
+      onAnswered={() => setAnswered(true)}
+      request={request}
+    />
+  )
 }
 
 function ClarifyToolSinglePending({
@@ -412,30 +425,34 @@ function ClarifyToolSinglePending({
   const gateway = useStore($gateway)
 
   const matchingRequest = useMemo(() => {
-    if (!request || request.questions?.length) {
+    if (!request || (request.questions?.length ?? 0) > 1) {
       return null
     }
 
-    if (fromArgs.question && request.question && fromArgs.question !== request.question) {
+    const requestQuestion = request.questions?.[0]?.question || request.question
+
+    if (fromArgs.question && requestQuestion && fromArgs.question !== requestQuestion) {
       return null
     }
 
     return request
   }, [fromArgs.question, request])
 
-  const question = fromArgs.question || matchingRequest?.question || ''
+  const batchQuestion = matchingRequest?.questions?.[0]
+  const question = fromArgs.question || batchQuestion?.question || matchingRequest?.question || ''
 
   const choices = useMemo(
     // Prefer the gateway request's choices over the raw tool args: the backend
     // labels the recommended option there (`mark_recommended`), and the card
     // only renders once `matchingRequest` exists, so the args are a fallback
     // for a hydration race, not the normal path.
-    () => matchingRequest?.choices ?? fromArgs.choices ?? [],
-    [fromArgs.choices, matchingRequest?.choices]
+    () => batchQuestion?.choices ?? matchingRequest?.choices ?? fromArgs.choices ?? [],
+    [batchQuestion?.choices, fromArgs.choices, matchingRequest?.choices]
   )
 
   const hasChoices = choices.length > 0
-  const multiSelect = hasChoices && Boolean(matchingRequest?.multiSelect ?? fromArgs.multiSelect)
+  const multiSelect =
+    hasChoices && Boolean(batchQuestion?.multiSelect ?? matchingRequest?.multiSelect ?? fromArgs.multiSelect)
 
   const [draft, setDraft] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -487,7 +504,8 @@ function ClarifyToolSinglePending({
           'clarify.respond',
           {
             request_id: matchingRequest.requestId,
-            answer
+            answer,
+            ...(batchQuestion ? { question_id: batchQuestion.qid } : {})
           }
         )
         triggerHaptic('submit')
@@ -499,7 +517,16 @@ function ClarifyToolSinglePending({
         setSubmitting(false)
       }
     },
-    [copy.gatewayDisconnected, copy.notReady, copy.sendFailed, gateway, matchingRequest, onAnswered, ready]
+    [
+      batchQuestion,
+      copy.gatewayDisconnected,
+      copy.notReady,
+      copy.sendFailed,
+      gateway,
+      matchingRequest,
+      onAnswered,
+      ready
+    ]
   )
 
   const trimmedDraft = draft.trim()

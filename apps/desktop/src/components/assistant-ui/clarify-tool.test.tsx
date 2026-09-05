@@ -609,6 +609,75 @@ describe('readClarifyBatchResult', () => {
 })
 
 describe('ClarifyTool batch card', () => {
+  it('renders and answers a one-question array with the single-question card', async () => {
+    const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
+    const args = { questions: [{ choices: ['red', 'blue'], question: 'Color?' }] }
+
+    $activeSessionId.set('session-1')
+    $gateway.set({ request } as never)
+    setClarifyRequest({
+      choices: null,
+      multiSelect: false,
+      question: '',
+      questions: [{ choices: ['red', 'blue'], multiSelect: false, qid: 'q0', question: 'Color?' }],
+      requestId: 'request-one-question',
+      sessionId: 'session-1'
+    })
+    renderClarify(
+      <ClarifyTool
+        {...liveBatchProps()}
+        args={args}
+        argsText={JSON.stringify(args)}
+        toolCallId="clarify-one-question"
+      />
+    )
+
+    expect(screen.getByText('Color?')).toBeTruthy()
+    expect(document.querySelector('[data-clarify-batch]')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: 'red',
+        question_id: 'q0',
+        request_id: 'request-one-question'
+      })
+    })
+  })
+
+  it('answers a one-question array when the gateway uses the single-question wire shape', async () => {
+    const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
+    const args = { questions: [{ choices: ['red', 'blue'], question: 'Color?' }] }
+
+    $activeSessionId.set('session-1')
+    $gateway.set({ request } as never)
+    setClarifyRequest({
+      choices: ['red', 'blue'],
+      multiSelect: false,
+      question: 'Color?',
+      requestId: 'request-single-wire',
+      sessionId: 'session-1'
+    })
+    renderClarify(
+      <ClarifyTool {...liveBatchProps()} args={args} argsText={JSON.stringify(args)} toolCallId="clarify-single-wire" />
+    )
+
+    expect(screen.getByText('Color?')).toBeTruthy()
+    expect(document.querySelector('[data-clarify-batch]')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /blue/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: 'blue',
+        request_id: 'request-single-wire'
+      })
+    })
+  })
+
   it('renders every question at once', () => {
     renderLiveBatch()
 

@@ -1,0 +1,87 @@
+name: Installer E2E Change Acceptance
+
+# The scheduled Install & Update E2E matrix is the release-shaped authority,
+# but relevant pull-request heads also need exact-object installer and updater
+# witnesses. Generic CI cannot prove the sandboxed real-network install path.
+# This focused lane samples the newest release, executes both update routes, and
+# keeps Node/npm/browser installation in scope for the installer route.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - '**'
+    paths:
+      - '.github/workflows/install-e2e-acceptance.yml'
+      - '.github/workflows/install-e2e-run.yml'
+      - '.github/workflows/install-e2e.yml'
+      - 'scripts/dev-sandbox.sh'
+      - 'scripts/install.sh'
+      - 'scripts/sandbox/**'
+      - 'tests/install/**'
+      - 'tests/test_install_e2e_contract.py'
+      - 'tests/test_sandbox_stage2_node_ca.py'
+  pull_request:
+    paths:
+      - '.github/workflows/install-e2e-acceptance.yml'
+      - '.github/workflows/install-e2e-run.yml'
+      - '.github/workflows/install-e2e.yml'
+      - 'scripts/dev-sandbox.sh'
+      - 'scripts/install.sh'
+      - 'scripts/sandbox/**'
+      - 'tests/install/**'
+      - 'tests/test_install_e2e_contract.py'
+      - 'tests/test_sandbox_stage2_node_ca.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-e2e-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pick-release:
+    name: Pick newest release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tags: ${{ steps.pick.outputs.tags }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          filter: blob:none
+          fetch-tags: true
+          sparse-checkout: scripts/sandbox/pick-release-tags.sh
+          sparse-checkout-cone-mode: false
+      - id: pick
+        run: |
+          set -euo pipefail
+          # The candidate may live in a fork whose tags are stale. Release
+          # selection belongs to the canonical base repository, while code
+          # execution remains bound to the submitted head.
+          git fetch --force --tags --no-recurse-submodules \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          actual="$(git rev-parse HEAD)"
+          expected='${{ github.event.pull_request.head.sha || github.sha }}'
+          test "$actual" = "$expected"
+          tags="$(scripts/sandbox/pick-release-tags.sh --count 1)"
+          echo "Testing installer paths from: $tags"
+          echo "Candidate object: $actual"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+
+  acceptance:
+    name: Exact-head install/update witness
+    needs: pick-release
+    strategy:
+      fail-fast: false
+      matrix:
+        install-ref: ${{ fromJSON(needs.pick-release.outputs.tags) }}
+        route: [installer, update]
+    uses: ./.github/workflows/install-e2e-run.yml
+    with:
+      route: ${{ matrix.route }}
+      install-ref: ${{ matrix.install-ref }}
+      include-browser: ${{ matrix.route == 'installer' }}

@@ -29,6 +29,11 @@ on:
         required: false
         type: string
         default: refs/heads/main
+      include-browser:
+        description: 'Exercise Node/npm/browser installation instead of passing --skip-browser.'
+        required: false
+        type: boolean
+        default: false
       runner:
         description: 'Runner label.'
         required: false
@@ -50,11 +55,28 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     steps:
-      # Full history: the sandbox fetches the starting commit and the test
-      # compares against this commit, so a shallow clone is not enough.
+      # Pull-request workflows normally check out GitHub's synthetic merge ref.
+      # Acceptance evidence must bind to the submitted object itself, so fetch
+      # the fork repository and exact head SHA when the caller is a PR.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+
+      - name: Bind exact candidate object
+        id: candidate
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          if [ "$actual" != "$EXPECTED_SHA" ]; then
+            echo "checkout mismatch: got $actual, expected $EXPECTED_SHA" >&2
+            exit 1
+          fi
+          echo "sha=$actual" >> "$GITHUB_OUTPUT"
+          echo "Installer acceptance is bound to $actual"
 
       # bubblewrap + slirp4netns are what the sandbox is built on; util-linux
       # supplies the `unshare` that builds the multi-uid userns for the
@@ -84,9 +106,14 @@ jobs:
       - name: Run install + update E2E
         run: |
           set -euo pipefail
-          tests/install/install-update-e2e.sh \
-            --route '${{ inputs.route }}' \
+          args=(
+            --route '${{ inputs.route }}'
             --install-ref '${{ inputs.install-ref }}'
+          )
+          if [ '${{ inputs.include-browser }}' = 'true' ]; then
+            args+=(--include-browser)
+          fi
+          tests/install/install-update-e2e.sh "${args[@]}"
         env:
           # Outside the workspace on purpose: the script creates this directory
           # up front, and an untracked dir inside the repo makes the worktree
@@ -114,9 +141,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          # Unique per leg: a matrix over releases runs this workflow several
-          # times per route, and same-named artifacts collide.
-          name: ${{ steps.artifact.outputs.name }}-${{ github.sha }}
+          # Unique per leg and bound to the checked-out candidate, not a PR
+          # merge ref: same-named artifacts must never masquerade as head proof.
+          name: ${{ steps.artifact.outputs.name }}-${{ steps.candidate.outputs.sha }}
           path: ${{ runner.temp }}/e2e-logs
           retention-days: 14
           if-no-files-found: ignore

@@ -126,12 +126,16 @@ def _worker_memory_max_bytes() -> int:
 
 def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
     """``systemd-run --user --scope`` argv shared by the probe and real spawns.
-    ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl."""
+    ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl.
+    NOTE: OOMPolicy=kill is intentionally OMITTED — systemd <250 rejects it on scope
+    units ("Unknown assignment: OOMPolicy=kill"), which makes the availability probe
+    fail and kills restart-safe cron dispatch on Ubuntu 20.04 (systemd 245). MemoryMax
+    + MemoryAccounting still bound the worker cgroup; the kernel OOM killer applies.
+    """
     return [
         binary, "--user", "--scope", "--quiet", "--unit", unit_name, "--collect",
         "--property", "MemoryAccounting=yes",
         "--property", f"MemoryMax={_worker_memory_max_bytes()}",
-        "--property", "OOMPolicy=kill",
         "--", *argv,
     ]
 

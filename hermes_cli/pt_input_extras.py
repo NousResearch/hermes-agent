@@ -269,10 +269,54 @@ def _modify_other_keys_aliases(ANSI_SEQUENCES: dict, Keys) -> dict[str, object]:
             for mod in _lock_twins(m) if key is not None else ():
                 _put(twin_fmt.format(mod=mod), key)
 
-    for code, key_val in _kitty_functional_map(Keys).items():
+    functional_map = _kitty_functional_map(Keys)
+    for code, key_val in functional_map.items():
         _put(f"\x1b[{code}u", key_val)
         for mod in _lock_twins(1):  # with a lock on these arrive as ESC[<code>;129u etc.
             _put(f"\x1b[{code};{mod}u", key_val)
+
+    # -- Kitty functional keys WITH a real modifier (#90640) ----
+    # The block above covers the bare key and its lock twins (modifier 1), but kitty sends
+    # Ctrl+KP_Enter as ESC[57414;5u and Shift+KP_Left as ESC[57417;2u. Those have no entry at
+    # all, so every modified keypad press leaks its raw CSI into the buffer — kitty-only, since
+    # the PUA codepoints are its encoding alone. Rather than invent a meaning, mirror whatever
+    # the EQUIVALENT non-keypad key already resolves to at the same modifier: those tables are
+    # already correct, so KP_Left inherits exactly what Left does and cannot drift from it.
+    _KP_EQUIV_CSI = {57417: "D", 57418: "C", 57419: "A", 57420: "B",  # Left/Right/Up/Down
+                     57423: "H", 57424: "F"}                          # Home/End
+    _KP_EQUIV_TILDE = {57421: 5, 57422: 6, 57425: 2, 57426: 3}        # PgUp/PgDn/Insert/Delete
+    # KP_Enter resolves to Keys.ControlM rather than a character, so it matches neither branch;
+    # point it at Enter's own CSI-u codepoint so Ctrl+KP_Enter inherits the newline alias
+    # install_ctrl_enter_alias() registered before this builder runs.
+    _KP_EQUIV_CSIU = {57414: 13}
+    for code, key_val in functional_map.items():
+        for base_mod in (2, 3, 4, 5, 6, 7, 8):
+            for mod in _lock_variants(base_mod):
+                seq = f"\x1b[{code};{mod}u"
+                if code in _KP_EQUIV_CSI:
+                    source = f"\x1b[1;{mod}{_KP_EQUIV_CSI[code]}"
+                elif code in _KP_EQUIV_TILDE:
+                    source = f"\x1b[{_KP_EQUIV_TILDE[code]};{mod}~"
+                elif code in _KP_EQUIV_CSIU:
+                    source = f"\x1b[{_KP_EQUIV_CSIU[code]};{mod}u"
+                elif isinstance(key_val, str) and not isinstance(key_val, Keys) and len(key_val) == 1:
+                    source = f"\x1b[{ord(key_val)};{mod}u"
+                else:
+                    # Ignore-mapped codes (locks, media keys, bare modifier events) stay
+                    # consumed under every modifier instead of leaking.
+                    if key_val is Keys.Ignore:
+                        _put(seq, Keys.Ignore)
+                    continue
+                # Entries this builder already collected win over the installed table, because
+                # the modifier rows above are written into `aliases` and not yet into
+                # ANSI_SEQUENCES. Where the twin is itself unmapped, the keypad key stays
+                # unmapped too rather than acquiring behaviour its twin does not have.
+                equivalent = aliases.get(source)
+                if equivalent is None:
+                    equivalent = ANSI_SEQUENCES.get(source)
+                if equivalent is not None:
+                    _put(seq, equivalent)
+
     return aliases
 
 

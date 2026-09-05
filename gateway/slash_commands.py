@@ -1126,22 +1126,67 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /approve — unblock waiting agent thread(s). They block inside tools/approval.py;
-        signalling the event resumes them so the command executes inline (same flow as the CLI)."""
+        signalling the event resumes them so the command executes inline (same flow as the CLI).
+
+        Scope precedence: ``always`` > ``session`` > bounded grant (``for 30m``, ``3 times``,
+        ``for today``) > ``once``. A grant is the texting-native middle ground: bounded in time
+        or count, survives ``/new`` and a gateway restart, scoped to this chat.
+        """
         from tools.approval import resolve_gateway_approval
+        from tools.approval_grants import parse_grant_spec
         session_key, stale = self._blocking_approval_or_stale(event, "gateway.approval_expired",
                                                               "gateway.approve.no_pending")
         if stale:
             return stale
-        # Args: "all", "all session", "all always", "session", "always" ("always" beats "session").
-        args = event.get_command_args().strip().lower().split()
+        raw_args = event.get_command_args().strip().lower()
+        args = raw_args.split()
         choices = {_APPROVE_CHOICE_BY_ARG[a] for a in args if a in _APPROVE_CHOICE_BY_ARG}
-        choice = "always" if "always" in choices else "session" if "session" in choices else "once"
+        spec = None if choices else parse_grant_spec(raw_args)
+        if "always" in choices:
+            choice, label = "always", "always"
+        elif "session" in choices:
+            choice, label = "session", "session"
+        elif spec is not None:
+            choice, label = f"grant:{raw_args}", "grant"
+        else:
+            choice, label = "once", "once"
         count = resolve_gateway_approval(session_key, choice, resolve_all="all" in args)
         if not count:
             return t("gateway.approve.no_pending")
-        confirmation_text = t(f"gateway.approve.{choice}_{'plural' if count > 1 else 'singular'}", count=count)
-        logger.info("User approved %d dangerous command(s) via /approve (%s)", count, choice)
+        plural = "plural" if count > 1 else "singular"
+        if label == "grant":
+            confirmation_text = t(f"gateway.approve.grant_{plural}", count=count, scope=spec.describe())
+        else:
+            confirmation_text = t(f"gateway.approve.{label}_{plural}", count=count)
+        logger.info("User approved %d dangerous command(s) via /approve (%s)", count, label)
         return await self._deliver_approval_confirmation(event, confirmation_text, "approve")
+
+    async def _handle_grants_command(self, event: MessageEvent) -> str:
+        """Handle /grants — list this chat's bounded approval grants, or revoke them.
+
+        ``/grants`` lists; ``/grants revoke <id>`` revokes one; ``/grants revoke all`` clears the
+        chat. Read-only listing never consumes a use.
+        """
+        from tools.approval_grants import format_duration, list_active, revoke
+        session_key = self._session_key_for_source(event.source)
+        args = event.get_command_args().strip().lower().split()
+        if args and args[0] in {"revoke", "clear", "stop"}:
+            target = args[1] if len(args) > 1 else "all"
+            removed = revoke(session_key, None if target == "all" else target)
+            if not removed:
+                return t("gateway.grants.none_revoked")
+            return t("gateway.grants.revoked_plural" if removed > 1 else "gateway.grants.revoked_singular",
+                     count=removed)
+        grants = list_active(session_key)
+        if not grants:
+            return t("gateway.grants.none")
+        lines = [t("gateway.grants.header", count=len(grants))]
+        for g in grants:
+            uses = "" if g.remaining_uses() is None else t("gateway.grants.uses_left", count=g.remaining_uses())
+            lines.append(t("gateway.grants.row", id=g.id, description=g.description,
+                           remaining=format_duration(g.remaining_seconds()), uses=uses))
+        lines.append(t("gateway.grants.footer"))
+        return "\n".join(lines)
 
     async def _handle_deny_command(self, event: MessageEvent) -> str:
         """Handle /deny — reject pending dangerous command(s) with a definitive BLOCKED result, as in

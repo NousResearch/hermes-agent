@@ -373,6 +373,33 @@ class GatewayBusySessionMixin:
         **{w: ("approve", "always") for w in ("always", "approve always", "always approve")},
         **{w: ("approve", "session") for w in ("session", "approve session", "session approve")},
     }
+    # An affirmative that a bounded-grant scope may follow ("yes for the next hour", "ok 3 times").
+    _PLAINTEXT_GRANT_LEADS = ("yes", "ok", "okay", "approve", "sure", "y", "go ahead", "allow", "approved")
+
+    @classmethod
+    def _plaintext_grant_match(cls, raw_text: str) -> Optional[tuple]:
+        """``("approve", <spec>)`` when *raw_text* is a bare affirmative followed by a bounded
+        scope the grant parser understands, else ``None``.
+
+        Kept deliberately narrow: the text must START with a known affirmative and the remainder
+        must parse as a duration/count. Anything else (a sentence, a question, a refusal) falls
+        through to normal handling, so the exact-match safety property of the word table holds —
+        "no, not for an hour" never approves anything.
+        """
+        from tools.approval_grants import parse_grant_spec
+        text = raw_text.strip().rstrip(".!").strip()
+        for lead in sorted(cls._PLAINTEXT_GRANT_LEADS, key=len, reverse=True):
+            if text == lead or not text.startswith(lead):
+                continue
+            rest = text[len(lead):].lstrip(" ,")
+            if not rest or "?" in rest:
+                return None
+            # strict: the remainder must be ONLY the scope, so a trailing instruction
+            # ("yes for an hour and also wipe the disk") falls through unmatched.
+            if parse_grant_spec(rest, strict=True) is None:
+                return None
+            return ("approve", rest)
+        return None
 
     async def _route_plaintext_approval_while_busy(self, event: MessageEvent, session_key: str) -> bool:
         """Route a bare "yes"/"no" to the approval handlers while a dangerous-command approval blocks.
@@ -399,6 +426,8 @@ class GatewayBusySessionMixin:
             if event.allow_gateway_control and has_blocking_approval(session_key):
                 _raw_text = (event.text or "").strip().lower()
                 _match = self._PLAINTEXT_APPROVAL_WORDS.get(_raw_text)
+                if _match is None:
+                    _match = self._plaintext_grant_match(_raw_text)
                 if _match is not None:
                     _verb, _normalized_args = _match
                     _approval_handler = (
@@ -692,7 +721,7 @@ class GatewayBusySessionMixin:
     _COMMAND_HANDLER_ALIASES = {"bg": "_handle_background_command", "sethome": "_handle_set_home_command"}
     # Ordinary slash handlers shared by idle and busy dispatch.
     _PLAIN_COMMANDS = (
-        "status", "context", "restart", "approve", "deny", "pause", "agents", "bg", "btw",
+        "status", "context", "restart", "approve", "deny", "grants", "pause", "agents", "bg", "btw",
         "kanban", "subgoal", "heartbeat", "busy", "yolo", "verbose", "footer", "help",
         "commands", "profile", "update", "version",
     )

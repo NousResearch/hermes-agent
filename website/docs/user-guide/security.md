@@ -219,10 +219,36 @@ The four options:
 
 On messaging platforms, the agent sends the dangerous command details to the chat and waits for the user to reply:
 
-- Reply **yes**, **y**, **approve**, **ok**, or **go** to approve
+- Reply **yes**, **y**, **approve**, **ok**, or **go** to approve this one operation
 - Reply **no**, **n**, **deny**, or **cancel** to deny
+- `/approve session` approves the pattern for the rest of this conversation; `/approve always` approves it permanently
 
 The `HERMES_EXEC_ASK=1` environment variable is automatically set when running the gateway.
+
+### Bounded grants (`/approve for 30m`, `/approve 3 times`)
+
+Between "once" and "session" sits a scope shaped for texting: approve a pattern **for a bounded window**.
+
+```
+/approve for 30m         # this pattern, this chat, next 30 minutes
+/approve for 2 hours
+/approve for today       # until local midnight
+/approve 3 times         # the next three occurrences
+/approve for 1h, 5 times # whichever runs out first
+```
+
+Conversationally, a bare affirmative followed by the scope does the same thing: `yes for the next hour`, `ok 3 times`, `sure, for today`. Anything with a trailing instruction (`yes for an hour and also wipe the disk`) is deliberately not read as a grant and leaves the command waiting.
+
+What makes a grant different from `session` and `always`:
+
+- **Always expires.** Every grant has an end time, capped at 24 hours. Longer than that is what `always` is for.
+- **Scoped to the chat.** A grant given in one conversation never applies in another.
+- **Survives `/new` and a gateway restart.** Grants persist in `~/.hermes/approvals/grants.json` (profile-aware). This matters on a VPS, where a deploy restarts the gateway under you: a grant you gave ten minutes ago should not silently vanish.
+- **Counts down.** Use-limited grants stop covering after the last use.
+
+`/grants` lists this chat's active grants with time and uses remaining; `/grants revoke <id>` removes one; `/grants revoke all` clears the chat. Listing never consumes a use.
+
+Grants apply wherever the approval gate does (terminal commands, `execute_code`, plugin-escalated tools, untrusted MCP tools) because they are checked by the same `is_approved` read. They do not bypass the hardline blocklist or `approvals.deny` rules, and they carry no monetary limit: Hermes has no structured payment surface to enforce an amount against, so a "$60" scope would be a comment rather than a control.
 
 ### Permanent Allowlist
 

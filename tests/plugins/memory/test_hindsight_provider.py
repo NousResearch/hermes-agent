@@ -554,6 +554,67 @@ class TestToolHandlers:
 
 
 class TestPrefetch:
+    @pytest.mark.parametrize("config,query,count,budget,tags,types", [
+        ({}, "Is the gateway running right now?", 2, "mid", ["normal"], ["observation"]),
+        ({"recall_live_status_bypass": True}, "Is the gateway running right now?", 0, None, None, None),
+        ({"recall_live_status_bypass": True}, "Läuft der Gateway gerade?", 0, None, None, None),
+        ({"recall_live_status_bypass": "false"}, "Is the gateway running right now?", 2, "mid", ["normal"], ["observation"]),
+        ({"recall_max_results": 1}, "Remember our plan", 1, "mid", ["normal"], ["observation"]),
+        ({"recall_max_results": "bad", "recall_document_tag_routes": []}, "Remember our plan", 2, "mid", ["normal"], ["observation"]),
+        ({"recall_simple_budget": "low", "recall_simple_max_words": 8}, "My favorite color?", 2, "low", ["normal"], ["observation"]),
+        ({"recall_simple_budget": "low", "recall_simple_max_words": 8}, "Compare our options", 2, "mid", ["normal"], ["observation"]),
+        ({"recall_simple_budget": "low", "recall_simple_max_words": 3, "recall_max_input_chars": 5}, "Tell me more about that project", 2, "mid", ["normal"], ["observation"]),
+        ({"recall_document_tags": ["docs"], "recall_document_terms": ["document"],
+          "recall_document_tag_routes": {"topic:network": ["router"]}}, "Find ROUTER document", 2, "mid", ["docs", "topic:network"], ["world", "observation"]),
+        ({"recall_document_tags": ["docs"], "recall_document_terms": ["document"]}, "My favorite color?", 2, "mid", ["normal"], ["observation"]),
+        ({"recall_document_tags": ["docs"]}, "Find document", 2, "mid", ["normal"], ["observation"]),
+    ])
+    def test_optional_auto_recall_controls_leave_explicit_tools_unchanged(
+        self, provider_with_config, config, query, count, budget, tags, types,
+    ):
+        p = provider_with_config(recall_sync=True, recall_tags=["normal"], **config)
+        injected = p.prefetch(query)
+        if count == 0:
+            assert injected == ""
+            assert p.recall_status() is None
+            p._client.arecall.assert_not_called()
+        else:
+            assert p.recall_status().count == count
+            assert ("Memory 2" in injected) == (count == 2)
+            kwargs = p._client.arecall.call_args.kwargs
+            assert (kwargs["budget"], kwargs["tags"], kwargs["types"]) == (budget, tags, types)
+            assert kwargs["tags_match"] == ("all" if tags[0] == "docs" else "any")
+        # Same query through the explicit tool must still use normal scope/budget
+        # and return both facts, even when automatic recall skipped or capped it.
+        result = p._tool_recall({"query": query})
+        assert "Memory 1" in result and "Memory 2" in result
+        kwargs = p._client.arecall.call_args.kwargs
+        assert (kwargs["budget"], kwargs["tags"], kwargs["types"]) == ("mid", ["normal"], ["observation"])
+
+    @pytest.mark.parametrize("query,expected_budget", [("Favorite document?", "low"), ("Compare documents", "mid"), ("Running right now?", None)])
+    def test_reflect_auto_controls_and_declared_configuration(self, provider_with_config, query, expected_budget):
+        from plugins.memory.hindsight.config_schema import CONFIG_SCHEMA
+
+        config = dict(recall_max_results=1, recall_live_status_bypass=True,
+                      recall_simple_budget="low", recall_simple_max_words=8,
+                      recall_document_tags=["docs"], recall_document_terms=["document"],
+                      recall_document_tag_routes={}, recall_document_types=["world"])
+        p = provider_with_config(prefetch_method="reflect", recall_sync=True, **config)
+        assert set(config) <= {f.key for f in CONFIG_SCHEMA.fields}
+        assert set(config) <= {f["key"] for f in p.get_config_schema()}
+        injected = p.prefetch(query)
+        p._client.arecall.assert_not_called()
+        if expected_budget is None:
+            assert injected == ""
+            p._client.areflect.assert_not_called()
+        else:
+            assert "Synthesized answer" in injected
+            assert p._client.areflect.call_args.kwargs == {
+                "bank_id": "test-bank", "query": query, "budget": expected_budget,
+            }
+        assert p._tool_reflect({"query": query}) == "Synthesized answer"
+        assert p._client.areflect.call_args.kwargs["budget"] == "mid"
+
     def test_prefetch_returns_empty_when_no_result(self, provider):
         assert provider.prefetch("test") == ""
 

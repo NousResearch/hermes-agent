@@ -148,6 +148,15 @@ export const enumerationFailed = <T>(result: EnumerationFailure | T): result is 
 const describeError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error ?? 'unknown error')
 
+/**
+ * Redirect a resolved module specifier out of `app.asar` so its files exist on
+ * the real filesystem. `/app.asar/` only ever appears as a complete path
+ * segment in a packaged build (electron-builder names the archive exactly
+ * that), so in dev — where nothing is archived — this is a no-op.
+ */
+export const resolveOutsideAsar = (specifier: string): string =>
+  specifier.replace('/app.asar/', '/app.asar.unpacked/')
+
 let getWindowsModule: Promise<GetWindowsModule | EnumerationFailure> | null = null
 
 const loadGetWindows = (): Promise<GetWindowsModule | EnumerationFailure> => {
@@ -169,7 +178,18 @@ const loadGetWindows = (): Promise<GetWindowsModule | EnumerationFailure> => {
   // scripts/stage-native-deps.mjs writes a staged lib/windows.js that requires
   // the binding directly, so it is the more reliable of the two everywhere.
   getWindowsModule ??= (async () => {
-    const staged = path.join(app.getAppPath(), 'dist', 'node_modules', 'get-windows', 'index.js')
+    // Both specifiers are redirected out of app.asar in a packaged build.
+    // get-windows does its real work by exec'ing a helper binary whose path it
+    // derives from its own module URL, so a module imported through an
+    // `/app.asar/` path derives an in-archive helper path and the spawn fails
+    // ENOTDIR: the kernel sees app.asar as a file. Electron rewrites asar
+    // paths for child_process only once that module has been pulled through
+    // the CJS loader, which this ESM main process never does (every import
+    // here is `from 'node:child_process'`). Pointing the import at the
+    // unpacked copy gives get-windows a real path to derive from.
+    const staged = resolveOutsideAsar(
+      path.join(app.getAppPath(), 'dist', 'node_modules', 'get-windows', 'index.js')
+    )
     let stagedError = 'not staged in this build'
 
     if (fs.existsSync(staged)) {
@@ -181,7 +201,7 @@ const loadGetWindows = (): Promise<GetWindowsModule | EnumerationFailure> => {
     }
 
     try {
-      return (await import('get-windows')) as GetWindowsModule
+      return (await import(resolveOutsideAsar(import.meta.resolve('get-windows')))) as GetWindowsModule
     } catch (error) {
       return {
         reason:

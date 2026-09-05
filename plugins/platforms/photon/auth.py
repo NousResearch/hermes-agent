@@ -481,8 +481,10 @@ def poll_for_token_candidates(
     timeout: Optional[int] = None,
     interval: Optional[int] = None,
     on_pending: Optional[Callable[[], None]] = None,
-) -> list:
+) -> list[_DeviceTokenCandidate]:
     """Poll ``/api/auth/device/token`` until the user approves.
+
+    Return candidates in priority order, never an empty list on success.
 
     Mirrors the official CLI's polling loop: sleep first, then poll;
     ``authorization_pending`` keeps the interval, ``slow_down`` adds 5s,

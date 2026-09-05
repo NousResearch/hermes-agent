@@ -16,7 +16,11 @@ from unittest.mock import MagicMock, patch
 
 
 from agent.context_compressor import SUMMARY_PREFIX, _DB_PERSISTED_MARKER
-from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS
+from agent.conversation_compression import (
+    COMPACTION_DONE_STATUS,
+    COMPACTION_STATUS,
+    COMPACTION_STATUS_KEY,
+)
 from run_agent import AIAgent
 import run_agent
 
@@ -441,10 +445,10 @@ class TestHTTP413Compression:
 class TestPreflightCompression:
     """Preflight compression should compress history before the first API call."""
 
-    def test_compress_context_emits_lifecycle_status_before_work(self, agent):
+    def test_compress_context_emits_compaction_status_before_work(self, agent):
         """Direct context compression should tell gateway users why the turn paused."""
         # This test calls _compress_context directly and asserts the FIRST
-        # status event is the lifecycle "Compacting context" message. With
+        # status event is the typed "Compacting context" message. With
         # compaction enabled the lazy feasibility probe would emit an
         # aux-provider warning first (no aux key in the hermetic test env),
         # displacing events[0]. The flag value is irrelevant to what this
@@ -488,9 +492,9 @@ class TestPreflightCompression:
         assert new_system_prompt == "new system prompt"
         build_prompt.assert_called_once()
         assert events == [
-            ("lifecycle", COMPACTION_STATUS),
+            (COMPACTION_STATUS_KEY, COMPACTION_STATUS),
             ("compress", "started"),
-            ("compacted", COMPACTION_DONE_STATUS),
+            (COMPACTION_STATUS_KEY, COMPACTION_DONE_STATUS),
         ]
 
     def test_compress_context_emits_one_terminal_status_when_lock_is_unavailable(self, agent):
@@ -509,8 +513,12 @@ class TestPreflightCompression:
 
         assert compressed is messages
         assert prompt == "You are helpful."
-        assert [event for event, _ in events] == ["lifecycle", "warn", "compacted"]
-        assert events[-1] == ("compacted", COMPACTION_DONE_STATUS)
+        assert [event for event, _ in events] == [
+            COMPACTION_STATUS_KEY,
+            "warn",
+            COMPACTION_STATUS_KEY,
+        ]
+        assert events[-1] == (COMPACTION_STATUS_KEY, COMPACTION_DONE_STATUS)
 
     def test_compress_context_does_not_emit_completion_after_an_abort(self, agent):
         """An aborted summary must not claim that compaction completed."""
@@ -529,8 +537,8 @@ class TestPreflightCompression:
 
         assert compressed is messages
         assert prompt == "You are helpful."
-        assert [event for event, _ in events] == ["lifecycle", "warn"]
-        assert ("compacted", COMPACTION_DONE_STATUS) not in events
+        assert [event for event, _ in events] == [COMPACTION_STATUS_KEY, "warn"]
+        assert (COMPACTION_STATUS_KEY, COMPACTION_DONE_STATUS) not in events
 
     def test_compression_reuses_cached_prompt_when_memory_snapshot_is_unchanged(self, agent):
         """A byte-equal rebuild must keep the EXACT cached prompt object.

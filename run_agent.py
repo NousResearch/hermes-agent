@@ -829,12 +829,25 @@ class AIAgent(
         from agent.session_activity import build_activity_snapshot
 
         provenance = getattr(self, "_last_activity_provenance", None)
+        sdk_visibility_count = int(
+            getattr(self, "_sdk_visibility_iteration_count", 0) or 0
+        )
+        sdk_visibility_lock = getattr(self, "_sdk_visibility_lock", None)
+        if sdk_visibility_lock is not None:
+            with sdk_visibility_lock:
+                sdk_visibility_count = int(
+                    getattr(self, "_sdk_visibility_iteration_count", 0) or 0
+                )
         return build_activity_snapshot(
             last_activity_at=getattr(self, "_last_activity_ts", None),
             last_activity_description=getattr(self, "_last_activity_desc", None) or "",
             last_activity_provenance=provenance if provenance is not None else ActivityProvenance.UNKNOWN,
             extra={
-                "current_tool": self._current_tool, "api_call_count": self._api_call_count,
+                "current_tool": self._current_tool,
+                "api_call_count": max(
+                    int(getattr(self, "_api_call_count", 0) or 0),
+                    sdk_visibility_count,
+                ),
                 "max_iterations": self.max_iterations, "budget_used": self.iteration_budget.used,
                 "budget_max": self.iteration_budget.max_total,
             },
@@ -899,6 +912,7 @@ class AIAgent(
         # and a cross-thread close can release TLS FDs under a still-unwinding worker.
         _quietly(self._drop_shared_client, lambda c: self._retire_shared_openai_client(c, reason="cache_evict"))
         self._close_request_clients("cache_evict")
+        _quietly(self._close_claude_sdk_session)
 
     def close(self) -> None:
         """Release every resource this agent holds (idempotent); each phase is guarded so one failure never
@@ -912,6 +926,7 @@ class AIAgent(
         _quietly(self._drop_shared_client, lambda c: self._close_openai_client(c, reason="agent_close", shared=True))
         self._close_request_clients("agent_close")
         _quietly(self._close_codex_session)
+        _quietly(self._close_claude_sdk_session)
         # Free conversation history proactively: callers may still hold the closed agent. The DB-flush
         # settled-prefix snapshot and the streamed-text accumulator are shadow copies of the same transcript;
         # on a closed delegate child they were the only remaining owners, pinning its history in the parent heap.
@@ -978,6 +993,18 @@ class AIAgent(
         if codex_session is not None:
             self._codex_session = None
             codex_session.close()
+
+    def _close_claude_sdk_session(self) -> None:
+        """Disconnect the SDK loop thread and Claude Code CLI subprocess.
+
+        The persisted SDK session id retains continuity when an evicted agent
+        is rebuilt. Clear the attribute before closing so a failure cannot
+        leave a half-closed session reachable.
+        """
+        sdk_session = getattr(self, "_claude_sdk_session", None)
+        if sdk_session is not None:
+            self._claude_sdk_session = None
+            sdk_session.close()
 
     @staticmethod
     def _trim_process_memory() -> None:

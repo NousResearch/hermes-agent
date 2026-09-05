@@ -4,10 +4,12 @@ from ``build_turn_context``)."""
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agent.turn_context_compaction import (
     CompactionOutcome,
-    _codex_native_auto_compaction,
     _rearm_uncompressed_overflow_warn,
+    provider_owns_context_for_auto_compression,
     run_turn_start_compaction,
 )
 
@@ -25,17 +27,26 @@ def _agent(**kw):
     return SimpleNamespace(**base)
 
 
-def test_codex_native_auto_compaction_gate():
-    assert _codex_native_auto_compaction(
-        SimpleNamespace(api_mode="codex_app_server", codex_app_server_auto_compaction="native")
+@pytest.mark.parametrize("mode", ["native", "off", "NATIVE"])
+def test_codex_native_modes_remain_provider_owned(mode):
+    assert provider_owns_context_for_auto_compression(
+        SimpleNamespace(api_mode="codex_app_server", codex_app_server_auto_compaction=mode)
     )
-    assert _codex_native_auto_compaction(
-        SimpleNamespace(api_mode="codex_app_server", codex_app_server_auto_compaction="OFF")
-    )
-    assert not _codex_native_auto_compaction(
+
+
+def test_codex_hermes_mode_remains_eligible_for_preflight():
+    assert not provider_owns_context_for_auto_compression(
         SimpleNamespace(api_mode="codex_app_server", codex_app_server_auto_compaction="hermes")
     )
-    assert not _codex_native_auto_compaction(SimpleNamespace(api_mode="chat_completions"))
+
+
+def test_claude_agent_sdk_owns_automatic_context():
+    assert provider_owns_context_for_auto_compression(SimpleNamespace(api_mode="claude_agent_sdk"))
+
+
+@pytest.mark.parametrize("api_mode", ["chat_completions", "anthropic_messages", "", None])
+def test_other_runtimes_remain_eligible_for_preflight(api_mode):
+    assert not provider_owns_context_for_auto_compression(SimpleNamespace(api_mode=api_mode))
 
 
 def test_disabled_compression_rearms_overflow_warn_when_under_window():

@@ -57,6 +57,19 @@ def _ic_codex_method(agent, name: str):
     return method if callable(method) else None
 
 
+def _ic_claude_sdk_session_method(agent, name: str):
+    """Hook ``name`` on the attached Claude Agent SDK session, or None when there is none."""
+    method = getattr(getattr(agent, "_claude_sdk_session", None), name, None)
+    return method if callable(method) else None
+
+
+def _ic_claude_sdk_method(agent, name: str):
+    """Same, but only while the SDK owns the model/tool loop (``api_mode == "claude_agent_sdk"``)."""
+    if getattr(agent, "api_mode", None) != "claude_agent_sdk":
+        return None
+    return _ic_claude_sdk_session_method(agent, name)
+
+
 def _ic_abort_active_request(agent, reason: str, failure_log: str) -> None:
     """Shut the registered in-flight request's sockets (cron turns register their client here)."""
     abort = getattr(agent, "_active_request_abort", None)
@@ -160,6 +173,17 @@ class InterruptControlMixin:
             except Exception:
                 logger.debug("Failed to interrupt Codex app-server turn", exc_info=True)
 
+        # claude-agent-sdk runtime: the blocking run_turn observes only the session's own
+        # interrupt event — signal it directly whenever a session is attached, regardless of
+        # the current api_mode (idempotent; schedules client.interrupt() on the session's
+        # loop). (#25267)
+        _request_sdk_interrupt = _ic_claude_sdk_session_method(self, "request_interrupt")
+        if _request_sdk_interrupt is not None:
+            try:
+                _request_sdk_interrupt()
+            except Exception:
+                logger.debug("Failed to interrupt Claude Agent SDK turn", exc_info=True)
+
         # Cron turns request on the conversation thread (no nested interrupt-worker deadlock); their client
         # is registered here so this cross-thread interrupt can still shut the sockets.
         _ic_abort_active_request(self, "interrupt_abort", "Failed to abort active inline request")
@@ -219,6 +243,21 @@ class InterruptControlMixin:
         if not text or not text.strip():
             return False
         cleaned = text.strip()
+
+        # The SDK owns tool execution, so Hermes' post-tool-result drain is
+        # never reached on this lane. Its live stream accepts the steer at the
+        # next SDK turn boundary; only fall back to the local stash when the
+        # session has no active turn to accept it.
+        _native_sdk_steer = _ic_claude_sdk_method(self, "steer")
+        if _native_sdk_steer is not None:
+            try:
+                if _native_sdk_steer(cleaned):
+                    return True
+            except Exception:
+                logger.debug(
+                    "Claude Agent SDK steer failed; falling back to stash",
+                    exc_info=True,
+                )
         with _ic_lock(self, "_pending_steer_lock"):
             existing = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned

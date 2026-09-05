@@ -30,6 +30,9 @@ from agent.prompt_caching import (
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
 from agent.turn_retry_state import TurnRetryState
+from agent.turn_runtime_handoff import (
+    RuntimeHandoffState, run_sdk_fallback_iteration, run_whole_turn_runtime,
+)
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
 # skewed phase mid-turn.
 from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
@@ -643,6 +646,33 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     Mutates ``agent._cached_system_prompt`` and persists a freshly-built prompt on first
     build. Row states ``missing``/``null``/``empty``/``present`` are logged and DB
     failures log at WARNING so silent prefix-cache misses show in ``agent.log``."""
+    # LOCAL DIVERGENCE (2026-08-14) -- claude-agent-sdk lane only.
+    #
+    # On this lane the stored snapshot is NOT Hermes' native composed prompt: claude_sdk_runtime
+    # deliberately overwrites it with "[claude_code preset]\n\n" + the --append-system-prompt
+    # blob, so the audit trail records the EFFECTIVE prompt the CLI actually sends. That snapshot
+    # can never satisfy _stored_prompt_matches_runtime(): the SDK composer hardcodes
+    # "Provider: claude-agent-sdk (Claude subscription)" while system_prompt.py emits the bare
+    # ``agent.provider``, and the comparison is exact string equality -- verified against
+    # state.db, the check returned False on EVERY turn. Two consequences, both fixed by the
+    # short-circuit: (1) a WARNING claiming "prefix cache will miss ... quota drain" fired every
+    # turn although the CLI owns the wire prompt (byte-stable per session), so rebuilding
+    # Hermes' _cached_system_prompt costs local CPU, not tokens; (2) continuations fell through
+    # to the brand-new-session path, re-firing on_session_start and the cold-start credits seed
+    # every turn. Gated on ``conversation_history`` so a genuine first turn still takes the full
+    # path. Reuse is deliberately NOT attempted (the sentinel must never become
+    # _cached_system_prompt) and the fresh native prompt is NOT written back: a long-lived SDK
+    # session never re-enters session creation, so that write would permanently replace the
+    # effective-prompt audit snapshot after turn one.
+    if conversation_history and getattr(agent, "api_mode", None) == "claude_agent_sdk":
+        logger.debug(
+            "claude-agent-sdk lane: skipping stored-prompt reuse for session %s "
+            "(the runtime owns the wire prompt)",
+            agent.session_id,
+        )
+        agent._cached_system_prompt = agent._build_system_prompt(system_message)
+        return
+
     stored_prompt = None
     stored_state = "missing"
     session_row = None
@@ -1274,6 +1304,13 @@ class _LoopState:
     # reports a prompt below threshold.
     max_compression_attempts: Any
     api_call_count: int = 0
+    # Generic provider failures refund the logical loop budget so a fallback gets a fair
+    # attempt; retain those real requests for final accounting.
+    _provider_fallback_call_refunds: int = 0
+    # Whether begin_iteration consumed the iteration budget (False on the grace call).
+    _iteration_budget_consumed: bool = False
+    # Cumulative accounting across whole-turn runtime hand-offs (agent/turn_runtime_handoff.py).
+    _runtime_handoff: Any = field(default_factory=RuntimeHandoffState)
     final_response: Any = None
     interrupted: bool = False
     failed: bool = False
@@ -1467,18 +1504,24 @@ def run_conversation(
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
     )
-    # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
-    # app-server subprocess (see agent/transports/codex_app_server_session.py).
-    if agent.api_mode == "codex_app_server":
-        return agent._run_codex_app_server_turn(
-            user_message=s.user_message, original_user_message=s.original_user_message,
-            messages=s.messages, effective_task_id=s.effective_task_id,
-            should_review_memory=s._should_review_memory,
-        )
+    # Whole-turn runtimes bypass the generic wire (agent/turn_runtime_handoff.py); a replay-safe
+    # provider fallback falls through to it with cumulative accounting.
+    _wt = _run_phase(run_whole_turn_runtime, agent, s)
+    if _wt.action == "return":
+        return _wt.result
 
     while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
+        if agent.api_mode == "claude_agent_sdk":
+            # A provider failure fell back INTO the SDK: it takes over only at an untouched
+            # user boundary (agent/turn_runtime_handoff.py).
+            _sf = _run_phase(run_sdk_fallback_iteration, agent, s)
+            if _sf.action == "return":
+                return _sf.result
+            if _sf.action == "break":
+                break
+            continue
         _run_phase(prepare_iteration, agent, s)
         _run_phase(assemble_api_request, agent, s)
         _pg = _run_phase(run_preflight_gate, agent, s)
@@ -1524,10 +1567,14 @@ def run_conversation(
                 break
 
     # Post-loop finalization lives in agent/turn_finalizer.finalize_turn.
-    result = finalize_turn(agent, **{
+    finalize_kwargs = {
         name: getattr(s, name)
         for name in inspect.signature(finalize_turn).parameters if name != "agent"
-    })
+    }
+    finalize_kwargs["api_call_count"] = (
+        s.api_call_count + s._provider_fallback_call_refunds
+    )
+    result = finalize_turn(agent, **finalize_kwargs)
     if s._compression_timeout_exhausted:
         # Reuse the gateway's context-recovery contract: transcript stays intact while
         # future input can move to a clean session (#98722).

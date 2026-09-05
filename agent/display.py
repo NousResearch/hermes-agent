@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 from utils import safe_json_loads
 from agent.redact import redact_sensitive_text
+from agent.tool_identity import canonical_tool_args, canonical_tool_name
 from agent.tool_result_classification import file_mutation_result_landed
 
 logger = logging.getLogger(__name__)
@@ -140,6 +141,7 @@ def get_skin_tool_prefix() -> str:
 
 def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
     """Display emoji for a tool: skin ``tool_emojis`` override, then registry, then *default*."""
+    tool_name = canonical_tool_name(tool_name)
     skin = _get_skin()
     override = skin.tool_emojis.get(tool_name) if skin and skin.tool_emojis else None
     if override:
@@ -167,6 +169,21 @@ def _truncate_preview(text: str, max_len: int | None) -> str:
     if max_len and max_len > 0 and len(text) > max_len:
         return "." * max_len if max_len <= 3 else text[:max_len - 3] + "..."
     return text
+
+
+def build_terminal_preview_line(command: str, max_len: int | None) -> str:
+    """Render a shell command as one capped line for a progress preview.
+
+    Uses the same ``_oneline`` + ``_truncate_preview`` pair as every other
+    preview, so a command spends its whole budget on content. Taking only the
+    *first* source line instead wastes the budget precisely when the preview
+    matters most: shell commands routinely open with boilerplate (``set -e``,
+    a ``cd``, a variable assignment), so a 120-character budget could render
+    as ``set +e``. The result is a label, not a paste-able command — collapsing
+    newlines puts any interior ``#`` comment inline; verbose mode's fenced
+    block stays the copyable form.
+    """
+    return _truncate_preview(_oneline(command), max_len)
 
 
 def _clip(text: str, n: int) -> str:
@@ -404,6 +421,49 @@ def _preview_todo_list(args: dict, _max_len: int) -> str:
     return "reading task list" if todos_arg is None else f"{verb} {len(todos_arg)} task(s)"
 
 
+# Per-task CRUD tools exposed by the Claude Agent SDK harness.
+#
+# Deliberately NOT aliased to native ``todo_list`` in :mod:`agent.tool_identity`,
+# which maps only tools whose semantics match.  ``todo_list`` rewrites the whole
+# list from a ``todos`` array; these operate on one task per call and carry no
+# such array, so the alias would route ``TaskCreate`` down the
+# ``todos_arg is None`` branch and render "reading task list" for a call that
+# creates one.  Wrong is worse than absent.
+TASK_TOOLS: frozenset[str] = frozenset({
+    "TaskCreate", "TaskUpdate", "TaskGet", "TaskList",
+})
+
+
+def _task_fields(args: dict) -> tuple[str, str, str]:
+    """``(subject, task_id, status)`` of a per-task tool call, each ``""`` when absent."""
+    return (
+        _oneline(str(args.get("subject") or "")).strip(),
+        str(args.get("taskId") or "").strip(),
+        str(args.get("status") or "").strip(),
+    )
+
+
+# Previews for the per-task tools show the task itself, not a count: ``todo_list``
+# renders "planning 3 task(s)" because one call really does carry three, while
+# these take one task per call, so a count would read "1 task(s)" every time --
+# true, and useless.  The subject is what tells the user which task moved.
+def _preview_task_create(args: dict, max_len: int) -> str | None:
+    subject = _task_fields(args)[0]
+    return _truncate_preview(subject, max_len) if subject else None
+
+
+def _preview_task_update(args: dict, max_len: int) -> str | None:
+    subject, task_id, status = _task_fields(args)
+    head = subject or (f"#{task_id}" if task_id else "")
+    preview = " ".join(p for p in (head, f"→ {status}" if status else "") if p)
+    return _truncate_preview(preview, max_len) if preview else None
+
+
+def _preview_task_get(args: dict, max_len: int) -> str | None:
+    task_id = _task_fields(args)[1]
+    return _truncate_preview(f"#{task_id}", max_len) if task_id else None
+
+
 def _preview_shell(key: str):
     def _build(args: dict, max_len: int) -> str | None:
         command = args.get(key)
@@ -447,6 +507,9 @@ _PREVIEW_BUILDERS = {
     "read_file": _preview_read_file, "memory": _preview_memory, "send_message": _preview_send_message,
     "skill_view": _preview_skill_view,
     "session_search": lambda args, _m: f"recall: \"{_clip(_oneline(args.get('query', '')), 25)}\"",
+    "TaskCreate": _preview_task_create, "TaskUpdate": _preview_task_update,
+    "TaskGet": _preview_task_get,
+    "TaskList": lambda _args, _limit: None,  # no meaningful arguments; the returned list is the content
 }
 
 
@@ -459,6 +522,8 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         max_len = _tool_preview_max_len
     if not args:
         return None
+    args = canonical_tool_args(tool_name, args)
+    tool_name = canonical_tool_name(tool_name)
     args = redact_tool_args_for_display(tool_name, args) or args
     builder = _PREVIEW_BUILDERS.get(tool_name)
     if builder is not None:
@@ -496,26 +561,39 @@ _TOOL_VERBS: dict[str, str] = {
     "skill_view": "Reading skill", "skills_list": "Listing skills", "skill_manage": "Updating skill",
     "delegate_task": "Delegating", "cronjob_manage": "Scheduling", "clarify": "Asking",
     "memory": "Updating memory", "todo_list": "Updating tasks",
+    # The SDK harness splits native ``todo_list`` into per-task calls, so each gets its own
+    # verb rather than borrowing "Updating tasks" -- reading the list and adding one differ.
+    "TaskCreate": "Adding task", "TaskUpdate": "Updating task",
+    "TaskGet": "Reading task", "TaskList": "Reading the task list",
+    "update_active_task": "Updating the active task",
+    # Not a Hermes tool and deliberately absent from the identity map (no native counterpart),
+    # but users see it constantly on runtimes that defer tool schemas, so it still earns a verb.
+    "ToolSearch": "Loading tools",
 }
-# Verbs that read better without the argument preview appended.
-_TOOL_VERBS_NO_PREVIEW: frozenset[str] = frozenset({"skills_list", "session_search"})
+# Verbs that read better without the argument preview appended: ``update_active_task`` takes
+# the whole record (echoing its first line would mislead); ``TaskList`` takes no arguments.
+_TOOL_VERBS_NO_PREVIEW: frozenset[str] = frozenset({
+    "skills_list", "session_search", "update_active_task", "TaskList",
+})
 # Verbs joined to the preview with " for " (search-style phrasing).
-_TOOL_VERBS_FOR_CONNECTOR: frozenset[str] = frozenset({"web_search", "search_files"})
+_TOOL_VERBS_FOR_CONNECTOR: frozenset[str] = frozenset({
+    "web_search", "search_files", "ToolSearch",
+})
 
 def get_tool_verb(tool_name: str) -> str | None:
     """Friendly verb for a built-in tool, or None (labels disabled / no curated verb);
     callers compose ``f"{verb}{tool_verb_connector(tool)}{preview}"`` themselves."""
-    return _TOOL_VERBS.get(tool_name) if _friendly_tool_labels else None
+    return _TOOL_VERBS.get(canonical_tool_name(tool_name)) if _friendly_tool_labels else None
 
 
 def tool_verb_connector(tool_name: str) -> str:
     """Return the connector between a verb and its preview (" for " or " ")."""
-    return " for " if tool_name in _TOOL_VERBS_FOR_CONNECTOR else " "
+    return " for " if canonical_tool_name(tool_name) in _TOOL_VERBS_FOR_CONNECTOR else " "
 
 
 def verb_drops_preview(tool_name: str) -> bool:
     """Whether the verb should render alone, without the argument preview."""
-    return tool_name in _TOOL_VERBS_NO_PREVIEW
+    return canonical_tool_name(tool_name) in _TOOL_VERBS_NO_PREVIEW
 
 
 def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) -> str | None:
@@ -527,6 +605,7 @@ def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) ->
     """
     if not tool_name or tool_name == "_thinking" or not _friendly_tool_labels:
         return None
+    tool_name = canonical_tool_name(tool_name)
     verb = _TOOL_VERBS.get(tool_name)
     phrase = f"is {verb[0].lower()}{verb[1:]}" if verb else f"is using {tool_name}"
     with_preview = args and verb and tool_name not in _TOOL_VERBS_NO_PREVIEW
@@ -1026,6 +1105,15 @@ def _cute_process_manage(a: dict, _r) -> str:
     return f"┊ ⚙️  proc      {'ls processes' if action == 'list' else f'{action} {sid}'}"
 
 
+_CUTE_TASK_VERBS = {"TaskCreate": "add", "TaskUpdate": "update", "TaskGet": "read", "TaskList": "list"}
+
+
+def _cute_task(tool_name: str, args: dict) -> str:
+    builder = _PREVIEW_BUILDERS[tool_name]
+    detail = _cute_trunc(builder(args, 0) or "")
+    return f"┊ 📋 task      {f'{_CUTE_TASK_VERBS[tool_name]} {detail}'.rstrip()}"
+
+
 _SCROLL_ARROWS = {"down": "↓", "up": "↑", "right": "→", "left": "←"}
 
 # Completion-line renderers: tool -> f(args, result) -> "┊ {emoji} {verb:9} {detail}" (duration appended by caller).
@@ -1060,6 +1148,10 @@ _CUTE_LINES = {
     "execute_code": _cute_execute_code,
     "browser_exec": _cute_browser_exec,
     "delegate_task": _cute_delegate,
+    "TaskCreate": lambda a, _r: _cute_task("TaskCreate", a),
+    "TaskUpdate": lambda a, _r: _cute_task("TaskUpdate", a),
+    "TaskGet": lambda a, _r: _cute_task("TaskGet", a),
+    "TaskList": lambda a, _r: _cute_task("TaskList", a),
 }
 
 

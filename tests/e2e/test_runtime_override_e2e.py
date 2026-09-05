@@ -180,10 +180,10 @@ def _run_turn(agent):
     return agent.run_conversation("hello")
 
 
-# ── P1-1: the overridden route is authoritative for the wire ────────────────
+# ── P1-1: the overridden model is authoritative for the wire ───────────────
 
 
-def test_override_model_and_provider_are_authoritative(monkeypatch):
+def test_override_model_is_authoritative(monkeypatch):
     """The wire request built for the turn uses the overridden model, and the
     pre-override identity is restored after the turn."""
     from hermes_cli.plugins import get_plugin_manager
@@ -345,9 +345,14 @@ def test_failed_override_falls_back_and_is_not_reapplied(monkeypatch):
         models = [r.get("model") for r in recorder.openai_requests]
         assert models, "no OpenAI-wire request recorded"
         assert models[0] == "override-model"
-        assert "fallback-model" in models, f"fallback route never reached; wire models: {models}"
-        fallback_at = models.index("fallback-model")
-        assert "override-model" not in models[fallback_at + 1:], (
+        # The retry built after the override's wire failure goes to the fallback
+        # route — the failed override must never re-enter the wire afterwards
+        # (consume_runtime_override supersedes the open scope when the fallback
+        # activates, so no later request is rebuilt for the overridden model).
+        assert models[1] == "fallback-model", (
+            f"retry not on the fallback route; wire models: {models}"
+        )
+        assert "override-model" not in models[1:], (
             f"failed override re-applied after the fallback activated: {models}"
         )
         # P1-1 supersession: the fallback-owned compressor state survives the

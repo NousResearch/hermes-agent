@@ -583,8 +583,8 @@ def _collect_pre_llm_call_context(
 ) -> Tuple[str, Dict[str, str]]:
     """Run ``pre_llm_call`` plugins; their context is injected into the user message
     (never the system prompt), and their validated ``runtime_override``
-    (model/provider/api_mode only; later hooks win per key) is staged for the turn's
-    API calls.  Oversized per-hook context is spilled to disk so a runaway plugin
+    (model only; later hooks win per key) is staged for the turn's API calls.
+    Oversized per-hook context is spilled to disk so a runaway plugin
     can't inflate every subsequent turn's prompt.
 
     Returns ``(context, runtime_override)``.  ``runtime_override`` is also stored on
@@ -637,7 +637,7 @@ def _collect_pre_llm_call_context(
             _ctx_parts.append(_piece)
         # Runtime override: merge every hook's dict, later hooks win per key.
         # validate_runtime_override type-checks and drops unsupported keys (logged,
-        # never crash); the surviving keys are only model/provider/api_mode.
+        # never crash); the surviving keys are only model.
         for r in _pre_results:
             if not isinstance(r, dict):
                 continue

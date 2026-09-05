@@ -914,13 +914,28 @@ class SessionDB(
         token = uuid.uuid4().hex
         try:
             with self._lock:
-                self._conn.execute(
-                    "INSERT OR IGNORE INTO state_meta (key, value) VALUES (?, ?)",
-                    (_STATE_DB_GENERATION_KEY, token),
-                )
+                # Read before writing. The stamp is minted once per FILE, so every open after
+                # the first one used to issue an INSERT OR IGNORE that could not insert
+                # anything — and a write statement takes the database write lock even when it
+                # changes nothing. With a sibling process holding that lock the no-op INSERT
+                # blocks for the full busy timeout (~1s at the timeout=1.0 this connection is
+                # opened with) and the whole block is then abandoned by the handler below, so
+                # the stamp was LOST precisely when contention made it slowest. state_meta is
+                # keyed by TEXT PRIMARY KEY, so the probe is a primary-key seek. First opener
+                # still wins via INSERT OR IGNORE, and racers still converge on the winner's
+                # token through the re-read.
                 row = self._conn.execute(
                     "SELECT value FROM state_meta WHERE key = ?", (_STATE_DB_GENERATION_KEY,),
                 ).fetchone()
+                if not (row and row[0]):
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO state_meta (key, value) VALUES (?, ?)",
+                        (_STATE_DB_GENERATION_KEY, token),
+                    )
+                    row = self._conn.execute(
+                        "SELECT value FROM state_meta WHERE key = ?",
+                        (_STATE_DB_GENERATION_KEY,),
+                    ).fetchone()
                 if row and row[0]:
                     token = str(row[0])
                 pragma_row = self._conn.execute("PRAGMA application_id").fetchone()

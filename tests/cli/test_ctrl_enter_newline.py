@@ -168,7 +168,7 @@ class _FakeOutput:
 
 
 def test_ghostty_uses_modify_other_keys_only():
-    """Ghostty must NOT push the Kitty keyboard protocol (CSI >1u)."""
+    """Ghostty must NOT push the Kitty keyboard protocol at all."""
     import cli as cli_mod
 
     out = _FakeOutput()
@@ -179,8 +179,8 @@ def test_ghostty_uses_modify_other_keys_only():
     assert result is True
     # Must contain modifyOtherKeys push ...
     assert b"\x1b[>4;2m" in out.written
-    # ... but NOT the Kitty protocol push.
-    assert b"\x1b[>1u" not in out.written
+    # ... but NOT the Kitty protocol push, whatever flags it asks for.
+    assert cli_mod._KITTY_KEYBOARD_PUSH_SEQ.encode() not in out.written
 
 
 def test_ghostty_via_term_var_uses_modify_other_keys_only():
@@ -194,7 +194,7 @@ def test_ghostty_via_term_var_uses_modify_other_keys_only():
     )
     assert result is True
     assert b"\x1b[>4;2m" in out.written
-    assert b"\x1b[>1u" not in out.written
+    assert cli_mod._KITTY_KEYBOARD_PUSH_SEQ.encode() not in out.written
 
 
 def test_non_ghostty_terminals_still_push_kitty_protocol():
@@ -207,7 +207,7 @@ def test_non_ghostty_terminals_still_push_kitty_protocol():
         env={"TERM_PROGRAM": "iTerm.app", "TERM": "xterm-256color"},
     )
     assert result is True
-    assert b"\x1b[>1u" in out.written
+    assert cli_mod._KITTY_KEYBOARD_PUSH_SEQ.encode() in out.written
     assert b"\x1b[>4;2m" in out.written
 
 
@@ -246,3 +246,12 @@ def test_is_ghostty_terminal_detection_paths():
     assert cli_mod._is_ghostty_terminal({"TERM": "XTERM-GHOSTTY"}) is True
     assert cli_mod._is_ghostty_terminal({"TERM_PROGRAM": "iTerm.app"}) is False
     assert cli_mod._is_ghostty_terminal({}) is False
+
+
+def test_the_pushed_flags_come_from_the_parser_that_decodes_them():
+    """A literal here would drift from the module that has to read what it produces."""
+    import cli as cli_mod
+    from hermes_cli import pt_input_extras_parser as parser
+
+    assert cli_mod._KITTY_KEYBOARD_PUSH_SEQ == parser.push()
+    assert parser.WANTED & parser.ALTERNATE_KEYS, "flag 4 is what makes a layout decodable"

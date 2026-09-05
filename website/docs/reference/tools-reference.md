@@ -102,6 +102,36 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 | `search_files` | Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents. Content search (target='content'): Regex search inside files. Output modes: full matches with line… | — |
 | `write_file` | Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by the write are surfaced. | — |
 
+### Navigate Markdown before reading sections
+
+`read_file({"path":"spec.md","mode":"outline"})` returns heading text,
+level (1–6), and 1-based source line numbers. Select a section, then read its
+body with the normal `offset` and `limit`. No summary/model call is involved;
+ordinary reads are unchanged.
+
+Outline mode recognizes ATX and Setext headings, excludes fenced code, and
+retains duplicate headings at their own positions. This is line-oriented
+navigation, not a complete CommonMark renderer: multi-line Setext paragraphs
+use the line immediately preceding the underline.
+
+Both work and output are bounded: at most 64 KiB is read per call, with at
+most 500 headings and a 90,000-character serialized-heading budget. Titles
+use the existing file-read redaction policy before being capped at 150
+characters (`heading_truncated` indicates this).
+
+When `scan_complete` is false, pass `next_cursor` as `cursor` on the same
+path and task, including when the page contains no headings. Totals are
+reported only on completion. Initial `offset` selects a heading ordinal;
+`limit` caps headings per page. Cursors expire after ten minutes, retain at
+most eight checkpoints per task, and reject changes to the file. Restart
+without a cursor after expiry or a file change.
+
+Existing access guards still apply. An outline does not count as a body read
+or refresh edit-staleness checks. Non-Markdown inputs return a note; binary
+inputs and physical lines larger than 64 KiB return an explicit error. Use
+ordinary paginated reads for oversized text lines. No new dependency, service,
+or tool is needed.
+
 ## `homeassistant` toolset
 
 | Tool | Description | Requires environment |
@@ -376,5 +406,4 @@ Registered only on the `hermes-yuanbao` platform toolset. Yuanbao is Tencent's c
 | `yb_send_dm` | Send a private/direct message to a user in a group, with optional media files. | Yuanbao credentials |
 | `yb_search_sticker` | Search the built-in Yuanbao sticker (TIM face) catalogue by keyword. | Yuanbao credentials |
 | `yb_send_sticker` | Send a built-in sticker to the current Yuanbao chat. | Yuanbao credentials |
-
 

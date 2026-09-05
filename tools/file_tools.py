@@ -536,7 +536,8 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     return count
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str = "default",
+                   mode: str = "read", cursor: str | None = None) -> str:
     """Read a file with pagination and line numbers.
 
     Guard order: device-path blocklist (no I/O) → stat-based special-file
@@ -545,6 +546,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
     """
     try:
         offset, limit = normalize_read_pagination(offset, limit)
+        if mode not in ("read", "outline"):
+            return tool_error("mode must be 'read' or 'outline'")
+        if cursor is not None and (mode != "outline" or not isinstance(cursor, str)):
+            return tool_error("cursor must be a string used with mode='outline'")
 
         device_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
         if _is_blocked_device(path, base_dir=device_base):
@@ -565,6 +570,17 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                         "it would block indefinitely, so no read was "
                         "attempted. Use terminal utilities if you need to "
                         "interact with it.")})
+
+        if mode == "outline":
+            block_error = get_read_block_error(str(_resolved))
+            if block_error:
+                return tool_error(block_error)
+            cached = _check_not_found_cache("read", str(_resolved), task_id)
+            if cached is not None:
+                return cached
+            from tools.file_outline import outline_page
+            return json.dumps(outline_page(_get_file_ops(task_id), path, str(_resolved),
+                                           task_id, offset, limit, cursor), ensure_ascii=False)
 
         extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
         if extracted is not None:
@@ -978,8 +994,10 @@ READ_FILE_SCHEMA = {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
-            "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": 2000, "maximum": 2000}
+            "offset": {"type": "integer", "description": "Starting line (1-based); in outline mode, initial heading ordinal. Ignored with cursor.", "default": 1, "minimum": 1},
+            "limit": {"type": "integer", "description": "Maximum lines (default/max 2000); in outline mode, maximum headings (capped at 500). Output is also character-budgeted.", "default": 2000, "maximum": 2000},
+            "mode": {"type": "string", "enum": ["read", "outline"], "default": "read", "description": "outline: Markdown headings with levels and source lines, not body content. Scans at most 64 KiB per call; follow next_cursor until scan_complete, including empty pages. Default read is unchanged."},
+            "cursor": {"type": "string", "description": "Outline continuation from next_cursor, for the same path and task. Expires in 10 minutes; restart if file changed."}
         },
         "required": ["path"]
     }
@@ -1123,7 +1141,9 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1),
+                          limit=args.get("limit", 500), task_id=tid,
+                          mode=args.get("mode", "read"), cursor=args.get("cursor"))
 
 
 def _handle_write_file(args, **kw):

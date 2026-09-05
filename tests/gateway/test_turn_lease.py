@@ -462,6 +462,20 @@ def test_rebind_does_not_replace_target_during_waiter_handoff():
     _run(scenario())
 
 
+def test_registry_len_tracks_lease_entries():
+    async def scenario():
+        registry = SessionTurnLeaseRegistry()
+        assert len(registry) == 0
+        token = await registry.acquire("session", owner_key="key", generation=1, timeout=1)
+        assert token is not None
+        assert len(registry) == 1
+        assert registry.release(token) is True
+        # Released entries remain available for reuse until capacity eviction.
+        assert len(registry) == 1
+
+    _run(scenario())
+
+
 # ---------------------------------------------------------------------------
 # GatewayRunner wiring
 # ---------------------------------------------------------------------------

@@ -511,6 +511,10 @@ class BaseEnvironment(ABC):
         except Exception:
             logger.debug("terminal wait-bound kill_process_tree failed", exc_info=True)
 
+    def stop(self):
+        """Alias for cleanup (compat with older callers)."""
+        self.cleanup()
+
     # --- Shared helpers ---
     def __del__(self):
         try:

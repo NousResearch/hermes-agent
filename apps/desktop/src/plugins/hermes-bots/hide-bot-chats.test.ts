@@ -39,8 +39,10 @@ const { groupChats, hostMock, lastRoster, requestForBotMock } = vi.hoisted(() =>
     setPersistedSessionHidden: vi.fn(),
     state: {
       gateway: { listen: vi.fn(() => () => undefined) },
-      profile: { get: () => 'default' }
-    }
+      profile: { get: vi.fn(() => 'default') },
+      connectionId: { get: vi.fn(() => '') }
+    },
+    activeConnectionId: vi.fn(() => '')
   },
   lastRoster: { value: [] as RosterRow[] },
   requestForBotMock: vi.fn()
@@ -50,7 +52,21 @@ vi.mock('@hermes/plugin-sdk', () => ({ host: hostMock }))
 
 vi.mock('./canonical-chat', () => ({ PROFILE_SESSION_LIST_LIMIT: 200 }))
 
-vi.mock('./data', () => ({ $lastRoster: { get: () => lastRoster.value } }))
+vi.mock('./data', () => ({
+  $lastRoster: { get: () => lastRoster.value },
+  isActiveRosterBot: (bot: RosterRow, active: { connectionId?: string; name?: string } | null) => {
+    if (!active) return false
+    const activeName = String(active.name || 'default').trim() || 'default'
+    const activeId = String(active?.connectionId || '').trim()
+    const botId = String((bot as RosterRow)?.connectionId || '').trim()
+    const botName = String((bot as RosterRow)?.name || '').trim() || 'default'
+    if ((bot as RosterRow)?.remoteSource) {
+      return Boolean(activeId) && activeId === botId && botName === activeName
+    }
+    if (activeId && activeId !== 'local' && botId && activeId !== botId) return false
+    return botName === activeName
+  }
+}))
 
 vi.mock('./group-chat', () => ({ $groupChats: { get: () => groupChats.value } }))
 
@@ -103,6 +119,9 @@ beforeEach(() => {
   hostMock.setPersistedSessionHidden.mockResolvedValue(undefined)
   hostMock.request.mockResolvedValue({})
   requestForBotMock.mockResolvedValue({})
+  hostMock.state.profile.get = vi.fn(() => 'default')
+  hostMock.state.connectionId.get = vi.fn(() => '')
+  hostMock.activeConnectionId = vi.fn(() => '')
 })
 
 afterEach(() => {
@@ -231,6 +250,9 @@ describe('the title half: each roster bot’s own profile listing', () => {
     hostMock.listPersistedSessions.mockImplementation(async (_route: unknown, options: { profile: string }) => ({
       sessions: rowsByProfile[options.profile] || []
     }))
+    hostMock.state.profile.get = vi.fn(() => 'alpha')
+    hostMock.state.connectionId.get = vi.fn(() => '')
+    hostMock.activeConnectionId = vi.fn(() => '')
   })
 
   it('hides Bot-Mode plumbing titles per roster bot, and only those', async () => {
@@ -240,19 +262,19 @@ describe('the title half: each roster bot’s own profile listing', () => {
       [null | ProfileRoute, { include_hidden?: boolean; profile: string }]
     >
 
-    expect(lists.map(([, options]) => options.profile).sort()).toEqual(['alpha', 'remy'])
+    // ponytail #94872: only active profile is swept — inactive remy is lazy
+    expect(lists.map(([, options]) => options.profile).sort()).toEqual(['alpha'])
     // Visible-rows-only listing keeps the sweep idempotent.
     expect(lists.every(([, options]) => !options.include_hidden)).toBe(true)
 
     // Exact plumbing titles only — user-titled and brand-new rows stay visible.
+    // remy's r-1 is inactive and lazily deferred.
     expect(
       hiddenCalls()
         .map(([, options]) => options.sessionId)
         .sort()
-    ).toEqual(['a-1', 'a-2', 'a-3', 'a-8', 'r-1'])
+    ).toEqual(['a-1', 'a-2', 'a-3', 'a-8'])
     expect(hiddenCalls().every(([, options]) => options.hidden)).toBe(true)
-    // Remote-source rows keep their immutable source owner on the REST route.
-    expect(hiddenCalls().find(([, options]) => options.sessionId === 'r-1')?.[0]?.connectionId).toBe('mini')
   })
 
   it('runs beside the id half, and a throwing title sweep never breaks it', async () => {

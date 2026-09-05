@@ -34,8 +34,10 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
       state: {
         ...sdk.host.state,
         gateway: gatewayState,
-        profile: atom('default')
-      }
+        profile: atom('alpha'),
+        connectionId: atom('')
+      },
+      activeConnectionId: () => ''
     }
   }
 })
@@ -70,21 +72,16 @@ describe('Bot Mode hidden-session reconciliation lifecycle', () => {
     gatewayState.set('open')
     await flushSweep()
 
-    expect(listPersistedSessions).toHaveBeenCalledTimes(6)
+    // ponytail #94872: only active profile is swept — inactive beta is lazy (5->1)
+    expect(listPersistedSessions).toHaveBeenCalledTimes(3)
     expect(listPersistedSessions.mock.calls.map(([, options]) => options.profile)).toEqual([
       'alpha',
-      'beta',
       'alpha',
-      'beta',
-      'alpha',
-      'beta'
+      'alpha'
     ])
-    expect(setPersistedSessionHidden).toHaveBeenCalledTimes(6)
+    expect(setPersistedSessionHidden).toHaveBeenCalledTimes(3)
     expect(setPersistedSessionHidden.mock.calls.map(([, options]) => options)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ hidden: true, profile: 'alpha', sessionId: 'alpha-bot' }),
-        expect.objectContaining({ hidden: true, profile: 'beta', sessionId: 'beta-bot' })
-      ])
+      expect.arrayContaining([expect.objectContaining({ hidden: true, profile: 'alpha', sessionId: 'alpha-bot' })])
     )
     expect(request.mock.calls.some(([method]) => method === 'session.list' || method === 'session.set_hidden')).toBe(
       false

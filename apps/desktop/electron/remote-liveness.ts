@@ -1,9 +1,9 @@
 export const REMOTE_LIVENESS_TIMEOUT_MS = 10_000
-// Dispatch is synchronous user intent: a cached descriptor must prove its
-// forwarded endpoint is alive before it can be returned. Keep this probe much
-// shorter than the background liveness budget so a dead tunnel reconnects
-// promptly instead of making the click feel hung.
-export const POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS = 2_500
+// Dispatch is synchronous user intent, but a newly established SSH forward can
+// take several seconds before the remote HTTP server responds. Use the same
+// 10s budget as background liveness: a 2.5s /api/status probe false-fails on
+// Tailscale userspace and then kills a healthy ControlMaster.
+export const POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS = 10_000
 export const REMOTE_LIVENESS_FAILURE_LIMIT = 3
 // Even at the capped retry path, consecutive liveness observations are at most
 // about 48s apart (ticket mint + socket open + backoff + the next status probe).
@@ -100,7 +100,7 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
       return reconnect()
     }
 
-    await probe(connection, '/api/status', {
+    await probe(connection, '/api/health', {
       timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
     })
   } catch (error) {

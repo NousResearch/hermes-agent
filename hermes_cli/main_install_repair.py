@@ -1179,3 +1179,17 @@ def _resolve_node_runtime_npm() -> str | None:
 def _resolve_update_branch(args) -> str:
     """Normalize ``args.branch`` to a non-empty name (default ``main``; blank/whitespace = default)."""
     return (getattr(args, "branch", None) or "main").strip() or "main"
+
+
+def _resolve_update_ref(args) -> str | None:
+    """Return a stripped ``--ref`` pin, or None when the flag was omitted."""
+    raw = getattr(args, "ref", None)
+    if raw is None:
+        return None
+    stripped = str(raw).strip()
+    return stripped or None
+
+
+def _update_branch_explicit(args) -> bool:
+    """True when the caller passed a non-empty ``--branch`` value."""
+    return bool((getattr(args, "branch", None) or "").strip())

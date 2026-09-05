@@ -30,7 +30,7 @@ When you run `hermes update`, the following steps occur:
 4. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
 5. **Config migration** — detects new config options added since your version and prompts you to set them
 6. **Desktop rebuild (stage-and-swap)** — if the Hermes Desktop app was built from this checkout, it is rebuilt so the GUI matches the new code. The rebuild packs into a temporary staging directory next to `apps/desktop/release/`, verifies the staged app, and only then renames it over the previous build. A rebuild that fails at any point — corrupt Electron download, missing dependency, disk full — leaves the previous app untouched and launchable; the update reports `⚠ Update partially complete` and `hermes desktop` retries the rebuild.
-7. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Hermes can map the running PID back to a profile. Manually-launched `hermes serve` / `hermes dashboard` backends (for example a network-bound serve powering a remote Desktop) are handled the same way: each backend records its bind address in the install's spawn ledger at startup, so the update stops it before the code swap and relaunches it afterward on the **same host and port** — a remote Desktop pointed at that endpoint reconnects instead of stranding. Backends owned by a running Desktop app are left to the app's own respawn.
+7. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Hermes can map the running PID back to a profile. Manually-launched `hermes serve` / `hermes dashboard` backends (for example a network-bound serve powering a remote Desktop) are handled the same way: each backend records its bind address in the install's spawn ledger at startup, so the update stops it before the code swap and relaunches it afterward on the **same host and port** — a remote Desktop pointed at that endpoint reconnects instead of stranding. Backends owned by a running Desktop app are left to the app's own respawn. Pass `--no-restart` to skip that gateway refresh.
 
 ### Updating against a non-default branch: `--branch`
 
@@ -42,6 +42,23 @@ hermes update --check --branch experimental   # preview behindness only
 ```
 
 If your local checkout is on a different branch, Hermes auto-stashes any uncommitted work, switches HEAD to the target branch, and then pulls. Branches that don't exist locally are auto-tracked from `origin/<name>` (`git checkout -B <name> origin/<name>`). Branches that don't exist anywhere fail cleanly — your stashed changes are restored before exit so you're never stranded in a weird state. The `main`-only fork-upstream sync logic is automatically skipped on non-`main` branches.
+
+### Skip gateway restart: `--no-restart`
+
+After a successful update, Hermes restarts running gateway profiles so they load the new code. Pass `--no-restart` to skip that step. Dependency install and post-install hooks still run. Use this when an outer supervisor (for example systemd) will restart the processes itself.
+
+### Pinning to a git tag or commit: `--ref`
+
+`--branch` tracks a branch tip. To pin the install to a specific git tag or commit (detached HEAD), use `--ref`:
+
+```bash
+hermes update --ref v2026.5.16
+hermes update --ref abc1234
+```
+
+`--ref` accepts a git tag or a 7-40 character commit SHA. After one fetch, a name that resolves only as a branch (for example `main`) is rejected; use `--branch` to track a branch. `--ref` and `--branch` cannot be combined. `--check` only compares branch tips and does not accept `--ref`.
+
+If HEAD is already at the pin, the command succeeds as already up to date and still refreshes dependencies, post-install hooks, and running gateways. `hermes update --branch main` later leaves the pin and returns to tracking `main`.
 
 ### Checkout parked on a feature branch
 

@@ -435,10 +435,21 @@ def _dump_call_args(fc: Dict[str, Any], **kwargs: Any) -> str:
 
 
 def _usage_from_metadata(usage_meta: Dict[str, Any]) -> SimpleNamespace:
+    """Gemini ``usageMetadata`` → OpenAI-shaped usage.
+
+    Hidden thinking is reported separately in ``thoughtsTokenCount``:
+    ``candidatesTokenCount`` counts visible output only, while ``totalTokenCount``
+    already includes thoughts. OpenAI's ``completion_tokens`` covers reasoning, so
+    thoughts are folded in (otherwise a thinking turn bills a few percent of its
+    real output and ``prompt + completion != total``) and also surfaced under
+    ``completion_tokens_details.reasoning_tokens``, where ``normalize_usage`` reads
+    them. Absent on non-thinking/older responses, which keeps their numbers as-is."""
     count = lambda key: int(usage_meta.get(key) or 0)  # noqa: E731
+    reasoning_tokens = count("thoughtsTokenCount")
     return SimpleNamespace(
-        prompt_tokens=count("promptTokenCount"), completion_tokens=count("candidatesTokenCount"),
+        prompt_tokens=count("promptTokenCount"), completion_tokens=count("candidatesTokenCount") + reasoning_tokens,
         total_tokens=count("totalTokenCount"), prompt_tokens_details=SimpleNamespace(cached_tokens=count("cachedContentTokenCount")),
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=reasoning_tokens),
     )
 
 

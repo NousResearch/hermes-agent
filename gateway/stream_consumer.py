@@ -156,6 +156,17 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._in_think_block = False  # think-tag filter state (mirrors CLI _stream_delta)
         self._think_buffer = ""
         self._before_finalize_notified = False
+        # Set when _reset_segment_state is called with preserve_no_edit=True
+        # (segment break on a __no_edit__ platform).  Signals _send_fallback_final
+        # to include "guest_segment_start": True on its first chunk so the
+        # Telegram adapter replaces the guest reply buffer instead of appending —
+        # preventing inter-tool commentary from earlier segments from bleeding
+        # into the answerGuestQuery reply.
+        self._had_no_edit_segment_break = False
+        # Offset into _accumulated where the most-recent segment began.  Updated
+        # by each __no_edit__ segment-break so _send_fallback_final can extract
+        # only the last segment's text when the adapter opts in.
+        self._no_edit_segment_text_start = 0
         self._reset_message_state()
 
         # Transports, resolved in run().  Draft: animated frames via adapter.send_draft;
@@ -433,6 +444,16 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     def _reset_segment_state(self, *, preserve_no_edit: bool = False) -> None:
         if preserve_no_edit and self._message_id == "__no_edit__":
+            # Preserve the __no_edit__ sentinel so _send_fallback_final remains
+            # the final delivery path — resetting to None would re-enter the
+            # first-send path on every segment break and create one platform
+            # message per tool call (the cause of 155 PR comments in #8124).
+            # Track where the current segment begins in _accumulated so
+            # adapters that deliver only the final segment (e.g. Telegram guest
+            # mode via answerGuestQuery) can extract it without accumulating
+            # inter-tool narration from earlier segments.
+            self._had_no_edit_segment_break = True
+            self._no_edit_segment_text_start = len(self._accumulated)
             return
         # Retain the segment's visible text so has_delivered_text still matches.
         finalized = self._clean_for_display(self._last_sent_text).strip()

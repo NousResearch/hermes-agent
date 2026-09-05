@@ -415,6 +415,13 @@ class TelegramAdapter(BasePlatformAdapter):
     FALLBACK_ON_FINAL_EDIT_FLOOD: bool = True  # retrying a final edit burns the same flood budget
     RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK: bool = True  # a failed final edit may leave a partial preview
 
+    # In guest mode (answerGuestQuery), the reply must be a single coherent
+    # answer, not a concatenation of all inter-tool commentary segments.
+    # Setting this True tells stream_consumer._send_fallback_final to deliver
+    # only the last segment's text and tag it with "guest_segment_start" so
+    # the send() buffer replaces instead of appending stale preamble.
+    GUEST_MODE_DROPS_PRIOR_SEGMENTS: bool = True
+
     # Adaptive text-batch ingress ("feels instant"): ≤320 codepoints settle in ~180ms, ≤1024 in ~240ms,
     # longer waits the configured cap; always clamped to ``_text_batch_delay_seconds``.
     _TEXT_BATCH_FAST_LEN = 320
@@ -501,6 +508,13 @@ class TelegramAdapter(BasePlatformAdapter):
         self._guest_reply_buffer: Dict[str, str] = {}
         # inline_message_id returned by the stub answerGuestQuery; used for the follow-up editMessageText
         self._guest_inline_message_ids: Dict[str, Optional[str]] = {}
+        # Per-turn staged media: chat_id → {file_id, media_kind}.  Set by send_* wrappers
+        # when a file is staged to TELEGRAM_HOME_CHANNEL during processing; consumed by OPC
+        # which edits the stub to include a deliver_<token> button.  Last-write-wins per turn.
+        self._guest_turn_media: Dict[str, dict] = {}
+        # Cross-turn file_id cache: (resolved_path, tg_type) → telegram file_id.
+        # Prevents re-staging the same file to TELEGRAM_HOME_CHANNEL on repeated delivery attempts.
+        self._guest_file_id_cache: Dict[tuple, str] = {}
         # Dedup set for guest_message update_ids: PTB resets its polling offset to 0 on restart,
         # so Telegram re-delivers unacknowledged updates.  We persist the last seen update_id to
         # _GUEST_UPDATE_ID_FILE and skip updates whose ids we've already processed.
@@ -4800,6 +4814,10 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send audio as a native Telegram voice message or audio file."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+
+        if self._is_guest_chat(chat_id):
+            return await self._guest_media_send(str(chat_id), "audio", audio_path, caption)
+
         _transcoded_voice_path: Optional[str] = None
         try:
             if not os.path.exists(audio_path):
@@ -4847,6 +4865,21 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         if not images:
             return SendResult(success=False, error="no images to send")
+
+        # Guest mode: stage each image via _guest_media_send (uploads to home channel
+        # to mint a file_id; first image goes to native delivery, rest become notes).
+        if self._is_guest_chat(chat_id):
+            from urllib.parse import unquote as _unquote
+            delivered = False
+            last_error = None
+            for _img_url, _img_alt in images:
+                _img_path = _unquote(_img_url[7:]) if _img_url.startswith("file://") else _img_url
+                _result = await self._guest_media_send(str(chat_id), "photo", _img_path, _img_alt or None)
+                delivered = delivered or _result.success
+                if not _result.success:
+                    last_error = _result.error
+            return SendResult(success=delivered, error=None if delivered else last_error)
+
         try:
             from telegram import InputMediaPhoto
         except Exception as exc:  # pragma: no cover - missing SDK
@@ -4910,6 +4943,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send a local image file natively as a Telegram photo."""
+        if self._is_guest_chat(chat_id):
+            return await self._guest_media_send(str(chat_id), "photo", image_path, caption)
+
         async def _photo_failed(e: Exception) -> SendResult:
             error_str = str(e)
             # Dimension errors are expected for valid images Telegram refuses as photos → INFO.
@@ -4959,6 +4995,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send a document/file natively as a Telegram file attachment."""
+        if self._is_guest_chat(chat_id):
+            return await self._guest_media_send(str(chat_id), "document", file_path, caption or file_name)
         return await self._send_local_file(
             "File", file_path, chat_id, reply_to, metadata, "document",
             lambda f: {"document": f, "filename": file_name or os.path.basename(file_path), "caption": self._caption_1024(caption)},
@@ -4971,6 +5009,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send a video natively as a Telegram video message."""
+        if self._is_guest_chat(chat_id):
+            return await self._guest_media_send(str(chat_id), "video", video_path, caption)
         return await self._send_local_file(
             "Video", video_path, chat_id, reply_to, metadata, "video",
             lambda f: {"video": f, "caption": self._caption_1024(caption)},
@@ -4988,6 +5028,28 @@ class TelegramAdapter(BasePlatformAdapter):
         if not is_safe_url(image_url):
             logger.warning("[%s] Blocked unsafe image URL (SSRF protection)", self.name)
             return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
+
+        if self._is_guest_chat(chat_id):
+            # URL-based: try sending from URL to staging directly (Telegram downloads it).
+            # Falls back to a local download + _guest_media_send if the URL is a local address.
+            _staging = os.environ.get("TELEGRAM_HOME_CHANNEL")
+            if _staging and self._bot:
+                try:
+                    _staging_id = int(_staging)
+                    _staging_kwargs: Dict[str, Any] = {"photo": image_url, "disable_notification": True}
+                    if caption:
+                        _staging_kwargs["caption"] = caption[:1024]
+                    _smsg = await self._bot.send_photo(_staging_id, **_staging_kwargs)
+                    _file_id = _smsg.photo[-1].file_id if _smsg.photo else None
+                    if _file_id:
+                        _chat_id_str = str(chat_id)
+                        self._guest_turn_media[_chat_id_str] = {"file_id": _file_id, "media_kind": "photo"}
+                        logger.info("[%s] guest URL photo staged for OPC delivery (chat=%s)", self.name, _chat_id_str)
+                        return SendResult(success=True, message_id=str(_smsg.message_id))
+                except Exception as _e:
+                    logger.warning("[%s] guest URL photo staging failed: %s", self.name, _e)
+            return SendResult(success=False, error="guest_no_staging: cannot send image in guest chat without TELEGRAM_HOME_CHANNEL")
+
         photo_caption = self._caption_1024(caption)
         try:
             msg = await self._send_media(
@@ -6007,7 +6069,10 @@ class TelegramAdapter(BasePlatformAdapter):
             from hermes_constants import get_hermes_home
             _path = get_hermes_home() / "telegram_guest_update_id.json"
             import json as _json
-            _path.write_text(_json.dumps({"last_update_id": update_id, "seen_ids": sorted(self._seen_guest_update_ids)[-200:]}))
+            _path.write_text(
+                _json.dumps({"last_update_id": update_id, "seen_ids": sorted(self._seen_guest_update_ids)[-200:]}),
+                encoding="utf-8",
+            )
         except Exception:
             pass
 
@@ -6018,13 +6083,147 @@ class TelegramAdapter(BasePlatformAdapter):
             import json as _json
             _path = get_hermes_home() / "telegram_guest_update_id.json"
             if _path.exists():
-                _data = _json.loads(_path.read_text())
+                _data = _json.loads(_path.read_text(encoding="utf-8"))
                 _ids = _data.get("seen_ids") or []
                 self._seen_guest_update_ids = set(_ids)
                 self._last_guest_update_id = _data.get("last_update_id", 0)
                 logger.info("[%s] Loaded %d seen guest update_ids (last=%s)", self.name, len(_ids), self._last_guest_update_id)
         except Exception as _e:
             logger.debug("[%s] Could not load guest update_ids: %s", self.name, _e)
+
+    def _guest_media_root(self) -> _Path:
+        """Return the resolved root directory guest media staging is confined to.
+
+        The delivery-constraint prompt tells the LLM to stage downloads under
+        ``HERMES_HOME/cache/<subdir>/`` — the same path on the sandbox and the
+        host, per the note in ``_handle_guest_message_update`` — but a sandbox
+        that instead exposes it as a container-relative cache path (e.g.
+        ``/root/.hermes/cache/<subdir>``) is translated back via
+        ``from_agent_visible_cache_path`` before this check runs. Either way,
+        that's only a prompt-level instruction — nothing enforced it. A
+        guest-triggered turn that is
+        coerced (directly asked, or prompt-injected) into emitting
+        ``MEDIA: /home/hermes/.hermes/auth.json`` or any other host path would
+        otherwise have it staged and made deliverable to the guest chat with no
+        containment at all. This is the hard boundary: any resolved local path
+        outside this root is rejected before ``open()``/upload is ever reached.
+        """
+        from hermes_constants import get_hermes_home
+        return (get_hermes_home() / "cache").resolve()
+
+    async def _guest_media_send(self, chat_id: str, tg_type: str, local_path: str, caption: Optional[str] = None) -> "SendResult":
+        """Stage media to TELEGRAM_HOME_CHANNEL and record it for OPC delivery.
+
+        editMessageMedia on an inline message requires a file_id or URL — raw
+        uploads are not accepted.  We upload to the home channel first to mint a
+        file_id, then record {file_id, media_kind} in _guest_turn_media so that
+        on_processing_complete can edit the stub with a deliver_<token> button.
+        Last-write-wins if the skill sends multiple files in one turn.
+
+        tg_type: "photo" | "audio" | "video" | "document"
+        """
+        _chat_id_str = str(chat_id)
+        if not self._bot:
+            return SendResult(success=False, error="guest_media: bot not available")
+
+        _staging = os.environ.get("TELEGRAM_HOME_CHANNEL")
+        if not _staging:
+            return SendResult(success=False, error="guest_no_staging: TELEGRAM_HOME_CHANNEL not configured")
+        try:
+            staging_id = int(_staging)
+        except (ValueError, TypeError):
+            return SendResult(success=False, error="guest_no_staging: TELEGRAM_HOME_CHANNEL is not a valid chat id")
+
+        _is_url = local_path.startswith("http://") or local_path.startswith("https://")
+        if _is_url:
+            _resolved_path = local_path
+        else:
+            from tools.credential_files import from_agent_visible_cache_path
+            # Same translate-then-contain pattern tools/image_source.py's
+            # _permitted_host_read_target() already uses for agent-visible
+            # cache paths: a no-op passthrough when the backend isn't Docker
+            # or the path isn't under a mounted cache dir (TERMINAL_ENV !=
+            # "docker", or an already-host-visible path some deployments
+            # write directly per the delivery-constraint note above) — the
+            # hard containment check below still gates the final result
+            # either way, so an unresolved passthrough just fails there.
+            _resolved_path = from_agent_visible_cache_path(local_path)
+
+        if not _is_url:
+            # Hard containment: reject anything outside the guest media root
+            # before any open()/upload is attempted, regardless of what the
+            # LLM turn was coerced into requesting. Not a soft/advisory check --
+            # this is the only thing standing between a guest chat and reading
+            # an arbitrary file the hermes process can access.
+            #
+            # Resolution and containment are separate try blocks so each
+            # handler's assumption holds: resolve() can itself raise
+            # ValueError (e.g. an embedded null byte in a model-emitted
+            # path), and inside a single try that would enter the
+            # "outside staging root" handler with _abs_resolved unbound --
+            # killing the one log line meant to record the rejection.
+            try:
+                _abs_resolved = _Path(_resolved_path).resolve()
+            except Exception as _path_err:
+                return SendResult(success=False, error=f"guest_media: path validation failed: {_path_err}")
+            try:
+                _abs_resolved.relative_to(self._guest_media_root())
+            except ValueError:
+                logger.warning(
+                    "[%s] guest_media_send: rejected path outside staging root "
+                    "(chat=%s requested=%r resolved=%s)",
+                    self.name, _chat_id_str, local_path, _abs_resolved,
+                )
+                return SendResult(
+                    success=False,
+                    error=f"guest_media: path outside the allowed staging directory: {local_path}",
+                )
+            except Exception as _path_err:
+                return SendResult(success=False, error=f"guest_media: path validation failed: {_path_err}")
+            _resolved_path = str(_abs_resolved)
+
+        # Cache key includes mtime for local files so a re-generated file at
+        # the same path (same name, new content) re-stages and mints a fresh
+        # file_id instead of serving the stale cached one. URLs have no mtime.
+        _cache_key: tuple = (_resolved_path, tg_type)
+        if not _is_url:
+            try:
+                _cache_key = (_resolved_path, tg_type, os.path.getmtime(_resolved_path))
+            except OSError:
+                pass  # missing file -- the existence check below reports it
+        _file_id = self._guest_file_id_cache.get(_cache_key)
+
+        if not _file_id:
+            if not _is_url and not os.path.exists(_resolved_path):
+                return SendResult(success=False, error=f"guest_media: file not found: {local_path}")
+            try:
+                _send_map = {
+                    "photo": self._bot.send_photo,
+                    "audio": self._bot.send_audio,
+                    "video": self._bot.send_video,
+                    "document": self._bot.send_document,
+                }
+                _send_fn = _send_map.get(tg_type, self._bot.send_document)
+                _extra: Dict[str, Any] = {"disable_notification": True}
+                if _is_url:
+                    _msg = await _send_fn(staging_id, **{tg_type: _resolved_path, **_extra})
+                else:
+                    with open(_resolved_path, "rb") as _fh:
+                        _msg = await _send_fn(staging_id, **{tg_type: _fh, **_extra})
+                _media_attr = getattr(_msg, tg_type, None)
+                if tg_type == "photo" and _msg.photo:
+                    _media_attr = _msg.photo[-1]
+                _file_id = getattr(_media_attr, "file_id", None)
+                if not _file_id:
+                    return SendResult(success=False, error="guest_media: staging upload returned no file_id")
+                self._guest_file_id_cache[_cache_key] = _file_id
+            except Exception as _stage_err:
+                logger.warning("[%s] guest_media_send staging failed (type=%s): %s", self.name, tg_type, _stage_err)
+                return SendResult(success=False, error=str(_stage_err))
+
+        self._guest_turn_media[_chat_id_str] = {"file_id": _file_id, "media_kind": tg_type}
+        logger.info("[%s] guest media staged for OPC delivery (type=%s chat=%s)", self.name, tg_type, _chat_id_str)
+        return SendResult(success=True, message_id="staged")
 
     async def _handle_guest_message_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle guest_message updates (Bot API 10.0 guest bot feature).
@@ -6125,6 +6324,53 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return
 
+        # Branch 2 / Branch 3: deliver_<token> query — no LLM pass, no stub.
+        # Strip the @botname mention before checking so "@bot deliver_<tok>" works.
+        # Dispatched independent of any in-flight Branch-1 turn for this chat —
+        # tapping a "tap to receive" button must work even while another normal
+        # query is still being processed in the same chat. Runs after the caller
+        # gate above, so an unauthorized caller can't redeem a leaked token.
+        _query_text = self._clean_bot_trigger_text(text.strip()).strip()
+        if _query_text.startswith("deliver_"):
+            _token = _query_text[len("deliver_"):]
+            try:
+                from tools.guest_mode_tool import resolve_token as _resolve_token
+                _entry = _resolve_token(_token)
+            except Exception as _imp_err:
+                logger.warning("[%s] guest deliver: import failed: %s", self.name, _imp_err)
+                _entry = None
+            if _entry:
+                # Branch 2 — valid token: answer immediately with the cached media.
+                _mk = _entry["media_kind"]
+                _fid = _entry["file_id"]
+                _fid_key = f"{_mk}_file_id"
+                _cached_result: Dict[str, Any] = {"type": _mk, "id": "delivery", _fid_key: _fid}
+                if _mk in ("audio", "video", "document"):
+                    _cached_result["title"] = _mk.capitalize()
+                try:
+                    await self._bot.do_api_request(
+                        "answerGuestQuery",
+                        api_kwargs={"guest_query_id": guest_query_id, "result": _cached_result},
+                    )
+                    logger.info("[%s] guest deliver branch2 (type=%s chat=%s)", self.name, _mk, chat_id_str)
+                except Exception as _b2_err:
+                    logger.error("[%s] guest deliver branch2 failed: %s", self.name, _b2_err)
+            else:
+                # Branch 3 — invalid / expired token.
+                _err_result = {
+                    "type": "article", "id": "reply", "title": "Something went wrong",
+                    "input_message_content": {"message_text": "⚠️ Sorry, something went wrong. Please try again."},
+                }
+                try:
+                    await self._bot.do_api_request(
+                        "answerGuestQuery",
+                        api_kwargs={"guest_query_id": guest_query_id, "result": _err_result},
+                    )
+                    logger.info("[%s] guest deliver branch3 (expired token=%r chat=%s)", self.name, _token, chat_id_str)
+                except Exception as _b3_err:
+                    logger.error("[%s] guest deliver branch3 failed: %s", self.name, _b3_err)
+            return
+
         # Guest state (_pending_guest_queries, _guest_reply_buffer,
         # _guest_inline_message_ids) is keyed by chat_id, not guest_query_id —
         # a second @mention from the same chat while a turn is still in flight
@@ -6150,7 +6396,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[%s] guest busy-reply failed (chat=%s): %s", self.name, chat_id_str, _busy_err)
             return
 
-        # Register state, fire stub, route to skill layer.
+        # Branch 1 — normal query.  Register state, fire stub, route to skill layer.
         self._pending_guest_queries[chat_id_str] = guest_query_id
         self._guest_only_chats.add(chat_id_str)
 
@@ -6185,14 +6431,41 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.source.user_name = _guest_caller_name
 
         # Inject delivery constraint so the LLM knows direct Bot API calls to this
-        # chat will fail (bot is not a member).
+        # chat will fail (bot is not a member).  Media must go via MEDIA: tag so the
+        # platform can stage → file_id → editMessageMedia on the stub.
+        #
+        # Only ever reference ONE path here — the same convention every other
+        # MEDIA:/absolute/path instruction in prompt_builder.py already uses.
+        # An earlier version of this note told the model to write to a
+        # hardcoded container-side path (``/cache/videos``) and cite a
+        # separately-computed host path in the MEDIA: tag, on the assumption
+        # that operators mount their cache dir at that exact container path.
+        # That's a ``terminal.docker_volumes`` mapping the operator chooses
+        # (see docs/configuration.md#docker-backend); nothing pins it to
+        # ``/cache/videos``, so on any deployment that maps it elsewhere the
+        # write silently lands somewhere the host-side validator can never
+        # see, and delivery fails with no actionable signal. Using the single
+        # HERMES_HOME-relative path for both the write and the MEDIA: tag
+        # works whenever the sandbox exposes it at the same path it has on
+        # the host — the same assumption the non-guest MEDIA: prompts already
+        # rely on — without hardcoding any particular mount layout.
+        try:
+            from hermes_constants import get_hermes_home as _ghh
+            _host_video_dir = str(_ghh() / "cache" / "videos")
+        except Exception:
+            _host_video_dir = "~/.hermes/cache/videos"
         _guest_delivery_note = (
             "**Delivery constraint (this session only):** You are responding to "
             "a @mention in a group chat where the bot is not a member. "
             "Direct Bot API calls (sendVideo, sendPhoto, sendDocument, sendAudio, "
             "curl to api.telegram.org, etc.) to this chat will fail with "
-            "\"Forbidden: bot is not a member\" — do NOT attempt them. Media "
-            "delivery is not yet supported in this context; respond with text only."
+            "\"Forbidden: bot is not a member\" — do NOT attempt them.\n"
+            "To deliver a file:\n"
+            f"1. Save it to `{_host_video_dir}/<filename>` "
+            "(this is the same path from inside the sandbox and on the host — "
+            "do not use `/tmp/` or any other container-local path).\n"
+            f"2. Output `MEDIA: {_host_video_dir}/<filename>` — the exact same path. "
+            "The platform will upload it to Telegram and deliver it to the chat automatically."
         )
         if event.channel_prompt:
             event.channel_prompt = event.channel_prompt + "\n\n" + _guest_delivery_note
@@ -6903,6 +7176,7 @@ class TelegramAdapter(BasePlatformAdapter):
             _guest_imi_raw = self._guest_inline_message_ids.pop(_gc_id, False)
             _guest_imi = _guest_imi_raw if isinstance(_guest_imi_raw, str) else None
             _buffered = self._guest_reply_buffer.pop(_gc_id, "")
+            _turn_media = self._guest_turn_media.pop(_gc_id, None)
             self._guest_only_chats.discard(_gc_id)
             if (_guest_qid or _guest_imi) and self._bot:
                 _plain = _strip_mdv2(self.format_message(_buffered)).strip() if _buffered else ""
@@ -6916,10 +7190,31 @@ class TelegramAdapter(BasePlatformAdapter):
                 # already been torn down above — silently dropping the turn.
                 _reply_text = self._truncate_stream_overflow_preview(_plain) or \
                     "⚠️ Sorry, something went wrong. Please try again."
-                logger.warning("[%s] guest OPC flush (chat=%s buffered_len=%d imi=%s)",
-                               self.name, _gc_id, len(_buffered), _guest_imi)
+                logger.warning("[%s] guest OPC flush (chat=%s buffered_len=%d turn_media=%s imi=%s)",
+                               self.name, _gc_id, len(_buffered), bool(_turn_media), _guest_imi)
                 try:
-                    if _guest_imi:
+                    if _turn_media and _guest_imi:
+                        # Media result: stage produced a file_id — mint token, edit stub with button.
+                        from tools.guest_mode_tool import mint_token as _mint_token
+                        _token = _mint_token(_turn_media["file_id"], _turn_media["media_kind"])
+                        _inline_q = f"deliver_{_token}"
+                        _ready_text = (_plain[:3900] + "\n\n✅ Ready — tap to receive").strip() if _plain else "✅ Ready — tap to receive"
+                        _markup = {
+                            "inline_keyboard": [[
+                                {"text": "📥 Tap to send here", "switch_inline_query_current_chat": _inline_q}
+                            ]]
+                        }
+                        await self._bot.do_api_request(
+                            "editMessageText",
+                            api_kwargs={
+                                "inline_message_id": _guest_imi,
+                                "text": _ready_text[:4096],
+                                "reply_markup": _markup,
+                            },
+                        )
+                        logger.warning("[%s] guest OPC media button (chat=%s token=%s kind=%s)",
+                                       self.name, _gc_id, _token, _turn_media["media_kind"])
+                    elif _guest_imi:
                         # Text result: typewriter then final edit.  Animate over
                         # the already-truncated _reply_text, not raw _plain —
                         # otherwise a long _plain both risks an oversized

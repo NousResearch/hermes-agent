@@ -398,17 +398,48 @@ DANGEROUS_PATTERNS = [
 
 DANGEROUS_PATTERNS_COMPILED = [(re.compile(p, _RE_FLAGS), d) for p, d in DANGEROUS_PATTERNS]
 
-# Preserve approvals stored under the removed interpreter regex rules.
+# Block reason for interpreter exec flags. One shared key for every inline-code
+# flag: the reason names the matched flag so an agent reading the block knows
+# what actually tripped the gate (#102847) — `powershell -File x.ps1` reported
+# "via -e/-c flag" while the command contained no -e/-c at all, burning agent
+# iterations hunting for a flag that did not exist.
+_EXEC_FLAG_LEGACY_KEY = "script execution via -e/-c flag"
+# -File/-f run a script from disk, not inline code. Still approval-worthy
+# (a .ps1 is arbitrary code) but its own description so the reason is truthful.
+_EXEC_FLAG_FILE_KEY = "script execution via -File/-f flag (PowerShell)"
+_POWERSHELL_FILE_FLAGS = {"-file", "-f"}
+
+
+def _interpreter_exec_flag_description(family: str, flag: str) -> str:
+    """Map the matched exec flag to its block reason (approval key)."""
+    if family == "powershell" and flag in _POWERSHELL_FILE_FLAGS:
+        return _EXEC_FLAG_FILE_KEY
+    return _EXEC_FLAG_LEGACY_KEY
+
+
+# Legacy approval keys keep resolving after the -File split: an approval saved
+# under the shared `-e/-c` key (or its older regex-derived key) still covers
+# -File runs, and vice versa. The -File key pairs with BOTH the shared
+# description and the historical regex-derived key: `_approval_key_aliases()`
+# returns only the stored set (no graph closure), so pairing through a single
+# intermediate would leave one of the two pre-migration spellings unable to
+# authorize a new `-File` finding (review feedback on #102955).
+_EXEC_FLAG_LEGACY_REGEX_KEY = r"(python[23]?|perl|ruby|node)\s+-[ec]\s+"
 _REMOVED_PATTERN_KEY_ALIASES = {
-    "script execution via -e/-c flag": "(python[23]?|perl|ruby|node)\\s+-[ec]\\s+",
-    "script execution via heredoc": "(python[23]?|perl|ruby|node)\\s+<<",
+    _EXEC_FLAG_LEGACY_KEY: _EXEC_FLAG_LEGACY_REGEX_KEY,
+    _EXEC_FLAG_FILE_KEY: _EXEC_FLAG_LEGACY_KEY,
+    "script execution via heredoc": r"(python[23]?|perl|ruby|node)\s+<<",
 }
+_REMOVED_PATTERN_KEY_ALIAS_PAIRS = [
+    (_EXEC_FLAG_FILE_KEY, _EXEC_FLAG_LEGACY_KEY),
+    (_EXEC_FLAG_FILE_KEY, _EXEC_FLAG_LEGACY_REGEX_KEY),
+]
 # description <-> legacy regex-derived key (the old approval key, kept for backwards compatibility
 # with stored allowlist/session entries), both ways.
 _PATTERN_KEY_ALIASES: dict[str, set[str]] = {}
 for _canonical_key, _legacy_key in [
     (d, p.split(r'\b')[1] if r'\b' in p else p[:20]) for p, d in DANGEROUS_PATTERNS
-] + list(_REMOVED_PATTERN_KEY_ALIASES.items()):
+] + list(_REMOVED_PATTERN_KEY_ALIASES.items()) + _REMOVED_PATTERN_KEY_ALIAS_PAIRS:
     _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).update({_canonical_key, _legacy_key})
     _PATTERN_KEY_ALIASES.setdefault(_legacy_key, set()).update({_legacy_key, _canonical_key})
 
@@ -827,8 +858,9 @@ def _execution_flag_findings(command: str):
             if not tokens:
                 continue
             args = tokens[1:]
-            if family and _interpreter_exec_flag(family, args):
-                yield ("script execution via -e/-c flag", None)
+            exec_flag = _interpreter_exec_flag(family, args) if family else None
+            if exec_flag:
+                yield (_interpreter_exec_flag_description(family, exec_flag), None)
             elif family and any(token.startswith("<<") for token in args):
                 yield ("script execution via heredoc", None)
             else:
@@ -840,6 +872,31 @@ def _execution_flag_findings(command: str):
                     finding = _read_tool_exec_flag(executable_name, args)
                     if finding:
                         yield (f"arbitrary program execution via {executable_name} {finding[0]}", finding[1])
+                # `cmd /c|/k` (and the git-bash //c //k spellings) hands the
+                # rest of the line to an arbitrary payload. Without this,
+                # `cmd /c powershell -File x.ps1` reached no gate at all while
+                # the direct form required approval — the trivial bypass
+                # reported in #102847. Options may precede the verb
+                # (`cmd /u /c ...` — /u is a modifier, not the payload), and
+                # the payload may be a single quoted string
+                # (`cmd /c "powershell -File x.ps1"`). Tokenize the whole tail
+                # with shlex so quoted payloads surface, then hand everything
+                # after the FIRST /c|/k to the nested scan. cmd semantics: the
+                # first control verb owns the entire remainder, so a `/c` in
+                # the payload (`cmd /c echo /c powershell -File x.ps1`) is
+                # payload DATA — taking the last verb would gate benign echo
+                # lines that merely print the text (review feedback on #102955).
+                if executable_name in {"cmd", "cmd.exe"}:
+                    verb_index = next(
+                        (
+                            index
+                            for index in range(1, len(tokens))
+                            if tokens[index].lower() in {"/c", "/k", "//c", "//k"}
+                        ),
+                        None,
+                    )
+                    if verb_index is not None:
+                        yield from _execution_flag_findings(" ".join(tokens[verb_index + 1 :]))
 
 
 def _skip_shell_whitespace(command: str, pos: int) -> int:

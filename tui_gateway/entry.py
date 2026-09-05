@@ -16,7 +16,7 @@ import traceback
 from contextlib import suppress
 
 from tui_gateway._env import env_float
-from tui_gateway._stdin_recovery import handle_spurious_eof
+from tui_gateway._stdin_recovery import diagnose_stdin_state, handle_spurious_eof
 
 from tui_gateway import server
 from tui_gateway.event_replay import replay_epoch
@@ -272,7 +272,22 @@ def main():
         logger.debug("picker cache prewarm (tui) failed to start", exc_info=True)
 
     while True:
-        raw = sys.stdin.readline()
+        try:
+            raw = sys.stdin.readline()
+        except OSError as exc:
+            # Windows: the stdio pipe can be invalidated under a live loop
+            # (parent restarted/reloaded and orphaned us, console torn down).
+            # Unhandled this exits 1, which the client surfaces as "gateway
+            # exited — recovering your session" and instantly respawns into
+            # the same broken pipe (reconnect storm). Log forensics and exit
+            # cleanly instead: one quiet reconnect when owned, silent death
+            # when already orphaned.
+            _append_crash_log(
+                f"stdin read failed · {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                f"({type(exc).__name__}: {exc}; {diagnose_stdin_state()})",
+                lambda f: traceback.print_exc(file=f))
+            _log_exit(f"stdin unreadable ({exc}); exiting for parent reconnect")
+            break
         if not raw:
             # Spurious (child flipped O_NONBLOCK on the shared description) or genuine EOF?
             if not handle_spurious_eof(_recovery_times, _log_exit):

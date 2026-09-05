@@ -27,7 +27,7 @@ import time
 import cli as cli_mod
 from cli import HermesCLI
 from tui_gateway._env import env_float
-from tui_gateway._stdin_recovery import handle_spurious_eof
+from tui_gateway._stdin_recovery import diagnose_stdin_state, handle_spurious_eof
 from rich.console import Console
 
 # Env-overridable so the integration test can drive sub-second timing.
@@ -113,7 +113,15 @@ def main():
     # point — any child inheriting fd 0 can flip the flag).
     _sw_recovery_times: list[float] = []
     while True:
-        raw = sys.stdin.readline()
+        try:
+            raw = sys.stdin.readline()
+        except OSError as exc:
+            # Same severed-pipe class as the gateway entry point (Windows
+            # Errno 22 when the parent goes away): exit quietly instead of a
+            # traceback, so the next slash command respawns us cleanly.
+            _sw_log(f"stdin read failed ({type(exc).__name__}: {exc}; "
+                    f"{diagnose_stdin_state()}); exiting")
+            break
         if not raw:
             if not handle_spurious_eof(_sw_recovery_times, _sw_log):
                 break

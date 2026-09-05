@@ -886,6 +886,9 @@ def _classify_dispatch_lateness(lateness_seconds: float, grace_seconds: int) -> 
 _persisted_error_recoveries: int = 0
 # Bounded in-memory history kept by every probe-visible fire-path counter.
 _TELEMETRY_RECENT_HISTORY = 20
+# A fire_claim younger than this is treated as a live run in another process
+# (heartbeat cadence is 60 s; matches the claim TTL used by claim_job_fire).
+_STALE_ERROR_FIRE_CLAIM_TTL_SECONDS = 300.0
 _persisted_error_recoveries_recent: list = []
 
 
@@ -905,6 +908,15 @@ def _job_is_stale_error_recurring(
     if job.get("last_status") != "error":
         return False
     if _job_running_in_this_process(str(job.get("id") or "")):
+        return False
+    # Cross-process liveness (2026-09-02 brain incident): a run owned by
+    # ANOTHER scheduler process sharing this jobs store (e.g. several Desktop
+    # profile tabs + the gateway) heartbeats ``fire_claim`` every
+    # _RUN_CLAIM_HEARTBEAT_SECONDS. While that claim is fresh the job is not
+    # wedged — it is running elsewhere — and re-arming it here makes every
+    # other ticker claim-fight the live run (171 re-arms, ~175 junk
+    # "Fire claim lost" execution rows, then the live run was killed).
+    if _claim_is_live(job.get("fire_claim"), now, _STALE_ERROR_FIRE_CLAIM_TTL_SECONDS):
         return False
     last_run = job.get("last_run_at")
     last_run_dt = _parse_aware(last_run) if last_run else None

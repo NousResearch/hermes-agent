@@ -17893,13 +17893,26 @@ if (!isPrimaryInstance) {
       handleDeepLink(url)
     }
 
-    ensureMainWindow(mainWindow, {
+    const outcome = ensureMainWindow(mainWindow, {
       isReady: app.isReady(),
       createWindow,
       focusWindow,
       // deep-link delivery focuses a live window after its renderer is ready.
-      focusExisting: !url
+      focusExisting: !url,
+      // A first launch still waiting on its backend owns window creation; a
+      // relaunch must not race a second boot against the same backend port.
+      starting: !mainWindow && !app.isReady()
     })
+
+    // Relaunching during a slow first start has nothing to focus and nothing to
+    // create, so the activation is invisible and the user keeps clicking. Log it
+    // so the wait is diagnosable instead of looking like a dead shortcut.
+    if (outcome === 'starting' || outcome === 'not-ready') {
+      rememberLog(
+        '[launch] activation ignored: Hermes is still starting up (no window yet). ' +
+          'Extra launches are intentionally suppressed — please wait for the first one.'
+      )
+    }
   })
 }
 

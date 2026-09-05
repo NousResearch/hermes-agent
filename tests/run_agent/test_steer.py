@@ -44,10 +44,44 @@ def _bare_agent() -> AIAgent:
 
 
 class TestSteerAcceptance:
-    def test_accepts_non_empty_text(self):
+    def test_rejects_text_without_a_live_delivery_window(self):
+        from tui_gateway import server
+
         agent = _bare_agent()
-        assert agent.steer("go ahead and check the logs") is True
-        assert agent._pending_steer == "go ahead and check the logs"
+
+        assert agent.steer("go ahead and check the logs") is False
+        assert agent._pending_steer is None
+        server._sessions["idle-steer"] = {"agent": agent}
+        try:
+            response = server.handle_request(
+                {
+                    "id": "request-1",
+                    "method": "command.dispatch",
+                    "params": {
+                        "name": "steer",
+                        "arg": "go ahead and check the logs",
+                        "session_id": "idle-steer",
+                    },
+                }
+            )
+        finally:
+            server._sessions.pop("idle-steer", None)
+        assert response["result"] == {
+            "type": "send",
+            "message": "go ahead and check the logs",
+        }
+        assert agent._pending_steer is None
+
+    def test_accepts_text_during_live_model_and_tool_windows(self):
+        for phase in ("model", "tools"):
+            agent = _bare_agent()
+            if phase == "model":
+                agent._model_request_active.set()
+            else:
+                agent._executing_tools = True
+
+            assert agent.steer("go ahead and check the logs") is True
+            assert agent._pending_steer == "go ahead and check the logs"
 
 
 
@@ -58,6 +92,7 @@ class TestSteerAcceptance:
 class TestSteerDrain:
     def test_drain_returns_and_clears(self):
         agent = _bare_agent()
+        agent._executing_tools = True
         agent.steer("hello")
         assert agent._drain_pending_steer() == "hello"
         assert agent._pending_steer is None
@@ -488,6 +523,7 @@ class TestEmptyHiddenAssistantRehealRegression:
 class TestSteerInjection:
     def test_appends_to_last_tool_result(self):
         agent = _bare_agent()
+        agent._executing_tools = True
         agent.steer("please also check auth.log")
         messages = [
             {"role": "user", "content": "what's in /var/log?"},
@@ -522,6 +558,7 @@ class TestSteerInjection:
         rewrites existing tool content, never the message-role sequence.
         """
         agent = _bare_agent()
+        agent._executing_tools = True
         agent.steer("stop after next step")
         messages = [{"role": "tool", "content": "x", "tool_call_id": "1"}]
         agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
@@ -533,6 +570,7 @@ class TestSteerInjection:
         """Anthropic-style list content should be preserved, with the steer
         appended as a text block."""
         agent = _bare_agent()
+        agent._executing_tools = True
         agent.steer("extra note")
         original_blocks = [{"type": "text", "text": "existing output"}]
         messages = [
@@ -551,6 +589,7 @@ class TestSteerInjection:
 class TestSteerThreadSafety:
     def test_concurrent_steer_calls_preserve_all_text(self):
         agent = _bare_agent()
+        agent._executing_tools = True
         N = 200
 
         def worker(idx: int) -> None:
@@ -584,6 +623,7 @@ class TestSteerClearedOnInterrupt:
         agent._tool_worker_threads = None
         agent._tool_worker_threads_lock = None
 
+        agent._executing_tools = True
         agent.steer("will be dropped")
         agent._pending_redirect = "also drop this"
         assert agent._pending_steer == "will be dropped"
@@ -613,6 +653,7 @@ class TestPreApiCallSteerDrain:
             {"role": "tool", "content": "output here", "tool_call_id": "tc1"},
         ]
         # Steer arrives during API call (set after tool execution)
+        agent._model_request_active.set()
         agent.steer("focus on error handling")
         # Simulate what the pre-API-call drain does:
         _pre_api_steer = agent._drain_pending_steer()
@@ -633,6 +674,7 @@ class TestPreApiCallSteerDrain:
         messages = [
             {"role": "user", "content": "hello"},
         ]
+        agent._model_request_active.set()
         agent.steer("early steer")
         _pre_api_steer = agent._drain_pending_steer()
         assert _pre_api_steer == "early steer"

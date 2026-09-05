@@ -215,8 +215,16 @@ class InterruptControlMixin:
 
     def steer(self, text: str) -> bool:
         """Append user text to the LAST tool result once the batch finishes (no interrupt); multiple calls
-        concatenate with newlines. Returns False for empty text."""
+        concatenate with newlines. Returns False without a live model/tool delivery window."""
         if not text or not text.strip():
+            return False
+        _model_active = getattr(self, "_model_request_active", None)
+        _executing_tools = getattr(self, "_executing_tools", None)
+        if (
+            (_executing_tools is not None or _model_active is not None)
+            and not _executing_tools
+            and (_model_active is None or not _model_active.is_set())
+        ):
             return False
         cleaned = text.strip()
         with _ic_lock(self, "_pending_steer_lock"):

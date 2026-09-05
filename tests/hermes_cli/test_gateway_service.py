@@ -1805,6 +1805,32 @@ class TestDockerAwareGateway:
         assert "Docker" in out or "docker" in out
         assert "restart" in out.lower()
 
+    def test_start_in_container_exits_nonzero(self, monkeypatch, capsys):
+        """'hermes gateway start' inside a no-s6 container must not report success.
+
+        The command starts no Gateway process there (the container runtime owns the
+        lifecycle), so exit code 0 would let callers treat it as a completed start.
+        """
+        import pytest
+
+        monkeypatch.setattr(gateway_cli, "is_managed", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: True)
+        monkeypatch.setattr(gateway_cli, "_dispatch_via_service_manager_if_s6", lambda *a, **k: False)
+        monkeypatch.setattr(gateway_cli, "_service_backend", lambda **k: None)
+
+        args = SimpleNamespace(gateway_command="start", system=False, all=False)
+        with pytest.raises(SystemExit) as exc_info:
+            gateway_cli.gateway_command(args)
+
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "not applicable inside a Docker container" in out
+        assert "hermes gateway run" in out
+
 
 class TestLegacyHermesUnitDetection:
     """Tests for _find_legacy_hermes_units / has_legacy_hermes_units.

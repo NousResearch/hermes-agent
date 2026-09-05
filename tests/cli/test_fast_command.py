@@ -200,6 +200,29 @@ class TestFastModeRouting(unittest.TestCase):
         assert route["runtime"]["provider"] == "openrouter"
         assert route.get("request_overrides") is None
 
+    def test_turn_route_keeps_runtime_extra_body_without_fast_mode(self):
+        cli_mod = _import_cli()
+        stub = SimpleNamespace(
+            model="llama3.1",
+            api_key="local-key",
+            base_url="http://localhost:11434/v1",
+            provider="custom",
+            api_mode="chat_completions",
+            acp_command=None,
+            acp_args=[],
+            _credential_pool=None,
+            _runtime_request_overrides={
+                "extra_body": {"options": {"seed": 42}}
+            },
+            service_tier=None,
+        )
+
+        route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
+
+        assert route["request_overrides"] == {
+            "extra_body": {"options": {"seed": 42}}
+        }
+
 
 class TestAnthropicFastMode(unittest.TestCase):
     """Verify Anthropic Fast Mode model support and override resolution."""

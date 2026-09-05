@@ -1397,7 +1397,8 @@ def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config
         context_length=ctx_len.context_length if ctx_len else None,
         base_url=getattr(agent, "_anthropic_base_url", None),
         fast_mode=request_overrides.get("speed") == "fast",
-        drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)))
+        drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
+        request_overrides=request_overrides)
     # Portal reads ``tags`` / ``session_id`` on its Messages route too, but the profile hook
     # is only consulted by the OpenAI-wire transport — merge here to keep sticky routing.
     return _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs)

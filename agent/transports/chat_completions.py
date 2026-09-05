@@ -109,6 +109,18 @@ def _add_prompt_cache_key(
         api_kwargs["prompt_cache_key"] = cache_key
 
 
+def _merge_extra_body(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge request-body mappings, with ``override`` winning."""
+    merged = dict(base)
+    for key, value in override.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _merge_extra_body(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
     """Clamp Hermes' extended effort set (``ultra``) to the OpenAI-compat wire vocabulary.
 
@@ -425,12 +437,19 @@ class ChatCompletionsTransport(ProviderTransport):
             elif raw_thinking_config:
                 extra_body["thinking_config"] = raw_thinking_config
 
-        if params.get("extra_body_additions"):
-            extra_body.update(params["extra_body_additions"])
+        additions = params.get("extra_body_additions")
+        if isinstance(additions, dict):
+            extra_body = _merge_extra_body(extra_body, additions)
+
+        overrides = params.get("request_overrides")
+        if overrides:
+            override_body = overrides.get("extra_body")
+            if isinstance(override_body, dict):
+                extra_body = _merge_extra_body(extra_body, override_body)
+            api_kwargs.update({key: value for key, value in overrides.items() if key != "extra_body"})
+
         if extra_body:
             api_kwargs["extra_body"] = extra_body
-        if params.get("request_overrides"):
-            api_kwargs.update(params["request_overrides"])
         return _finish_kwargs(
             api_kwargs, sanitized, params,
             supports_prompt_cache_key=bool(params.get("supports_prompt_cache_key")) or _is_openai_api_base_url(base_url),
@@ -460,11 +479,11 @@ class ChatCompletionsTransport(ProviderTransport):
             openrouter_min_coding_score=params.get("openrouter_min_coding_score"),
         )
         for part in (profile_body, extra_body_from_profile, params.get("extra_body_additions")):
-            if part:
-                extra_body.update(part)
+            if isinstance(part, dict):
+                extra_body = _merge_extra_body(extra_body, part)
         for k, v in (params.get("request_overrides") or {}).items():
             if k == "extra_body" and isinstance(v, dict):
-                extra_body.update(v)
+                extra_body = _merge_extra_body(extra_body, v)
             else:
                 api_kwargs[k] = v
 

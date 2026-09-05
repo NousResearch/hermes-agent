@@ -810,8 +810,8 @@ def _opencode_free_runtime(provider, requested_provider, model_cfg, target_model
     return _tag(_models.opencode_zen_free_runtime(provider, model), requested_provider)
 
 
-def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_key: Optional[str] = None,
-                             explicit_base_url: Optional[str] = None, target_model: Optional[str] = None) -> Dict[str, Any]:
+def _resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_key: Optional[str] = None,
+                              explicit_base_url: Optional[str] = None, target_model: Optional[str] = None) -> Dict[str, Any]:
     """Resolve runtime provider credentials for agent execution. Ladder (order is behavior — each
     rung returns or raises, else falls to the next):
       1. disabled-provider guard (``providers.<name>.enabled: false``)
@@ -863,6 +863,43 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
     if pconfig and pconfig.auth_type == "api_key":
         yield _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, target_model)
     yield _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url)
+
+
+def _deep_merge_extra_body(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge request-body mappings recursively, with ``override`` winning."""
+    merged = dict(base)
+    for key, value in override.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_extra_body(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _apply_model_extra_body(runtime: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach user-configured ``model.extra_body`` to a resolved runtime."""
+    model_cfg = _get_model_config()
+    extra_body = model_cfg.get("extra_body") if isinstance(model_cfg, dict) else None
+    if not isinstance(extra_body, dict) or not extra_body:
+        return runtime
+
+    resolved = dict(runtime)
+    overrides = dict(resolved.get("request_overrides") or {})
+    existing_extra_body = overrides.get("extra_body")
+    overrides["extra_body"] = _deep_merge_extra_body(
+        existing_extra_body if isinstance(existing_extra_body, dict) else {}, extra_body)
+    resolved["request_overrides"] = overrides
+    return resolved
+
+
+def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_key: Optional[str] = None,
+                             explicit_base_url: Optional[str] = None, target_model: Optional[str] = None) -> Dict[str, Any]:
+    """Resolve a runtime and attach model-level request fields."""
+    return _apply_model_extra_body(_resolve_runtime_provider(
+        requested=requested, explicit_api_key=explicit_api_key,
+        explicit_base_url=explicit_base_url, target_model=target_model,
+    ))
 
 
 def format_runtime_provider_error(error: Exception) -> str:

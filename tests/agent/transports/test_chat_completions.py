@@ -332,6 +332,26 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["options"]["num_ctx"] == 32768
 
+    def test_request_extra_body_deep_merges_ollama_options(self, transport):
+        """A configured nested option must not erase Hermes' context limit."""
+        from providers import get_provider_profile
+
+        kw = transport.build_kwargs(
+            model="llama3",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=get_provider_profile("custom"),
+            ollama_num_ctx=32768,
+            request_overrides={
+                "extra_body": {"options": {"seed": 42, "num_batch": 512}}
+            },
+        )
+
+        assert kw["extra_body"]["options"] == {
+            "num_ctx": 32768,
+            "seed": 42,
+            "num_batch": 512,
+        }
+
     def test_custom_think_false(self, transport):
         from providers import get_provider_profile
         profile = get_provider_profile("custom")

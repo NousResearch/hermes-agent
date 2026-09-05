@@ -129,6 +129,29 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
     assert route["request_overrides"] == {}
 
 
+def test_turn_route_carries_runtime_request_overrides():
+    """Model-level request fields survive gateway route construction."""
+    runner = _make_runner()
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "http://localhost:11434/v1",
+        "provider": "custom",
+        "requested_provider": "custom:ollama",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+        "max_tokens": None,
+        "request_overrides": {"extra_body": {"options": {"seed": 42}}},
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner, "hi", "llama3.1", runtime_kwargs
+    )
+
+    assert route["request_overrides"] == {"extra_body": {"options": {"seed": 42}}}
+
+
 @pytest.mark.asyncio
 async def test_handle_fast_command_global_flag_persists_config(monkeypatch, tmp_path):
     runner = _make_runner()
@@ -173,5 +196,4 @@ async def test_session_fast_override_beats_config_default(monkeypatch, tmp_path)
     assert runner._resolve_session_service_tier(session_key=session_key) is None
     # A different session still gets the config default.
     assert runner._resolve_session_service_tier(session_key="other-session") == "priority"
-
 

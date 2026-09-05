@@ -541,6 +541,25 @@ def classify_responses_route(agent: Any) -> ResponsesRouteFlags:
     )
 
 
+def native_responses_owns_automatic_compaction(agent: Any) -> bool:
+    """Whether this request's provider owns automatic threshold compaction."""
+    if getattr(agent, "api_mode", None) != "codex_responses":
+        return False
+
+    route = classify_responses_route(agent)
+
+    from agent.native_compaction import native_compaction_context_management
+
+    return bool(
+        native_compaction_context_management(
+            agent,
+            is_codex_backend=route.is_codex_backend,
+            is_xai_responses=route.is_xai_responses,
+            is_github_responses=route.is_github_responses,
+        )
+    )
+
+
 def estimate_native_responses_preflight_tokens(
     agent: Any, messages: List[Dict[str, Any]], *, system_prompt: str = "", tools: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[int]:

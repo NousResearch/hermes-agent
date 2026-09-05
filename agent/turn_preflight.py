@@ -13,6 +13,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from agent.codex_responses_adapter import native_responses_owns_automatic_compaction
 from agent.context_engine import automatic_compaction_status_message
 from agent.conversation_compression import (
     PRE_API_COMPRESSION_STATUS_TEMPLATE, compression_blocked_transiently,
@@ -90,8 +91,13 @@ def run_preflight_compression(
         and len(v.messages) > 1
         and v.compression_attempts < max_compression_attempts
     )
+    _native_auto = (
+        native_responses_owns_automatic_compaction(agent)
+        and not provider_overflow_preflight
+    )
     if (
         _eligible
+        and not _native_auto
         and not _review_fork_first_request_pending(agent)
         and (not v._preflight_compression_blocked or provider_overflow_preflight)
         and (not defer_preflight(request_pressure_tokens) or provider_overflow_preflight)
@@ -197,7 +203,12 @@ def run_preflight_compression(
         # All recovery passes consumed and still over threshold: fail closed —
         # llama.cpp may silently truncate an oversized retry.
         return _done("return", _exhausted_result())
-    elif _eligible and not defer_preflight(request_pressure_tokens) and _compression_cooldown:
+    elif (
+        _eligible
+        and not _native_auto
+        and not defer_preflight(request_pressure_tokens)
+        and _compression_cooldown
+    ):
         # Summary-LLM cooldown blocks compression: deduped warning only when over
         # threshold (should_compress_info reason is None below it).
         _block_reason = _blocked_compress_reason(compressor, request_pressure_tokens)
@@ -263,6 +274,7 @@ def compress_after_tool_results(
         )
 
     _compressor = agent.context_compressor
+    _native_auto = native_responses_owns_automatic_compaction(agent)
     # Use real token counts from the API response to decide compression.  prompt_tokens + completion_tokens
     # is the actual context size the provider reported plus the assistant turn — a tight lower bound for the
     # next prompt. Tool results appended above aren't counted yet, but the threshold (default 50%) leaves
@@ -296,6 +308,7 @@ def compress_after_tool_results(
 
     if (
         agent.compression_enabled
+        and not _native_auto
         and compression_attempts < max_compression_attempts
         and _compressor.should_compress(_real_tokens)
     ):
@@ -352,7 +365,7 @@ def compress_after_tool_results(
                     final_response = _HANDOFF_SKIP_FINAL_RESPONSE
                 turn_exit_reason = "compaction_handoff_not_actionable"
                 return _verdict(True)
-    elif agent.compression_enabled:
+    elif agent.compression_enabled and not _native_auto:
         # Over threshold but compression blocked (cooldown/anti-thrash): deduped
         # warning so context can't silently overflow. ``attempts_spent`` names the
         # attempts_exhausted lockout when the engine says RUN but the per-turn

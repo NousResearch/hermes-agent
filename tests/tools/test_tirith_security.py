@@ -603,7 +603,7 @@ class TestSpawnWarningDedup:
         }
         mock_run.side_effect = FileNotFoundError("[WinError 2]")
         # Fresh dedupe state — clear any keys left by other tests.
-        _tirith_mod._reset_spawn_warning_state()
+        _tirith_mod._warned_messages.clear()
 
         with caplog.at_level("WARNING", logger="tools.tirith_security"):
             for i in range(15):

@@ -1,25 +1,9 @@
-"""Persistent registry of delivery targets that are confirmed unreachable.
-
-When a messaging platform reports that a target chat is permanently gone — a
-deleted group (``Forbidden: the group chat was deleted``), a bot kicked/blocked,
-or a deactivated user — re-sending to it on every cron tick or every fan-out
-delivery wastes a send attempt against the platform's flood-control envelope and
-spams the logs.  This registry lets the delivery layer short-circuit a target it
-has already proven dead, while staying self-healing: any successful send to that
-target clears the flag, so a user who re-adds the bot (or restores the chat)
-recovers automatically with no manual cleanup.
-
-Scope is deliberately narrow.  Only *whole-chat* deaths are recorded — the
-``forbidden`` and chat-level ``not_found`` (``chat not found``) error kinds.
-Thread/topic-level ``not_found`` is NOT recorded here: the adapters already
-self-heal that by retrying without ``reply_to`` (see the Telegram adapter's
-reply-target-deleted path), and a deleted topic does not mean the parent chat is
-dead.
-
-The store is a small JSON file under the active profile's HERMES_HOME so each
-profile keeps its own dead set.  Reads/writes are best-effort: a corrupt or
-unwritable file degrades to an in-memory-only registry rather than raising on
-the delivery path.
+"""Persistent registry of delivery targets confirmed unreachable. Re-sending to a permanently gone chat
+(deleted group, bot kicked/blocked, deactivated user) every cron tick wastes flood-control budget; delivery
+short-circuits targets proven dead and any later successful send clears the flag. Only *whole-chat* deaths
+(``forbidden``, chat-level ``not_found``) are recorded: adapters self-heal thread/topic-level ``not_found``
+by retrying without ``reply_to``. Storage is a per-profile JSON file; reads/writes are best-effort (a
+corrupt or unwritable file degrades to in-memory-only rather than raising on the delivery path).
 """
 
 from __future__ import annotations
@@ -35,8 +19,7 @@ from hermes_cli.config import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
-# Error kinds (from gateway.platforms.base.classify_send_error) that mean the
-# *whole chat* is unreachable, not a transient or thread-level problem.
+# classify_send_error kinds meaning the whole chat is unreachable (not transient / thread-level).
 _DEAD_ERROR_KINDS = frozenset({"forbidden", "not_found"})
 
 
@@ -45,38 +28,35 @@ def _normalize(platform: str, chat_id: str) -> str:
     return f"{str(platform).strip().lower()}:{str(chat_id).strip()}"
 
 
-class DeadTargetRegistry:
-    """Thread-safe, persistent set of confirmed-dead delivery targets.
+def classify_dead_error(error_text: Optional[str]) -> Optional[str]:
+    """Best-effort dead-target error_kind from a raised error's text, else None. ``_deliver_to_platform``
+    raises on hard failure (no SendResult), so ``deliver()`` only has the exception string. ``not_found``
+    collapses chat-level and thread/topic/message-level failures: only a whole-chat not_found means the
+    target is dead — a deleted forum topic or edited-away message must not mark the entire chat dead."""
+    if not error_text:
+        return None
+    try:
+        from .platforms.base import classify_send_error, is_chat_level_not_found
+    except Exception:  # pragma: no cover - import guard
+        return None
+    kind = classify_send_error(None, error_text=error_text)
+    dead = kind in _DEAD_ERROR_KINDS and (kind != "not_found" or is_chat_level_not_found(error_text=error_text))
+    return kind if dead else None
 
-    Keyed on ``platform:chat_id``.  Stores the reason and a timestamp for
-    observability.  Self-healing: :meth:`clear` (called on a successful send)
-    removes the flag.
-    """
+
+class DeadTargetRegistry:
+    """Thread-safe, persistent set of confirmed-dead targets keyed ``platform:chat_id``. Each entry stores
+    reason + timestamp for observability; :meth:`clear` (called on a successful send) removes the flag."""
 
     def __init__(self, path: Optional[Path] = None) -> None:
         self._lock = threading.RLock()
         self._dead: Dict[str, Dict[str, object]] = {}
-        if path is not None:
-            self._path = path
-        else:
-            self._path = get_hermes_home() / "gateway" / "dead_targets.json"
-        self._load()
-
-    # -- persistence -------------------------------------------------------
-
-    def _load(self) -> None:
+        self._path = path if path is not None else get_hermes_home() / "gateway" / "dead_targets.json"
         try:
-            if self._path.exists():
-                raw = json.loads(self._path.read_text(encoding="utf-8"))
-                if isinstance(raw, dict):
-                    # Only keep well-shaped entries.
-                    self._dead = {
-                        k: v for k, v in raw.items() if isinstance(v, dict)
-                    }
+            raw = json.loads(self._path.read_text(encoding="utf-8")) if self._path.exists() else {}
+            self._dead = {k: v for k, v in raw.items() if isinstance(v, dict)} if isinstance(raw, dict) else {}
         except (OSError, ValueError) as exc:
-            logger.debug("dead_targets: could not load %s (%s) — starting empty",
-                         self._path, exc)
-            self._dead = {}
+            logger.debug("dead_targets: could not load %s (%s) — starting empty", self._path, exc)
 
     def _flush_locked(self) -> None:
         try:
@@ -84,60 +64,36 @@ class DeadTargetRegistry:
             tmp = self._path.with_suffix(self._path.suffix + ".tmp")
             tmp.write_text(json.dumps(self._dead, indent=2), encoding="utf-8")
             tmp.replace(self._path)
-        except OSError as exc:
-            # Best-effort: keep the in-memory state, don't break delivery.
+        except OSError as exc:  # best-effort: keep in-memory state, never break delivery
             logger.debug("dead_targets: could not persist %s (%s)", self._path, exc)
 
-    # -- public API --------------------------------------------------------
-
-    @staticmethod
-    def is_dead_error_kind(error_kind: Optional[str]) -> bool:
-        """Return True when ``error_kind`` denotes a permanent whole-chat death."""
-        return bool(error_kind) and error_kind in _DEAD_ERROR_KINDS
-
     def is_dead(self, platform: str, chat_id: Optional[str]) -> bool:
-        if not chat_id:
-            return False
         with self._lock:
-            return _normalize(platform, chat_id) in self._dead
+            return bool(chat_id) and _normalize(platform, chat_id) in self._dead
 
-    def mark_dead(self, platform: str, chat_id: Optional[str],
-                  reason: str = "") -> bool:
-        """Record a target as confirmed-dead.  Returns True if newly added."""
+    def mark_dead(self, platform: str, chat_id: Optional[str], reason: str = "") -> bool:
+        """Record a target as confirmed-dead. Returns True if newly added."""
         if not chat_id:
             return False
         key = _normalize(platform, chat_id)
         with self._lock:
             existed = key in self._dead
-            self._dead[key] = {
-                "platform": str(platform).strip().lower(),
-                "chat_id": str(chat_id),
-                "reason": str(reason)[:200],
-                "marked_at": time.time(),
-            }
+            self._dead[key] = {"platform": str(platform).strip().lower(), "chat_id": str(chat_id),
+                               "reason": str(reason)[:200], "marked_at": time.time()}
             self._flush_locked()
         if not existed:
-            logger.info(
-                "dead_targets: marked %s as unreachable (%s) — future deliveries "
-                "to this target will be skipped until a send succeeds",
-                key, reason or "no reason given",
-            )
+            logger.info("dead_targets: marked %s as unreachable (%s) — future deliveries "
+                        "to this target will be skipped until a send succeeds", key, reason or "no reason given")
         return not existed
 
     def clear(self, platform: str, chat_id: Optional[str]) -> bool:
-        """Remove a target's dead flag (self-healing).  Returns True if it was set."""
+        """Remove a target's dead flag (self-healing). Returns True if it was set."""
         if not chat_id:
             return False
         key = _normalize(platform, chat_id)
         with self._lock:
-            if key in self._dead:
-                del self._dead[key]
-                self._flush_locked()
-                logger.info("dead_targets: cleared %s (delivery succeeded again)", key)
-                return True
-        return False
-
-    def all_dead(self) -> Dict[str, Dict[str, object]]:
-        """Snapshot of the current dead set (for diagnostics / `hermes` CLI)."""
-        with self._lock:
-            return {k: dict(v) for k, v in self._dead.items()}
+            if self._dead.pop(key, None) is None:
+                return False
+            self._flush_locked()
+            logger.info("dead_targets: cleared %s (delivery succeeded again)", key)
+        return True

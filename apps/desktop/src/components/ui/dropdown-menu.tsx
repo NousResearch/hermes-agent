@@ -71,12 +71,16 @@ function DropdownMenuSearch({
 function DropdownMenuContent({
   className,
   collisionPadding = 8,
+  portalContainer,
   sideOffset = 4,
   ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
-  // Portal into the enclosing dialog when nested in one, so dismissing the menu
-  // doesn't close the dialog; document.body otherwise.
-  const container = usePopoverPortalContainer()
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Content> & {
+  portalContainer?: HTMLElement | null
+}) {
+  // An explicit target-owned container supports global menus whose component
+  // lives outside the dialog's React context. Nested menus still inherit the
+  // enclosing dialog; everything else falls back to document.body.
+  const container = usePopoverPortalContainer(portalContainer)
 
   return (
     <DropdownMenuPrimitive.Portal container={container}>

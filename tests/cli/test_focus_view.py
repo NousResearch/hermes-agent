@@ -23,7 +23,6 @@ from hermes_cli.focus_view import (
     FOCUS_CONFIG_KEY,
     FOCUS_STATUSBAR_LABEL,
     FOCUS_TOOL_PROGRESS_MODE,
-    effective_tool_progress_mode,
     focus_statusbar_segment,
     format_focus_status,
     format_focus_toggle_message,
@@ -69,15 +68,6 @@ class TestComposesWithVerboseModes:
     def test_focus_on_snaps_to_the_existing_off_mode(self):
         # Focus view must reuse the tool_progress "off" path, not invent a mode.
         assert FOCUS_TOOL_PROGRESS_MODE == "off"
-        for configured in ("off", "new", "all", "verbose"):
-            assert effective_tool_progress_mode(True, configured) == "off"
-
-    @pytest.mark.parametrize("configured", ["off", "new", "all", "verbose"])
-    def test_focus_off_leaves_the_configured_verbose_mode_untouched(self, configured):
-        assert effective_tool_progress_mode(False, configured) == configured
-
-
-
 
     def test_new_mode_skips_consecutive_repeats_like_the_renderer(self):
         assert would_display_tool_line("new", "terminal", "terminal") is False
@@ -251,10 +241,10 @@ def _make_agent(tool_progress_mode: str):
         }
     ]
     with (
-        patch("run_agent.get_tool_definitions", return_value=tool_defs),
-        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("model_tools.get_tool_definitions", return_value=tool_defs),
+        patch("model_tools.check_toolset_requirements", return_value={}),
         patch("hermes_cli.config.load_config", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -302,7 +292,7 @@ def _run_fake_turn(tool_progress_mode: str, dispatch_mode: str = "sequential"):
         return json.dumps({"ok": args["query"]})
 
     with (
-        patch("run_agent.handle_function_call", side_effect=fake_dispatch),
+        patch("model_tools.handle_function_call", side_effect=fake_dispatch),
         patch.object(agent, "_invoke_tool", side_effect=fake_dispatch),
         patch(
             "agent.tool_executor.maybe_persist_tool_result",

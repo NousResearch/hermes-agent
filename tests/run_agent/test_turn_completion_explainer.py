@@ -13,10 +13,11 @@ These tests exercise:
      retries and verifies the explanation reaches ``final_response``.
 
 All assertions work under the mocked OpenAI SDK used elsewhere in this
-suite (we patch ``run_agent.OpenAI`` and drive ``agent.client``), so they
+suite (we patch ``agent.process_bootstrap.OpenAI`` and drive ``agent.client``), so they
 pass identically in CI and locally.
 """
 
+import hermes_state_errors
 import os
 import uuid
 from types import SimpleNamespace
@@ -36,10 +37,10 @@ def _mock_response(content="Hello", finish_reason="stop", tool_calls=None):
 
 def _make_agent(max_iterations: int = 10, config: dict | None = None) -> AIAgent:
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
         patch("hermes_cli.config.load_config", return_value=config or {}),
-        patch("run_agent.OpenAI"),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -154,6 +155,17 @@ def test_explanation_persistence_corrupt_cause_never_says_free_space():
     assert "full disk" not in lower
 
 
+def test_explanation_persistence_replaced_cause_forbids_inplace_repair():
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "replaced"
+    )
+    lower = out.lower()
+    assert "replaced" in lower
+    assert "doctor --fix" in lower or "in-place" in lower
+    assert "free some space" not in lower
+    assert "full disk" not in lower
+
+
 def test_explanation_persistence_unknown_cause_is_neutral():
     """None/'unknown' cause must not claim disk-full — point at diagnostics."""
     for cause in (None, "unknown"):
@@ -238,7 +250,7 @@ def test_classify_persistence_error_corruption_beats_disk_bucket():
 
 
 def test_classify_persistence_error_reuses_disk_full_markers():
-    """The disk bucket delegates to hermes_state.is_disk_full_error, so
+    """The disk bucket delegates to hermes_state_errors.is_disk_full_error, so
     every marker that helper recognizes (ENOSPC, 'not enough space', ...)
     must classify as 'disk' — the two classifiers can never drift apart."""
     import errno
@@ -259,10 +271,8 @@ def test_classify_persistence_error_compression_busy_is_distinct():
     storage damage — but its message contains neither 'locked' nor 'busy',
     so it must classify by exception type (and by phrase for RPC-wrapped
     strings). This is the exact failure mode of issue #81227."""
-    from hermes_state import (
-        CompressionSessionBusyError,
-        SessionCompressionInProgressError,
-    )
+    from hermes_state import SessionCompressionInProgressError
+    from hermes_state_errors import CompressionSessionBusyError
     from hermes_state import classify_persistence_error
 
     assert classify_persistence_error(
@@ -283,7 +293,8 @@ def test_classify_persistence_error_compression_busy_is_distinct():
 
 
 def test_classify_persistence_error_turn_lease_lost_is_distinct():
-    from hermes_state import SessionTurnLeaseLostError, classify_persistence_error
+    from hermes_state import classify_persistence_error
+    from hermes_state_errors import SessionTurnLeaseLostError
 
     assert classify_persistence_error(
         SessionTurnLeaseLostError(
@@ -298,13 +309,15 @@ def test_classify_persistence_error_turn_lease_lost_is_distinct():
 def test_persistence_error_causes_tuple_matches_classifier():
     """PERSISTENCE_ERROR_CAUSES must cover every value the classifier can
     return (consumers like cron suppression iterate it)."""
-    from hermes_state import PERSISTENCE_ERROR_CAUSES, classify_persistence_error
+    from hermes_state import classify_persistence_error
+    from hermes_state_errors import PERSISTENCE_ERROR_CAUSES
 
     probes = (
         "database is locked",
         "Session 'abc' is being compressed by another writer",
         "Session turn lease lost; refusing transcript write for 'abc'",
         "database disk image is malformed",
+        "FATAL: state.db was replaced underneath the gateway",
         "database or disk is full",
         "something else entirely",
         None,
@@ -426,3 +439,8 @@ def test_run_conversation_partial_stream_recovery_surfaces_explanation():
     assert result["response_previewed"] is False
 
 
+def test_classify_persistence_error_quarantined_handle_is_corrupt() -> None:
+    """A quarantined SessionDB raises the typed error; it stays in the corrupt bucket."""
+    from hermes_state import StateDbCorruptError, classify_persistence_error
+
+    assert classify_persistence_error(StateDbCorruptError("quarantined")) == "corrupt"

@@ -60,6 +60,18 @@ export function isRemoteReauthError(error: string | null | undefined): boolean {
   )
 }
 
+/**
+ * After a healthy cold boot, main may still re-emit boot-progress errors when a
+ * post-boot startHermes()/ticket mint fails (liveness reset → rebuild, wake
+ * recovery, etc.). Only CONFIRMED reauth should take over the full-screen
+ * recovery overlay then — transient "could not reach … WebSocket ticket"
+ * blips must stay in the reconnect loop so reading/drafting is not locked out
+ * for 1–3 minutes while the socket self-heals.
+ */
+export function shouldApplyPostBootProgressError(error: string | null | undefined): boolean {
+  return isRemoteReauthError(error)
+}
+
 // A remote, gated (oauth-bucket) gateway is a remote-reauth boot failure when the
 // session isn't connected OR the boot error is auth-shaped (connected-but-expired
 // — see isRemoteReauthError). Only re-establishing the remote session fixes it;

@@ -200,7 +200,7 @@ async def test_bare_local_path_history_dedup_survives_and_logs(tmp_path, monkeyp
     # Bypass the local-path safety filter so the test pins ONLY the history
     # dedup behavior, not the safe-root policy.
     monkeypatch.setattr(
-        type(adapter), "filter_local_delivery_paths", staticmethod(lambda paths: list(paths))
+        type(adapter), "filter_local_delivery_paths", staticmethod(lambda paths, session_key="": list(paths))
     )
 
     async def handler(_event):
@@ -283,7 +283,7 @@ async def test_bare_path_history_lookup_does_not_block_event_loop(tmp_path, monk
     adapter = _DummyAdapter()
     adapter._keep_typing = _hold_typing
     monkeypatch.setattr(
-        type(adapter), "filter_local_delivery_paths", staticmethod(lambda paths: list(paths))
+        type(adapter), "filter_local_delivery_paths", staticmethod(lambda paths, session_key="": list(paths))
     )
 
     class _GatedStore:
@@ -332,7 +332,7 @@ async def test_bare_path_history_lookup_timeout_fails_open(tmp_path, monkeypatch
     adapter = _DummyAdapter()
     adapter._keep_typing = _hold_typing
     monkeypatch.setattr(
-        type(adapter), "filter_local_delivery_paths", staticmethod(lambda paths: list(paths))
+        type(adapter), "filter_local_delivery_paths", staticmethod(lambda paths, session_key="": list(paths))
     )
 
     class _WedgedStore:
@@ -353,18 +353,19 @@ async def test_bare_path_history_lookup_timeout_fails_open(tmp_path, monkeypatch
     started = time.monotonic()
     await adapter._process_message_background(event, build_session_key(event.source))
 
-    # The lookup times out after 0.02s and fails open; the generous 1.0s
-    # bound only guards against delivery hanging on the wedged read
-    # indefinitely, without flaking on loaded CI hosts. Delivery of the
-    # document below is the real fail-open assertion.
-    assert time.monotonic() - started < 1.0
+    # The lookup times out after 0.02s and fails open; the bound only guards
+    # against delivery hanging on the wedged read indefinitely. 1.0s still
+    # flaked on loaded CI runners (observed 1.55s on main run 33455779041),
+    # so keep it >= 5s per the flake policy. Delivery of the document below
+    # is the real fail-open assertion.
+    assert time.monotonic() - started < 5.0
     assert adapter.documents == [str(pdf)]
 
 
 @pytest.mark.asyncio
 async def test_history_lookup_saturation_fails_open_without_new_worker(monkeypatch):
     """Wedged lookups are bounded and cannot consume unbounded worker threads."""
-    monkeypatch.setattr("gateway.platforms.base._HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr("gateway.platforms.base._HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS", 5.0)
     monkeypatch.setattr(
         "gateway.platforms.base._HISTORY_MEDIA_LOOKUP_ADMISSION",
         threading.BoundedSemaphore(2),
@@ -381,13 +382,13 @@ async def test_history_lookup_saturation_fails_open_without_new_worker(monkeypat
             calls += 1
             if calls == 2:
                 two_started.set()
-        release.wait(timeout=1)
+        release.wait(timeout=10)
         return None
 
     monkeypatch.setattr(adapter, "_history_media_paths_for_session", blocked_lookup)
     first = asyncio.create_task(adapter._bounded_history_media_paths_for_session("one"))
     second = asyncio.create_task(adapter._bounded_history_media_paths_for_session("two"))
-    deadline = time.monotonic() + 1
+    deadline = time.monotonic() + 5
     while not two_started.is_set() and time.monotonic() < deadline:
         await asyncio.sleep(0.005)
     assert two_started.is_set()
@@ -397,9 +398,10 @@ async def test_history_lookup_saturation_fails_open_without_new_worker(monkeypat
     elapsed = time.monotonic() - began
 
     assert third is None
-    # Saturation must fail open immediately (no waiting on the 1.0s lookup
-    # timeout); 0.5s is a generous bound that stays flake-free on loaded CI.
-    assert elapsed < 0.5
+    # Saturation must fail open immediately (no waiting on the 5.0s lookup
+    # timeout); 2.0s keeps the distinction while staying flake-free on
+    # loaded CI runners.
+    assert elapsed < 2.0
     assert calls == 2
     release.set()
     await asyncio.gather(first, second)

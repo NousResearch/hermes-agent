@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [Research, Citations, Grounding, Sources, Web, Reports]
     category: research
-    related_skills: [research-paper-writing, arxiv, ocr-and-documents]
+    related_skills: [arxiv, pdf]
 ---
 
 # Grounded Citations
@@ -26,7 +26,7 @@ and `verify --evidence` fails any draft whose cited sources carry no evidence.
 
 This skill covers answers in chat, written documents (markdown, PDF, docx,
 slides), and research reports. It does not cover academic BibTeX pipelines —
-for conference papers use the `research-paper-writing` skill, which this skill
+for conference papers use the `arxiv` skill, which this skill
 feeds (see `references/citation-formats.md`).
 
 ## When to Use

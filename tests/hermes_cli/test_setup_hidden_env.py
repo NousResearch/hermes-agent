@@ -42,7 +42,7 @@ class TestChannelCards:
     def test_discord_card_asks_for_token_and_allowlist_only(self):
         """The reported bug: the Discord card asked five questions for a
         one-credential platform."""
-        from hermes_cli.web_server import _build_catalog_entry
+        from hermes_cli.web_server_messaging import _build_catalog_entry
 
         assert set(_build_catalog_entry("discord")["env_vars"]) == {
             "DISCORD_BOT_TOKEN",
@@ -50,7 +50,7 @@ class TestChannelCards:
         }
 
     def test_no_card_shows_a_hidden_knob(self):
-        from hermes_cli.web_server import _messaging_platform_catalog
+        from hermes_cli.web_server_messaging import _messaging_platform_catalog
 
         for entry in _messaging_platform_catalog():
             for key in entry["env_vars"]:
@@ -60,7 +60,7 @@ class TestChannelCards:
     def test_hidden_knobs_move_to_the_keys_page_not_into_a_void(self):
         """Keys hides what a Channels card owns. Dropping these from the card
         must hand them back to Keys, not orphan them from every surface."""
-        from hermes_cli.web_server import _channel_managed_env_keys
+        from hermes_cli.web_server_messaging import _channel_managed_env_keys
 
         managed = _channel_managed_env_keys()
         for key in (

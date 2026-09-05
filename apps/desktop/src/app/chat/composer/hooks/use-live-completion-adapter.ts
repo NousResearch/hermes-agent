@@ -5,6 +5,9 @@ export interface CompletionEntry {
   text: string
   display?: unknown
   meta?: unknown
+  /** From `complete.slash`: registry command vs skill. The popover groups on
+   *  this instead of re-deriving kind from the desktop command table. */
+  kind?: string
   /** Optional section label (e.g. "Commands", "Skills"). The popover renders a
    *  header whenever this changes between consecutive items, so the fetcher must
    *  emit entries already grouped contiguously. */

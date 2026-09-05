@@ -30,7 +30,8 @@ import os
 
 import pytest
 
-from tools import terminal_tool
+from tools import terminal_tool, terminal_tool_backends
+from tools.terminal_tool_lifecycle import is_persistent_env
 
 
 @pytest.fixture(autouse=True)
@@ -282,7 +283,7 @@ class TestSessionScopedContainerLifecycle:
             terminal_tool._active_environments, "tui:sess-1", _FakeEnv()
         )
         try:
-            assert terminal_tool.is_persistent_env("tui:sess-1") is True
+            assert is_persistent_env("tui:sess-1") is True
         finally:
             terminal_tool._active_environments.pop("tui:sess-1", None)
 
@@ -296,10 +297,10 @@ class TestSessionScopedContainerLifecycle:
             def __init__(self, **kwargs):
                 captured.update(kwargs)
 
-        monkeypatch.setattr(terminal_tool, "_DockerEnvironment", _FakeDockerEnv)
+        monkeypatch.setattr(terminal_tool_backends, "_DockerEnvironment", _FakeDockerEnv)
         monkeypatch.setattr(terminal_tool, "_maybe_reap_docker_orphans", lambda cc: None)
 
-        env = terminal_tool._create_environment(
+        env = terminal_tool_backends._create_environment(
             env_type="docker", image="img:1", cwd="/workspace", timeout=60,
             container_config={"docker_persist_across_processes": True},
             task_id="tui:sess-1",
@@ -315,10 +316,10 @@ class TestSessionScopedContainerLifecycle:
             def __init__(self, **kwargs):
                 captured.update(kwargs)
 
-        monkeypatch.setattr(terminal_tool, "_DockerEnvironment", _FakeDockerEnv)
+        monkeypatch.setattr(terminal_tool_backends, "_DockerEnvironment", _FakeDockerEnv)
         monkeypatch.setattr(terminal_tool, "_maybe_reap_docker_orphans", lambda cc: None)
 
-        env = terminal_tool._create_environment(
+        env = terminal_tool_backends._create_environment(
             env_type="docker", image="img:1", cwd="/workspace", timeout=60,
             container_config={"docker_persist_across_processes": True},
             task_id="default",

@@ -1,3 +1,4 @@
+import importlib.metadata
 import argparse
 import json
 from types import SimpleNamespace
@@ -75,7 +76,7 @@ def test_discover_all_plugins_includes_entrypoint_plugins(monkeypatch, tmp_path)
         lambda: bundled_dir,
     )
     monkeypatch.setattr(
-        plugins_cmd.importlib.metadata,
+        importlib.metadata,
         "entry_points",
         lambda: [entry_point],
     )
@@ -117,7 +118,7 @@ def test_declared_capabilities_for_entrypoint_uses_distribution_metadata(
         "hermes_cli.plugins.get_bundled_plugins_dir", lambda: bundled_dir
     )
     monkeypatch.setattr(
-        plugins_cmd.importlib.metadata,
+        importlib.metadata,
         "entry_points",
         lambda: [plugin_ep, capability_ep],
     )

@@ -23,7 +23,7 @@ class TestClearStaleOpenaiBaseUrl:
 
     def test_clears_when_provider_is_named(self, monkeypatch):
         """OPENAI_BASE_URL is cleared when config provider is a named provider."""
-        from hermes_cli.main import _clear_stale_openai_base_url
+        from hermes_cli.main_provider_setup import _clear_stale_openai_base_url
 
         _write_provider("openrouter")
         save_env_value("OPENAI_BASE_URL", "http://localhost:11434/v1")
@@ -35,7 +35,7 @@ class TestClearStaleOpenaiBaseUrl:
 
     def test_preserves_when_provider_is_custom(self, monkeypatch):
         """OPENAI_BASE_URL is NOT cleared when config provider is 'custom'."""
-        from hermes_cli.main import _clear_stale_openai_base_url
+        from hermes_cli.main_provider_setup import _clear_stale_openai_base_url
 
         _write_provider("custom")
         save_env_value("OPENAI_BASE_URL", "http://localhost:11434/v1")

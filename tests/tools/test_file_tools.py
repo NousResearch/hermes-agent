@@ -317,7 +317,7 @@ class TestWindowsMsysPathResolution:
         """Windows-only: ``_resolve_path_for_task`` hands the translated path
         to ``ntpath``/``Path``, and only a real Windows ``Path`` renders
         ``C:\\Users\\...`` — faking ``sys.platform`` left PosixPath in place."""
-        import tools.file_tools as file_tools
+        import tools.file_tools_paths as file_tools
 
         monkeypatch.setattr(file_tools, "_uses_container_paths", lambda task_id="default": False)
 
@@ -332,7 +332,7 @@ class TestWindowsMsysPathResolution:
         Windows-only: the translation this guards against only happens when
         the host really is Windows, so the negative is only meaningful there.
         """
-        import tools.file_tools as file_tools
+        import tools.file_tools_paths as file_tools
 
         monkeypatch.setattr(file_tools, "_uses_container_paths", lambda task_id="default": True)
         monkeypatch.setattr(
@@ -387,7 +387,7 @@ class TestSearchHints:
 
     def setup_method(self):
         """Clear read/search tracker between tests to avoid cross-test state."""
-        from tools.file_tools import _read_tracker
+        from tools.file_tools_read_tracking import _read_tracker
         _read_tracker.clear()
 
     @patch("tools.file_tools._get_file_ops")
@@ -436,8 +436,8 @@ class TestSensitivePathCheck:
 
     def test_hermes_config_blocked_for_write_file(self, tmp_path, monkeypatch):
         fake_config = tmp_path / "config.yaml"
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", str(fake_config))
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
 
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool(str(fake_config), "approvals:\n  mode: off\n"))
@@ -446,8 +446,8 @@ class TestSensitivePathCheck:
 
     def test_hermes_config_blocked_via_tilde_path(self, tmp_path, monkeypatch):
         fake_config = tmp_path / "config.yaml"
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", str(fake_config))
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
 
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool(str(fake_config), "approvals:\n  mode: off\n"))
@@ -456,8 +456,8 @@ class TestSensitivePathCheck:
 
 
     def test_system_path_still_blocked(self, monkeypatch):
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/some/other/path")
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", "/some/other/path")
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
 
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool("/etc/passwd", "evil"))
@@ -467,7 +467,7 @@ class TestSensitivePathCheck:
     def test_macos_private_var_carveouts(self):
         """macOS temp dirs under /private/var must not be blanket-blocked,
         while the genuinely-sensitive /private/var subtrees still are."""
-        from tools.file_tools import _check_sensitive_path
+        from tools.file_tools_write_guards import _check_sensitive_path
 
         # $TMPDIR / /tmp / /var/folders realpath into these on macOS.
         assert _check_sensitive_path("/private/var/folders/xy/T/tmp.txt") is None
@@ -480,8 +480,8 @@ class TestSensitivePathCheck:
 
     @patch("tools.file_tools._get_file_ops")
     def test_normal_file_not_blocked(self, mock_get, monkeypatch):
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/home/user/.hermes/config.yaml")
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", "/home/user/.hermes/config.yaml")
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
         mock_ops = MagicMock()
         result_obj = MagicMock()
         result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/other.txt", "bytes": 5}
@@ -494,25 +494,36 @@ class TestSensitivePathCheck:
 
 
 class TestPatchSchemaShape:
-    """PATCH_SCHEMA must advertise per-mode required params via description
-    text (not JSON-schema ``required``), so strict models like kimi-k2.x stop
-    silently omitting old_string / new_string / patch content."""
+    """The BASE schema is replace-only (V4A layers on for OpenAI-family
+    mains via _patch_schema_overrides — see test_patch_v4a_gate.py). The
+    kimi-k2.x per-mode-description concern now applies to the V4A LAYER,
+    whose composed variant still documents both modes' requirements."""
 
-    def test_per_mode_required_params_documented_in_descriptions(self):
+    def test_base_schema_replace_only_with_real_required(self):
         desc = PATCH_SCHEMA["description"]
-        assert "REQUIRED PARAMETERS: mode, path, old_string, new_string" in desc
-        assert "REQUIRED PARAMETERS: mode, patch" in desc
+        assert "V4A" not in desc
         props = PATCH_SCHEMA["parameters"]["properties"]
-        for name in ("path", "old_string", "new_string"):
-            assert "REQUIRED when mode='replace'" in props[name]["description"]
-        assert "REQUIRED when mode='patch'" in props["patch"]["description"]
+        assert "mode" not in props and "patch" not in props
+        # replace-only means required can finally be the REAL contract —
+        # no per-mode description hedging needed on the base.
+        assert PATCH_SCHEMA["parameters"]["required"] == ["path", "old_string", "new_string"]
         assert "must differ from old_string" in props["new_string"]["description"]
 
-    def test_no_anyof_required_stays_mode_only(self):
-        # anyOf/oneOf at parameters level break Anthropic, Fireworks, and the
-        # Moonshot/Kimi schema sanitizer — description-level guidance is the
-        # only provider-safe signalling mechanism.
-        params = PATCH_SCHEMA["parameters"]
+    def test_v4a_layer_keeps_per_mode_documentation(self):
+        """When the V4A layer IS rendered (OpenAI-family), the strict-model
+        guidance survives: per-mode requirements in description text, no
+        anyOf/oneOf (breaks Anthropic/Fireworks/Kimi sanitizers)."""
+        from unittest.mock import patch as _p
+
+        import tools.file_tools as ft
+
+        with _p("agent.auxiliary_client._read_main_provider", return_value="openai"), \
+             _p("agent.auxiliary_client._read_main_model", return_value="gpt-5.2"):
+            o = ft._patch_schema_overrides()
+        desc = o["description"]
+        assert "REQUIRED PARAMETERS: mode, path, old_string, new_string" in desc
+        assert "REQUIRED PARAMETERS: mode, patch" in desc
+        params = o["parameters"]
         assert params["required"] == ["mode"]
         assert "anyOf" not in params and "oneOf" not in params
 
@@ -536,7 +547,7 @@ class TestSessionCwdSurvivesEnvRecreation:
     @patch("tools.terminal_tool._active_environments", new_callable=dict)
     @patch("tools.file_tools._file_ops_cache", new_callable=dict)
     @patch("tools.terminal_tool._get_env_config")
-    @patch("tools.terminal_tool._create_environment")
+    @patch("tools.terminal_tool_backends._create_environment")
     def test_recorded_cwd_used_for_recreated_env(
         self, mock_create_env, mock_config, mock_cache, mock_active
     ):
@@ -577,7 +588,7 @@ class TestSessionCwdSurvivesEnvRecreation:
     @patch("tools.terminal_tool._active_environments", new_callable=dict)
     @patch("tools.file_tools._file_ops_cache", new_callable=dict)
     @patch("tools.terminal_tool._get_env_config")
-    @patch("tools.terminal_tool._create_environment")
+    @patch("tools.terminal_tool_backends._create_environment")
     def test_stale_cache_cwd_rescued_into_record_on_cleanup_detection(
         self, mock_create_env, mock_config, mock_cache, mock_active
     ):
@@ -707,21 +718,24 @@ class TestDedupInvalidationTaskResolution:
 
         # The task resolves the relative path into the workspace; the default
         # task (the old buggy resolution) would resolve into proc.
-        correct = str(ft._resolve_path("data.txt", task_id))
-        buggy = str(ft._resolve_path("data.txt"))
+        from tools.file_tools_paths import _resolve_path_for_task
+        from tools.file_tools_read_tracking import _read_tracker
+        correct = str(_resolve_path_for_task("data.txt", task_id))
+        buggy = str(_resolve_path_for_task("data.txt"))
         assert correct != buggy, "test precondition: cwds must diverge"
 
         # Populate the dedup cache via a real read.
         ft.read_file_tool("data.txt", task_id=task_id)
-        keys = [k[0] for k in ft._read_tracker.get(task_id, {}).get("dedup", {})]
+        keys = [k[0] for k in _read_tracker.get(task_id, {}).get("dedup", {})]
         assert correct in keys, keys
 
         # Invalidate as write_file_tool does; the entry must be gone.
-        ft._invalidate_dedup_for_path("data.txt", task_id)
-        remaining = [k[0] for k in ft._read_tracker.get(task_id, {}).get("dedup", {})]
+        from tools.file_tools_read_tracking import _invalidate_dedup_for_path
+        _invalidate_dedup_for_path("data.txt", task_id)
+        remaining = [k[0] for k in _read_tracker.get(task_id, {}).get("dedup", {})]
         assert correct not in remaining, remaining
 
-        ft._read_tracker.pop(task_id, None)
+        _read_tracker.pop(task_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -746,7 +760,8 @@ class TestNotFoundCache:
         mock_ops.read_file.return_value = result_obj
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import read_file_tool, _read_tracker
+        from tools.file_tools import read_file_tool
+        from tools.file_tools_read_tracking import _read_tracker
         # Use a unique task_id so we don't collide with other tests.
         tid = "neg-cache-read-1"
         _read_tracker.pop(tid, None)
@@ -774,7 +789,8 @@ class TestNotFoundCache:
         mock_ops.read_file.return_value = result_obj
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import read_file_tool, _read_tracker
+        from tools.file_tools import read_file_tool
+        from tools.file_tools_read_tracking import _read_tracker
         for tid in ("neg-cache-iso-A", "neg-cache-iso-B"):
             _read_tracker.pop(tid, None)
 
@@ -793,7 +809,8 @@ class TestNotFoundCache:
         mock_ops.read_file.return_value = result_obj
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import read_file_tool, _read_tracker
+        from tools.file_tools import read_file_tool
+        from tools.file_tools_read_tracking import _read_tracker
         tid = "neg-cache-success-only"
         _read_tracker.pop(tid, None)
 
@@ -815,7 +832,8 @@ class TestNotFoundCache:
         mock_ops.search.return_value = result_obj
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import search_tool, _read_tracker
+        from tools.file_tools import search_tool
+        from tools.file_tools_read_tracking import _read_tracker
         tid = "neg-cache-search-3"
         _read_tracker.pop(tid, None)
 
@@ -851,7 +869,8 @@ class TestNotFoundCache:
 
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import read_file_tool, search_tool, _read_tracker
+        from tools.file_tools import read_file_tool, search_tool
+        from tools.file_tools_read_tracking import _read_tracker
         tid = "neg-cache-namespace-4"
         _read_tracker.pop(tid, None)
 
@@ -883,7 +902,8 @@ class TestNotFoundCache:
         mock_ops.write_file.return_value = write_result_obj
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import read_file_tool, write_file_tool, _read_tracker
+        from tools.file_tools import read_file_tool, write_file_tool
+        from tools.file_tools_read_tracking import _read_tracker
         tid = "neg-cache-write-invalidate-5"
         _read_tracker.pop(tid, None)
 
@@ -901,13 +921,9 @@ class TestNotFoundCache:
 
     def test_not_found_ttl_expires(self):
         # A cache entry older than _NOT_FOUND_TTL_SECONDS must be discarded.
-        from tools.file_tools import (
-            _check_not_found_cache,
-            _record_not_found,
-            _read_tracker,
-            _NOT_FOUND_TTL_SECONDS,
-        )
-        import tools.file_tools as ft
+        from tools.file_tools_read_tracking import (
+            _NOT_FOUND_TTL_SECONDS, _check_not_found_cache, _read_tracker, _read_tracker_lock,
+            _record_not_found)
 
         tid = "neg-cache-ttl-6"
         _read_tracker.pop(tid, None)
@@ -916,15 +932,15 @@ class TestNotFoundCache:
         assert _check_not_found_cache("read", "/tmp/ttl-test", tid) is not None
 
         # Backdate the entry past the TTL.
-        with ft._read_tracker_lock:
+        with _read_tracker_lock:
             entry = _read_tracker[tid]["not_found"][("read", "/tmp/ttl-test")]
-            ft._read_tracker[tid]["not_found"][("read", "/tmp/ttl-test")] = (
+            _read_tracker[tid]["not_found"][("read", "/tmp/ttl-test")] = (
                 entry[0] - _NOT_FOUND_TTL_SECONDS - 1.0,
                 entry[1],
             )
         # Stale entry: cache miss, also evicted.
         assert _check_not_found_cache("read", "/tmp/ttl-test", tid) is None
-        with ft._read_tracker_lock:
+        with _read_tracker_lock:
             assert ("read", "/tmp/ttl-test") not in _read_tracker[tid].get("not_found", {})
 
     def test_out_of_band_creation_defeats_cached_miss(self, tmp_path):
@@ -932,11 +948,7 @@ class TestNotFoundCache:
         by a terminal command or any external process, NOT write_file_tool —
         must be served for real on the next read. The agent pattern
         'check for file → create it → read it' breaks otherwise."""
-        from tools.file_tools import (
-            _check_not_found_cache,
-            _record_not_found,
-            _read_tracker,
-        )
+        from tools.file_tools_read_tracking import _check_not_found_cache, _record_not_found, _read_tracker
 
         tid = "neg-cache-oob-read"
         _read_tracker.pop(tid, None)
@@ -960,11 +972,7 @@ class TestNotFoundCache:
     def test_out_of_band_creation_defeats_cached_search_miss(self, tmp_path):
         """Same contract for search roots: creating a file under a
         previously-missing directory must defeat the cached 'Path not found'."""
-        from tools.file_tools import (
-            _check_not_found_cache,
-            _record_not_found,
-            _read_tracker,
-        )
+        from tools.file_tools_read_tracking import _check_not_found_cache, _record_not_found, _read_tracker
 
         tid = "neg-cache-oob-search"
         _read_tracker.pop(tid, None)
@@ -983,12 +991,8 @@ class TestNotFoundCache:
     def test_notify_other_tool_call_clears_not_found(self):
         """Belt-and-suspenders: any non-read tool (terminal etc.) invalidates
         the task's negative cache via the dispatcher's notify hook."""
-        from tools.file_tools import (
-            _check_not_found_cache,
-            _record_not_found,
-            _read_tracker,
-            notify_other_tool_call,
-        )
+        from tools.file_tools_read_tracking import _check_not_found_cache, _record_not_found, _read_tracker
+        from tools.file_tools_read_tracking import notify_other_tool_call
 
         tid = "neg-cache-notify"
         _read_tracker.pop(tid, None)
@@ -999,4 +1003,37 @@ class TestNotFoundCache:
 
         assert _check_not_found_cache("read", "/tmp/never-exists-notify", tid) is None, (
             "notify_other_tool_call must clear cached misses"
+        )
+
+
+class TestSSHConfigWriteGateSingleQuery:
+    """Regression: the ssh-config write guard must pass
+    single_query_deny_message to _run_approval_gate (required kwarg since
+    1596148ff). Missing it raises TypeError instead of routing through the
+    approval flow — see issue #93201."""
+
+    def test_gate_call_passes_single_query_deny_message(self):
+        import inspect as _inspect
+        import re as _re
+        import tools.file_tools_write_guards as ft
+
+        src = _inspect.getsource(ft)
+        idx = src.find("_approval._run_approval_gate(")
+        assert idx != -1, "ssh_config_write gate call not found"
+        block = src[idx:idx + 900]
+        assert "pattern_key=\"ssh_config_write\"" in block
+
+        from tools.approval import _run_approval_gate
+        required = [
+            name for name, param in _inspect.signature(
+                _run_approval_gate).parameters.items()
+            if param.kind == _inspect.Parameter.KEYWORD_ONLY
+            and param.default is _inspect.Parameter.empty
+        ]
+        missing = [k for k in required if not _re.search(
+            rf"\b{k}\s*=", block)]
+        assert missing == [], (
+            f"_run_approval_gate call at ssh_config_write gate is missing "
+            f"required kwargs {missing}; it would raise TypeError instead "
+            f"of showing an approval prompt"
         )

@@ -6,14 +6,9 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 import tools.approval as approval_module
-from tools.approval import (
-    approve_session,
-    check_all_command_guards,
-    check_dangerous_command,
-    is_approved,
-    set_current_session_key,
-    reset_current_session_key,
-)
+from tools import approval_context
+from tools.approval import approve_session, check_all_command_guards, check_dangerous_command, is_approved
+from tools.approval_context import set_current_session_key, reset_current_session_key
 
 # Ensure the module is importable so we can patch it
 import tools.tirith_security
@@ -43,7 +38,7 @@ def _mode_manual(monkeypatch):
     inside every prompting test — slow and flaky. These tests exercise the
     manual prompt flow, so force manual mode.
     """
-    monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
 
 
 @pytest.fixture(autouse=True)

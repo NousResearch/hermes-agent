@@ -1,4 +1,6 @@
 import { isMissingRestEndpoint } from '@/lib/gateway-rpc'
+import { maybeBackfillLegacySessionOwners } from '@/lib/legacy-session-owner-backfill'
+import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
 import { recordTranscriptTail } from '@/store/transcript-tail'
 import type {
   PaginatedSessions,
@@ -8,9 +10,47 @@ import type {
   SessionSearchResponse
 } from '@/types/hermes'
 
-import { hermesApi } from './client'
+import { capabilityScoped, getApiRequestConnection, hermesApi, type ProfileScope, profileScoped } from './client'
 
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
+
+function sessionScoped(scope?: ProfileScope): { connectionId?: string; profile?: string } {
+  if (scope === undefined || scope === null) {
+    return {}
+  }
+
+  const scoped = capabilityScoped(scope)
+
+  if (typeof scope === 'object' && scope.connectionId?.trim() === 'local') {
+    return { ...scoped, connectionId: 'local' }
+  }
+
+  return scoped
+}
+
+function sessionScopeQuery(scope?: ProfileScope): string {
+  const profile = sessionScoped(scope).profile
+
+  return profile ? `?profile=${encodeURIComponent(profile)}` : ''
+}
+
+/**
+ * The active registered gateway owns every row it returns, but its HTTP APIs
+ * correctly know nothing about this Desktop-local registry id. Preserve an
+ * explicit owner from a multi-source response; otherwise stamp the active
+ * non-local source so a later resume cannot fall back to a same-named local
+ * profile. Delegates to the canonical row-stamp helper so this stays the ONE
+ * write shape for connection_id on backend-returned rows.
+ */
+function stampActiveConnectionOwner(sessions: SessionInfo[]): SessionInfo[] {
+  // Durable half of the same ownership contract (#94724): enumeration under
+  // registry topology triggers the one-shot server-side owner backfill for
+  // the serving store when its owner is a single match. Fire-and-forget;
+  // idempotent server-side; never blocks or fails the list that triggered it.
+  maybeBackfillLegacySessionOwners()
+
+  return stampRowsWithOwningConnection(sessions, getApiRequestConnection())
+}
 
 /**
  * Trim a page to its window WITHOUT discarding pinned rows.
@@ -39,6 +79,7 @@ export async function listSessions(
   order: 'created' | 'recent' = 'recent'
 ): Promise<PaginatedSessions> {
   const result = await hermesApi<PaginatedSessions>({
+    ...profileScoped(),
     path:
       `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
       `&archived=${archived}&order=${order}`,
@@ -47,7 +88,7 @@ export async function listSessions(
 
   return {
     ...result,
-    sessions: pageWindow(result.sessions, limit),
+    sessions: pageWindow(stampActiveConnectionOwner(result.sessions), limit),
     offset: 0
   }
 }
@@ -80,6 +121,7 @@ export async function listAllProfileSessions(
     : ''
 
   const result = await hermesApi<PaginatedSessions>({
+    ...profileScoped(),
     path:
       `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
       `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`,
@@ -88,7 +130,7 @@ export async function listAllProfileSessions(
 
   return {
     ...result,
-    sessions: pageWindow(result.sessions, limit),
+    sessions: pageWindow(stampActiveConnectionOwner(result.sessions), limit),
     offset: 0
   }
 }
@@ -106,6 +148,11 @@ export interface SidebarSessionSlice {
   /** Per-profile tokens and spend over every session, not just this window.
    *  Absent from the legacy per-slice endpoint, which has no aggregate. */
   profiles_usage?: Record<string, { cost_usd: number; tokens: number }>
+  /** Profiles whose scan for THIS slice failed. Batched `/sidebar` stamps the
+   *  same profile errors on every slice (one DB open). Legacy per-slice calls
+   *  stamp only the slice that actually failed, so a cron I/O error cannot
+   *  carry-forward recents. */
+  errors?: Array<{ profile: string; error: string }>
 }
 
 /** Which profiles filled their per-profile window in a returned page. The
@@ -174,16 +221,24 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
     })
   ])
 
-  const errors = [...(recents.errors ?? []), ...(cron.errors ?? []), ...(messaging.errors ?? [])]
+  const recentsErrors = recents.errors ?? []
+  const cronErrors = cron.errors ?? []
+  const messagingErrors = messaging.errors ?? []
 
   return {
     recents: {
       profiles_truncated: profilesTruncatedFrom(recents.sessions, req.recentsLimit),
-      sessions: recents.sessions
+      sessions: recents.sessions,
+      ...(recentsErrors.length ? { errors: recentsErrors } : {})
     },
-    cron: { sessions: cron.sessions },
-    messaging: { sessions: messaging.sessions },
-    ...(errors.length ? { errors } : {})
+    cron: {
+      sessions: cron.sessions,
+      ...(cronErrors.length ? { errors: cronErrors } : {})
+    },
+    messaging: {
+      sessions: messaging.sessions,
+      ...(messagingErrors.length ? { errors: messagingErrors } : {})
+    }
   }
 }
 
@@ -228,6 +283,7 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
 
   try {
     result = await hermesApi<SidebarSessionsResponse>({
+      ...profileScoped(),
       path: `/api/profiles/sessions/sidebar?${params.toString()}`,
       timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
     })
@@ -245,9 +301,21 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
   }
 
   return {
-    recents: { ...result.recents, sessions: result.recents?.sessions ?? [] },
-    cron: { ...result.cron, sessions: result.cron?.sessions ?? [] },
-    messaging: { ...result.messaging, sessions: result.messaging?.sessions ?? [] },
+    recents: {
+      ...result.recents,
+      sessions: stampActiveConnectionOwner(result.recents?.sessions ?? []),
+      ...(result.errors?.length ? { errors: result.errors } : {})
+    },
+    cron: {
+      ...result.cron,
+      sessions: stampActiveConnectionOwner(result.cron?.sessions ?? []),
+      ...(result.errors?.length ? { errors: result.errors } : {})
+    },
+    messaging: {
+      ...result.messaging,
+      sessions: stampActiveConnectionOwner(result.messaging?.sessions ?? []),
+      ...(result.errors?.length ? { errors: result.errors } : {})
+    },
     errors: result.errors
   }
 }
@@ -255,11 +323,17 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
 // Mutations take the owning `profile` so Electron can route them to the correct
 // remote backend or local profile scope. Omit for the current/default profile.
 export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
+  // Carry the owning profile IN THE PATCH BODY, mirroring renameSession — the
+  // backend reads its target DB from body.profile (_open_session_db_for_profile).
+  // Passing it only as request.profile (Electron routing) is not enough on a
+  // remote gateway with no remoteProfile alias: the archive lands on the wrong
+  // (default) state.db, no-ops on a missing row, and the archived/unarchived
+  // state silently fails to stick — the same class as the unscoped DELETE.
   return hermesApi<{ ok: boolean }>({
     ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { archived }
+    body: { archived, ...(profile ? { profile } : {}) }
   })
 }
 
@@ -268,11 +342,14 @@ export function setSessionArchived(id: string, archived: boolean, profile?: stri
 // pinned chat. Best-effort: the sidebar stays localStorage-driven for its own
 // display; this only feeds the backend policy.
 export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: string | null): Promise<{ ok: boolean }> {
+  // Owning profile in the PATCH body (see setSessionArchived / renameSession):
+  // the handler reads its target DB from body.profile, so a remote/foreign
+  // profile's pin must travel in the body or it no-ops on the wrong state.db.
   return hermesApi<{ ok: boolean }>({
     ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { pinned }
+    body: { pinned, ...(profile ? { profile } : {}) }
   })
 }
 
@@ -281,11 +358,15 @@ export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: st
 // routing as the other session mutations: a remote session's row lives only
 // on its remote host, so the owning profile must travel with the request.
 export function setSessionUnreadRemote(id: string, unread: boolean, profile?: string | null): Promise<{ ok: boolean }> {
+  // Owning profile in the PATCH body (see setSessionArchived / renameSession):
+  // the handler reads its target DB from body.profile, so a remote/foreign
+  // profile's unread toggle must travel in the body or it no-ops on the wrong
+  // state.db.
   return hermesApi<{ ok: boolean }>({
     ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { unread }
+    body: { unread, ...(profile ? { profile } : {}) }
   })
 }
 
@@ -299,11 +380,11 @@ export function searchSessions(query: string): Promise<SessionSearchResponse> {
 // the given `profile`). The backend resolves exact ids and unique prefixes and
 // 404s when the id isn't on that profile — so a cheap by-id lookup replaces the
 // cross-profile list scan when locating an unknown id's owner.
-export function getSession(id: string, profile?: string | null): Promise<SessionInfo> {
-  const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+export function getSession(id: string, profile?: ProfileScope): Promise<SessionInfo> {
+  const suffix = sessionScopeQuery(profile)
 
   return hermesApi<SessionInfo>({
-    ...(profile ? { profile } : {}),
+    ...sessionScoped(profile),
     path: `/api/sessions/${encodeURIComponent(id)}${suffix}`
   })
 }
@@ -314,13 +395,15 @@ export function getSession(id: string, profile?: string | null): Promise<Session
 // the current/default profile.
 export function getSessionMessages(
   id: string,
-  profile?: string | null,
+  profile?: ProfileScope,
   page: { limit?: number; offset?: number; order?: 'latest' | 'oldest'; includeCompacted?: boolean } = {}
 ): Promise<SessionMessagesResponse> {
   const query = new URLSearchParams()
 
-  if (profile) {
-    query.set('profile', profile)
+  const sessionScope = sessionScoped(profile)
+
+  if (sessionScope.profile) {
+    query.set('profile', sessionScope.profile)
   }
 
   if (page.limit !== undefined) {
@@ -342,7 +425,7 @@ export function getSessionMessages(
   const suffix = query.size ? `?${query.toString()}` : ''
 
   return hermesApi<SessionMessagesResponse>({
-    ...(profile ? { profile } : {}),
+    ...sessionScope,
     path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`
   })
 }
@@ -356,7 +439,7 @@ export function getSessionMessages(
  */
 export const LATEST_SESSION_MESSAGES_LIMIT = 120
 
-export function getLatestSessionMessages(id: string, profile?: string | null): Promise<SessionMessagesResponse> {
+export function getLatestSessionMessages(id: string, profile?: ProfileScope): Promise<SessionMessagesResponse> {
   // includeCompacted: durable display history must include rows preserved by
   // in-place compaction (active=0, compacted=1); without them the transcript
   // silently ends at the compaction boundary and earlier turns are unreachable.
@@ -380,6 +463,43 @@ export function getLatestSessionMessages(id: string, profile?: string | null): P
 }
 
 /**
+ * READ-ONLY stored-transcript lookup that never routes a live session
+ * (#94724 no-owner recovery). Tries the ambient/primary store first, then
+ * probes every registered NON-local connection by id — a REST read of a
+ * backend's own state.db is side-effect free (a miss is a plain 404, no
+ * session is minted or resumed anywhere), so probing across backends is safe
+ * where live routing would be a guess. Returns null when no reachable
+ * backend holds the transcript.
+ */
+export async function fetchStoredTranscriptAcrossBackends(id: string): Promise<SessionMessagesResponse | null> {
+  try {
+    return await getLatestSessionMessages(id)
+  } catch {
+    // Not on the ambient store — probe the registered backends below.
+  }
+
+  const { $connectionsRegistry } = await import('@/store/connection-registry-state')
+
+  const connections = ($connectionsRegistry.get()?.connections ?? []) as Array<{ id?: string }>
+
+  for (const connection of connections) {
+    const connectionId = connection.id?.trim()
+
+    if (!connectionId || connectionId === 'local' || connectionId === getApiRequestConnection()) {
+      continue
+    }
+
+    try {
+      return await getLatestSessionMessages(id, { connectionId, profile: 'default' })
+    } catch {
+      // Not on this backend (or it is unreachable); try the next.
+    }
+  }
+
+  return null
+}
+
+/**
  * One page of messages OLDER than the `offset` newest rows.
  *
  * Backend semantics (`_handle_session_messages` → `SessionDB.get_messages`
@@ -394,7 +514,7 @@ export function getLatestSessionMessages(id: string, profile?: string | null): P
  */
 export function getOlderSessionMessages(
   id: string,
-  profile: string | null | undefined,
+  profile: ProfileScope,
   offset: number,
   limit: number = LATEST_SESSION_MESSAGES_LIMIT
 ): Promise<SessionMessagesResponse> {
@@ -403,7 +523,7 @@ export function getOlderSessionMessages(
 
 export async function getAllSessionMessages(
   id: string,
-  profile?: string | null,
+  profile?: ProfileScope,
   options: { maxJsonChars?: number } = {}
 ): Promise<SessionMessagesResponse> {
   const messages: SessionMessage[] = []
@@ -443,10 +563,24 @@ export async function getAllSessionMessages(
   return { session_id: resolvedSessionId, messages }
 }
 
-export function deleteSession(id: string, profile?: string | null): Promise<{ ok: boolean }> {
+export function deleteSession(id: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
+  // Scope the DELETE to the owning profile IN THE URL, mirroring getSession /
+  // getSessionMessages. Passing the profile only via request.profile (which the
+  // Electron main process consumes for backend routing) is NOT enough: on a
+  // remote gateway whose connection has no remoteProfile alias, the main-process
+  // path rewrite leaves the URL unscoped, so the backend opens its OWN (default)
+  // state.db, fails to find another profile's session, and returns
+  // {ok:true, already_absent:true}. The row then vanishes optimistically but was
+  // never deleted and reappears on the next sidebar refresh — the "All Profiles
+  // delete doesn't stick" report. The endpoint already honours ?profile=
+  // (get/rename/messages all send it); DELETE was the one mutation that dropped
+  // it after the api/ split. request.profile stays on for per-profile remote
+  // override + global-remote routing (both re-read/re-append the param).
+  const suffix = sessionScopeQuery(profile)
+
   return hermesApi<{ ok: boolean }>({
-    ...(profile ? { profile } : {}),
-    path: `/api/sessions/${encodeURIComponent(id)}`,
+    ...sessionScoped(profile),
+    path: `/api/sessions/${encodeURIComponent(id)}${suffix}`,
     method: 'DELETE'
   })
 }

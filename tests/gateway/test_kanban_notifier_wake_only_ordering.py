@@ -15,6 +15,8 @@ import asyncio
 from gateway.config import Platform
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_notify as kbn
 
 
 class RecordingAdapter:
@@ -62,7 +64,7 @@ def _make_runner(adapter):
 
 
 def _make_completed_task(delivery_mode):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(
             conn,
@@ -70,7 +72,7 @@ def _make_completed_task(delivery_mode):
             assignee="worker",
             session_id="agent:main:telegram:dm:chat-1",
         )
-        kb.add_notify_sub(
+        kbn.add_notify_sub(
             conn,
             task_id=tid,
             platform="telegram",
@@ -85,9 +87,9 @@ def _make_completed_task(delivery_mode):
 
 
 def _unseen_terminal_events(tid):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
-        _, events = kb.unseen_events_for_sub(
+        _, events = kbn.unseen_events_for_sub(
             conn,
             task_id=tid,
             platform="telegram",
@@ -100,9 +102,9 @@ def _unseen_terminal_events(tid):
 
 
 def _subs(tid):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
-        return kb.list_notify_subs(conn, tid)
+        return kbn.list_notify_subs(conn, tid)
     finally:
         conn.close()
 

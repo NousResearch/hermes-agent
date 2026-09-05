@@ -111,11 +111,12 @@ Common options:
 
 | Option | Description |
 |--------|-------------|
-| `-q`, `--query "..."` | One-shot, non-interactive prompt. |
-| `--query-file PATH` | Read the one-shot prompt from a file (`-` = stdin). Nothing is shell-interpreted, so quotes, `$(...)`, and backticks arrive verbatim — use this for programmatic or untrusted message bodies (Bot Mode teammate DMs use it). Mutually exclusive with `-q`. |
+| `-q`, `--query "..."` | Seed the session with a prompt. On a real TTY the prompt is submitted **literally** as the first turn of a normal interactive session (it is never parsed as a slash command or `!` shell escape) and the session stays open — ideal for OS launchers and desktop integrations. With `--oneshot`, `-Q`, or non-TTY stdio it answers and exits. |
+| `--query-file PATH` | Read the query from a file (`-` = stdin). Nothing is shell-interpreted, so quotes, `$(...)`, and backticks arrive verbatim — use this for programmatic or untrusted message bodies (Bot Mode teammate DMs use it). Mutually exclusive with `-q`. |
+| `--oneshot` | With `-q`/`--query-file`: answer the query and exit (the pre-0.21 single-query behavior) instead of seeding an interactive session. Implied on non-TTY stdio and by `-Q`. |
 | `-m`, `--model <model>` | Override the model for this run. |
 | `-t`, `--toolsets <csv>` | Enable a comma-separated set of toolsets. |
-| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `gemini`, `huggingface`, `novita` (aliases `novita-ai`, `novitaai`), `openai-api`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `upstage` (alias `solar`), `alibaba`, `alibaba-coding-plan` (alias `alibaba_coding`), `deepseek`, `nvidia`, `ollama-cloud`, `xai` (alias `grok`), `xai-oauth` (alias `grok-oauth`), `qwen-oauth`, `bedrock`, `opencode-zen`, `opencode-go`, `opencode-free` (aliases `free`, `opencode_free`; keyless), `commandcode`, `commandcode-anthropic`, `ai-gateway`, `azure-foundry`, `lmstudio`, `stepfun`, `tencent-tokenhub` (alias `tencent`, `tokenhub`). |
+| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `gemini`, `huggingface`, `novita` (aliases `novita-ai`, `novitaai`), `openai-api`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `upstage` (alias `solar`), `alibaba`, `alibaba-cn`, `alibaba-coding-plan` (alias `alibaba_coding`), `alibaba-coding-plan-cn`, `alibaba-token-plan`, `alibaba-token-plan-cn`, `deepseek`, `nvidia`, `ollama-cloud`, `xai` (alias `grok`), `xai-oauth` (alias `grok-oauth`), `qwen-oauth`, `bedrock`, `opencode-zen`, `opencode-go`, `opencode-free` (aliases `free`, `opencode_free`; keyless), `commandcode`, `commandcode-anthropic`, `ai-gateway`, `azure-foundry`, `lmstudio`, `stepfun`, `tencent-tokenhub` (alias `tencent`, `tokenhub`), `router` (aliases `ramp-router`, `ramp`), `nebius-token-factory` (aliases `nebius`, `nebius-tf`, `tokenfactory`), `tencent-tokenplan` (aliases `tokenplan`, `tencent-lkeap`). |
 | `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
@@ -135,7 +136,8 @@ Examples:
 
 ```bash
 hermes
-hermes chat -q "Summarize the latest PRs"
+hermes chat -q "Summarize the latest PRs"          # seeds an interactive session
+hermes chat --oneshot -q "Summarize the latest PRs"  # answer and exit
 hermes chat --provider openrouter --model anthropic/claude-sonnet-4.6
 hermes chat --toolsets web,terminal,skills
 hermes chat --quiet -q "Return only JSON"
@@ -170,7 +172,7 @@ hermes -z "…" --provider openrouter --model openai/gpt-5.5
 HERMES_INFERENCE_MODEL=anthropic/claude-sonnet-4.6 hermes -z "…"
 ```
 
-Same agent, same tools, same skills — just strips every interactive / cosmetic layer. If you need tool output in the transcript too, use `hermes chat -q` instead; `-z` is explicitly for "I only want the final answer".
+Same agent, same tools, same skills — just strips every interactive / cosmetic layer. If you need tool output in the transcript too, use `hermes chat --oneshot -q` instead; `-z` is explicitly for "I only want the final answer".
 
 #### `--usage-file` — JSON usage report for pipelines
 
@@ -447,6 +449,9 @@ hermes send --list telegram         # filter by platform
 hermes peer add <name> --url http://host:port --key <API_SERVER_KEY>
 hermes peer list
 hermes peer dm <peer>[/<agent>] "message"
+hermes peer run <peer>[/<agent>] --idempotency-key <key> "message"
+hermes peer status <peer>[/<agent>] <run_id>
+hermes peer stop <peer>[/<agent>] <run_id>
 hermes peer remove <name>
 ```
 
@@ -466,6 +471,9 @@ its `/p/<profile>/` mirror).
 | `add <name> --url <URL> [--key <KEY>] [--note TEXT]` | Register or update a peer. The URL goes to `config.yaml` (`bot_peers`); the key is stored as `HERMES_PEER_<NAME>_KEY` in `~/.hermes/.env`. |
 | `list` | List peers and whether each has a key configured. |
 | `dm <peer>[/<agent>] [message]` | Message the peer agent's canonical Bot Chat and print the reply (`--json` for machine-readable output; message falls back to stdin). |
+| `run <peer>[/<agent>] [message]` | Start a long canonical Bot Chat turn asynchronously and return its `run_id`, session ID, and idempotency key (`--json` supported). Reuse `--idempotency-key` when retrying the same request. |
+| `status <peer>[/<agent>] <run_id>` | Poll an asynchronous peer run and print its final output when complete (`--json` supported). |
+| `stop <peer>[/<agent>] <run_id>` | Stop the exact asynchronous peer run without targeting another turn (`--json` supported). |
 | `remove <name>` | Remove a peer from the registry (the `.env` key entry is left in place). |
 
 When at least one peer is registered, the Bot Mode messaging protocol
@@ -596,7 +604,7 @@ hermes status [--all] [--deep]
 ## `hermes cron`
 
 ```bash
-hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
+hermes cron <list|create|edit|pause|resume|run|remove|status|runs|incidents|doctor|tick>
 ```
 
 | Subcommand | Description |
@@ -609,6 +617,7 @@ hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
 | `run` | Trigger a job on the next scheduler tick. |
 | `remove` | Delete a scheduled job. |
 | `status` | Check whether the cron scheduler is running. |
+| `doctor` | Read-only fleet health check: failed runs, failed deliveries, overdue/missing `next_run_at`, missing scripts or workdirs. Exits non-zero when issues are found. |
 | `tick` | Run due jobs once and exit. |
 
 The cron **trigger** is pluggable via the `cron.provider` config key. Empty
@@ -930,7 +939,7 @@ hermes debug share --local      # Print report to terminal (no upload)
 hermes backup [options]
 ```
 
-Create a zip archive of your Hermes configuration, skills, sessions, and data. The backup excludes the hermes-agent codebase itself.
+Create a zip archive of your Hermes configuration, skills, sessions, and data. The backup excludes the hermes-agent codebase itself, and it does not nest earlier backup artifacts (`backups/`, `state-snapshots/`) — each of those already contains its own copy of `state.db`.
 
 | Option | Description |
 |--------|-------------|
@@ -1008,6 +1017,21 @@ Restore a previously created Hermes backup into your Hermes home directory. All 
 :::warning
 Stop the gateway before importing to avoid conflicts with running processes.
 :::
+
+### SQLite databases
+
+`.db` members (`state.db`, `kanban.db`, `response_store.db`, …) are not published with a rename like ordinary files. Renaming would replace the file's inode while a gateway, dashboard, or WebUI process still holds the old one open: that process would keep reading pre-import pages and keep writing sessions nobody else can see, and those sessions would simply be absent from the database everyone opens next — with nothing logged. Instead the imported pages are written **into the existing database file**, the same way `/snapshot restore` does it, so every open connection converges on the imported data.
+
+If the live database cannot be replaced safely — the page copy failed *and* another process still holds the file open — the import leaves that database untouched and lists it under `Warnings (N files skipped)`. Stop the holding processes and re-run.
+
+Importing an older backup over newer work is still allowed, but it is no longer silent. When the imported `state.db` holds fewer messages than the one it replaced, the summary reports it:
+
+```
+  ⚠ Session data replaced by older backup contents:
+    state.db: 12 session(s) / 8912 message(s) -> 3 / 24
+    Anything recorded after the backup was taken is not in it.
+    Recover from a newer backup or snapshot: hermes snapshot list
+```
 
 ### Examples
 ```bash
@@ -1148,6 +1172,27 @@ Subcommands:
 | `env-path` | Print the `.env` file path. |
 | `check` | Check for missing or stale config. |
 | `migrate` | Add newly introduced options interactively. |
+
+### Dots inside key names
+
+`hermes config set/get/unset` use `.` as the nesting separator, but many real
+key names contain literal dots — model IDs (`grok-4.6`, `glm-5.3-flash`),
+Matrix room IDs (`!room:example.org`), versioned provider names. Two rules
+make these addressable:
+
+- **Existing keys just work.** When navigating an existing mapping, an
+  existing literal key that matches the dotted remainder is preferred over
+  splitting. `hermes config set providers.p.models.grok-4.6.supports_vision true`
+  updates the real `grok-4.6` entry (and `get`/`unset` resolve the same way).
+- **Creating a new dotted key requires escaping.** Escape literal dots with a
+  backslash: `hermes config set 'providers.p.models.grok-4\.7.context_length' 128000`
+  creates the literal `grok-4.7` key. (Quote the key so your shell keeps the
+  backslash.)
+
+If an unescaped write would create a nested mapping that shadows an existing
+dotted sibling (e.g. creating `grok-4` next to an existing `grok-4.6`), the
+command fails with an error instead of silently writing a phantom entry the
+runtime would never read.
 
 ## `hermes pairing`
 
@@ -1483,7 +1528,7 @@ Registering raw Cua MCP tools is an alternative when you need Cua's low-level
 tool vocabulary. `cua-driver skills install` detects Hermes and links Cua's
 skill pack into the Hermes skills directory automatically.
 
-Permission mode, capability-manifest approval, and the existing-profile grant
+Permission mode and capability-manifest approval
 belong to runtime launch. In bounded mode Hermes passes Cua's canonical
 `--capability-manifest` and `--approve-capability-manifest` flags. Every MCP
 transport owns a private lifecycle session inside its runtime. Public session
@@ -1628,6 +1673,8 @@ hermes serve [options]
 
 Start the Hermes **backend server** — the JSON-RPC/WebSocket gateway the [desktop app](/user-guide/desktop) and remote clients connect to. It is the same server `hermes dashboard` runs, but **headless**: it never opens a browser UI. The desktop app launches its own `hermes serve` backend; use this command directly when you want a headless backend on a remote host. Accepts the same `--host` / `--port` / `--insecure` / `--skip-build` / `--stop` / `--status` options as `hermes dashboard` below (a non-loopback bind engages the same auth gate). Requires the `[web]` extra; the embedded Chat socket additionally needs `[pty]` on a POSIX host.
 
+**Port conflicts:** if the requested port (default `9119`) is already held by another process (e.g. a second `hermes serve` or the gateway), the command prints a machine-readable sentinel line `BACKEND_PORT_IN_USE port=<port>` to stdout, a human hint naming the likely holder, and exits with code **75** (`EX_TEMPFAIL`) instead of a generic error — so scripts and the desktop app can tell "port occupied" apart from "backend broken". Pass `--port 0` to bind a free ephemeral port (the successful boot announces the chosen port via `HERMES_BACKEND_READY port=<port>`).
+
 ## `hermes dashboard`
 
 ```bash
@@ -1749,6 +1796,7 @@ Pulls the latest `hermes-agent` code and reinstalls dependencies in the managed 
 Additional behavior:
 
 - **Gateway restart.** After a successful update, Hermes attempts to restart all running gateway profiles automatically so they pick up the new code. Use `hermes gateway restart` when you want to restart a gateway without applying an update.
+- **Restart-phase recovery.** If the in-process restart phase aborts while importing the freshly pulled tree, supervised gateway profiles are retried through a clean Python process. Only restarts independently confirmed by systemd (`systemctl --user is-active`) are reported as verified; a relaunch that merely exited 0 is recorded as `relaunch_attempted` and still fails the update conservatively. Manual gateways and serve/dashboard runtimes are never killed without a relaunch authority; they are recorded as skipped with a reason and remain in the incomplete-update report with the exact restart command.
 - **Update receipts + fleet version check.** Every run writes a machine-readable receipt to `~/.hermes/logs/update_receipts/` (pre-update fleet plan, steps, skips with reasons, restart outcome; `latest.json` points at the newest). After the restart phase the updater verifies each live gateway's running code against the updated checkout and prints a per-profile version matrix; a gateway still on pre-update code fails the update (exit 1) with the exact restart command.
 - **Local source changes.** For git installs, dirty tracked files and untracked files are auto-stashed before branch checkout or pull (`git stash push --include-untracked`). Interactive terminal updates ask before restoring the stash. Non-interactive updates restore it by default; set `updates.non_interactive_local_changes: discard` only on managed installs where local source edits should be thrown away after a successful pull. If stash restore conflicts or the pull fails, the stash is left in place for manual recovery.
 - **npm lockfile churn.** Before stashing or switching branches, Hermes makes a best-effort cleanup of tracked `package-lock.json` diffs produced by npm install/build steps. Commit or manually stash intentional lockfile edits before running `hermes update`.

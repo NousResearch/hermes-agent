@@ -1,6 +1,8 @@
 import type { GatewayWsUrlResult } from '@hermes/shared'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
+import type { PoolLimits } from '../electron/pool-limits'
+
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
   PetOverlayBounds,
@@ -46,13 +48,24 @@ declare global {
       // Keepalive: mark a pool profile backend as recently used so the idle
       // reaper spares it while its chat is active.
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
+      // Pool sizing (Settings → Advanced): device-local, live-applied by the
+      // main process. get resolves the limits currently in force; set applies
+      // (and persists) new ones, evicting/reaping to converge immediately.
+      getPoolLimits: () => Promise<PoolLimits>
+      setPoolLimits: (limits: { maxBackends?: number; idleMs?: number }) => Promise<{
+        ok: boolean
+        limits: PoolLimits
+      }>
       getGatewayWsUrl: (profile?: null | string) => Promise<GatewayWsUrlResult>
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false
       // with an error code when the sessionId is empty/invalid. `watch` opens
       // a spectator window (lazy resume — no agent build) for live-streaming
       // a running subagent's session.
-      openSessionWindow: (sessionId: string, opts?: { watch?: boolean }) => Promise<{ ok: boolean; error?: string }>
+      openSessionWindow: (
+        sessionId: string,
+        opts?: { profile?: null | string; watch?: boolean }
+      ) => Promise<{ ok: boolean; error?: string }>
       // Resume this session in the user's own terminal emulator (`hermes --tui
       // --resume <id>`) — the external terminal, not the in-app pane.
       openSessionInTerminal: (
@@ -63,6 +76,11 @@ declare global {
       // renders the complete app against the shared backend, so the user can run
       // multiple GUI windows at once.
       openWindow: () => Promise<{ ok: boolean; error?: string }>
+      // Pop the in-app Browser (webview + address bar) into its own OS window.
+      // `tabId` is the `$previewTabs` id; closing the window fires
+      // `onBrowserPopoutClosed` so the caller can dock the tab again.
+      openBrowserWindow: (tabId: string) => Promise<{ ok: boolean; error?: string }>
+      onBrowserPopoutClosed: (callback: (tabId: string) => void) => () => void
       // Claim a one-shot cross-window ambient cue (turn-end sound / spoken
       // reply). Resolves true for the first window to claim a key, false for
       // peers — so N open windows don't all fire the same cue.
@@ -91,16 +109,29 @@ declare global {
       // bar — so it mounts the real composer rather than a lookalike. Main
       // owns the window; `onChanged` keeps every window's toggle truthful.
       hud?: {
+        nativeDrag: boolean
+        windowing?: {
+          clientPlacement: boolean
+          controlDrag: boolean
+          nativeDrag: boolean
+          solid: boolean
+          workspaceTransfer: boolean
+        }
         open: (request?: { sessionId?: null | string; profile?: null | string }) => Promise<{ ok: boolean }>
         close: () => Promise<{ ok: boolean }>
         setIgnoreMouse: (ignore: boolean) => void
-        moveBy: (delta: { x: number; y: number; width: number; height: number }) => void
+        beginMove: () => void
+        endMove: () => void
+        moveBy: (delta: { width: number; height: number }) => void
+        setWorkspaceTransfer?: (transferring: boolean) => void
         setBounds: (bounds: { x: number; y: number; width: number; height: number }) => void
+        resetLayout: () => Promise<{ ok: boolean }>
         setFrost: (showing: boolean) => Promise<{ ok: boolean }>
         setSession: (sessionId: null | string) => void
         onGoto: (callback: (sessionId: string) => void) => () => void
         onChanged: (callback: (state: { open: boolean; sessionId: null | string }) => void) => () => void
         onCursor: (callback: (point: { x: number; y: number } | null) => void) => () => void
+        onGameOverlay: (callback: (state: { active: boolean; app: string }) => void) => () => void
       }
       // Quick Entry: a global-hotkey mini composer window. Main owns the OS
       // shortcut registration + the persisted preference (it must restore the
@@ -135,6 +166,11 @@ declare global {
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       testConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionTestResult>
+      // Opt-in OS-keychain encryption for stored gateway secrets (default
+      // off). `get` never touches the OS keychain; `set` re-encodes stored
+      // secrets and can throw when the keychain is unusable.
+      getSecretStorageEncryption: () => Promise<{ on: boolean }>
+      setSecretStorageEncryption: (on: boolean) => Promise<{ on: boolean }>
       // v2 multi-connection registry: named agent sources, all persisted
       // together (local + any number of remote/cloud/ssh instances).
       connections: {
@@ -149,6 +185,9 @@ declare global {
         ) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
         setLastUsed?: (id: string) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
         test: (id: string) => Promise<DesktopConnectionTestResult>
+        // Drain/update/restore one Desktop-managed SSH install. External URL
+        // and cloud sources are refused without touching their processes.
+        updateManaged?: (id: string) => Promise<DesktopManagedConnectionUpdateResult>
         // Fan out `hermes update` to every eligible registered connection;
         // cloud entries are skipped (platform-managed), each row independent.
         // excludeIds skips connections the caller updates through another
@@ -160,13 +199,15 @@ declare global {
         // materially edited so the renderer can dispose (and re-dial) the
         // secondary gateways scoped to it. Optional: older Electron mains
         // don't emit it.
-        onChanged?: (callback: (payload: { connectionId: string; reason: 'removed' | 'updated' }) => void) => () => void
+        onChanged?: (
+          callback: (payload: { connectionId: string; reason: 'removed' | 'saved' | 'updated' }) => void
+        ) => () => void
       }
       sshConfigHosts: () => Promise<DesktopSshHostsResult>
       sshResolveHost: (host: string) => Promise<DesktopSshResolveResult>
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
       oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
-      oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
+      oauthLogoutConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLogoutResult>
       // Hermes Cloud: one portal login powers discovery + silent per-agent
       // sign-in (cloud-auto-discovery Phase 3).
       cloud: {
@@ -178,6 +219,9 @@ declare global {
       }
       profile: {
         get: () => Promise<DesktopActiveProfile>
+        // Persists the profile used on the next Desktop launch without
+        // interrupting the live gateway workspace switch.
+        remember: (name: string | null) => Promise<DesktopActiveProfile>
         // Persists the desktop's profile choice and relaunches the local
         // backend under the new HERMES_HOME (reloads the window). Pass null to
         // clear the preference.
@@ -207,6 +251,10 @@ declare global {
         set: (maxMb: number) => Promise<{ defaultMaxMb: number; maxBytes: number; maxMb: number }>
       }
       readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
+      /** Full-source read for runtime desktop plugins (readFileText truncates
+       *  at the 512 KiB preview cap). Absent on older shells — callers fall
+       *  back to readFileText and must reject a `truncated` result. */
+      readPluginSource?: (filePath: string) => Promise<HermesReadFileTextResult>
       selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
       /** Native save dialog; returns the chosen path or null on cancel. */
       selectSavePath?: (options?: {
@@ -216,7 +264,12 @@ declare global {
       }) => Promise<null | string>
       writeClipboard: (text: string) => Promise<boolean>
       readClipboard: () => Promise<string>
-      saveGatewayFile?: (payload: { path: string; profile?: null | string; suggestedName?: string }) => Promise<{
+      saveGatewayFile?: (payload: {
+        connectionId?: null | string
+        path: string
+        profile?: null | string
+        suggestedName?: string
+      }) => Promise<{
         canceled?: boolean
         path?: string
         saved: boolean
@@ -238,7 +291,13 @@ declare global {
       onContextMenuSpellcheck?: (
         callback: (payload: { misspelledWord: string; suggestions: string[] }) => void
       ) => () => void
-      saveImageBuffer: (data: ArrayBuffer | Uint8Array, ext: string) => Promise<string>
+      saveImageBuffer: (data: ArrayBuffer | Uint8Array, ext: string, name?: string) => Promise<string>
+      /** Crop the in-app browser guest. `rect` is CSS pixels in the page viewport. */
+      capturePreview?: (payload: {
+        rect?: { height: number; width: number; x: number; y: number }
+        viewport?: { height: number; width: number }
+        webContentsId: number
+      }) => Promise<string>
       saveClipboardImage: () => Promise<string>
       getPathForFile: (file: File) => string
       normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
@@ -255,11 +314,26 @@ declare global {
       glassSupported?: boolean
       /** Main-process fact: this OS can do any translucency at all (not Linux). */
       translucencySupported?: boolean
+      /** Launch flag: the app was started with --local, enabling the
+       *  local-models GUI surfaces. Absent/false = every local surface hides. */
+      localModelsEnabled?: boolean
       setTranslucency?: (payload: TranslucencyState) => void
       setKeepAwake?: (on: boolean) => void
       setDisableF12?: (blocked: boolean) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
+      /** One-shot loopback callback listener for MCP OAuth against remote
+       *  backends (electron/mcp-oauth-callback-ipc.ts): bind on THIS machine,
+       *  pass redirectUri as client_redirect_uri to mcp.servers.oauth.start,
+       *  await the provider redirect, relay code/state via oauth.callback. */
+      mcpOauth?: {
+        listen: () => Promise<{ id: string; redirectUri: string }>
+        wait: (
+          id: string,
+          timeoutMs?: number
+        ) => Promise<{ code: null | string; error: null | string; state: null | string }>
+        cancel: (id: string) => Promise<boolean>
+      }
       openPreviewInBrowser?: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
       /** A site's icon as a data URL, or '' when it has none we can read.
@@ -297,6 +371,8 @@ declare global {
       // resolved by Electron independently of the connected backend (#66899).
       // Created on demand; returns the normalized absolute path.
       desktopPluginsRoot?: () => Promise<string>
+      /** LOCAL `<HERMES_HOME>/logs` (profile-aware) — error card "Open Logs". */
+      logsRoot?: () => Promise<string>
       // Local AGENT-plugin root (<HERMES_HOME>/plugins), same Electron-local
       // resolution. The disk door also scans it for `<name>/desktop/plugin.js`
       // so one agent-plugin package can ship a desktop UI half. Optional:
@@ -372,6 +448,7 @@ declare global {
         ) => Promise<{ root: string; label: string }[]>
       }
       terminal: {
+        attach: (id: string) => Promise<boolean>
         /** Best-effort current working directory of the live PTY child (POSIX
          *  only; null on Windows or when unavailable). Used to reopen a tab
          *  where the user last `cd`'d. */
@@ -384,6 +461,13 @@ declare global {
         write: (id: string, data: string) => Promise<boolean>
       }
       reachPreviewUrl?: (url: string) => Promise<string>
+      setActiveConnectionRoute?: (
+        route: {
+          connectionId?: null | string
+          profile?: string
+          registryScoped?: boolean
+        } | null
+      ) => void
       onClosePreviewRequested?: (callback: () => void) => () => void
       onPreviewNav?: (callback: (command: 'back' | 'forward' | 'reload') => void) => () => void
       onOpenFolderRequested?: (callback: () => void) => () => void
@@ -425,11 +509,14 @@ declare global {
       onBootProgress: (callback: (payload: DesktopBootProgress) => void) => () => void
       getBootstrapState: () => Promise<DesktopBootstrapState>
       continueBootstrapLocal: () => Promise<{ ok: boolean }>
+      recycleBackend?: (profile?: null | string) => Promise<{ ok: boolean }>
       resetBootstrap: () => Promise<{ ok: boolean }>
       repairBootstrap: () => Promise<{ ok: boolean }>
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
       getVersion: () => Promise<DesktopVersionInfo>
+      /** Restart the app in place — loads the swapped bundle when bundleSwapPending. */
+      relaunchApp?: () => Promise<void>
       getRemoteDisplayReason?: () => Promise<string | null>
       updates: {
         check: () => Promise<DesktopUpdateStatus>
@@ -510,6 +597,9 @@ export interface DesktopVersionInfo {
   bundleOutOfSync?: boolean
   /** Commits under apps/desktop/ the running bundle is missing (null unknown). */
   bundleCommitsBehind?: null | number
+  /** True when the bundle on disk is newer than the running process — a plain
+   *  app restart (no rebuild, no installer) is enough to load it. */
+  bundleSwapPending?: boolean
 }
 
 export type DesktopUninstallMode = 'full' | 'gui' | 'lite'
@@ -877,6 +967,7 @@ export interface DesktopRosterAgent {
   connectionKind: DesktopConnectionKind
   connectionLabel: string
   profile: string
+  targetProfile?: string
   handle: string
 }
 
@@ -903,6 +994,37 @@ export interface DesktopConnectionUpdateResult {
   reason?: string
   detail?: string
   error?: string
+}
+
+export type DesktopManagedConnectionUpdateOutcome =
+  'updated' | 'update-failed' | 'restore-failed' | 'update-and-restore-failed' | 'refused'
+
+export interface DesktopManagedUpdateReceipt {
+  correlationId: string
+  // Additive receipt outcomes remain forward-compatible with newer updater
+  // kernels instead of making an older renderer reject their proof.
+  outcome: string
+  startedAt?: string
+  finishedAt?: string
+  preSha?: string
+  postSha?: string
+  preVersion?: string
+  postVersion?: string
+  stopReason?: string
+}
+
+export interface DesktopManagedConnectionUpdateResult {
+  connectionId: string
+  correlationId: string
+  ok: boolean
+  updateOk: boolean
+  restoreOk: boolean
+  outcome: DesktopManagedConnectionUpdateOutcome
+  exitCode: number | null
+  receipt: DesktopManagedUpdateReceipt | null
+  scopes: Array<{ profile: string; restored: boolean; error?: string }>
+  error?: string
+  message?: string
 }
 
 export interface DesktopSshResolveResult {
@@ -998,6 +1120,8 @@ export interface DesktopCloudAgentSignInResult {
 export interface DesktopBootProgress {
   error: string | null
   fakeMode: boolean
+  /** True when the boot failure is a Nous Cloud agent that is down (HTTP 502/503/504). */
+  isCloudBackendDown?: boolean
   message: string
   phase: string
   progress: number
@@ -1009,6 +1133,8 @@ export interface DesktopBootProgress {
    */
   retryable?: boolean
   running: boolean
+  /** Structured HTTP status when the boot failure carried one (e.g. 503). */
+  statusCode?: number | null
   timestamp: number
 }
 

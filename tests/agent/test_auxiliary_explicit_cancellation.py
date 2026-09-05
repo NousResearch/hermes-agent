@@ -552,11 +552,8 @@ def test_isolated_provider_worker_inherits_protection_and_progress_hook() -> Non
 
 
 def test_isolated_provider_worker_inherits_caller_contextvars() -> None:
-    from tools.approval import (
-        get_current_session_key,
-        reset_current_session_key,
-        set_current_session_key,
-    )
+    from tools.approval import get_current_session_key
+    from tools.approval_context import reset_current_session_key, set_current_session_key
 
     arbitrary = contextvars.ContextVar("isolated-provider-test", default="missing")
     arbitrary_token = arbitrary.set("caller-value")

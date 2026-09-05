@@ -15,7 +15,7 @@ Send and receive iMessages/SMS via the imsg CLI on macOS.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/apple/imessage` |
+| Path | `skills/apple\imessage` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |

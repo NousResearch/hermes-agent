@@ -15,8 +15,14 @@ from unittest.mock import patch
 import pytest
 
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+# Minimal valid 1x1 PNG bytes. Resolver validation requires a decodable fixture.
+PNG = base64.b64decode(
+    b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+)
 JPEG = b"\xff\xd8\xff" + b"\x00" * 64
+CORRUPT_PNG = base64.b64decode(
+    b"iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAFElEQVR4nGP8z8Dwn4EIwESJ5gAAVQ4CH1evYJQAAAAASUVORK5CYII="
+)
 
 
 def _reload(monkeypatch, hermes_home: Path):
@@ -56,6 +62,16 @@ class TestDataUrl:
         with pytest.raises(isrc.NotAnImage):
             await isrc.resolve_image_source(
                 f"data:text/plain;base64,{b64}", isrc.ResolveContext())
+
+    @pytest.mark.asyncio
+    async def test_corrupt_png_rejected_at_resolver_boundary(self, tmp_path, monkeypatch):
+        """A PNG-shaped but undecodable payload never becomes a resolved image."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        img = tmp_path / "corrupt.png"
+        img.write_bytes(CORRUPT_PNG)
+        with pytest.raises(isrc.NotAnImage):
+            await isrc.resolve_image_source(str(img), isrc.ResolveContext())
 
 
 class TestLocalBackend:
@@ -303,7 +319,7 @@ class TestSvgNormalization:
 
     @pytest.mark.asyncio
     async def test_svg_rasterized_when_converter_available(self, tmp_path, monkeypatch):
-        from tools import vision_tools as vt
+        from tools import vision_tools_image_prep as vt
         isrc = _reload(monkeypatch, tmp_path / "hermes")
         monkeypatch.setenv("TERMINAL_ENV", "local")
         svg = tmp_path / "art.svg"
@@ -323,7 +339,7 @@ class TestSvgNormalization:
         path.unlink()
 
     def test_svg_actionable_error_when_no_converter(self, tmp_path, monkeypatch):
-        from tools import vision_tools as vt
+        from tools import vision_tools_image_prep as vt
         _reload(monkeypatch, tmp_path / "hermes")
         svg = tmp_path / "art.svg"
         svg.write_bytes(b'<svg xmlns="http://www.w3.org/2000/svg"/>')

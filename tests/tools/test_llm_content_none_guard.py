@@ -177,3 +177,29 @@ class TestExtractContentOrReasoning:
         """When both content and reasoning exist, content wins."""
         response = _make_response("Actual answer", reasoning="Internal reasoning")
         assert extract_content_or_reasoning(response) == "Actual answer"
+
+    def test_dict_message_and_whitespace_fall_back(self):
+        assert extract_content_or_reasoning(
+            {"content": " ", "reasoning_content": "dict reasoning"}
+        ) == "dict reasoning"
+        assert extract_content_or_reasoning(
+            {"choices": [{"message": {"content": "", "reasoning": "from response"}}]}
+        ) == "from response"
+
+    def test_string_message_passthrough(self):
+        response = types.SimpleNamespace(
+            choices=[types.SimpleNamespace(message="plain summary text")]
+        )
+        assert extract_content_or_reasoning(response) == "plain summary text"
+
+    def test_reasoning_fallback_respects_max_chars(self):
+        huge = "t" * 20_000
+        text = extract_content_or_reasoning(
+            {"content": "", "reasoning_content": huge},
+            max_reasoning_chars=8000,
+        )
+        assert text == huge[:8000]
+        assert extract_content_or_reasoning(
+            {"content": "", "reasoning_content": "short"},
+            max_reasoning_chars=8000,
+        ) == "short"

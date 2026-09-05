@@ -111,6 +111,27 @@ class TestHooksTest:
         assert seen["tool_name"] is None
         assert seen["tool_input"] is None
 
+    @pytest.mark.parametrize("event", ["pre_llm_call", "post_llm_call"])
+    def test_llm_synthetic_payload_includes_routing_fields(self, tmp_path, event):
+        capture = tmp_path / f"{event}.json"
+        script = _hook_script(
+            tmp_path,
+            f"#!/usr/bin/env bash\ncat - > {capture}\nprintf '{{}}\\n'\n",
+            name=f"{event}.sh",
+        )
+        cfg = {"hooks": {event: [{"command": str(script)}]}}
+
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            _run(SimpleNamespace(
+                hooks_action="test", event=event,
+                for_tool=None, payload_file=None,
+            ))
+
+        extra = json.loads(capture.read_text(encoding="utf-8"))["extra"]
+        assert {
+            key: extra[key] for key in ("platform", "sender_id", "chat_id")
+        } == {"platform": "cli", "sender_id": "", "chat_id": ""}
+
     def test_fires_real_subprocess_and_parses_block(self, tmp_path):
         block_script = _hook_script(
             tmp_path,

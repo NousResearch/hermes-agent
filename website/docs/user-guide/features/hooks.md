@@ -443,8 +443,8 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
-| `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
-| `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
+| `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id`, `chat_id` | Full user message and conversation history, plus counterparty routing identifiers. |
+| `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform`, `sender_id`, `chat_id` | Full prompt, response, and history, plus counterparty routing identifiers. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
@@ -664,7 +664,8 @@ Fires **once per turn**, before the tool-calling loop begins. All valid callback
 
 ```python
 def my_callback(session_id: str, user_message: str, conversation_history: list,
-                is_first_turn: bool, model: str, platform: str, **kwargs):
+                is_first_turn: bool, model: str, platform: str,
+                sender_id: str, chat_id: str, **kwargs):
 ```
 
 | Parameter | Type | Description |
@@ -675,6 +676,8 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 | `is_first_turn` | `bool` | `True` if this is the first turn of a new session, `False` on subsequent turns |
 | `model` | `str` | The model identifier (e.g. `"anthropic/claude-sonnet-4.6"`) |
 | `platform` | `str` | Where the session is running: `"cli"`, `"telegram"`, `"discord"`, etc. |
+| `sender_id` | `str` | Platform sender identifier; empty outside gateway sessions |
+| `chat_id` | `str` | Platform conversation identifier for outbound replies; empty outside gateway sessions |
 
 **Fires:** In `agent/turn_context.py` (turn preparation for `run_conversation()` in `agent/conversation_loop.py`), after context compression but before the main `while` loop. Fires once per `run_conversation()` call (i.e. once per user turn), not once per API call within the tool loop.
 
@@ -746,7 +749,8 @@ Fires **once per turn**, after the tool-calling loop completes and the agent has
 
 ```python
 def my_callback(session_id: str, user_message: str, assistant_response: str,
-                conversation_history: list, model: str, platform: str, **kwargs):
+                conversation_history: list, model: str, platform: str,
+                sender_id: str, chat_id: str, **kwargs):
 ```
 
 | Parameter | Type | Description |
@@ -757,6 +761,8 @@ def my_callback(session_id: str, user_message: str, assistant_response: str,
 | `conversation_history` | `list` | Copy of the full message list after the turn completed |
 | `model` | `str` | The model identifier |
 | `platform` | `str` | Where the session is running |
+| `sender_id` | `str` | Platform sender identifier; empty outside gateway sessions |
+| `chat_id` | `str` | Platform conversation identifier for outbound replies; empty outside gateway sessions |
 
 **Fires:** In `agent/turn_finalizer.py` (`finalize_turn()`, called by `run_conversation()` in `agent/conversation_loop.py`), after the tool loop exits with a final response. Guarded by `if final_response and not interrupted` — so it does **not** fire when the user interrupts mid-turn or the agent hits the iteration limit without producing a response.
 

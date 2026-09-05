@@ -128,15 +128,15 @@ def _api_server_key(profile: str | None = None) -> str:
 def _profile_execution_policy(profile: str) -> dict:
     """Resolve execution policy under the exact multiplexed profile home."""
     from gateway.hosted_room_execution_policy import execution_policy_mapping
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    token = None
     if _bound_server is not None and profile not in {_current_profile(), _profile_name()}:
-        token = set_hermes_home_override(str(_foreign_profile_home(profile)))
-    try:
-        return execution_policy_mapping(target_profile=profile)
-    finally:
-        if token is not None:
-            reset_hermes_home_override(token)
+        from agent.secret_scope import current_secret_scope, strict_secret_scope
+        from gateway.run import _profile_runtime_scope
+        with _profile_runtime_scope(_foreign_profile_home(profile)):
+            # TUI need not be a process-wide multiplexer; this target still owns
+            # its credentials, including their absence, just as on the API side.
+            with strict_secret_scope(current_secret_scope()):
+                return execution_policy_mapping(target_profile=profile)
+    return execution_policy_mapping(target_profile=profile)
 
 
 def _room_link_run_storage_durable() -> bool:

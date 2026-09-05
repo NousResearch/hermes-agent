@@ -920,6 +920,57 @@ def _rebuild_primary_client(agent, rt: Dict[str, Any], *, reason: str) -> None:
         # factory so the restored facade keeps the reference_callback relay wired at init — a bare
         # MoAClient() would silently stop emitting moa.reference/moa.aggregating display events (#53802).
         agent._anthropic_client = None
+    elif (agent.provider or "").strip().lower() == "bedrock":
+        api_mode = agent.api_mode or rt.get("api_mode", "")
+        if api_mode == "bedrock_converse":
+            # Bedrock Converse has no OpenAI client; it uses boto3 directly.
+            # Falls through to _create_openai_client would raise OPENAI_API_KEY.
+            from agent.agent_init import _bedrock_region_from_url
+            region = rt.get("_bedrock_region") or rt.get("bedrock_region")
+            if not region:
+                region = _bedrock_region_from_url(rt.get("base_url") or getattr(agent, "base_url", "") or "")
+            agent._bedrock_region = region
+            # Preserve guardrail config from snapshot when present; otherwise keep current.
+            if "bedrock_guardrail_config" in rt:
+                agent._bedrock_guardrail_config = rt.get("bedrock_guardrail_config")
+            elif "_bedrock_guardrail_config" in rt:
+                agent._bedrock_guardrail_config = rt.get("_bedrock_guardrail_config")
+            elif not hasattr(agent, "_bedrock_guardrail_config"):
+                agent._bedrock_guardrail_config = None
+            agent.client = None
+            agent._anthropic_client = None
+        elif api_mode == "anthropic_messages":
+            # Bedrock Claude via AnthropicBedrock SDK (SigV4, prompt caching).
+            try:
+                from agent.anthropic_adapter import build_anthropic_bedrock_client
+                from agent.agent_init import _bedrock_region_from_url
+                region = rt.get("_bedrock_region") or rt.get("bedrock_region")
+                if not region:
+                    region = _bedrock_region_from_url(rt.get("base_url") or getattr(agent, "base_url", "") or "")
+                agent._bedrock_region = region
+                agent._anthropic_client = build_anthropic_bedrock_client(region)
+                agent._anthropic_api_key = rt.get("anthropic_api_key", "aws-sdk")
+                agent._anthropic_base_url = rt.get("anthropic_base_url", rt.get("base_url", ""))
+                agent._is_anthropic_oauth = False
+                agent.api_key = rt.get("api_key", "aws-sdk")
+                agent.client = None
+            except Exception:
+                # Fall back to generic Anthropic rebuild if Bedrock SDK unavailable.
+                _build_anthropic_client_from_runtime(agent, rt)
+        else:
+            # Bedrock Mantle OpenAI-compatible endpoint (bedrock-mantle.*.api.aws).
+            # Snapshot client_kwargs already contains SigV4 http_client, but re-apply
+            # to ensure the region-derived auth is fresh.
+            try:
+                from agent.bedrock_adapter import configure_bedrock_openai_client_kwargs
+                kwargs = dict(rt.get("client_kwargs") or {})
+                configure_bedrock_openai_client_kwargs(
+                    kwargs, timeout=get_provider_request_timeout(agent.provider, agent.model)
+                )
+                agent.client = agent._create_openai_client(kwargs, reason=reason, shared=True)
+            except Exception:
+                agent.client = agent._create_openai_client(dict(rt.get("client_kwargs") or {}), reason=reason, shared=True)
+            agent._anthropic_client = None
     elif agent.api_mode == "anthropic_messages":
         _build_anthropic_client_from_runtime(agent, rt)
     else:

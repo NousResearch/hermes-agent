@@ -2105,6 +2105,12 @@ def _snapshot_primary_runtime(agent):
             "anthropic_base_url": agent._anthropic_base_url,
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
+    # Bedrock needs region/guardrail so restore can rebuild without OPENAI_API_KEY.
+    if (agent.provider or "").strip().lower() == "bedrock" or agent.api_mode == "bedrock_converse":
+        if hasattr(agent, "_bedrock_region"):
+            agent._primary_runtime["_bedrock_region"] = agent._bedrock_region
+        if hasattr(agent, "_bedrock_guardrail_config"):
+            agent._primary_runtime["bedrock_guardrail_config"] = agent._bedrock_guardrail_config
 
 
 def _init_usage_state(agent):

@@ -104,6 +104,7 @@ export function I18nProvider({
   const [locale, setLocaleState] = useState<Locale>(() => normalizeLocale(initialLocale))
   const [isLoadingConfig, setIsLoadingConfig] = useState(false)
   const [isSavingLocale, setIsSavingLocale] = useState(false)
+  const [isLocaleResolved, setIsLocaleResolved] = useState(configClient === null)
   const [configLoadError, setConfigLoadError] = useState<Error | null>(null)
   const [saveError, setSaveError] = useState<Error | null>(null)
   const localeRef = useRef(locale)
@@ -143,6 +144,16 @@ export function I18nProvider({
     }
   }, [registryVersion])
 
+  useEffect(() => {
+    if (!isLocaleResolved || typeof window === 'undefined') {
+      return
+    }
+
+    // Electron's application menu must follow Hermes display.language rather
+    // than the OS locale. The bridge is optional during rolling app updates.
+    void window.hermesDesktop?.setApplicationMenuLocale?.(locale).catch(() => undefined)
+  }, [isLocaleResolved, locale])
+
   // eslint-disable-next-line no-restricted-syntax -- scope-local request generation and user intent, not an atom mirror
   useEffect(() => {
     scopeGenerationRef.current += 1
@@ -150,6 +161,7 @@ export function I18nProvider({
     requestedRef.current = null
     setSaveError(null)
     setIsSavingLocale(false)
+    setIsLocaleResolved(!configClient)
 
     if (!configClient) {
       return
@@ -189,6 +201,7 @@ export function I18nProvider({
           // A saved choice needs no machine probe and always takes precedence.
           if (isSupportedLocaleValue(saved)) {
             setLocaleState(normalizeLocale(saved))
+            setIsLocaleResolved(true)
 
             return
           }
@@ -200,6 +213,7 @@ export function I18nProvider({
 
           if (!cancelled && !userLocaleRef.current) {
             setLocaleState(resolveInitialLocale(requestedRef.current, machineProfile?.locale))
+            setIsLocaleResolved(true)
           }
         })
         .catch(error => {
@@ -209,6 +223,7 @@ export function I18nProvider({
 
           setConfigLoadError(toError(error))
           setLocaleState(DEFAULT_LOCALE)
+          setIsLocaleResolved(true)
 
           if (retryCount < MAX_LOCALE_RETRIES) {
             retryCount += 1
@@ -244,6 +259,7 @@ export function I18nProvider({
       userLocaleRef.current = true
       setSaveError(null)
       setLocaleState(next)
+      setIsLocaleResolved(true)
       requestedRef.current = next
       $requestedLocale.set(next)
 

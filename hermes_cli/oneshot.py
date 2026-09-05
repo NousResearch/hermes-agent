@@ -206,6 +206,7 @@ def run_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: Optional[str] = None,
+    resume: Optional[str] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -221,6 +222,8 @@ def run_oneshot(
             cost, token counts, model, api_calls) is written there after the
             run — even when the run fails — so pipelines can account for
             spend per invocation.
+        resume: Optional session ID to resume before appending this one-shot
+            turn.
 
     Returns the exit code.  The caller owns process termination.
     """
@@ -283,6 +286,7 @@ def run_oneshot(
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
                     skills=skills,
+                    resume=resume,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -361,6 +365,7 @@ def _run_agent(
     toolsets: object = None,
     use_config_toolsets: bool = True,
     skills: object = None,
+    resume: Optional[str] = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -478,6 +483,34 @@ def _run_agent(
     skills_prompt = _build_preloaded_skills_prompt(skills)
 
     session_db = _create_session_db_for_oneshot()
+    resume_history: list[dict] = []
+    resume_session_id = (resume or "").strip()
+    if resume_session_id:
+        if session_db is None:
+            raise ValueError("Session store unavailable; cannot resume a one-shot session.")
+        try:
+            resolved = session_db.resolve_resume_session_id(resume_session_id)
+        except Exception:
+            resolved = resume_session_id
+        resume_session_id = resolved or resume_session_id
+        if not session_db.get_session(resume_session_id):
+            raise ValueError(f"Session not found: {resume}")
+        try:
+            model_history, _display_history = session_db.get_resume_conversations(
+                resume_session_id
+            )
+        except Exception:
+            model_history = session_db.get_messages_as_conversation(
+                resume_session_id,
+                repair_alternation=True,
+            )
+        resume_history = [
+            msg for msg in (model_history or []) if msg.get("role") != "session_meta"
+        ]
+        try:
+            session_db.reopen_session(resume_session_id)
+        except Exception:
+            logging.debug("oneshot resume reopen_session failed", exc_info=True)
     # The try spans agent construction (not just ``chat``) so the SQLite store
     # opened above is always closed — including when ``AIAgent(...)`` itself
     # raises on a provider/config error. The one-shot exit path hard-exits via
@@ -499,6 +532,7 @@ def _run_agent(
             enabled_toolsets=toolsets_list,
             quiet_mode=True,
             platform="cli",
+            session_id=resume_session_id or None,
             session_db=session_db,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=_fb or None,
@@ -523,7 +557,14 @@ def _run_agent(
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
 
-        result = agent.run_conversation(prompt)
+        run_kwargs = (
+            {"conversation_history": resume_history}
+            if resume_session_id
+            else {}
+        )
+        result = agent.run_conversation(prompt, **run_kwargs)
+        if resume_session_id and isinstance(result, dict):
+            result.setdefault("session_id", getattr(agent, "session_id", resume_session_id))
         return (result.get("final_response") or "", result)
     finally:
         # Ordering deliberately mirrors gateway/run.py:_cleanup_agent_resources,

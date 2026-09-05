@@ -122,3 +122,30 @@ class TestChatParserOneshotFlag:
         args = self._parse(["-z", "what is up"])
         assert args.oneshot == "what is up"
         assert getattr(args, "oneshot_exit", False) is False
+
+
+def test_top_level_oneshot_dispatch_preserves_resume(monkeypatch):
+    import hermes_cli.main as main_mod
+
+    captured = {}
+
+    def fake_run_and_exit(*args, **kwargs):
+        captured.update({"args": args, "kwargs": kwargs})
+        raise SystemExit(0)
+
+    monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
+    monkeypatch.setattr(main_mod, "_prepare_agent_startup", lambda _args: None)
+    monkeypatch.setattr(main_mod, "_confirm_startup_expensive_model_override", lambda _args: None)
+    monkeypatch.setattr(main_mod, "_run_and_exit_oneshot", fake_run_and_exit)
+    monkeypatch.setattr(
+        main_mod.sys,
+        "argv",
+        ["hermes", "--resume", "session-123", "-z", "what was the fact?"],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        main_mod.main()
+
+    assert excinfo.value.code == 0
+    assert captured["args"] == ("what was the fact?",)
+    assert captured["kwargs"]["resume"] == "session-123"

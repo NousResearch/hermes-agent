@@ -254,6 +254,33 @@ def test_profile_auth_add_owns_only_its_own_rows(fleet):
     assert [e["id"] for e in fleet["rows"](fleet["root"])] == ["abc123"]
 
 
+def test_profile_auth_add_on_empty_root_persists_to_profile(fleet):
+    """Named profile adding a single-use credential when root store has no rows (#103694).
+
+    When root has no rows for the single-use provider (e.g. fresh root or unconfigured
+    provider), load_pool() records an empty borrowed_ids set. The profile's add_entry()
+    must persist the newly added credential to the profile store instead of silently
+    routing to update-only root merge.
+    """
+    from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+
+    root = fleet["root"]
+    (root / "auth.json").write_text(json.dumps({"version": 1, "providers": {}, "credential_pool": {}}))
+
+    fresh_profile = _profile(fleet, "fresh_profile")
+    fleet["use"](fresh_profile)
+    pool = load_pool("anthropic")
+    pool.add_entry(PooledCredential(
+        provider="anthropic", id="fresh001", label="fresh_auth", auth_type=AUTH_TYPE_OAUTH,
+        priority=0, source="manual:hermes_pkce", access_token="sk-ant-oat01-FRESH",
+        refresh_token="rt-fresh",
+    ))
+    assert fleet["rows"](fresh_profile) is not None, "credential was dropped without persisting (#103694)"
+    assert [e["id"] for e in fleet["rows"](fresh_profile)] == ["fresh001"]
+    assert fleet["rows"](root) is None
+
+
+
 def test_classic_mode_persist_is_unchanged(fleet):
     from agent.credential_pool import load_pool
 

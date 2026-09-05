@@ -141,6 +141,11 @@ JUDGE_SYSTEM_PROMPT = (
     "``wait_on_pid`` (releases on exit only).\n"
     "- The agent says it is rate-limited / backing off / must wait a fixed "
     "period — return seconds in ``wait_for_seconds``.\n"
+    "- The agent has delegated subagents still running (stated below as "
+    "active delegations) and the response says it is waiting on them with "
+    "nothing else dispatchable — return ``wait_for_seconds`` between 600 and "
+    "1800. Their results wake the agent on their own; re-poking it now only "
+    "produces a status recap.\n"
     "Picking WAIT parks the loop without burning a turn; it resumes "
     "automatically when the pid exits or the time elapses. Do NOT pick WAIT "
     "just because work remains — only when re-poking now would be pure "
@@ -157,6 +162,12 @@ JUDGE_SYSTEM_PROMPT = (
     '{"verdict": "wait", "wait_for_seconds": <int>, "reason": "<one sentence>"}\n'
     "The legacy shape {\"done\": <true|false>, \"reason\": \"...\"} is still "
     "accepted (true=done, false=continue)."
+)
+
+# Judge prompt line for live delegated subagents (WAIT-for-seconds vs CONTINUE).
+JUDGE_DELEGATIONS_BLOCK_TEMPLATE = (
+    "Active delegations: the agent has {count} delegated subagent batch(es) still running; "
+    "their results are delivered to it automatically when they finish.\n\n"
 )
 
 # Judge prompt block listing running background processes (WAIT vs CONTINUE, which pid).
@@ -860,6 +871,7 @@ def judge_goal(
     subgoals: Optional[List[str]] = None,
     background_processes: Optional[List[Dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
+    active_delegations: int = 0,
 ) -> Tuple[str, str, bool, Optional[Dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
@@ -886,7 +898,8 @@ def judge_goal(
     common = dict(
         goal=_truncate(goal, 2000),
         response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
-        background_block=_render_background_block(background_processes),
+        background_block=_render_background_block(background_processes)
+        + (JUDGE_DELEGATIONS_BLOCK_TEMPLATE.format(count=active_delegations) if active_delegations > 0 else ""),
         current_time=datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"),
     )
     if contract is not None and not contract.is_empty():
@@ -910,6 +923,17 @@ def judge_goal(
     logger.info("goal judge: verdict=%s reason=%s%s", verdict, _truncate(reason, 120),
                 f" wait={wait_directive}" if wait_directive else "")
     return verdict, reason, parse_failed, wait_directive, False
+
+
+def count_active_delegations(session_id: Optional[str]) -> int:
+    """Live async delegation batches spawned by this session (fail-safe 0)."""
+    if not session_id:
+        return 0
+    try:
+        from tools.async_delegation import _LIVE_STATES, _session_records
+        return len(_session_records(_LIVE_STATES, "", "", str(session_id)))
+    except Exception:
+        return 0
 
 
 def gather_background_processes(task_id: Optional[str] = None, *, owner_task_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -1351,6 +1375,7 @@ class GoalManager:
     def evaluate_after_turn(
         self, last_response: str, *, user_initiated: bool = True,
         background_processes: Optional[List[Dict[str, Any]]] = None,
+        active_delegations: int = 0,
     ) -> Dict[str, Any]:
         """Run gates + judge and update state. Return a decision dict (``status``, ``should_continue``,
         ``continuation_prompt``, ``verdict``, ``reason``, ``message``). Both real user prompts and our
@@ -1376,7 +1401,7 @@ class GoalManager:
 
         verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None, background_processes=background_processes,
-            contract=state.contract if state.has_contract() else None,
+            contract=state.contract if state.has_contract() else None, active_delegations=active_delegations,
         )
         state.last_verdict = verdict
         state.last_reason = reason

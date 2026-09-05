@@ -12,10 +12,9 @@
  * clarify.request event → renderer, against the mock inference server.
  */
 
-import { expect, test } from './test'
-
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
 import { BATCH_CLARIFY_QUESTIONS, BATCH_CLARIFY_TRIGGER } from './mock-server'
+import { expect, test } from './test'
 
 let fixture: MockBackendFixture | null = null
 
@@ -66,11 +65,13 @@ test.describe('batch clarify card', () => {
     await batchCard.getByRole('button', { name: /Coffee/ }).click()
     await expect(confirmButton).toBeDisabled()
 
-    await batchCard.getByRole('button', { name: /Morning/ }).click()
+    const lastChoice = batchCard.getByRole('button', { name: /Morning/ })
+    await lastChoice.click()
+    await expect(lastChoice).toBeFocused()
     await expect(confirmButton).toBeEnabled()
 
-    // ONE confirm submits the whole batch.
-    await confirmButton.click()
+    // Enter from the focused final choice submits the whole batch.
+    await page.keyboard.press('Enter')
 
     // The settled card lists both questions with their locked answers.
     const settled = page.locator('[data-clarify-settled]')

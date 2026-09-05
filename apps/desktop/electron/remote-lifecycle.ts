@@ -1139,8 +1139,17 @@ async function scrapeReadyPort(ssh, logPath, { timeoutMs = DEFAULT_READY_TIMEOUT
     assertBootstrapNotSuperseded(signal)
 
     if (isAlive && !(await isAlive())) {
-      const err: any = new Error('Remote dashboard process exited before announcing its port.')
-      err.kind = 'spawn-failed'
+      let failureLog = ''
+
+      try {
+        failureLog = String(await ssh.exec(`cat ${remoteLog} 2>/dev/null || true`))
+      } catch {
+        // A missing/unreadable log must still surface the original spawn failure.
+      }
+
+      const missingProfile = failureLog.match(/(?:Error:\s*)?Profile ['"][^'"\r\n]+['"] does not exist[^\r\n]*/i)
+      const err: any = new Error(missingProfile?.[0] || 'Remote dashboard process exited before announcing its port.')
+      err.kind = missingProfile ? 'missing-profile' : 'spawn-failed'
       throw err
     }
 

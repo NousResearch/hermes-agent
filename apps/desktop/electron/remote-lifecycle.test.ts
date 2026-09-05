@@ -967,6 +967,21 @@ test('scrapeReadyPort times out and reports a dead spawn', async () => {
   )
 })
 
+test('scrapeReadyPort preserves a missing-profile failure from a dead remote spawn', async () => {
+  const logPath = spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+  const ssh = fakeSsh([[/cat .*\.log/, "Error: Profile 'missing-bot' does not exist. Create it first.\n"]])
+
+  await assert.rejects(
+    () => scrapeReadyPort(ssh, logPath, { timeoutMs: 1000, isAlive: async () => false }),
+    (err: any) => {
+      assert.equal(err.kind, 'missing-profile')
+      assert.match(err.message, /Profile 'missing-bot' does not exist/)
+
+      return true
+    }
+  )
+})
+
 function connectDeps(ssh, over: any = {}) {
   return {
     ssh,

@@ -23,6 +23,7 @@ import type { ReactNode } from 'react'
 
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
+import { contributedRoutes } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
 import {
   $narrowViewport,
@@ -70,6 +71,7 @@ import {
   setActiveProfile,
   setShowAllProfiles
 } from '@/store/profile'
+import { openRouteTile } from '@/store/route-tiles'
 import {
   $activeSessionId,
   $connection,
@@ -637,8 +639,19 @@ export const host = {
   /** Tail an app log file (`agent` / `errors` / `gateway` / `gui` / …). */
   logs: async (...args: Parameters<typeof getLogs>) => getLogs(...args),
 
-  /** Navigate the app router (hash routes, e.g. '/command-center?section=system'). */
+  /** Navigate the app router (hash routes, e.g. '/command-center?section=system').
+   *  Contributed plugin pages open as route tiles so they don't replace the
+   *  live Bot Chat (#101593). */
   navigate: (path: string) => {
+    const raw = path.startsWith('#') ? path.slice(1) : path
+    const pathname = raw.split(/[?#]/)[0] || raw
+
+    if (contributedRoutes().some(route => route.path === pathname)) {
+      openRouteTile(pathname)
+
+      return
+    }
+
     window.location.hash = path.startsWith('#') ? path : `#${path}`
   },
 

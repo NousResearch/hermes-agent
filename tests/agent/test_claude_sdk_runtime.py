@@ -4559,6 +4559,336 @@ class TestGatewayApprovalBridge:
             **kwargs,
         )
 
+    # --- Smart-approval Bash pre-filter -------------------------------------
+    #
+    # The SDK bridge calls the smart evaluator for every tool call that reaches
+    # it, with a fixed pattern key and no screen in front of it. The evaluator's
+    # two other entry points both screen first: the native shell path returns
+    # approved when neither tirith nor the dangerous-pattern detector flagged
+    # anything (approval.py's `if not warnings` early return), and the
+    # execute_code path consults the approval cache (#39275, added precisely
+    # because every call re-prompted). Both reach the evaluator through the
+    # single call site in approval_smart.
+    #
+    # Measured on one live gateway session: 446 evaluator calls, ~432k tokens.
+    #
+    # The trade: a command both static screens clear no longer reaches the
+    # guardian, so one the guardian would have denied is granted with no
+    # operator card. That is exactly what the native early return already does.
+
+    def _smart_recorder(self, monkeypatch, verdict="approve"):
+        calls = []
+        monkeypatch.setattr(
+            approval_smart,
+            "_smart_approve",
+            lambda *a, **k: calls.append((a, k)) or verdict,
+        )
+        return calls
+
+    def test_smart_prefilter_skips_llm_for_clean_bash(self, monkeypatch):
+        """A command neither screen flags is approved without a model call."""
+        sk = "sess-prefilter-clean"
+        approval_mod, token = self._gateway_ctx(monkeypatch, sk)
+        cards = []
+        try:
+            import tools.tirith_security as tirith_mod
+
+            # Pin the scan. The command is clean under the real scanner today,
+            # but letting a rule change decide whether this test still tests
+            # anything would make it silently vacuous.
+            monkeypatch.setattr(
+                tirith_mod, "check_command_security",
+                lambda command, **k: {"action": "allow", "findings": [], "summary": ""},
+            )
+            monkeypatch.setattr(
+                approval_ctx, "_get_approval_config",
+                lambda: {"mode": "smart", "timeout": 5},
+            )
+            smart_calls = self._smart_recorder(monkeypatch)
+            approval_mod.register_gateway_notify(sk, lambda data: cards.append(dict(data)))
+            cb = sdk_gateway.build_sdk_gateway_approval_callback()
+            result = self._call_gateway(
+                cb, "cd /opt/solar-monitor && sqlite3 data/solar.db '.tables'"
+            )
+            assert result == "once"
+            assert smart_calls == []
+            assert cards == []
+        finally:
+            approval_mod.unregister_gateway_notify(sk)
+            approval_ctx.reset_current_session_key(token)
+
+    def test_smart_prefilter_still_consults_llm_for_dangerous_pattern(self, monkeypatch):
+        """The pre-filter must not swallow a command the pattern detector flags."""
+        sk = "sess-prefilter-dangerous"
+        approval_mod, token = self._gateway_ctx(monkeypatch, sk)
+        cards = []
+        try:
+            monkeypatch.setattr(
+                approval_ctx, "_get_approval_config",
+                lambda: {"mode": "smart", "timeout": 5},
+            )
+            smart_calls = self._smart_recorder(monkeypatch)
+            approval_mod.register_gateway_notify(sk, lambda data: cards.append(dict(data)))
+            cb = sdk_gateway.build_sdk_gateway_approval_callback()
+            result = self._call_gateway(cb, "chmod 777 /etc/passwd")
+            assert len(smart_calls) == 1
+            assert result == "once"
+        finally:
+            approval_mod.unregister_gateway_notify(sk)
+            approval_ctx.reset_current_session_key(token)
+
+    @pytest.mark.parametrize("tirith_action", ["warn", "block"])
+    def test_smart_prefilter_still_consults_llm_when_tirith_flags(
+        self, monkeypatch, tirith_action,
+    ):
+        """Either tirith verdict on a pattern-clean command still escalates.
+
+        Both are parametrised because the scanner really does return both, and
+        pinning only `warn` would leave `block` -- the stricter verdict -- with
+        no coverage at all through this path.
+        """
+        sk = f"sess-prefilter-tirith-{tirith_action}"
+        approval_mod, token = self._gateway_ctx(monkeypatch, sk)
+        cards = []
+        try:
+            import tools.tirith_security as tirith_mod
+
+            monkeypatch.setattr(
+                tirith_mod, "check_command_security",
+                lambda command, **k: {
+                    "action": tirith_action,
+                    "findings": [{"rule_id": "raw_ip_url", "severity": "LOW"}],
+                    "summary": "raw ip",
+                },
+            )
+            monkeypatch.setattr(
+                approval_ctx, "_get_approval_config",
+                lambda: {"mode": "smart", "timeout": 5},
+            )
+            smart_calls = self._smart_recorder(monkeypatch)
+            approval_mod.register_gateway_notify(sk, lambda data: cards.append(dict(data)))
+            cb = sdk_gateway.build_sdk_gateway_approval_callback()
+            result = self._call_gateway(cb, "curl -s http://192.0.2.10/api")
+            assert len(smart_calls) == 1
+            assert result == "once"
+        finally:
+            approval_mod.unregister_gateway_notify(sk)
+            approval_ctx.reset_current_session_key(token)
+
+    def test_smart_prefilter_does_not_apply_to_non_bash_tools(self, monkeypatch):
+        """Only Bash carries a shell command; every other tool is unchanged."""
+        sk = "sess-prefilter-nonbash"
+        approval_mod, token = self._gateway_ctx(monkeypatch, sk)
+        cards = []
+        try:
+            monkeypatch.setattr(
+                approval_ctx, "_get_approval_config",
+                lambda: {"mode": "smart", "timeout": 5},
+            )
+            smart_calls = self._smart_recorder(monkeypatch)
+            approval_mod.register_gateway_notify(sk, lambda data: cards.append(dict(data)))
+            cb = sdk_gateway.build_sdk_gateway_approval_callback()
+            result = self._call_gateway(
+                cb, tool_name="Edit",
+                tool_input={"file_path": "/tmp/x.py", "old_string": "a", "new_string": "b"},
+            )
+            assert len(smart_calls) == 1
+            assert result == "once"
+        finally:
+            approval_mod.unregister_gateway_notify(sk)
+            approval_ctx.reset_current_session_key(token)
+
+    def test_smart_prefilter_ignores_a_command_key_on_a_non_bash_tool(self, monkeypatch):
+        """Only Bash is screened, even when another tool carries a `command` key.
+
+        The sibling non-Bash test uses an Edit payload, which has no `command` at
+        all and is therefore refused by the type check rather than by the tool
+        name -- it passes even with the Bash guard deleted. This is the
+        discriminating case: a clean command string under a tool that is NOT
+        Bash. Only the tool-name guard can refuse it.
+        """
+        sk = "sess-prefilter-nonbash-command"
+        approval_mod, token = self._gateway_ctx(monkeypatch, sk)
+        cards = []
+        try:
+            monkeypatch.setattr(
+                approval_ctx, "_get_approval_config",
+                lambda: {"mode": "smart", "timeout": 5},
+            )
+            smart_calls = self._smart_recorder(monkeypatch)
+            approval_mod.register_gateway_notify(sk, lambda data: cards.append(dict(data)))
+            cb = sdk_gateway.build_sdk_gateway_approval_callback()
+            result = self._call_gateway(
+                cb, tool_name="NotBash",
+                tool_input={"command": "echo definitely-clean"},
+            )
+            assert len(smart_calls) == 1
+            assert result == "once"
+        finally:
+            approval_mod.unregister_gateway_notify(sk)
+            approval_ctx.reset_current_session_key(token)
+
+    def test_smart_prefilter_escalates_an_empty_command(self, monkeypatch):
+        """A blank command is an unexpected shape, so it escalates rather than clears.
+
+        Both screens are content-based and have nothing to say about whitespace,
+        so without an explicit guard a blank command would be cleared by default.
+        Pinned because the pre-filter's contract is that any unexpected shape
+        falls through to the evaluator.
+        """
+        sk = "sess-prefilter-empty"
+        approval_mod, token = self._gateway_ctx(monkeypatch, sk)
+        cards = []
+        try:
+            monkeypatch.setattr(
+                approval_ctx, "_get_approval_config",
+                lambda: {"mode": "smart", "timeout": 5},
+            )
+            smart_calls = self._smart_recorder(monkeypatch)
+            approval_mod.register_gateway_notify(sk, lambda data: cards.append(dict(data)))
+            cb = sdk_gateway.build_sdk_gateway_approval_callback()
+            result = self._call_gateway(cb, "   \t  ")
+            assert len(smart_calls) == 1
+            assert result == "once"
+        finally:
+            approval_mod.unregister_gateway_notify(sk)
+            approval_ctx.reset_current_session_key(token)
+
+    def test_smart_prefilter_escalates_when_tirith_screen_raises(self, monkeypatch):
+        """Fail-safe: a broken screen must escalate, never silently auto-approve."""
+        sk = "sess-prefilter-broken"
+        approval_mod, token = self._gateway_ctx(monkeypatch, sk)
+        cards = []
+        scanned = []
+
+        def boom(command, **k):
+            scanned.append(command)
+            raise RuntimeError("tirith exploded")
+
+        try:
+            import tools.tirith_security as tirith_mod
+
+            monkeypatch.setattr(tirith_mod, "check_command_security", boom)
+            monkeypatch.setattr(
+                approval_ctx, "_get_approval_config",
+                lambda: {"mode": "smart", "timeout": 5},
+            )
+            smart_calls = self._smart_recorder(monkeypatch)
+            approval_mod.register_gateway_notify(sk, lambda data: cards.append(dict(data)))
+            cb = sdk_gateway.build_sdk_gateway_approval_callback()
+            result = self._call_gateway(cb, "echo still-assessed")
+            # Prove the raise was actually reached, so this cannot pass vacuously
+            # via some earlier return.
+            assert scanned == ["echo still-assessed"]
+            assert len(smart_calls) == 1
+            assert result == "once"
+        finally:
+            approval_mod.unregister_gateway_notify(sk)
+            approval_ctx.reset_current_session_key(token)
+
+    def test_smart_prefilter_runs_after_the_no_approver_deny(self, monkeypatch):
+        """Ordering: a turn with no approver must fail closed, not be cleared.
+
+        Pins the call site's POSITION, not just its behaviour. Hoisting the
+        pre-filter above the approver-presence check passes every other test in
+        this class, and would silently auto-allow clean Bash in a background
+        turn that has nobody to ask -- turning a fail-closed deny into an
+        unattended grant.
+        """
+        sk = "sess-prefilter-no-approver"
+        approval_mod, token = self._gateway_ctx(monkeypatch, sk)
+        try:
+            import tools.tirith_security as tirith_mod
+
+            # Pin the scan: this test only discriminates while the command is
+            # genuinely clearable, and letting the real scanner decide that
+            # would let a rule change silently retire the assertion.
+            monkeypatch.setattr(
+                tirith_mod, "check_command_security",
+                lambda command, **k: {"action": "allow", "findings": [], "summary": ""},
+            )
+            monkeypatch.setattr(
+                approval_ctx, "_get_approval_config",
+                lambda: {"mode": "smart", "timeout": 5},
+            )
+            smart_calls = self._smart_recorder(monkeypatch)
+            # Deliberately NO register_gateway_notify: there is no approver.
+            cb = sdk_gateway.build_sdk_gateway_approval_callback()
+            result = self._call_gateway(cb, "echo clean-but-unattended")
+            assert result == {
+                "choice": "deny",
+                "reason": "no approver available (background context)",
+            }
+            assert smart_calls == []
+        finally:
+            approval_ctx.reset_current_session_key(token)
+
+    def test_smart_prefilter_leaves_the_denial_tally_alone(self, monkeypatch):
+        """The cleared path renders no verdict, so it must not reset the tally.
+
+        The evaluator-approved path calls ``_reset_denials``; this one
+        deliberately does not, matching the native early return, which also
+        leaves the tally untouched. Pinned because adding the reset here passes
+        every other test in this class.
+        """
+        sk = "sess-prefilter-tally"
+        approval_mod, token = self._gateway_ctx(monkeypatch, sk)
+        cards = []
+        try:
+            import tools.tirith_security as tirith_mod
+
+            monkeypatch.setattr(
+                tirith_mod, "check_command_security",
+                lambda command, **k: {"action": "allow", "findings": [], "summary": ""},
+            )
+            monkeypatch.setattr(
+                approval_ctx, "_get_approval_config",
+                lambda: {"mode": "smart", "timeout": 5},
+            )
+            smart_calls = self._smart_recorder(monkeypatch)
+            approval_mod.register_gateway_notify(sk, lambda data: cards.append(dict(data)))
+            cb = sdk_gateway.build_sdk_gateway_approval_callback()
+
+            seeded = approval_mod._record_denial(sk)
+            assert seeded == 1
+            result = self._call_gateway(cb, "echo tally-untouched")
+
+            assert smart_calls == []
+            assert result == "once"
+            assert approval_mod._denial_tally.get(sk) == 1
+        finally:
+            approval_mod._reset_denials(sk)
+            approval_mod.unregister_gateway_notify(sk)
+            approval_ctx.reset_current_session_key(token)
+
+    def test_smart_prefilter_is_inert_outside_smart_mode(self, monkeypatch):
+        """manual mode still shows a card for a clean command -- unchanged."""
+        sk = "sess-prefilter-manual"
+        approval_mod, token = self._gateway_ctx(monkeypatch, sk)
+        cards = []
+
+        def notify(data):
+            cards.append(dict(data))
+            approval_mod.resolve_gateway_approval(
+                sk, "once", tool_use_id=data["tool_use_id"]
+            )
+
+        try:
+            monkeypatch.setattr(
+                approval_ctx, "_get_approval_config",
+                lambda: {"mode": "manual", "timeout": 5},
+            )
+            smart_calls = self._smart_recorder(monkeypatch)
+            approval_mod.register_gateway_notify(sk, notify)
+            cb = sdk_gateway.build_sdk_gateway_approval_callback()
+            result = self._call_gateway(cb, "echo hello", tool_use_id="toolu-manual")
+            assert result == "once"
+            assert smart_calls == []
+            assert len(cards) == 1
+        finally:
+            approval_mod.unregister_gateway_notify(sk)
+            approval_ctx.reset_current_session_key(token)
+
     def test_builder_returns_none_outside_gateway_context(self, monkeypatch):
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
@@ -5136,7 +5466,12 @@ class TestGatewayApprovalBridge:
                 hermes_session_id=sk,
             )
             fields = session.build_option_fields()
-            original = {"command": "printf guarded"}
+            # A command that trips the dangerous-pattern detector, so it reaches
+            # the evaluator on BOTH sides of the SDK Bash pre-filter. "printf
+            # guarded" is clean under tirith and the pattern detector alike, so
+            # using it here would assert that smart approval runs on commands
+            # neither screen flagged -- the exact behaviour the pre-filter removes.
+            original = {"command": "chmod 777 /etc/passwd"}
             result = asyncio.run(fields["can_use_tool"](
                 "Bash", original, SimpleNamespace(tool_use_id="toolu-guarded")
             ))

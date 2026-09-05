@@ -19,6 +19,7 @@ from hermes_cli.lifecycle import observer_failure_log
 from tools import approval as _approval
 from tools import approval_context as _ctx
 from tools import approval_gateway_wait, approval_session_notify, approval_smart
+from tools.approval_detection import detect_dangerous_command
 from utils import env_var_enabled
 
 logger = logging.getLogger("tools.approval")
@@ -154,6 +155,70 @@ def _resolve_sdk_approval_context(context_provider, build_key: str, build_gatewa
         return "", False
 
 
+def sdk_bash_prefilter_clears(request: dict) -> bool:
+    """True when an SDK Bash request needs no auxiliary-LLM risk assessment.
+
+    Mirrors the screen the native terminal path has always had.
+    ``check_all_command_guards`` collects tirith findings plus
+    ``detect_dangerous_command`` hits and, when neither produced a warning,
+    returns approved WITHOUT prompting and without consulting the evaluator (its
+    ``if not warnings`` early return). This bridge had no such screen and paid an
+    auxiliary-model call for every tool call that reached it -- the same defect
+    class as #39275, where ``execute_code`` re-prompted on every call because the
+    approval cache was never consulted.
+
+    Deliberately narrow:
+
+    * Bash only. Every other tool carries no shell command to scan and keeps its
+      existing behaviour unchanged.
+    * Clearing IS an auto-grant, and the honest cost is stated below -- but it
+      cannot reach anything the floors would have stopped. The immutable
+      hardline / sudo-stdin / user-deny floors run earlier and elsewhere (the SDK
+      session's ``_resolve_can_use_tool`` via
+      :func:`sdk_bash_immutable_floor_reason`), so nothing this clears could have
+      been floor-blocked.
+    * Fail-safe. Any unexpected shape or exception returns False, preserving the
+      pre-existing "always ask the evaluator" behaviour. ``_tirith_scan`` already
+      encodes the fail-closed contract (#20733): with
+      ``security.tirith_fail_open`` false an un-importable scanner yields a HIGH
+      ``warn``, which escalates here rather than clearing.
+    * It does not touch the consecutive-denial tally: no verdict was rendered,
+      and the native path likewise leaves the tally alone on this branch.
+
+    The command scanned is the validated canonical request's own bytes -- the
+    same string the SDK executes -- never the bounded presentation.
+
+    Permissiveness is bounded by construction: a command this clears is one the
+    native terminal tool would have run with no prompt and no model call.
+
+    What this DOES give up, stated plainly: the guardian no longer sees commands
+    both static screens clear, so one it would have denied or asked about is now
+    granted without an operator card. That is the same trade the native path
+    already makes at its ``if not warnings`` early return -- it too returns
+    approved without consulting the guardian -- so this brings the SDK lane to
+    parity rather than below it. It is a real reduction in guardian coverage all
+    the same, not merely a saved round trip.
+    """
+    try:
+        if type(request) is not dict or request.get("tool_name") != "Bash":
+            return False
+        tool_input = request.get("tool_input")
+        if type(tool_input) is not dict:
+            return False
+        command = tool_input.get("command")
+        if type(command) is not str or not command.strip():
+            return False
+        tirith_result = _approval._tirith_scan(command)
+        if type(tirith_result) is not dict:
+            return False
+        if tirith_result.get("action") in {"block", "warn"}:
+            return False
+        return not detect_dangerous_command(command)[0]
+    except Exception:
+        logger.debug("SDK Bash approval pre-filter failed; escalating to the evaluator")
+        return False
+
+
 def _sdk_smart_verdict(canonical_tool_input: str, safe_command: str, safe_description: str,
                        session_key: str) -> str:
     """Guardian step for an SDK request: the evaluator sees the bounded canonical SDK bytes;
@@ -242,7 +307,7 @@ def build_sdk_gateway_approval_callback(context_provider=None):
             canonical_request = safe_presentation = None
         if canonical_request is None or safe_presentation is None:
             return {"choice": "deny", "reason": "canonical request is unassessable"}
-        canonical_tool_input, _request = canonical_request
+        canonical_tool_input, request = canonical_request
         safe_command, safe_description = safe_presentation
 
         session_key, gateway = _resolve_sdk_approval_context(context_provider, build_key, build_gateway)
@@ -261,6 +326,16 @@ def build_sdk_gateway_approval_callback(context_provider=None):
         # The Smart decision seam runs only after the canonical request and approver context validated.
         smart_denied = False
         if _ctx._get_approval_mode() == "smart":
+            # Screen before spending an auxiliary-model call, exactly as the native
+            # terminal path does. Without this the bridge assessed every tool
+            # call that reached it: one live gateway session logged 446 evaluator
+            # calls and ~432k tokens. A cleared command is one the native tool
+            # would have run with no prompt at all, so this matches the native
+            # path's own `if not warnings` early return. Note the trade is not
+            # free: the guardian no longer sees commands both static screens
+            # clear, so one it would have denied now carries no operator card.
+            if sdk_bash_prefilter_clears(request):
+                return "once"
             verdict = _sdk_smart_verdict(canonical_tool_input, safe_command, safe_description, session_key)
             if verdict == "approve":
                 _approval._reset_denials(session_key)

@@ -7,6 +7,7 @@ import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
+import { stampSecondaryProfileOwner } from '@/store/session-event-provenance'
 
 // ── Multi-profile gateway routing ──────────────────────────────────────────
 // Concurrent sessions across profiles need concurrent sockets: the renderer's
@@ -41,6 +42,10 @@ interface RegistryConfig {
    * (#89206: the stale-profile split-brain that stranded bot wake-ups).
    */
   onActiveRouteChanged?: (profile: string) => void
+  /** Drop transient profile-pool runtime routes when local profile teardown
+   * permanently retires their owning secondary. Exact registry routes are
+   * deliberately outside this callback: a remote source may share the name. */
+  onLocalProfileRetired?: (profile: string) => void
   /**
    * Scopes a FOREGROUND surface is bound to right now — every mounted
    * session tile's owner and the primary thread's (foregroundSessionScopes in
@@ -715,9 +720,13 @@ function createSecondary(profile: string, connectionId: null | string = null): S
   }
 
   // Events keep carrying the bare profile — session routing is profile-keyed
-  // everywhere. connectionId rides along for surfaces that need the source.
+  // everywhere. A pool secondary with no registry connection has no exact
+  // connection id, so stamp this closure-owned profile before registry fan-in;
+  // the recorder must not promote an arbitrary wire `profile` field instead.
   entry.offEvent = gateway.onEvent(event => {
-    g.config?.onEvent({ ...event, profile, ...(connectionId ? { connectionId } : {}) })
+    const scopedEvent = stampSecondaryProfileOwner({ ...event, ...(connectionId ? { connectionId } : {}) }, profile)
+
+    g.config?.onEvent(scopedEvent)
     releaseTerminalTurnLease(entry.scope, event)
   })
   entry.offState = gateway.onState(state => {
@@ -1775,6 +1784,12 @@ export function retireLocalProfileGateways(profile: string): void {
   const key = normKey(name)
   const scopes = new Set([key, registryBackendScopeKey('local', key)])
   let activeInvalidated = false
+
+  // A profile-only owner is a claim about the legacy local pool, not durable
+  // session identity. Clear it with that pool before a delayed session action
+  // can recreate the deleted/old-name backend. Exact remote owners are
+  // descriptors and remain routable even when they share this profile name.
+  g.config?.onLocalProfileRetired?.(key)
 
   for (const scope of scopes) {
     const entry = g.secondaries.get(scope)

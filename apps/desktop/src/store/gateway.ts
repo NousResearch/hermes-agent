@@ -1,4 +1,4 @@
-import { type ConnectionState, type GatewayEvent, registryBackendScopeKey, resolveGatewayWsUrl } from '@hermes/shared'
+import { type ConnectionState, type GatewayEvent, LOCAL_CONNECTION_ID, registryBackendScopeKey, resolveGatewayWsUrl } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
@@ -307,6 +307,14 @@ async function isAttachedSharedRemote(connectionId: null | string, profile: stri
   const key = normKey(profile)
 
   if (!id || !g.primaryConnectionId || id !== g.primaryConnectionId) {
+    return false
+  }
+
+  // The local registry source is a pool of per-profile HERMES_HOME backends,
+  // never a one-host-many-profiles remote. Collapsing onto the primary here
+  // made Bot Mode's `default` row mint and prompt on whatever local profile
+  // was foregrounded (orchestrator) (#101422).
+  if (id === LOCAL_CONNECTION_ID) {
     return false
   }
 
@@ -880,6 +888,25 @@ export async function requestGatewayForProfile<T>(
   } finally {
     route.release()
   }
+}
+
+/**
+ * Bot Mode door for a LOCAL (non-cross-connection) profile.
+ *
+ * Unlike `host.request` (active gateway) and `host.requestProfile`'s string
+ * overload (throws when more than one registry source exists), this always
+ * resolves the named profile's own socket via `requestGatewayForProfile`.
+ * That is what keeps `default` reachable when another profile (e.g.
+ * orchestrator) is foregrounded (#101422).
+ */
+export async function requestLocalProfileGateway<T>(
+  profile: string,
+  method: string,
+  params: Record<string, unknown> = {},
+  timeoutMs?: number,
+  signal?: AbortSignal
+): Promise<T> {
+  return requestGatewayForProfile<T>(profile, method, params, timeoutMs, signal)
 }
 
 /**

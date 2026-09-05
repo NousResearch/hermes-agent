@@ -50,6 +50,7 @@ import {
   openGatewayForProfile,
   requestGatewayForAgent,
   requestGatewayForProfile,
+  requestLocalProfileGateway,
   retainGatewayForAgent,
   retainGatewayForRelay,
   retireLocalProfileGateways
@@ -1283,6 +1284,20 @@ export const host = {
     params: Record<string, unknown> = {},
     timeoutMs?: number
   ): Promise<T> => requestPluginProfile<T>(route, method, params, timeoutMs),
+
+  /** Gateway JSON-RPC for a LOCAL profile by name, without using the active
+   *  socket and without the multi-source string gate on `requestProfile`.
+   *  Bot Mode's unscoped rows use this so `default` is not hijacked by a
+   *  foregrounded orchestrator (#101422). Feature-detect on older hosts. */
+  requestLocalProfileGateway: async <T>(
+    profile: string,
+    method: string,
+    params: Record<string, unknown> = {},
+    timeoutMs?: number
+  ): Promise<T> =>
+    timeoutMs === undefined
+      ? requestLocalProfileGateway<T>(profile, method, params)
+      : requestLocalProfileGateway<T>(profile, method, params, timeoutMs),
 
   /** Pin a route's pooled gateway socket open across repeated `requestProfile`
    *  calls (#93594: the bot-relay drain loop was dialing and tearing down a

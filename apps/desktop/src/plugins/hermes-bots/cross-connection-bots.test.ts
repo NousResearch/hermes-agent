@@ -20,9 +20,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { GroupMember, ProfileRoute, RosterRow } from './types'
 
-const { overrides, request, requestProfile } = vi.hoisted(() => ({
+const { overrides, request, requestLocalProfileGateway, requestProfile } = vi.hoisted(() => ({
   overrides: {} as Record<string, unknown>,
   request: vi.fn(),
+  requestLocalProfileGateway: vi.fn(),
   requestProfile: vi.fn()
 }))
 
@@ -30,6 +31,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
 
   overrides.request = request
+  overrides.requestLocalProfileGateway = requestLocalProfileGateway
   overrides.requestProfile = requestProfile
 
   return {
@@ -60,6 +62,7 @@ const aliasBot = {
 beforeEach(() => {
   vi.clearAllMocks()
   request.mockResolvedValue({})
+  requestLocalProfileGateway.mockResolvedValue({})
   requestProfile.mockResolvedValue({})
 })
 
@@ -91,7 +94,7 @@ describe('every source-scoped row resolves to an immutable owner', () => {
 })
 
 describe('requestForBot dispatches on the owner, not the active gateway', () => {
-  it('sends source-scoped rows through requestProfile and local rows through request', async () => {
+  it('sends source-scoped rows through requestProfile and local rows through requestLocalProfileGateway', async () => {
     await requestForBot({ name: 'local-bot' }, 'session.create', { title: 'x' })
     await requestForBot({ connectionId: 'local', name: 'local-bot', sourceScoped: true }, 'session.create', {
       title: 'x'
@@ -100,7 +103,10 @@ describe('requestForBot dispatches on the owner, not the active gateway', () => 
       text: 'hi'
     })
 
-    expect(request.mock.calls.map(([method]) => method)).toEqual(['session.create'])
+    expect(requestLocalProfileGateway.mock.calls.map(([profile, method]) => [profile, method])).toEqual([
+      ['local-bot', 'session.create']
+    ])
+    expect(request).not.toHaveBeenCalled()
     // A registered LOCAL source still uses the explicit descriptor.
     expect(requestProfile.mock.calls.map(([route, method]) => [route.connectionId, method])).toEqual([
       ['local', 'session.create'],

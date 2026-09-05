@@ -2803,12 +2803,16 @@ class _StreamingCall:
 
     def _count_chunk(self, diag, chunk) -> None:
         """Stamp liveness for a real chunk; diagnostics are best-effort."""
-        self.last_chunk_time["t"] = time.time()
-        self.agent._touch_activity("receiving stream response")
+        from agent.stream_progress import chunk_has_progress
+
+        received_at = time.time()
+        if chunk_has_progress(chunk):
+            self.last_chunk_time["t"] = received_at
+            self.agent._touch_activity("receiving stream response")
         with contextlib.suppress(Exception):
             diag["chunks"] = int(diag.get("chunks", 0)) + 1
             if diag.get("first_chunk_at") is None:
-                diag["first_chunk_at"] = self.last_chunk_time["t"]
+                diag["first_chunk_at"] = received_at
             # Delta-length estimate: ~3x cheaper than repr() per chunk.
             diag["bytes"] = int(diag.get("bytes", 0)) + _estimate_chunk_bytes(chunk)
 

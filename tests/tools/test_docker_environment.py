@@ -1787,3 +1787,161 @@ def test_docker_env_warnings_never_echo_values(caplog):
     with caplog.at_level(logging.WARNING, logger="tools.environments.docker"):
         docker_env._normalize_env_dict({"TOKEN": ["sk-live-value"], "OK": "1"})
     assert "TOKEN" in caplog.text and "sk-live-value" not in caplog.text
+
+
+def _make_detached_cleanup_env(monkeypatch, container_id="race-cid"):
+    """Build a minimal opt-out (persist_across_processes=False) env whose
+    ``cleanup()`` will stop+rm the container on a real daemon thread."""
+    env = docker_env.DockerEnvironment.__new__(docker_env.DockerEnvironment)
+    env._container_id = container_id
+    env._docker_exe = "/usr/bin/docker"
+    env._persist_across_processes = False
+    env._persistent = True  # skip bind-mount rmtree in cleanup
+    env._workspace_dir = None
+    env._home_dir = None
+    env._cleanup_thread = None
+    return env
+
+
+def test_detached_cleanup_thread_is_tracked_and_drained(monkeypatch):
+    """The container-teardown worker must be reachable at exit even after the
+    idle reaper detaches the env from ``_active_environments`` before calling
+    ``cleanup()``. Otherwise the process can exit after ``docker stop`` but
+    before ``docker rm``, leaving a stopped labeled container (#86317).
+
+    We drive a real cleanup thread (blocked mid-``stop`` via an Event) and
+    assert it is registered in the module-level outstanding set — independent
+    of any active-environment registry — and that the atexit drain
+    (``_drain_outstanding_cleanups``) joins it so ``docker rm`` completes."""
+    import threading
+
+    release = threading.Event()
+    calls = []
+
+    def _run(cmd, **kwargs):
+        cmd_list = list(cmd) if isinstance(cmd, (list, tuple)) else cmd
+        calls.append(cmd_list)
+        if isinstance(cmd_list, list) and len(cmd_list) >= 2 and cmd_list[1] == "stop":
+            # Hold the worker inside ``docker stop`` so we can observe it as an
+            # in-flight, detached teardown before ``docker rm`` runs.
+            release.wait(timeout=5.0)
+        return subprocess.CompletedProcess(cmd_list, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    # Snapshot so the assertions are robust to any unrelated leftovers.
+    before = set(docker_env._OUTSTANDING_CLEANUP_THREADS)
+
+    env = _make_detached_cleanup_env(monkeypatch)
+    env.cleanup()
+
+    worker = env._cleanup_thread
+    assert worker is not None
+    # Registered the moment cleanup() returns — before the worker even runs —
+    # and NOT via any active-environment registry (this env was never in one).
+    assert worker in docker_env._OUTSTANDING_CLEANUP_THREADS
+    assert worker not in before
+    # The in-process handle is detached (mirrors the reaper popping the env).
+    assert env._container_id is None
+    assert worker.is_alive()
+
+    # Let the worker finish ``stop`` and proceed to ``rm``; the atexit drain
+    # must join it to completion.
+    release.set()
+    assert docker_env._drain_outstanding_cleanups(timeout=5.0) is True
+    assert not worker.is_alive()
+
+    ops = [c[1] for c in calls if isinstance(c, list) and len(c) >= 2]
+    assert "stop" in ops, f"expected docker stop, got {calls}"
+    assert "rm" in ops, f"docker rm must run before exit (the #86317 gap); got {calls}"
+    # The worker deregisters itself once teardown completes.
+    assert worker not in docker_env._OUTSTANDING_CLEANUP_THREADS
+
+
+def test_persist_mode_cleanup_registers_no_teardown_thread(monkeypatch):
+    """persist_across_processes=True cleanup is a container no-op, so it must
+    not spawn or register a teardown thread in the outstanding set."""
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(list(cmd) if isinstance(cmd, (list, tuple)) else cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    env = _make_detached_cleanup_env(monkeypatch, container_id="persist-cid")
+    env._persist_across_processes = True
+    before = set(docker_env._OUTSTANDING_CLEANUP_THREADS)
+
+    env.cleanup()
+
+    assert set(docker_env._OUTSTANDING_CLEANUP_THREADS) == before
+    assert env._container_id is None  # handle cleared for label re-probe
+    assert not any(
+        isinstance(c, list) and len(c) >= 2 and c[1] in ("stop", "rm") for c in calls
+    ), f"persist-mode cleanup must not stop/rm; got {calls}"
+
+
+def test_drain_rescans_for_workers_registered_mid_drain():
+    """``_drain_outstanding_cleanups`` must join teardown workers registered
+    *after* it started, not only those present at an initial snapshot.
+
+    The idle reaper can detach an env and call ``cleanup()`` while the atexit
+    drain is already running (its timer fires during interpreter shutdown),
+    registering a fresh worker mid-drain. A single-snapshot drain would return
+    without joining it, leaving ``docker rm`` to be killed at exit (#86317).
+
+    Driven with lightweight fakes whose ``join()`` deterministically registers
+    a second worker — no real races. With the old single-snapshot drain the
+    late worker is never joined (stays "alive"); the re-scanning drain joins it.
+    """
+
+    class _FakeWorker:
+        def __init__(self, on_join=None):
+            self._alive = True
+            self._on_join = on_join
+
+        def is_alive(self):
+            return self._alive
+
+        def join(self, timeout=None):
+            self._alive = False
+            if self._on_join is not None:
+                self._on_join()
+
+    late = _FakeWorker()
+
+    def _register_late():
+        # Registered only once the first worker is being joined — i.e. after
+        # the drain's initial snapshot was taken.
+        docker_env._register_cleanup_thread(late)
+
+    first = _FakeWorker(on_join=_register_late)
+    docker_env._register_cleanup_thread(first)
+    try:
+        assert docker_env._drain_outstanding_cleanups(timeout=5.0) is True
+        # Both the initial and the mid-drain worker were joined to completion.
+        assert not first.is_alive()
+        assert not late.is_alive()
+    finally:
+        docker_env._discard_cleanup_thread(first)
+        docker_env._discard_cleanup_thread(late)
+
+
+def test_drain_returns_false_when_worker_outlasts_deadline():
+    """A worker that never finishes must make the drain report an unclean
+    exit (``False``) rather than block forever."""
+
+    class _StuckWorker:
+        def is_alive(self):
+            return True
+
+        def join(self, timeout=None):
+            return  # never actually finishes
+
+    stuck = _StuckWorker()
+    docker_env._register_cleanup_thread(stuck)
+    try:
+        assert docker_env._drain_outstanding_cleanups(timeout=0.05) is False
+    finally:
+        docker_env._discard_cleanup_thread(stuck)

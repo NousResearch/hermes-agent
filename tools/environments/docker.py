@@ -5,6 +5,7 @@ resource limits (CPU, memory, disk), and optional filesystem persistence via
 bind mounts.
 """
 
+import atexit
 import datetime
 import hashlib
 import json
@@ -16,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -32,6 +34,68 @@ from tools.environments.remote_common import (
     bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
 
 logger = logging.getLogger(__name__)
+
+
+# Outstanding container-teardown worker threads, tracked independently of
+# terminal_tool's ``_active_environments`` registry.
+#
+# ``DockerEnvironment.cleanup()`` runs ``docker stop`` + ``docker rm -f`` on a
+# daemon thread. The idle reaper (``_cleanup_inactive_envs``) *pops* the env
+# from ``_active_environments`` **before** calling ``cleanup()``, so once that
+# happens the env — and its ``wait_for_cleanup`` thread handle — is no longer
+# reachable from the atexit drain that iterates the active registry. If the
+# interpreter then exits after ``docker stop`` but before ``docker rm``, the
+# daemon thread is killed mid-teardown and a stopped, labeled container is left
+# behind even though cleanup logged success (#86317, the narrower race that
+# remained after #20561 / #33645).
+#
+# Registering every teardown thread here — and draining this set at exit —
+# closes that gap without changing container lifecycle semantics.
+_OUTSTANDING_CLEANUP_THREADS: "set[threading.Thread]" = set()
+_OUTSTANDING_CLEANUP_LOCK = threading.Lock()
+
+
+def _register_cleanup_thread(t: "threading.Thread") -> None:
+    with _OUTSTANDING_CLEANUP_LOCK:
+        _OUTSTANDING_CLEANUP_THREADS.add(t)
+
+
+def _discard_cleanup_thread(t: "threading.Thread") -> None:
+    with _OUTSTANDING_CLEANUP_LOCK:
+        _OUTSTANDING_CLEANUP_THREADS.discard(t)
+
+
+def _drain_outstanding_cleanups(timeout: float = 30.0) -> bool:
+    """Join every in-flight ``DockerEnvironment.cleanup()`` worker.
+
+    Called from an atexit hook so ``docker stop`` / ``docker rm`` actually
+    completes before the interpreter tears down daemon threads, even for envs
+    the idle reaper already detached from ``_active_environments`` (#86317).
+    Returns ``True`` if all tracked threads finished within *timeout*.
+
+    The outstanding set is re-snapshotted every pass rather than joined once:
+    the idle reaper can detach an env and call ``cleanup()`` *while* this drain
+    is already running (e.g. its timer fires during interpreter shutdown),
+    registering a fresh teardown worker after an initial snapshot was taken. A
+    single-snapshot drain would return without joining that late worker,
+    leaving ``docker rm`` to be killed at exit — the exact #86317 gap. Looping
+    until the set is empty (or the deadline passes) closes that window.
+    """
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        with _OUTSTANDING_CLEANUP_LOCK:
+            pending = [t for t in _OUTSTANDING_CLEANUP_THREADS if t.is_alive()]
+        if not pending:
+            return True
+        for t in pending:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            t.join(timeout=remaining)
+
+
+atexit.register(_drain_outstanding_cleanups)
+
 
 # Docker Desktop install paths checked when 'docker' is not in PATH
 # (macOS Intel / Apple Silicon Homebrew / app bundle).
@@ -1014,16 +1078,30 @@ class DockerEnvironment(BaseEnvironment):
         log_id = container_id[:12]
 
         def _do_cleanup() -> None:
-            for argv, fail_msg in ((["stop", "-t", "10"], "docker stop %s timed out / failed: %s"),
-                                   (["rm", "-f"], "docker rm -f %s failed: %s")):
-                try:
-                    subprocess.run(
-                        [docker_exe, *argv, container_id],
-                        capture_output=True, timeout=30, stdin=subprocess.DEVNULL)
-                except (subprocess.TimeoutExpired, OSError) as e:
-                    logger.warning(fail_msg, log_id, e)
+            try:
+                for argv, fail_msg in ((["stop", "-t", "10"], "docker stop %s timed out / failed: %s"),
+                                       (["rm", "-f"], "docker rm -f %s failed: %s")):
+                    try:
+                        subprocess.run(
+                            [docker_exe, *argv, container_id],
+                            capture_output=True, timeout=30, stdin=subprocess.DEVNULL)
+                    except (subprocess.TimeoutExpired, OSError) as e:
+                        logger.warning(fail_msg, log_id, e)
+            finally:
+                _discard_cleanup_thread(threading.current_thread())
 
+        # Daemon thread: doesn't block interpreter exit (atexit returns
+        # promptly), but unlike the old ``Popen(... &)`` shell trick the
+        # Python-level join semantics let the thread actually run to
+        # completion if the interpreter is still alive. atexit registers
+        # ``_atexit_cleanup`` in terminal_tool.py which waits for outstanding
+        # cleanups. That drain only covers envs still in the active registry,
+        # though — the idle reaper detaches an env *before* calling cleanup() —
+        # so we also register the worker in the module-level
+        # ``_OUTSTANDING_CLEANUP_THREADS`` set (drained by ``_drain_outstanding_cleanups``
+        # at exit) to guarantee ``docker rm`` runs even for a detached env (#86317).
         t = threading.Thread(target=_do_cleanup, daemon=True, name=f"hermes-cleanup-{log_id}")
+        _register_cleanup_thread(t)  # before start(): the finally in the worker discards it
         t.start()
         self._cleanup_thread = t
         self._container_id = None

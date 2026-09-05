@@ -18,7 +18,7 @@ logger = logging.getLogger("hermes_state")
 
 _IMPORT_SESSION_TEXT_FIELDS = (
     "source", "user_id", "model", "system_prompt", "end_reason", "cwd", "git_branch", "git_repo_root",
-    "billing_provider", "billing_base_url", "billing_mode", "cost_status", "cost_source", "pricing_version", "title",
+    "billing_provider", "billing_base_url", "billing_mode", "cost_status", "cost_source", "pricing_version", "title", "title_source",
 )
 # ``role`` is validated separately (non-empty string).
 _IMPORT_MESSAGE_TEXT_FIELDS = (
@@ -35,7 +35,7 @@ _IMPORT_SESSION_INSERT_SQL = """INSERT INTO sessions (
                            cwd, git_branch, git_repo_root,
                            billing_provider, billing_base_url, billing_mode,
                            estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
-                           pricing_version, title, api_call_count, archived
+                           pricing_version, title, title_source, api_call_count, archived
                        )
                        VALUES (
                            :id, :source, :user_id, :model, :model_config,
@@ -45,13 +45,13 @@ _IMPORT_SESSION_INSERT_SQL = """INSERT INTO sessions (
                            :reasoning_tokens, :cwd, :git_branch, :git_repo_root,
                            :billing_provider, :billing_base_url, :billing_mode,
                            :estimated_cost_usd, :actual_cost_usd, :cost_status,
-                           :cost_source, :pricing_version, :title,
+                           :cost_source, :pricing_version, :title, :title_source,
                            :api_call_count, :archived
                        )"""
 # Columns copied verbatim from the payload; typed columns are converted below.
 _IMPORT_PASSTHROUGH_COLS = (
     "user_id", "model", "model_config", "end_reason", "cwd", "git_branch", "git_repo_root", "billing_provider",
-    "billing_base_url", "billing_mode", "cost_status", "cost_source", "pricing_version", "title",
+    "billing_base_url", "billing_mode", "cost_status", "cost_source", "pricing_version", "title", "title_source",
 )
 _IMPORT_INT_COLS = (
     "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "api_call_count",
@@ -335,6 +335,9 @@ class SessionPortabilityMixin:
         clean_session["model_config"] = self._import_json_object_or_none(clean_session.get("model_config"), "model_config")
         for field in ("parent_session_id", *_IMPORT_SESSION_TEXT_FIELDS):
             clean_session[field] = self._import_text_or_none(clean_session.get(field), field)
+        title_source = clean_session.get("title_source")
+        if title_source is not None and title_source not in self._TITLE_SOURCE_RANK:
+            raise ValueError(f"invalid title_source: {title_source!r}")
         clean_messages: List[Dict[str, Any]] = []
         for message_index, message in enumerate(messages):
             clean_message = dict(message)

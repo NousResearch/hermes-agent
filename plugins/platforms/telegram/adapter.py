@@ -3707,6 +3707,26 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         await _await_with_thread_deadline(
             self._bot.edit_message_text(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
 
+    async def _edit_streaming_tick(
+            self, chat_id: str, message_id: str, content: str, preview_key: Any, saturated: bool) -> SendResult:
+        """One streaming (non-final) edit, in MarkdownV2 so the message stays formatted while content arrives.
+
+        ``format_message`` escapes unmatched markers, so a BadRequest is rare; when MarkdownV2 is rejected
+        this tick goes out as plain text and the next one tries MarkdownV2 again. Flood/network errors
+        propagate to ``edit_message``'s handler so the consumer can back off. A saturated preview is
+        cached on every successful exit so the next identical truncated frame is skipped instead of
+        re-tripping flood control."""
+        try:
+            await self._edit_text(chat_id, message_id, self.format_message(content), ParseMode.MARKDOWN_V2)
+        except Exception as exc:
+            if "not modified" not in str(exc).lower():
+                if not self._is_bad_request_error(exc):
+                    raise
+                await self._edit_text(chat_id, message_id, content)
+        if saturated:
+            self._last_overflow_preview[preview_key] = content
+        return SendResult(success=True, message_id=message_id)
+
     async def _edit_markdown_or_plain(self, chat_id: str, message_id: str, formatted: str, plain: str, warn_fmt: str) -> bool:
         """MarkdownV2 edit with plain-text fallback. Returns True on a "not modified" no-op (caller may
         skip further work); the fallback edit's exceptions propagate."""
@@ -3785,10 +3805,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             self._last_overflow_preview.pop(_preview_key, None)
         try:
             if not finalize:
-                await self._edit_text(chat_id, message_id, content)
-                if _saturated_preview:
-                    self._last_overflow_preview[_preview_key] = content
-                return SendResult(success=True, message_id=message_id)
+                return await self._edit_streaming_tick(chat_id, message_id, content, _preview_key, _saturated_preview)
             await self._edit_markdown_or_plain(
                 chat_id, message_id, self.format_message(content), _strip_mdv2(content) if content else content,
                 "[%s] MarkdownV2 edit failed, falling back to plain text: %s")

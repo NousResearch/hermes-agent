@@ -2073,7 +2073,7 @@ def pool_for_runtime(runtime: Optional[Dict[str, Any]]) -> Optional[CredentialPo
     credentials under the endpoint's OWN pool key, so ``load_pool("custom")``
     would read an empty pool and report it healthy.  ``requested_provider``
     carries the endpoint's configured name, which
-    :func:`get_custom_provider_pool_key` prefers over a ``base_url`` match --
+    :func:`custom_provider_pool_key_candidates` prefers over a ``base_url`` match --
     that name-first rule is what keeps two endpoints sharing one base_url
     from resolving to each other's pool.
 
@@ -2100,8 +2100,8 @@ def pool_for_runtime(runtime: Optional[Dict[str, Any]]) -> Optional[CredentialPo
         return attached
     try:
         if provider == "custom":
-            # `get_custom_provider_pool_key` matches on the endpoint's bare
-            # configured name, but a runtime can be requested in the scoped
+            # The candidates helper matches on the endpoint's bare configured
+            # name, but a runtime can be requested in the scoped
             # `custom:<name>` form and carries that verbatim. Passing it
             # through misses the name match and silently falls back to a
             # base_url match -- which resolves to a SIBLING's pool when two
@@ -2110,14 +2110,21 @@ def pool_for_runtime(runtime: Optional[Dict[str, Any]]) -> Optional[CredentialPo
             requested = str(runtime.get("requested_provider") or "").strip()
             if requested.lower().startswith(CUSTOM_POOL_PREFIX):
                 requested = requested[len(CUSTOM_POOL_PREFIX):]
-            pool_key = get_custom_provider_pool_key(
+            # Credentials live under EITHER the durable `providers.<key>` slug
+            # or the legacy `custom:<name>` namespace, so take the first
+            # candidate that actually holds rows. Probing only the preferred
+            # key reads an empty pool when the credentials sit under the other
+            # identity and calls the provider healthy -- the exact miss this
+            # probe exists to catch. `_try_resolve_from_custom_pool` above and
+            # the pool-seeding caller both walk the candidates for this reason.
+            for pool_key in custom_provider_pool_key_candidates(
                 runtime.get("base_url"), requested or None
-            )
-            if not pool_key:
-                return None
-        else:
-            pool_key = provider
-        return load_pool(pool_key)
+            ):
+                pool = load_pool(pool_key)
+                if pool.has_credentials():
+                    return pool
+            return None
+        return load_pool(provider)
     except Exception:
         logger.debug(
             "Could not load %s's credential pool for a cooldown probe",

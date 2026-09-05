@@ -37,10 +37,11 @@ def _make_running_kanban_task(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_KANBAN_ATTACHMENTS_ROOT", str(attachments_root))
 
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
 
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(
             conn,
@@ -99,9 +100,11 @@ def test_build_child_agent_strips_kanban_toolset_even_when_parent_is_worker(monk
 
     import run_agent
     from tools import delegate_tool
+    import tools.delegate_tool_config as delegate_tool_config
 
     monkeypatch.setattr(run_agent, "AIAgent", FakeAgent)
     monkeypatch.setattr(delegate_tool, "_load_config", lambda: {})
+    monkeypatch.setattr(delegate_tool_config, "_load_config", lambda: {})
 
     class Parent:
         enabled_toolsets = ["terminal", "kanban"]
@@ -151,7 +154,7 @@ def test_delegate_child_execute_code_env_bridges_contextvar_and_scrubs_kanban(
     monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
 
     from agent.delegation_context import delegated_child_context
-    from tools.code_execution_tool import _scrub_child_env
+    from tools.code_execution_env import _scrub_child_env
 
     with delegated_child_context():
         env = _scrub_child_env(
@@ -211,6 +214,7 @@ def test_delegate_child_kanban_cli_cannot_delete_parent_board(
 
 def test_delegate_child_attach_url_guard_leaves_no_row_or_file(monkeypatch, tmp_path):
     kb, tid, _workspace, attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
+    from hermes_cli import kanban_db_connect as kbc
 
     from agent.delegation_context import delegated_child_context
     from tools import kanban_tools
@@ -230,7 +234,7 @@ def test_delegate_child_attach_url_guard_leaves_no_row_or_file(monkeypatch, tmp_
     assert payload["error"]
     assert "delegate_task child" in payload["error"]
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         assert kb.list_attachments(conn, tid) == []
     finally:
@@ -245,6 +249,7 @@ def test_child_attempting_default_complete_does_not_finish_parent_or_delete_work
 ):
     """Deterministic E2E: a delegated child cannot complete its parent task."""
     kb, tid, workspace, _attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
+    from hermes_cli import kanban_db_connect as kbc
     from tools import delegate_tool
     from tools import kanban_tools
 
@@ -284,7 +289,7 @@ def test_child_attempting_default_complete_does_not_finish_parent_or_delete_work
 
     result = delegate_tool._run_single_child(0, "try to complete parent", Child(), Parent())
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task = kb.get_task(conn, tid)
         run = kb.latest_run(conn, tid)

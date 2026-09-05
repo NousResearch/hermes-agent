@@ -1034,7 +1034,7 @@ READ_FILE_SCHEMA = {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Starting line (1-based); in outline mode, initial heading ordinal. Ignored with cursor.", "default": 1, "minimum": 1},
             "limit": {"type": "integer", "description": "Maximum lines (default/max 2000); in outline mode, maximum headings (capped at 500). Output is also character-budgeted.", "default": 2000, "maximum": 2000},
-            "mode": {"type": "string", "enum": ["read", "outline"], "default": "read", "description": "outline: Markdown headings with levels and source lines, not body content. Scans up to 2 MiB per call; if scan_complete is false, follow next_cursor. Default read is unchanged."},
+            "mode": {"type": "string", "enum": ["read", "outline"], "default": "read", "description": "outline: Markdown headings/levels/source lines, not body content; scans up to 2 MiB per call. Stop when a useful heading is found and read its body. Follow next_cursor only for more headings; scan_complete marks a complete outline. Default read is unchanged."},
             "cursor": {"type": "string", "description": "Outline continuation from next_cursor, for the same path and task. Expires in 10 minutes; restart if file changed."}
         },
         "required": ["path"]

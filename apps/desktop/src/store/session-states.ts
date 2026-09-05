@@ -1863,7 +1863,7 @@ export const $focusedSessionState = computed([$focusedRuntimeId, $sessionStates]
 )
 
 /** The workspace CWD of the currently focused session (the focused tile's cwd,
- *  else the primary session's confirmed workspace cwd). */
+ *  else the primary session's confirmed workspace cwd, with fallback to historical session cwd). */
 export const $focusedWorkspaceCwd = computed(
   [
     $focusedStoredSessionId,
@@ -1888,7 +1888,23 @@ export const $focusedWorkspaceCwd = computed(
 
     const hasPrimaryWorkspace = Boolean(currentCwd) && (workspaceCwdOwner ?? null) === (selectedStoredId ?? null)
 
-    return hasPrimaryWorkspace ? currentCwd.trim() : ''
+    if (hasPrimaryWorkspace) {
+      return currentCwd.trim()
+    }
+
+    if (selectedStoredId) {
+      const fallbackCwd = (
+        focusedSessionState?.cwd ||
+        sessions.find(s => sessionMatchesStoredId(s, selectedStoredId))?.cwd ||
+        ''
+      ).trim()
+
+      if (fallbackCwd) {
+        return fallbackCwd
+      }
+    }
+
+    return ''
   }
 )
 

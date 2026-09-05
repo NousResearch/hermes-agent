@@ -3457,6 +3457,22 @@ class GatewayTurnMixin:
             next_message_id = self._reply_anchor_for_event(pending_event)
             next_channel_prompt = getattr(pending_event, "channel_prompt", None)
             next_message_type = getattr(pending_event, "message_type", None)
+            # The follow-up never went through the adapter's normal dispatch, so no
+            # 👀 reaction was ever stamped on it and the drain task's
+            # on_processing_complete() swap still targets the FIRST message — queued
+            # turns looked "ignored" on Telegram (#103429). Fire the same lifecycle
+            # hooks around the recursive turn below, reusing the drain task's own
+            # guard so the outcome swap targets this follow-up's message.
+            _queued_lifecycle_adapter = (
+                self._adapter_for_source(next_source) or self._adapter_for_source(source)
+            )
+            if _queued_lifecycle_adapter is not None and session_key:
+                self._bind_adapter_run_generation(
+                    _queued_lifecycle_adapter, session_key, run_generation
+                )
+            await self._queued_followup_lifecycle(
+                _queued_lifecycle_adapter, pending_event, "start",
+            )
 
         # Clear the prior turn's streaming-TTS completion marker so the recursive turn isn't suppressed.
         # See #60671.
@@ -3486,14 +3502,46 @@ class GatewayTurnMixin:
         # guard will consult. Fail-safe in helper.
         await self._refresh_agent_cache_message_count(session_key, session_id)
 
-        followup_result = await self._run_agent(
-            message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
-            source=next_source, session_id=session_id, session_key=next_session_key,
-            run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
-            event_message_id=next_message_id, channel_prompt=next_channel_prompt,
-            message_type=next_message_type,
-        )
+        try:
+            followup_result = await self._run_agent(
+                message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
+                source=next_source, session_id=session_id, session_key=next_session_key,
+                run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
+                event_message_id=next_message_id, channel_prompt=next_channel_prompt,
+                message_type=next_message_type,
+            )
+        finally:
+            await self._queued_followup_lifecycle(
+                _queued_lifecycle_adapter, pending_event, "complete", followup_result,
+            )
         return _preserve_queued_followup_history_offset(result, followup_result)
+
+    async def _queued_followup_lifecycle(
+        self, adapter, pending_event, phase: str, followup_result: Dict[str, Any] | None = None,
+    ) -> None:
+        """Fire the adapter processing lifecycle for an in-band queued follow-up (#103429).
+
+        The drain recursion bypasses ``_process_message_background``, so the queued message never
+        got the in-progress (👀) reaction and the completion hook still swapped the outcome
+        reaction on the PREVIOUS message — queued turns looked "ignored" on Telegram. Best-effort:
+        a reaction failure must never abort the follow-up turn.
+        """
+        if adapter is None or pending_event is None:
+            return
+        outcome = None
+        if phase == "complete":
+            from gateway.platforms.base import ProcessingOutcome
+            # Match the drain task's own success rule: interrupted/stale turns are not a
+            # failure, but an errored follow-up must show ❌ on ITS message.
+            outcome = (
+                ProcessingOutcome.FAILURE
+                if followup_result and followup_result.get("failed")
+                else ProcessingOutcome.SUCCESS
+            )
+        hook = "on_processing_start" if phase == "start" else "on_processing_complete"
+        args = (pending_event,) if phase == "start" else (pending_event, outcome)
+        with suppress(Exception):
+            await adapter._run_processing_hook(hook, *args)
 
     async def _run_agent_cleanup_turn_tasks(
         self, turn_ctx: TurnContext, *, progress_task: Any, log_task: Any, interrupt_monitor: "asyncio.Task",

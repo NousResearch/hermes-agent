@@ -189,6 +189,15 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     },
     {
       context: appearanceContext,
+      description: appearance.composerSuggestionsDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.composerSuggestions}`,
+      keywords: ['composer', 'suggestions', 'pills', 'recommendations'],
+      label: appearance.composerSuggestionsTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.composerSuggestions, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
       description: appearance.embedsDesc,
       icon: Palette,
       id: `setting:${APPEARANCE_SETTING_IDS.embeds}`,

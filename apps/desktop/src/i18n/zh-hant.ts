@@ -411,6 +411,8 @@ export const zhHant = defineLocale({
       toursDesc: '讓 Hermes 帶你認識應用程式：調暗畫面並逐步標示每個位置。',
       composerPopoutTitle: '懸浮輸入框',
       composerPopoutDesc: '允許將輸入框拖出底部停靠區。關閉後，輸入框會鎖定在底部。',
+      composerSuggestionsTitle: '輸入框建議',
+      composerSuggestionsDesc: '在輸入框上方顯示實用的建議按鈕。關閉後不會影響斜線補全或草稿歷史。',
       vibeHeartsTitle: '心情愛心',
       vibeHeartsDesc: '當你說謝謝、愛你、good bot 或送出愛心時飄出的愛心。與上方的訊息回應是兩回事。',
       embedsTitle: '內嵌預覽',

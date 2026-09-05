@@ -491,6 +491,8 @@ export interface Translations {
       toursDesc: string
       composerPopoutTitle: string
       composerPopoutDesc: string
+      composerSuggestionsTitle: string
+      composerSuggestionsDesc: string
       vibeHeartsTitle: string
       vibeHeartsDesc: string
       embedsTitle: string

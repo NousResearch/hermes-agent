@@ -178,13 +178,15 @@ export function ToggleRow({
   description,
   disabled,
   label,
-  onChange
+  onChange,
+  id
 }: {
   checked: boolean
   description?: string
   disabled?: boolean
   label: string
   onChange: (on: boolean) => void
+  id?: string
 }) {
   return (
     <ListRow
@@ -200,6 +202,7 @@ export function ToggleRow({
         />
       }
       description={description}
+      id={id}
       title={label}
     />
   )

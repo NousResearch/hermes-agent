@@ -480,6 +480,9 @@ export const ar = defineLocale({
       toursDesc: 'دع Hermes يرشدك في التطبيق، مع تعتيم الشاشة وإبراز كل خطوة.',
       composerPopoutTitle: 'محرر عائم',
       composerPopoutDesc: 'السماح بسحب محرر الرسائل خارج موضعه. عطّل هذا الخيار لإبقائه مثبتًا في الأسفل.',
+      composerSuggestionsTitle: 'اقتراحات المحرر',
+      composerSuggestionsDesc:
+        'إظهار أزرار اقتراحات مفيدة فوق المحرر. لن يؤثر تعطيلها في الإكمال بالشرطة المائلة أو سجل المسودات.',
       vibeHeartsTitle: 'قلوب المزاج',
       vibeHeartsDesc: 'قلوب عائمة عند قول شكراً أو أحبك أو good bot أو إرسال قلب. منفصلة عن تفاعلات الرسائل أعلاه.',
       embedsTitle: 'التضمينات المضمّنة',

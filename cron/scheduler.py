@@ -431,29 +431,114 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     return result
 
 
-def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
-    """Toolset list for a cron job. Precedence: per-job ``enabled_toolsets`` (+ MCP merge) >
-    ``cron`` platform config (``_get_platform_tools``, which strips _DEFAULT_OFF_TOOLSETS so fresh
-    installs run without ``moa``) > ``None`` on any failure (full default set).
+def _job_origin_platform(job: dict | None) -> str | None:
+    """``origin.platform`` when it is a non-blank string; else None.
 
-    1. Per-job ``enabled_toolsets`` (set via ``cronjob`` tool on create/update). Keeps the agent's
-    job-scoped toolset override intact — #6130. Enabled MCP servers are layered on per
-    ``_merge_mcp_into_per_job_toolsets`` so a native-toolset allowlist does not silently strip MCP tools. 2.
-    Mirrors gateway behavior (``_get_platform_tools(cfg, platform_key)``) so users can gate cron toolsets
-    globally without recreating every job. 3. ``None`` on any lookup failure — AIAgent loads the full
-    default set (legacy behavior before this change, preserved as the safety net).
+    Non-dict origins (legacy provenance strings) are missing, matching
+    ``_resolve_origin``.
     """
-    per_job = job.get("enabled_toolsets")
-    if per_job:
-        return _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})
+    if not isinstance(job, dict):
+        return None
+    origin = job.get("origin")
+    if not isinstance(origin, dict):
+        return None
+    plat = origin.get("platform")
+    if isinstance(plat, str) and plat.strip():
+        return plat.strip()
+    return None
+
+
+def _cfg_for_platform_tools(cfg: dict | None) -> dict:
+    """``_get_platform_tools`` reads top-level ``platform_toolsets``.
+
+    Promote a non-empty ``tools.platform_toolsets`` map when the top-level key
+    is missing so a hermetic config (and any wrapped shape) still intersects.
+    """
+    cfg = cfg or {}
+    pts = cfg.get("platform_toolsets")
+    if isinstance(pts, dict) and pts:
+        return cfg
+    tools = cfg.get("tools")
+    nested = tools.get("platform_toolsets") if isinstance(tools, dict) else None
+    if isinstance(nested, dict) and nested:
+        return {**cfg, "platform_toolsets": nested}
+    return cfg
+
+
+def clamp_cron_enabled_toolsets_to_origin(
+    enabled_toolsets: list[str] | None,
+    origin: dict | None,
+    cfg: dict | None = None,
+) -> list[str] | None:
+    """Create/update choke: never persist more toolsets than the origin platform.
+
+    Missing origin (CLI/dashboard) leaves the list unchanged. Lookup failure
+    refuses to persist the unclamped grant (returns None → inherit at fire).
+    """
+    requested = [str(t).strip() for t in (enabled_toolsets or []) if str(t).strip()]
+    if not requested:
+        return None
+    plat = None
+    if isinstance(origin, dict):
+        raw = origin.get("platform")
+        if isinstance(raw, str) and raw.strip():
+            plat = raw.strip()
+    if not plat:
+        return requested
     try:
-        from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
-        return sorted(_get_platform_tools(cfg or {}, "cron"))
+        from hermes_cli.tools_config import _get_platform_tools  # lazy
+        if cfg is None:
+            cfg = load_config() or {}
+        origin_tools = set(_get_platform_tools(_cfg_for_platform_tools(cfg), plat))
     except Exception as exc:
         logger.warning(
-            "Cron toolset resolution failed, falling back to full default toolset: %s",
-            exc)
+            "Cron toolset clamp at persist failed; not storing unclamped list: %s",
+            exc,
+        )
         return None
+    clamped = [t for t in requested if t in origin_tools]
+    return clamped or None
+
+
+def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
+    """Toolset list for a cron job. A cron never has more permissions than who created it.
+
+    Precedence:
+    1. Origin platform (``job.origin.platform``) when present. Missing origin
+       (CLI/dashboard) falls back to the ``cron`` platform.
+    2. If per-job ``enabled_toolsets`` is set, INTERSECT with that platform
+       list, then layer MCP via ``_merge_mcp_into_per_job_toolsets``. Without
+       an origin the per-job list still wins outright (#6130 for CLI jobs).
+    3. If no per-job list, use the origin platform list (or ``cron`` when
+       origin is missing).
+    4. Any lookup failure → ``[]`` (fail-closed). Never ``None``: that used
+       to load the full default set, including terminal.
+    """
+    try:
+        from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
+        cfg = _cfg_for_platform_tools(cfg)
+        origin_plat = _job_origin_platform(job)
+        per_job = job.get("enabled_toolsets")
+
+        origin_tools = None
+        if origin_plat:
+            origin_tools = set(_get_platform_tools(cfg, origin_plat))
+
+        if per_job:
+            requested = [str(t).strip() for t in per_job if str(t).strip()]
+            if origin_tools is not None:
+                requested = [t for t in requested if t in origin_tools]
+            return _merge_mcp_into_per_job_toolsets(requested, cfg)
+
+        if origin_tools is not None:
+            return sorted(origin_tools)
+        return sorted(_get_platform_tools(cfg, "cron"))
+    except Exception as exc:
+        logger.warning(
+            "Cron toolset resolution failed, failing closed (empty toolset, no terminal): %s",
+            exc,
+        )
+        return []
 
 
 def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | None:

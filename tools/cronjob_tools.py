@@ -63,6 +63,12 @@ from tools.cronjob_job_args import (
 from tools.registry import registry, tool_error
 
 
+def _clamp_enabled_toolsets_for_origin(enabled_toolsets, origin):
+    """Persist-time intersect: a cron never stores more toolsets than its origin platform."""
+    from cron.scheduler import clamp_cron_enabled_toolsets_to_origin
+    return clamp_cron_enabled_toolsets_to_origin(enabled_toolsets, origin)
+
+
 def _dumps(payload: Dict[str, Any]) -> str:
     return json.dumps(payload, indent=2)
 
@@ -566,7 +572,9 @@ def _action_create(a: Dict[str, Any]) -> str:
             model=_normalize_optional_job_value(a["model"]), provider=_normalize_optional_job_value(a["provider"]),
             base_url=_normalize_optional_job_value(a["base_url"], strip_trailing_slash=True),
             script=_normalize_optional_job_value(script), context_from=context_from,
-            enabled_toolsets=a["enabled_toolsets"] or None, workdir=_normalize_optional_job_value(a["workdir"]),
+            enabled_toolsets=_clamp_enabled_toolsets_for_origin(
+                a["enabled_toolsets"] or None, _origin_from_env()),
+            workdir=_normalize_optional_job_value(a["workdir"]),
             no_agent=_no_agent, attach_to_session=a["attach_to_session"],
             monitor_script=_normalize_optional_job_value(a["monitor_script"]),
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
@@ -766,7 +774,8 @@ def _update_context_from(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[s
 def _update_run_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[str, Any]) -> Optional[str]:
     """enabled_toolsets / attach_to_session / workdir / no_agent / repeat / schedule."""
     if a["enabled_toolsets"] is not None:
-        updates["enabled_toolsets"] = a["enabled_toolsets"] or None
+        updates["enabled_toolsets"] = _clamp_enabled_toolsets_for_origin(
+            a["enabled_toolsets"] or None, job.get("origin"))
     if a["attach_to_session"] is not None:
         updates["attach_to_session"] = bool(a["attach_to_session"])
     if a["workdir"] is not None:
@@ -967,7 +976,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             "enabled_toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional toolset names to restrict the job's agent to (e.g. [\"web\", \"terminal\"]) — cuts token overhead. Infer from the prompt. Omit for all default tools. On update, [] clears."
+                "description": "Optional toolset names to restrict the job's agent to (e.g. [\"web\", \"file\"]). Infer from the prompt. A cron never receives more toolsets than the platform that created it. Omit to inherit that platform's tools. On update, [] clears."
             },
             "workdir": {
                 "type": "string",

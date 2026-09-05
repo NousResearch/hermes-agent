@@ -1719,6 +1719,9 @@ def create_job(
 
     raw = locals()
     f = {key: norm(raw[key]) for key, norm in _CREATE_FIELD_NORMALIZERS.items()}
+    from cron.scheduler import clamp_cron_enabled_toolsets_to_origin
+    f["enabled_toolsets"] = clamp_cron_enabled_toolsets_to_origin(
+        f["enabled_toolsets"], origin)
     normalized_skills = _normalize_skill_list(skill, skills)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
@@ -1923,6 +1926,10 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         _normalize_job_updates(job, updates)
         previous_inference_axes = _normalized_inference_axes(job)
         updated = _apply_skill_fields({**job, **updates})
+        if "enabled_toolsets" in updates:
+            from cron.scheduler import clamp_cron_enabled_toolsets_to_origin
+            updated["enabled_toolsets"] = clamp_cron_enabled_toolsets_to_origin(
+                updated.get("enabled_toolsets"), updated.get("origin"))
         _reject_terminal_activation(job, updated, job_id)
         # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
         if {"monitor_script", "monitor_url", "no_agent", "script"}.intersection(updates):

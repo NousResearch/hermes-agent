@@ -1416,8 +1416,13 @@ def _standalone_send(
             try:
                 # A fresh thread does NOT inherit the profile ContextVars (home override + secret
                 # scope); run in the active context or the sender reads the default bot token.
+                # Media rides this fallback too, carrying the same attachments as the live lane,
+                # so a large one must get the same configurable budget (#88787 covered only
+                # _send_media_via_adapter). Text-only sends keep the short timeout so a hung
+                # text send still fails fast.
+                send_timeout = _script._get_media_send_timeout() if media_files else 30
                 return pool.submit(contextvars.copy_context().run, asyncio.run, _send()).result(
-                    timeout=30), None
+                    timeout=send_timeout), None
             finally:
                 pool.shutdown(wait=False)
         except Exception as e:

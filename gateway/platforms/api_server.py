@@ -3708,6 +3708,65 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         if bind_declared_conversation:
                             self._bind_declared_conversation(
                                 getattr(agent, "session_id", None) or session_id, gateway_session_key)
+                        # This surface builds a fresh AIAgent per request and
+                        # never inserts it into GatewayRunner._agent_cache, so
+                        # none of the gateway's eviction/finalize paths
+                        # (_cleanup_agent_resources) can ever reach it — this
+                        # finally block is the agent's only owner boundary.
+                        # Without an explicit teardown the external memory
+                        # provider spun up in agent_init (connection pool +
+                        # async writer) outlives the request forever: ~5
+                        # threads leaked per /v1/chat/completions call, plus
+                        # pooled DB connections that can exhaust the backend
+                        # under request bursts (sibling of the cached-agent
+                        # eviction leak in #64278, on the api_server path).
+                        #
+                        # Deliberately NOT agent.close(): close() kills the
+                        # task's background processes, which this surface must
+                        # preserve (ownership-marker comment above, #76115).
+                        # No session transcript is passed: the per-turn memory
+                        # sync already ran inside run_conversation, and this
+                        # path's agents are per-request — passing messages
+                        # would add end-of-session extraction to every API
+                        # call. flush_pending() first gives queued turn syncs
+                        # a bounded head start so shutdown_all()'s drain
+                        # doesn't abandon them (#73297); it returns
+                        # immediately when the queue is idle.
+                        try:
+                            if hasattr(agent, "shutdown_memory_provider"):
+                                # Teardown is deliberately inline on the
+                                # request thread, so flush_pending's bounded
+                                # wait plus shutdown_all()'s drain land in
+                                # this call's tail latency.  Timed at debug
+                                # level so that cost is measurable rather
+                                # than assumed: against a slow memory backend
+                                # this is the difference between a few
+                                # milliseconds and the full 5s budget, and
+                                # under request bursts it serializes teardown
+                                # behind new arrivals.  If the numbers show
+                                # it hurting, the answer is a bounded shared
+                                # teardown worker or a flush budget derived
+                                # from the remaining request deadline — not a
+                                # detached thread per request, which would
+                                # reintroduce the unbounded-thread growth
+                                # this block exists to remove.
+                                _teardown_started = time.perf_counter()
+                                _mm = getattr(agent, "_memory_manager", None)
+                                if _mm is not None and hasattr(_mm, "flush_pending"):
+                                    try:
+                                        _mm.flush_pending(timeout=5)
+                                    except Exception:
+                                        pass
+                                agent.shutdown_memory_provider()
+                                logger.debug(
+                                    "api_server memory-provider teardown took %.3fs",
+                                    time.perf_counter() - _teardown_started,
+                                )
+                        except Exception:
+                            logger.debug(
+                                "api_server memory-provider teardown failed",
+                                exc_info=True,
+                            )
                     clear_session_vars(tokens)
         self._activate_admitted_request()
         self._inflight_agent_runs += 1

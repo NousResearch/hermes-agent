@@ -127,7 +127,13 @@ class MemoryProvider(ABC):
         """Per-turn tick. kwargs may include remaining_tokens, model, platform, tool_count."""
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        """End-of-session extraction; fires only at real session boundaries, never per-turn."""
+        """End-of-session extraction; fires only at real session boundaries, never per-turn.
+
+        ``messages`` MAY be empty: surfaces that own an agent for a single request (the API
+        server tears its per-request agent down via ``shutdown_memory_provider()`` with no
+        transcript) end the session purely to release provider resources — the per-turn sync
+        already ran. Treat [] as "release resources, nothing new to extract" and return
+        without summarizing; do not interpret it as a session with no content."""
 
     def on_session_switch(
         self, new_session_id: str, *, parent_session_id: str = "", reset: bool = False, rewound: bool = False, **kwargs,

@@ -26,6 +26,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from agent.memory_manager import MemoryManager
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
@@ -39,6 +40,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from run_agent import AIAgent
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +429,73 @@ class TestAgentExecution:
         # arriving after this point can't reap work this turn left running.
         assert mock_agent._gateway_turn_process_task_id == ""
         assert mock_agent._gateway_turn_process_baseline == frozenset()
+
+
+class TestMemoryProviderTeardown:
+    """This surface builds a fresh AIAgent per request and never caches it
+    in GatewayRunner._agent_cache, so none of the gateway eviction/finalize
+    cleanup paths can reach it — _run_agent's finally block is the agent's
+    only owner boundary. Without an explicit teardown the external memory
+    provider created in agent_init (connection pool + writer thread) leaks
+    ~5 threads per request for the life of the gateway process."""
+
+    def _mock_agent(self):
+        # spec'd against the real classes deliberately.  The teardown in
+        # _run_agent probes agent.shutdown_memory_provider and
+        # _memory_manager.flush_pending through hasattr, and a bare
+        # MagicMock() answers every hasattr with True and auto-creates the
+        # call.  Renaming either symbol in run_agent.py would therefore turn
+        # production teardown into a silent no-op while these tests stayed
+        # green — the exact regression they exist to catch.  Under spec the
+        # rename raises AttributeError here instead.
+        mock_agent = MagicMock(spec=AIAgent)
+        mock_agent.run_conversation.return_value = {"final_response": "ok"}
+        # Attached explicitly: these are assigned at runtime (agent_init and
+        # memory_manager) rather than declared on AIAgent, so they are not in
+        # the spec.  Plain spec restricts reads of attributes that were never
+        # set, not writes, so assigning them here is what makes them readable.
+        mock_agent._memory_manager = MagicMock(spec=MemoryManager)
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        return mock_agent
+
+    @pytest.mark.asyncio
+    async def test_run_agent_shuts_down_memory_provider(self, adapter):
+        mock_agent = self._mock_agent()
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id="session-789",
+            )
+
+        # Pending turn syncs get a bounded head start before teardown
+        # (#73297), then the provider is shut down without a transcript —
+        # per-turn sync already ran inside run_conversation, and passing
+        # messages would add end-of-session extraction to every API call.
+        mock_agent._memory_manager.flush_pending.assert_called_once_with(timeout=5)
+        mock_agent.shutdown_memory_provider.assert_called_once_with()
+        # close() would kill the task's background processes, which this
+        # surface deliberately preserves (#76115).
+        mock_agent.close.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_agent_shuts_down_memory_provider_on_crash(self, adapter):
+        mock_agent = self._mock_agent()
+        mock_agent.run_conversation.side_effect = RuntimeError("boom")
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            with pytest.raises(RuntimeError, match="boom"):
+                await adapter._run_agent(
+                    user_message="hello",
+                    conversation_history=[],
+                    session_id="session-790",
+                )
+
+        mock_agent.shutdown_memory_provider.assert_called_once_with()
+        mock_agent.close.assert_not_called()
 
 
 class TestDisconnectedAgentReap:

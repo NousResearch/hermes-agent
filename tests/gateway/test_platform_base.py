@@ -1581,4 +1581,3 @@ class TestPlatformLockTakeoverGovernance:
         assert adapter._acquire_platform_lock("discord-token", "tok", "Discord") is False
         assert len(takeover_calls) == 1
         assert adapter._platform_lock_takeover_attempted is True
-

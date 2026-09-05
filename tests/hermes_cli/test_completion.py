@@ -77,6 +77,46 @@ class TestWalk:
 # 2. Bash output
 # ---------------------------------------------------------------------------
 
+def _usable_bash_for_syntax_check() -> str | None:
+    """A `bash` that can actually run `bash -n` here, or None.
+
+    Windows ships a `bash.exe` in System32 that is the WSL launcher: it
+    boots a Linux VM on first use, which can take a minute or more, and a
+    syntax check against it either times out or comes back with VM-boot
+    noise — neither validates the generated script. Probe with a short
+    timeout and fall back to a real bash (Git for Windows) when the PATH
+    one is unusable; skip when no usable bash exists at all.
+
+    Must be called at test time, not module import: a subprocess probe in
+    a decorator argument would run during collection on every platform.
+    """
+    import shutil as _shutil
+
+    candidates = []
+    on_path = _shutil.which("bash")
+    if on_path:
+        candidates.append(on_path)
+    git_exe = _shutil.which("git")
+    if git_exe:
+        candidates.append(
+            os.path.join(os.path.dirname(os.path.dirname(git_exe)), "bin", "bash.exe")
+        )
+    seen = set()
+    for bash in candidates:
+        if not bash or bash in seen or not os.path.exists(bash):
+            continue
+        seen.add(bash)
+        try:
+            probe = subprocess.run(
+                [bash, "--version"], capture_output=True, timeout=10
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if probe.returncode == 0:
+            return bash
+    return None
+
+
 class TestGenerateBash:
     def test_contains_completion_function_and_register(self):
         out = generate_bash(_make_parser())
@@ -86,13 +126,24 @@ class TestGenerateBash:
 
     def test_valid_bash_syntax(self):
         """Script must pass `bash -n` syntax check."""
+        bash = _usable_bash_for_syntax_check()
+        if bash is None:
+            pytest.skip("no usable bash for syntax check (WSL launcher or none)")
         out = generate_bash(_make_parser())
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".bash", delete=False) as f:
+        # Explicit UTF-8 + LF: the platform-default text mode can write
+        # UTF-16 / CRLF on Windows, and `bash -n` chokes on both — a
+        # file-encoding artifact, not a real syntax failure of the
+        # generated script.
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".bash", delete=False, encoding="utf-8", newline="\n"
+        ) as f:
             f.write(out)
             path = f.name
         try:
-            result = subprocess.run(["bash", "-n", path], capture_output=True)
-            assert result.returncode == 0, result.stderr.decode()
+            result = subprocess.run(
+                [bash, "-n", path], capture_output=True, timeout=60
+            )
+            assert result.returncode == 0, result.stderr.decode(errors="replace")
         finally:
             os.unlink(path)
 

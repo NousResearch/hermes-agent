@@ -585,7 +585,13 @@ class GatewaySessionCommandsMixin:
                 return describe_compression_lock_skip(_lock_skipped)
             if partial and tail:
                 compressed = rejoin_compressed_head_and_tail(compressed, tail)
+            committed_rewrite = (
+                tmp_agent.session_id != session_entry.session_id
+                or bool(getattr(tmp_agent, "_last_compaction_in_place", False))
+            )
             await self._persist_manual_compression(tmp_agent, session_entry, source, compressed)
+            if committed_rewrite:
+                self._arm_astra_segment_reset(session_key)
             finalize_context_engine_compression_notification(tmp_agent, committed=True)
             new_tokens = estimate_request_tokens_rough(compressed, system_prompt=_sys_prompt, tools=_tools)
             summary = summarize_manual_compression(msgs, compressed, approx_tokens, new_tokens,

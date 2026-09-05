@@ -64,6 +64,13 @@ def _reset_retry_state_after_compaction(agent: Any) -> None:
     agent._mute_post_response = False
 
 
+def _reset_astra_segment_after_compaction(agent: Any) -> None:
+    """Start a fresh Astra cache-compatible effort segment after a committed rewrite."""
+    from agent.turn_iteration_prep import _reset_astra_segment
+
+    _reset_astra_segment(agent)
+
+
 def _blocked_compress_reason(
     compressor: Any, tokens: int, attempts_spent: Optional[int] = None
 ) -> Optional[str]:
@@ -202,6 +209,7 @@ def _idle_compaction(
     # ``_compress_context`` returns the INPUT list object when it skips; only
     # re-baseline and re-anchor after a real compaction.
     if out.messages is not messages:
+        _reset_astra_segment_after_compaction(agent)
         out.conversation_history = conversation_history_after_compression(
             agent, out.messages, out.conversation_history
         )
@@ -368,6 +376,7 @@ def _run_preflight_passes(
     if _preflight_status:
         agent._emit_status(_preflight_status)
     _max_preflight_passes = max(1, int(getattr(agent, "max_compression_attempts", 3) or 3))
+    _astra_segment_reset = False
     for _pass in range(_max_preflight_passes):
         _preflight_input = out.messages
         _orig_len = len(_preflight_input)
@@ -400,6 +409,9 @@ def _run_preflight_passes(
             _tc._fail_closed_after_preflight_timeout(agent, _preflight_tokens)
             out.blocked = True
             break  # Cannot compress further: neither rows nor tokens moved
+        if not _astra_segment_reset:
+            _reset_astra_segment_after_compaction(agent)
+            _astra_segment_reset = True
         out.conversation_history = conversation_history_after_compression(
             agent, out.messages, out.conversation_history
         )
@@ -454,6 +466,7 @@ def _engine_preflight_maintenance(
     # may no-op; re-baseline/re-anchor only after a REAL compaction.
     if out.messages is not _engine_input:
         out.compressed = True
+        _reset_astra_segment_after_compaction(agent)
         out.conversation_history = conversation_history_after_compression(
             agent, out.messages
         )

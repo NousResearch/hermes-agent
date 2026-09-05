@@ -7,7 +7,9 @@ from unittest.mock import MagicMock, patch
 from agent.turn_context_compaction import (
     CompactionOutcome,
     _codex_native_auto_compaction,
+    _idle_compaction,
     _rearm_uncompressed_overflow_warn,
+    _run_preflight_passes,
     run_turn_start_compaction,
 )
 
@@ -78,3 +80,63 @@ def test_preflight_gate_skips_small_transcripts():
     est.assert_not_called()
     agent.context_compressor.should_compress.assert_not_called()
     assert out.messages is msgs
+
+
+def test_idle_compaction_resets_astra_segment_only_after_real_rewrite():
+    messages = [{"role": "user", "content": "old"}]
+    compressed = [{"role": "assistant", "content": "summary"}]
+    compressor = SimpleNamespace(
+        threshold_tokens=100, summary_target_ratio=0.5,
+        get_active_compression_failure_cooldown=lambda: None,
+        last_compression_rough_tokens=0,
+    )
+    agent = _agent(
+        compression_enabled=True, compression_idle_compact_after_seconds=1,
+        _last_activity_ts=0, context_compressor=compressor,
+        _emit_status=MagicMock(), _compress_context=MagicMock(return_value=(compressed, "sys")),
+    )
+    out = CompactionOutcome(
+        messages=messages, active_system_prompt="sys", conversation_history=list(messages),
+        current_turn_user_idx=0,
+    )
+    with (
+        patch("agent.turn_context._preflight_request_tokens", return_value=1_000),
+        patch("agent.turn_context._should_idle_compact", return_value=True),
+        patch("agent.turn_context_compaction.automatic_compaction_status_message", return_value=None),
+        patch("agent.turn_context_compaction.conversation_history_after_compression", return_value=compressed),
+        patch("agent.turn_context_compaction._reset_astra_segment_after_compaction") as reset,
+        patch("agent.turn_context_compaction._reanchor", return_value=0),
+    ):
+        _idle_compaction(agent, out, "sys", "old", "task")
+
+    reset.assert_called_once_with(agent)
+
+
+def test_preflight_compaction_resets_astra_segment_once_across_passes():
+    messages = [
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "long"},
+    ]
+    compressed = [{"role": "assistant", "content": "summary"}]
+    compressor = SimpleNamespace(
+        threshold_tokens=100, context_length=1_000,
+        should_compress=MagicMock(return_value=False),
+    )
+    agent = _agent(
+        compression_enabled=True, context_compressor=compressor, max_compression_attempts=2,
+        _emit_status=MagicMock(), _compress_context=MagicMock(return_value=(compressed, "sys")),
+    )
+    out = CompactionOutcome(
+        messages=messages, active_system_prompt="sys", conversation_history=list(messages),
+        current_turn_user_idx=0,
+    )
+    with (
+        patch("agent.turn_context._preflight_request_tokens", return_value=50),
+        patch("agent.turn_context.compression_made_progress", return_value=True),
+        patch("agent.turn_context_compaction.automatic_compaction_status_message", return_value=None),
+        patch("agent.turn_context_compaction.conversation_history_after_compression", return_value=compressed),
+        patch("agent.turn_context_compaction._reset_astra_segment_after_compaction") as reset,
+    ):
+        _run_preflight_passes(agent, out, compressor, 1_000, "sys", "task")
+
+    reset.assert_called_once_with(agent)

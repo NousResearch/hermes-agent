@@ -1106,6 +1106,15 @@ class TurnRunner:
         agent.notice_clear_callback = None  # sends can't be retracted
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
+        state = runner._peek_session_state(ctx.session_key)
+        conversation = state.conversation if state is not None else None
+        if conversation is not None and getattr(conversation, "astra_force_new_segment", False):
+            from agent.turn_iteration_prep import _reset_astra_segment
+
+            agent._astra_base_effort = conversation.base_effort
+            agent._astra_effective_effort = conversation.effective_effort
+            _reset_astra_segment(agent)
+            conversation.astra_force_new_segment = False
         self._merge_turn_request_overrides(agent, turn_route)
         # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never
         # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.

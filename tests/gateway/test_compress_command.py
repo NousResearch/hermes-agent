@@ -75,6 +75,7 @@ async def test_compress_command_works_when_auto_compaction_disabled():
         history[-1],
     ]
     runner = _make_runner(history)
+    runner._arm_astra_segment_reset = MagicMock()
     agent_instance = MagicMock()
     agent_instance.shutdown_memory_provider = MagicMock()
     agent_instance.close = MagicMock()
@@ -83,6 +84,7 @@ async def test_compress_command_works_when_auto_compaction_disabled():
     agent_instance.compression_enabled = False
     agent_instance.context_compressor.has_content_to_compress.return_value = True
     agent_instance.session_id = "sess-1"
+    agent_instance._last_compaction_in_place = True
     agent_instance._compress_context.return_value = (compressed, "")
     # Explicit non-lock-skip: MagicMock getattr would return a truthy mock.
     agent_instance._compression_skipped_due_to_lock = False
@@ -102,6 +104,7 @@ async def test_compress_command_works_when_auto_compaction_disabled():
     assert "Compressed:" in result
     agent_instance._compress_context.assert_called_once()
     assert agent_instance._compress_context.call_args.kwargs.get("force") is True
+    runner._arm_astra_segment_reset.assert_called_once_with(build_session_key(_make_source()))
 
 
 @pytest.mark.asyncio

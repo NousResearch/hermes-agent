@@ -191,9 +191,13 @@ class GatewayConfigLoadersMixin:
             return
         # Per-session field write: a lazy ``_session_reasoning_overrides = {}`` init replaced the
         # WHOLE dict, racing concurrent sessions; a SessionState field reset cannot cross sessions.
-        self._session_state(session_key).conversation.reasoning_override = (
-            None if reasoning_config is None else dict(reasoning_config)
-        )
+        conversation = self._session_state(session_key).conversation
+        conversation.reasoning_override = None if reasoning_config is None else dict(reasoning_config)
+        # ``slash_commands_model`` intentionally delegates cache ownership to
+        # ``_evict_cached_agent``.  Record the reason for that call so the cache layer can
+        # retain an eligible Astra agent for an effort-only change while still evicting
+        # on /new, /model, and all other callers of the generic method.
+        conversation.reasoning_change_requested = True
 
     def _resolve_session_service_tier(self, source=None, session_key: Optional[str] = None) -> Optional[str]:
         """Effective service tier: a session-scoped /fast override beats the config default.

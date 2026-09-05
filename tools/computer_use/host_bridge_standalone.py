@@ -244,7 +244,9 @@ def main() -> None:
     parser.add_argument("--bind", default="127.0.0.1", help="Bind address (default 127.0.0.1)")
     parser.add_argument("--allowed-hosts", required=True, help="Comma-separated allowed Host headers")
     parser.add_argument("--allowed-origins", required=True, help="Comma-separated allowed Origin headers")
-    parser.add_argument("--session-idle-timeout", type=int, default=300, help="Session idle timeout in seconds")
+    # MCP recommendation for interactive sessions: long model turns must not be
+    # reaped mid-call. Matches create_host_bridge_app's default.
+    parser.add_argument("--session-idle-timeout", type=int, default=1800, help="Session idle timeout in seconds")
     args = parser.parse_args()
 
     # Validate everything cheap and fail-closed BEFORE spawning any X stack, so

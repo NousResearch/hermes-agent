@@ -244,7 +244,9 @@ class GatewayGoalsMixin:
         _bg_procs = None
         with suppress(Exception):
             from hermes_cli.goals import gather_background_processes as _gather_bg
-            _bg_procs = _gather_bg()
+            # Only THIS session's processes (gateway turns register under turn_ctx.session_id):
+            # subagents' pollers must not park the parent's goal.
+            _bg_procs = _gather_bg(owner_task_id=getattr(session_entry, "session_id", None) or None)
 
         # judge_goal() is a synchronous aux-LLM HTTP call (10-40 s; would block Discord heartbeats).
         # _run_in_executor_with_context carries the profile secret scope / aux runtime contextvars

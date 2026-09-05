@@ -145,6 +145,21 @@ def _systemd_scope_cached() -> Optional[bool]:
     return None if _SYSTEMD_SCOPE_AVAILABLE is None or stale else False
 
 
+def _portable_true_binary() -> str:
+    """Resolve a usable ``true`` binary, tolerant of NixOS (no /bin/true)."""
+    import shutil as _shutil
+    for candidate in (
+        _shutil.which("true"),
+        "/run/current-system/sw/bin/true",
+        "/usr/bin/true",
+        "/bin/true",
+    ):
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return "/bin/true"  # fallback — will fail on NixOS but at least won't crash import
+
+
+
 def _systemd_run_user_scope_available() -> bool:
     """True if ``systemd-run --user --scope`` can create a cgroup.
     ``shutil.which`` alone is insufficient: system services and containers may lack
@@ -170,7 +185,8 @@ def _systemd_run_user_scope_available() -> bool:
                     # Unique unit avoids collisions; the timeout bounds D-Bus.
                     probe_unit = f"hermes-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
                     result = subprocess.run(
-                        _systemd_scope_argv(binary, probe_unit, "/bin/true"), capture_output=True, timeout=3,
+                        _systemd_scope_argv(binary, probe_unit, _portable_true_binary()),
+                        capture_output=True, timeout=3,
                     )
                     available = result.returncode == 0
                     if not available:

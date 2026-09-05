@@ -302,6 +302,7 @@ import {
   runPrimaryBackendStartup
 } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
+import { PrimaryProfilePin } from './primary-profile-pin'
 import {
   assertLocalProfileCanStart,
   decideProfileDeleteAction,
@@ -11224,6 +11225,8 @@ function resetHermesConnection({ soft = false } = {}) {
   backendStartFailure = null
   remoteReauthFailure = null
   remoteLiveness.clear()
+  // The next startHermes() re-reads active-profile.json for its launch profile.
+  primaryProfilePin.clear()
   const hermesProcess = backendConnectionState.invalidate()
   stopBackendChild(hermesProcess)
 
@@ -11333,11 +11336,13 @@ async function waitForBackendExit(child, timeoutMs = 5000) {
   await wait(1000)
 }
 
-// The profile the primary (window) backend runs as. readActiveDesktopProfile()
-// returns the desktop's stored preference, or null when unset (legacy launch
-// that defers to active_profile / default).
+// The profile the primary (window) backend was actually LAUNCHED as. Pinned by
+// startHermes() and cleared when the primary is torn down; while a primary is
+// live this must NOT follow active-profile.json (see primary-profile-pin.ts).
+const primaryProfilePin = new PrimaryProfilePin()
+
 function primaryProfileKey() {
-  return readActiveDesktopProfile() || 'default'
+  return primaryProfilePin.resolve(readActiveDesktopProfile)
 }
 
 // Options describing the current connection setup for `resolveProfileBackendRoute`.
@@ -12797,6 +12802,9 @@ async function startHermes() {
 
   const connectionAttempt = backendConnectionState.startAttempt()
   const primaryProfile = primaryProfileKey()
+  // Pin the routing table to the profile this primary actually boots as; a
+  // later hermes:profile:remember must not retarget requests mid-life.
+  primaryProfilePin.pin(primaryProfile)
 
   // Legacy path callers without an explicit profile belong to the primary
   // window backend. Profile-scoped callers still pass their key directly.

@@ -478,8 +478,14 @@ def _convert_content_to_converse(content) -> List[Dict]:
         elif isinstance(part, dict) and part.get("type", "") == "text":
             blocks.append({"text": _safe_text(part.get("text", ""))})
         elif isinstance(part, dict) and part.get("type", "") == "image_url":
+            # ``image_url`` may be a dict ({"url": ...}) or, for some producers, a bare URL
+            # string. A dict whose ``url`` is null or a non-string must not reach
+            # ``url.startswith`` — that raises AttributeError and aborts the whole message
+            # conversion. The Gemini and Codex converters already tolerate both shapes.
             image_url = part.get("image_url", {})
-            url = image_url.get("url", "") if isinstance(image_url, dict) else ""
+            url = image_url.get("url") if isinstance(image_url, dict) else image_url
+            if not isinstance(url, str):
+                url = ""
             blocks.append(_image_block_from_data_url(url) if url.startswith("data:") else {"text": f"[Image: {url}]"})
     return blocks or [dict(_PLACEHOLDER_BLOCK)]
 

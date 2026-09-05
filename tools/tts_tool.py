@@ -325,15 +325,98 @@ def _tool_failure(prefix: str, provider: str, exc: BaseException) -> str:
     return tool_error(error_msg, success=False)
 
 
+def _build_fallback_entries(provider: str, tts_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Normalize ``tts.fallback`` into a list of {provider, model} entries.
+
+    Entries may be plain provider names ("edge") or dicts carrying a model
+    override for the same provider (e.g. gemini -> older gemini model).
+    Entries that would retry the exact primary provider+model are dropped.
+    """
+    raw = tts_config.get("fallback") or []
+    entries: List[Dict[str, Any]] = []
+    for item in raw:
+        if isinstance(item, str):
+            p = item.strip().lower()
+            if p:
+                entries.append({"provider": p})
+        elif isinstance(item, dict):
+            p = str(item.get("provider") or "").strip().lower()
+            if p:
+                entry: Dict[str, Any] = {"provider": p}
+                if item.get("model"):
+                    entry["model"] = str(item["model"]).strip()
+                entries.append(entry)
+    # Drop pointless self-retries (same provider, no model override).
+    return [e for e in entries if not (e["provider"] == provider and not e.get("model"))]
+
+
+def _fallback_config_with_model(tts_config: Dict[str, Any], entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a config copy with the fallback entry's model override applied."""
+    if not entry.get("model"):
+        return tts_config
+    cfg = dict(tts_config)
+    gemini = dict(cfg.get("gemini") or {})
+    gemini["model"] = entry["model"]
+    cfg["gemini"] = gemini
+    return cfg
+
+
 def _text_to_speech_single(
     text: str, file_str: str, *, provider: str, tts_config: Dict[str, Any],
     command_provider_config: Optional[Dict[str, Any]], want_opus: bool, instructions: Optional[str],
+    _fallback_chain: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Synthesize one provider-safe chunk into *file_str*; returns the result envelope.
 
     Command providers resolve BEFORE built-in dispatch, but built-in names short-circuit so
     ``tts.providers.openai.command`` can't shadow OpenAI. Plugins fire only for names that are
     neither; a None return falls through to built-in dispatch (unknown -> Edge default)."""
+    # Automatic fallback chain (tts.fallback): try the primary provider, then
+    # each configured entry in order. Recursion depth is bounded by the chain
+    # length; every recursive call passes _fallback_chain=[] so the normal
+    # single-provider body executes exactly once per attempt.
+    if _fallback_chain is None:
+        _fallback_chain = _build_fallback_entries(provider, tts_config)
+    if _fallback_chain:
+        attempts = [(provider, tts_config)] + [
+            (entry.get("provider") or provider, _fallback_config_with_model(tts_config, entry))
+            for entry in _fallback_chain
+        ]
+        last_error = "unknown"
+        for i, (attempt_provider, attempt_cfg) in enumerate(attempts):
+            if file_str and os.path.exists(file_str):
+                try:
+                    os.remove(file_str)
+                except OSError:
+                    pass
+            result = _text_to_speech_single(
+                text,
+                file_str,
+                provider=attempt_provider,
+                tts_config=attempt_cfg,
+                command_provider_config=_resolve_command_provider_config(attempt_provider, attempt_cfg),
+                want_opus=want_opus,
+                instructions=instructions,
+                _fallback_chain=[],
+            )
+            try:
+                parsed = json.loads(result) if isinstance(result, str) else result
+            except Exception:
+                parsed = None
+            if parsed is not None and parsed.get("success") is False:
+                last_error = parsed.get("error") or str(parsed)
+                logger.warning(
+                    "TTS attempt %s failed (%s); %s",
+                    attempt_provider, last_error,
+                    "trying next fallback" if i < len(attempts) - 1 else "no fallbacks left",
+                )
+                continue
+            return result
+        return json.dumps({
+            "success": False,
+            "error": f"All TTS providers failed. Last error: {last_error}",
+        }, ensure_ascii=False)
+
     try:
         if command_provider_config is not None:
             logger.info("Generating speech with command TTS provider '%s'...", provider)

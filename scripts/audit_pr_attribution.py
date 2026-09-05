@@ -33,6 +33,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from add_contributor import find_mapping_file  # noqa: E402
+
 SKIP_SUBSTRINGS = (
     "teknium",
     "noreply@github.com",
@@ -66,7 +69,14 @@ def is_mapped(email: str) -> bool:
         return True
     if ID_NOREPLY_RE.search(email):
         return True
-    if (REPO_ROOT / "contributors" / "emails" / email).is_file():
+    # Case-insensitive on purpose, via the same helper add_contributor.py uses
+    # so the two cannot drift. Email hostnames are case-insensitive per DNS, so
+    # a mapping file whose name differs only by case already covers this
+    # address. Answering False here would send --fix to add_contributor.py,
+    # which now refuses a variant spelling (the two files cannot coexist on a
+    # macOS/Windows checkout) — leaving this audit looping on an address it can
+    # never create a file for.
+    if find_mapping_file(email, REPO_ROOT / "contributors" / "emails") is not None:
         return True
     release_py = REPO_ROOT / "scripts" / "release.py"
     try:

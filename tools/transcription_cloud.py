@@ -137,7 +137,9 @@ def _transcribe_openai(
             if language:
                 # gpt-transcribe takes a ``languages`` list and rejects the legacy field.
                 if model_name == "gpt-transcribe":
-                    create_kwargs["extra_body"] = {"languages": [language]}
+                    # Preserve comma-separated hints as separate expected languages.
+                    languages = [code.strip() for code in language.split(",") if code.strip()]
+                    create_kwargs["extra_body"] = {"languages": languages}
                 else:
                     create_kwargs["language"] = language
                 logger.debug("Using language hint '%s' for OpenAI STT", language)

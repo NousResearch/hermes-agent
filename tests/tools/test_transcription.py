@@ -180,6 +180,94 @@ class TestTranscribeOpenAI:
         assert "language" not in mock_client.audio.transcriptions.create.call_args.kwargs
 
 
+    @pytest.mark.parametrize("language", ["en,fi", "en, fi", "en"])
+    @pytest.mark.parametrize("source", ["config", "override"])
+    def test_gpt_transcribe_splits_expected_languages(self, monkeypatch, tmp_path, language, source):
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = {"text": "Hello"}
+        config = {"openai": {"language": language if source == "config" else ""}}
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_cloud import _transcribe_openai
+            result = _transcribe_openai(
+                str(audio_file), "gpt-transcribe",
+                language=language if source == "override" else None,
+            )
+        assert result["success"] is True
+        kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
+        expected = ["en"] if language == "en" else ["en", "fi"]
+        assert kwargs["extra_body"] == {"languages": expected}
+        assert "language" not in kwargs
+
+
+    @pytest.mark.parametrize(("model", "language", "expected"), [
+        ("gpt-transcribe", "en,fi", {"languages[]": ["en", "fi"]}),
+        ("gpt-transcribe", " en, fi, ", {"languages[]": ["en", "fi"]}),
+        ("gpt-transcribe", "en", {"languages[]": ["en"]}),
+        ("gpt-transcribe", "", {}),
+        ("whisper-1", "fi", {"language": ["fi"]}),
+        ("gpt-4o-transcribe", "fi", {"language": ["fi"]}),
+    ])
+    def test_language_hints_reach_multipart_request(self, monkeypatch, tmp_path, model, language, expected):
+        import wave
+        from email import policy
+        from email.parser import BytesParser
+
+        import httpx
+        import openai
+        import yaml
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
+        monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({"stt": {
+            "enabled": True, "provider": "openai", "language": "",
+            "cloud_trim_silence": False,
+            "openai": {"model": model, "language": language},
+        }}), encoding="utf-8")
+        audio_file = tmp_path / "test.wav"
+        with wave.open(str(audio_file), "wb") as audio:
+            audio.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+            audio.writeframes(b"\x00\x00" * 16000)
+        requests = []
+
+        def respond(request):
+            message = BytesParser(policy=policy.default).parsebytes(
+                f"Content-Type: {request.headers['content-type']}\r\n\r\n".encode()
+                + request.read()
+            )
+            fields = {}
+            for part in message.iter_parts():
+                name = part.get_param("name", header="content-disposition")
+                if name != "file":
+                    payload = part.get_payload(decode=True)
+                    assert isinstance(payload, bytes)
+                    fields.setdefault(name, []).append(payload.decode())
+            requests.append(fields)
+            if fields["response_format"] == ["text"]:
+                return httpx.Response(200, text="test transcript")
+            return httpx.Response(200, json={"text": "test transcript"})
+
+        real_openai = openai.OpenAI
+        monkeypatch.setattr(openai, "OpenAI", lambda **kwargs: real_openai(
+            **kwargs, http_client=httpx.Client(transport=httpx.MockTransport(respond)),
+        ))
+        from tools.transcription_tools import transcribe_audio
+        result = transcribe_audio(str(audio_file))
+
+        assert result["success"] is True, result
+        assert result["transcript"] == "test transcript"
+        assert len(requests) == 1
+        assert requests[0]["model"] == [model]
+        actual = {key: values for key, values in requests[0].items()
+                  if key in ("language", "languages", "languages[]")}
+        assert actual == expected
+
+
 # ---------------------------------------------------------------------------
 # Main transcribe_audio() dispatch
 # ---------------------------------------------------------------------------

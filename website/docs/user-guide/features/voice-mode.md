@@ -474,6 +474,26 @@ tts:
     device: cpu
 ```
 
+### Multiple language hints with OpenAI
+
+With `gpt-transcribe`, the Python STT backend accepts comma-separated expected
+languages in the existing `stt.openai.language` setting:
+
+```yaml
+stt:
+  provider: openai
+  openai:
+    model: gpt-transcribe
+    language: "en,fi"
+```
+
+Hermes sends these as `languages: ["en", "fi"]`, as required by the
+[OpenAI transcription API](https://developers.openai.com/api/docs/guides/speech-to-text#add-transcription-context).
+These are hints, not output-language restrictions. This multi-language syntax is
+specific to `gpt-transcribe`; `whisper-1` and `gpt-4o-transcribe` still take a
+single language code. To use automatic detection, leave both the provider-specific
+hint and `stt.language` blank, with no `HERMES_LOCAL_STT_LANGUAGE` override.
+
 ### Environment Variables
 
 ```bash

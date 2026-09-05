@@ -412,3 +412,58 @@ async def test_shutdown_notifications_are_fully_muted_when_flag_disabled():
     adapter.send.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_home_channel_startup_notification_logs_when_no_home_channel(
+    tmp_path, monkeypatch, caplog
+):
+    """A platform with no configured home channel logs why it is skipped.
+
+    Regression for #93122: the skip branches in
+    ``_home_channel_transports`` were silent, so a missing home channel was
+    indistinguishable from a delivery failure.
+    """
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, _adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = None
+
+    with caplog.at_level("DEBUG", logger="gateway.run"):
+        delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == set()
+    assert any(
+        "telegram" in rec.message and "home channel" in rec.message.lower()
+        for rec in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_home_channel_startup_notification_logs_when_no_transport(
+    tmp_path, monkeypatch, caplog
+):
+    """A platform with a home channel but no live transport logs why.
+
+    Regression for #93122: when ``resolve_delivery_transport`` returns None the
+    old code skipped silently, hiding the failure.
+    """
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, _adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="parent-42",
+        name="Ops",
+    )
+    # No live adapter for TELEGRAM -> resolve_delivery_transport returns None.
+    runner.adapters = {}
+
+    with caplog.at_level("INFO", logger="gateway.run"):
+        delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == set()
+    assert any(
+        "telegram" in rec.message and "transport" in rec.message.lower()
+        for rec in caplog.records
+    )
+
+

@@ -652,9 +652,18 @@ class GatewayNotificationsMixin:
         for platform, platform_cfg in self.config.platforms.items():
             home = platform_cfg.home_channel
             if not home or not home.chat_id:
+                logger.debug(
+                    "Home-channel notification skipped: %s has no configured home channel",
+                    platform.value,
+                )
                 continue
             transport = resolve_delivery_transport(platform, self.config, self.adapters)
             if transport is None:
+                logger.info(
+                    "Home-channel notification skipped: %s home channel %s has no live delivery transport",
+                    platform.value,
+                    home.chat_id,
+                )
                 continue
             yield platform, platform_cfg, home, transport
 

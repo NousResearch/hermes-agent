@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+from hermes_cli._subprocess_compat import bounded_probe_run
 from hermes_cli.doctor_platform import _system_package_install_cmd
 from hermes_cli.doctor_report import Finding, _fail_and_issue, check_bool, check_info, check_ok, check_warn, doctor_check
 from hermes_cli.vercel_auth import describe_vercel_auth
@@ -361,8 +362,13 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues
     import json
     try:
         # Resolved absolute path so Windows can execute npm.cmd (CreateProcessW can't run bare .cmd names).
-        audit_result = subprocess.run([npm_bin, "audit", "--json", *audit_extra], cwd=str(npm_dir),
-                                      capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
+        audit_result = bounded_probe_run(
+            [npm_bin, "audit", "--json", *audit_extra],
+            cwd=str(npm_dir),
+            timeout=30,
+        )
+        if audit_result is None:
+            return
         audit_data = json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
         counts = audit_data.get("metadata", {}).get("vulnerabilities", {})
         critical, high, moderate = (counts.get(k, 0) for k in ("critical", "high", "moderate"))

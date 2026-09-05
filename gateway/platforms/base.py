@@ -3250,7 +3250,7 @@ class BasePlatformAdapter(ABC):
         return result
 
     def _can_merge_text_debounce_events(self, existing: MessageEvent, event: MessageEvent) -> bool:
-        """Return True when two text debounce events came from the same sender."""
+        """Return True when sender and full reply context are identical."""
 
         def _identity(candidate: MessageEvent) -> tuple[str, ...] | None:
             source = getattr(candidate, "source", None)
@@ -3263,8 +3263,22 @@ class BasePlatformAdapter(ABC):
             if getattr(source, "chat_type", None) in {"dm", "private"} and getattr(source, "chat_id", None):
                 return (platform, "dm", str(source.chat_id))
             return None
+        def _reply_context(candidate: MessageEvent) -> tuple[Any, ...]:
+            return (
+                candidate.reply_to_message_id,
+                candidate.reply_to_text,
+                candidate.reply_to_author_id,
+                candidate.reply_to_author_name,
+                bool(candidate.reply_to_is_own_message),
+            )
+
         existing_sender = _identity(existing)
-        return existing_sender is not None and existing_sender == _identity(event)
+        incoming_sender = _identity(event)
+        return (
+            existing_sender is not None
+            and existing_sender == incoming_sender
+            and _reply_context(existing) == _reply_context(event)
+        )
 
     def _text_debounce_delay(self, session_key: str) -> float:
         """Return bounded busy-text debounce delay for ``session_key``."""
@@ -3297,11 +3311,10 @@ class BasePlatformAdapter(ABC):
             if event.text:
                 state.event.text = _append_text(state.event.text, event.text)
             latest_message_id = getattr(event, "message_id", None)
-            latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
             if latest_message_id is not None:
+                # Responses should anchor to the latest inbound message, while
+                # reply_to_* remains the user's original quote/author context.
                 state.event.message_id = str(latest_message_id)
-            if latest_anchor is not None and hasattr(state.event, "reply_to_message_id"):
-                state.event.reply_to_message_id = str(latest_anchor)
             state.last_ts = now
         state.cancel_timer()
         delay = self._text_debounce_delay(session_key)

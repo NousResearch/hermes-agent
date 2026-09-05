@@ -233,8 +233,13 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
     def _resolve_session_key(self, cfg, session_id: str, **kwargs) -> str:
         """Resolve the Honcho session key without touching the network."""
+        from agent.runtime_cwd import resolve_agent_cwd
+
+        cwd = kwargs.get("cwd") or str(resolve_agent_cwd())
         return cfg.resolve_session_name(
+            cwd=cwd,
             session_title=kwargs.get("session_title"), session_id=session_id,
+            session_title_source=kwargs.get("session_title_source"),
             gateway_session_key=kwargs.get("gateway_session_key"),
         ) or session_id or "hermes-default"
 

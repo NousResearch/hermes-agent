@@ -139,6 +139,14 @@ When pointing Hermes at a self-hosted Honcho server, `hermes honcho setup` (and 
 - `per-repo` — one session per git repository.
 - `global` — single session across all directories.
 
+Directory-based strategies and manual `sessions` mappings use the logical session working directory, not the backend's launch directory. Desktop/TUI project workspaces and ACP session directories are passed during agent construction, including deferred builds. When no directory is supplied, Honcho uses the runtime cwd resolver: session context, then the scoped `terminal.cwd` setting, then the process launch directory.
+
+Messaging gateways keep their stable per-chat session key regardless of strategy or title. For other sessions, `per-session` identity takes priority, followed by a manual directory mapping, an explicit title, and the configured strategy.
+
+Automatically generated Hermes titles (`derived` or `llm`), including lineage titles for Desktop branches, are display metadata and do not override `sessionStrategy`. An explicit user title remains an intentional session-name override for non-gateway, non-`per-session` sessions without a manual mapping.
+
+Sessions created before title provenance was recorded retain legacy behavior: because an old automatic title cannot be distinguished from an old user title, a title with no source is treated as an explicit override.
+
 **Recall mode** controls how memory flows into conversations:
 - `hybrid` — context auto-injected into system prompt AND tools available (model decides when to query).
 - `context` — auto-injection only, tools hidden.

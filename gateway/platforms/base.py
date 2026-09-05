@@ -1140,8 +1140,18 @@ def _validated_delivery_path(raw_path, session_key: str, label: str) -> Optional
         from gateway.media_fetch import fetch_remote_media
         safe_path = fetch_remote_media(raw)
     if not safe_path:
-        logger.warning("Skipping unsafe %s: %s", label, _log_safe_path(raw))
+        # Say WHY: a path that does not exist on the host is the common case (a model hallucinated or
+        # a sandbox path failed to translate) and is not a security rejection.
+        reason = "not found on this host" if not _existing_regular_file(raw) else "denied by the delivery policy"
+        logger.warning("Skipping %s (%s): %s", label, reason, _log_safe_path(raw))
     return safe_path
+
+
+def _existing_regular_file(raw: str) -> bool:
+    try:
+        return Path(os.path.expanduser(raw)).is_file()
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 SUPPORTED_DOCUMENT_TYPES = {

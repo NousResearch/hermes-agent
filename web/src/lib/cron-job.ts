@@ -39,6 +39,23 @@ function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+/** Describe the model assignment shown on a cron card. */
+export function cronJobModelDisplay(
+  job: Pick<CronJob, "provider" | "model">,
+): string {
+  const provider = asString(job.provider).trim();
+  const model = asString(job.model).trim();
+  if (provider && model) return `${provider}/${model}`;
+  return model || provider || "default";
+}
+
+/** Return a normalized endpoint override when the job has one. */
+export function cronJobBaseUrlDisplay(
+  job: Pick<CronJob, "base_url">,
+): string {
+  return asString(job.base_url).trim();
+}
+
 /** Build the create/update payload. Optional fields collapse to null so an
  * update explicitly clears them rather than leaving stale values. */
 export function buildCronJobPayload(form: CronJobFormState): CronJobMutation {

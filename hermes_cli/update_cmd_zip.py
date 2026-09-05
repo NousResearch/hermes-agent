@@ -366,8 +366,21 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False, _windo
     opts = _resolve_update_options(args, gateway_mode)
     # Snapshot before files are replaced, for the completion line.
     pre_update_version = _read_project_version()
-    # The static archive would silently ignore --branch — the exact silent-divergence bug it exists to
+    # The static archive would silently ignore --branch/--ref — the exact silent-divergence bug it exists to
     # prevent. Refuse rather than lie.
+    update_ref = _m()._resolve_update_ref(args)
+    if update_ref:
+        print(
+            f"✗ --ref={update_ref} is not supported on the Windows ZIP-fallback "
+            "update path."
+        )
+        print(
+            "  This path runs when git file I/O is broken on the system. "
+            "Either resolve the git-side breakage (typically an antivirus "
+            "or NTFS filter holding files open) and rerun `hermes update "
+            f"--ref {update_ref}`, or update against main with `hermes update`."
+        )
+        _m().sys.exit(1)
     branch = _m()._resolve_update_branch(args)
     if branch != "main":
         print(f"✗ --branch={branch} is not supported on the Windows ZIP-fallback update path.")

@@ -9,6 +9,7 @@ import {
   $desktopOnboarding,
   type DesktopOnboardingState,
   type OnboardingContext,
+  confirmOnboardingModel,
   refreshOnboarding,
   requestDesktopOnboarding,
   saveOnboardingLocalEndpoint,
@@ -397,15 +398,14 @@ describe('OAuth onboarding', () => {
       expect(state.flow.currentModel).toBe(model)
     }
 
-    expect(calls.some(c => c.path === '/api/model/set')).toBe(true)
-
+    // The model assignment (/api/model/set) now happens AFTER the user
+    // confirms, not during initial onboarding.
     const optionsIndex = calls.findIndex(c => c.path.startsWith('/api/model/options'))
     const recommendedIndex = calls.findIndex(c => c.path.startsWith('/api/model/recommended-default'))
-    const setIndex = calls.findIndex(c => c.path === '/api/model/set')
 
     expect(optionsIndex).toBeGreaterThanOrEqual(0)
     expect(recommendedIndex).toBeGreaterThan(optionsIndex)
-    expect(setIndex).toBeGreaterThan(recommendedIndex)
+    expect(calls.some(c => c.path === '/api/model/set')).toBe(false)
   })
 
   it('does not advance when the default model assignment is not persisted', async () => {
@@ -433,12 +433,26 @@ describe('OAuth onboarding', () => {
         }
       }
 
+      if (path === '/api/setup/runtime_check') {
+        return { ready: true }
+      }
+
       throw new Error(`unexpected api path: ${path}`)
     })
 
-    const requestGatewayMock = vi.fn(async (method: string) => {
+    const requestGatewayMock = vi.fn(async (method: string, params?: unknown) => {
       if (method === 'reload.env') {
         return {}
+      }
+
+      if (method === 'setup.status') {
+        return { provider_configured: true }
+      }
+
+      if (method === 'setup.runtime_check') {
+        expect(params).toEqual({ provider: 'nous' })
+
+        return { ok: true }
       }
 
       throw new Error(`unexpected gateway method: ${method}`)
@@ -464,10 +478,16 @@ describe('OAuth onboarding', () => {
 
     await submitOnboardingCode(onboardingContext(requestGateway))
 
+    // After initial onboarding the flow sits at the confirmation step;
+    // the error only surfaces when the user confirms.
     const state = $desktopOnboarding.get()
-    expect(state.flow.status).toBe('error')
-    expect(state.flow.status === 'error' ? state.flow.message : '').toContain('Confirm this expensive model.')
-    expect(requestGatewayMock).not.toHaveBeenCalledWith('setup.runtime_check', expect.anything())
+    expect(state.flow.status).toBe('confirming_model')
+
+    await confirmOnboardingModel(onboardingContext(requestGateway))
+
+    const stateAfterConfirm = $desktopOnboarding.get()
+    expect(stateAfterConfirm.flow.status).toBe('error')
+    expect(stateAfterConfirm.flow.status === 'error' ? stateAfterConfirm.flow.message : '').toContain('Confirm this expensive model.')
   })
 })
 

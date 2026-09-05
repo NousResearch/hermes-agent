@@ -44,6 +44,10 @@ export type OnboardingFlow =
       providerSlug: string
       saving: boolean
       status: 'confirming_model'
+      // Snapshot of the config before the manual flow started, for
+      // restore on dismiss (fix for #102829).
+      priorProvider?: string
+      priorModel?: string
     }
   | { message: string; provider?: OAuthProvider; start?: OAuthStartResponse; status: 'error' }
 
@@ -338,36 +342,22 @@ async function completeWithModelConfirm(
 
   const defaults = await fetchProviderDefaultModel(preferredSlugs)
 
+  // Defer the model assignment until the user confirms in the confirm-model
+  // screen. This prevents the global default from flipping to the
+  // just-authenticated provider before the user explicitly confirms their
+  // choice (fix for #102829).
   if (defaults) {
-    // Persist the chosen provider/model before the runtime gate so a stale
-    // config provider (e.g. anthropic from a prior failed setup) cannot make
-    // setup.runtime_check validate the wrong backend after a fresh OAuth login.
-    try {
-      const res = await setMainModelAssignment(
-        {
-          provider: defaults.providerSlug,
-          model: defaults.defaultModel
-        },
-        undefined,
-        // Headless automated flow: nothing is mounted to click a guard
-        // prompt, so fail with the message instead of hanging.
-        { skipConfirmPrompt: true }
-      )
+    // Run the runtime check FIRST (before showing the confirm screen) so the
+    // user doesn't get to the confirm step if the provider isn't actually
+    // usable. The confirm screen is only shown when the provider is verified
+    // ready.
+    const runtime = await checkRuntime(ctx, preferredSlugs[0])
 
-      notifyGatewayTools(res.gateway_tools)
-    } catch (error) {
-      onFail(error instanceof Error ? error.message : 'Hermes could not save the selected model.')
+    if (!runtime.ready && !ignoreRuntimeGate) {
+      onFail(runtime.reason)
 
       return
     }
-  }
-
-  const runtime = await checkRuntime(ctx, preferredSlugs[0])
-
-  if (!runtime.ready && !ignoreRuntimeGate) {
-    onFail(runtime.reason)
-
-    return
   }
 
   if (!defaults) {
@@ -379,12 +369,19 @@ async function completeWithModelConfirm(
     return
   }
 
+  // Snapshot the current model/provider for potential restore on dismiss.
+  const current = $desktopOnboarding.get()
+  const priorProvider = current.flow.status === 'confirming_model' ? current.flow.providerSlug : undefined
+  const priorModel = current.flow.status === 'confirming_model' ? current.flow.currentModel : undefined
+
   setFlow({
     status: 'confirming_model',
     providerSlug: defaults.providerSlug,
     currentModel: defaults.defaultModel,
     label: providerLabel,
-    saving: false
+    saving: false,
+    priorProvider,
+    priorModel
   })
 }
 
@@ -520,6 +517,25 @@ export function clearPendingProviderOAuth() {
 // (working) configuration. Only valid in the manual path — the unconfigured
 // first-run flow has no close affordance because the app can't run yet.
 export function closeManualOnboarding() {
+  const { flow } = $desktopOnboarding.get()
+
+  // If we were in the confirming_model state, restore the prior
+  // provider/model snapshotted when the confirm step was shown.
+  // This ensures dismissing the manual flow leaves the previous default
+  // untouched (fix for #102829).
+  if (flow.status === 'confirming_model') {
+    const { priorProvider, priorModel } = flow
+    if (priorProvider || priorModel) {
+      setMainModelAssignment(
+        { provider: priorProvider!, model: priorModel! },
+        undefined,
+        { skipConfirmPrompt: true }
+      ).catch(error => {
+        console.warn('Failed to restore prior model on dismiss:', error)
+      })
+    }
+  }
+
   pendingProviderOAuthId = null
 
   patch({ manual: false, requested: false, localEndpoint: false, flow: { status: 'idle' } })
@@ -975,6 +991,26 @@ export function confirmOnboardingModel(ctx: OnboardingContext) {
   if (flow.status !== 'confirming_model') {
     return
   }
+
+  // Persist the user's confirmed model/provider choice.
+  const { providerSlug, currentModel } = flow
+  return setMainModelAssignment(
+    { provider: providerSlug, model: currentModel },
+    undefined,
+    { skipConfirmPrompt: true }
+  ).then(res => {
+    notifyGatewayTools(res.gateway_tools)
+  }).catch(error => {
+    const message = error instanceof Error ? error.message : String(error)
+    if (message.includes('Confirm this expensive model') || message.includes('confirm_required')) {
+      const { flow } = $desktopOnboarding.get()
+      if (flow.status === 'confirming_model') {
+        setFlow({ status: 'error', message })
+      }
+    } else {
+      console.warn('Failed to persist model assignment after confirm:', error)
+    }
+  })
 
   // No success toast here: the confirm-model screen already showed "<provider>
   // connected." notifyReady is reserved for completion paths that SKIP this

@@ -106,6 +106,9 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
             # Marker inputs read back by _run_prompt_submit: attempt count (crash breaker) and the ORIGINAL prompt (no
             # nested notes). Set here, not at schedule time, so a bail above leaves nothing for a racing user turn.
             session["_auto_continue_attempt"], session["_auto_continue_prompt"] = attempt, marker["prompt"]
+            # No client started this turn — the gateway did, recovering a crash. Mirrored clients see origin
+            # "auto_continue" and know the stream is nobody's typing.
+            session["turn_origin"] = "auto_continue"
         try:
             _emit("status.update", sid, {"kind": "process", "text": "Resuming interrupted turn…"})
             _emit("message.start", sid)
@@ -285,8 +288,18 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         queue_generation = int(session.get("_queued_prompt_generation", 0))
         _ac_set_queue(session, session.get("queued_prompts") or [])
         session["running"] = True
-        if queued.get("transport") is not None:
-            session["transport"] = queued["transport"]
+        queued_transport = queued.get("transport")
+        # The queuer's transport is pinned so the drained turn reaches the client that sent it — but
+        # ATTACHED, not rebound: a mid-turn prompt from a second client used to silence the first for the
+        # whole drained turn. A peer that disconnected while its prompt sat in the queue is skipped: the
+        # prompt still runs, only the dead pin is dropped.
+        if queued_transport is not None:
+            # The drained turn belongs to whoever QUEUED it, not to whoever happened to be driving the
+            # session when it finally fires. The dead-peer skip is about the attach only: a queuer that
+            # dropped while its prompt waited still owns the turn that prompt starts.
+            session["turn_origin"] = _transport_origin(queued_transport)
+            if not _transport_is_dead(queued_transport):
+                _attach_session_transport(session, queued_transport)
     use_compute_host = _session_uses_compute_host(session)
     with session["history_lock"]:
         if int(session.get("_queued_prompt_generation", 0)) != queue_generation:

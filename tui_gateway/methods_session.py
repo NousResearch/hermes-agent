@@ -519,18 +519,21 @@ def _find_live_unpersisted(needle: str, home) -> str:
 
 def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
     """Reattach a LIVE lazy session with no state.db row yet (every fresh Bot Chat; a 404 here killed messaging
-    for never-spoken bots). Rebind the transport and cancel the armed orphan-reap Timer (a WS drop may have
+    for never-spoken bots). Attach the transport and cancel the armed orphan-reap Timer (a WS drop may have
     sentinel-parked the record) or it fires against this client."""
     if ctx.owns_db:
         _release_db(ctx.db)
     live["last_active"] = time.time()
     if (transport := current_transport()) is not None:
         # This resume reattaches the live record. A lazy session (no state.db row yet — every fresh Bot
-        # Chat) that was sentinel-parked by a WS drop MUST be rebound here, or it keeps the drop sentinel
+        # Chat) that was sentinel-parked by a WS drop MUST be reattached here, or it keeps the drop sentinel
         # and the armed orphan-reap Timer fires against a client that is attached right now — the
         # unpersisted sibling of the storm-killer paths (#91276).
         with live.setdefault("history_lock", threading.Lock()):
-            live["transport"] = transport
+            # Attach additively so a second client resuming this live record does not steal the stream
+            # from the one already attached; attaching a live transport also un-parks a sentinel slot,
+            # which is what #91276 needed here.
+            _attach_session_transport(live, transport)
             live.setdefault("viewers", {})[transport] = time.time()
     _cancel_ws_orphan_reap(live_sid)
     history = live.get("history") or []
@@ -629,16 +632,22 @@ def _resume_guard(ctx: _Resume) -> dict | None:
 
 def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> dict:
     """Reattach an already-live session under the resume lock (held across the client-gone check,
-    transport rebind and reap cancel so grace expiry is atomic)."""
+    transport attach and reap cancel so grace expiry is atomic). _live_session_payload ATTACHES this
+    caller alongside the client(s) already streaming instead of taking the slot from them."""
     with _session_resume_lock:
         if _sessions.get(sid) is not session:
             return _err(ctx.rid, 4007, "session no longer live; retry resume")
         if session.get("_client_gone_interrupt_requested"):
             return _err(ctx.rid, 4009, "session disconnect interrupt settling")
         _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
+        caller = current_transport() or _stdio_transport
+        # Read BEFORE the attach below: "watching" means somebody ELSE was already on this session when we
+        # arrived, i.e. this client joined a stream in progress rather than taking the session over.
+        watching = _session_has_live_transport(session, excluding=caller)
         payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
-                                        transport=current_transport() or _stdio_transport)
+                                        transport=caller)
         payload["resumed"] = ctx.target
+        payload["watching"] = watching
         if ctx.defer_history:
             payload.update(messages=[], hydrating=bool(session.get("resume_hydrating")),
                            message_count=int(session.get("resume_message_count") or payload["message_count"]))
@@ -658,10 +667,14 @@ def _resume_response(
         messages = ctx.messages(display)
     if message_count is None:
         message_count = len(count_source) if ctx.omit_messages else len(messages)
+    # Every path that reaches here REGISTERED the live session for this caller — lazy child-watch, deferred,
+    # cold and eager alike — so nobody else was streaming it when the caller arrived. A resume that found a
+    # session already live returns through _resume_reuse_live instead, which computes ``watching`` for real.
     payload = {"session_id": sid, "resumed": ctx.target, "message_count": message_count, "messages": messages,
                **({"messages_omitted": ctx.omit_messages} if hydrating is None else {"hydrating": hydrating}),
                "info": info, "inflight": None, "running": running, "session_key": ctx.target,
-               "started_at": record["created_at"] if started_at is None else started_at, "status": status}
+               "started_at": record["created_at"] if started_at is None else started_at, "status": status,
+               "watching": False}
     if auto_continue is not None:
         payload["auto_continue"] = auto_continue
     return _ok(ctx.rid, _attach_todo_state(payload, record))
@@ -889,10 +902,19 @@ def _(rid, params: dict) -> dict:
 
 @_session_method("session.activate")
 def _(rid, params: dict, session: dict) -> dict:
-    """Attach the frontend to a live TUI session without closing the previously focused one."""
-    return _ok(rid, _live_session_payload(
-        str(params.get("session_id") or ""), session, touch=True, transport=current_transport() or _stdio_transport,
-        omit_messages=is_truthy_value(params.get("omit_messages", False))))
+    """Attach the frontend to a live TUI session without closing the previously focused one.
+
+    _live_session_payload ATTACHES this caller to the session rather than rebinding it, so activating a
+    session someone else is already streaming mirrors it instead of stealing it."""
+    caller = current_transport() or _stdio_transport
+    # Read before the attach, same contract as session.resume: True means this client joined a session
+    # another client is already streaming.
+    watching = _session_has_live_transport(session, excluding=caller)
+    payload = _live_session_payload(
+        str(params.get("session_id") or ""), session, touch=True, transport=caller,
+        omit_messages=is_truthy_value(params.get("omit_messages", False)))
+    payload["watching"] = watching
+    return _ok(rid, payload)
 
 
 @method("session.delete")

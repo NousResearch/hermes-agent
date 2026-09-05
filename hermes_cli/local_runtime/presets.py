@@ -80,7 +80,12 @@ def effective_ctx_cap(launch_overrides: object, model_id: str,
     configured = _override_int(model_overrides, "ctx-size", model_id)
     if configured is None:
         return None
-    return max(min(FLOOR, native_window), min(configured, native_window))
+    minimum = min(FLOOR, native_window)
+    if configured < minimum:
+        logger.warning(
+            "local_runtime.launch_overrides.%s.ctx-size=%s raised to minimum %s",
+            model_id, configured, minimum)
+    return max(minimum, min(configured, native_window))
 
 
 def _cap_window(profile: ModelProfile, budget: HardwareBudget, decision: WindowDecision,

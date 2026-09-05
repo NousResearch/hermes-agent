@@ -321,6 +321,21 @@ def test_launch_overrides_survive_preset_regeneration(hermes_home, tmp_path, mon
         assert ini["tiny-dense"]["ubatch-size"] == "512"
 
 
+def test_context_cap_below_floor_warns_and_uses_floor(caplog):
+    from hermes_cli.local_runtime.context_policy import FLOOR
+    from hermes_cli.local_runtime.presets import effective_ctx_cap
+
+    configured = FLOOR // 2
+    cap = effective_ctx_cap(
+        {"model-a": {"ctx-size": configured}}, "model-a", native_window=FLOOR * 2)
+
+    assert cap == FLOOR
+    assert (
+        f"local_runtime.launch_overrides.model-a.ctx-size={configured} "
+        f"raised to minimum {FLOOR}"
+    ) in caplog.text
+
+
 def test_preset_restores_grown_window_midladder(hermes_home, tmp_path, monkeypatch):
     """The real growth shape: launch at a lower rung, override to a middle
     rung -> the preset window follows the override."""

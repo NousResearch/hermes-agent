@@ -2471,6 +2471,15 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
         # missing provider if it matters.
         print(f"⚠ Plugin discovery failed: {exc}", file=sys.stderr)
 
+    # Register config shell hooks and outbound webhooks for the in-process
+    # dashboard/serve runtime (#102504). Must run AFTER discover_plugins()
+    # so plugin-registered callbacks retain priority over config shell hooks.
+    try:
+        from hermes_cli.config_shell_hooks import register_runtime_config_hooks
+        register_runtime_config_hooks(args)
+    except Exception:
+        logger.debug("Runtime config hooks registration failed at dashboard startup", exc_info=True)
+
     # Desktop chat uses the in-process /api/ws gateway (tui_gateway.server
     # ._make_agent), which only snapshots the tool registry and never starts
     # MCP discovery — so configured MCP servers would never connect. Spawn

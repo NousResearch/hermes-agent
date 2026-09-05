@@ -17,6 +17,12 @@ the redactor regexes so the assertions stay meaningful, but contain no real
 or real-looking key, so secret scanners do not flag this file.
 """
 
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+
 from gateway.run import _redact_approval_command
 
 # Synthetic, scanner-safe credential fixtures. Each matches its redactor
@@ -116,12 +122,40 @@ class TestApprovalCommandWiring:
 
         self._assert_redacts_then_uses(run, "_approval_notify_sync", "send_exec_approval")
 
-    def test_sse_api_path_redacts_before_enqueue(self):
-        from gateway.platforms import api_server_runs
-
-        self._assert_redacts_then_uses(
-            api_server_runs, "_approval_notify", "put_nowait"
+    @pytest.mark.asyncio
+    async def test_sse_api_path_redacts_before_enqueue(self):
+        from gateway.platforms.api_server_runs import (
+            _make_approval_notify,
+            _publish_run_event,
         )
+
+        run_id = "run_redaction"
+        pending = asyncio.Queue()
+        subscriber = asyncio.Queue()
+        adapter = SimpleNamespace(
+            _run_streams={run_id: pending},
+            _run_stream_subscribers={run_id: {subscriber}},
+            _set_run_status=MagicMock(),
+        )
+        run = SimpleNamespace(
+            run_id=run_id,
+            put_event=lambda event: _publish_run_event(
+                adapter, run_id, event, expected_queue=pending
+            ),
+        )
+        api_server = SimpleNamespace(
+            _approval_event_choices=lambda **_: ["once", "deny"]
+        )
+        notify = _make_approval_notify(adapter, run, _api_server=api_server)
+
+        notify({"command": "curl -H 'Authorization: *** " + _FAKE_GHP + "' github.com"})
+        await asyncio.sleep(0)
+
+        event = subscriber.get_nowait()
+        assert _FAKE_GHP not in event["command"]
+        assert "curl" in event["command"]
+        assert event["event"] == "approval.request"
+        assert pending.empty()
 
 
 class TestApprovalTextFallbackContract:

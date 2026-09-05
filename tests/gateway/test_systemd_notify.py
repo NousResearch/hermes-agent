@@ -8,7 +8,11 @@ import socket
 import pytest
 
 
+<<<<<<< HEAD
 @pytest.mark.linux_only  # abstract (NUL-prefixed) AF_UNIX names are a Linux kernel feature
+=======
+@pytest.mark.linux_only
+>>>>>>> af80cc149e (test: gate systemd abstract-socket coverage with linux_only)
 def test_notify_supports_systemd_abstract_socket(monkeypatch):
     name = "\0hermes-test-notify"
     receiver = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)

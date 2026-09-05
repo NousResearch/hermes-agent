@@ -30,6 +30,7 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
+import { EDITOR_SUPPRESSION_ATTRS } from './autofill-suppression'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
@@ -1053,6 +1054,15 @@ export function ChatBar({
           hudNativeDrag && '[-webkit-app-region:no-drag]'
         )}
         contentEditable={!inputDisabled}
+        /* WebKit AutoFill suppression (#95089): iPadOS Safari's keyboard bar
+           classifies focused editors heuristically and offers the user's
+           contact card (name/address) on free-form chat fields. The WHATWG
+           autofill algorithm only applies to input/select/textarea, so
+           autoComplete= is not even defined for contentEditable — WebKit
+           sniffs the element anyway. `data-1p-ignore` and
+           same field; they are inert in Safari but keep the whole suppression
+           contract in one place. */
+        {...EDITOR_SUPPRESSION_ATTRS}
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
         onBeforeInput={handleEditorBeforeInput}
@@ -1225,6 +1235,11 @@ export function ChatBar({
             sessionId={statusSessionId}
           />
           <ComposerPrimitive.Root
+            /* #95089: this primitive renders the composer <form>. Safari
+               consults the form's autocomplete state for fields inside it, so
+               the form must opt out too, or the sr-only textarea's own
+               autoComplete="off" can be overridden by the form-level default. */
+            autoComplete="off"
             className={cn(
               'group/composer relative w-full overflow-visible rounded-2xl',
               poppedOut && 'bg-transparent',

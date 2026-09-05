@@ -16,10 +16,12 @@ vi.mock('@/app/open-session', () => ({ openSession: (...args: unknown[]) => open
 /** A live contenteditable holding real chips, with the watcher bound to it —
  *  the same pair both composers mount. */
 function mountEditor(chips: { kind: string; value: string }[]) {
+  // eslint-disable-next-line no-restricted-globals -- test harness needs a real contentEditable in the DOM
   const editor = document.createElement('div')
 
   editor.contentEditable = 'true'
   editor.append(...chips.map(chip => refChipElement(chip.kind, `\`${chip.value}\``)))
+  // eslint-disable-next-line no-restricted-globals -- test harness appends editor to DOM
   document.body.append(editor)
 
   render(
@@ -41,11 +43,13 @@ function hover(node: Element) {
 
 /** The reference the visible action pill points at, or null when there is none. */
 function pillValue() {
+  // eslint-disable-next-line no-restricted-globals -- test harness reads DOM state
   return document.querySelector('[data-slot="composer-directive-action"]')?.getAttribute('data-value') ?? null
 }
 
 afterEach(() => {
   cleanup()
+  // eslint-disable-next-line no-restricted-globals -- test harness resets DOM
   document.body.replaceChildren()
   closeRightRail()
   delete desktopWindow.hermesDesktop
@@ -122,6 +126,7 @@ describe('ComposerDirectiveActions', () => {
     const chip = chips(editor, 'url')[0]!
 
     hover(chip)
+    // eslint-disable-next-line no-restricted-globals -- test harness simulates pointer events
     fireEvent.pointerOut(chip, { relatedTarget: document.body })
     fireEvent.mouseEnter(screen.getByRole('button').parentElement!)
     vi.advanceTimersByTime(500)
@@ -133,6 +138,7 @@ describe('ComposerDirectiveActions', () => {
     // The edit composer's editor isn't reliably in the DOM when the effect
     // first runs; a document listener that reads the editor lazily works
     // regardless — this is the whole reason it binds to document, not editor.
+    // eslint-disable-next-line no-restricted-globals -- test harness needs a real contentEditable in the DOM
     const editor = document.createElement('div')
 
     editor.contentEditable = 'true'
@@ -145,6 +151,7 @@ describe('ComposerDirectiveActions', () => {
     )
 
     // Editor attached AFTER mount.
+    // eslint-disable-next-line no-restricted-globals -- test harness appends editor to DOM
     document.body.append(editor)
     hover(editor.querySelector('[data-ref-kind="url"]')!)
 

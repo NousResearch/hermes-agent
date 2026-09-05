@@ -1354,12 +1354,94 @@ class GatewayAdapterLifecycleMixin:
         return bool(getattr(self.config, "multiplex_profiles", False))
 
     async def _handle_gateway_platform_event(self, event: dict, source) -> None:
-        """Authorize and publish one normalized adapter event to plugin hooks."""
-        # Observer failures must never break the adapter's update loop.
-        with _log_suppressed(logging.DEBUG, "gateway_platform_event hook dispatch failed", exc_info=True):
+        """Authorize and publish one normalized adapter event to plugin hooks, then dispatch any
+        configured reaction action. Observers and the action layer share one authorization
+        decision; with no hook subscriber AND no mapped action the event drops before the auth
+        check (preserving the original short-circuit)."""
+        # Observer/action failures must never break the adapter's update loop.
+        with _log_suppressed(logging.DEBUG, "gateway_platform_event dispatch failed", exc_info=True):
             from hermes_cli.lifecycle import has_hook, invoke_hook
-            if has_hook("gateway_platform_event") and self._is_user_authorized_for_source(source):
-                invoke_hook("gateway_platform_event", **event)
+            wants_hook = has_hook("gateway_platform_event")
+            action = self._reaction_action_for_event(event)
+            if not wants_hook and action is None:
+                return
+            if not self._is_user_authorized_for_source(source):
+                return
+            if wants_hook:
+                # A failing observer plugin must not suppress a configured action.
+                with _log_suppressed(logging.DEBUG, "gateway_platform_event hook dispatch failed", exc_info=True):
+                    invoke_hook("gateway_platform_event", **event)
+            if action is not None:
+                await self._dispatch_reaction_action(event, source, action)
+
+    def _reaction_action_for_event(self, event: dict):
+        """Return ``(emoji, instruction)`` for the first newly-added emoji mapped in the event
+        platform's ``reaction_actions`` config, else ``None``.
+
+        Source: ``platforms.<name>.extra.reaction_actions`` — an emoji → plain-language
+        instruction map (default empty, so the action layer is inert unless configured). Only the
+        payload's ``added_emojis`` are considered: an emoji already present on the message never
+        re-fires, and custom-emoji reactions (ids, not emoji) are never mapped.
+        """
+        if not isinstance(event, dict) or event.get("event_type") != "reaction":
+            return None
+        payload = event.get("payload")
+        added = payload.get("added_emojis") if isinstance(payload, dict) else None
+        if not isinstance(added, (list, tuple)) or not added:
+            return None
+        try:
+            platform_cfg = self.config.platforms.get(Platform(str(event.get("platform"))))
+        except Exception:
+            return None
+        extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+        raw = extra.get("reaction_actions") if isinstance(extra, dict) else None
+        if not isinstance(raw, dict) or not raw:
+            return None
+        actions = {str(k): str(v) for k, v in raw.items() if str(k).strip() and str(v).strip()}
+        for emoji in added:
+            if emoji in actions:
+                return (emoji, actions[emoji])
+        return None
+
+    async def _dispatch_reaction_action(self, event: dict, source, action) -> None:
+        """Synthesize an agent turn for a configured reaction action.
+
+        The reactor was already authorized by the shared post-auth gate. The synthesized turn
+        flows through ``_handle_message`` like any inbound message, so session routing, history,
+        and tool policy apply normally. The reacted-to message rides the event's native
+        reply-context fields (recovered from ``rich_sent_store`` when available).
+        """
+        from gateway.platforms.base import MessageEvent, MessageType
+
+        emoji, instruction = action
+        payload = event.get("payload") or {}
+        chat_id = str(payload.get("chat_id") or "")
+        message_id = str(payload.get("message_id") or "")
+
+        reacted_text = None
+        with suppress(Exception):
+            from gateway import rich_sent_store
+            reacted_text = rich_sent_store.lookup(chat_id, message_id)
+
+        text = (
+            f"[The user reacted {emoji} to your earlier message. "
+            f"In this context {emoji} means: {instruction}.] "
+            "Take the appropriate action with your tools (e.g. complete/"
+            "snooze/escalate the relevant task). Reply with at most one short "
+            "line, or stay silent if nothing needs saying."
+        )
+        await self._handle_message(
+            MessageEvent(
+                text=text,
+                message_type=MessageType.TEXT,
+                user_id=getattr(source, "user_id", None),
+                user_name=getattr(source, "user_name", None),
+                source=source,
+                reply_to_message_id=message_id or None,
+                reply_to_text=str(reacted_text) if reacted_text else None,
+                reply_to_is_own_message=True,
+            )
+        )
 
     def _make_profile_platform_event_handler(self, profile_name: str):
         """Bind platform-event auth and hook dispatch to one multiplex profile."""

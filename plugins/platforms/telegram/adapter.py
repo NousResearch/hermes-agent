@@ -2565,6 +2565,21 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._post_connect_task is asyncio.current_task():
                 self._post_connect_task = None
 
+    def _reaction_actions_map(self) -> dict:
+        """Return the configured ``emoji -> action instruction`` map.
+
+        Source: ``platforms.telegram.extra.reaction_actions``. Used here only
+        as an inertness gate for the catch-all: with no hook subscriber AND no
+        configured actions, per-update normalization work is skipped entirely.
+        The gateway boundary owns the authoritative action mapping and
+        dispatch (see ``GatewayRunner._reaction_action_for_event``).
+        """
+        try:
+            raw = self.config.extra.get("reaction_actions") if self.config and self.config.extra else None
+        except Exception:
+            raw = None
+        return raw if isinstance(raw, dict) else {}
+
     async def _on_platform_update(self, update, context) -> None:
         """Catch-all PTB handler (group 99) firing ``gateway_platform_event`` per inbound update with a
         stable envelope (no raw SDK objects) and an internal auth source. Never raises into PTB."""
@@ -2573,7 +2588,14 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         try:
             from hermes_cli.lifecycle import has_hook
-            if not has_hook("gateway_platform_event"):
+            # Inertness gate: skip per-update normalization work when nothing
+            # can consume the event — no hook subscriber AND no configured
+            # reaction action (the gateway boundary holds the authoritative
+            # action mapping).
+            if not has_hook("gateway_platform_event") and not (
+                getattr(update, "message_reaction", None) is not None
+                and self._reaction_actions_map()
+            ):
                 return
             event = self._normalize_platform_event(update)
         except Exception:
@@ -2638,12 +2660,25 @@ class TelegramAdapter(BasePlatformAdapter):
             custom_id = getattr(r, "custom_emoji_id", None)
             if self._is_id_like(custom_id):
                 custom_emoji_ids.append(str(custom_id)[:128])
+        # Telegram's new_reaction is the message's full current reaction set,
+        # not a delta. Consumers that act once per reaction (rather than
+        # re-render state) need the newly-added emoji only, so expose the
+        # new-minus-old diff additively as added_emojis.
+        old_reaction = getattr(mr, "old_reaction", None) or []
+        if not isinstance(old_reaction, (list, tuple)):
+            old_reaction = []
+        old_emojis: set = set()
+        for r in old_reaction[:64]:
+            emoji = getattr(r, "emoji", None)
+            if isinstance(emoji, str) and emoji:
+                old_emojis.add(emoji[:64])
+        added_emojis = [e for e in emojis if e not in old_emojis]
         return {
             "platform": "telegram",
             "event_type": "reaction",
             "payload": {
-                "emojis": emojis, "custom_emoji_ids": custom_emoji_ids, "chat_id": str(chat_id)[:128],
-                "message_id": str(message_id)[:128], "thread_id": None},
+                "emojis": emojis, "added_emojis": added_emojis, "custom_emoji_ids": custom_emoji_ids,
+                "chat_id": str(chat_id)[:128], "message_id": str(message_id)[:128], "thread_id": None},
         }
 
     def _normalize_message_edited_event(self, update) -> Optional[Dict[str, Any]]:

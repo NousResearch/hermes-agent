@@ -81,13 +81,18 @@ def _reaction(*, emoji=None, custom_emoji_id=None):
     return r
 
 
-def _reaction_update(reactions, chat_id: object = 123, message_id: object = 456):
-    """A PTB Update stand-in carrying a message_reaction with ``reactions``."""
+def _reaction_update(reactions, chat_id: object = 123, message_id: object = 456, old=()):
+    """A PTB Update stand-in carrying a message_reaction with ``reactions``.
+
+    ``old`` is the previous reaction set (``old_reaction``), so tests can
+    exercise the added_emojis new-minus-old diff.
+    """
     update = MagicMock()
     update.message_reaction = MagicMock()
     update.message_reaction.chat.id = chat_id
     update.message_reaction.message_id = message_id
     update.message_reaction.new_reaction = list(reactions)
+    update.message_reaction.old_reaction = list(old)
     return update
 
 
@@ -210,6 +215,7 @@ class TestNormalizePlatformEvent:
             "event_type": "reaction",
             "payload": {
                 "emojis": ["\U0001F44E"],
+                "added_emojis": ["\U0001F44E"],
                 "custom_emoji_ids": [],
                 "chat_id": "123",
                 "message_id": "456",
@@ -631,6 +637,7 @@ class TestFixturePluginObservationPath:
             "event_type": "reaction",
             "payload": {
                 "emojis": ["\U0001F44D"],
+                "added_emojis": ["\U0001F44D"],
                 "custom_emoji_ids": [],
                 "chat_id": "123",
                 "message_id": "456",
@@ -739,3 +746,253 @@ class TestRegisterHandlers:
 
 async def _async_value(value):
     return value
+
+
+# ---------------------------------------------------------------------------
+# added_emojis — new-minus-old diff semantics
+# ---------------------------------------------------------------------------
+
+class TestAddedEmojis:
+    def test_added_emojis_excludes_preexisting(self):
+        """Only emoji newly added by this update land in added_emojis; the
+        full current set stays in emojis."""
+        a = _adapter()
+        update = _reaction_update(
+            [_reaction(emoji="\U0001F44D"), _reaction(emoji="\U0001F525")],
+            old=[_reaction(emoji="\U0001F44D")],
+        )
+
+        event = a._normalize_platform_event(update)
+        assert event["payload"]["emojis"] == ["\U0001F44D", "\U0001F525"]
+        assert event["payload"]["added_emojis"] == ["\U0001F525"]
+
+    def test_retap_of_existing_emoji_adds_nothing(self):
+        a = _adapter()
+        update = _reaction_update(
+            [_reaction(emoji="\U0001F44D")], old=[_reaction(emoji="\U0001F44D")],
+        )
+
+        assert a._normalize_platform_event(update)["payload"]["added_emojis"] == []
+
+    def test_removal_yields_empty_added(self):
+        """Removing a reaction (empty new set) produces no added emoji."""
+        a = _adapter()
+        update = _reaction_update([], old=[_reaction(emoji="\U0001F525")])
+
+        event = a._normalize_platform_event(update)
+        assert event["payload"]["emojis"] == []
+        assert event["payload"]["added_emojis"] == []
+
+    def test_malformed_old_reaction_treated_as_empty(self):
+        """A non-list old_reaction (malformed update) must not crash the
+        normalizer; every current emoji counts as added."""
+        a = _adapter()
+        update = _reaction_update([_reaction(emoji="\U0001F525")])
+        update.message_reaction.old_reaction = "not-a-list"
+
+        assert a._normalize_platform_event(update)["payload"]["added_emojis"] == [
+            "\U0001F525"
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Reaction actions — config-driven action layer at the post-auth boundary
+# ---------------------------------------------------------------------------
+
+def _action_runner(actions=None, authorized=True):
+    """A GatewayRunner stand-in with platform config + stubbed auth/dispatch."""
+    runner = object.__new__(GatewayRunner)
+    runner._is_user_authorized = MagicMock(return_value=authorized)
+    extra = {"allow_from": ["*"]}
+    if actions:
+        extra["reaction_actions"] = actions
+    runner.config = SimpleNamespace(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="t", extra=extra)
+        }
+    )
+    runner._handle_message = AsyncMock()
+    return runner
+
+
+def _action_event(added=("\U0001F525",), emojis=None):
+    return {
+        "platform": "telegram",
+        "event_type": "reaction",
+        "payload": {
+            "emojis": list(emojis if emojis is not None else added),
+            "added_emojis": list(added),
+            "custom_emoji_ids": [],
+            "chat_id": "123",
+            "message_id": "456",
+            "thread_id": None,
+        },
+    }
+
+
+def _action_source():
+    return _adapter()._source_from_reaction_for_auth(_auth_reaction_update(user_id=777))
+
+
+class TestReactionActions:
+    def test_mapped_added_emoji_dispatches_agent_turn(self):
+        """A configured emoji on added_emojis synthesizes an agent turn with the
+        reacted-to message riding native reply context; the observer hook still
+        fires alongside."""
+        runner = _action_runner(actions={"\U0001F525": "escalate the task"})
+        invoke = MagicMock()
+
+        with patch("hermes_cli.lifecycle.invoke_hook", invoke), patch(
+            "gateway.rich_sent_store.lookup", return_value="You have 3 open tasks"
+        ):
+            asyncio.run(
+                runner._handle_gateway_platform_event(_action_event(), _action_source())
+            )
+
+        invoke.assert_called_once()
+        runner._handle_message.assert_awaited_once()
+        event = runner._handle_message.await_args.args[0]
+        assert "\U0001F525" in event.text
+        assert "escalate the task" in event.text
+        assert event.reply_to_message_id == "456"
+        assert event.reply_to_text == "You have 3 open tasks"
+        assert event.reply_to_is_own_message is True
+        assert event.source.user_id == "777"
+
+    def test_unmapped_emoji_never_dispatches(self):
+        """Observers still fire, but no action for an unmapped emoji."""
+        runner = _action_runner(actions={"\U0001F44D": "done"})
+        invoke = MagicMock()
+
+        with patch("hermes_cli.lifecycle.invoke_hook", invoke):
+            asyncio.run(
+                runner._handle_gateway_platform_event(_action_event(), _action_source())
+            )
+
+        invoke.assert_called_once()
+        runner._handle_message.assert_not_awaited()
+
+    def test_preexisting_emoji_never_refires(self):
+        """A mapped emoji that was already on the message (in emojis but not
+        added_emojis) must not re-fire the action."""
+        runner = _action_runner(actions={"\U0001F44D": "done"})
+
+        with patch("hermes_cli.lifecycle.invoke_hook", MagicMock()):
+            asyncio.run(
+                runner._handle_gateway_platform_event(
+                    _action_event(added=(), emojis=("\U0001F44D",)), _action_source()
+                )
+            )
+
+        runner._handle_message.assert_not_awaited()
+
+    def test_unauthorized_reactor_blocks_hook_and_action(self):
+        """One shared auth decision gates both consumers."""
+        runner = _action_runner(actions={"\U0001F525": "escalate"}, authorized=False)
+        invoke = MagicMock()
+
+        with patch("hermes_cli.lifecycle.invoke_hook", invoke):
+            asyncio.run(
+                runner._handle_gateway_platform_event(_action_event(), _action_source())
+            )
+
+        invoke.assert_not_called()
+        runner._handle_message.assert_not_awaited()
+
+    def test_action_fires_without_hook_subscriber(self):
+        """With no observer plugin installed, a configured action still runs —
+        and still behind the auth gate (companion to
+        test_skips_dispatch_when_no_subscriber)."""
+        runner = _action_runner(actions={"\U0001F525": "escalate"})
+        invoke = MagicMock()
+
+        with patch("hermes_cli.lifecycle.has_hook", return_value=False), patch(
+            "hermes_cli.lifecycle.invoke_hook", invoke
+        ):
+            asyncio.run(
+                runner._handle_gateway_platform_event(_action_event(), _action_source())
+            )
+
+        runner._is_user_authorized.assert_called_once()
+        invoke.assert_not_called()
+        runner._handle_message.assert_awaited_once()
+
+    def test_unconfigured_event_drops_before_auth_without_subscriber(self):
+        """No hook + no configured actions = nothing consumes the event; it is
+        dropped before the auth check (preserves the original short-circuit)."""
+        runner = _action_runner()
+
+        with patch("hermes_cli.lifecycle.has_hook", return_value=False), patch(
+            "hermes_cli.lifecycle.invoke_hook", MagicMock()
+        ):
+            asyncio.run(
+                runner._handle_gateway_platform_event(_action_event(), _action_source())
+            )
+
+        runner._is_user_authorized.assert_not_called()
+        runner._handle_message.assert_not_awaited()
+
+    def test_hook_error_does_not_suppress_action(self):
+        """An observer plugin blowing up must not swallow the configured action."""
+        runner = _action_runner(actions={"\U0001F525": "escalate"})
+        invoke = MagicMock(side_effect=RuntimeError("plugin boom"))
+
+        with patch("hermes_cli.lifecycle.invoke_hook", invoke):
+            asyncio.run(
+                runner._handle_gateway_platform_event(_action_event(), _action_source())
+            )
+
+        runner._handle_message.assert_awaited_once()
+
+    def test_action_dispatch_error_is_isolated(self):
+        """A failing action dispatch never raises into the adapter's update loop."""
+        runner = _action_runner(actions={"\U0001F525": "escalate"})
+        runner._handle_message = AsyncMock(side_effect=RuntimeError("agent boom"))
+
+        with patch("hermes_cli.lifecycle.invoke_hook", MagicMock()):
+            asyncio.run(
+                runner._handle_gateway_platform_event(_action_event(), _action_source())
+            )  # no raise
+
+
+class TestReactionActionFireSiteGate:
+    def test_actions_configured_no_subscriber_still_normalizes(self):
+        """The adapter's inertness gate lets reaction updates through when
+        reaction_actions is configured, even with no hook subscriber, so the
+        gateway boundary can dispatch the action."""
+        a = _adapter(
+            extra={"allow_from": ["*"], "reaction_actions": {"\U0001F525": "escalate"}}
+        )
+        seen: list = []
+
+        async def observe(event, source):
+            seen.append((event, source))
+
+        a.set_platform_event_handler(observe)
+
+        with patch("hermes_cli.lifecycle.has_hook", return_value=False):
+            asyncio.run(a._on_platform_update(
+                _reaction_update([_reaction(emoji="\U0001F525")], 123, 456),
+                context=MagicMock(),
+            ))
+
+        assert len(seen) == 1
+        assert seen[0][0]["payload"]["added_emojis"] == ["\U0001F525"]
+
+    def test_non_reaction_update_still_skipped_without_subscriber(self):
+        """The widened gate only applies to reaction updates; other update
+        types keep the original skip when no hook is subscribed."""
+        a = _adapter(
+            extra={"allow_from": ["*"], "reaction_actions": {"\U0001F525": "escalate"}}
+        )
+        a._normalize_platform_event = MagicMock()
+        handler = AsyncMock()
+        a.set_platform_event_handler(handler)
+        update = MagicMock()
+        update.message_reaction = None
+
+        with patch("hermes_cli.lifecycle.has_hook", return_value=False):
+            asyncio.run(a._on_platform_update(update, context=MagicMock()))
+
+        a._normalize_platform_event.assert_not_called()
+        handler.assert_not_awaited()

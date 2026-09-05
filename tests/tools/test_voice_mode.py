@@ -695,8 +695,14 @@ class TestCleanupTempRecordings:
 # ============================================================================
 
 class TestPlayBeep:
-    def test_beep_calls_sounddevice_play(self, mock_sd):
+    def test_beep_calls_sounddevice_play(self, mock_sd, monkeypatch):
         np = pytest.importorskip("numpy")
+
+        # This test covers the sounddevice branch. On macOS play_beep routes
+        # through the tempfile/afplay path instead (covered by
+        # TestMacOSAudioOutputPolicy), so pin the policy to the branch under
+        # test rather than the host's.
+        monkeypatch.setattr("tools.voice_mode._sounddevice_output_allowed", lambda: True)
 
         from tools.voice_mode import play_beep
 

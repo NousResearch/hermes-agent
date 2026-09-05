@@ -25,6 +25,7 @@ import importlib
 import os
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -1079,11 +1080,89 @@ def _wal_is_usable() -> bool:
 #    available to the tests that legitimately exercise it with a mocked
 #    audio backend (``tests/tools/test_voice_mode.py``).
 #
+#  • ``tools.voice_mode._spawn_system_player`` — the one place voice_mode
+#    starts ``afplay`` / ``ffplay`` / ``aplay``. Second incident (2026-09-04):
+#    a macOS run played beeps and spoke "Hello world." through the speakers.
+#    Neither route passed through the two bindings above:
+#      - ``tools.tts_tool.stream_tts_to_speaker`` does its own late
+#        ``from tools.voice_mode import play_audio_file`` (the "Hello world."
+#        fixture in ``tests/gateway/test_voice_command.py``, synthesised by
+#        the keyless ``edge`` provider);
+#      - ``play_beep`` on macOS skips sounddevice (TCC prompt) and writes a
+#        temp WAV that goes through the same ``play_audio_file``.
+#    Every one of them ends in this spawn, so that is where it is stopped.
+#    The stub hands the call through when a test has stubbed
+#    ``subprocess.Popen`` itself (such a test is asserting on argv/env, not
+#    making noise), and otherwise returns a finished no-op process.
+#
 # Config cannot re-open this hole: the ``tts:`` section of ``config.yaml``
 # only selects *which* provider speaks, never *whether* to speak — that gate
 # is the env var alone.
 
 _AUDIO_GUARD_BYPASS_MARK = "real_audio_playback"
+
+# Captured at import, before any fixture wraps it. ``_live_system_guard``
+# installs a *subclass* of the real ``Popen`` for every test (so isinstance
+# checks keep working); a test that stubs ``Popen`` itself installs a plain
+# function or a Mock. That is the distinction the spawn guard relies on.
+_REAL_POPEN = subprocess.Popen
+
+
+def _popen_would_really_spawn() -> bool:
+    """True when ``subprocess.Popen`` is the real class or a subclass of it
+    (the live-system guard's wrapper) — i.e. calling it starts a process."""
+    cur = subprocess.Popen
+    return isinstance(cur, type) and issubclass(cur, _REAL_POPEN)
+
+
+class _SilentPlayer:
+    """Stand-in for an already-finished system-player process."""
+
+    returncode = 0
+    pid = -1
+
+    def wait(self, timeout=None):
+        return 0
+
+    def poll(self):
+        return 0
+
+    def terminate(self):
+        pass
+
+    def kill(self):
+        pass
+
+
+def _make_silent_spawn(real_spawn):
+    def _silent_spawn_system_player(cmd, env):
+        if not _popen_would_really_spawn():
+            # The test stubbed the primitive itself — honour its stub so
+            # argv/env assertions keep working (it makes no noise).
+            return real_spawn(cmd, env)
+        return _SilentPlayer()
+
+    return _silent_spawn_system_player
+
+
+@pytest.fixture(scope="session")
+def _audio_playback_spawn_guard_session():
+    """Session-lived state for the system-player spawn guard.
+
+    The silent spawn is installed by the per-test guard on first use (so
+    ``tools.voice_mode`` is first imported under the hermetic environment,
+    exactly as before) but through *this* session-scoped MonkeyPatch, so it
+    stays in place between tests. That matters: the 2026-09-04 incident
+    included a beep fired from a daemon thread *after* its test had finished,
+    i.e. after a function-scoped monkeypatch would have restored the real
+    spawn. ``state["real"]`` is the real spawn, handed back to tests marked
+    ``real_audio_playback`` for their duration only.
+    """
+    state = {"real": None, "mp": pytest.MonkeyPatch()}
+    try:
+        yield state
+    finally:
+        state["mp"].undo()
 _ALLOW_MACOS_KEYCHAIN_MARK = "allow_macos_keychain"
 
 # ---------------------------------------------------------------------------
@@ -1657,7 +1736,7 @@ def _live_system_guard(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _audio_playback_guard(request, monkeypatch):
+def _audio_playback_guard(request, monkeypatch, _audio_playback_spawn_guard_session):
     """Stub TTS synthesis + speaker playback for every test.
 
     See the block comment above for the incident this closes. Defence in
@@ -1672,14 +1751,13 @@ def _audio_playback_guard(request, monkeypatch):
     surface. Silence is the whole point. Tests that genuinely want real audio
     can opt out with ``@pytest.mark.real_audio_playback``.
     """
-    if request.node.get_closest_marker(_AUDIO_GUARD_BYPASS_MARK):
-        yield
-        return
+    spawn_state = _audio_playback_spawn_guard_session
 
-    try:
-        import hermes_cli.voice as _voice
-    except Exception:
-        # Optional audio deps missing — nothing importable to speak with.
+    if request.node.get_closest_marker(_AUDIO_GUARD_BYPASS_MARK):
+        if spawn_state["real"] is not None:
+            import tools.voice_mode as _vm
+
+            monkeypatch.setattr(_vm, "_spawn_system_player", spawn_state["real"])
         yield
         return
 
@@ -1689,10 +1767,37 @@ def _audio_playback_guard(request, monkeypatch):
     def _blocked_play_audio_file(path, *args, **kwargs):
         return False
 
-    if hasattr(_voice, "speak_text"):
-        monkeypatch.setattr(_voice, "speak_text", _blocked_speak_text)
-    if hasattr(_voice, "play_audio_file"):
-        monkeypatch.setattr(_voice, "play_audio_file", _blocked_play_audio_file)
+    try:
+        import hermes_cli.voice as _voice
+    except Exception:
+        # Optional audio deps missing — nothing importable to speak with.
+        _voice = None
+
+    if _voice is not None:
+        if hasattr(_voice, "speak_text"):
+            monkeypatch.setattr(_voice, "speak_text", _blocked_speak_text)
+        if hasattr(_voice, "play_audio_file"):
+            monkeypatch.setattr(_voice, "play_audio_file", _blocked_play_audio_file)
+
+    # Third route: the system-player spawn itself (see the comment block
+    # above). Installed through the session-scoped MonkeyPatch so it persists
+    # between tests; re-checked every test in case one reloaded
+    # ``tools.voice_mode`` and got the real spawn back.
+    try:
+        import tools.voice_mode as _vm
+    except Exception:
+        _vm = None
+
+    current = getattr(_vm, "_spawn_system_player", None)
+    if (
+        current is not None
+        and current.__name__ != "_silent_spawn_system_player"
+    ):
+        if spawn_state["real"] is None:
+            spawn_state["real"] = current
+        spawn_state["mp"].setattr(
+            _vm, "_spawn_system_player", _make_silent_spawn(spawn_state["real"])
+        )
 
     yield
 

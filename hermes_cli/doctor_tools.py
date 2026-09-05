@@ -138,7 +138,10 @@ def _check_docker_backend(terminal_env: str, running_in_container: bool, issues:
         if not _safe_which("docker"):
             _fail_and_issue("docker not found", "(required for TERMINAL_ENV=docker)", "Install Docker or change TERMINAL_ENV", issues)
         else:
-            _require(_run_ok(["docker", "info"], timeout=10), ("docker", "(daemon running)"), ("docker daemon not running", ""),
+            # `docker version` hits /version, which socket proxies (tecnativa) allow by default; `docker info`
+            # needs /info and is commonly blocked, giving a false "daemon not running". The backend itself
+            # probes with `docker version` too (environments/docker.py).
+            _require(_run_ok(["docker", "version"], timeout=10), ("docker", "(daemon running)"), ("docker daemon not running", ""),
                      "Start Docker daemon", issues)
     elif _safe_which("docker"):
         check_ok("docker", "(optional)")

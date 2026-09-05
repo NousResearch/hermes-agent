@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Dict
 
 from agent.display import KawaiiSpinner
+from agent._truncation_boost_cap import resolve_truncation_boost_cap
 from agent.turn_context import reanchor_current_turn_user_idx
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -386,7 +387,11 @@ def apply_retry_restarts(
         _requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
         if _requested_cap is not None:
             _boost = max(_boost, _requested_cap)
-        _boost_cap = max(32768, _requested_cap or 0)
+        _boost_cap = resolve_truncation_boost_cap(
+            requested_cap=_requested_cap,
+            provider=agent.provider,
+            model=agent.model,
+        )
         agent._ephemeral_max_output_tokens = min(_boost, _boost_cap)
         return _verdict("continue")
 

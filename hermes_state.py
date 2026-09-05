@@ -1303,6 +1303,11 @@ import contextlib  # noqa: F401,E402
 import errno  # noqa: F401,E402
 import struct  # noqa: F401,E402
 import weakref  # noqa: F401,E402
+from hermes_state_registry import (
+    acquire as get_shared_session_db,
+    close_all as close_shared_session_dbs,
+    release as release_shared_session_db,
+)  # noqa: F401,E402
 
 MAX_SAFE_EXPORT_MESSAGES = 20_000
 

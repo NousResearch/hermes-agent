@@ -39,11 +39,11 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | moved | 0 | name now defined in `new location`; re-exported from the old module |
 | moved-lazy | 1148 | same, resolved lazily via `__getattr__` to avoid an import cycle |
 | import | 592 | a third-party/stdlib name the old module used to expose; original import restored |
-| restored-def | 290 | public name that was deleted as unused; its pre-decomposition definition is restored verbatim |
+| restored-def | 293 | public name that was deleted as unused; its pre-decomposition definition is restored verbatim |
 | restored-helper | 41 | private helper restored only because a restored-def above depends on it |
 | restored-import | 17 | import re-added only because a restored-def above depends on it |
 | module-stub | 3 | whole module deleted; stub re-exports from its replacement |
-| unrestorable | 34 | not restorable (e.g. leaked loop variables); listed for completeness |
+| unrestorable | 31 | not restorable (e.g. leaked loop variables); listed for completeness |
 
 ## Names by old module
 
@@ -1040,7 +1040,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 
 | name | kind | new location |
 |---|---|---|
-| `*` | module-stub | `gateway.shutdown_watchdog` |
+| `*` | module-stub | `hermes_startup_watchdog` |
 
 ### `gateway.status`
 
@@ -2229,14 +2229,14 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `WalUnsupportedError` | moved-lazy | `hermes_state_wal` |
 | `apply_durability_barriers` | moved-lazy | `hermes_state_repair` |
 | `classify_session_status` | moved-lazy | `hermes_state_sessions` |
-| `close_shared_session_dbs` | unrestorable | `no top-level definition on BASE` |
+| `close_shared_session_dbs` | restored-def | `(deleted; BASE body restored)` |
 | `collect_state_db_stats` | moved-lazy | `hermes_state_dbfile` |
 | `contextlib` | import | `contextlib` |
 | `count_db_holders` | moved-lazy | `hermes_state_dbfile` |
 | `describe_skill_invocation` | moved-lazy | `agent.skill_commands` |
 | `errno` | import | `errno` |
 | `fts5_cjk_so_path` | moved-lazy | `hermes_state_fts` |
-| `get_shared_session_db` | unrestorable | `no top-level definition on BASE` |
+| `get_shared_session_db` | restored-def | `(deleted; BASE body restored)` |
 | `is_advisory_lock_contention` | moved-lazy | `hermes_state_common` |
 | `is_automatic_end_reason` | moved-lazy | `hermes_state_common` |
 | `is_disk_full_error` | moved-lazy | `hermes_state_errors` |
@@ -2244,7 +2244,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `is_transient_sqlite_error` | moved-lazy | `hermes_state_errors` |
 | `iter_deleted_sqlite_sidecar_holders` | moved-lazy | `hermes_state_dbfile` |
 | `release_or_close` | moved-lazy | `hermes_state_registry` |
-| `release_shared_session_db` | unrestorable | `no top-level definition on BASE` |
+| `release_shared_session_db` | restored-def | `(deleted; BASE body restored)` |
 | `report_startup_progress` | moved-lazy | `hermes_startup_watchdog` |
 | `resolve_journal_mode` | moved-lazy | `hermes_state_wal` |
 | `resolve_synchronous_level` | moved-lazy | `hermes_state_wal` |

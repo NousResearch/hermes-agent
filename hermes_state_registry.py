@@ -229,12 +229,8 @@ def release_or_close(db: "SessionDB") -> None:
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
 
-def close_shared_session_dbs() -> int:
-    return close_all()
-
-def get_shared_session_db(db_path: Optional[Path] = None) -> "SessionDB":
-    return acquire(db_path)
-
-def release_shared_session_db(db: "SessionDB") -> bool:
-    return release(db)
+# Historical aliases retained for external plugins; these point directly at the registry API.
+close_shared_session_dbs = close_all
+get_shared_session_db = acquire
+release_shared_session_db = release
 # ---- END PLUGIN-COMPAT ----

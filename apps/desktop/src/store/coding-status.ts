@@ -139,20 +139,24 @@ export function repoWorktreesForCwd(cwd?: null | string): ReadableAtom<HermesGit
 export type RepoChangeKind = 'added' | 'conflicted' | 'modified'
 
 // Absolute file path → its git change kind, for VS Code-style file-tree tinting.
-// Reuses the same bounded $repoStatus probe (capped file list); git reports
-// repo-root-relative paths, so we join them onto the active cwd. Deletions never
-// appear — the file is gone from disk, so there's no tree row to tint.
-export const $repoChangeByPath = computed([$repoStatus, $currentCwd], (status, cwd) => {
+// Reuses the bounded per-CWD repo-status probes (capped file list); git reports
+// repo-root-relative paths, so we join them onto their corresponding probed cwd.
+// Deletions never appear — the file is gone from disk, so there's no tree row to tint.
+export const $repoChangeByPath = computed([$repoStatusByCwd], byCwd => {
   const map = new Map<string, RepoChangeKind>()
-  const root = (cwd || '').replace(/[/\\]+$/, '')
 
-  if (!status || !root) {
-    return map
-  }
+  for (const [cwd, status] of Object.entries(byCwd)) {
+    const root = (cwd || '').trim().replace(/[/\\]+$/, '')
 
-  for (const file of status.files) {
-    const kind: RepoChangeKind = file.conflicted ? 'conflicted' : file.untracked ? 'added' : 'modified'
-    map.set(`${root}/${file.path}`, kind)
+    if (!status || !root) {
+      continue
+    }
+
+    for (const file of status.files) {
+      const cleanPath = (file.path || '').replace(/^[/\\]+/, '')
+      const kind: RepoChangeKind = file.conflicted ? 'conflicted' : file.untracked ? 'added' : 'modified'
+      map.set(`${root}/${cleanPath}`, kind)
+    }
   }
 
   return map
@@ -161,9 +165,36 @@ export const $repoChangeByPath = computed([$repoStatus, $currentCwd], (status, c
 /**
  * Per-row Git decoration subscription. A visible file row reads one scalar, so
  * a fresh repo-status map only re-renders that row when its own kind changed.
+ * Supports directory inheritance for untracked folders under `--untracked-files=normal`.
  */
 export function repoChangeKindForPath(path: string): ReadableAtom<RepoChangeKind | undefined> {
-  return computed($repoChangeByPath, changes => changes.get(path))
+  return computed($repoChangeByPath, changes => {
+    const direct = changes.get(path)
+
+    if (direct) {
+      return direct
+    }
+
+    // Check if an ancestor directory is marked 'added' (untracked directory).
+    let parent = path.replace(/[/\\]+$/, '')
+
+    while (true) {
+      const lastSlash = Math.max(parent.lastIndexOf('/'), parent.lastIndexOf('\\'))
+
+      if (lastSlash <= 0) {
+        break
+      }
+
+      parent = parent.slice(0, lastSlash)
+      const parentKind = changes.get(parent)
+
+      if (parentKind === 'added') {
+        return 'added'
+      }
+    }
+
+    return undefined
+  })
 }
 
 // Cwds whose rails are on screen right now (refcounted — two tiles in one

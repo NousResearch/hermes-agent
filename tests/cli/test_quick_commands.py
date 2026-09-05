@@ -175,3 +175,187 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+
+# ── Exec arg-forwarding (PR #9942) ──────────────────────────────────────
+# Gateway/CLI/TUI exec quick commands must forward user args with argv
+# boundaries preserved (split-then-quote, never blob-quote).
+
+class TestGatewayExecArgsForwarding(TestGatewayQuickCommands):
+    """Gateway exec quick commands append args with boundaries preserved."""
+
+    @pytest.mark.asyncio
+    async def test_exec_command_passes_args_tokenized(self):
+        """Gateway exec quick commands append args with boundaries preserved."""
+        import shlex
+        from unittest.mock import AsyncMock
+
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"search": {"type": "exec", "command": "echo"}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        captured: dict[str, str] = {}
+        fake_proc = AsyncMock()
+        fake_proc.communicate.return_value = (b"ok", b"")
+
+        async def fake_shell(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return fake_proc
+
+        with patch("asyncio.create_subprocess_shell", side_effect=fake_shell):
+            result = await runner._handle_message(self._make_event("search", args="--foo bar"))
+
+        assert result == "ok"
+        assert shlex.split(captured["cmd"]) == ["echo", "--foo", "bar"]
+
+    @pytest.mark.asyncio
+    async def test_exec_command_metachars_stay_boundary_safe(self):
+        """Gateway: shell metacharacters must stay inside quoted tokens."""
+        import shlex
+        from unittest.mock import AsyncMock
+
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"search": {"type": "exec", "command": "echo"}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        captured: dict[str, str] = {}
+        fake_proc = AsyncMock()
+        fake_proc.communicate.return_value = (b"ok", b"")
+
+        async def fake_shell(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return fake_proc
+
+        for dangerous in ["'; rm -rf /'", "a && id", "x | cat", "%PATH%"]:
+            with patch("asyncio.create_subprocess_shell", side_effect=fake_shell):
+                await runner._handle_message(self._make_event("search", args=dangerous))
+            assert shlex.split(captured["cmd"]) == ["echo"] + shlex.split(dangerous)
+
+
+
+
+
+# ── TUI tests ──────────────────────────────────────────────────────────────
+
+class TestTUIQuickCommands:
+    """Test TUI command.dispatch exec quick commands (arg forwarding)."""
+
+    @staticmethod
+    def _dispatch(name, arg):
+        # Handlers are registered on tui_gateway.server's _methods registry
+        # (method_ctx rebinds at install); methods_tools itself has no dict.
+        import tui_gateway.server as server
+
+        return server._methods["command.dispatch"](None, {"name": name, "arg": arg, "session_id": ""})
+
+    @staticmethod
+    def _patch_cfg(quick_commands):
+        # _load_cfg is lazily imported from tui_gateway.server at call time —
+        # patch the source module, not the consumer.
+        return patch("tui_gateway.server._load_cfg", return_value={"quick_commands": quick_commands})
+
+    def test_tui_exec_forwards_args_tokenized(self):
+        import shlex
+        import subprocess as sp
+        from unittest.mock import patch
+
+        captured: dict[str, str] = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return sp.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+        with self._patch_cfg({"search": {"type": "exec", "command": "echo"}}):
+            with patch("subprocess.run", side_effect=fake_run):
+                self._dispatch("/search", "--foo bar")
+
+        assert shlex.split(captured["cmd"]) == ["echo", "--foo", "bar"]
+
+    def test_tui_exec_no_args_unchanged(self):
+        import subprocess as sp
+        from unittest.mock import patch
+
+        captured: dict[str, str] = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return sp.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+        with self._patch_cfg({"limits": {"type": "exec", "command": "echo ok"}}):
+            with patch("subprocess.run", side_effect=fake_run):
+                self._dispatch("/limits", "")
+
+        assert captured["cmd"] == "echo ok"
+
+
+class TestExecQuickCommandArgs:
+    """Test that exec quick commands receive user arguments."""
+
+    def test_exec_command_receives_args(self):
+        """Exec quick commands should pass user arguments to the shell command."""
+        from unittest.mock import patch
+        import subprocess
+
+        cli = TestCLIQuickCommands()._make_cli({
+            "search": {"type": "exec", "command": "echo"}
+        })
+
+        # Process command with arguments
+        result = cli.process_command("/search hello world")
+        assert result is True
+
+        # Verify the command was called with arguments
+        printed = TestCLIQuickCommands._printed_plain(cli.console.print.call_args[0][0])
+        assert "hello world" in printed
+
+    def test_exec_command_passes_args_tokenized(self):
+        """User args must be appended per-token so argv boundaries survive."""
+        import shlex
+
+        cli = TestCLIQuickCommands()._make_cli({"search": {"type": "exec", "command": "echo"}})
+        captured: dict[str, str] = {}
+
+        def fake_run(args, **kwargs):
+            captured["cmd"] = args
+            return subprocess.CompletedProcess(args, 0, stdout="ok", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = cli.process_command("/search --foo bar")
+
+        assert result is True
+        assert shlex.split(captured["cmd"]) == ["echo", "--foo", "bar"]
+
+    def test_exec_command_metachars_stay_boundary_safe(self):
+        """Shell metacharacters in user args must arrive quoted, not as operators."""
+        import shlex
+
+        cli = TestCLIQuickCommands()._make_cli({"search": {"type": "exec", "command": "echo"}})
+        captured: dict[str, str] = {}
+
+        def fake_run(args, **kwargs):
+            captured["cmd"] = args
+            return subprocess.CompletedProcess(args, 0, stdout="ok", stderr="")
+
+        for dangerous in ["'; rm -rf /'", "a && id", "x | cat", "%PATH%", "a; touch /tmp/pwned"]:
+            with patch("subprocess.run", side_effect=fake_run):
+                cli.process_command(f"/search {dangerous}")
+            assert shlex.split(captured["cmd"]) == ["echo"] + shlex.split(dangerous)
+
+    def test_exec_command_no_args_still_works(self):
+        """Exec quick commands without arguments should still execute."""
+        cli = TestCLIQuickCommands()._make_cli({
+            "test": {"type": "exec", "command": "echo ok"}
+        })
+
+        result = cli.process_command("/test")
+        assert result is True
+        printed = TestCLIQuickCommands._printed_plain(cli.console.print.call_args[0][0])
+        assert "ok" in printed

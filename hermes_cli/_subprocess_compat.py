@@ -27,6 +27,8 @@ __all__ = [
     "bounded_git_probe",
     "bounded_probe_run",
     "noninteractive_git_env",
+    "shell_quote",
+    "quote_args",
     "NO_DRIVER_DIFF_FLAGS",
     "pid_is_hermes",
 ]
@@ -461,3 +463,73 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
         return ""
     return (result.stdout or "").strip()
 
+
+
+def shell_quote(value: str) -> str:
+    """Shell-quote a single token for the current platform's default shell.
+
+    Uses ``mslex.quote`` on Windows (cmd.exe-compatible) and
+    ``shlex.quote`` on POSIX.  Falls back to cmd.exe's ``""`` doubling
+    rule if ``mslex`` is not installed on Windows.
+
+    Quote ONE token at a time.  For a whole argument string use
+    :func:`quote_args`, which splits into tokens first — quoting a blob
+    destroys argv boundaries (``--foo bar`` would arrive as one argument).
+    """
+    import shlex
+
+    if IS_WINDOWS:
+        try:
+            import mslex  # type: ignore[import-not-found]
+
+            return mslex.quote(value)
+        except ImportError:
+            # Minimal cmd.exe escape: wrap in double quotes and double any
+            # embedded double quote.  cmd.exe's quoting rule is doubling,
+            # NOT backslash-escaping (backslash is not an escape character
+            # there) — backslash escapes both break the token and leave it
+            # injectable.  Percent signs are doubled as well: cmd.exe expands
+            # %VAR% *inside* double quotes, so a bare % in user input is an
+            # expansion vector; %% renders literally with no variable lookup.
+            # (!VAR! delayed expansion is off under plain cmd /c and cannot be
+            # escaped inside quotes, so it is intentionally left alone.)
+            return '"' + value.replace('"', '""').replace('%', '%%') + '"'
+
+    return shlex.quote(value)
+
+
+def quote_args(args: str) -> str:
+    """Split a user-supplied argument string into tokens and quote each one.
+
+    Appending a shell-quoted *blob* to a command collapses ``--foo bar``
+    into a single argv entry; this helper preserves token boundaries so
+    the appended arguments reach the wrapped tool the way the user typed
+    them.  On POSIX it is ``shlex.split`` + ``shlex.quote`` per token; on
+    Windows it uses ``mslex.split``/``mslex.quote`` when available and
+    falls back to :func:`split_command_line` with cmd-safe quoting.
+
+    Returns ``""`` for empty input.  If the input has unbalanced quotes
+    and cannot be tokenized, the whole string is quoted as one token
+    rather than raising.
+    """
+    import shlex
+
+    text = args.strip()
+    if not text:
+        return ""
+    if IS_WINDOWS:
+        try:
+            import mslex  # type: ignore[import-not-found]
+
+            return " ".join(mslex.quote(tok) for tok in mslex.split(text))
+        except ImportError:
+            try:
+                tokens = split_command_line(text)
+            except ValueError:
+                return shell_quote(text)
+            return " ".join(shell_quote(tok) for tok in tokens)
+    try:
+        tokens = shlex.split(text)
+    except ValueError:
+        return shell_quote(text)
+    return " ".join(shell_quote(tok) for tok in tokens)

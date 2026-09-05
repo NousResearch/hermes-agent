@@ -3273,6 +3273,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         if not exec_cmd:
             self._console_print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
             return True
+        # Forward user arguments (e.g. `/poly white sox` → `poly.sh 'white sox'`).
+        # Split-then-quote per token so `--foo bar` stays two argv entries;
+        # quoting the blob would collapse it into one (see quote_args).
+        args = (user_args or "").strip()
+        if args:
+            from hermes_cli._subprocess_compat import quote_args
+            exec_cmd = f"{exec_cmd} {quote_args(args)}"
         try:
             # shell=True is intentional (user-authored config snippets, never LLM controlled);
             # the env is sanitized because this process holds every API key.

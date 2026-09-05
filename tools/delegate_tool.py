@@ -102,6 +102,27 @@ def _open_child_session_db(parent_agent) -> Any:
         return acquire(_parent_db_path) if _parent_db_path is not None else acquire()
     return None
 
+
+def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
+    """Cap the child's compaction trigger at ``delegation.compression_threshold_tokens`` (lower of it
+    and any global ``compression.threshold_tokens``). The compressor applies the cap on first window
+    resolution, which happens after construction, so setting it here is exactly equivalent to config."""
+    from agent.context_compressor import ContextCompressor
+
+    cc = getattr(child, "context_compressor", None)
+    if not isinstance(cc, ContextCompressor):
+        return
+    try:
+        cap = int((delegation_cfg or {}).get("compression_threshold_tokens", 200_000) or 0)
+    except (TypeError, ValueError):
+        cap = 0
+    if cap <= 0:
+        return
+    existing = cc.threshold_tokens_cap
+    cc.threshold_tokens_cap = min(cap, existing) if isinstance(existing, int) and existing > 0 else cap
+    if cc._threshold_tokens is not None:  # already resolved: re-clamp now
+        cc._apply_threshold_tokens_cap()
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -203,6 +224,7 @@ def _build_child_agent(
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
+    _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.
     try:

@@ -2307,8 +2307,27 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     for c in cands:
         if c and c in agent.valid_tool_names:
             return c
-    matches = get_close_matches(lowered, agent.valid_tool_names, n=1, cutoff=0.7)
-    return matches[0] if matches else None
+# Fuzzy match as last resort. Resolve the requested name against the
+    # FULL pre-gating registry first (#94506): a check_fn-gated tool is
+    # absent from agent.valid_tool_names, so fuzzy-matching against that
+    # post-gating set alone would remap a request for a gated tool onto an
+    # available sibling — a read becoming a write (kanban_list ->
+    # kanban_link) or an operation becoming its own inverse
+    # (kanban_unblok -> kanban_block). Resolve intent against the full
+    # registry, then fail closed (None) when the canonical target is not
+    # available this turn. Genuine typos of available tools still repair,
+    # because their canonical target IS in valid_tool_names. Session-
+    # injected tools (context-engine / memory-provider schemas added
+    # directly to valid_tool_names, not the registry) are unioned in so
+    # typos of them still repair. NOTE: session-injected tools that are both
+    # unregistered AND gated this turn are absent from both sets and remain
+    # out of scope; the union guarantees only registry-registered tools.
+    from tools.registry import registry
+    fuzzy_candidates = set(registry.get_all_tool_names()) | set(agent.valid_tool_names)
+    matches = get_close_matches(lowered, fuzzy_candidates, n=1, cutoff=0.7)
+    if matches and matches[0] in agent.valid_tool_names:
+        return matches[0]
+    return None
 
 
 # Placeholder for an empty non-final message the provider would reject. Kept identical to the stub

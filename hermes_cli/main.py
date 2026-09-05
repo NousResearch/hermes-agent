@@ -731,6 +731,8 @@ from hermes_cli.main_install_repair import (  # frozen updater surface: update_c
     _resolve_install_target_python,
     _resolve_node_runtime_npm,
     _resolve_update_branch,
+    _resolve_update_ref,
+    _update_branch_explicit,
     _run_install_with_heartbeat,
     _run_package_only_install,
     _update_marker_path,
@@ -2189,6 +2191,13 @@ def _update_preflight_handled(args) -> bool:
         managed_error("update Hermes Agent")
         return True
 
+    update_ref = _resolve_update_ref(args)
+    branch_explicit = _update_branch_explicit(args)
+    if update_ref and branch_explicit:
+        print("✗ --ref and --branch are mutually exclusive.")
+        print("  Use --ref to pin a tag or commit; use --branch to track a branch tip.")
+        sys.exit(1)
+
     # --plan is read-only and deployment-kind aware, so it runs BEFORE the
     # docker/nix/apt refusal gates: on an image/package-managed install the
     # plan itself reports "not updatable in place" plus the right mechanism.
@@ -2224,13 +2233,18 @@ def _update_preflight_handled(args) -> bool:
         sys.exit(2)
 
     if getattr(args, "check", False):
+        # --check is branch-tip only. A pin is a checkout, not "is origin/X ahead?".
+        if update_ref:
+            print("✗ --check does not support --ref.")
+            print("  --check compares against a branch tip. Use --branch to select the branch.")
+            sys.exit(1)
         # --check honors --branch so its answer matches what update would pull.
         branch = _resolve_update_branch(args)
         from hermes_cli.update_cmd import _cmd_update_check
 
         _cmd_update_check(
             branch=branch,
-            branch_explicit=bool(getattr(args, "branch", None)),
+            branch_explicit=branch_explicit,
         )
         return True
     return False

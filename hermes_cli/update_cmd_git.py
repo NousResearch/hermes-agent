@@ -7,6 +7,7 @@ test patches on ``update_cmd`` stay effective).
 
 import logging
 from contextlib import suppress
+import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -488,3 +489,189 @@ def _normalize_managed_eol(git_cmd, repo_root):
                 return
             print(f"→ Normalized line-ending churn ({len(eol_only)} file(s))")
         subprocess.run(git_cmd + ["config", "core.autocrlf", "false"], cwd=repo_root, capture_output=True, check=False)
+
+
+_COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+
+
+def _looks_like_commit_sha(ref: str) -> bool:
+    """True for a 7-40 hex commit abbreviation or full SHA."""
+    return bool(_COMMIT_SHA_RE.fullmatch(ref))
+
+
+def _git_is_shallow(git_cmd, cwd) -> bool:
+    result = subprocess.run(
+        git_cmd + ["rev-parse", "--is-shallow-repository"],
+        cwd=cwd,
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    return result.stdout.strip() == "true"
+
+
+def _git_rev_parse_commit(git_cmd, cwd, spec: str) -> str | None:
+    """Resolve ``spec`` to a commit SHA, or None if it does not exist."""
+    result = subprocess.run(
+        git_cmd + ["rev-parse", "--verify", "--quiet", spec],
+        cwd=cwd,
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    if result.returncode != 0:
+        return None
+    sha = (result.stdout or "").strip()
+    return sha or None
+
+
+def _classify_update_ref(git_cmd, cwd, ref: str) -> tuple[str, str] | None:
+    """Classify a pin after the single fetch/deepen attempt."""
+    tag_sha = _git_rev_parse_commit(git_cmd, cwd, f"refs/tags/{ref}^{{commit}}")
+    if tag_sha:
+        return ("tag", tag_sha)
+
+    if _looks_like_commit_sha(ref):
+        sha = _git_rev_parse_commit(git_cmd, cwd, f"{ref}^{{commit}}")
+        if sha:
+            return ("sha", sha)
+        return None
+
+    branch_sha = _git_rev_parse_commit(
+        git_cmd, cwd, f"refs/heads/{ref}^{{commit}}"
+    ) or _git_rev_parse_commit(
+        git_cmd, cwd, f"refs/remotes/origin/{ref}^{{commit}}"
+    )
+    if branch_sha:
+        return ("branch", branch_sha)
+    return None
+
+
+def _fetch_update_ref(git_cmd, cwd, ref: str) -> subprocess.CompletedProcess:
+    """Fetch a tag or commit once. Shallow clones use ``--depth 1``."""
+    depth_args = ["--depth", "1"] if _git_is_shallow(git_cmd, cwd) else []
+    if _looks_like_commit_sha(ref):
+        fetch_spec = [ref]
+    else:
+        fetch_spec = ["tag", ref]
+    return subprocess.run(
+        git_cmd + ["fetch"] + depth_args + ["origin", *fetch_spec],
+        cwd=cwd,
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+
+
+def _apply_update_ref(
+    git_cmd,
+    ref: str,
+    *,
+    assume_yes: bool,
+    gateway_mode: bool,
+    gw_input_fn,
+    discard_local_changes: bool,
+) -> str:
+    """Pin the checkout to ``ref`` (tag or commit). Returns ``already`` or ``moved``."""
+    from hermes_cli.gitlock import clear_stale_git_locks
+    from hermes_cli.update_cmd import (
+        _capture_head_sha,
+        _classify_fetch_failure,
+        _m,
+        _print_fetch_failure,
+        _validate_critical_files_syntax,
+    )
+
+    cwd = _m().PROJECT_ROOT
+    cleared = clear_stale_git_locks(cwd)
+    if cleared:
+        print("  (removed stale git lock(s): %s)" % ", ".join(cleared))
+
+    print(f"→ Fetching {ref}...")
+    fetch_result = _fetch_update_ref(git_cmd, cwd, ref)
+    if fetch_result.returncode != 0:
+        stderr = (fetch_result.stderr or "").strip()
+        diagnosis = _classify_fetch_failure(stderr)
+        if diagnosis.startswith("✗ Network") or diagnosis.startswith("✗ Authentication"):
+            _print_fetch_failure(stderr)
+            sys.exit(1)
+
+    classified = _classify_update_ref(git_cmd, cwd, ref)
+    if classified is None:
+        print(f"✗ Ref '{ref}' could not be resolved to a tag or commit.")
+        if fetch_result.returncode != 0 and (fetch_result.stderr or "").strip():
+            print(f"  {fetch_result.stderr.strip().splitlines()[0]}")
+        print("  Use --ref with a git tag or a 7-40 character commit SHA.")
+        print("  To track a branch tip, use --branch instead.")
+        sys.exit(1)
+
+    kind, pin_sha = classified
+    if kind == "branch":
+        print(f"✗ '{ref}' is a branch, not a pin.")
+        print(f"  Use --branch {ref} to track that branch tip.")
+        sys.exit(1)
+
+    current_sha = _capture_head_sha(git_cmd, cwd)
+    short = pin_sha[:10]
+    if current_sha and current_sha == pin_sha:
+        print(f"✓ Already at {ref} ({short}).")
+        return "already"
+
+    print(f"→ Checking out {ref} ({short}, detached HEAD)...")
+    auto_stash_ref = _m()._stash_local_changes_if_needed(git_cmd, cwd)
+    pre_sha = current_sha
+    checkout_result = subprocess.run(
+        git_cmd + ["checkout", "--detach", pin_sha],
+        cwd=cwd,
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    if checkout_result.returncode != 0:
+        if auto_stash_ref is not None:
+            _m()._restore_stashed_changes(
+                git_cmd, cwd, auto_stash_ref,
+                prompt_user=False, input_fn=gw_input_fn,
+            )
+        print(f"✗ Failed to check out {ref} ({short}).")
+        if checkout_result.stderr.strip():
+            print(f"  {checkout_result.stderr.strip().splitlines()[0]}")
+        sys.exit(1)
+
+    syntax_ok, failing_path, syntax_error = _validate_critical_files_syntax(cwd)
+    if not syntax_ok:
+        print()
+        print("✗ Pinned code has a syntax error in a critical file:")
+        print(f"  {failing_path}")
+        if syntax_error:
+            for line in str(syntax_error).splitlines()[:6]:
+                print(f"    {line}")
+        if pre_sha:
+            print()
+            print(f"→ Rolling back to {pre_sha[:10]}...")
+            rollback_result = subprocess.run(
+                git_cmd + ["reset", "--hard", pre_sha],
+                cwd=cwd, capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+            )
+            if rollback_result.returncode == 0:
+                print("  ✓ Rollback complete — your install is unchanged.")
+            else:
+                print("  ✗ Rollback failed. Recover manually with:")
+                print(f"    cd {cwd} && git reset --hard {pre_sha}")
+        if auto_stash_ref is not None:
+            _m()._restore_stashed_changes(
+                git_cmd, cwd, auto_stash_ref,
+                prompt_user=False, input_fn=gw_input_fn,
+            )
+        sys.exit(1)
+
+    if auto_stash_ref is not None:
+        prompt_for_restore = (
+            not assume_yes
+            and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
+        )
+        if discard_local_changes:
+            _m()._discard_stashed_changes(git_cmd, cwd, auto_stash_ref)
+        else:
+            _m()._restore_stashed_changes(
+                git_cmd, cwd, auto_stash_ref,
+                prompt_user=prompt_for_restore, input_fn=gw_input_fn,
+            )
+    return "moved"

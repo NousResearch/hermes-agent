@@ -118,8 +118,8 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         help=(
             "Update this machine as a runtime-free remote Desktop client: "
             "advance the git checkout and rebuild the app, but skip venv, "
-            "dependency sync, and fleet/gateway restart. Refused when a "
-            "local Hermes runtime is present (use a normal update) or when "
+            "Python dependency sync, and fleet/gateway restart. A complete "
+            "local runtime uses the normal full update. Refused when "
             "the missing runtime looks like a broken local install."
         ),
     )

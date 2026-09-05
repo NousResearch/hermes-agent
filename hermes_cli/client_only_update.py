@@ -23,6 +23,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
+import tempfile
 import shutil
 import subprocess
 import sys
@@ -119,11 +121,11 @@ def remote_mode_from_connection_docs(
 
 def inspect_install_root(install_root: Path, *, windows: bool = False) -> UpdateSurface:
     """Read venv/bootstrap signals from a checkout. Does not read connection files."""
-    scripts = install_root / "venv" / ("Scripts" if windows else "bin")
+    bins = [install_root / name / ("Scripts" if windows else "bin") for name in (".venv", "venv")]
     hermes_name = "hermes.exe" if windows else "hermes"
     python_names = ("python.exe", "python") if windows else ("python3", "python")
-    has_hermes = _is_executable(scripts / hermes_name)
-    has_python = any(_is_executable(scripts / name) for name in python_names)
+    has_hermes = any(_is_executable(scripts / hermes_name) for scripts in bins)
+    has_python = any(_is_executable(scripts / name) for scripts in bins for name in python_names)
     marker = (install_root / ".hermes-bootstrap-complete").is_file()
     return UpdateSurface(
         has_venv_hermes=has_hermes,
@@ -152,6 +154,7 @@ def run_client_only_update(
     run: RunCommand | None = None,
     build_command: Sequence[str] | None = None,
     skip_desktop_build: bool = False,
+    relaunch_target: Path | None = None,
 ) -> ClientOnlyUpdateResult:
     """Advance the checkout and rebuild Desktop without a local runtime.
 
@@ -211,6 +214,17 @@ def run_client_only_update(
             kind=kind,
         )
 
+    # Never use rollback to clean up changes that belong to the user.
+    status = runner(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=install_root, env=_git_env(),
+    )
+    if status.returncode != 0 or status.stdout.strip():
+        return ClientOnlyUpdateResult(
+            ok=False, exit_code=1, kind=kind, installed_commit=pre_sha,
+            message="Update refused: could not verify a clean checkout or local changes exist. Preserve or commit them before retrying.",
+        )
+
     try:
         _git_check(runner, install_root, ["fetch", "origin", branch])
         _git_check(
@@ -237,8 +251,11 @@ def run_client_only_update(
                 install_root,
                 runner=runner,
                 build_command=build_command,
+                hermes_home=hermes_home,
+                expected_commit=post_sha,
+                relaunch_target=relaunch_target,
             )
-        except ClientOnlyBuildError as exc:
+        except (ClientOnlyBuildError, OSError) as exc:
             rolled = _rollback_to(runner, install_root, pre_sha)
             return ClientOnlyUpdateResult(
                 ok=False,
@@ -287,9 +304,7 @@ def _is_executable(path: Path) -> bool:
 
 
 def _run(args: Sequence[str], *, cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-    merged = os.environ.copy()
-    if env:
-        merged.update(env)
+    merged = os.environ.copy() if env is None else dict(env)
     merged.setdefault("GIT_TERMINAL_PROMPT", "0")
     return subprocess.run(
         list(args),
@@ -304,6 +319,7 @@ def _run(args: Sequence[str], *, cwd: Path, env: dict[str, str] | None = None) -
 
 def _git_env() -> dict[str, str]:
     return {
+        **os.environ,
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_OPTIONAL_LOCKS": "0",
     }
@@ -325,10 +341,57 @@ def _git_output(run: RunCommand, cwd: Path, args: Sequence[str]) -> str:
 
 def _rollback_to(run: RunCommand, cwd: Path, sha: str) -> bool:
     try:
-        _git_check(run, cwd, ["reset", "--hard", sha])
+        _git_check(run, cwd, ["reset", "--keep", sha])
         return True
     except ClientOnlyGitError:
         return False
+
+
+def _desktop_layout(output: Path) -> tuple[Path, Path, Path]:
+    if sys.platform == "darwin":
+        arch = "arm64" if platform.machine() == "arm64" else "x64"
+        bundle = output / ("mac-arm64" if arch == "arm64" else "mac") / "Hermes.app"
+        return bundle, bundle / "Contents/MacOS/Hermes", bundle / "Contents/Resources"
+    if sys.platform.startswith("linux"):
+        name = "linux-arm64-unpacked" if platform.machine() in ("arm64", "aarch64") else "linux-unpacked"
+        bundle = output / name
+        return bundle, bundle / "Hermes", bundle / "resources"
+    raise ClientOnlyBuildError("Client-only packaging is supported by the POSIX handoff only.")
+
+
+def _require_desktop_closed(executables: Sequence[Path], runner: RunCommand, cwd: Path) -> None:
+    # Match the full executable path, never an argv substring or bot process.
+    paths = {str(executable) for executable in executables}
+    if sys.platform.startswith("linux"):
+        # Linux `ps comm` reports a basename, unlike macOS. /proc exposes
+        # the actual executable without confusing a similarly named process.
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                target = os.readlink(entry / "exe").removesuffix(" (deleted)")
+            except (FileNotFoundError, PermissionError):
+                continue
+            if target in paths:
+                raise ClientOnlyBuildError("Desktop is running or reopened during the update. Close it fully and retry.")
+        return
+    result = runner(["ps", "-axo", "pid=,comm="], cwd=cwd)
+    if result.returncode:
+        raise ClientOnlyBuildError("Cannot verify that Desktop is closed; retry after closing it.")
+    for line in result.stdout.splitlines():
+        fields = line.strip().split(None, 1)
+        if len(fields) == 2 and fields[1] in paths:
+            raise ClientOnlyBuildError("Desktop is running or reopened during the update. Close it fully and retry.")
+
+
+def _verify_desktop_bundle(output: Path, commit: str) -> Path:
+    bundle, executable, resources = _desktop_layout(output)
+    stamp = load_json_object(resources / "install-stamp.json")
+    if not stamp or stamp.get("commit") != commit:
+        raise ClientOnlyBuildError("Packaged Desktop commit does not match the updated checkout.")
+    if not _is_executable(executable) or not (resources / "app.asar.unpacked/dist/index.html").is_file():
+        raise ClientOnlyBuildError("Packaged Desktop executable or application files are missing.")
+    return bundle
 
 
 def _rebuild_desktop(
@@ -336,35 +399,74 @@ def _rebuild_desktop(
     *,
     runner: RunCommand,
     build_command: Sequence[str] | None,
+    hermes_home: Path,
+    expected_commit: str,
+    relaunch_target: Path | None = None,
 ) -> bool:
     desktop_dir = install_root / "apps" / "desktop"
     if not (desktop_dir / "package.json").is_file():
-        return False
-
-    command = list(build_command or _default_desktop_build_command())
-    if not command:
-        raise ClientOnlyBuildError("no Node/npm runtime on PATH")
+        raise ClientOnlyBuildError("Desktop package.json is missing; no app was built.")
 
     env = os.environ.copy()
-    managed_node = Path(os.environ.get("HERMES_HOME") or install_root.parent) / "node" / "bin"
+    managed_node = hermes_home / "node" / "bin"
     if managed_node.is_dir():
         env["PATH"] = f"{managed_node}{os.pathsep}{env.get('PATH', '')}"
+    # Resolve npm only after adding the managed runtime used by GUI installs.
+    npm = shutil.which("npm", path=env.get("PATH"))
+    if not npm and not build_command:
+        raise ClientOnlyBuildError("No Node/npm runtime on PATH")
+    env["CI"] = "1"
+    env["CSC_IDENTITY_AUTO_DISCOVERY"] = "false"
+    for key in (
+        "ELECTRON_RUN_AS_NODE", "CSC_LINK", "CSC_KEY_PASSWORD", "APPLE_SIGNING_IDENTITY",
+        "APPLE_NOTARY_PROFILE", "APPLE_API_KEY", "APPLE_API_KEY_ID", "APPLE_API_ISSUER",
+    ):
+        env.pop(key, None)
 
-    result = runner(command, cwd=desktop_dir, env=env)
-    if result.returncode != 0:
-        tail = (result.stderr or result.stdout or "").strip()
-        raise ClientOnlyBuildError(tail or f"{' '.join(command)} failed")
+    release = desktop_dir / "release"
+    canonical, executable, _ = _desktop_layout(release)
+    executables = [executable]
+    if relaunch_target:
+        executables.append(relaunch_target / "Contents/MacOS/Hermes" if sys.platform == "darwin" else relaunch_target)
+    _require_desktop_closed(executables, runner, install_root)
+    # before-pack deletes its output directory. It must never target the
+    # installed bundle, even after the original Desktop PID has exited.
+    backup_root = hermes_home / "backups" / "desktop-client-updates"
+    backup_root.mkdir(parents=True, exist_ok=True)
+    operation = Path(tempfile.mkdtemp(prefix="update-", dir=backup_root))
+    output = operation / "release"
+    if build_command:
+        commands = [(list(build_command), desktop_dir)]
+    else:
+        platform_flag = "--mac" if sys.platform == "darwin" else "--linux"
+        arch = "arm64" if platform.machine() in ("arm64", "aarch64") else "x64"
+        commands = [
+            ([npm, "ci", "--include=dev"], install_root),
+            ([npm, "run", "build", "--workspace", "apps/desktop"], install_root),
+            ([npm, "run", "builder", "--workspace", "apps/desktop", "--",
+              platform_flag, f"--{arch}", "--dir", "--publish", "never",
+              f"-c.directories.output={output}"], install_root),
+        ]
+    for command, cwd in commands:
+        result = runner(command, cwd=cwd, env=env)
+        if result.returncode != 0:
+            tail = "\n".join((result.stderr or result.stdout or "").strip().splitlines()[-15:])
+            raise ClientOnlyBuildError(tail or f"{' '.join(command)} failed")
+
+    candidate = _verify_desktop_bundle(output, expected_commit)
+    _require_desktop_closed(executables, runner, install_root)
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    previous = operation / "previous-app"
+    had_previous = canonical.exists()
+    if had_previous:
+        canonical.rename(previous)
+    try:
+        candidate.rename(canonical)
+    except OSError:
+        if had_previous:
+            previous.rename(canonical)
+        raise
     return True
-
-
-def _default_desktop_build_command() -> list[str]:
-    override = os.environ.get("HERMES_CLIENT_ONLY_BUILD_CMD")
-    if override:
-        return override.split()
-    npm = shutil.which("npm")
-    if npm:
-        return [npm, "run", "build"]
-    return []
 
 
 def _write_client_receipt(
@@ -403,6 +505,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--install-root", required=True)
     parser.add_argument("--branch", default="main")
     parser.add_argument("--hermes-home")
+    parser.add_argument("--relaunch-target", help="Desktop app or executable selected by the native handoff")
     parser.add_argument(
         "--client-only",
         action="store_true",
@@ -410,7 +513,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--connection-file", help="Optional connection.json path for classification")
     parser.add_argument("--connections-file", help="Optional connections.json path for classification")
-    parser.add_argument("--skip-desktop-build", action="store_true")
     return parser
 
 
@@ -426,7 +528,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         hermes_home=Path(args.hermes_home) if args.hermes_home else None,
         remote_mode=remote_mode,
         force_client_only=args.client_only,
-        skip_desktop_build=args.skip_desktop_build,
+        relaunch_target=Path(args.relaunch_target) if args.relaunch_target else None,
     )
     if result.installed_commit:
         print(f"INSTALLED_COMMIT={result.installed_commit}")

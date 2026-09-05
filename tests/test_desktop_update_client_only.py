@@ -54,7 +54,9 @@ def _init_origin(path: Path) -> str:
     _git(path, "config", "user.name", "Hermes Test")
     _git(path, "config", "user.email", "hermes@example.invalid")
     (path / "README.md").write_text("first\n", encoding="utf-8")
-    _git(path, "add", "README.md")
+    (path / "apps/desktop").mkdir(parents=True)
+    (path / "apps/desktop/package.json").write_text("{}", encoding="utf-8")
+    _git(path, "add", ".")
     _git(path, "commit", "-m", "first")
     return _git(path, "rev-parse", "HEAD")
 
@@ -85,7 +87,6 @@ def _launch_posix(
         **os.environ,
         "TMPDIR": str(install_root.parent),
         "PYTHONPATH": str(REPO_ROOT),
-        "HERMES_CLIENT_ONLY_SKIP_BUILD": "1",
         "GIT_TERMINAL_PROMPT": "0",
     }
     if env_extra:
@@ -122,9 +123,11 @@ def _prepare_behind_clone(tmp_path: Path) -> tuple[Path, Path, str, str]:
     _git(origin.parent, "clone", "--quiet", str(origin), str(install))
     _git(install, "config", "commit.gpgSign", "false")
     _git(install, "reset", "--hard", first)
+    (install / ".git/info/exclude").write_text("hermes_cli\napps/desktop/release/\n", encoding="utf-8")
     # Production PYTHONPATH is the checkout; a real install already has this
     # package. The tiny origin fixture does not, so link the live module.
     (install / "hermes_cli").symlink_to(REPO_ROOT / "hermes_cli")
+    _install_fake_npm(hermes_home)
     assert not (install / "venv" / "bin" / "hermes").exists()
     return install, hermes_home, first, second
 
@@ -194,7 +197,7 @@ def test_posix_client_only_success_still_relaunches_linux_unpacked(tmp_path: Pat
     unpacked = install / "apps" / "desktop" / "release" / "linux-unpacked"
     unpacked.mkdir(parents=True)
     stamp = hermes_home / "relaunch.stamp"
-    target = unpacked / "hermes-desktop"
+    target = unpacked / "Hermes"
     target.write_text(
         "#!/bin/sh\n"
         "printf launched > \"$HERMES_TEST_RELAUNCH_STAMP\"\n"
@@ -235,3 +238,43 @@ def test_posix_client_only_success_still_relaunches_linux_unpacked(tmp_path: Pat
         # Cooperative stop only — the dummy was setsid-detached by posix.sh,
         # so os.kill would trip the live-system guard.
         done.write_text("1", encoding="utf-8")
+
+
+def _install_fake_npm(hermes_home: Path):
+    """Exercise the real packaging command path without downloading Electron."""
+    npm = hermes_home / "node/bin/npm"
+    npm.parent.mkdir(parents=True)
+    npm.write_text('''#!/usr/bin/python3
+import json, os, subprocess, sys
+from pathlib import Path
+from hermes_cli.client_only_update import _desktop_layout
+if 'builder' in sys.argv:
+    output = Path(next(arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('-c.directories.output=')))
+    bundle, executable, resources = _desktop_layout(output)
+    executable.parent.mkdir(parents=True)
+    script = '#!/bin/sh\\nexit 0\\n'
+    if os.environ.get('HERMES_TEST_RELAUNCH_STAMP'):
+        script = '#!/bin/sh\\nprintf launched > "$HERMES_TEST_RELAUNCH_STAMP"\\nwhile [ ! -f "$HERMES_TEST_RELAUNCH_DONE" ]; do sleep 0.2; done\\n'
+    executable.write_text(script)
+    executable.chmod(0o755)
+    (resources / 'app.asar.unpacked/dist').mkdir(parents=True)
+    (resources / 'app.asar.unpacked/dist/index.html').write_text('packaged fixture')
+    commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+    (resources / 'install-stamp.json').write_text(json.dumps({'commit': commit}))
+''', encoding="utf-8")
+    npm.chmod(0o755)
+
+
+@pytest.mark.macos_only
+@requires_posix_handoff
+def test_macos_native_handoff_installs_matching_packaged_bundle(tmp_path: Path):
+    from hermes_cli.client_only_update import _desktop_layout
+    install, hermes_home, _, second = _prepare_behind_clone(tmp_path)
+    launched = _launch_posix(install_root=install, extra_args=["--client-only"])
+    assert launched.returncode == 0
+    payload = _wait_result(hermes_home)
+    assert payload["ok"] and payload["commit"] == second
+    _, executable, resources = _desktop_layout(install / "apps/desktop/release")
+    assert os.access(executable, os.X_OK)
+    assert json.loads((resources / "install-stamp.json").read_text())["commit"] == second
+    assert (resources / "app.asar.unpacked/dist/index.html").read_text() == "packaged fixture"

@@ -70,6 +70,15 @@ def _write_exe(path: Path) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
+def _commit_desktop_package(repo: Path) -> str:
+    desktop = repo / "apps" / "desktop"
+    desktop.mkdir(parents=True, exist_ok=True)
+    (desktop / "package.json").write_text("{}\n", encoding="utf-8")
+    _git(repo, "add", "apps/desktop/package.json")
+    _git(repo, "commit", "-m", "add desktop package")
+    return _git(repo, "rev-parse", "HEAD")
+
+
 # ── classification ────────────────────────────────────────────────────────
 
 
@@ -194,6 +203,167 @@ def test_missing_runtime_success_and_commit_readback(tmp_path: Path):
     )
 
 
+def test_dirty_checkout_refuses_before_fetch_and_preserves_staged_untracked_state(
+    tmp_path: Path,
+):
+    """A client update must never reset a user's dirty checkout.
+
+    Keep all three common forms of local work present at once: an unstaged
+    tracked edit, an index entry for the same tracked file, and an untracked
+    file. The real git pair makes this regression meaningful even when the
+    refusal is implemented before the fetch/merge path.
+    """
+    origin = tmp_path / "origin"
+    first = _init_repo(origin)
+    (origin / "README.md").write_text("upstream second\n", encoding="utf-8")
+    _git(origin, "add", "README.md")
+    _git(origin, "commit", "-m", "upstream second")
+
+    install = tmp_path / "home" / "hermes-agent"
+    _clone_behind(origin, install)
+    _git(install, "reset", "--hard", first)
+
+    tracked = install / "README.md"
+    tracked.write_text("staged local edit\n", encoding="utf-8")
+    _git(install, "add", "README.md")
+    tracked.write_text("unstaged local edit\n", encoding="utf-8")
+    untracked = install / "local-only.txt"
+    untracked.write_text("keep this file\n", encoding="utf-8")
+
+    before_status = _git(install, "status", "--porcelain=v1")
+    before_cached = _git(install, "diff", "--cached")
+    before_worktree = _git(install, "diff")
+    before_tracked = tracked.read_text(encoding="utf-8")
+    before_untracked = untracked.read_text(encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def recording_run(args, *, cwd, env=None):
+        calls.append(list(args))
+        return subprocess.run(
+            list(args),
+            cwd=str(cwd),
+            env={**os.environ, **(env or {})},
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+
+    result = run_client_only_update(
+        install,
+        hermes_home=tmp_path / "home",
+        force_client_only=True,
+        skip_desktop_build=True,
+        run=recording_run,
+    )
+
+    assert not result.ok
+    assert result.exit_code != 0
+    assert result.message
+    assert _git(install, "rev-parse", "HEAD") == first
+    assert _git(install, "status", "--porcelain=v1") == before_status
+    assert _git(install, "diff", "--cached") == before_cached
+    assert _git(install, "diff") == before_worktree
+    assert tracked.read_text(encoding="utf-8") == before_tracked
+    assert untracked.read_text(encoding="utf-8") == before_untracked
+    assert not any(
+        len(command) > 1 and command[0] == "git" and command[1] in {"fetch", "merge", "reset"}
+        for command in calls
+    )
+
+
+def test_missing_desktop_package_is_a_failed_update(tmp_path: Path):
+    """A checkout without the Desktop package must not report success."""
+    origin = tmp_path / "origin"
+    first = _init_repo(origin)
+    (origin / "README.md").write_text("upstream second\n", encoding="utf-8")
+    _git(origin, "add", "README.md")
+    _git(origin, "commit", "-m", "upstream second")
+
+    install = tmp_path / "home" / "hermes-agent"
+    _clone_behind(origin, install)
+    _git(install, "reset", "--hard", first)
+    build_marker = tmp_path / "build-invoked"
+
+    result = run_client_only_update(
+        install,
+        hermes_home=tmp_path / "home",
+        force_client_only=True,
+        build_command=["/bin/sh", "-c", f"touch {build_marker}; exit 0"],
+    )
+
+    assert not result.ok
+    assert result.kind == "client_only"
+    assert result.exit_code != 0
+    message = result.message.lower()
+    assert "desktop" in message
+    assert any(word in message for word in ("missing", "package", "build"))
+    assert result.rebuilt_desktop is False
+    assert not build_marker.exists()
+    assert _git(install, "rev-parse", "HEAD") == first
+    assert not (tmp_path / "home" / "logs" / "update_receipts" / "latest.json").exists()
+
+
+def test_repeated_update_preserves_remote_connection_config(tmp_path: Path):
+    """Repeated client updates are idempotent and leave Desktop routing intact."""
+    origin = tmp_path / "origin"
+    first = _init_repo(origin)
+    (origin / "README.md").write_text("upstream second\n", encoding="utf-8")
+    _git(origin, "add", "README.md")
+    _git(origin, "commit", "-m", "upstream second")
+    second = _git(origin, "rev-parse", "HEAD")
+
+    install = tmp_path / "home" / "hermes-agent"
+    _clone_behind(origin, install)
+    _git(install, "reset", "--hard", first)
+    connections = tmp_path / "home" / "connections.json"
+    connections.parent.mkdir(parents=True, exist_ok=True)
+    connections.write_text(
+        json.dumps(
+            {
+                "launchMode": "primary",
+                "primary": "vps",
+                "lastUsed": "vps",
+                "connections": [
+                    {"id": "vps", "kind": "ssh", "label": "production host"},
+                    {"id": "local", "kind": "local", "label": "this Mac"},
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    before_connections = connections.read_bytes()
+
+    first_result = run_client_only_update(
+        install,
+        hermes_home=tmp_path / "home",
+        force_client_only=True,
+        skip_desktop_build=True,
+    )
+    assert first_result.ok
+    assert first_result.installed_commit == second
+    assert connections.read_bytes() == before_connections
+
+    second_result = run_client_only_update(
+        install,
+        hermes_home=tmp_path / "home",
+        force_client_only=True,
+        skip_desktop_build=True,
+    )
+    assert second_result.ok
+    assert second_result.installed_commit == second
+    assert _git(install, "rev-parse", "HEAD") == second
+    assert connections.read_bytes() == before_connections
+    receipt = json.loads(
+        (tmp_path / "home" / "logs" / "update_receipts" / "latest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert receipt["pre_update"]["sha"] == second
+    assert receipt["post_update"]["sha"] == second
+
+
 def test_broken_local_missing_runtime_is_refused(tmp_path: Path):
     install = tmp_path / "hermes-agent"
     _init_repo(install)
@@ -239,7 +409,8 @@ def test_git_failure_rolls_back(tmp_path: Path):
 
 def test_build_failure_rolls_back_and_does_not_claim_new_commit(tmp_path: Path):
     origin = tmp_path / "origin"
-    first = _init_repo(origin)
+    _init_repo(origin)
+    first = _commit_desktop_package(origin)
     (origin / "README.md").write_text("second\n", encoding="utf-8")
     _git(origin, "add", "README.md")
     _git(origin, "commit", "-m", "second")
@@ -248,9 +419,6 @@ def test_build_failure_rolls_back_and_does_not_claim_new_commit(tmp_path: Path):
     install = tmp_path / "home" / "hermes-agent"
     _clone_behind(origin, install)
     _git(install, "reset", "--hard", first)
-    desktop = install / "apps" / "desktop"
-    desktop.mkdir(parents=True)
-    (desktop / "package.json").write_text("{}", encoding="utf-8")
 
     result = run_client_only_update(
         install,
@@ -269,7 +437,8 @@ def test_build_failure_rolls_back_and_does_not_claim_new_commit(tmp_path: Path):
 
 def test_dependency_command_failure_rolls_back(tmp_path: Path):
     origin = tmp_path / "origin"
-    first = _init_repo(origin)
+    _init_repo(origin)
+    first = _commit_desktop_package(origin)
     (origin / "README.md").write_text("second\n", encoding="utf-8")
     _git(origin, "add", "README.md")
     _git(origin, "commit", "-m", "second")
@@ -277,9 +446,6 @@ def test_dependency_command_failure_rolls_back(tmp_path: Path):
     install = tmp_path / "home" / "hermes-agent"
     _clone_behind(origin, install)
     _git(install, "reset", "--hard", first)
-    desktop = install / "apps" / "desktop"
-    desktop.mkdir(parents=True)
-    (desktop / "package.json").write_text("{}", encoding="utf-8")
 
     result = run_client_only_update(
         install,
@@ -326,3 +492,25 @@ def test_client_only_never_invokes_fleet_or_gateway_helpers(tmp_path: Path, monk
     assert all("fleet" not in " ".join(c) for c in calls)
     assert all("gateway" not in c for c in joined)
     assert all(c[0] == "git" for c in calls)
+
+
+def test_dot_venv_is_not_classified_as_runtime_free(tmp_path):
+    install = tmp_path / "hermes-agent"
+    _init_repo(install)
+    _write_exe(install / ".venv/bin/hermes")
+    _write_exe(install / ".venv/bin/python3")
+    result = run_client_only_update(install, force_client_only=True, skip_desktop_build=True)
+    assert not result.ok
+    assert result.kind == "full_install"
+
+
+@pytest.mark.linux_only
+def test_linux_running_desktop_is_detected_by_executable_path(tmp_path):
+    from hermes_cli.client_only_update import ClientOnlyBuildError, _require_desktop_closed
+    executable = tmp_path / "Hermes"
+    shutil.copy2("/bin/sleep", executable)
+    # Popen returns after exec; the process exits cooperatively, with no signal.
+    with subprocess.Popen([str(executable), "2"]) as process:
+        assert process.poll() is None
+        with pytest.raises(ClientOnlyBuildError, match="running or reopened"):
+            _require_desktop_closed([executable], subprocess.run, tmp_path)

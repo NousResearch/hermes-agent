@@ -418,7 +418,7 @@ import {
   MIN_HEIGHT as WINDOW_MIN_HEIGHT,
   MIN_WIDTH as WINDOW_MIN_WIDTH
 } from './window-state'
-import { isClientOnlyUpdateSurface } from './client-only-update'
+import { inspectClientOnlyUpdateSurface, isClientOnlyUpdateSurface } from './client-only-update'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 import {
   buildPathExtCandidates,
@@ -4472,18 +4472,7 @@ async function applyUpdatesPosixHandoff(opts: any) {
   }
 
   const args = [...handoff.args, '--install-root', updateRoot, '--branch', branch, '--desktop-pid', String(process.pid)]
-  const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
-  const venvHermes = path.join(venvBin, IS_WINDOWS ? 'hermes.exe' : 'hermes')
-  const venvPython = path.join(venvBin, IS_WINDOWS ? 'python.exe' : 'python')
-  const venvPython3 = path.join(venvBin, 'python3')
-
-  if (
-    isClientOnlyUpdateSurface({
-      remoteMode: globalRemoteActive(),
-      hasVenvHermes: fileExists(venvHermes),
-      hasVenvPython: fileExists(venvPython) || (!IS_WINDOWS && fileExists(venvPython3))
-    })
-  ) {
+  if (isClientOnlyUpdateSurface(inspectClientOnlyUpdateSurface(updateRoot, primaryBackendIsRemote()))) {
     args.push('--client-only')
     rememberLog('[updates] runtime-free remote client: posix hand-off will skip venv/fleet restart')
   }

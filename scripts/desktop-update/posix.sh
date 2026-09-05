@@ -737,8 +737,8 @@ run_client_only_update() {
     --install-root "$INSTALL_ROOT" \
     --hermes-home "$HERMES_HOME" \
     --branch "$BRANCH" \
+    --relaunch-target "$RELAUNCH_TARGET" \
     --client-only \
-    ${HERMES_CLIENT_ONLY_SKIP_BUILD:+--skip-desktop-build} \
     >"$STATUS.clientout" 2>&1
   code=$?
   out="$(cat "$STATUS.clientout" 2>/dev/null)"

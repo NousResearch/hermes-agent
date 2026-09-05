@@ -927,8 +927,20 @@ def _handle_unblock(args: dict, **kw) -> str:
     _check(tid, "task_id is required")
     tid = str(tid)
     _enforce_worker_task_ownership(tid)
+    # Audit: attribute the unblock to the calling worker's
+    # profile/session so the ``unblocked`` event is reconstructable.
+    # Prefer the request-scoped origin binding over HERMES_SESSION_ID
+    # (the env var is clobbered with a subagent's internal id whenever a
+    # child agent is constructed in-process — see _handle_create).
+    from tools.async_delegation import _current_origin_session_id
+    profile = (os.environ.get("HERMES_PROFILE") or "").strip() or "worker"
+    session = (
+        _current_origin_session_id()
+        or (os.environ.get("HERMES_SESSION_ID") or "").strip()
+    )
+    actor = f"tool:{profile}:{session}" if session else f"tool:{profile}"
     with _board(args.get("board")) as (kb, conn):
-        _check(kb.unblock_task(conn, tid), f"could not unblock {tid} (not blocked or unknown)")
+        _check(kb.unblock_task(conn, tid, actor=actor), f"could not unblock {tid} (not blocked or unknown)")
         return _ok(task_id=tid, **_fields(kb.get_task(conn, tid), ("status",)))
 
 

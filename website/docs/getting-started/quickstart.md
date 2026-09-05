@@ -216,11 +216,14 @@ If that works, you're past the hardest part.
 Before moving on, make sure resume works:
 
 ```bash
-hermes --continue    # Resume the most recent session
-hermes -c            # Short form
+hermes --continue    # Resume the most recent CLI session
+hermes -c            # Short form (CLI only)
+hermes --tui -c      # Resume a TUI session
 ```
 
 That should bring you back to the session you just had. If it doesn't, check whether you're in the same profile and whether the session actually saved. This matters later when you're juggling multiple setups or machines.
+
+**Note:** If you started your session with `hermes --tui`, use `hermes --tui -c` to resume it. The plain `hermes -c` form resumes CLI sessions opened without `--tui`.
 
 ## 5. Try Key Features
 

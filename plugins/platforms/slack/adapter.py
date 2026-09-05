@@ -43,8 +43,10 @@ from gateway.platforms.base import (
 
 try:  # sibling module; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
+    from .thread_participation import SlackThreadParticipationStore
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
+    from thread_participation import SlackThreadParticipationStore  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -902,6 +904,7 @@ class SlackAdapter(BasePlatformAdapter):
         # Bot-sent message ts / @mentioned threads: replies there get answered without a mention.
         self._bot_message_ts: set[str] = set()
         self._mentioned_threads: set[str] = set()
+        self._thread_participation = SlackThreadParticipationStore()
         # (team_id, channel_id, thread_ts) → Assistant thread metadata; lifecycle
         # events may precede message events and carry session-scoping identity.
         self._assistant_threads: Dict[Tuple[str, str, str], Dict[str, str]] = {}
@@ -1032,6 +1035,9 @@ class SlackAdapter(BasePlatformAdapter):
             value = factory()
             setattr(self, name, value)
         return value
+
+    def _thread_participation_store(self) -> SlackThreadParticipationStore:
+        return self._lazy_attr("_thread_participation", SlackThreadParticipationStore)
 
     def _remember_channel_team(self, channel_id: str, team_id: str) -> None:
         """Record which workspace owns *channel_id* (bounded oldest-first). Channel ids are
@@ -3821,6 +3827,24 @@ class SlackAdapter(BasePlatformAdapter):
                 "[Slack] Early reject of unauthorized user %s in channel %s", user_id, channel_id)
         return decision is False
 
+    def _allowed_channel_gate_allows(self, channel_id: str) -> bool:
+        """Apply the configured channel allowlist before any channel-scoped side effect."""
+        allowed_channels = self._slack_allowed_channels()
+        if allowed_channels and channel_id not in allowed_channels:
+            logger.debug("[Slack] Ignoring message in non-allowed channel: %s", channel_id)
+            return False
+        return True
+
+    @staticmethod
+    def _slack_participation_mention_text(text: str, bot_uid: Optional[str]) -> Optional[str]:
+        """Return text sans this bot's exact Slack mention, or None when absent."""
+        if not bot_uid:
+            return None
+        token = f"<@{bot_uid}>"
+        if token not in text:
+            return None
+        return text.replace(token, "").strip()
+
     async def _channel_gate_allows(
         self, *, channel_id: str, routing_text: str, bot_uid: str, is_mentioned: bool,
         is_thread_reply: bool, event_thread_ts, user_id: str, team_id: str, is_dm: bool,
@@ -3829,9 +3853,14 @@ class SlackAdapter(BasePlatformAdapter):
         ``thread_require_mention``), when @mentioned, or when a wake check passes. Always silent
         outside ``allowed_channels`` or when addressed to another user; ``force_process`` skips only
         the mention rule."""
-        allowed_channels = self._slack_allowed_channels()
-        if allowed_channels and channel_id not in allowed_channels:
-            logger.debug("[Slack] Ignoring message in non-allowed channel: %s", channel_id)
+        if not self._allowed_channel_gate_allows(channel_id):
+            return False
+        if event_thread_ts and self._thread_participation_store().is_muted(
+            team_id, channel_id, event_thread_ts
+        ):
+            logger.debug(
+                "[Slack] Ignoring message in a thread this bot left: channel=%s thread_ts=%s",
+                channel_id, event_thread_ts)
             return False
         self_uids = {u for u in (bot_uid, self._bot_user_id) if u}
         if (
@@ -4239,6 +4268,7 @@ class SlackAdapter(BasePlatformAdapter):
         is_mentioned = bool(
             (bot_uid and f"<@{bot_uid}>" in routing_text)
             or self._slack_message_matches_mention_patterns(routing_text))
+        participation_text = self._slack_participation_mention_text(original_text, bot_uid)
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
         # Internal triggers (reactions) skip the mention requirement but NOT
@@ -4246,6 +4276,40 @@ class SlackAdapter(BasePlatformAdapter):
         force_process = bool(event.get("_hermes_force_process"))
         if await self._peer_bot_drop(event, user_id, bot_uid, channel_id, team_id, is_mentioned):
             return
+        if not is_one_to_one_dm and bot_uid and not self._allowed_channel_gate_allows(channel_id):
+            return
+        if participation_text is not None and thread_ts:
+            if is_thread_reply and participation_text.lower() == "!leave":
+                result = self._thread_participation_store().mute(
+                    team_id, channel_id, thread_ts)
+                marker = self._workspace_message_marker(team_id, thread_ts)
+                await self.send(
+                    channel_id,
+                    (
+                        "Left this thread. Mention me to rejoin."
+                        if result.persisted
+                        else "Couldn't leave this thread because the leave state could not be saved. Please try again."
+                    ),
+                    reply_to=thread_ts,
+                    metadata={"team_id": team_id},
+                )
+                # send() records its reply root as bot participation, so clear direct wake
+                # markers only after the acknowledgement has completed.
+                if result.persisted:
+                    for wake_markers in (self._mentioned_threads, self._bot_message_ts):
+                        wake_markers.discard(marker)
+                        wake_markers.discard(thread_ts)
+                return
+            result = self._thread_participation_store().unmute(
+                team_id, channel_id, thread_ts)
+            if not result.persisted:
+                await self.send(
+                    channel_id,
+                    "Couldn't rejoin this thread because the leave state could not be saved. Please try again.",
+                    reply_to=thread_ts,
+                    metadata={"team_id": team_id},
+                )
+                return
         if (
             not is_one_to_one_dm and bot_uid and not await self._channel_gate_allows(
             channel_id=channel_id, routing_text=routing_text, bot_uid=bot_uid,

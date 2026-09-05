@@ -1737,4 +1737,35 @@ describe('hosted Group Chat runtime', () => {
     ).toMatchObject({ kind: 'queued', canStop: true })
     expect(loaded.runtime.hostedRoomPollFingerprint({ revision: 4, latest_seq: 9 })).toBe('4:9')
   })
+
+  it('keeps deferred work actionable after settlement without hiding healthy work', async () => {
+    const loaded = await loadRuntime(() => ({}))
+    const display = loaded.runtime.hostedRoomDriverDisplayStatus
+    const pending = { pending_actions: [{ kind: 'retry', task_id: 'deferred-task' }] }
+
+    expect(display({ kind: 'ready' }, pending)).toMatchObject({
+      kind: 'needs-attention',
+      canRetry: true,
+      canStop: false
+    })
+    expect(display({ kind: 'ready' }, { ...pending, needs_attention: true })).toMatchObject({
+      kind: 'needs-attention',
+      canRetry: true
+    })
+    expect(display({ kind: 'ready' }, { ...pending, working: true })).toMatchObject({
+      kind: 'working',
+      canStop: true
+    })
+    expect(display({ kind: 'ready' }, pending, { stopping: true })).toMatchObject({
+      kind: 'stopping',
+      canStop: false
+    })
+    expect(display({ kind: 'ready' }, { pending_actions: [{ kind: 'approval' }] })).toMatchObject({
+      kind: 'needs-attention',
+      canRetry: false
+    })
+    expect(display({ kind: 'ready' }, { pending_actions: [], needs_attention: false })).toMatchObject({
+      kind: 'ready'
+    })
+  })
 })

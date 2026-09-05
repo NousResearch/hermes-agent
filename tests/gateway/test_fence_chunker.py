@@ -15,6 +15,7 @@ from gateway.platforms.helpers import (
     merge_streaming_fences,
     split_at_paragraph_boundary,
     split_markdown_atoms,
+    split_markdown_paragraphs,
     split_markdown_table_row,
     split_text_fence_aware,
     text_has_unclosed_fence,
@@ -99,6 +100,15 @@ def test_atoms_fence_kept_whole():
     fence_atoms = [a for a in atoms if a.lstrip().startswith("```")]
     assert len(fence_atoms) == 1
     assert fence_atoms[0].rstrip().endswith("```")
+
+
+def test_markdown_paragraphs_split_only_on_blank_lines_outside_fences():
+    text = "Intro\n```python\na = 1\n\nb = 2\n```\nOutro\n\nNext"
+
+    assert split_markdown_paragraphs(text) == [
+        "Intro\n```python\na = 1\n\nb = 2\n```\nOutro",
+        "Next",
+    ]
 
 
 # ── streaming merge + separators ─────────────────────────────────────────────

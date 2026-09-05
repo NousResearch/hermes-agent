@@ -1183,6 +1183,24 @@ async def test_display_streaming_does_not_enable_gateway_streaming(monkeypatch, 
     assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
 
 
+@pytest.mark.asyncio
+async def test_photon_default_delivers_commentary_without_token_fragments(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-photon-default-commentary",
+        platform=Platform("photon"),
+        chat_id="space-1",
+        chat_type="direct",
+        adapter_cls=NonEditingProgressCaptureAdapter,
+    )
+
+    assert result.get("already_sent") is not True
+    assert adapter.edits == []
+    assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
+
+
 class TransformedStreamAgent:
     """Streams a response, then signals the gateway that a plugin hook
     (``transform_llm_output``) modified the final text after streaming

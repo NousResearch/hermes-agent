@@ -195,6 +195,23 @@ Common issues:
 - **Sidecar won't start** — confirm `node --version` is 18.17+ and that
   `hermes photon install-sidecar` completed without errors.
 
+## Conversation behavior
+
+Each Photon space maps to one persistent Hermes session. Normal messages keep
+using that session across gateway restarts, so routine conversation does not
+require `/resume` or `/new`. Hermes compresses older context automatically when
+context compression is enabled (the default). `/new` remains an explicit reset.
+
+For tasks that require tools or research, Hermes first sends a brief natural
+acknowledgment describing what it is about to do. This is visible commentary,
+not private reasoning. It then sends completed mid-turn commentary as work
+progresses and splits the final reply into conversational iMessage bubbles.
+Blank-line-separated sections become separate bubbles. Every bare URL on its own
+line becomes a separate native rich-link card, including links between text
+sections. Blank lines inside fenced code blocks stay in the same message. Set
+`PHOTON_MARKDOWN=false` to disable Markdown and rich-link rendering; section
+splitting still applies.
+
 ## Limits today
 
 - **Inbound attachments are metadata-only.** Inbound events carry the

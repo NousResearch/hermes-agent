@@ -2345,15 +2345,21 @@ class GatewayTurnMixin:
         if source.platform == Platform.TELEGRAM and hasattr(adapter, "pause_typing_for_chat"):
             def _pause_typing_before_finalize(_adapter=adapter, _chat_id=source.chat_id) -> None:
                 _adapter.pause_typing_for_chat(_chat_id)
-        # Non-editing platforms (QQ, WeChat) skip streaming — the partial first message could never
-        # be updated — unless they have a native-streaming transport (WeCom msgtype "stream").
+        # Non-editing platforms (QQ, WeChat) skip token streaming because the
+        # partial first message could never be updated. Completed commentary
+        # can still use this consumer in buffer-only mode to send distinct
+        # messages, while native-streaming transports (WeCom msgtype "stream")
+        # keep their normal streaming path.
         _adapter_supports_edit = getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
         _adapter_supports_native_stream = bool(getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False))
-        if not _adapter_supports_edit and not _adapter_supports_native_stream and on_missing_cursor == "raise":
-            raise RuntimeError("skip streaming for non-editable platform")
+        _buffer_only = False
+        if not _adapter_supports_edit and not _adapter_supports_native_stream:
+            if on_missing_cursor == "raise":
+                raise RuntimeError("skip streaming for non-editable platform")
+            _buffer_only = True
         _effective_cursor = scfg.cursor if _adapter_supports_edit else ""
         # Some Matrix clients render the cursor as tofu: stream text, no cursor.
-        _buffer_only = source.platform == Platform.MATRIX
+        _buffer_only = _buffer_only or source.platform == Platform.MATRIX
         if _buffer_only:
             _effective_cursor = ""
         # Fresh-final applies to Telegram only (others edit in place cheaply).

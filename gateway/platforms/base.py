@@ -3648,12 +3648,17 @@ class BasePlatformAdapter(ABC):
         replacement adapter live, trigger another redelivery sweep (the watcher's may have run
         before this failure landed; atomic claiming keeps it idempotent)."""
         try:
-            from gateway.delivery_ledger import mark_delivered, mark_failed
+            from gateway.delivery_ledger import mark_delivered, mark_failed, mark_failed_with_content
             if getattr(result, "success", False):
                 await asyncio.to_thread(mark_delivered, obligation_id)
                 return
             error = str(getattr(result, "error", "") or "")
-            await asyncio.to_thread(mark_failed, obligation_id, error)
+            raw = getattr(result, "raw_response", None)
+            undelivered = raw.get("undelivered_content") if isinstance(raw, dict) else None
+            if isinstance(undelivered, str) and undelivered:
+                await asyncio.to_thread(mark_failed_with_content, obligation_id, undelivered, error)
+            else:
+                await asyncio.to_thread(mark_failed, obligation_id, error)
             if error == "send_path_degraded":
                 redeliver = getattr(
                     self.gateway_runner, "_redeliver_failed_obligations_for_platform", None)

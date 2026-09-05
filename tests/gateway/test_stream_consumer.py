@@ -558,6 +558,45 @@ class TestFinalResponseDeliveryGuard:
     promotion can taint)."""
 
     @pytest.mark.asyncio
+    async def test_first_send_partial_bubbles_falls_back_to_missing_tail(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(
+                success=False,
+                error="second bubble failed",
+                message_id="m1",
+                continuation_message_ids=(),
+                raw_response={
+                    "partial_bubble_delivery": True,
+                    "delivered_prefix": "First.",
+                    "undelivered_content": "Second.",
+                    "last_message_id": "m1",
+                },
+            ),
+            SimpleNamespace(success=True, message_id="m2"),
+        ])
+        adapter.edit_message = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.platform = SimpleNamespace(value="photon")
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(buffer_only=True, cursor=""),
+        )
+
+        consumer.on_delta("First.\n\nSecond.")
+        consumer.finish()
+        await consumer.run()
+
+        assert [call.kwargs["content"] for call in adapter.send.await_args_list] == [
+            "First.\n\nSecond.",
+            "Second.",
+        ]
+        assert consumer.final_response_sent
+        adapter.edit_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_split_overflow_failed_send_does_not_mark_final_sent(self):
         """Split-overflow path: if every chunk send fails on done frame,
         _final_response_sent must stay False so the gateway falls back."""

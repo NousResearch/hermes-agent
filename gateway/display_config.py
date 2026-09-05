@@ -60,7 +60,10 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "signal": _TIER_LOW,
     "whatsapp": _TIER_MEDIUM,  # Baileys bridge supports /edit
     "whatsapp_cloud": _TIER_LOW,  # adapter lacks edit_message; promote once it lands
-    "photon": _TIER_LOW,  # permanent-message iMessage inboxes (no edit)
+    # iMessage is a conversational inbox: send the model's completed mid-turn
+    # commentary as separate bubbles instead of leaving the user at "typing..."
+    # until the full turn ends. Token streaming and operational chatter stay off.
+    "photon": {**_TIER_LOW, "interim_assistant_messages": True},
     "bluebubbles": _TIER_LOW,
     "weixin": _TIER_LOW,
     # Non-editable, but its native "stream" msgtype gives a typing animation + cumulative updates.

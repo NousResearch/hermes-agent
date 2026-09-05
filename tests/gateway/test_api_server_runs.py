@@ -390,6 +390,47 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_events_stream_broadcasts_terminal_event_to_concurrent_subscribers(
+        self, adapter
+    ):
+        release = threading.Event()
+        agent = MagicMock()
+
+        def finish_after_subscribers_connect(**_):
+            release.wait(timeout=5.0)
+            return {"final_response": "broadcast"}
+
+        agent.run_conversation.side_effect = finish_after_subscribers_connect
+        agent.session_prompt_tokens = 1
+        agent.session_completion_tokens = 1
+        agent.session_total_tokens = 2
+        app = _create_runs_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=agent):
+                started = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await started.json())["run_id"]
+                first = asyncio.create_task(cli.get(f"/v1/runs/{run_id}/events"))
+                second = asyncio.create_task(cli.get(f"/v1/runs/{run_id}/events"))
+                for _ in range(100):
+                    if len(adapter._run_stream_subscribers.get(run_id, ())) == 2:
+                        break
+                    await asyncio.sleep(0.01)
+                assert len(adapter._run_stream_subscribers[run_id]) == 2
+
+                release.set()
+                responses = await asyncio.wait_for(
+                    asyncio.gather(first, second), timeout=5.0
+                )
+                bodies = await asyncio.wait_for(
+                    asyncio.gather(*(response.text() for response in responses)),
+                    timeout=2.0,
+                )
+
+        assert all("run.completed" in body for body in bodies)
+        assert all("broadcast" in body for body in bodies)
+
 
     @pytest.mark.asyncio
     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):

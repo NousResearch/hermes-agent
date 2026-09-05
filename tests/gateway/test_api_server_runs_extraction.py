@@ -132,7 +132,7 @@ def test_run_state_initialization_and_teardown_are_shard_owned():
     assert adapter._run_owners == {}
     assert adapter._run_streams == {}
     assert adapter._run_streams_created == {}
-    assert adapter._run_stream_subscribers == set()
+    assert adapter._run_stream_subscribers == {}
     assert adapter._active_run_agents == {}
     assert adapter._active_run_tasks == {}
     assert adapter._stopping_run_ids == set()

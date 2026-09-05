@@ -319,14 +319,14 @@ function profilePickConnectionId(profile?: string): null | string {
  * the owner hint, the optimistic row and every later session-scoped RPC name
  * the same registry entry. A legacy profile-only activation yields null.
  */
-export function resolveNewChatOwnerRoute(): AgentProfileRoute | null {
+export function resolveNewChatOwnerRoute(forProfile?: string): AgentProfileRoute | null {
   const explicit = $newChatRoute.get()
 
-  if (explicit) {
+  if (explicit && (!forProfile || normalizeProfileKey(explicit.profile) === normalizeProfileKey(forProfile))) {
     return explicit
   }
 
-  const intentProfile = $newChatProfile.get()
+  const intentProfile = forProfile ? normalizeProfileKey(forProfile) : $newChatProfile.get()
 
   const connectionId = (
     (intentProfile

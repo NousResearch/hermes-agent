@@ -14,8 +14,10 @@ from __future__ import annotations
 from hermes_cli import gateway as hermes_gateway
 from hermes_cli import gateway_windows
 from hermes_cli import main as cli_main
+import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import process_identity
 from hermes_cli import update_cmd
+import hermes_cli.update_cmd_windows as update_cmd_windows
 
 
 def _live_serve_ledger_entry() -> dict:
@@ -86,24 +88,28 @@ def test_orphaned_control_plane_does_not_own_lifecycle(monkeypatch):
 
 def test_pause_skips_cold_start_plan_when_desktop_owns_lifecycle(monkeypatch):
     monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
     monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda **_k: [])
     monkeypatch.setattr(
         hermes_gateway, "find_windows_gateway_services", lambda **_k: []
     )
     monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
     monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: True)
+    monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: True)
 
     assert update_cmd._pause_windows_gateways_for_update() is None
 
 
 def test_pause_still_cold_starts_when_autostart_and_no_desktop_owner(monkeypatch):
     monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
     monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda **_k: [])
     monkeypatch.setattr(
         hermes_gateway, "find_windows_gateway_services", lambda **_k: []
     )
     monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
     monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: False)
+    monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: False)
 
     token = update_cmd._pause_windows_gateways_for_update()
 
@@ -119,8 +125,10 @@ def test_pause_still_cold_starts_when_autostart_and_no_desktop_owner(monkeypatch
 def test_cold_start_aborts_when_desktop_owns_lifecycle(monkeypatch):
     spawned = []
     monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
     monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda **_k: [])
     monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: True)
+    monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: True)
     monkeypatch.setattr(
         gateway_windows, "_spawn_detached", lambda: spawned.append(1) or 4242
     )

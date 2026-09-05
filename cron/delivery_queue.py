@@ -89,7 +89,7 @@ def _transaction() -> Iterator[sqlite3.Connection]:
             pass
         conn.row_factory = sqlite3.Row
         try:
-            from hermes_state import apply_wal_with_fallback
+            from hermes_state_wal import apply_wal_with_fallback
 
             conn.execute("PRAGMA busy_timeout=5000")
             apply_wal_with_fallback(conn, db_label="cron/deliveries.db")

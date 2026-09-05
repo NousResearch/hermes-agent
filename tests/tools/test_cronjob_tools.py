@@ -105,7 +105,7 @@ class TestScanCronPrompt:
 # Skill-assembled cron prompt scanning (looser pattern set)
 # =========================================================================
 
-from tools.cronjob_tools import _scan_cron_skill_assembled  # noqa: E402
+from tools.cronjob_prompt_scan import _scan_cron_skill_assembled  # noqa: E402
 
 
 class TestScanCronSkillAssembled:

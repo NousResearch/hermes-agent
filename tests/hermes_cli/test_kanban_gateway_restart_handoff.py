@@ -14,6 +14,20 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_dispatch as kbd
 
 
+def _set_user_service_cgroup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model the user-service topology this handoff contract covers."""
+    import tools.process_registry as process_registry
+
+    real_read_text = process_registry.Path.read_text
+
+    def read_text(path: Path, *args, **kwargs) -> str:
+        if path == Path("/proc/self/cgroup"):
+            return "0::/user.slice/user-1000.slice/user@1000.service/app.slice/hermes.service\n"
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(process_registry.Path, "read_text", read_text)
+
+
 @pytest.fixture
 def worker_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, kb.Task]:
     root = tmp_path / ".hermes"
@@ -54,9 +68,11 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
     worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace, task = worker_setup
+    _set_user_service_cgroup(monkeypatch)
     captured_cmd: list[str] = []
     captured_env: dict[str, str] = {}
     captured_cwd: str | None = None
+    probed_managers: list[str] = []
 
     class FakeProc:
         pid = 4242
@@ -73,11 +89,15 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
     monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: True)
-    monkeypatch.setattr("tools.process_registry._systemd_run_user_scope_available", lambda: True)
+    monkeypatch.setattr(
+        "tools.process_registry._systemd_run_scope_available",
+        lambda manager: probed_managers.append(manager) or True,
+    )
     monkeypatch.setattr("tools.process_registry._worker_memory_max_bytes", lambda: 536_870_912)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
     assert kbd._default_spawn(task, str(workspace)) == 4242
+    assert probed_managers == ["user"]
     assert captured_cmd[:4] == ["/usr/bin/systemd-run", "--user", "--scope", "--quiet"]
     unit_index = captured_cmd.index("--unit")
     assert captured_cmd[unit_index + 1] == "hermes-worker-kanban-t_candidate_restart-run-23"
@@ -95,11 +115,12 @@ def test_managed_gateway_worker_spawn_fails_closed_without_scope(
     worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace, task = worker_setup
+    _set_user_service_cgroup(monkeypatch)
     popen_calls: list[list[str]] = []
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: popen_calls.append(list(cmd)))
     monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: True)
-    monkeypatch.setattr("tools.process_registry._systemd_run_user_scope_available", lambda: False)
+    monkeypatch.setattr("tools.process_registry._systemd_run_scope_available", lambda _manager: False)
 
     with pytest.raises(RuntimeError, match="restart-safe systemd scope"):
         kbd._default_spawn(task, str(workspace))
@@ -111,9 +132,10 @@ def test_managed_gateway_scope_builder_fails_closed_if_binary_disappears(
     worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace, task = worker_setup
+    _set_user_service_cgroup(monkeypatch)
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
     monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: True)
-    monkeypatch.setattr("tools.process_registry._systemd_run_user_scope_available", lambda: True)
+    monkeypatch.setattr("tools.process_registry._systemd_run_scope_available", lambda _manager: True)
     monkeypatch.setattr("shutil.which", lambda _name: None)
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("unsafe direct spawn"))
 

@@ -753,6 +753,35 @@ def _current_session_steer_authority(session_id: str) -> tuple[Transport | None,
         return transport, session
 
 
+_MODEL_OPTIONS_RUNTIME_SNAPSHOT = "_model_runtime_snapshot"
+
+
+def _freeze_model_options_request(req: dict, params: dict) -> dict:
+    """Copy a model.options request with its coherent request-time runtime.
+
+    ``model.options`` runs on the long-handler pool; a model switch queued ahead
+    of it can otherwise mutate the live agent before the worker reads it, so
+    the worker would report the POST-switch runtime for a PRE-switch request.
+    Freeze (model, provider, base_url) under the sessions lock at dispatch time
+    and hand the worker the frozen copy (#65388)."""
+    with _sessions_lock:
+        session = _sessions.get(params.get("session_id", ""))
+        agent = session.get("agent") if session else None
+        if agent is None:
+            runtime_snapshot = None
+        else:
+            runtime_snapshot = {
+                key: getattr(agent, key, "") or ""
+                for key in ("model", "provider", "base_url")
+            }
+
+    worker_params = dict(params)
+    worker_params[_MODEL_OPTIONS_RUNTIME_SNAPSHOT] = runtime_snapshot
+    worker_request = dict(req)
+    worker_request["params"] = worker_params
+    return worker_request
+
+
 def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
     """Route inbound RPCs — long handlers to the pool (returns None; the worker writes its own
     response via the bound transport), everything else inline (returns the response dict).
@@ -766,11 +795,18 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
             return normalized
         if normalized[1] not in _LONG_HANDLERS:
             return handle_request(req)
+        # model.options: freeze the request-time runtime so a queued switch
+        # can't tear the identity the worker reports (#65388).
+        worker_request = (
+            _freeze_model_options_request(req, normalized[2])
+            if normalized[1] == "model.options"
+            else req
+        )
         ctx = contextvars.copy_context()  # the pool worker must see the bound transport
 
         def run():
             try:
-                resp = handle_request(req)
+                resp = handle_request(worker_request)
             except Exception as exc:
                 resp = _err(req.get("id"), -32000, f"handler error: {exc}")
             if resp is not None:

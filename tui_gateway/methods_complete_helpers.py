@@ -162,11 +162,20 @@ def _details_completions(text: str) -> list[dict] | None:
     return []
 
 
-def _model_picker_context(agent):
-    """Layer live session state onto config without losing custom identity."""
+def _model_picker_context(agent, *, runtime_snapshot: dict | None = None):
+    """Layer live or request-time state onto config without losing custom identity.
+
+    ``runtime_snapshot`` (frozen by dispatch for pool-run ``model.options`` requests,
+    #65388) wins over the live agent: a switch queued ahead of the worker must not
+    tear the identity this request reports."""
     from hermes_cli.inventory import load_picker_context
     ctx = load_picker_context()
-    provider, base_url, model = (getattr(agent, k, "") if agent else "" for k in ("provider", "base_url", "model"))
+    if isinstance(runtime_snapshot, dict):
+        provider = runtime_snapshot.get("provider", "")
+        base_url = runtime_snapshot.get("base_url", "")
+        model = runtime_snapshot.get("model", "")
+    else:
+        provider, base_url, model = (getattr(agent, k, "") if agent else "" for k in ("provider", "base_url", "model"))
     if str(provider or "").strip().lower() == "custom":
         try:
             from hermes_cli.runtime_provider import canonical_custom_identity

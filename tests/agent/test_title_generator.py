@@ -79,6 +79,46 @@ class TestGenerateTitle:
             # leaving nothing → None.
             assert title is None
 
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "```json",
+            '```json\n{"title": "Broken title',
+            '{"title"',
+            '{"title": "Broken title',
+            '{title: "Broken title"',
+            "[truncated structured output",
+        ],
+    )
+    def test_rejects_truncated_structured_output(self, content):
+        """Incomplete JSON and fences must not become Markdown-breaking titles."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = content
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("hello") is None
+
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            ('```json\n{"title": "Readable session"}\n```', "Readable session"),
+            ('```JSON\n{"title": "Uppercase fence"}\n```', "Uppercase fence"),
+            ('{"title": "Embedded title"} and chatter {step', "Embedded title"),
+            ("*Fix the login flow*", "*Fix the login flow*"),
+            ("'Quoted phrase'", "Quoted phrase"),
+            ("Use dict {key: value} carefully", "Use dict {key: value} carefully"),
+        ],
+    )
+    def test_preserves_valid_structured_and_prose_titles(self, content, expected):
+        """Structural rejection must not discard valid JSON or ordinary prose."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = content
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("hello") == expected
+
 
     def test_truncates_long_titles(self):
         mock_response = MagicMock()

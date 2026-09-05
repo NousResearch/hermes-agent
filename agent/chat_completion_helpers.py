@@ -1891,17 +1891,132 @@ def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
     return False
 
 
+# How long a fallback entry stays suppressed after resolving to no client.
+# The memo exists so an unconfigured provider is not re-probed on every
+# activation, but it used to be cleared only by a ``fallback_providers`` content
+# edit. Credentials normally arrive via ``hermes auth`` (auth.json) or a new env
+# var — neither touches config.yaml — so a provider configured mid-uptime stayed
+# suppressed for the entire life of a cached agent. A TTL keeps the
+# rate-limiting benefit while guaranteeing the memo cannot outlive the condition
+# that created it.
+UNAVAILABLE_FALLBACK_RETRY_SECONDS = 10 * 60
+
+# Stamp tables for memo sets that reject attributes (a plain ``set``), keyed by
+# id(). Bounded by the number of live agents; entries are dropped on expiry.
+_FALLBACK_STAMP_TABLE: dict = {}
+
+
+def _unavailable_stamps(memo):
+    """Side table of ``fb_key -> marked_at`` for a memo container.
+
+    Kept beside the set rather than inside it so the container type (and every
+    ``key in unavailable`` check in callers and tests) stays unchanged.
+    """
+    stamps = getattr(memo, "_hermes_marked_at", None)
+    if stamps is None:
+        stamps = _FALLBACK_STAMP_TABLE.setdefault(id(memo), {})
+        try:
+            memo._hermes_marked_at = stamps
+        except AttributeError:
+            pass  # plain set: the id()-keyed table is the only home
+    return stamps
+
+
+def _memo_mark_unavailable(memo, fb_key) -> None:
+    """Record ``fb_key`` as unavailable, stamped so the TTL can expire it."""
+    memo.add(fb_key)
+    _unavailable_stamps(memo)[fb_key] = time.time()
+
+
+def _memo_is_suppressed(memo, fb_key) -> bool:
+    """True when ``fb_key`` is memoized AND still inside its retry window.
+
+    Expired entries are dropped, so the next activation re-probes the provider.
+    """
+    if fb_key not in memo:
+        return False
+    stamps = _unavailable_stamps(memo)
+    marked_at = stamps.get(fb_key)
+    if marked_at is None:
+        # Marked before this stamping existed (or by a caller that added
+        # directly): adopt it now rather than suppressing forever.
+        stamps[fb_key] = time.time()
+        return True
+    if time.time() - marked_at < UNAVAILABLE_FALLBACK_RETRY_SECONDS:
+        return True
+    memo.discard(fb_key)
+    stamps.pop(fb_key, None)
+    return False
+
+
+def _expire_unavailable_entry_for_test(memo, fb_key) -> None:
+    """Age a memo entry past its retry window (test helper)."""
+    _unavailable_stamps(memo)[fb_key] = (
+        time.time() - UNAVAILABLE_FALLBACK_RETRY_SECONDS - 1
+    )
+    _memo_is_suppressed(memo, fb_key)
+
+
+def _fallback_provider_benched_until(provider):
+    """Distinguish "no credentials" from "credentials all cooling down".
+
+    Returns ``None`` when the provider has no credential material at all (or the
+    pool cannot be read — treated as unconfigured, matching the previous
+    behavior). When credentials exist but none are currently selectable, returns
+    the epoch time the next one re-enters rotation, or ``0.0`` when the pool
+    gives no recovery hint. ``0.0`` is deliberately falsy-but-not-None: callers
+    must test ``is None``.
+    """
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool(provider)
+    except Exception as exc:
+        logger.debug(
+            "Fallback bench check: could not load pool for %s: %s", provider, exc
+        )
+        return None
+    if pool is None or not pool.has_credentials():
+        return None
+    try:
+        if pool.has_available():
+            # Credentials exist and one is usable, so the None client came from
+            # something else (missing aux model, unknown provider id, ...).
+            # Treat as unconfigured so the existing suppression still applies.
+            return None
+        return pool.next_available_at() or 0.0
+    except Exception as exc:
+        logger.debug(
+            "Fallback bench check: could not read availability for %s: %s",
+            provider,
+            exc,
+        )
+        return None
+
+
+def _format_benched_suffix(benched_until) -> str:
+    """Render " (retry in Nm)" when a recovery time is known, else ""."""
+    if not benched_until:
+        return ""
+    remaining = benched_until - time.time()
+    if remaining <= 0:
+        return ""
+    if remaining < 90:
+        return f" (retry in {int(remaining)}s)"
+    return f" (retry in {int(remaining // 60)}m)"
+
+
 def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> bool:
     """True when the entry is already unavailable, malformed, locally unusable, or resolves
     to the backend that just failed (falling back to it would loop the failure)."""
-    if fb_key in unavailable:
+    if _memo_is_suppressed(unavailable, fb_key):
         logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
         return True
     if not fb_provider or not fb_model:
         return True
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
     if local_skip_reason:
-        unavailable.add(fb_key)
+        _memo_mark_unavailable(unavailable, fb_key)
         logger.warning("Fallback skip: %s/%s is not locally usable (%s); suppressing for this session", fb_provider, fb_model, local_skip_reason)
         return True
     # Identity semantics (axes, shim aliases, credential surfaces, multi-endpoint pools)
@@ -2052,8 +2167,25 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         fb_client, _resolved_fb_model = resolve_provider_client(
             fb_provider, model=fb_model, raw_codex=True, explicit_base_url=fb_base_url_hint, explicit_api_key=fb_api_key_hint, api_mode=fb_api_mode)
         if fb_client is None:
-            logger.warning("Fallback to %s failed: provider not configured", fb_provider)
-            unavailable.add(fb_key)
+            # A None client has two very different causes that look identical
+            # here: the provider was never configured, or it IS configured but
+            # every credential is in exhaustion cooldown right now (a DeepSeek
+            # 402 benches the key for an hour). Only the first deserves the
+            # session-scoped memo — that is cleared only by a config edit, so
+            # memoizing a one-hour bench drops the entry from the chain for the
+            # whole life of a cached agent, which is how a healthy provider
+            # silently disappeared and left a free model as the last resort.
+            benched_until = _fallback_provider_benched_until(fb_provider)
+            if benched_until is None:
+                logger.warning("Fallback to %s failed: provider not configured", fb_provider)
+                _memo_mark_unavailable(unavailable, fb_key)
+            else:
+                logger.warning(
+                    "Fallback to %s skipped: configured, but all credentials are "
+                    "in cooldown%s. Staying retryable for later turns.",
+                    fb_provider,
+                    _format_benched_suffix(benched_until),
+                )
             return agent._try_activate_fallback(reason)
         try:
             from hermes_cli.model_normalize import normalize_model_for_provider
@@ -2110,7 +2242,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         return True
     except Exception as e:
         if fb_provider == "nous":
-            unavailable.add(fb_key)
+            _memo_mark_unavailable(unavailable, fb_key)
         logger.error("Failed to activate fallback %s: %s", fb_model, e)
         return agent._try_activate_fallback(reason)  # try next in chain
 

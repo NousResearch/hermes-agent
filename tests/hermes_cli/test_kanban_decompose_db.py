@@ -10,6 +10,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_workspace as kbw
 
 
 @pytest.fixture
@@ -89,5 +90,58 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
     assert any(ev.kind == "decomposed" for ev in events)
 
 
+def test_decompose_scratch_children_do_not_inherit_claimed_root_path(kanban_home):
+    """Regression: a claimed scratch root has a persisted workspace_path
+    (dispatch persists the resolved dir on claim). A fan-out must NOT copy
+    that literal path onto scratch children — siblings would all run inside
+    the parent's directory. Children stay unset so dispatch materializes a
+    fresh ``<workspaces_root>/<child-id>`` per child. See #103303."""
+    with kbc.connect() as conn:
+        tid = _create_triage(conn, title="fan out research")
+        # Simulate a root that has already been claimed by the dispatcher.
+        kbw.set_workspace_path(conn, tid, str(kanban_home / "kanban" / "workspaces" / tid))
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "task A", "assignee": "researcher"},
+                {"title": "task B", "assignee": "researcher"},
+            ],
+            author="decomposer",
+        )
+    assert child_ids is not None
+    assert len(child_ids) == 2
+    with kbc.connect() as conn:
+        paths = [
+            conn.execute("SELECT workspace_path FROM tasks WHERE id = ?", (cid,)).fetchone()[0]
+            for cid in child_ids
+        ]
+    # Each child is unset -> dispatch derives workspaces/<child-id> per child.
+    assert paths == [None, None]
+
+
+def test_decompose_dir_children_keep_inheriting_shared_root_path(kanban_home):
+    """'dir' is an explicitly shared persistent checkout: children of a dir
+    root inherit its path when kinds match. Guards against over-fixing the
+    scratch isolation above (shared checkout is the point of 'dir')."""
+    shared = str(kanban_home / "boards" / "default" / "shared-proj")
+    with kbc.connect() as conn:
+        tid = _create_triage(conn, title="dir fan out")
+        conn.execute("UPDATE tasks SET workspace_kind='dir' WHERE id = ?", (tid,))
+        kbw.set_workspace_path(conn, tid, shared)
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orchestrator",
+            children=[{"title": "task A", "assignee": "researcher"}],
+            author="decomposer",
+        )
+    assert child_ids is not None
+    with kbc.connect() as conn:
+        path = conn.execute(
+            "SELECT workspace_path FROM tasks WHERE id = ?", (child_ids[0],)
+        ).fetchone()[0]
+    assert path == shared
 
 

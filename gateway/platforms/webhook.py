@@ -451,6 +451,7 @@ class WebhookAdapter(BasePlatformAdapter):
         """deliver_only: the rendered prompt IS the message — skip the agent, reuse the same
         auth/rate-limit/idempotency/template pipeline."""
         delivery = {"deliver": route_config.get("deliver", "log"), "payload": payload,
+                    "profile": route_config.get("profile") if isinstance(route_config.get("profile"), str) else None,
                     "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload)}
         logger.info("[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s", event_type,
                     route_name, delivery["deliver"], len(prompt), delivery_id)
@@ -566,7 +567,10 @@ class WebhookAdapter(BasePlatformAdapter):
         session_chat_id = f"webhook:{route_name}:{delivery_id}"
         self._delivery_info[session_chat_id] = {
             "deliver": route_config.get("deliver", "log"),
-            "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload)}
+            "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
+            # Route-resolved profile (None = un-profiled). Read back by _deliver_cross_platform so the
+            # final response egresses through THIS profile's adapter, not the first-connected one.
+            "profile": profile}
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)
@@ -750,6 +754,27 @@ class WebhookAdapter(BasePlatformAdapter):
                 return amap[target_platform]
         return None
 
+    def _profile_delivery_adapter(self, target_platform: Platform, delivery: dict):
+        """Profile-aware adapter for cross-platform delivery.
+
+        The route's resolved profile (stored in ``_delivery_info``) wins: a webhook bound to
+        ``profile: X`` must egress through profile X's adapter — its own bot credential — even
+        when the primary profile also connects the same platform. ``_find_adapter`` alone returns
+        the primary adapter first, which is how a trainer-bound route could post as the accountant
+        bot. Resolution reuses the runner's ``_authorization_adapter`` (same profile-scoped map +
+        fail-closed contract as reply routing). Only a route with NO profile binding falls back to
+        ``_find_adapter``; a named profile whose platform never connected stays failed-closed
+        (not-connected error), never a silent cross-profile send.
+        """
+        profile = delivery.get("profile")
+        if isinstance(profile, str) and profile.strip():
+            runner = self.gateway_runner
+            resolver = getattr(runner, "_authorization_adapter", None)
+            if resolver is None:
+                return None
+            return resolver(target_platform, profile)
+        return self._find_adapter(target_platform)
+
     async def _deliver_cross_platform(self, platform_name: str, content: str, delivery: dict) -> SendResult:
         """Route response to another platform (telegram, discord, etc.)."""
         if not self.gateway_runner:
@@ -758,7 +783,7 @@ class WebhookAdapter(BasePlatformAdapter):
             target_platform = Platform(platform_name)
         except ValueError:
             return SendResult(success=False, error=f"Unknown platform: {platform_name}")
-        if not (adapter := self._find_adapter(target_platform)):
+        if not (adapter := self._profile_delivery_adapter(target_platform, delivery)):
             return SendResult(success=False, error=f"Platform {platform_name} not connected")
         extra = delivery.get("deliver_extra", {})
         chat_id = extra.get("chat_id", "")

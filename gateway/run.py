@@ -453,8 +453,16 @@ def _gateway_platform_value(platform: Any) -> str:
 
 def _non_conversational_metadata(
     metadata: Optional[Dict[str, Any]] = None, *, platform: Any = None) -> Optional[Dict[str, Any]]:
-    """Mark Discord lifecycle/status sends without changing other platforms."""
-    if _gateway_platform_value(platform) != "discord":
+    """Mark Discord lifecycle/status sends without changing other platforms. For email, stamp
+    gateway-internal provenance: these calls wrap only gateway-composed notifications (never model
+    replies), and under review_first the email adapter auto-sends solely on this marker — and even
+    then only to the auto-send allowlist. An unwrapped email notification degrades to a Draft."""
+    value = _gateway_platform_value(platform)
+    if value == "email":
+        merged = dict(metadata or {})
+        merged["gateway_internal_send"] = True
+        return merged
+    if value != "discord":
         return metadata
     merged = dict(metadata or {})
     merged["non_conversational"] = True

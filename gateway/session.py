@@ -96,6 +96,12 @@ class SessionSource:
     # over the authenticated relay WebSocket. ``platform`` is the UNDERLYING platform, not
     # ``relay``, so authz must key upstream trust off THIS flag.
     delivered_via_upstream_relay: bool = False
+    # Wire-INVISIBLE email review-first flags (same unforgeability contract): stamped only in-process
+    # by the email adapter at dispatch from the verified Authentication-Results evaluation.
+    # email_sender_trusted: inbound sender authenticated AND on the auto-send allowlist.
+    # email_zero_tools: this turn must resolve to ZERO callable tools (review_first policy).
+    email_sender_trusted: bool = field(default=False, repr=False, compare=False)
+    email_zero_tools: bool = field(default=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         # Mirror scope_id/guild_id onto each other (scope_id wins) so readers of EITHER agree.

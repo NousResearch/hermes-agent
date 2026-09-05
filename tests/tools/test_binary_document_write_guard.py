@@ -10,12 +10,16 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
+
+from tools import file_tools, file_tools_write_guards
 from tools.binary_extensions import (
     has_opaque_document_extension,
     is_pdf_path,
 )
 from tools.file_tools import patch_tool, write_file_tool
 from tools.file_tools_write_guards import _check_binary_document_write
+from tools.file_operations import ShellFileOperations
 
 
 def _make_minimal_docx(path: Path) -> None:
@@ -72,6 +76,80 @@ class TestCheckBinaryDocumentWrite:
     def test_plain_text_allowed(self, tmp_path: Path):
         assert _check_binary_document_write(str(tmp_path / "notes.txt")) is None
 
+    def test_remote_existing_pdf_uses_backend_regular_file_probe(self, monkeypatch):
+        class ProbeOperations:
+            def __init__(self):
+                self.paths = []
+
+            def is_regular_file(self, path):
+                self.paths.append(path)
+                return True
+
+        operations = ProbeOperations()
+        monkeypatch.setattr(file_tools_write_guards, "_uses_container_paths", lambda _task: True)
+        monkeypatch.setattr(file_tools, "_get_file_ops", lambda _task: operations)
+        error = _check_binary_document_write(
+            "report.pdf", task_id="remote-task", resolved_path="/remote/work/report.pdf"
+        )
+        assert error is not None
+        assert "overwrite" in error.lower()
+        assert operations.paths == ["/remote/work/report.pdf"]
+
+    def test_remote_new_pdf_is_allowed_after_backend_probe(self, monkeypatch):
+        class ProbeOperations:
+            def is_regular_file(self, _path):
+                return False
+
+        monkeypatch.setattr(file_tools_write_guards, "_uses_container_paths", lambda _task: True)
+        monkeypatch.setattr(file_tools, "_get_file_ops", lambda _task: ProbeOperations())
+        assert _check_binary_document_write(
+            "report.pdf", task_id="container-task", resolved_path="/workspace/report.pdf"
+        ) is None
+
+    def test_remote_pdf_probe_failure_is_fail_closed(self, monkeypatch):
+        class ProbeOperations:
+            def is_regular_file(self, _path):
+                raise OSError("transport unavailable")
+
+        monkeypatch.setattr(file_tools_write_guards, "_uses_container_paths", lambda _task: True)
+        monkeypatch.setattr(file_tools, "_get_file_ops", lambda _task: ProbeOperations())
+        error = _check_binary_document_write(
+            "report.pdf", task_id="remote-task", resolved_path="/remote/work/report.pdf"
+        )
+        assert error is not None
+        assert "could not safely determine" in error
+
+
+class TestBackendRegularFileProbe:
+    @pytest.mark.parametrize(
+        ("output", "expected"),
+        [("regular\n", True), ("missing\n", False), ("non_regular\n", False)],
+    )
+    def test_explicit_backend_probe_results(self, output, expected):
+        class Environment:
+            cwd = "/workspace"
+
+            def execute(self, _command, cwd=None, **_kwargs):
+                return {"output": output, "returncode": 0}
+
+        assert ShellFileOperations(Environment()).is_regular_file(
+            "/workspace/report.pdf"
+        ) is expected
+
+    @pytest.mark.parametrize(
+        ("output", "returncode"),
+        [("transport unavailable", 1), ("unexpected", 0)],
+    )
+    def test_transport_or_protocol_failure_raises(self, output, returncode):
+        class Environment:
+            cwd = "/workspace"
+
+            def execute(self, _command, cwd=None, **_kwargs):
+                return {"output": output, "returncode": returncode}
+
+        with pytest.raises(OSError):
+            ShellFileOperations(Environment()).is_regular_file("/workspace/report.pdf")
+
 
 class TestWriteFileToolGuard:
     def test_write_file_rejects_existing_docx(self, tmp_path: Path):
@@ -124,7 +202,7 @@ class TestWriteFileToolGuard:
         target = tmp_path / "notes.txt"
         result = json.loads(write_file_tool(str(target), "hello world"))
         assert not result.get("error")
-        assert target.read_text() == "hello world"
+        assert target.read_text(encoding="utf-8") == "hello world"
 
 
 class TestPatchToolGuard:
@@ -176,10 +254,10 @@ class TestPatchToolGuard:
 
     def test_patch_replace_plain_text_unaffected(self, tmp_path: Path):
         target = tmp_path / "notes.txt"
-        target.write_text("hello world")
+        target.write_text("hello world", encoding="utf-8")
         result = json.loads(
             patch_tool(mode="replace", path=str(target),
                        old_string="world", new_string="there")
         )
         assert not result.get("error")
-        assert target.read_text() == "hello there"
+        assert target.read_text(encoding="utf-8") == "hello there"

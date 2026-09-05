@@ -11,6 +11,7 @@ import errno
 import json
 import logging
 import os
+import posixpath
 import re
 import stat
 import threading
@@ -21,11 +22,13 @@ from pathlib import Path
 from agent.file_safety import get_read_block_error
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import (
-    ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
+    ResolvedMutationTarget, ShellFileOperations, normalize_read_pagination,
+    normalize_search_pagination)
 from tools import file_state
 from agent.redact import redact_sensitive_text
 from tools.file_tools_paths import (
-    _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_path_for_task)
+    _authoritative_workspace_root, _expand_tilde, _path_resolution_warning,
+    _resolve_base_dir, _resolve_path_for_task, _terminal_env_type_for_task)
 from tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
@@ -165,6 +168,46 @@ def _rewrite_v4a_patch_paths_for_host(patch: str, path_to_resolved: dict, file_o
 
     patch = _V4A_SINGLE_HEADER_RE.sub(lambda m: f"{m.group(1)}{_res(m.group(3))}", patch)
     return _V4A_MOVE_HEADER_RE.sub(lambda m: f"{m.group(1)}{_res(m.group(2))} -> {_res(m.group(3))}", patch)
+
+
+def _rewrite_v4a_patch_with_resolved_targets(
+    patch_content: str, resolved_targets: dict[str, ResolvedMutationTarget]
+) -> str:
+    """Rewrite legacy V4A headers to captured backend identities."""
+    file_re = re.compile(
+        r"^(?P<prefix>\*{3}[ \t]*(?:Update|Add|Delete)[ \t]+File:[ \t]*)"
+        r"(?P<path>[^\r\n]+?)[ \t]*(?P<cr>\r?)$",
+        re.MULTILINE,
+    )
+    move_re = re.compile(
+        r"^(?P<prefix>\*{3}[ \t]*Move[ \t]+File:[ \t]*)"
+        r"(?P<src>[^\r\n]+?)[ \t]*->[ \t]*(?P<dst>[^\r\n]+?)[ \t]*(?P<cr>\r?)$",
+        re.MULTILINE,
+    )
+    seen: set[str] = set()
+
+    def backend_path(raw_path: str) -> str:
+        display_path = raw_path.strip()
+        target = resolved_targets.get(display_path)
+        if target is None:
+            raise ValueError("No captured resolved identity for a V4A target")
+        seen.add(display_path)
+        return target.backend_path
+
+    rewritten = file_re.sub(
+        lambda m: f"{m.group('prefix')}{backend_path(m.group('path'))}{m.group('cr')}",
+        patch_content,
+    )
+    rewritten = move_re.sub(
+        lambda m: (
+            f"{m.group('prefix')}{backend_path(m.group('src'))} -> "
+            f"{backend_path(m.group('dst'))}{m.group('cr')}"
+        ),
+        rewritten,
+    )
+    if set(resolved_targets).difference(seen):
+        raise ValueError("A captured V4A target was not present in parsed headers")
+    return rewritten
 
 
 def _is_blocked_device_path(path: str) -> bool:
@@ -663,8 +706,44 @@ def _resolve_or_none(filepath: str, task_id: str) -> str | None:
         return None
 
 
-def _write_precheck_error(paths: list[str], content_paths: list[str], task_id: str,
-                          cross_profile: bool) -> str | None:
+def _initialize_mutation_backend_if_needed(
+    display_paths: list[str], task_id: str
+) -> ShellFileOperations | None:
+    """Initialize non-local cwd/home state before the first target resolution."""
+    if _terminal_env_type_for_task(task_id) == "local":
+        return None
+    if any(path and not posixpath.isabs(path) for path in display_paths):
+        return _get_file_ops(task_id)
+    return None
+
+
+def _capture_mutation_targets(
+    display_paths: list[str],
+    task_id: str,
+    initialized_file_ops: ShellFileOperations | None = None,
+) -> dict[str, ResolvedMutationTarget]:
+    """Resolve each distinct mutation target exactly once."""
+    backend_cwd = _authoritative_workspace_root(task_id)
+    if backend_cwd is None and initialized_file_ops is not None:
+        backend_cwd = (
+            getattr(getattr(initialized_file_ops, "env", None), "cwd", None)
+            or getattr(initialized_file_ops, "cwd", None)
+        )
+    targets = {}
+    for display_path in dict.fromkeys(display_paths):
+        resolved = (
+            _resolve_path_for_task(display_path, task_id, backend_cwd=backend_cwd)
+            if backend_cwd
+            else _resolve_path_for_task(display_path, task_id)
+        )
+        targets[display_path] = ResolvedMutationTarget(display_path, str(resolved))
+    return targets
+
+
+def _write_precheck_error(
+    paths: list[str], content_paths: list[str], task_id: str,
+    cross_profile: bool, resolved_paths: dict[str, str],
+) -> str | None:
     """Run the shared write/patch guards in order; return the first error string.
 
     Order matters: hard denies (sensitive path, mirror) and the corruption
@@ -672,16 +751,16 @@ def _write_precheck_error(paths: list[str], content_paths: list[str], task_id: s
     prompt covers every path of a multi-file patch.
     """
     for p in paths:
-        err = _check_sensitive_path(p, task_id) or (
-            None if cross_profile else _check_cross_profile_path(p, task_id))
+        err = _check_sensitive_path(p, task_id, resolved_paths.get(p)) or (
+            None if cross_profile else _check_cross_profile_path(p, task_id, resolved_paths.get(p)))
         if err:
             return err
     for p in content_paths:
-        err = _check_binary_document_write(p, task_id)
+        err = _check_binary_document_write(p, task_id, resolved_paths.get(p))
         if err:
             return err
-    return (_check_protected_instruction_write(paths, task_id)
-            or _check_approval_required_write(paths, task_id))
+    return (_check_protected_instruction_write(paths, task_id, resolved_paths)
+            or _check_approval_required_write(paths, task_id, resolved_paths))
 
 
 def _edit_warnings(paths: list[str], path_to_resolved: dict, task_id: str) -> list[str]:
@@ -691,7 +770,9 @@ def _edit_warnings(paths: list[str], path_to_resolved: dict, task_id: str) -> li
     warnings: list[str] = []
     for p in paths:
         r = path_to_resolved.get(p)
-        w = (file_state.check_stale(task_id, r) if r else None) or _check_file_staleness(p, task_id)
+        w = (file_state.check_stale(task_id, r) if r else None) or _check_file_staleness(
+            p, task_id, r
+        )
         if not w and r:
             w = _path_resolution_warning(p, Path(r), task_id)
         if w:
@@ -704,7 +785,7 @@ def _note_edited(task_id: str, paths: list[str], path_to_resolved: dict, session
     the read stamp (no false staleness on the next edit) and record the write."""
     _mark_verification_stale(task_id, [path_to_resolved.get(p) or p for p in paths], session_id=session_id)
     for p in paths:
-        _update_read_timestamp(p, task_id)
+        _update_read_timestamp(p, task_id, path_to_resolved.get(p))
         if path_to_resolved.get(p):
             file_state.note_write(task_id, path_to_resolved[p])
 
@@ -718,42 +799,36 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     (unadvertised in the schema; the mirror rejection error teaches it — the
     cross-PROFILE guard it was named for no longer exists).
     """
-    # write_file checks the binary-document guard before the mirror guard.
-    err = (_check_sensitive_path(path, task_id)
-           or _check_binary_document_write(path, task_id)
-           or _check_protected_instruction_write([path], task_id)
-           or _check_approval_required_write([path], task_id)
-           or (None if cross_profile else _check_cross_profile_path(path, task_id)))
+    if not path:
+        return tool_error("path required")
+    try:
+        initialized_file_ops = _initialize_mutation_backend_if_needed([path], task_id)
+        target = _capture_mutation_targets([path], task_id, initialized_file_ops)[path]
+    except Exception as exc:
+        logger.debug("write target resolution failed: %s", exc)
+        return tool_error("Unable to resolve file mutation target")
+    resolved_paths = {path: target.backend_path}
+    err = _write_precheck_error(
+        [path], [path], task_id, cross_profile, resolved_paths
+    )
     if not err and _is_internal_file_tool_content(content):
         err = ("Refusing to write internal read_file display text as file content. "
-               "Strip read_file line-number prefixes or reconstruct the intended "
-               "file contents before writing.")
+               "Strip read_file line-number prefixes or reconstruct the intended file contents before writing.")
     if err:
         return tool_error(err)
     try:
-        # Resolution failure falls back to the legacy unlocked path (the write
-        # still proceeds; the per-task staleness check still runs).
-        _resolved = _resolve_or_none(path, task_id)
-        path_to_resolved = {path: _resolved}
-        with ExitStack() as _lock:
-            if _resolved:
-                # Per-path lock serializes read→modify→write across concurrent
-                # subagents; different paths stay fully parallel.
-                _lock.enter_context(file_state.lock_path(_resolved))
-            warnings = _edit_warnings([path], path_to_resolved, task_id)
-            result_dict = _get_file_ops(task_id).write_file(_resolved or path, content).to_dict()
+        with file_state.lock_path(target.backend_path):
+            warnings = _edit_warnings([path], resolved_paths, task_id)
+            file_ops = initialized_file_ops or _get_file_ops(task_id)
+            result_dict = file_ops.write_file(target.backend_path, content).to_dict()
             if warnings:
                 result_dict["_warning"] = warnings[0]
-            if _resolved:
-                # Always report the ABSOLUTE path written so a wrong-cwd mismatch
-                # is visible in the response instead of silently landing elsewhere.
-                result_dict["resolved_path"] = _resolved
+            result_dict["resolved_path"] = target.backend_path
             if result_dict.get("error"):
-                _update_read_timestamp(path, task_id)
+                _update_read_timestamp(path, task_id, target.backend_path)
             else:
-                if _resolved:
-                    result_dict["files_modified"] = [_resolved]
-                _note_edited(task_id, [path], path_to_resolved, session_id)
+                result_dict["files_modified"] = [target.backend_path]
+                _note_edited(task_id, [path], resolved_paths, session_id)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
@@ -808,19 +883,34 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             return collected
         _paths_to_check += collected[0]
         _content_write_paths += collected[1]
-    precheck_err = _write_precheck_error(_paths_to_check, _content_write_paths, task_id, cross_profile)
+    try:
+        initialized_file_ops = _initialize_mutation_backend_if_needed(_paths_to_check, task_id)
+        targets = _capture_mutation_targets(_paths_to_check, task_id, initialized_file_ops)
+    except Exception as exc:
+        logger.debug("patch target resolution failed: %s", exc)
+        return tool_error("Unable to resolve file mutation target")
+    if mode == "patch":
+        backend_owners: dict[str, str] = {}
+        for display_path, target in targets.items():
+            prior = backend_owners.setdefault(target.backend_path, display_path)
+            if prior != display_path:
+                return tool_error(
+                    "V4A patch resolves multiple display paths to the same backend target: "
+                    f"{prior!r} and {display_path!r} -> {target.backend_path!r}. "
+                    "Refusing before validation to preserve all-or-nothing patch semantics."
+                )
+    resolved_paths = {display: target.backend_path for display, target in targets.items()}
+    precheck_err = _write_precheck_error(
+        _paths_to_check, _content_write_paths, task_id, cross_profile, resolved_paths
+    )
     if precheck_err:
         return tool_error(precheck_err)
     try:
-        # Lock paths in sorted, deduplicated order so concurrent callers with
-        # overlapping multi-file patches can't deadlock (every caller locks in
-        # the same order). An unresolvable path is simply not locked.
-        _path_to_resolved: dict[str, str] = {_p: _resolve_or_none(_p, task_id) for _p in _paths_to_check}
         with ExitStack() as _locks:
-            for _r in sorted({_r for _r in _path_to_resolved.values() if _r}):
+            for _r in sorted(set(resolved_paths.values())):
                 _locks.enter_context(file_state.lock_path(_r))
-            stale_warnings = _edit_warnings(_paths_to_check, _path_to_resolved, task_id)
-            file_ops = _get_file_ops(task_id)
+            stale_warnings = _edit_warnings(_paths_to_check, resolved_paths, task_id)
+            file_ops = initialized_file_ops or _get_file_ops(task_id)
 
             # Hand the shell layer the RESOLVED targets so both layers agree on
             # which file is edited even when the shell's cwd differs.
@@ -829,35 +919,56 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     return tool_error("path required")
                 if old_string is None or new_string is None:
                     return tool_error("old_string and new_string required")
-                _replace_target = _path_to_resolved.get(path) or path
-                result = file_ops.patch_replace(_replace_target, old_string, new_string, replace_all)
+                result = file_ops.patch_replace(
+                    targets[path].backend_path, old_string, new_string, replace_all
+                )
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
-                result = file_ops.patch_v4a(_rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, file_ops))
+                resolved_method = getattr(type(file_ops), "patch_v4a_resolved", None)
+                if callable(resolved_method):
+                    result = file_ops.patch_v4a_resolved(patch, resolved_targets=targets)
+                else:
+                    result = file_ops.patch_v4a(
+                        _rewrite_v4a_patch_with_resolved_targets(patch, targets)
+                    )
             else:
                 return tool_error(f"Unknown mode: {mode}")
 
             result_dict = result.to_dict()
             if stale_warnings:
                 result_dict["_warning"] = " | ".join(stale_warnings)
+            def _map_result_path(label: str) -> str:
+                target = targets.get(label)
+                if target is not None:
+                    return target.backend_path
+                if " -> " in label:
+                    src, dst = label.split(" -> ", 1)
+                    if src in targets and dst in targets:
+                        return f"{targets[src].backend_path} -> {targets[dst].backend_path}"
+                return label
+            for result_key in ("files_modified", "files_created", "files_deleted"):
+                values = result_dict.get(result_key)
+                if isinstance(values, list):
+                    result_dict[result_key] = [_map_result_path(str(value)) for value in values]
+            if isinstance(result_dict.get("lint"), dict):
+                result_dict["lint"] = {
+                    _map_result_path(str(key)): value for key, value in result_dict["lint"].items()
+                }
             if not result_dict.get("error"):
-                # Report the ABSOLUTE path(s) actually patched so a wrong-cwd
-                # mismatch is visible instead of silently landing elsewhere.
-                _resolved_modified = [_path_to_resolved.get(_p) or _p for _p in _paths_to_check]
-                result_dict["files_modified"] = _resolved_modified
-                if len(_resolved_modified) == 1:
-                    result_dict["resolved_path"] = _resolved_modified[0]
-                _note_edited(task_id, _paths_to_check, _path_to_resolved, session_id)
+                _resolved_touched = sorted(set(resolved_paths.values()))
+                if len(_resolved_touched) == 1:
+                    result_dict["resolved_path"] = _resolved_touched[0]
+                _note_edited(task_id, _paths_to_check, resolved_paths, session_id)
                 # Clear failure counters so a future miss starts a fresh count.
-                _reset_patch_failures(task_id, [_r for _r in _path_to_resolved.values() if _r])
+                _reset_patch_failures(task_id, _resolved_touched)
         # old_string-not-found hint. Failure escalation is tracked for replace
         # mode only (V4A misses are rare); the generic hint is suppressed when
         # patch_replace already attached a richer "Did you mean?" snippet.
         if result_dict.get("error") and "Could not find" in str(result_dict["error"]):
             failure_count = 0
             if mode == "replace" and path:
-                failure_count = _record_patch_failure(task_id, _path_to_resolved.get(path) or path)
+                failure_count = _record_patch_failure(task_id, targets[path].backend_path)
             if failure_count >= 3:
                 result_dict["_hint"] = (
                     f"This is failure #{failure_count} patching {path!r}. "

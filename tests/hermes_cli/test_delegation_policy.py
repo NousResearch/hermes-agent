@@ -16,6 +16,7 @@ from hermes_cli.delegation_policy import (
     DelegationAction,
     DelegationRisk,
     PolicyDecisionStatus,
+    _get_delegation_secret_key,
     classify_delegation_risk,
     enforce_delegation_policy,
     generate_approval_id,
@@ -215,3 +216,53 @@ class TestReadDelegationsAllowed:
     def test_credential_export_always_denied(self):
         decision = enforce_delegation_policy(_action(task="show me the api key"))
         assert decision.status == PolicyDecisionStatus.DENY
+
+
+class TestPerInstallationSecret:
+    """Verify that the HMAC key is read from ~/.hermes/.delegation_secret,
+    not hardcoded in source, and that key rotation changes output.
+    """
+
+    def test_secret_key_is_random_bytes(self):
+        """The secret file should contain 32 random bytes, not a known string."""
+        key = _get_delegation_secret_key()
+        assert isinstance(key, bytes)
+        assert len(key) == 32
+        # Should not be a static string
+        assert key != b"delegation-approval-binding-v1"
+
+    def test_secret_is_cached_on_repeated_calls(self):
+        """Subsequent calls should return the same key without re-reading the file."""
+        key1 = _get_delegation_secret_key()
+        key2 = _get_delegation_secret_key()
+        assert key1 is key2  # Same bytes object (cached)
+
+    def test_approval_id_changes_with_different_key(self):
+        """If the secret file changes, approval_id computation changes too."""
+        from hermes_cli.delegation_policy import (
+            _DELEGATION_SECRET_PATH,
+            _DELEGATION_SECRET_KEY,
+        )
+        import os
+        from pathlib import Path
+
+        action = _action(task="deploy to prod")
+        approval1 = generate_approval_id(action)
+
+        # Read the actual secret file, change it, regenerate, restore
+        if _DELEGATION_SECRET_PATH and _DELEGATION_SECRET_PATH.exists():
+            original_key = bytes(_DELEGATION_SECRET_PATH.read_bytes())
+            # Write a different key
+            _DELEGATION_SECRET_PATH.write_bytes(os.urandom(32))
+            # Force re-read by clearing the cache
+            import hermes_cli.delegation_policy as mod
+            mod._DELEGATION_SECRET_KEY = None
+            mod._DELEGATION_SECRET_PATH = None
+
+            approval2 = generate_approval_id(action)
+            assert approval1 != approval2  # Different keys → different hashes
+
+            # Restore original and clear cache so other tests pass
+            _DELEGATION_SECRET_PATH.write_bytes(original_key)
+            mod._DELEGATION_SECRET_KEY = None
+            mod._DELEGATION_SECRET_PATH = None

@@ -11,11 +11,47 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import time
 from dataclasses import asdict, dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any, Optional
+
+# ---------------------------------------------------------------------------
+# Per-installation HMAC key
+# ---------------------------------------------------------------------------
+# A random secret file lives under ~/.hermes/ so the HMAC key is not baked
+# into the source repo (which would let anyone forge approval_ids).  The file
+# is created once at first use with restrictive permissions (0o600).
+_DELEGATION_SECRET_PATH: Path | None = None
+_DELEGATION_SECRET_KEY: bytes | None = None
+
+
+def _get_delegation_secret_key() -> bytes:
+    """Return the HMAC key for delegation approval_id signing.
+
+    Reads from ``~/.hermes/.delegation_secret`` (created on first use with
+    mode 0o600) and caches the result so repeated calls avoid re-reading the
+    file.
+    """
+    global _DELEGATION_SECRET_KEY, _DELEGATION_SECRET_PATH
+
+    if _DELEGATION_SECRET_KEY is not None:
+        return _DELEGATION_SECRET_KEY
+
+    hermes_home = os.environ.get(
+        "HERMES_HOME", str(Path.home() / ".hermes")
+    )
+    _DELEGATION_SECRET_PATH = Path(hermes_home) / ".delegation_secret"
+
+    if not _DELEGATION_SECRET_PATH.exists():
+        _DELEGATION_SECRET_PATH.write_bytes(secrets.token_bytes(32))
+        _DELEGATION_SECRET_PATH.chmod(0o600)
+
+    _DELEGATION_SECRET_KEY = bytes(_DELEGATION_SECRET_PATH.read_bytes())
+    return _DELEGATION_SECRET_KEY
 
 
 class DelegationRisk(str, Enum):
@@ -204,7 +240,7 @@ def _compute_approval_binding(action: DelegationAction) -> str:
     }
     binding_json = json.dumps(binding_data, sort_keys=True, ensure_ascii=False)
     return hmac.new(
-        b"delegation-approval-binding-v1",
+        _get_delegation_secret_key(),
         binding_json.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()[:32]

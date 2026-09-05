@@ -447,11 +447,29 @@ Override the driver binary path (tests / CI / local builds):
 HERMES_CUA_DRIVER_CMD=/path/to/your/cua-driver
 ```
 
-Swap the backend entirely (for testing):
+### Choosing which machine the agent drives
 
+By default the agent drives the machine running the gateway, through
+cua-driver. That is the `local` provider, and it is what `computer_use` has
+always done:
+
+```yaml
+computer_use:
+  provider: local
 ```
-HERMES_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
-```
+
+A plugin can register other providers — a per-task container pool, a leased
+cloud sandbox — by calling `ctx.register_computer_use_provider()`. Name one
+here to activate it. Registering never activates on its own: an unrecognized
+name is an error rather than a quiet fall back to driving this host's own
+desktop, because that is the difference between clicking a container and
+clicking the user's screen.
+
+`noop` is built in for tests and CI — it records calls and has no side
+effects.
+
+`HERMES_COMPUTER_USE_BACKEND` did this before `computer_use.provider` existed.
+It still wins where it is set, and warns once per process.
 
 ### Telemetry
 

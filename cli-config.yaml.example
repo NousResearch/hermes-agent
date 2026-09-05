@@ -530,6 +530,23 @@ browser:
   # snapshot_threshold: 15000
 
 # =============================================================================
+# Computer Use Configuration
+# =============================================================================
+# computer_use:
+#   # Which machine's keyboard and mouse the agent drives.
+#   #   local (default) - cua-driver on whatever host runs the gateway.
+#   # A plugin can register others - a per-task container pool, a leased cloud
+#   # sandbox - through ctx.register_computer_use_provider(); name one here to
+#   # activate it. Registering does not activate: selection is always explicit,
+#   # because guessing would silently move where the agent's clicks land. An
+#   # unrecognized name is an error rather than a quiet fall back to driving
+#   # this host's own desktop.
+#   #
+#   # Replaces HERMES_COMPUTER_USE_BACKEND, which still wins where it is set
+#   # but warns once per process.
+#   provider: local
+
+# =============================================================================
 # Tool Loop Guardrails
 # =============================================================================
 # Soft warnings are enabled by default. They append guidance to repeated failed

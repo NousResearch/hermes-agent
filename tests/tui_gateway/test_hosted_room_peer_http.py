@@ -194,7 +194,8 @@ def test_scoped_peer_runs_client_stops_exact_run(peer_server):
     assert FakePeer.runs["run-1"]["status"] == "cancelled"
 
 
-def test_named_profile_prefixes_every_roomlink_request(monkeypatch):
+@pytest.mark.parametrize("scoped", [False, True])
+def test_named_profile_prefixes_every_roomlink_request(monkeypatch, scoped):
     captured = {}
 
     class Response:
@@ -222,7 +223,7 @@ def test_named_profile_prefixes_every_roomlink_request(monkeypatch):
         opened,
     )
     client = PeerRunsHTTPClient(
-        base_url="https://peer.example.test/hermes",
+        base_url="https://peer.example.test/hermes" + ("/p/reviewer%3Awest" if scoped else ""),
         api_key="",
         target_profile="reviewer:west",
     )
@@ -232,6 +233,15 @@ def test_named_profile_prefixes_every_roomlink_request(monkeypatch):
         "https://peer.example.test/hermes/p/reviewer%3Awest/"
         "v1/room-members/capabilities"
     )
+
+
+@pytest.mark.parametrize("profile", ["default", "reviewer"])
+def test_profile_scoped_endpoint_cannot_select_another_profile(profile):
+    with pytest.raises(ValueError, match="profile.*match"):
+        PeerRunsHTTPClient(
+            base_url="https://peer.example.test/hermes/p/someone-else",
+            api_key="", target_profile=profile,
+        )
 
 
 def test_remote_run_receipt_survives_home_restart(peer_server, tmp_path):

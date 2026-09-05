@@ -1426,6 +1426,46 @@ class TestMatrixSyncLoop:
 class TestMatrixUploadAndSend:
 
     @pytest.mark.asyncio
+    async def test_image_info_includes_dimensions(self):
+        """m.image info carries w/h so clients can size the image instead of a thumbnail."""
+        import io
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGB", (1280, 720)).save(buf, format="PNG")
+        adapter = _make_adapter()
+        mock_client = MagicMock()
+        mock_client.upload_media = AsyncMock(return_value="mxc://example.org/card")
+        mock_client.send_message_event = AsyncMock(return_value="$event")
+        adapter._client = mock_client
+
+        result = await adapter._upload_and_send(
+            "!room:example.org", buf.getvalue(), "card.png", "image/png", "m.image",
+        )
+
+        assert result.success is True
+        info = mock_client.send_message_event.await_args.args[2]["info"]
+        assert (info["w"], info["h"]) == (1280, 720)
+        assert info["mimetype"] == "image/png"
+
+    @pytest.mark.asyncio
+    async def test_image_info_omits_dimensions_when_unreadable(self):
+        """Unreadable image bytes still send, without w/h, exactly as before."""
+        adapter = _make_adapter()
+        mock_client = MagicMock()
+        mock_client.upload_media = AsyncMock(return_value="mxc://example.org/x")
+        mock_client.send_message_event = AsyncMock(return_value="$event")
+        adapter._client = mock_client
+
+        result = await adapter._upload_and_send(
+            "!room:example.org", b"not an image", "x.png", "image/png", "m.image",
+        )
+
+        assert result.success is True
+        info = mock_client.send_message_event.await_args.args[2]["info"]
+        assert "w" not in info and "h" not in info
+
+    @pytest.mark.asyncio
     async def test_upload_encrypted_room_uses_file_payload(self):
         """Encrypted rooms should use 'file' key with crypto metadata."""
         adapter = _make_adapter()

@@ -15,6 +15,11 @@ CHATGPT_REJECTED_CODEX_PRO_SLUGS = {
 }
 
 
+def test_curated_codex_picker_leads_with_live_verified_astra_aliases():
+    model_ids = get_codex_model_ids()
+    assert model_ids[:2] == ["gpt-6-astra-pro", "gpt-6-astra"]
+
+
 def test_curated_codex_fallback_excludes_chatgpt_rejected_pro_slugs(monkeypatch):
     """OAuth fallback retains real models but never synthesizes rejected ones."""
     retained_models = {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}

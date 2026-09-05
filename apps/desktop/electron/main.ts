@@ -91,7 +91,6 @@ import {
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
 import { applyConnectionChange, sshQuitShouldBlock, teardownSshState } from './connection-apply'
-import { decodedPathIfMissing } from './decoded-path-fallback'
 import {
   apiRequestRegistryConnectionId,
   authModeFromStatus,
@@ -128,6 +127,7 @@ import {
   withTransientRetries
 } from './connection-config'
 import { applyConnectionConfigAtomically } from './connection-config-apply'
+import { decodedPathIfMissing } from './decoded-path-fallback'
 import {
   backendScopeKey,
   backendScopePrefix,

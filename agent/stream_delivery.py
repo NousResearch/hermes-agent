@@ -264,6 +264,8 @@ class StreamDeliveryMixin:
 
     def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
         """Surface a real mid-turn assistant commentary message to the UI layer."""
+        if getattr(self, "_conversational_response_suppressed", False):
+            return
         if not isinstance(assistant_msg, dict):
             return
         if getattr(self, "_conversational_response_gated", False):
@@ -427,7 +429,8 @@ class StreamDeliveryMixin:
     def _close_stream_display_segment(self) -> None:
         """Close a legacy display segment unless admission suppressed it."""
         if getattr(self, "_conversational_response_suppressed", False):
-            self._conversational_response_suppressed = False
+            # Suppression belongs to the response, not the display segment. Only
+            # beginning the next response may re-enable interim delivery.
             return
         self._call_quietly(self.stream_delta_callback, None)
 

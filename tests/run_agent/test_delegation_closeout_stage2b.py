@@ -3,6 +3,8 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 import run_agent
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.turn_finalizer import finalize_turn
@@ -128,6 +130,34 @@ def test_text_then_later_tool_delta_leaks_to_no_observer(monkeypatch):
     agent._close_stream_display_segment()
     assert display == tts == interim == []
     assert hooks == []
+
+
+@pytest.mark.parametrize("gated", [False, True])
+@pytest.mark.parametrize("codex", [False, True])
+def test_settled_tool_prose_stays_suppressed_through_interim_delivery(monkeypatch, gated, codex):
+    agent = _agent()
+    delivered, hooks = [], []
+    agent.interim_assistant_callback = lambda text, **kw: delivered.append(text)
+    monkeypatch.setattr(agent, "_conversational_admission_required", lambda: gated)
+    monkeypatch.setattr(agent, "_enqueue_stream_hook", lambda event, **kw: hooks.append(event))
+    message = {"role": "assistant", "content": "premature", "tool_calls": [{"id": "tool"}]}
+    if codex:
+        message["codex_message_items"] = [{"type": "message", "phase": "commentary",
+            "content": [{"type": "output_text", "text": "premature"}]}]
+    agent._reset_stream_delivery_tracking()
+    agent._settle_conversational_response(has_tool_calls=True)
+    # Production tool-round ordering, including a repeated notification after segment close.
+    agent._emit_interim_assistant_message(message)
+    agent._close_stream_display_segment()
+    agent._emit_interim_assistant_message(message)
+    assert delivered == ([] if gated else ["premature"])
+    assert hooks == ([] if gated else ["on_interim_message"])
+
+    agent._reset_stream_delivery_tracking()
+    agent._settle_conversational_response(has_tool_calls=False)
+    agent._emit_interim_assistant_message({"role": "assistant", "content": "next response"})
+    agent._admit_conversational_response()
+    assert delivered[-1] == "next response"
 
 
 def test_no_tool_response_admits_exactly_once(monkeypatch):

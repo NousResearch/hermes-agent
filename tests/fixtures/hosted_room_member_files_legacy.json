@@ -1,0 +1,131 @@
+{
+  "room": {
+    "room_id": "workshop",
+    "name": "Workshop planning",
+    "members": [
+      {
+        "handle": "writer",
+        "member_id": "writer",
+        "profile": "writer",
+        "target": {
+          "kind": "local",
+          "profile": "writer"
+        }
+      },
+      {
+        "handle": "reviewer",
+        "member_id": "reviewer",
+        "profile": "reviewer",
+        "target": {
+          "kind": "local",
+          "profile": "reviewer"
+        }
+      }
+    ],
+    "authority_gateway_id": "install:6fecf429af5e427e8368d86712079a28",
+    "authority_epoch": 1,
+    "revision": 1,
+    "created_at": 1788813091.816275,
+    "updated_at": 1788813091.8721488,
+    "idempotent": false,
+    "latest_seq": 3
+  },
+  "events": [
+    {
+      "room_id": "workshop",
+      "seq": 1,
+      "event_id": "initial",
+      "kind": "message.user",
+      "actor": {
+        "id": "desktop",
+        "kind": "user"
+      },
+      "authority_epoch": 1,
+      "payload": {
+        "text": "Prepare the workshop agenda.",
+        "thread_id": "workshop-thread"
+      },
+      "created_at": 1788813091.8190799,
+      "idempotent": false
+    },
+    {
+      "room_id": "workshop",
+      "seq": 2,
+      "event_id": "dmessage:34cba092c11818ca762f30b0fa859b5e25f9cf6bf26bd3ea",
+      "kind": "message.member",
+      "actor": {
+        "id": "writer",
+        "kind": "member",
+        "profile": "writer"
+      },
+      "authority_epoch": 1,
+      "payload": {
+        "attachments": [
+          {
+            "attachment_id": "att_a35cd7f73e79dd689d39c3fc8c61897c",
+            "kind": "file",
+            "mime": "text/markdown",
+            "name": "agenda.md",
+            "size": 26
+          }
+        ],
+        "discussion_event_id": "initial",
+        "member_id": "writer",
+        "member_index": 0,
+        "round_index": 0,
+        "task_id": "dtask:34cba092c11818ca762f30b0fa859b5e25f9cf6bf26bd3ea",
+        "text": "Agenda attached. @reviewer check it.",
+        "thread_id": "workshop-thread",
+        "turn_id": "d1.r0.p0.s1.m3874f9d7f35426e6017cf0f4"
+      },
+      "created_at": 1788813091.8709035,
+      "idempotent": false
+    },
+    {
+      "room_id": "workshop",
+      "seq": 3,
+      "event_id": "dterminal:34cba092c11818ca762f30b0fa859b5e25f9cf6bf26bd3ea",
+      "kind": "turn.settled",
+      "actor": {
+        "id": "install:6fecf429af5e427e8368d86712079a28",
+        "kind": "gateway"
+      },
+      "authority_epoch": 1,
+      "payload": {
+        "discussion_event_id": "initial",
+        "member_id": "writer",
+        "member_index": 0,
+        "message_event_id": "dmessage:34cba092c11818ca762f30b0fa859b5e25f9cf6bf26bd3ea",
+        "passed": false,
+        "round_index": 0,
+        "seen_through_seq": 1,
+        "task_id": "dtask:34cba092c11818ca762f30b0fa859b5e25f9cf6bf26bd3ea",
+        "thread_id": "workshop-thread",
+        "turn_id": "d1.r0.p0.s1.m3874f9d7f35426e6017cf0f4"
+      },
+      "created_at": 1788813091.8721488,
+      "idempotent": false
+    }
+  ],
+  "task": {
+    "identity": {
+      "room_id": "workshop",
+      "task_id": "dtask:4d9823d915238108a1821193c853c8b1635ccc51e55e4349",
+      "thread_id": "workshop-thread",
+      "turn_id": "d1.r0.p1.s2.m94a8dc93e4a08f4908a5ee2e"
+    },
+    "payload": {
+      "target_profile": "reviewer",
+      "prompt": "[Discussion: \"Workshop planning\"] You are @reviewer, one participant with @writer and the user.\n\nNew messages in this thread since your last turn (oldest first):\n  User (user): Prepare the workshop agenda.\n  @writer: Agenda attached. @reviewer check it.\n\nRules for this Discussion:\n- Reply with one conversational message only when you have something new worth adding.\n- If you have nothing new to add, reply with exactly \"(pass)\".\n- Mention a teammate by handle to pull them into the next round; do not repeat points already made.\n- Never reveal content from private conversations. Your reply is published verbatim.",
+      "source_event_seq": 1,
+      "input_context": {
+        "watermark": 0,
+        "event_seqs": [
+          1,
+          2
+        ]
+      },
+      "target_member_id": "reviewer"
+    }
+  }
+}

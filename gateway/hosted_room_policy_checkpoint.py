@@ -29,7 +29,8 @@ MAX_THREAD_TRANSCRIPT_EVENTS = 24
 # 4: watermarks are rebuilt because the previous projection advanced every held member on every
 # threaded event, discarding input addressed to a peer. Holds, threads, transcript and citation
 # state rebuild with them from the canonical log, which is unchanged.
-_PROJECTION_SCHEMA_VERSION = 4
+# 5: rebuild compacted retry handoffs without rewriting accepted task input.
+_PROJECTION_SCHEMA_VERSION = 5
 MAX_TRANSCRIPT_POLICY_EVENTS = MAX_THREAD_TRANSCRIPT_EVENTS * (MAX_ACTIVE_POLICY_EVENTS + 2)
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
 
@@ -80,7 +81,8 @@ _SCHEMA_DDL = (
     # The citation state as it stood when one discussion STARTED. Its phases are frozen, so they
     # must not read the live aggregate above: a later reply can resolve an old citation and make a
     # new one, and neither may retroactively change an earlier phase's responder set, member index
-    # or task identity. Captured once per discussion and dropped with its thread.
+    # or task identity. Keep one latest-discussion baseline per thread, including
+    # after active-event compaction, until a newer user source replaces it.
     """CREATE TABLE IF NOT EXISTS hosted_room_policy_citation_baseline (
         room_id TEXT NOT NULL, thread_id TEXT NOT NULL, discussion_event_id TEXT NOT NULL,
         member_id TEXT NOT NULL, cited_at_seq INTEGER NOT NULL DEFAULT 0,
@@ -89,6 +91,8 @@ _SCHEMA_DDL = (
     """CREATE INDEX IF NOT EXISTS idx_hosted_room_user_thread
        ON hosted_room_events(room_id, json_extract(payload_json, '$.thread_id'), seq)
        WHERE kind='message.user'""",
+    """CREATE INDEX IF NOT EXISTS idx_hosted_room_discussion_events
+       ON hosted_room_events(room_id, json_extract(payload_json, '$.discussion_event_id'), seq)""",
 )
 
 _ROOM_EVENT_COLUMNS = hosted_rooms._EVENT_COLUMNS
@@ -339,7 +343,8 @@ class HostedRoomPolicyCheckpoint:
     # -- per-kind projection handlers (dispatched by _apply_event) -----------
 
     def _apply_user_message(
-        self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
+        self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any],
+        *, restoring: bool = False) -> None:
         room_id = str(event["room_id"])
         thread_id, event_id = _text(payload, "thread_id"), _text(event, "event_id")
         if not thread_id or not event_id:
@@ -351,25 +356,28 @@ class HostedRoomPolicyCheckpoint:
                    discussion_event_id=excluded.discussion_event_id,
                    latest_user_seq=excluded.latest_user_seq, completed=0""",
             (room_id, thread_id, event_id, int(event["seq"])))
-        # Freeze the citation state this discussion starts from, before any of its own replies
-        # move the live aggregate. Everything newer reaches its phases through the committed
-        # events they already carry.
-        conn.execute(
-            "DELETE FROM hosted_room_policy_citation_baseline WHERE room_id=? AND thread_id=?",
-            (room_id, thread_id))
-        conn.execute("""INSERT INTO hosted_room_policy_citation_baseline(
-                   room_id, thread_id, discussion_event_id, member_id, cited_at_seq, last_post_seq)
-               SELECT room_id, thread_id, ?, member_id, cited_at_seq, last_post_seq
-                   FROM hosted_room_policy_citations WHERE room_id=? AND thread_id=?""",
-            (event_id, room_id, thread_id))
+        if not restoring:
+            # Freeze the citation state this discussion starts from, before any of its own replies
+            # move the live aggregate. Everything newer reaches its phases through the committed
+            # events they already carry.
+            conn.execute(
+                "DELETE FROM hosted_room_policy_citation_baseline WHERE room_id=? AND thread_id=?",
+                (room_id, thread_id))
+            conn.execute("""INSERT INTO hosted_room_policy_citation_baseline(
+                       room_id, thread_id, discussion_event_id, member_id, cited_at_seq, last_post_seq)
+                   SELECT room_id, thread_id, ?, member_id, cited_at_seq, last_post_seq
+                       FROM hosted_room_policy_citations WHERE room_id=? AND thread_id=?""",
+                (event_id, room_id, thread_id))
         self._store_active_event(conn, event=event, thread_id=thread_id, discussion_event_id=event_id)
         self._store_transcript_event(conn, event=event, thread_id=thread_id)
-        # User text is the only input that changes manual holds (see resolve_hold_directive).
-        self._apply_holds(
-            conn, room_id,
-            directive=discussion.resolve_hold_directive(
-                payload.get("text"), _room_members(conn, room_id)),
-            seq=int(event["seq"]))
+        # Reopening a committed result must not replay old user controls.
+        if not restoring:
+            # User text is the only input that changes manual holds (see resolve_hold_directive).
+            self._apply_holds(
+                conn, room_id,
+                directive=discussion.resolve_hold_directive(
+                    payload.get("text"), _room_members(conn, room_id)),
+                seq=int(event["seq"]))
 
     def _apply_discussion_event(
         self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
@@ -386,6 +394,8 @@ class HostedRoomPolicyCheckpoint:
         source = conn.execute(
             "SELECT seq FROM hosted_room_policy_events WHERE room_id=? AND discussion_event_id=? ORDER BY seq LIMIT 1",
             (room_id, discussion_event_id)).fetchone()
+        if source is None and kind == "turn.settled" and payload.get("message_event_id"):
+            source = self._restore_retry_discussion(conn, event, payload)
         source_seq = int(source["seq"]) if source is not None else None
         if source is not None:
             # Only an ACTIVE discussion keeps an inflated projection.
@@ -426,14 +436,56 @@ class HostedRoomPolicyCheckpoint:
                        seen_through_seq=MAX(hosted_room_policy_watermarks.seen_through_seq, excluded.seen_through_seq)""",
                 (room_id, thread_id, member_id, seen_through_seq))
 
+    def _restore_retry_discussion(
+        self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]
+    ) -> sqlite3.Row | None:
+        """Reopen compacted silence only after a late visible result is committed."""
+        room_id, seq = str(event["room_id"]), int(event["seq"])
+        thread_id, discussion_id = _text(payload, "thread_id"), _text(payload, "discussion_event_id")
+        source = conn.execute("""SELECT * FROM hosted_room_events
+            WHERE room_id=? AND kind='message.user' AND json_extract(payload_json, '$.thread_id')=? AND seq<=?
+            ORDER BY seq DESC LIMIT 1""", (room_id, thread_id, seq)).fetchone()
+        if source is None or source["event_id"] != discussion_id:
+            return None
+        cursor = conn.execute("SELECT stopped_through_seq FROM hosted_room_policy_cursors WHERE room_id=?",
+                              (room_id,)).fetchone()
+        if int(source["seq"]) <= int(cursor["stopped_through_seq"]):
+            return None
+        # Repeated explicit retries may leave many obsolete deferrals. Retain
+        # the latest receipt per task and completion per status, not their history.
+        rows = conn.execute("""WITH history AS (
+            SELECT * FROM hosted_room_events
+            WHERE room_id=? AND json_extract(payload_json, '$.discussion_event_id')=? AND seq<=?),
+            receipts AS (
+                SELECT MAX(seq) AS seq FROM history
+                WHERE kind IN ('turn.settled', 'turn.failed', 'turn.cancelled', 'turn.deferred')
+                GROUP BY json_extract(payload_json, '$.task_id')),
+            activities AS (
+                SELECT MAX(seq) AS seq FROM history WHERE kind='room.activity'
+                GROUP BY json_extract(payload_json, '$.status'))
+            SELECT * FROM history WHERE kind='message.member'
+                OR seq IN (SELECT seq FROM receipts) OR seq IN (SELECT seq FROM activities)
+            ORDER BY seq LIMIT ?""", (room_id, discussion_id, seq, MAX_ACTIVE_POLICY_EVENTS)).fetchall()
+        events = [_event_from_room_row(row) for row in rows]
+        activities = [item for item in events if item["kind"] == "room.activity"]
+        if not activities or any(item["payload"]["status"] == "bounded" for item in activities):
+            return None
+        if len(rows) >= MAX_ACTIVE_POLICY_EVENTS:
+            raise RuntimeError("retried room policy projection exceeded its bound")
+        self._apply_user_message(
+            conn, _event_from_room_row(source), json.loads(source["payload_json"]), restoring=True)
+        for item in events:
+            self._store_active_event(conn, event=item, thread_id=thread_id, discussion_event_id=discussion_id)
+        return source
+
     def _apply_room_activity(
         self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
         room_id, thread_id = str(event["room_id"]), _text(payload, "thread_id")
         conn.execute(_DELETE_ACTIVE_EVENTS_SQL, (room_id, _text(payload, "discussion_event_id")))
         conn.execute("DELETE FROM hosted_room_policy_threads WHERE room_id=? AND thread_id=?", (room_id, thread_id))
-        conn.execute(
-            "DELETE FROM hosted_room_policy_citation_baseline WHERE room_id=? AND thread_id=?",
-            (room_id, thread_id))
+        # Keep the bounded latest-discussion baseline for an exact late result.
+        # A genuinely new source replaces it in _apply_user_message; do not
+        # reconstruct an old phase from the future citation aggregate.
 
     def _apply_stop_requested(
         self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:

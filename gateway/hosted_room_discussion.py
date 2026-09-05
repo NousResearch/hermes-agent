@@ -920,9 +920,15 @@ def _make_task_plan(
 def _pending_discussion(validated: Sequence[_ValidatedEvent]) -> _ValidatedEvent | None:
     """Oldest latest-per-thread user message not stopped and not yet completed."""
     stopped_through_seq = max((event.seq for event in validated if event.kind == "room.stop_requested"), default=0)
+    committed_through = {
+        str(event.payload["discussion_event_id"]): event.seq for event in validated
+        if event.kind == "turn.settled" and event.payload.get("message_event_id") is not None}
     completed_discussion_ids = {
         str(event.payload["discussion_event_id"]) for event in validated
-        if event.kind == "room.activity" and event.payload.get("status") in {"settled", "bounded"}}
+        if event.kind == "room.activity" and (
+            event.payload.get("status") == "bounded"
+            or (event.payload.get("status") == "settled"
+                and event.seq >= committed_through.get(str(event.payload["discussion_event_id"]), 0)))}
     latest_by_thread = {
         str(event.payload["thread_id"]): event for event in validated if event.kind == "message.user"}
     return next((
@@ -1022,7 +1028,7 @@ def plan_next_task(
         """This slot's task, or ``None`` when the slot has nothing to say."""
         watermark = watermarks.get((thread_id, member.member_id), 0)
         pending_attachments = any(
-            event.kind == "message.user" and watermark < event.seq <= maximum_seen_seq
+            event.kind in {"message.user", "message.member"} and watermark < event.seq <= maximum_seen_seq
             and event.payload.get("attachments") for event in thread_messages)
         if (round_index, member.member_id, continuation) in terminals and not pending_attachments:
             return None
@@ -1030,6 +1036,8 @@ def plan_next_task(
             thread_messages, watermark=watermark, maximum_seq=maximum_seen_seq)
         if not delta:
             return None
+        member_attachments = any(event.kind == "message.member" and event.payload.get("attachments")
+                                 for event in delta)
         prompt = _build_prompt(
             room=room, member=member, messages=thread_messages, watermark=watermark,
             seen_through_seq=seen_through_seq)
@@ -1037,8 +1045,12 @@ def plan_next_task(
             room=room, discussion_event=discussion, member=member, member_index=member_index,
             round_index=round_index, seen_through_seq=seen_through_seq, prompt=prompt,
             attachments=attachments, continuation=continuation,
-            input_context=(validate_task_input({"watermark": watermark, "event_seqs": [event.seq for event in delta]})
-                           if freeze_input_context else None)))
+            input_context=(validate_task_input({
+                "watermark": watermark, "event_seqs": [event.seq for event in delta],
+                # Bind the additive produced-file contract into the immutable task identity.
+                # Older admissions lacking this field must never gain files on Retry.
+                **({"member_attachments": True} if member_attachments else {})})
+                if freeze_input_context or member_attachments else None)))
 
     for round_index in range(MAX_DISCUSSION_ROUNDS):
         # Cumulative selection, frozen at this round's own committed frontier: this discussion's
@@ -1162,7 +1174,9 @@ def reconstruct_task_plan(
             raise DiscussionReconstructionError("task input message is missing")
         task_messages = tuple(by_seq[seq] for seq in input_context["event_seqs"])
     attachments = [dict(attachment) for event in task_messages
-                   if watermark < event.seq <= seen_through_seq and event.kind == "message.user"
+                   if watermark < event.seq <= seen_through_seq and (event.kind == "message.user"
+                       or (input_context is not None and input_context.get("member_attachments") is True
+                           and event.kind == "message.member"))
                    for attachment in event.payload.get("attachments", [])]
     reconstructed = _make_task_plan(
         room=room, discussion_event=discussion, member=member, member_index=int(match.group("position")),
@@ -1294,7 +1308,7 @@ def _bounded_task_delta(
 ) -> tuple[int, list[_ValidatedEvent], list[dict[str, Any]]]:
     """Return the oldest complete input prefix that fits one model turn.
 
-    Every accepted user message already fits the per-message attachment limits,
+    Every accepted user or member message fits the per-message attachment limits,
     so the first event can always make progress. Stopping only between events
     preserves each message and lets the terminal watermark resume at the next
     unconsumed event instead of poisoning the room backlog.
@@ -1309,7 +1323,7 @@ def _bounded_task_delta(
             continue
         event_attachments = (
             list(event.payload.get("attachments", []))
-            if event.kind == "message.user"
+            if event.kind in {"message.user", "message.member"}
             else []
         )
         next_count = len(attachments) + len(event_attachments)
@@ -1323,7 +1337,7 @@ def _bounded_task_delta(
             if selected:
                 break
             raise DiscussionValidationError(
-                "one user message exceeds the per-task attachment budget"
+                "one message exceeds the per-task attachment budget"
             )
         selected.append(event)
         attachments.extend(dict(attachment) for attachment in event_attachments)

@@ -7,8 +7,12 @@ MAX_TASK_INPUT_EVENTS = 128
 
 
 def validate_task_input(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != {"watermark", "event_seqs"}:
+    if not isinstance(value, dict) or not {"watermark", "event_seqs"} <= set(value) <= {
+        "watermark", "event_seqs", "member_attachments"
+    }:
         raise ValueError("invalid task input context")
+    if "member_attachments" in value and value["member_attachments"] is not True:
+        raise ValueError("invalid member attachment input contract")
     watermark = value["watermark"]
     seqs = value["event_seqs"]
     if type(watermark) is not int or watermark < 0:
@@ -22,4 +26,5 @@ def validate_task_input(value: Any) -> dict[str, Any]:
                 "task input sequences must be increasing after the watermark"
             )
         previous = seq
-    return {"watermark": watermark, "event_seqs": list(seqs)}
+    return {"watermark": watermark, "event_seqs": list(seqs),
+            **({"member_attachments": True} if "member_attachments" in value else {})}

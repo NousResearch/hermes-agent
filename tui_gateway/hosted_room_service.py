@@ -559,15 +559,20 @@ class HostedRoomService:
         if decision.discussion_event_id is None:
             return
         gateway_id, epoch = _authority(room)
-        hosted_rooms.append_event(
-            self.db_path, room_id=str(room["room_id"]),
-            event_id=f"dactivity:{decision.discussion_event_id}:{decision.reason}",
-            kind="room.activity", actor={"kind": "gateway", "id": gateway_id},
-            payload={
-                "status": decision.status, "reason_code": decision.reason,
-                "thread_id": decision.thread_id,
-                "discussion_event_id": decision.discussion_event_id},
-            authority_gateway_id=gateway_id, authority_epoch=epoch)
+        try:
+            hosted_rooms.append_event(
+                self.db_path, room_id=str(room["room_id"]),
+                event_id=f"dactivity:{decision.discussion_event_id}:{decision.reason}:{room['latest_seq']}",
+                kind="room.activity", actor={"kind": "gateway", "id": gateway_id},
+                payload={
+                    "status": decision.status, "reason_code": decision.reason,
+                    "thread_id": decision.thread_id,
+                    "discussion_event_id": decision.discussion_event_id},
+                authority_gateway_id=gateway_id, authority_epoch=epoch,
+                expected_latest_seq=int(room["latest_seq"]))
+        except hosted_rooms.EventCursorConflictError:
+            # A retry committed after the policy read; recompute on the next preparation.
+            return
 
     def _enforce_control_intent(self, snapshot: PolicySnapshot, room_id: str) -> bool:
         """Cancel every surviving task the durable control log already forbids.
@@ -874,6 +879,7 @@ class HostedRoomService:
             "blocked": room_id in runtime["blocked_rooms"]
             or bool(counts.get("indeterminate") or counts.get("stopping")),
             "counts": dict(counts), "pending_actions": pending_actions,
+            "needs_attention": bool(pending_actions),
             "holds": self._hold_status(room_id),
             "peer_routes": self._route_statuses(room_id)}
 

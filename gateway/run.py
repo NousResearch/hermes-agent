@@ -2949,20 +2949,50 @@ import weakref as _weakref
 _gateway_runner_ref: _weakref.ref = lambda: None
 
 
+def _is_synthetic_empty_terminal_response(agent_result: dict, response: str) -> bool:
+    """True when ``response == "(empty)"`` is Hermes' terminal sentinel."""
+    if response != "(empty)" or not isinstance(agent_result, dict):
+        return False
+
+    messages = agent_result.get("messages")
+    if not isinstance(messages, list):
+        return False
+
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            return bool(msg.get("_empty_terminal_sentinel"))
+    return False
+
+
 def _normalize_empty_agent_response(
     agent_result: dict, response: str, *, history_len: int = 0) -> str:
     """Normalize empty/None agent responses into user-facing messages.
     Covers ``failed``, work done (api_calls > 0) with no text, and never-ran (api_calls == 0, the
     post-/stop silent-drop from a stale generation token) with a retry hint.
 
-    Consolidates the existing ``failed`` handler and adds a catch-all for the case where the agent did work
-    (api_calls > 0) but returned no text. Fix for #18765.
+    Consolidates the existing ``failed`` handler and catch-all handling for
+    empty / synthetic-empty replies when the agent did work but produced no
+    user-visible text. Intentional ``end_turn_tool_batch`` completions remain
+    silent for the messaging layer.
     Also surfaces a retry hint when the agent never ran at all (api_calls == 0) for a non-interrupted,
     non-failed turn -- this is the silent-drop pattern observed after ``/stop`` where the next user message
     hits a stale generation token and returns an empty result, leaving the platform with nothing to send.
     (#31884)
     """
-    if response:
+    synthetic_empty = _is_synthetic_empty_terminal_response(agent_result, response)
+
+    # end_turn batches stay silent when the closer is the persistable
+    # ``(empty)`` placeholder (no ``_empty_terminal_sentinel``; that flag
+    # would rewind the tool batch on persist). Visible handoff text still
+    # passes through.
+    if agent_result.get("turn_exit_reason") == "end_turn_tool_batch" and (
+        synthetic_empty
+        or not (response or "").strip()
+        or (response or "").strip() == "(empty)"
+    ):
+        return ""
+
+    if response and not synthetic_empty:
         return response
     if agent_result.get("failed"):
         # ``error`` can be an EXPLICIT None (bypasses dict.get default) -> would render "failed: None".
@@ -3019,6 +3049,14 @@ def _normalize_empty_agent_response(
         if agent_result.get("partial"):
             err = agent_result.get("error", "processing incomplete")
             return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
+        if agent_result.get("turn_exit_reason") == "end_turn_tool_batch":
+            return ""
+        if synthetic_empty:
+            return (
+                "⚠️ The model returned no response after processing tool "
+                "results. This can happen with some models — try again or "
+                "rephrase your question."
+            )
         return (
             "⚠️ Processing completed but no response was generated. "
             "This may be a transient error — try sending your message again.")
@@ -3028,6 +3066,9 @@ def _normalize_empty_agent_response(
         return (
             "⚠️ Your message wasn't processed (the previous turn was still "
             "being cleaned up). Please send it again.")
+
+    if synthetic_empty:
+        return ""
 
     return response
 

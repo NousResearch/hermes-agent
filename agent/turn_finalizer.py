@@ -39,6 +39,19 @@ def _assistant_row_missing_visible_text(msg: dict) -> bool:
     return not flatten_message_text(msg.get("content")).strip()
 
 
+def _is_empty_placeholder_tail(msg: dict) -> bool:
+    """Assistant closer from ``_build_empty_assistant_placeholder``.
+
+    Role-only finalization would keep ``(empty)`` in durable history when
+    ``final_response`` holds the real handoff text. Restrict to the helper's
+    sentinel shape (no tool_calls, ``(empty)`` body) so a real assistant
+    answer is never overwritten.
+    """
+    if msg.get("tool_calls"):
+        return False
+    return flatten_message_text(msg.get("content")).strip() == "(empty)"
+
+
 def _record_kanban_budget_exhausted(
     kanban_task: str, api_call_count: int, max_iterations: int, logger: logging.Logger
 ) -> None:
@@ -243,10 +256,15 @@ def _close_transcript_tail(agent, messages, final_response, interrupted, _recove
         elif (
             _tail.get("content") != final_response
             and _assistant_row_missing_visible_text(_tail)
-            and (_tail.get("tool_calls") or _recovered_from_stream)
+            and (
+                _tail.get("tool_calls")
+                or _recovered_from_stream
+                or _is_empty_placeholder_tail(_tail)
+            )
         ):
-            # Pure tool-call turn or stream-recovered blank (#95514): fill the persisted
-            # blank row's content rather than append a second row.
+            # Pure tool-call turn, stream-recovered blank (#95514), or end_turn
+            # ``(empty)`` closer: fill the persisted blank row's content rather
+            # than append a second row.
             _tail["content"] = final_response
             stamp_message_timestamp(_tail)
             _tail.pop(_DB_PERSISTED_MARKER, None)

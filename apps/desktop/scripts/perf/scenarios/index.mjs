@@ -6,6 +6,7 @@ import firstToken from './first-token.mjs'
 import idleCost from './idle-cost.mjs'
 import keystroke from './keystroke.mjs'
 import liveWindow from './live-window.mjs'
+import loadedKeystroke from './loaded-keystroke.mjs'
 import multitab from './multitab.mjs'
 import profileSwitch from './profile-switch.mjs'
 import renderChurn from './render-churn.mjs'
@@ -21,6 +22,7 @@ export const SCENARIOS = {
   [stream.name]: stream,
   [streamHistory.name]: streamHistory,
   [keystroke.name]: keystroke,
+  [loadedKeystroke.name]: loadedKeystroke,
   [transcript.name]: transcript,
   [multitab.name]: multitab,
   [liveWindow.name]: liveWindow,

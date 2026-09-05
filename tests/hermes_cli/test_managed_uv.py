@@ -1424,6 +1424,17 @@ class TestWindowsRuntimeSelfLock:
             "the structural self-lock must not promise that retrying helps"
         )
         assert "outside" in out, "the deferral must point at an escape hatch"
+        # #103601: a bare system interpreter has none of Hermes' third-party
+        # dependencies (e.g. python-dotenv), so `hermes_cli.main` dies on its
+        # first import unless the workaround installs them first.
+        install_line = next(
+            (i for i, line in enumerate(out.splitlines()) if "pip install" in line), None)
+        assert install_line is not None, (
+            "the workaround must install Hermes' dependencies, not just swap the interpreter"
+        )
+        run_line = next(
+            i for i, line in enumerate(out.splitlines()) if "hermes_cli.main update" in line)
+        assert install_line < run_line, "dependencies must be installed before the updater runs"
 
     def test_non_self_locked_repair_proceeds(self, tmp_path, monkeypatch):
         """The guard must fail OPEN when the updater runs from outside the

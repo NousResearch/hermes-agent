@@ -4160,6 +4160,19 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     _custom_headers = _apply_user_default_headers(None)
     if _custom_headers:
         _extra["default_headers"] = _custom_headers
+    # Per-provider extra_headers — the main agent applies these in
+    # run_agent.py via apply_custom_provider_extra_headers_to_client_kwargs,
+    # but that step was missing here too, so anonymous custom endpoint
+    # auxiliary calls also dropped auth/attribution headers. (#aux-extra-headers)
+    try:
+        from hermes_cli.config import get_custom_provider_extra_headers
+        _anon_extra_headers = get_custom_provider_extra_headers(_clean_base)
+        if _anon_extra_headers:
+            merged_anon = dict(_extra.get("default_headers") or {})
+            merged_anon.update(_anon_extra_headers)
+            _extra["default_headers"] = merged_anon
+    except Exception:
+        logger.debug("custom-provider extra_headers lookup failed for anonymous custom", exc_info=True)
     if custom_mode == "codex_responses":
         real_client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
         return CodexAuxiliaryClient(real_client, model), model
@@ -7289,6 +7302,23 @@ def resolve_provider_client(
                 _headers2 = _apply_user_default_headers(_extra2.get("default_headers"))
                 if _headers2:
                     _extra2["default_headers"] = _headers2
+                # Per-provider extra_headers (custom_providers[].extra_headers) —
+                # the main agent applies these in run_agent.py via
+                # apply_custom_provider_extra_headers_to_client_kwargs, but that
+                # step was missing here, so auxiliary calls (title generation,
+                # compression, vision) to named custom providers silently
+                # dropped auth/attribution headers and 401/403'd. (#aux-extra-headers)
+                try:
+                    from hermes_cli.config import normalize_extra_headers
+                    _provider_extra_headers = normalize_extra_headers(
+                        custom_entry.get("extra_headers")
+                    )
+                except Exception:
+                    _provider_extra_headers = {}
+                if _provider_extra_headers:
+                    merged_provider_headers = dict(_extra2.get("default_headers") or {})
+                    merged_provider_headers.update(_provider_extra_headers)
+                    _extra2["default_headers"] = merged_provider_headers
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                     provider, final_model, entry_api_mode or "chat_completions")

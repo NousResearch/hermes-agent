@@ -101,6 +101,8 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `RAMP_ROUTER_BASE_URL` | Override Ramp Router base URL (default: `https://api.router.com/v1`) |
 | `NEBIUS_API_KEY` | Nebius Token Factory API key ([tokenfactory.nebius.com](https://tokenfactory.nebius.com/)); `NEBIUS_TOKEN_FACTORY_API_KEY` also accepted |
 | `NEBIUS_BASE_URL` | Override Nebius Token Factory base URL (default: `https://api.tokenfactory.nebius.com/v1`) |
+| `OPENZOO_API_KEY` | openzoo placeholder key — any non-empty value (`sk-openzoo`); the local proxy pays per call over x402, no account needed ([openzoo.fun](https://openzoo.fun)) |
+| `OPENZOO_BASE_URL` | Override openzoo proxy base URL (default: `http://localhost:8402/v1`) |
 | `NVIDIA_API_KEY` | NVIDIA NIM API key — Nemotron and open models ([build.nvidia.com](https://build.nvidia.com)) |
 | `NVIDIA_BASE_URL` | Override NVIDIA base URL (default: `https://integrate.api.nvidia.com/v1`; set to `http://localhost:8000/v1` for a local NIM endpoint) |
 | `STEPFUN_API_KEY` | StepFun API key — Step-series models ([platform.stepfun.com](https://platform.stepfun.com)) |

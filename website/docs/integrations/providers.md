@@ -59,6 +59,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **MiniMax OAuth** | `hermes model` → "MiniMax (OAuth)" (provider: `minimax-oauth`; browser PKCE login) |
 | **StepFun** | `STEPFUN_API_KEY` in `~/.hermes/.env` (provider: `stepfun`) |
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
+| **openzoo** | `OPENZOO_API_KEY=sk-openzoo` in `~/.hermes/.env` (any value — the local proxy pays per call over x402; no account, no key) (provider: `openzoo`; aliases: `open-zoo`, `zoo`). Run `npx openzoo` first; Hermes talks to it at `http://localhost:8402/v1` |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 
 All three OpenCode providers send an opaque, per-conversation `x-opencode-session` header on every request (main turns on every transport plus auxiliary calls such as compression and titles). OpenCode uses it to pin a conversation to one backend so its prompt cache stays warm; the value is derived from the Hermes session id and carries no personal data.
@@ -315,6 +316,10 @@ hermes chat --provider gmi --model zai-org/GLM-5.1-FP8
 # Nebius Token Factory
 hermes chat --provider nebius --model deepseek-ai/DeepSeek-V4-Pro
 # Requires: NEBIUS_API_KEY in ~/.hermes/.env
+
+# openzoo (local x402 proxy — run `npx openzoo` first; it listens on http://localhost:8402/v1)
+hermes chat --provider openzoo --model openzoo/auto
+# Requires: OPENZOO_API_KEY=sk-openzoo in ~/.hermes/.env (any value; the proxy pays per call, not the key)
 ```
 
 Fireworks uses its native slash-form catalog IDs, such as `accounts/fireworks/models/kimi-k2p6`. Run `hermes model`, choose **Fireworks AI**, and select from the live catalog or enter another Fireworks model ID. The default endpoint is `https://api.fireworks.ai/inference/v1`; configure a different endpoint through `model.base_url` in `config.yaml`, not `.env`.
@@ -326,7 +331,7 @@ model:
   default: "zai-org/GLM-5.1-FP8"
 ```
 
-Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, `META_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
+Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, `META_BASE_URL`, `OPENZOO_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
 
 :::note Meta contributor tier
 `muse-spark-1.2-contributor` and `muse-spark-1.3-contributor` are Meta's contributor tiers — Meta may train on your prompts and completions, so [interactive model selection asks for confirmation](../user-guide/configuring-models.md) before using either. For current pricing and rate limits, see [Meta Model API pricing and rate limits](https://dev.meta.ai/docs/pricing-rate-limits/). Use the standard `muse-spark-1.2` / `muse-spark-1.3` (no training) for confidential work.

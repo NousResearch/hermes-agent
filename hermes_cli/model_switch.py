@@ -440,6 +440,7 @@ class ModelSwitchResult:
     runtime_capabilities: Optional[dict[str, bool]] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
+    model_verified: bool = False
 
 
 @dataclass(frozen=True)
@@ -1052,6 +1053,7 @@ class _Switch:
     validation_headers: dict = field(default_factory=dict)
     suppress_ollama_headers: bool = False
     validation: dict = field(default_factory=dict)
+    model_verified: bool = False
 
     def fail(self, message: str, **fields) -> ModelSwitchResult:
         return ModelSwitchResult(success=False, is_global=self.is_global, error_message=message, **fields)
@@ -1362,15 +1364,18 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
         validation = {"accepted": False, "persist": False, "recognized": False,
                       "message": f"Could not validate `{st.new_model}`: {e}"}
 
+    declared_model = _config_declares_model(
+        st.new_model, st.target_provider, st.base_url,
+        st.user_providers, st.custom_providers)
     if not validation.get("accepted"):
-        if not _config_declares_model(
-                st.new_model, st.target_provider, st.base_url, st.user_providers, st.custom_providers):
+        if not declared_model:
             return st.fail(
                 validation.get("message", "Invalid model"),
                 new_model=st.new_model, target_provider=st.target_provider, provider_label=st.provider_label)
         validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
     st.new_model = validation.get("corrected_model") or st.new_model
     st.validation = validation
+    st.model_verified = bool(validation.get("recognized") or declared_model)
     return None
 
 
@@ -1448,7 +1453,7 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
         provider_label=st.provider_label, resolved_via_alias=st.resolved_alias, capabilities=capabilities,
         runtime_capabilities={
             k: v for k, v in runtime_capabilities.items() if isinstance(k, str) and isinstance(v, bool)},
-        model_info=model_info, is_global=st.is_global)
+        model_info=model_info, is_global=st.is_global, model_verified=st.model_verified)
 
 
 def switch_model(

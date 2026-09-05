@@ -35,8 +35,7 @@ import {
   $botChatFocused,
   $focusedBotOwner,
   $selectedRosterKey,
-  focusedRosterOwner,
-  saveSelectedRosterBot
+  focusedRosterOwner
 } from './bot-state'
 import { ensureBotMetadata } from './canonical-chat'
 import {
@@ -51,7 +50,6 @@ import {
   botSourceStatus,
   isActiveRosterBot,
   isDefaultBot,
-  newBotChat,
   ROSTER_KEY,
   saveBotMeta
 } from './data'
@@ -62,7 +60,7 @@ import { useBots } from './i18n'
 import { displayName, stripPreviewMarkdown } from './labels'
 import { duplicateBot } from './profile-ops'
 import { openRosterBot } from './roster-actions'
-import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
+import { botRosterMeta } from './routing'
 import { A2A_PREFIX_RE, botCanonicalSessionId, botRowOwnsWorkspace, previewKind, workerActiveAt } from './row-helpers'
 import type { GroupMember, RosterRow, SidebarRowLabels } from './types'
 import { $botSections, $draggingBot, BOT_DRAG_MIME, botSectionId, moveBotsToSection } from './user-sections'
@@ -394,16 +392,6 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
           }}
         >
           {b.bot.duplicate}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem
-          onSelect={() => {
-            saveSelectedRosterBot(bot)
-            setBotsWorkspaceOwner(botWorkspaceOwnerKey(bot), bot)
-            newBotChat(bot)
-          }}
-        >
-          {b.bot.newChatWith}
         </ContextMenuItem>
         <ContextMenuSeparator />
         {/* Filing. Membership is one field on the bot's meta (`sectionId`), so

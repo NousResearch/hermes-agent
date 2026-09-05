@@ -17,6 +17,7 @@ import { codiconIcon } from '@/components/ui/codicon'
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { KbdCombo } from '@/components/ui/kbd'
+import { useContributions } from '@/contrib/react/use-contributions'
 import { getHermesConfigRecord, listAllProfileSessions } from '@/hermes'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useI18n } from '@/i18n'
@@ -93,12 +94,15 @@ import {
   AGENTS_ROUTE,
   ARTIFACTS_ROUTE,
   COMMAND_CENTER_ROUTE,
+  contributedRoutes,
   CRON_ROUTE,
   MESSAGING_ROUTE,
   navigateToWorkspacePage,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
   SETTINGS_ROUTE,
+  SIDEBAR_NAV_AREA,
+  type SidebarNavContribution,
   SKILLS_ROUTE,
   STARMAP_ROUTE
 } from '../routes'
@@ -728,6 +732,12 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
 
   const contributedItems = usePaletteContributions()
 
+  // Contributed workspace pages (plugins pairing a full page with a sidebar
+  // nav row) ride along in the Go-to list below: their ONLY other entry point
+  // hides with the sessions rail, so a collapsed or Bot Mode layout would
+  // strand them otherwise (#102432).
+  const navContributions = useContributions(SIDEBAR_NAV_AREA)
+
   // The active repo's worktrees → "new conversation in <branch>". This is the
   // ⌘K-typed "I want to work on <branch>" reflex: each entry seeds a fresh
   // session anchored to that worktree's checkout (requestStartWorkSession),
@@ -754,6 +764,35 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         : [],
     [t, worktrees]
   )
+
+  // Contributed pages → Go-to rows. Same guarantee the core pages above get
+  // from their hardcoded rows: reachable with the sessions rail hidden. Only
+  // paths backed by a LIVE contributed page qualify (contributedRoutes()
+  // already excludes core-reserved paths, which have their own rows), so a
+  // stale nav row can never point the palette at a dead end.
+  const contributedPageItems = useMemo<PaletteItem[]>(() => {
+    const pagePaths = new Set(contributedRoutes().map(route => route.path))
+    const rows: PaletteItem[] = []
+
+    for (const contribution of navContributions) {
+      const data = contribution.data as Partial<SidebarNavContribution> | undefined
+      const path = data?.path ?? ''
+
+      if (!data?.label || !path.startsWith('/') || !pagePaths.has(path)) {
+        continue
+      }
+
+      rows.push({
+        icon: codiconIcon(data.codicon || 'link'),
+        id: `go-${contribution.source ?? 'core'}:${contribution.id}`,
+        keywords: ['go to', data.label.toLowerCase(), path],
+        label: data.label,
+        run: go(path)
+      })
+    }
+
+    return rows
+  }, [go, navContributions])
 
   const baseGroups = useMemo<PaletteGroup[]>(() => {
     const settingsTab = (tab: string) => `${SETTINGS_ROUTE}?tab=${tab}`
@@ -862,7 +901,11 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             keywords: ['star map', 'memory', 'memories', 'skills', 'graph', 'learning', 'constellation'],
             label: t.starmap.title,
             run: go(STARMAP_ROUTE)
-          }
+          },
+          // Contributed pages land at the end of Go to — Kanban et al. stay
+          // reachable from layouts where the sessions rail (their sidebar
+          // home) is hidden (#102432).
+          ...contributedPageItems
         ]
       },
       projectGroup,
@@ -1006,6 +1049,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     contributedItems,
+    contributedPageItems,
     dismissedAutoProjects,
     go,
     projectTree,

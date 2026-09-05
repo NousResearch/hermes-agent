@@ -1611,6 +1611,14 @@ stt:
 #   deepinfra:
 #     # Leave `model` blank for the first live `image-gen`-tagged result.
 #     model: ""
+#
+# OpenRouter-compatible providers can instead use a primary model with ordered
+# fallbacks:
+# image_gen:
+#   provider: "openrouter"
+#   model: "google/gemini-3.1-flash-image"
+#   fallback_models:
+#     - "openai/gpt-5.4-image-2"
 
 # =============================================================================
 # Response Pacing (Messaging Platforms)

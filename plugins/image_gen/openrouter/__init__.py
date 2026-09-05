@@ -39,6 +39,31 @@ _MAX_REFERENCE_IMAGES = 3  # Gemini Flash Image accepts up to 3 input images per
 _REQUEST_TIMEOUT = 300.0  # per image call; a cold quality-first row can run past 3 minutes.
 
 # Curated metadata for well-known chat-completions image models.
+
+
+def _dedupe_models(models: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for model in models:
+        m = (model or "").strip()
+        if not m or m in seen:
+            continue
+        seen.add(m)
+        out.append(m)
+    return out
+
+
+def _coerce_model_list(value: Any) -> list[str]:
+    """Accept one model id or an ordered list from image_gen config."""
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, (list, tuple)):
+        values = value
+    else:
+        return []
+    return _dedupe_models([item for item in values if isinstance(item, str)])
+
+
 _KNOWN_MODEL_META = {
     DEFAULT_MODEL: {
         "display": "OpenAI GPT-5.4 Image 2",
@@ -599,16 +624,43 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
         return self._resolve_model_chain(explicit)[0]
 
     def _resolve_model_chain(self, explicit: Optional[str] = None) -> list[str]:
-        """``model`` kwarg → ``*_IMAGE_MODEL`` env → ``image_gen.<provider>.model`` →
-        ``image_gen.model`` → default chain. Only the bare default chain carries a fallback."""
-        for candidate in (explicit, os.environ.get(self._model_env_var)):
-            if isinstance(candidate, str) and candidate.strip():
-                return [candidate.strip()]
+        """Ordered model attempts for this request.
+
+        Precedence: explicit caller override (the ``model`` kwarg) → the
+        provider's ``*_IMAGE_MODEL`` env override → scoped
+        ``image_gen.<provider>.model`` → top-level ``image_gen.model`` (written
+        by ``hermes tools``) → the quality-first default chain.
+
+        ``image_gen.fallback_models`` (or the provider-scoped equivalent) is
+        appended to a configured primary model in order. Explicit caller/env
+        model overrides remain exact selections and bypass configured fallbacks.
+        """
+        if isinstance(explicit, str) and explicit.strip():
+            return [explicit.strip()]
+        env_override = os.environ.get(self._model_env_var, "").strip()
+        if env_override:
+            return [env_override]
+
         cfg = _load_image_gen_config()
-        for candidate in (_dict_at(cfg, self._config_key).get("model"), cfg.get("model")):
-            if isinstance(candidate, str) and candidate.strip():
-                return [candidate.strip()]
-        return list(_DEFAULT_MODEL_CHAIN)
+        scoped = _dict_at(cfg, self._config_key)
+        primary: Optional[str] = None
+        fallback_value: Any = None
+        value = scoped.get("model")
+        if isinstance(value, str) and value.strip():
+            primary = value.strip()
+        if "fallback_models" in scoped:
+            fallback_value = scoped.get("fallback_models")
+
+        if primary is None:
+            top = cfg.get("model") if isinstance(cfg, dict) else None
+            if isinstance(top, str) and top.strip():
+                primary = top.strip()
+        if fallback_value is None and isinstance(cfg, dict):
+            fallback_value = cfg.get("fallback_models")
+
+        if primary:
+            return _dedupe_models([primary, *_coerce_model_list(fallback_value)])
+        return _dedupe_models(list(_DEFAULT_MODEL_CHAIN))
 
     def _generate_via_image_api(
         self, *, model_id: str, prompt: str, semantic_aspect: str, references: List[str],

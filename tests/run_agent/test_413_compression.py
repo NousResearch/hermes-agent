@@ -180,12 +180,14 @@ class TestHTTP413Compression:
 
 
     def test_413_strips_vision_payloads_when_compression_cannot_reduce_messages(self, agent):
-        """If compression leaves image payloads behind, strip them and retry.
+        """A 413 must evict image payloads BEFORE spending a compaction pass.
 
-        Browser vision tool results can contain base64 image parts. A 413 can
-        persist even after summarisation when the remaining recent tool result
-        still carries binary data; Hermes should evict the image payload and
-        keep the text/placeholder context instead of failing immediately.
+        Browser vision tool results can contain base64 image parts, which are
+        usually the bulk of an oversized request body. Text summarisation
+        cannot shrink base64, so the recovery path strips the vision payload
+        first and retries immediately -- keeping the text/placeholder context
+        and never burning a (slow) compaction attempt that could not have
+        reduced the payload anyway.
         """
         err_413 = _make_413_error()
         ok_resp = _mock_response(content="Recovered after image eviction", finish_reason="stop")
@@ -238,7 +240,9 @@ class TestHTTP413Compression:
             mock_compress.side_effect = lambda msgs, *_a, **_k: (msgs, "compressed prompt")
             result = agent.run_conversation("continue", conversation_history=prefill)
 
-        mock_compress.assert_called_once()
+        # The vision strip is the FIRST recovery move, so no compaction pass
+        # is spent: text summarisation cannot shrink base64 anyway.
+        mock_compress.assert_not_called()
         assert result["completed"] is True
         assert result["final_response"] == "Recovered after image eviction"
         assert len(request_payloads) == 2

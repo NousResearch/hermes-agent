@@ -1,10 +1,13 @@
 from argparse import Namespace
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import textwrap
 import types
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from hermes_cli import main_tui_launch
@@ -26,6 +29,27 @@ def _args(**overrides):
 
 def _raise_exit(rc):
     raise SystemExit(rc)
+
+
+def _mod(name, **attrs):
+    module = types.ModuleType(name)
+    for key, value in attrs.items():
+        setattr(module, key, value)
+    return module
+
+
+def _mock_response(content="ok"):
+    message = SimpleNamespace(content=content, tool_calls=None)
+    choice = SimpleNamespace(message=message, finish_reason="stop")
+    return SimpleNamespace(
+        choices=[choice],
+        model="test/model",
+        usage=SimpleNamespace(
+            prompt_tokens=1,
+            completion_tokens=1,
+            total_tokens=2,
+        ),
+    )
 
 
 @pytest.fixture
@@ -250,6 +274,10 @@ def test_oneshot_resume_preloads_session_history(monkeypatch):
         def __init__(self):
             self.closed = False
 
+        def assert_resume_safe(self, session_id):
+            captured["assert_resume_safe"] = session_id
+            return 2
+
         def resolve_resume_session_id(self, session_id):
             captured["resolve_resume_session_id"] = session_id
             return "resolved-session"
@@ -258,9 +286,9 @@ def test_oneshot_resume_preloads_session_history(monkeypatch):
             captured["get_session"] = session_id
             return {"id": session_id}
 
-        def get_resume_conversations(self, session_id):
-            captured["get_resume_conversations"] = session_id
-            return resumed_history, resumed_history
+        def get_messages_as_conversation(self, session_id, **kwargs):
+            captured["get_messages_as_conversation"] = (session_id, kwargs)
+            return resumed_history
 
         def reopen_session(self, session_id):
             captured["reopen_session"] = session_id
@@ -268,28 +296,22 @@ def test_oneshot_resume_preloads_session_history(monkeypatch):
         def close(self):
             self.closed = True
 
-    def mod(name, **attrs):
-        module = types.ModuleType(name)
-        for key, value in attrs.items():
-            setattr(module, key, value)
-        return module
-
-    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=FakeAgent))
-    monkeypatch.setitem(sys.modules, "hermes_state", mod("hermes_state", SessionDB=FakeSessionDB))
+    monkeypatch.setitem(sys.modules, "run_agent", _mod("run_agent", AIAgent=FakeAgent))
+    monkeypatch.setitem(sys.modules, "hermes_state", _mod("hermes_state", SessionDB=FakeSessionDB))
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
-        mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m"}}),
+        _mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m"}}),
     )
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.models",
-        mod("hermes_cli.models", detect_provider_for_model=lambda *_args, **_kwargs: None),
+        _mod("hermes_cli.models", detect_provider_for_model=lambda *_args, **_kwargs: None),
     )
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.runtime_provider",
-        mod(
+        _mod(
             "hermes_cli.runtime_provider",
             resolve_runtime_provider=lambda **_kwargs: {
                 "api_key": "k",
@@ -303,7 +325,7 @@ def test_oneshot_resume_preloads_session_history(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.tools_config",
-        mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: set()),
+        _mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: set()),
     )
 
     text, result = _run_agent("what was the fact?", resume="input-session")
@@ -312,10 +334,94 @@ def test_oneshot_resume_preloads_session_history(monkeypatch):
     assert not result.get("failed")
     assert captured["resolve_resume_session_id"] == "input-session"
     assert captured["get_session"] == "resolved-session"
-    assert captured["get_resume_conversations"] == "resolved-session"
+    assert captured["assert_resume_safe"] == "resolved-session"
+    assert captured["get_messages_as_conversation"] == (
+        "resolved-session",
+        {"repair_alternation": True},
+    )
     assert captured["reopen_session"] == "resolved-session"
     assert captured["session_id"] == "resolved-session"
     assert captured["run_kwargs"]["conversation_history"] == resumed_history
+
+
+def test_oneshot_resume_refuses_oversized_session_before_loading_history(
+    monkeypatch,
+):
+    from hermes_cli.oneshot import _run_agent
+
+    calls = []
+
+    class FakeSessionDB:
+        def resolve_resume_session_id(self, session_id):
+            calls.append(("resolve", session_id))
+            return session_id
+
+        def get_session(self, session_id):
+            calls.append(("get_session", session_id))
+            return {"id": session_id}
+
+        def reopen_session(self, session_id):
+            calls.append(("reopen", session_id))
+
+        def assert_resume_safe(self, session_id):
+            calls.append(("assert_resume_safe", session_id))
+            from hermes_state import SessionResumeTooLargeError
+
+            raise SessionResumeTooLargeError(3, 2)
+
+        def get_resume_conversations(self, session_id):
+            calls.append(("get_resume_conversations", session_id))
+            raise AssertionError("must not materialize full lineage after guard rejection")
+
+        def get_messages_as_conversation(self, session_id, **_kwargs):
+            calls.append(("get_messages_as_conversation", session_id))
+            raise AssertionError("must not load model history after guard rejection")
+
+        def close(self):
+            calls.append(("close", None))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "run_agent",
+        _mod("run_agent", AIAgent=lambda **_kwargs: pytest.fail("must not build agent")),
+    )
+    monkeypatch.setitem(sys.modules, "hermes_state", __import__("hermes_state"))
+    monkeypatch.setattr("hermes_cli.oneshot._create_session_db_for_oneshot", FakeSessionDB)
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        _mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m"}}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        _mod(
+            "hermes_cli.runtime_provider",
+            resolve_runtime_provider=lambda **_kwargs: {
+                "api_key": "k",
+                "base_url": "u",
+                "provider": "p",
+                "api_mode": "chat_completions",
+                "credential_pool": None,
+            },
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.tools_config",
+        _mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: set()),
+    )
+
+    with pytest.raises(ValueError, match="safe resume limit is 2"):
+        _run_agent("what was the fact?", resume="too-large")
+
+    assert calls == [
+        ("resolve", "too-large"),
+        ("get_session", "too-large"),
+        ("reopen", "too-large"),
+        ("assert_resume_safe", "too-large"),
+        ("close", None),
+    ]
 
 
 def test_oneshot_resume_loads_history_from_session_db(monkeypatch, tmp_path):
@@ -357,31 +463,25 @@ def test_oneshot_resume_loads_history_from_session_db(monkeypatch, tmp_path):
         def close(self):
             pass
 
-    def mod(name, **attrs):
-        module = types.ModuleType(name)
-        for key, value in attrs.items():
-            setattr(module, key, value)
-        return module
-
     monkeypatch.setattr(
         "hermes_cli.oneshot._create_session_db_for_oneshot",
         lambda: session_db,
     )
-    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=FakeAgent))
+    monkeypatch.setitem(sys.modules, "run_agent", _mod("run_agent", AIAgent=FakeAgent))
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
-        mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m"}}),
+        _mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m"}}),
     )
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.models",
-        mod("hermes_cli.models", detect_provider_for_model=lambda *_args, **_kwargs: None),
+        _mod("hermes_cli.models", detect_provider_for_model=lambda *_args, **_kwargs: None),
     )
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.runtime_provider",
-        mod(
+        _mod(
             "hermes_cli.runtime_provider",
             resolve_runtime_provider=lambda **_kwargs: {
                 "api_key": "k",
@@ -395,7 +495,7 @@ def test_oneshot_resume_loads_history_from_session_db(monkeypatch, tmp_path):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.tools_config",
-        mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: set()),
+        _mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: set()),
     )
 
     text, result = _run_agent("what was the fact?", resume="resumable-session")
@@ -411,6 +511,179 @@ def test_oneshot_resume_loads_history_from_session_db(monkeypatch, tmp_path):
         ("user", "remember the session-only fact: cobalt"),
         ("assistant", "I will remember cobalt."),
     ]
+
+
+def test_oneshot_resume_real_agent_appends_to_resumed_session_and_preserves_identity(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    import logging
+
+    from hermes_cli.oneshot import run_oneshot
+    import hermes_cli.config as config_mod
+    import hermes_cli.runtime_provider as runtime_provider_mod
+    import hermes_cli.tools_config as tools_config_mod
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    seed_db = SessionDB(db_path=db_path)
+    seed_db.create_session("resumable-session", source="cli")
+    seed_db.append_message(
+        "resumable-session",
+        "user",
+        "remember the session-only fact: cobalt",
+    )
+    seed_db.append_message(
+        "resumable-session",
+        "assistant",
+        "I will remember cobalt.",
+    )
+    seed_db.end_session("resumable-session", "agent_close")
+    seed_db.close()
+
+    provider_calls = []
+
+    class DeterministicClient:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=self._create)
+            )
+
+        def _create(self, **kwargs):
+            provider_calls.append(kwargs)
+            messages = kwargs["messages"]
+            saw_cobalt = any(
+                isinstance(message.get("content"), str)
+                and "cobalt" in message["content"]
+                for message in messages
+            )
+            content = "resumed fact is cobalt" if saw_cobalt else "missing resumed fact"
+            return _mock_response(content)
+
+    monkeypatch.setattr(
+        "hermes_cli.oneshot._create_session_db_for_oneshot",
+        lambda: SessionDB(db_path=db_path),
+    )
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"model": {"default": "m"}})
+    monkeypatch.setattr(
+        runtime_provider_mod,
+        "resolve_runtime_provider",
+        lambda **_kwargs: {
+            "api_key": "k",
+            "base_url": "https://example.invalid/v1",
+            "provider": "openai",
+            "requested_provider": "openai",
+            "api_mode": "chat_completions",
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr(tools_config_mod, "_get_platform_tools", lambda *_args, **_kwargs: set())
+    monkeypatch.setattr(
+        "hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build",
+        lambda **_kwargs: None,
+    )
+    with (
+        patch("agent.process_bootstrap.OpenAI", DeterministicClient),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+    ):
+        usage_file = tmp_path / "usage.json"
+        try:
+            rc = run_oneshot(
+                "what was the fact?",
+                usage_file=str(usage_file),
+                resume="resumable-session",
+            )
+        finally:
+            logging.disable(logging.NOTSET)
+
+    assert rc == 0
+    assert capsys.readouterr().out == "resumed fact is cobalt\n"
+    report = json.loads(usage_file.read_text(encoding="utf-8"))
+    assert report["session_id"] == "resumable-session"
+    assert provider_calls
+    assert provider_calls[-1]["messages"][-1]["content"] == "what was the fact?"
+
+    verify_db = SessionDB(db_path=db_path)
+    try:
+        rows = verify_db.get_messages_as_conversation("resumable-session")
+    finally:
+        verify_db.close()
+    assert [(row["role"], row["content"]) for row in rows] == [
+        ("user", "remember the session-only fact: cobalt"),
+        ("assistant", "I will remember cobalt."),
+        ("user", "what was the fact?"),
+        ("assistant", "resumed fact is cobalt"),
+    ]
+
+
+def test_oneshot_without_resume_real_agent_does_not_see_prior_session(
+    monkeypatch,
+    tmp_path,
+):
+    from hermes_cli.oneshot import _run_agent
+    import hermes_cli.config as config_mod
+    import hermes_cli.runtime_provider as runtime_provider_mod
+    import hermes_cli.tools_config as tools_config_mod
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    seed_db = SessionDB(db_path=db_path)
+    seed_db.create_session("isolated-session", source="cli")
+    seed_db.append_message("isolated-session", "user", "remember cobalt")
+    seed_db.append_message("isolated-session", "assistant", "stored cobalt")
+    seed_db.end_session("isolated-session", "agent_close")
+    seed_db.close()
+
+    class DeterministicClient:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=self._create)
+            )
+
+        def _create(self, **kwargs):
+            messages = kwargs["messages"]
+            saw_cobalt = any(
+                isinstance(message.get("content"), str)
+                and "cobalt" in message["content"]
+                for message in messages
+            )
+            return _mock_response(
+                "unexpected prior fact" if saw_cobalt else "no prior fact"
+            )
+
+    monkeypatch.setattr(
+        "hermes_cli.oneshot._create_session_db_for_oneshot",
+        lambda: SessionDB(db_path=db_path),
+    )
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"model": {"default": "m"}})
+    monkeypatch.setattr(
+        runtime_provider_mod,
+        "resolve_runtime_provider",
+        lambda **_kwargs: {
+            "api_key": "k",
+            "base_url": "https://example.invalid/v1",
+            "provider": "openai",
+            "requested_provider": "openai",
+            "api_mode": "chat_completions",
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr(tools_config_mod, "_get_platform_tools", lambda *_args, **_kwargs: set())
+    monkeypatch.setattr(
+        "hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build",
+        lambda **_kwargs: None,
+    )
+    with (
+        patch("agent.process_bootstrap.OpenAI", DeterministicClient),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+    ):
+        text, result = _run_agent("what was the fact?")
+
+    assert text == "no prior fact"
+    assert result["session_id"] != "isolated-session"
 
 
 def test_oneshot_resume_rejects_unknown_session(monkeypatch, tmp_path):
@@ -532,5 +805,3 @@ def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path)
     assert argv == [str(tsx), "src/entry.tsx"]
     assert cwd == tui_dir
     assert calls == [(["/usr/bin/npm", "run", "build"], str(ink_dir))]
-
-

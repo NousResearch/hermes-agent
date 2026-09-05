@@ -387,36 +387,33 @@ def _run_agent(
     session_db = _create_session_db_for_oneshot()
     resume_history: list[dict] = []
     resume_session_id = (resume or "").strip()
-    if resume_session_id:
-        if session_db is None:
-            raise ValueError("Session store unavailable; cannot resume a one-shot session.")
-        try:
-            resolved = session_db.resolve_resume_session_id(resume_session_id)
-        except Exception:
-            resolved = resume_session_id
-        resume_session_id = resolved or resume_session_id
-        if not session_db.get_session(resume_session_id):
-            raise ValueError(f"Session not found: {resume}")
-        try:
-            model_history, _display_history = session_db.get_resume_conversations(
-                resume_session_id
-            )
-        except Exception:
-            model_history = session_db.get_messages_as_conversation(
-                resume_session_id,
-                repair_alternation=True,
-            )
-        resume_history = [
-            msg for msg in (model_history or []) if msg.get("role") != "session_meta"
-        ]
-        try:
-            session_db.reopen_session(resume_session_id)
-        except Exception:
-            logging.debug("oneshot resume reopen_session failed", exc_info=True)
     # The try spans agent construction (not just ``chat``) so the store is always closed, even when
     # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
     agent = None
     try:
+        if resume_session_id:
+            if session_db is None:
+                raise ValueError("Session store unavailable; cannot resume a one-shot session.")
+            try:
+                resolved = session_db.resolve_resume_session_id(resume_session_id)
+            except Exception:
+                resolved = resume_session_id
+            resume_session_id = resolved or resume_session_id
+            if not session_db.get_session(resume_session_id):
+                raise ValueError(f"Session not found: {resume}")
+            try:
+                session_db.reopen_session(resume_session_id)
+            except Exception:
+                logging.debug("oneshot resume reopen_session failed", exc_info=True)
+            if callable(safety_check := getattr(session_db, "assert_resume_safe", None)):
+                safety_check(resume_session_id)
+            model_history = session_db.get_messages_as_conversation(
+                resume_session_id,
+                repair_alternation=True,
+            )
+            resume_history = [
+                msg for msg in (model_history or []) if msg.get("role") != "session_meta"
+            ]
         agent = AIAgent(
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),

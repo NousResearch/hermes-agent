@@ -713,6 +713,42 @@ export function useGatewayBoot({
       applyDesktopBootProgress(payload)
     })
 
+    // #96743 item 1: main ALSO pushes the resolved connection descriptor the
+    // moment the primary backend is actually ready, on the
+    // `hermes:backend-ready` channel. The pull handshake (getConnection IPC)
+    // can lose its race when the renderer's retry budget exhausts while main
+    // is parked inside a long gate (remote update, installer); the pushed
+    // connection lets a pending boot continue directly from the descriptor,
+    // no second dial needed.
+    let standbyPushedConnection: Awaited<
+      ReturnType<NonNullable<typeof window.hermesDesktop>['getConnection']>
+    > | null = null
+
+    const offBackendReady = desktop.onBackendReady?.(payload => {
+      // Pull-based handoff stays canonical: boot, soft-switch, reconnect, and
+      // retries all complete through their own getConnection() await. The
+      // push is the recovery escape hatch: it only matters when the pull
+      // pipeline gave up — i.e. boot failed AND its retry budget is
+      // exhausted (no retry timer armed). Any other moment (in-flight boot,
+      // pending retry, completed boot, in-progress switch) is a normal path
+      // that must not be disturbed; swallow the push there too.
+      if (cancelled || bootCompleted || $gatewaySwitching.get() || bootRetryTimer) {
+        return
+      }
+
+      const connection = (payload as { connection?: unknown } | null | undefined)?.connection
+
+      if (!connection || typeof connection !== 'object') {
+        return
+      }
+
+      standbyPushedConnection =
+        connection as Awaited<ReturnType<NonNullable<typeof window.hermesDesktop>['getConnection']>>
+
+      resumeDesktopBootForRetry(translateNow('boot.steps.retryingRemoteBackend'))
+      void boot()
+    })
+
     void desktop
       .getBootProgress()
       .then(snapshot => applyDesktopBootProgress(snapshot))
@@ -988,11 +1024,20 @@ export function useGatewayBoot({
         // round-trip must not hang "Starting Hermes…" forever. Initial boot
         // rides out a full backend cold spawn, so it gets the shared 45s
         // backend-boot budget, not the 20s reconnect budget.
-        const conn = await withTimeout(
+        //
+        // #96743 item 1: when main has already PUSHED the resolved connection
+        // on `hermes:backend-ready` (the boot was triggered from the push
+        // after retries exhausted), skip this dial entirely and consume the
+        // pushed descriptor directly — the pull was already lost once; asking
+        // again just re-awaits the same gate.
+        const pushed = standbyPushedConnection
+        standbyPushedConnection = null
+
+        const conn = pushed ?? (await withTimeout(
           desktop.getConnection(windowProfileOverride() ?? undefined),
           BACKEND_BOOT_WAIT_TIMEOUT_MS,
           'Timed out connecting to Hermes backend'
-        )
+        ))
 
         if (cancelled) {
           return
@@ -1173,6 +1218,7 @@ export function useGatewayBoot({
       offExit()
       offWindowState?.()
       offBootProgress()
+      offBackendReady?.()
 
       // HMR teardown vs. real unmount. On a hot update we must NOT close the
       // socket — that's the whole bug. Detach this instance's listeners (their

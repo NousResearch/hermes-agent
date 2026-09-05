@@ -475,6 +475,16 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:boot-progress', listener)
   },
+  // #96743 item 1: main pushes the resolved connection descriptor once the
+  // primary backend is actually ready — the missing half of the handshake.
+  // Boot uses it to recover when its own getConnection() IPC call lost the
+  // race against a long-running gate (remote update, install, etc.).
+  onBackendReady: callback => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('hermes:backend-ready', listener)
+
+    return () => ipcRenderer.removeListener('hermes:backend-ready', listener)
+  },
   // First-launch bootstrap progress -- emitted by the install.ps1 stage
   // runner in main.ts (apps/desktop/electron/bootstrap-runner.ts).
   // Renderer's install overlay subscribes to live events and queries the

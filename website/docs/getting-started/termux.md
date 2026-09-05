@@ -37,7 +37,8 @@ python -m pip install -e '.[termux]' -c constraints-termux.txt
 A few features still need desktop/server-style dependencies that are not published for Android, or have not been validated on phones yet:
 
 - `.[all]` is not supported on Android today
-- the `voice` extra is blocked by `faster-whisper -> ctranslate2`, and `ctranslate2` does not publish Android wheels
+- the `voice` extra is blocked by `faster-whisper -> ctranslate2`, and `ctranslate2` does not publish Android wheels **on bare Termux**
+- **works on PRoot Ubuntu** (see [Local STT section](#local-stt-faster-whisper-on-proot-ubuntu))
 - automatic browser / Playwright bootstrap is skipped in the Termux installer
 - Docker-based terminal isolation is not available inside Termux
 - Android may still suspend Termux background jobs, so gateway persistence is best-effort rather than a normal managed service
@@ -238,7 +239,9 @@ The blocker is currently the `voice` extra:
 
 - `voice` pulls `faster-whisper`
 - `faster-whisper` depends on `ctranslate2`
-- `ctranslate2` does not publish Android wheels
+- `ctranslate2` does not publish Android wheels **on bare Termux**
+
+**Workaround:** If you need local STT and are on **PRoot Ubuntu**, see [Local STT (faster-whisper) on PRoot Ubuntu](#local-stt-faster-whisper-on-proot-ubuntu).
 
 ### `uv pip install` fails on Android
 
@@ -269,6 +272,35 @@ Install them with Termux packages:
 pkg install ripgrep nodejs
 ```
 
+### Local STT (faster-whisper) on PRoot Ubuntu
+
+If you're running Hermes on **PRoot Ubuntu** (via `proot-distro install ubuntu` inside Termux), you CAN run local voice transcription with `faster-whisper` — the `ctranslate2` blocker only affects bare Termux.
+
+**Tested working setup:**
+
+```bash
+# Inside PRoot Ubuntu (not bare Termux)
+apt update && apt install -y python3-av ffmpeg
+pip install faster-whisper --no-deps
+```
+
+Then configure Hermes for local STT in `~/.hermes/config.yaml`:
+
+```yaml
+stt:
+  enabled: true
+  provider: local
+  language: en
+  local:
+    model: base      # or tiny for speed
+    compute_type: int8
+    device: cpu
+```
+
+This works because PRoot Ubuntu provides `glibc` and standard Linux libraries, allowing `ctranslate2` (via `faster-whisper`) to run natively.
+
+**Note:** On bare Termux (no PRoot), STT remains unavailable in the tested path — use cloud STT (OpenAI Whisper API) instead.
+
 ### Build failures while installing Python packages
 
 Make sure the build toolchain is installed:
@@ -288,7 +320,8 @@ python -m pip install -e '.[termux]' -c constraints-termux.txt
 ## Known limitations on phones
 
 - Docker backend is unavailable
-- local voice transcription via `faster-whisper` is unavailable in the tested path
+- local voice transcription via `faster-whisper` is unavailable in the tested path on **bare Termux**
+- **works on PRoot Ubuntu** (see [Local STT section](#local-stt-faster-whisper-on-proot-ubuntu))
 - browser automation setup is intentionally skipped by the installer
 - some optional extras may work, but only `.[termux]` and `.[termux-all]` are currently documented as the tested Android bundles
 

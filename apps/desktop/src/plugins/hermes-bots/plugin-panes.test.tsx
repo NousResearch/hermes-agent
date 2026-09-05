@@ -4,10 +4,10 @@
  *
  *  - the Bots pane center-stacks into the sessions zone (a SESSIONS | BOTS tab
  *    strip), never splits below it, and carries the ENFORCED dock invariant so
- *    every boot re-homes a stacked install. No heal token, no user-placed
- *    exemption — the retired one-shot heal burned its token even when its
- *    guards skipped the move, so exactly the users who had dragged their panes
- *    stayed stacked forever;
+ *    a stacked install with no user-placed record re-homes at boot. No heal
+ *    token — the retired one-shot heal burned its token even when its guards
+ *    skipped the move, pinning the broken stacked shape forever. User-placed
+ *    exemption lives in the tree store (`enforceDockedPanes`), not on the hint;
  *  - the Scheduled jobs (internally `routines`) pane only exists while a BOT
  *    CHAT owns the main workspace and the Bots pane is on screen. It is
  *    registered and unregistered through the contribution disposer, driven by

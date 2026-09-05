@@ -1,0 +1,76 @@
+name: Apply aux-headers fix
+on:
+  workflow_dispatch:
+    inputs:
+      gist_id:
+        description: 'Gist ID with file chunks'
+        required: true
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Reassemble and push
+        env:
+          GIST_ID: ${{ inputs.gist_id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT_MSG: |
+            fix(aux): propagate custom_providers[].extra_headers to auxiliary clients
+
+            The main agent (run_agent.py) applies per-provider extra_headers from
+            custom_providers[] entries via apply_custom_provider_extra_headers_to_client_kwargs,
+            but the auxiliary client's two custom-provider resolution branches both
+            missed that step.
+
+            1. resolve_provider_client() named-custom-provider branch:
+               only called _apply_user_default_headers(), never merged
+               custom_entry.get("extra_headers").
+
+            2. _try_custom_endpoint() anonymous-custom branch:
+               same omission.
+
+            Fix: both branches now merge custom_providers[].extra_headers onto
+            the OpenAI client default_headers after _apply_user_default_headers().
+
+            Tests: test_auxiliary_custom_provider_extra_headers.py (4 tests)
+        run: |
+          pip install requests
+          python -c "
+          import os, json, urllib.request, base64, subprocess, sys
+
+          gist_id = os.environ['GIST_ID']
+          token = os.environ['GH_TOKEN']
+
+          req = urllib.request.Request(
+              f'https://api.github.com/gists/{gist_id}',
+              headers={'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json'}
+          )
+          with urllib.request.urlopen(req) as resp:
+              gist = json.loads(resp.read())
+
+          chunks = []
+          for name in sorted(gist['files'].keys()):
+              if name.startswith('aux_chunk_'):
+                  chunks.append(gist['files'][name]['content'])
+          aux_content = ''.join(chunks)
+
+          os.makedirs('agent', exist_ok=True)
+          os.makedirs('tests/agent', exist_ok=True)
+          with open('agent/auxiliary_client.py', 'w') as f:
+              f.write(aux_content)
+          with open('tests/agent/test_auxiliary_custom_provider_extra_headers.py', 'wb') as f:
+              f.write(base64.b64decode(gist['files']['test_file.b64']['content']))
+
+          subprocess.run(['git', 'config', 'user.name', 'YangKangSung'], check=True)
+          subprocess.run(['git', 'config', 'user.email', 'YangKangSung@users.noreply.github.com'], check=True)
+          subprocess.run(['git', 'checkout', '-b', 'fix/aux-custom-provider-extra-headers'], check=True)
+          subprocess.run(['git', 'add', 'agent/auxiliary_client.py', 'tests/agent/test_auxiliary_custom_provider_extra_headers.py'], check=True)
+          subprocess.run(['git', 'commit', '-m', os.environ['COMMIT_MSG']], check=True)
+          subprocess.run(['git', 'push', 'origin', 'fix/aux-custom-provider-extra-headers'], check=True)
+          print('Push successful!')
+          "

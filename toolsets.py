@@ -414,10 +414,14 @@ def _plugin_display_names() -> List[str]:
 def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
     """All toolset definitions: static plus plugin-registered."""
     result = dict(TOOLSETS)
+    aliases = _get_registry_toolset_aliases()
     for display_name in _plugin_display_names():
         toolset = None if display_name in result else get_toolset(display_name)
         if toolset:
             result[display_name] = toolset
+    # Static names an MCP server also aliases show the merged view get_toolset() resolves.
+    for name in TOOLSETS.keys() & aliases.keys():
+        result[name] = get_toolset(name) or result[name]
     return result
 
 

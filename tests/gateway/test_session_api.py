@@ -891,3 +891,136 @@ async def test_patch_session_still_rejects_unknown_fields(adapter, session_db):
         resp = await cli.patch(f"/api/sessions/{session_id}", json={"nonsense": 1})
         assert resp.status == 400, await resp.text()
         assert (await resp.json())["error"]["code"] == "unsupported_session_field"
+
+
+# ---------------------------------------------------------------------------
+# The wait-for-model interrupt sentinel is cancellation metadata, not assistant
+# prose. ACP and the chat surfaces already suppress it; the session API was the
+# last surface rendering it as a fake assistant reply. Refs #7921, #31658.
+# ---------------------------------------------------------------------------
+
+_INTERRUPT_SENTINEL = "Operation interrupted: waiting for model response (1.7s elapsed)."
+
+
+def _sse_event(body: str, event_name: str):
+    """Payload of the ``event_name`` block in an SSE body, or ``None``."""
+    import json as _json
+
+    payload = None
+    for block in body.split("\n\n"):
+        if f"event: {event_name}" in block:
+            for line in block.splitlines():
+                if line.startswith("data: "):
+                    payload = _json.loads(line[len("data: "):])
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_session_chat_hides_interrupt_sentinel_and_reports_metadata(adapter, session_db):
+    """An interrupted turn must not be delivered as a fake assistant reply."""
+    session_id = session_db.create_session("interrupt-session", "api_server")
+
+    async def fake_run(**kwargs):
+        return {
+            "final_response": _INTERRUPT_SENTINEL, "session_id": session_id,
+            "interrupted": True, "partial": True,
+        }, {"total_tokens": 3}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}/chat", json={"message": "hi"})
+            assert resp.status == 200, await resp.text()
+            payload = await resp.json()
+
+    assert payload["message"]["content"] == ""
+    assert payload["interrupted"] is True
+    assert payload["completed"] is False
+    assert payload["partial"] is True
+
+
+@pytest.mark.asyncio
+async def test_session_chat_keeps_real_text_from_an_interrupted_turn(adapter, session_db):
+    """Only the sentinel is dropped — real partial prose from an interrupted turn survives."""
+    session_id = session_db.create_session("interrupt-real-text", "api_server")
+
+    async def fake_run(**kwargs):
+        return {
+            "final_response": "I found three matches so far", "session_id": session_id,
+            "interrupted": True, "partial": True,
+        }, {"total_tokens": 4}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}/chat", json={"message": "search"})
+            payload = await resp.json()
+
+    assert payload["message"]["content"] == "I found three matches so far"
+    assert payload["interrupted"] is True
+    assert payload["completed"] is False
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_terminal_events_agree_on_completion_state(adapter, session_db):
+    """``assistant.completed`` and ``run.completed`` must advertise the same completion state,
+    so a client listening to only one of them still sees the interruption."""
+    session_id = session_db.create_session("interrupt-stream", "api_server")
+
+    async def fake_run(**kwargs):
+        kwargs["stream_delta_callback"]("Looking that up")
+        return {
+            "final_response": _INTERRUPT_SENTINEL, "session_id": session_id,
+            "interrupted": True, "partial": True,
+            "messages": [
+                {"role": "user", "content": "look it up"},
+                {"role": "assistant", "content": "Looking that up"},
+                {"role": "assistant", "content": _INTERRUPT_SENTINEL},
+            ],
+        }, {"total_tokens": 5}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream", json={"message": "look it up"})
+            assert resp.status == 200
+            body = await resp.text()
+
+    assistant = _sse_event(body, "assistant.completed")
+    run_completed = _sse_event(body, "run.completed")
+    assert assistant is not None and run_completed is not None, body
+
+    assert assistant["content"] == ""
+    for payload in (assistant, run_completed):
+        assert payload["interrupted"] is True, payload
+        assert payload["completed"] is False, payload
+        assert payload["partial"] is True, payload
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_transcript_drops_only_the_sentinel_row(adapter, session_db):
+    """``run.completed.messages`` omits the synthetic sentinel row, keeping real assistant text."""
+    session_id = session_db.create_session("interrupt-transcript", "api_server")
+
+    async def fake_run(**kwargs):
+        return {
+            "final_response": _INTERRUPT_SENTINEL, "session_id": session_id, "interrupted": True,
+            "messages": [
+                {"role": "user", "content": "summarize"},
+                {"role": "assistant", "content": "Here is what I have so far"},
+                {"role": "assistant", "content": _INTERRUPT_SENTINEL},
+            ],
+        }, {"total_tokens": 5}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream", json={"message": "summarize"})
+            body = await resp.text()
+
+    messages = _sse_event(body, "run.completed")["messages"]
+    contents = [m.get("content") for m in messages]
+    assert "Here is what I have so far" in contents, messages
+    assert all(_INTERRUPT_SENTINEL not in str(c) for c in contents), messages

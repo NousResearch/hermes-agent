@@ -80,6 +80,8 @@ declare global {
       // `tabId` is the `$previewTabs` id; closing the window fires
       // `onBrowserPopoutClosed` so the caller can dock the tab again.
       openBrowserWindow: (tabId: string) => Promise<{ ok: boolean; error?: string }>
+      openPluginViewer?: (pluginId: string, input: { id: string; url: string; title: string }) => Promise<boolean>
+      closePluginViewer?: (pluginId: string, id?: string) => Promise<boolean>
       onBrowserPopoutClosed: (callback: (tabId: string) => void) => () => void
       // Claim a one-shot cross-window ambient cue (turn-end sound / spoken
       // reply). Resolves true for the first window to claim a key, false for

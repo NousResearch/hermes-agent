@@ -6,6 +6,7 @@ import ntpath
 import os
 import platform
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -543,10 +544,40 @@ def _path_env_key(run_env: dict) -> str | None:
     return next((k for k in run_env if k.upper() == "PATH"), None) if _IS_WINDOWS else "PATH"
 
 
-def _make_run_env(env: dict) -> dict:
+def _finalize_execution_env(env: dict, execution_context, *, authoritative_keys=()) -> dict:
+    """Keep explicit routing exact after defaults/sanitization, without restoring secrets.
+
+    PATH is not a credential: an explicitly chosen search path must not acquire
+    host executable directories from the generic terminal convenience defaults.
+    """
+    if execution_context is None:
+        return env
+    execution_context.check()
+    context = execution_context.context
+    for key in context.env_unset - set(authoritative_keys):
+        env.pop(key, None)
+    if "PATH" in context.env_set:
+        env["PATH"] = context.env_set["PATH"]
+    return env
+
+
+def _prepend_execution_routing(command: str, run_env: dict, execution_context) -> str:
+    """Reassert sanitized routing after shell startup, or abort before user code."""
+    context = execution_context.context
+    routing = set(context.env_set) | set(context.env_unset)
+    prelude = [f"builtin export {key}={shlex.quote(run_env[key])} || exit 126" if key in run_env
+               else f"builtin unset {key} || exit 126" for key in sorted(routing)]
+    return "\n".join([*prelude, command])
+
+
+def _make_run_env(env: dict, execution_context=None) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
-    return _scrubbed_env([(dict(os.environ | env), True)], frozenset(),
-                         lambda p: _prepend_git_bash_dirs(_append_missing_sane_path_entries(p)))
+    merged = dict(os.environ | env)
+    if execution_context is not None:
+        merged = execution_context.apply_env(merged)
+    clean = _scrubbed_env([(merged, True)], frozenset(),
+                          lambda p: _prepend_git_bash_dirs(_append_missing_sane_path_entries(p)))
+    return _finalize_execution_env(clean, execution_context)
 
 
 # --- Hermes venv / repo-root detection (module-level, computed once) ---
@@ -695,6 +726,7 @@ class LocalEnvironment(BaseEnvironment):
     # Commands run on the Hermes host itself — controller-side platform behavior
     # (macOS TCC pruning, etc.) legitimately applies here.
     is_local = True
+    execution_context = None
 
     def _additional_profile_scoped_passthrough_names(self) -> tuple[str, ...]:
         """First-party ``BUZZ_*`` names present in the env, excluded from the shared
@@ -707,7 +739,16 @@ class LocalEnvironment(BaseEnvironment):
             name for name in merged
             if isinstance(name, str) and _matches_terminal_first_party_prefix(name)))
 
-    def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
+    def _snapshot_excluded_passthrough_names(self):
+        names = set(super()._snapshot_excluded_passthrough_names())
+        if self.execution_context is not None:
+            context = self.execution_context.context
+            names.update(context.env_set)
+            names.update(context.env_unset)
+        return tuple(sorted(names))
+
+    def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None, *, execution_context=None):
+        self.execution_context = execution_context
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env)
         self.init_session()
 
@@ -777,14 +818,22 @@ class LocalEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         bash = _find_bash()
+        run_env = _make_run_env(self.env, self.execution_context)
+        if self.execution_context is not None:
+            # Bash has already sourced BASH_ENV/login profiles when this runs;
+            # custom init is prepended below. Pin sanitized routing before the
+            # wrapper saves passthrough values or creates/restores a snapshot.
+            cmd_string = _prepend_execution_routing(cmd_string, run_env, self.execution_context)
         # Login invocations (init_session's env snapshot) source the user's rc /
         # custom init files so nvm/asdf/pyenv land on PATH in the snapshot.
         if login:
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
+        if self.execution_context is not None:
+            args = self.execution_context.wrap_argv(args)
         self._recover_cwd()
         proc = subprocess.Popen(
-            args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
+            args, text=True, env=run_env, encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             start_new_session=True, cwd=self.cwd,

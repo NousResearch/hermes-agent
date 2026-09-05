@@ -396,6 +396,13 @@ def _docker_session_isolation_enabled() -> bool:
 
 
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
+    """Resolve a registered execution lease before ordinary container scoping."""
+    from hermes_cli.session_execution import resolve_session_execution_context
+    execution = resolve_session_execution_context(task_id=task_id)
+    return execution.cache_key if execution is not None else _resolve_unbound_container_task_id(task_id)
+
+
+def _resolve_unbound_container_task_id(task_id: Optional[str]) -> str:
     """Map a tool-call ``task_id`` to the ``_active_environments`` key. Order matters —
     earlier branches are authoritative where they apply:
 
@@ -442,7 +449,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     return "default" if profile == "default" else f"profile:{profile}"
 
 
-def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
+def resolve_task_overrides(task_id: Optional[str], *, container_task_id: Optional[str] = None) -> Dict[str, Any]:
     """Return the env overrides for *task_id*, raw key first then collapsed.
 
     ``register_task_env_overrides`` writes under the *raw* task/session id, but
@@ -451,11 +458,13 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
     FIRST and only fall back to the collapsed container id, or the originating
     session's override is silently dropped. Single source of that lookup so
     the terminal and file layers can't drift apart.
+
+    A pre-resolved container key avoids lease lookup for host-local control-plane calls.
     """
     raw = task_id or "default"
     return (
         _task_env_overrides.get(raw)
-        or _task_env_overrides.get(_resolve_container_task_id(raw))
+        or _task_env_overrides.get(container_task_id if container_task_id is not None else _resolve_container_task_id(raw))
         or {}
     )
 
@@ -873,11 +882,12 @@ class _ExecPlan:
     cwd: str
     host_cwd: Optional[str]
     effective_timeout: int
+    execution_context: Any = None
 
 
 def _plan_execution(
     command: Any, *, task_id: Optional[str], timeout: Optional[int],
-    background: bool, _host_local: bool,
+    background: bool, _host_local: bool, session_id: Optional[str] = None,
 ) -> _ExecPlan:
     """Resolve backend, env-cache key, image, cwd and timeout for one call.
 
@@ -903,20 +913,28 @@ def _plan_execution(
 
         enforce_no_refusal()
 
-    effective_task_id = _resolve_container_task_id(task_id)
+    from hermes_cli.session_execution import resolve_session_execution_context, SessionExecutionError
+    execution = None if _host_local else resolve_session_execution_context(session_id=session_id, task_id=task_id)
+    if execution is not None and env_type != "local":
+        raise SessionExecutionError("session execution contexts require the local terminal backend")
     if _host_local:
         # Control-plane children run beside this interpreter, never inside
-        # the configured Docker/SSH backend; keep their env cache separate.
-        effective_task_id = f"host-local-{effective_task_id}"
+        # a session lease or Docker/SSH backend. Neither cache nor override
+        # lookup may re-enter lease validation through the task alias.
+        container_task_id = _resolve_unbound_container_task_id(task_id)
+        effective_task_id = f"host-local-{container_task_id}"
+        overrides = resolve_task_overrides(task_id, container_task_id=container_task_id)
+    else:
+        effective_task_id = execution.cache_key if execution else _resolve_container_task_id(task_id)
+        overrides = resolve_task_overrides(task_id)
 
     # Per-task overrides (RL/benchmark envs, ACP workspace cwd) win over
     # the global env-var config; ``resolve_task_overrides`` reads the raw
     # task id first, then the collapsed container id.
-    overrides = resolve_task_overrides(task_id)
     image = _select_image(env_type, overrides, config)
 
     cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
-    host_cwd = _resolve_task_host_cwd(config, task_id)
+    host_cwd = None if _host_local else _resolve_task_host_cwd(config, task_id)
     # config["cwd"] was sanitized for container backends in _get_env_config
     # but an override / session record is raw: a host path would reach
     # `docker run -w` and fail with exit 125. Re-apply the guard to the
@@ -950,6 +968,7 @@ def _plan_execution(
     return _ExecPlan(
         config=config, env_type=env_type, effective_task_id=effective_task_id,
         image=image, cwd=cwd, host_cwd=host_cwd, effective_timeout=timeout or config["timeout"],
+        execution_context=execution,
     )
 
 
@@ -963,6 +982,9 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
     """
     _start_cleanup_thread()
     env_type, eff = plan.env_type, plan.effective_task_id
+    if plan.execution_context is not None:
+        plan.execution_context.check()
+        task_id = None  # never reuse a raw/shared host environment for this generation
 
     with _env_lock:
         env: Any = _lookup_active_env(eff, task_id)
@@ -986,7 +1008,8 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
                 plan.config, env_type, image=plan.image, cwd=plan.cwd,
                 timeout=plan.effective_timeout, task_id=eff, host_cwd=plan.host_cwd,
                 local_config=(
-                    {"persistent": plan.config.get("local_persistent", False)}
+                    {"persistent": plan.config.get("local_persistent", False),
+                     "execution_context": plan.execution_context}
                     if env_type == "local" else None
                 ),
             )
@@ -1136,8 +1159,10 @@ def terminal_tool(
     try:
         plan = _plan_execution(
             command, task_id=task_id, timeout=timeout, background=background, _host_local=_host_local,
+            session_id=session_id,
         )
-        env = _acquire_env(plan, task_id)
+        # Host-local calls must not reuse a raw task's session/container cache.
+        env = _acquire_env(plan, None if _host_local else task_id)
         env_type, cwd, effective_task_id = plan.env_type, plan.cwd, plan.effective_task_id
 
         # Session key for cwd records: the contextvar doesn't cross tool-worker

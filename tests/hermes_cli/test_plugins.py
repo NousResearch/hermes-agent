@@ -1309,21 +1309,24 @@ class TestPreToolCallDirective:
             session_id="session-1",
             tool_call_id="call-1",
         ) == (None, None)
-        assert observed == [
-            (
-                "pre_tool_call",
-                {
-                    "tool_name": "write_file",
-                    "args": {"path": "README.md"},
-                    "task_id": "task-1",
-                    "session_id": "session-1",
-                    "tool_call_id": "call-1",
-                    "turn_id": "",
-                    "api_request_id": "",
-                    "middleware_trace": [],
-                },
-            )
-        ]
+        assert len(observed) == 1
+        hook_name, payload = observed[0]
+        assert hook_name == "pre_tool_call"
+        expected = {
+            "tool_name": "write_file",
+            "args": {"path": "README.md"},
+            "task_id": "task-1",
+            "session_id": "session-1",
+            "tool_call_id": "call-1",
+            "turn_id": "",
+            "api_request_id": "",
+            "middleware_trace": [],
+        }
+        # Hook payloads are additive; preserve every existing semantic field.
+        assert {key: payload[key] for key in expected} == expected
+        for key in ("runtime_session_id", "stored_session_id", "profile",
+                    "hermes_home", "source", "surface"):
+            assert payload[key] is None  # No UI/profile identity was supplied.
 
     def test_approve_directive_returned(self, monkeypatch):
         from hermes_cli.plugins import get_pre_tool_call_directive

@@ -917,7 +917,7 @@ def _start_session_services(sid: str, key: str, current: dict) -> None:
     with _sessions_lock:
         if (rec := _sessions.get(sid)) is not None:
             rec["_notif_stop"] = _start_notification_poller(sid, rec)
-    _notify_session_boundary("on_session_reset", key, _session_source(current))
+    _notify_session_boundary("on_session_reset", key, _session_source(current), current)
 
 
 def _await_resume_history(sid: str, current: dict) -> bool:
@@ -939,6 +939,8 @@ def _attach_built_agent(current: dict, agent) -> None:
     if _title_hint := str(current.get("pending_title") or "").strip():
         agent._session_title_hint = _title_hint
     current["agent"] = agent
+    with contextlib.suppress(AttributeError):  # legacy slotted agent adapters
+        agent._plugin_session_identity = _session_hook_identity(current)
     _session_todo_state(current)
     # Baseline for the per-turn config sync (profile home override still active).
     current["config_model_seen"] = _config_model_target()
@@ -2357,6 +2359,7 @@ def _init_session(
             "transport": current_transport() or _stdio_transport,
         }
         _session_todo_state(_sessions[sid])
+    _publish_session_identity(sid, _sessions[sid])
     _hydrate_session_cwd(sid, key, session_db, profile_home)
     _register_session_cwd(_sessions[sid])
     _wire_session_agent(sid, key, agent)  # no eager slash-worker pre-warm (see _start_agent_build)
@@ -2455,6 +2458,7 @@ def _claim_or_reuse_live(sid: str, session_key: str, record: dict, lease) -> tup
         _cancel_ws_orphan_reap(sid)
         stale = _claim_parked_runtimes(session_key, keep_sid=sid, profile_home=profile_home)
     _finalize_superseded_runtimes(stale)  # slow finalization stays OUTSIDE _session_resume_lock
+    _publish_session_identity(sid, record)
     return None
 
 

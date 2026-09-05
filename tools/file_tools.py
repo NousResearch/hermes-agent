@@ -262,6 +262,10 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     config = _get_env_config()
     env_type = config["env_type"]
     overrides = resolve_task_overrides(raw_task_id)
+    from hermes_cli.session_execution import resolve_session_execution_context, SessionExecutionError
+    execution = resolve_session_execution_context(task_id=raw_task_id)
+    if execution is not None and env_type != "local":
+        raise SessionExecutionError("session execution contexts require the local terminal backend")
     try:
         recorded_cwd = get_session_cwd(raw_task_id)
     except Exception:
@@ -288,7 +292,8 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
         config, env_type, image=_select_image(env_type, overrides, config), cwd=cwd,
         timeout=config["timeout"], task_id=task_id,
         host_cwd=_resolve_task_host_cwd(config, raw_task_id),
-        local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,
+        local_config={"persistent": config.get("local_persistent", False), "execution_context": execution}
+                     if env_type == "local" else None,
     )
     return env_type, terminal_env
 

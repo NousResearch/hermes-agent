@@ -11,6 +11,8 @@ import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timesta
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { OverflowTip, Tip } from '@/components/ui/tooltip'
+import { SESSION_AREAS } from '@/contrib/session'
+import { SessionContributions } from '@/contrib/session-contributions'
 import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
@@ -492,6 +494,7 @@ function SidebarSessionRowImpl({
                 <>
                   {leadNode}
                   {handoffBadge}
+                  <SessionContributions area={SESSION_AREAS.listBadge} row={session} storedSessionId={session.id} />
                   <span className="min-w-0 flex-1 self-center">
                     <OverflowTip label={title}>
                       <SidebarRowLabel
@@ -548,6 +551,7 @@ function SidebarSessionRowImpl({
                     {context}
                   </span>
                   {handoffBadge}
+                  <SessionContributions area={SESSION_AREAS.listBadge} row={session} storedSessionId={session.id} />
                   {actionsNode}
                 </div>
                 {/* Title + preview: ONE grouped cell with its own tight

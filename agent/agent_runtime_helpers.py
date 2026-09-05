@@ -2168,9 +2168,11 @@ def _pre_tool_block_message(agent, function_name, function_args, effective_task_
     """Plugin pre-tool-call hook verdict: ``(block_message, function_args)``; failures never block."""
     try:
         from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+        from hermes_cli.session_hook_context import agent_session_identity
+        identity = agent_session_identity(agent)
+        identity.update(task_id=effective_task_id or "", session_id=getattr(agent, "session_id", "") or "")
         block_message, modified_args = _dispatch_pre_tool_call_hooks(
-            function_name, function_args, task_id=effective_task_id or "",
-            session_id=getattr(agent, "session_id", "") or "", tool_call_id=tool_call_id or "",
+            function_name, function_args, **identity, tool_call_id=tool_call_id or "",
             turn_id=getattr(agent, "_current_turn_id", "") or "",
             api_request_id=getattr(agent, "_current_api_request_id", "") or "",
             middleware_trace=list(middleware_trace),

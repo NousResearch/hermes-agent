@@ -10,14 +10,51 @@ import contextlib
 from .method_ctx import bind_module
 
 
-def _notify_session_boundary(event_type: str, session_id: str | None, platform: str | None = None) -> None:
+def _publish_session_identity(sid: str, session: dict) -> None:
+    """Publish ownership before exposing a new runtime to clients (no agent/DB row required)."""
+    from hermes_cli.session_hook_context import capture_session_identity
+    from hermes_cli.lifecycle import invoke_hook
+
+    session["_sid"] = sid
+    if "plugin_session_identity" not in session:
+        session["plugin_session_identity"] = capture_session_identity(
+            runtime_session_id=sid, stored_session_id=session.get("session_key"),
+            session_id=session.get("resume_session_id") or session.get("session_key"),
+            source=session.get("source"), surface=session.get("source"),
+            hermes_home=session.get("profile_home"))
+    identity = _session_hook_identity(session)
+    session["plugin_session_identity"] = dict(identity)
+    if (agent := session.get("agent")) is not None:
+        # Legacy slotted agent adapters cannot accept host metadata; the live
+        # record still owns identity for lifecycle dispatch.
+        with contextlib.suppress(AttributeError):
+            agent._plugin_session_identity = dict(identity)
+    invoke_hook("on_session_identity", **identity)
+
+
+def _session_hook_identity(session: dict) -> dict:
+    from hermes_cli.session_hook_context import agent_session_identity
+
+    agent = session.get("agent")
+    identity = agent_session_identity(agent)
+    identity.update(session.get("plugin_session_identity") or {})
+    identity.update(runtime_session_id=session.get("_sid"), stored_session_id=session.get("session_key"),
+                    session_id=getattr(agent, "session_id", None) or session.get("resume_session_id") or session.get("session_key"),
+                    task_id=getattr(agent, "_current_task_id", None))
+    return identity
+
+
+def _notify_session_boundary(event_type: str, session_id: str | None, platform: str | None = None,
+                             session: dict | None = None) -> None:
     """Fire session lifecycle hooks with CLI parity."""
     with contextlib.suppress(Exception):
         from hermes_cli.lifecycle import finalize_session, invoke_hook
+        context = _session_hook_identity(session) if session is not None else {}
+        context.update(session_id=session_id, platform=_resolve_agent_platform(platform))
         if event_type == "on_session_finalize":
-            finalize_session(session_id=session_id, platform=_resolve_agent_platform(platform))
+            finalize_session(**context)
         else:
-            invoke_hook(event_type, session_id=session_id, platform=_resolve_agent_platform(platform))
+            invoke_hook(event_type, **context)
 
 
 _SESSION_OWNERSHIP_UNAVAILABLE = "Hermes could not safely reserve this session. Try again."
@@ -223,7 +260,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             from hermes_cli.lifecycle import invoke_hook
             invoke_hook(
                 "on_session_end", completed=False, interrupted=True,
-                session_id=getattr(agent, "session_id", None) or session.get("session_key", ""),
+                **_session_hook_identity(session),
                 model=getattr(agent, "model", "unknown"), platform=getattr(agent, "platform", None) or "tui")
     if agent is not None and history and hasattr(agent, "commit_memory_session"):
         with contextlib.suppress(Exception):
@@ -231,7 +268,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
 
     session_key = session.get("session_key")
     session_id = getattr(agent, "session_id", None) or session_key
-    _notify_session_boundary("on_session_finalize", session_id, _session_source(session))
+    _notify_session_boundary("on_session_finalize", session_id, _session_source(session), session)
     # End the state.db row so it doesn't linger as a ghost in /resume. Use session_id (agent.session_id), not
     # session_key: after compression the key may be the stale ended parent while session_id is the live continuation.
     # Fix for #20001.

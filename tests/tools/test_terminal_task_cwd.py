@@ -216,7 +216,7 @@ def test_host_local_background_command_bypasses_configured_backend(tmp_path, mon
     monkeypatch.setattr(terminal_tool, "_last_activity", {})
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
     monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
-    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda value: value)
+    monkeypatch.setattr(terminal_tool, "_resolve_unbound_container_task_id", lambda value: value)
     monkeypatch.setattr(terminal_tool, "_docker_has_host_access", lambda config: False)
     monkeypatch.setattr(
         terminal_tool,

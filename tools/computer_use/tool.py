@@ -20,6 +20,7 @@ from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from hermes_cli.session_execution import SessionExecutionError
 from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement, image_dimensions_from_bytes
 
 logger = logging.getLogger(__name__)
@@ -118,11 +119,14 @@ def _cua_permission_mode(session_id: str) -> str:
             return "unrestricted"
     return configured
 
-def _new_backend(permission_mode: str) -> ComputerUseBackend:
+def _new_backend(permission_mode: str, *, execution_context=None) -> ComputerUseBackend:
     backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
     if backend_name in {"cua", "cua-driver", ""}:
         from tools.computer_use.cua_backend import CuaDriverBackend
-        return CuaDriverBackend(permission_mode=permission_mode)
+        return CuaDriverBackend(permission_mode=permission_mode,
+                                **({"execution_context": execution_context} if execution_context else {}))
+    if execution_context is not None:
+        raise SessionExecutionError("session execution context requires the cua backend")
     if backend_name != "noop":
         raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
     return _NoopBackend()  # pragma: no cover
@@ -156,23 +160,41 @@ def _stop_backend(backend: ComputerUseBackend, call_lock: Optional[threading.RLo
     except Exception as e:
         on_error(e)
 
-def _get_backend(session_id: str = "") -> ComputerUseBackend:
+def _get_backend(session_id: str = "", *, task_id: Optional[str] = None) -> ComputerUseBackend:
     sid = str(session_id or "")
     while True:
+        from hermes_cli.session_execution import resolve_session_execution_context
+        execution = resolve_session_execution_context(session_id=sid, task_id=task_id)
         with _backend_lock:
             # Mode resolved under the cache lock; YOLO mutation never holds the approval lock while releasing it.
             permission_mode = _cua_permission_mode(sid)
             if sid == "" and _backend is not None and sid not in _backends:
                 _install_backend(sid, _backend, permission_mode)  # fold the injection hook into the cache
             if (cached := _backends.get(sid)) is None:
-                backend = _new_backend(permission_mode)
-                backend.start()  # under the cache lock: one backend per session; a concurrent toggle releases it
+                backend = _new_backend(permission_mode,
+                                       **({"execution_context": execution} if execution else {}))
+                try:
+                    backend.start()  # one backend per session; failed starts never enter the cache
+                except Exception:
+                    backend.stop()
+                    raise
                 return _install_backend(sid, backend, permission_mode)
-            if _backend_permission_modes.get(sid, "standard") == permission_mode:
+            if (_backend_permission_modes.get(sid, "standard") == permission_mode
+                    and getattr(cached, "execution_context", None) is execution):
                 return cached
             # Cua's mode is immutable after daemon startup: a /yolo toggle replaces only this session's backend.
             _, stale_lock = _detach_locked(sid)  # stopped outside the cache lock; the loop re-reads the mode first
         _stop_backend(cached, stale_lock, lambda e: None)
+
+def release_computer_use_execution_context(execution_context) -> None:
+    """Retire only transports holding this revoked lease; leave approvals unchanged."""
+    with _backend_lock:
+        stale = [_detach_locked(sid) for sid, backend in list(_backends.items())
+                 if getattr(backend, "execution_context", None) is execution_context]
+    for backend, call_lock in stale:
+        if backend is not None:
+            _stop_backend(backend, call_lock, lambda e: logger.debug("Cua context teardown failed: %s", e))
+
 
 def release_computer_use_session(session_id: str) -> bool:
     """Release one session-owned backend (lifecycle seam for hosts/plugins); idempotent, True iff one was released.
@@ -254,7 +276,9 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         if (err := _request_approval(scope, args, session_id)) is not None:
             return err
     try:
-        backend = _get_backend(session_id=session_id)
+        backend = _get_backend(session_id=session_id, task_id=kwargs.get("task_id"))
+    except SessionExecutionError as e:
+        return _text_response(ActionResult(ok=False, action=action, message=str(e), code="policy_denied"))
     except Exception as e:
         return json.dumps({"error": f"computer_use backend unavailable: {e}",
                            "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
@@ -263,7 +287,11 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         with _backend_lock:
             call_lock = _backend_call_locks.setdefault(session_id, threading.RLock())
         with call_lock:
+            from tools.computer_use.session_context import check_desktop_request
+            check_desktop_request(backend, args)
             return _dispatch(backend, action, args)
+    except SessionExecutionError as e:
+        return _text_response(ActionResult(ok=False, action=action, message=str(e), code="policy_denied"))
     except Exception as e:
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
@@ -409,6 +437,10 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
 def _classify_action_result(res: ActionResult) -> Dict[str, Any]:
     """Next ladder step from semantic evidence, in precedence order. Escalation is advisory: it never overrides
     a confirmed effect nor licenses repeating input."""
+    if res.code == "policy_denied":
+        return {"decision": "deny", "retryable": False, "hint": (
+            "Session execution policy denied this action. Do not retry with coordinates, foreground delivery, "
+            "another tool, or the host desktop. Wait for the session owner to restore permission or repair the context.")}
     if res.effect == "confirmed" or res.verified is True:
         return {"decision": "done"}
     if res.effect == "unverifiable":

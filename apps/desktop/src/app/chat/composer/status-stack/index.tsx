@@ -11,6 +11,9 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
+import { useContributions } from '@/contrib'
+import { SESSION_AREAS } from '@/contrib/session'
+import { SessionContributions } from '@/contrib/session-contributions'
 import { type Translations, useI18n } from '@/i18n'
 import { useSessionSlice } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -87,6 +90,7 @@ interface ComposerStatusStackProps {
  */
 export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackProps) {
   const { t } = useI18n()
+  const pluginRows = useContributions(SESSION_AREAS.statusStack)
   const navigate = useNavigate()
   // Subscribe to THIS session's slice only. Both maps churn on other
   // sessions' activity (subagent ticks, background polls, preview updates in
@@ -222,6 +226,19 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
     sections.push({ key: 'preview', node: previewBlock })
   }
 
+  const hasCoreSections = sections.length > 0 || Boolean(queue)
+
+  if (sessionId && pluginRows.length > 0) {
+    sections.push({
+      key: 'session-contributions',
+      node: (
+        <div className="px-1 py-0.5 empty:hidden" data-session-contribution-content="">
+          <SessionContributions area={SESSION_AREAS.statusStack} runtimeSessionId={sessionId} />
+        </div>
+      )
+    })
+  }
+
   if (queue) {
     sections.push({ key: 'queue', node: queue })
   }
@@ -245,7 +262,10 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
       // In flow in the dock column, directly above the composer. The dock is
       // bottom-anchored, so this grows upward over the thread without needing
       // to be positioned — and it shares the dock's left edge for free.
-      className="flex max-h-[40vh] min-h-0 flex-col overflow-y-auto"
+      className={cn(
+        'flex max-h-[40vh] min-h-0 flex-col overflow-y-auto',
+        !hasCoreSections && '[&:not(:has([data-session-contribution-content]:not(:empty)))]:hidden'
+      )}
       data-slot="composer-status-stack"
       onPointerDownCapture={() => blurComposerInput()}
     >

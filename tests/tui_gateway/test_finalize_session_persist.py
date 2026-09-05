@@ -262,12 +262,10 @@ class TestOnSessionEndHook:
 
         _finalize_session(session, end_reason="tui_close")
 
-        mock_invoke_hook.assert_any_call(
-            "on_session_end",
-            session_id="hook_test_001",
-            completed=False,
-            interrupted=True,
-            model="claude-sonnet-4",
-            platform="tui",
-        )
+        ends = [call.kwargs for call in mock_invoke_hook.call_args_list
+                if call.args == ("on_session_end",)]
+        assert ends
+        expected = dict(session_id="hook_test_001", completed=False, interrupted=True,
+                        model="claude-sonnet-4", platform="tui")
+        assert expected.items() <= ends[-1].items()
 

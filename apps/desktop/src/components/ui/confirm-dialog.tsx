@@ -28,6 +28,10 @@ interface ConfirmDialogProps {
   destructive?: boolean
   /** Close as soon as onConfirm resolves — for optimistic actions that finish in the background. */
   dismissOnConfirm?: boolean
+  /** Focus control for dialogs with no input. Pass `preventCloseButtonAutoFocus`
+   *  so opening doesn't land focus on the close/cancel button (which would pop
+   *  its tooltip with no pointer near it). */
+  onOpenAutoFocus?: (event: Event) => void
   /** A third, non-destructive way out, shown between Cancel and Confirm (e.g.
    *  "Remove from sidebar" beside "Delete worktree"). Closes on click. */
   secondaryAction?: ConfirmSecondaryAction
@@ -38,10 +42,9 @@ interface ConfirmSecondaryAction {
   onClick: () => void
 }
 
-// Shared confirmation dialog: opens focused on Confirm, Enter confirms (from
-// anywhere in the dialog), Esc/Cancel/backdrop dismiss. Owns the pending → done
-// → close beat and inline error, so callers pass only an async onConfirm that
-// does the work.
+// Shared confirmation dialog: opens focused on Confirm by default, lets callers
+// override autofocus when needed, and owns the pending → done → close beat plus
+// inline error handling.
 export function ConfirmDialog({
   open,
   onClose,
@@ -54,6 +57,7 @@ export function ConfirmDialog({
   cancelLabel,
   destructive = false,
   dismissOnConfirm = false,
+  onOpenAutoFocus,
   secondaryAction
 }: ConfirmDialogProps) {
   const { t } = useI18n()
@@ -125,6 +129,21 @@ export function ConfirmDialog({
     }
   }
 
+  function handleOpenAutoFocus(event: Event) {
+    if (onOpenAutoFocus) {
+      onOpenAutoFocus(event)
+
+      return
+    }
+
+    // Focus must land inside the dialog or the handler below never sees the
+    // key: it stays on whatever opened the dialog (a menu item, a sidebar row)
+    // and Enter re-triggers that instead. Radix's default would take the X —
+    // confirm is the button Enter maps to.
+    event.preventDefault()
+    confirmRef.current?.focus()
+  }
+
   return (
     <Dialog onOpenChange={value => !value && !busy && onClose()} open={open}>
       <DialogContent
@@ -137,14 +156,7 @@ export function ConfirmDialog({
             void run()
           }
         }}
-        onOpenAutoFocus={event => {
-          // Focus must land inside the dialog or the handler above never sees
-          // the key: it stays on whatever opened the dialog (a menu item, a
-          // sidebar row) and Enter re-triggers that instead. Radix's default
-          // would take the X — confirm is the button Enter maps to.
-          event.preventDefault()
-          confirmRef.current?.focus()
-        }}
+        onOpenAutoFocus={handleOpenAutoFocus}
       >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
@@ -152,8 +164,12 @@ export function ConfirmDialog({
         </DialogHeader>
 
         {error && (
-          <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <div
+            aria-atomic="true"
+            className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+            role="alert"
+          >
+            <AlertTriangle aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
             <span>{error}</span>
           </div>
         )}

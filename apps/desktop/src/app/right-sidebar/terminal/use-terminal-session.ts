@@ -543,6 +543,7 @@ export function useTerminalSession({
       // at render time, matching the muted ink-like look of their terminal.
       minimumContrastRatio: 4.5,
       scrollback: 1000,
+      screenReaderMode: true,
       theme: withSurface(initialThemeRef.current)
     })
 

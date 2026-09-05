@@ -226,6 +226,13 @@ const StatusbarItemView = memo(function StatusbarItemView({
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
 
+  const accessibleTitle =
+    item.title ??
+    (typeof item.label === 'string' ? item.label : typeof item.detail === 'string' ? item.detail : undefined)
+
+  const hasVisibleText = typeof item.label === 'string' || typeof item.detail === 'string'
+  const accessibleName = hasVisibleText ? undefined : accessibleTitle
+
   // Render escape hatch: the contribution owns its own chrome/state/tooltip.
   if (item.render) {
     return <ContribRender render={item.render} />
@@ -249,7 +256,13 @@ const StatusbarItemView = memo(function StatusbarItemView({
     // way profile-switcher.tsx stacks Popover/ContextMenu/Tooltip triggers.
     const trigger = (
       <DropdownMenuTrigger asChild>
-        <button className={cn(STATUSBAR_ACTION_CLASS, item.className)} disabled={item.disabled} type="button">
+        <button
+          aria-label={accessibleName}
+          className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+          disabled={item.disabled}
+          title={accessibleTitle}
+          type="button"
+        >
           {content}
         </button>
       </DropdownMenuTrigger>
@@ -333,7 +346,14 @@ const StatusbarItemView = memo(function StatusbarItemView({
   if (item.href || item.variant === 'link') {
     return (
       <Tip label={tooltipLabel}>
-        <a className={cn(STATUSBAR_ACTION_CLASS, item.className)} href={item.href} rel="noreferrer" target="_blank">
+        <a
+          aria-label={accessibleName}
+          className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+          href={item.href}
+          rel="noreferrer"
+          target="_blank"
+          title={accessibleTitle}
+        >
           {content}
         </a>
       </Tip>
@@ -343,6 +363,7 @@ const StatusbarItemView = memo(function StatusbarItemView({
   return (
     <Tip label={tooltipLabel}>
       <button
+        aria-label={accessibleName}
         className={cn(STATUSBAR_ACTION_CLASS, item.className)}
         disabled={item.disabled}
         onClick={event => {
@@ -352,6 +373,7 @@ const StatusbarItemView = memo(function StatusbarItemView({
 
           item.onSelect?.({ shiftKey: event.shiftKey })
         }}
+        title={accessibleTitle}
         type="button"
       >
         {content}

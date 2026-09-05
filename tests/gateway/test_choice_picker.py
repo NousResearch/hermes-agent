@@ -9,6 +9,7 @@ command, so picker and typed arguments can never diverge.
 
 import asyncio
 import types
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -136,8 +137,9 @@ class TestReasoningChoicePicker:
         assert session_key not in runner._session_reasoning_overrides
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", ["/reasoning --global", "/reasoning —global"])
     async def test_multiplex_global_picker_persists_only_named_profile(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, command
     ):
         """A delayed picker tap must retain its originating profile scope."""
         from agent.secret_scope import set_multiplex_active
@@ -146,6 +148,8 @@ class TestReasoningChoicePicker:
         named_home = tmp_path / "profiles" / "named"
         default_home.mkdir(parents=True)
         named_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
         default_cfg = {"marker": "default"}
         named_cfg = {"marker": "named"}
         (default_home / "config.yaml").write_text(
@@ -160,8 +164,13 @@ class TestReasoningChoicePicker:
         runner.config = types.SimpleNamespace(multiplex_profiles=True)
         runner._resolve_profile_home_for_source = lambda source: named_home
         monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
-        event = _make_event("/reasoning --global")
+        event = _make_event(command)
         event.source.profile = "named"
+        session_key = runner._session_key_for_source(event.source)
+        runner._session_reasoning_overrides[session_key] = {
+            "enabled": True,
+            "effort": "low",
+        }
 
         set_multiplex_active(True)
         try:
@@ -174,10 +183,13 @@ class TestReasoningChoicePicker:
             set_multiplex_active(False)
 
         assert "ultra" in reply
-        assert yaml.safe_load((default_home / "config.yaml").read_text()) == default_cfg
-        saved = yaml.safe_load((named_home / "config.yaml").read_text())
+        assert yaml.safe_load(
+            (default_home / "config.yaml").read_text(encoding="utf-8")
+        ) == default_cfg
+        saved = yaml.safe_load((named_home / "config.yaml").read_text(encoding="utf-8"))
         assert saved["marker"] == "named"
         assert saved["agent"]["reasoning_effort"] == "ultra"
+        assert session_key not in runner._session_reasoning_overrides
 
 
 class TestFastChoicePicker:
@@ -198,7 +210,7 @@ class TestFastChoicePicker:
 
         assert result is None
         values = [c["value"] for c in adapter.calls[0]["choices"]]
-        assert values == ["fast", "normal"]
+        assert values == ["fast", "normal", "auto", "cold"]
 
     @pytest.mark.asyncio
     async def test_fast_picker_selection_is_session_scoped(self, tmp_path, monkeypatch):
@@ -215,4 +227,3 @@ class TestFastChoicePicker:
         assert runner._service_tier == "priority"
         assert runner._session_service_tier_overrides
         assert not (tmp_path / "config.yaml").exists()
-

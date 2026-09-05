@@ -1,134 +1,88 @@
-"""Per-thread interrupt signaling for all tools.
-
-Provides thread-scoped interrupt tracking so that interrupting one agent
-session does not kill tools running in other sessions.  This is critical
-in the gateway where multiple agents run concurrently in the same process.
-
-The agent stores its execution thread ID at the start of run_conversation()
-and passes it to set_interrupt()/clear_interrupt().  Tools call
-is_interrupted() which checks the CURRENT thread — no argument needed.
-
-Usage in tools:
-    from tools.interrupt import is_interrupted
-    if is_interrupted():
-        return {"output": "[interrupted]", "returncode": 130}
-"""
+"""Per-thread interrupt signaling for all tools: thread-scoped so interrupting one
+agent session does not kill tools in other sessions (the gateway runs many agents in one
+process). The agent passes its execution thread id to set_interrupt(); tools call
+is_interrupted(), which checks the CURRENT thread."""
 
 import logging
 import os
 import threading
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
-# Opt-in debug tracing — pairs with HERMES_DEBUG_INTERRUPT in
-# tools/environments/base.py.  Enables per-call logging of set/check so the
-# caller thread, target thread, and current state are visible when
-# diagnosing "interrupt signaled but tool never saw it" reports.
+# Opt-in debug tracing — pairs with HERMES_DEBUG_INTERRUPT in tools/environments/base.py.
 _DEBUG_INTERRUPT = bool(os.getenv("HERMES_DEBUG_INTERRUPT"))
-
 if _DEBUG_INTERRUPT:
-    # AIAgent's quiet_mode path forces `tools` logger to ERROR on CLI startup.
-    # Force our own logger back to INFO so the trace is visible in agent.log.
+    # AIAgent's quiet_mode forces the `tools` logger to ERROR on CLI startup;
+    # force ours back to INFO so the trace is visible in agent.log.
     logger.setLevel(logging.INFO)
 
-# Set of thread idents that have been interrupted, plus an optional
-# user-safe cause for each signal. The cause deliberately does not contain an
-# incoming user's message text.
+# Interrupted thread idents + optional user-safe cause (never the user's message text).
 _interrupted_threads: set[int] = set()
 _interrupt_reasons: dict[int, str] = {}
 _lock = threading.Lock()
 
 
-def set_interrupt(
-    active: bool,
-    thread_id: int | None = None,
-    *,
-    reason: str | None = None,
-) -> None:
-    """Set or clear interrupt for a specific thread.
-
-    Args:
-        active: True to signal interrupt, False to clear it.
-        thread_id: Target thread ident.  When None, targets the
-                   current thread (backward compat for CLI/tests).
-        reason: Optional user-safe cause for the interrupt.
-    """
+def set_interrupt(active: bool, thread_id: int | None = None, *, reason: str | None = None) -> None:
+    """Set or clear the interrupt for *thread_id* (default: current thread); ``reason`` is
+    an optional user-safe cause."""
     tid = thread_id if thread_id is not None else threading.current_thread().ident
     with _lock:
-        if active:
-            _interrupted_threads.add(tid)
-            if reason:
-                _interrupt_reasons[tid] = reason
-            else:
-                _interrupt_reasons.pop(tid, None)
+        (_interrupted_threads.add if active else _interrupted_threads.discard)(tid)
+        if active and reason:
+            _interrupt_reasons[tid] = reason
         else:
-            _interrupted_threads.discard(tid)
             _interrupt_reasons.pop(tid, None)
         _snapshot = set(_interrupted_threads) if _DEBUG_INTERRUPT else None
     if _DEBUG_INTERRUPT:
         logger.info(
             "[interrupt-debug] set_interrupt(active=%s, target_tid=%s) "
             "called_from_tid=%s current_set=%s",
-            active, tid, threading.current_thread().ident, _snapshot,
-        )
+            active, tid, threading.current_thread().ident, _snapshot)
 
 
 def is_interrupted() -> bool:
-    """Check if an interrupt has been requested for the current thread.
+    return is_thread_interrupted(threading.current_thread().ident)
 
-    Safe to call from any thread — each thread only sees its own
-    interrupt state.
+
+def is_thread_interrupted(thread_id: int | None) -> bool:
+    """Whether *thread_id* has an interrupt bit set (``None`` never is). Used when
+    a wait moves onto a deadline worker (``run_bounded_sync``) so ``/stop``
+    targeting the original tool-worker tid still kills the subprocess.
+
+    See #94285.
+    """
+    if thread_id is None:
+        return False
+    with _lock:
+        return thread_id in _interrupted_threads
+
+
+def run_if_not_interrupted(callback: Callable[[], None]) -> bool:
+    """Run a state transition atomically with current-thread interruption.
+
+    Returns ``False`` without calling ``callback`` when the current thread is
+    already interrupted. The callback runs under the interrupt lock and must
+    not block or re-enter any interrupt API.
     """
     tid = threading.current_thread().ident
     with _lock:
-        return tid in _interrupted_threads
+        if tid in _interrupted_threads:
+            return False
+        callback()
+        return True
 
 
 def get_interrupt_reason() -> str | None:
-    """Return the user-safe interrupt cause for the current thread, if known."""
-    tid = threading.current_thread().ident
+    """User-safe interrupt cause for the current thread, if known."""
     with _lock:
-        return _interrupt_reasons.get(tid)
+        return _interrupt_reasons.get(threading.current_thread().ident)
 
 
 def clear_current_thread_interrupt() -> None:
-    """Clear any interrupt bit on the CURRENT thread.
-
-    Gives a user-approved command a clean interrupt slate immediately before
-    it spawns its child process, so a stale bit that landed on this thread
-    during the blocking approval-wait cannot SIGINT the just-approved run
-    (exit 130 + "[Command interrupted]").  Single-thread ordering on this tid
-    keeps the DO-NOT-BREAK invariant intact: a *genuine* interrupt arriving
-    after this call re-sets the bit on the same thread and is still observed by
-    the executor's poll loop.  Call this directly, never via the
-    _interrupt_event proxy (its .clear() binds to whatever thread runs it).
-    """
-    set_interrupt(False)  # thread_id=None -> current thread (see set_interrupt)
-
-
-# ---------------------------------------------------------------------------
-# Backward-compatible _interrupt_event proxy
-# ---------------------------------------------------------------------------
-# Some legacy call sites (code_execution_tool, process_registry, tests)
-# import _interrupt_event directly and call .is_set() / .set() / .clear().
-# This shim maps those calls to the per-thread functions above so existing
-# code keeps working while the underlying mechanism is thread-scoped.
-
-class _ThreadAwareEventProxy:
-    """Drop-in proxy that maps threading.Event methods to per-thread state."""
-
-    def is_set(self) -> bool:
-        return is_interrupted()
-
-    def set(self) -> None:  # noqa: A003
-        set_interrupt(True)
-
-    def clear(self) -> None:
-        set_interrupt(False)
-
-    def wait(self, timeout: float | None = None) -> bool:
-        """Not truly supported — returns current state immediately."""
-        return self.is_set()
-
-
-_interrupt_event = _ThreadAwareEventProxy()
+    """Clear any interrupt bit on the CURRENT thread: gives a user-approved command a clean
+    slate right before it spawns its child, so a stale bit that landed during the blocking
+    approval-wait cannot SIGINT the just-approved run. A *genuine* interrupt arriving after
+    this call re-sets the bit and is still observed by the executor's poll loop. Call
+    directly on the executing thread."""
+    set_interrupt(False)

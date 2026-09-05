@@ -291,7 +291,7 @@ def test_hatch_pet_end_to_end(monkeypatch, tmp_path):
     def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
         # Return a synthetic row strip; frame count is inferable from the spec.
         state = prefix.replace("pet_row_", "")
-        count = atlas_mod.FRAME_COUNTS.get(state, 6)
+        count = dict((s, c) for s, _, c in atlas_mod.ROW_SPECS).get(state, 6)
         p = tmp_path / f"{prefix}.png"
         _strip(count).save(p)
         return [p]
@@ -331,7 +331,7 @@ def test_hatch_pet_removes_row_strips_after_extraction(monkeypatch, tmp_path):
 
     def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
         state = prefix.replace("pet_row_", "")
-        count = atlas_mod.FRAME_COUNTS.get(state, 6)
+        count = dict((s, c) for s, _, c in atlas_mod.ROW_SPECS).get(state, 6)
         p = tmp_path / f"{prefix}.png"
         _strip(count).save(p)
         produced.append(p)
@@ -359,7 +359,7 @@ def test_hatch_pet_removes_row_strips_after_failed_attempt(monkeypatch, tmp_path
     def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
         attempts[prefix] = attempts.get(prefix, 0) + 1
         state = prefix.replace("pet_row_", "")
-        count = atlas_mod.FRAME_COUNTS.get(state, 6)
+        count = dict((s, c) for s, _, c in atlas_mod.ROW_SPECS).get(state, 6)
         path = tmp_path / f"{prefix}_{attempts[prefix]}.png"
         _strip(count).save(path)
         return [path]
@@ -397,7 +397,7 @@ def test_hatch_pet_idle_fallback_when_row_fails(monkeypatch, tmp_path):
         if prefix == "pet_row_idle":
             raise GenerationError("boom")
         state = prefix.replace("pet_row_", "")
-        count = atlas_mod.FRAME_COUNTS.get(state, 6)
+        count = dict((s, c) for s, _, c in atlas_mod.ROW_SPECS).get(state, 6)
         p = tmp_path / f"{prefix}.png"
         _strip(count).save(p)
         return [p]

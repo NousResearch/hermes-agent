@@ -222,8 +222,23 @@ class StreamingTTSConsumer:
                 self._loop.call_soon_threadsafe(asyncio.create_task, self._safe_abort(reason))
 
     async def wait_complete(self, timeout: float = 10.0) -> bool:
-        """Wait for the drain task to finish. Returns True only on full success."""
-        if self._task is not None:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await asyncio.wait_for(asyncio.shield(self._task), timeout=timeout)
+        """Wait for the drain task to finish. Returns True only on full success.
+
+        After ``abort()``, a provider iterator may still be blocked inside
+        ``asyncio.to_thread(next, ...)``. If the graceful wait expires, cancel
+        and reap the asyncio drain task so it cannot survive turn teardown.
+        """
+        if self._task is None:
+            return self._completed
+        try:
+            await asyncio.wait_for(asyncio.shield(self._task), timeout=timeout)
+        except asyncio.TimeoutError:
+            if self._aborted and not self._task.done():
+                self._task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await self._task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
         return self._completed

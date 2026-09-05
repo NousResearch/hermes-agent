@@ -59,7 +59,17 @@ export async function openInEditor(initial: string, suffix = '.txt'): Promise<nu
   let status: null | number = null
 
   await withInkSuspended(async () => {
-    status = spawnSync(cmd!, [...args, file], { stdio: 'inherit' }).status
+    const result = spawnSync(cmd!, [...args, file], {
+      // On Windows, shell:true lets spawnSync resolve .CMD/.BAT shims
+      // (e.g. VS Code's `code` is `code.CMD`). Without it, CreateProcess
+      // only appends .exe and returns ENOENT, so the editor never opens.
+      shell: process.platform === 'win32',
+      stdio: 'inherit'
+    })
+    status = result.status
+    if (result.error && status === null) {
+      throw result.error
+    }
   })
 
   try {

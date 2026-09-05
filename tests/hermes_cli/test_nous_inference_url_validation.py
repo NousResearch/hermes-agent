@@ -76,9 +76,14 @@ class TestCallSiteWiring:
     """
 
     def _read_auth_source(self):
+        # The Nous refresh sites live in auth_nous.py (split out of auth.py);
+        # read both so the guard tolerates relocation but still fires on deletion.
         import hermes_cli.auth as _auth_mod
+        import hermes_cli.auth_nous as _nous_mod
         from pathlib import Path
-        return Path(_auth_mod.__file__).read_text(encoding="utf-8")
+        return "".join(
+            Path(m.__file__).read_text(encoding="utf-8") for m in (_auth_mod, _nous_mod)
+        )
 
     def test_no_unvalidated_inference_base_url_assignments_remain(self):
         """No remaining ``_optional_base_url(...inference_base_url...)`` reads
@@ -96,13 +101,17 @@ class TestCallSiteWiring:
             )
 
     def test_validator_wired_at_all_known_call_sites(self):
-        """All 2 known auth.py NETWORK sites use the validator. If this count
-        drops, someone removed protection; if it grows, audit the new
-        site to be sure validation is appropriate."""
+        """All 2 known auth.py NETWORK refresh sites route the Portal-returned
+        inference URL through ``_healed_nous_inference_url`` (which applies the
+        validator and heals to the default). If this count drops, someone removed
+        protection; if it grows, audit the new site to be sure validation is
+        appropriate."""
         source = self._read_auth_source()
-        refresh_count = source.count(
-            '_validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))'
-        )
+        assert (
+            source.count('_validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))')
+            == 1
+        ), "the validator must be applied exactly once, inside _healed_nous_inference_url"
+        refresh_count = source.count("_healed_nous_inference_url(refreshed)")
         mint_count = source.count(
             '_validate_nous_inference_url_from_network(mint_payload.get("inference_base_url"))'
         )
@@ -164,6 +173,7 @@ class TestHealsPoisonedStoredValue:
 
     def test_refresh_resets_rejected_url_to_default(self, monkeypatch):
         import hermes_cli.auth as auth
+        import hermes_cli.auth_nous as hermes_cli_auth_nous
 
         poisoned = "https://stg-inference-api.nousresearch.com/v1"
         state = {
@@ -177,6 +187,7 @@ class TestHealsPoisonedStoredValue:
         # Force the refresh branch and return another rejected (staging) URL,
         # exercising the validator-returns-None heal path.
         monkeypatch.setattr(auth, "_nous_invoke_jwt_status", lambda *a, **k: "needs_refresh")
+        monkeypatch.setattr(hermes_cli_auth_nous, "_nous_invoke_jwt_status", lambda *a, **k: "needs_refresh")
         monkeypatch.setattr(
             auth,
             "_refresh_access_token",
@@ -187,9 +198,21 @@ class TestHealsPoisonedStoredValue:
                 "inference_base_url": poisoned,  # Portal still hands back staging
             },
         )
+        monkeypatch.setattr(
+            hermes_cli_auth_nous,
+            "_refresh_access_token",
+            lambda **k: {
+                "access_token": "newtok",
+                "refresh_token": "newrtok",
+                "expires_in": 3600,
+                "inference_base_url": poisoned,  # Portal still hands back staging
+            },
+        )
         # Skip the JWT usability assertions (orthogonal to URL healing).
         monkeypatch.setattr(auth, "_assert_nous_inference_jwt_usable", lambda *a, **k: None)
+        monkeypatch.setattr(hermes_cli_auth_nous, "_assert_nous_inference_jwt_usable", lambda *a, **k: None)
         monkeypatch.setattr(auth, "_select_nous_invoke_jwt", lambda *a, **k: None)
+        monkeypatch.setattr(hermes_cli_auth_nous, "_select_nous_invoke_jwt", lambda *a, **k: None)
 
         result = auth.refresh_nous_oauth_from_state(state, force_refresh=True)
 
@@ -217,10 +240,12 @@ class TestEnvOverrideWins:
     STAGING = "https://stg-inference-api.nousresearch.com/v1"
 
     def _patch_no_refresh(self, monkeypatch, auth, state):
+        import hermes_cli.auth_nous as hermes_cli_auth_nous
         import contextlib
 
         # No refresh fires: the stored access token is a usable invoke JWT.
         monkeypatch.setattr(auth, "_nous_invoke_jwt_status", lambda *a, **k: None)
+        monkeypatch.setattr(hermes_cli_auth_nous, "_nous_invoke_jwt_status", lambda *a, **k: None)
         monkeypatch.setattr(
             auth, "_auth_store_lock", lambda *a, **k: contextlib.nullcontext()
         )
@@ -235,10 +260,14 @@ class TestEnvOverrideWins:
         monkeypatch.setattr(auth, "_save_provider_state_to_source", lambda *a, **k: None)
         monkeypatch.setattr(auth, "_save_auth_store", lambda *a, **k: None)
         monkeypatch.setattr(auth, "_write_shared_nous_state", lambda *a, **k: None)
+        monkeypatch.setattr(hermes_cli_auth_nous, "_write_shared_nous_state", lambda *a, **k: None)
         monkeypatch.setattr(auth, "_sync_nous_pool_from_auth_store", lambda *a, **k: None)
+        monkeypatch.setattr(hermes_cli_auth_nous, "_sync_nous_pool_from_auth_store", lambda *a, **k: None)
         monkeypatch.setattr(auth, "_resolve_verify", lambda *a, **k: True)
         monkeypatch.setattr(auth, "_assert_nous_inference_jwt_usable", lambda *a, **k: None)
+        monkeypatch.setattr(hermes_cli_auth_nous, "_assert_nous_inference_jwt_usable", lambda *a, **k: None)
         monkeypatch.setattr(auth, "_select_nous_invoke_jwt", lambda *a, **k: None)
+        monkeypatch.setattr(hermes_cli_auth_nous, "_select_nous_invoke_jwt", lambda *a, **k: None)
 
     def _base_state(self, auth, stored):
         return {

@@ -170,7 +170,7 @@ def test_gateway_run_agent_threads_the_event_message_id_into_the_turn():
     import ast
     import inspect
 
-    import gateway.run as gateway_run
+    import gateway.run_turn_runner as gateway_run
 
     source = inspect.getsource(gateway_run)
     tree = ast.parse(source)

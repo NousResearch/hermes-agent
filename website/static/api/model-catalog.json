@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-29T02:38:32Z",
+  "updated_at": "2026-09-04T22:47:22Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -12,6 +12,10 @@
         "note": "Descriptions drive picker badges. Live /api/v1/models filters curated ids by tool-calling support and free pricing. The entry labeled \"default\": true is the model Hermes silently lands on when the user never picked one."
       },
       "models": [
+        {
+          "id": "anthropic/claude-fable-5.1",
+          "description": ""
+        },
         {
           "id": "anthropic/claude-fable-5",
           "description": ""
@@ -39,6 +43,30 @@
         {
           "id": "anthropic/claude-haiku-4.5",
           "description": ""
+        },
+        {
+          "id": "openai/gpt-6-astra",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-6-astra-fast",
+          "description": "2x price, priority tier"
+        },
+        {
+          "id": "openai/gpt-6-astra-flex",
+          "description": "0.5x price, flex tier"
+        },
+        {
+          "id": "openai/gpt-6-astra-pro",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-6-astra-pro-fast",
+          "description": "2x price, priority tier"
+        },
+        {
+          "id": "openai/gpt-6-astra-pro-flex",
+          "description": "0.5x price, flex tier"
         },
         {
           "id": "openai/gpt-5.6-sol",
@@ -78,6 +106,10 @@
         },
         {
           "id": "google/gemini-3.1-pro-preview",
+          "description": ""
+        },
+        {
+          "id": "google/gemini-3.8-flash",
           "description": ""
         },
         {
@@ -158,6 +190,18 @@
           "description": ""
         },
         {
+          "id": "meta/muse-spark-1.2-contributor",
+          "description": ""
+        },
+        {
+          "id": "meta/muse-spark-1.3",
+          "description": ""
+        },
+        {
+          "id": "meta/muse-spark-1.3-contributor",
+          "description": ""
+        },
+        {
           "id": "sakana/fugu-ultra",
           "description": ""
         },
@@ -210,6 +254,9 @@
       },
       "models": [
         {
+          "id": "anthropic/claude-fable-5.1"
+        },
+        {
           "id": "anthropic/claude-fable-5"
         },
         {
@@ -223,6 +270,24 @@
         },
         {
           "id": "anthropic/claude-haiku-4.5"
+        },
+        {
+          "id": "openai/gpt-6-astra"
+        },
+        {
+          "id": "openai/gpt-6-astra-fast"
+        },
+        {
+          "id": "openai/gpt-6-astra-flex"
+        },
+        {
+          "id": "openai/gpt-6-astra-pro"
+        },
+        {
+          "id": "openai/gpt-6-astra-pro-fast"
+        },
+        {
+          "id": "openai/gpt-6-astra-pro-flex"
         },
         {
           "id": "openai/gpt-5.6-sol"
@@ -253,6 +318,9 @@
         },
         {
           "id": "google/gemini-3.1-pro-preview"
+        },
+        {
+          "id": "google/gemini-3.8-flash"
         },
         {
           "id": "google/gemini-3.7-flash"

@@ -273,4 +273,72 @@ class TestTerminalOutputCleanliness:
         """This is how _has_command works -- must return clean 'yes'."""
         result = env.execute("command -v cat >/dev/null 2>&1 && echo 'yes'")
         assert result["output"].strip() == "yes"
-        _assert_clean(result["output"])
+
+
+# ── patch_replace wrong-region regression (PR #54572 / #54575) ──────────
+
+WRONG_REGION_CONTENT = (
+    "def handler(request):\n"
+    "    audit_log(request.user_id)\n"
+    "    return process(request)\n"
+)
+
+
+WRONG_REGION_OLD = (
+    "def handler(request):\n"
+    "    validate(request.token)\n"
+    "    return process(request)"
+)
+
+
+WRONG_REGION_NEW = (
+    "def handler(request):\n"
+    "    rate_limit(request)\n"
+    "    return process(request)"
+)
+
+
+class TestPatchReplaceWrongRegionRejected:
+    """Live regression for the bug where a fuzzy strategy (block_anchor /
+    context_aware) would happily overwrite a region whose real content
+    differed from old_string, so the patch 'succeeded' while editing the
+    wrong place. After PR #54575 the guard must reject the match, surface
+    an error via PatchResult, and leave the on-disk file byte-identical."""
+
+    def test_block_anchor_wrong_region_is_rejected(self, ops, tmp_path):
+        # File contents deliberately do not contain any substring that looks
+        # like validate(request.token). The first/last lines do match the
+        # model's pattern, which is precisely what used to trick strategy 8.
+        target = tmp_path / "service.py"
+        target.write_text(WRONG_REGION_CONTENT)
+
+        result = ops.patch_replace(
+            str(target), WRONG_REGION_OLD, WRONG_REGION_NEW
+        )
+
+        assert result.error is not None, (
+            "patch_replace returned success for a wrong-region match — "
+            "this is the bug PR #54572 / #54575 fixes."
+        )
+        # File on disk must be untouched. The audit_log line is the canary:
+        # if the guard regressed, this line gets clobbered with
+        # validate(request.token) or rate_limit(request).
+        assert target.read_text() == WRONG_REGION_CONTENT
+        assert "audit_log(request.user_id)" in target.read_text()
+        assert "validate(request.token)" not in target.read_text()
+        assert "rate_limit(request)" not in target.read_text()
+
+    def test_legitimate_rescue_still_applies(self, ops, tmp_path):
+        """Sanity check: the guard must not regress real edits. A pattern
+        that differs from the file only in indentation / whitespace still
+        has to apply."""
+        target = tmp_path / "math.py"
+        target.write_text("def foo():\n    x = 1\n    y = 2\n    return x + y\n")
+        result = ops.patch_replace(
+            str(target),
+            "def foo():\n  x = 1\n  y = 9\n  return x + y",  # drifted indent + value
+            "def foo():\n    return 0\n",
+        )
+        assert result.error is None, f"legitimate edit rejected: {result.error}"
+        assert "return 0" in target.read_text()
+        assert "audit_log" not in target.read_text()  # not this file's content

@@ -3223,6 +3223,9 @@ def init_agent(
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
+        # Bedrock region for restore_primary_runtime: boto3 / the
+        # AnthropicBedrock SDK resolve it outside client_kwargs (#102860).
+        "bedrock_region": getattr(agent, "_bedrock_region", ""),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,

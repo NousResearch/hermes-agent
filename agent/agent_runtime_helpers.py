@@ -1791,7 +1791,26 @@ def restore_primary_runtime(agent) -> bool:
             agent._use_native_cache_layout = False
 
         # ── Rebuild client for the primary provider ──
-        if agent.provider == "moa":
+        if agent.provider == "bedrock":
+            # Bedrock never uses an OpenAI client: converse goes through
+            # boto3 directly, Claude-on-Bedrock through the AnthropicBedrock
+            # SDK. Rebuilding via _create_openai_client raises a spurious
+            # OPENAI_API_KEY error and permanently strands the fallback
+            # chain (#102860). Mirror _rebuild_anthropic_client.
+            from agent.anthropic_adapter import build_anthropic_bedrock_client
+            region = (
+                rt.get("bedrock_region")
+                or getattr(agent, "_bedrock_region", "us-east-1")
+                or "us-east-1"
+            )
+            agent._bedrock_region = region
+            if agent.api_mode == "anthropic_messages":
+                agent._anthropic_client = build_anthropic_bedrock_client(region)
+            else:
+                # converse uses boto3 per-request; no long-lived client.
+                agent._anthropic_client = None
+            agent.client = None
+        elif agent.provider == "moa":
             # MoA is a virtual chat-completions provider.  It never has real
             # OpenAI client kwargs; restoring it after a fallback must recreate
             # the facade, not call OpenAI() with an empty api_key.  Use the
@@ -3441,7 +3460,9 @@ def switch_model(
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
-        "client_kwargs": dict(agent._client_kwargs),
+        # Bedrock region for restore_primary_runtime: boto3 / the
+        # AnthropicBedrock SDK resolve it outside client_kwargs (#102860).
+        "bedrock_region": getattr(agent, "_bedrock_region", ""),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,

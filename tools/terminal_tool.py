@@ -1119,6 +1119,12 @@ def terminal_tool(
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
     _host_local: bool = False,
+    coding_backend: str = "",
+    coding_backend_version: str = "",
+    coding_session_id: str = "",
+    coding_model: str = "",
+    coding_capabilities: Optional[List[str]] = None,
+    coding_resume_command: str = "",
 ) -> str:
     """Execute *command* in the configured terminal environment; returns a JSON string.
 
@@ -1132,6 +1138,11 @@ def terminal_tool(
     use it only for rare one-shot signals on long-lived processes.
     ``_host_local`` forces the local backend for Hermes-owned control-plane
     children (kept in a separate env cache from the configured backend).
+    The ``coding_*`` params (background launches only) tag a Codex/OpenCode
+    worker with its typed session descriptor (#103194): backend kind, version,
+    external session id, effective model, capability flags, and resume template.
+    All default empty = ordinary process. Only ids and model names are stored —
+    never env, tokens, or launch credentials.
     """
     try:
         plan = _plan_execution(
@@ -1160,6 +1171,10 @@ def terminal_tool(
                 effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
                 watch_patterns=watch_patterns, approval_note=verdict.note,
                 pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
+                coding_backend=coding_backend, coding_backend_version=coding_backend_version,
+                coding_session_id=coding_session_id, coding_model=coding_model,
+                coding_capabilities=coding_capabilities,
+                coding_resume_command=coding_resume_command,
             )
         return _run_foreground(
             command, env, plan,
@@ -1222,10 +1237,35 @@ TERMINAL_SCHEMA = {
                     {"type": "boolean"},
                     {"type": "array", "items": {"type": "string"}}
                 ]
-            }
+            },
             # Legacy aliases (unadvertised, still accepted): notify_on_complete
             # (bool) and watch_patterns (list). notify=true|[...] maps onto
             # them in the dispatch wrapper; explicit notify wins on conflict.
+            "coding_backend": {
+                "type": "string",
+                "description": "With background=true: tag this Codex/OpenCode worker with its backend kind ('codex' or 'opencode') so later model controls can target it. Omit for ordinary processes."
+            },
+            "coding_backend_version": {
+                "type": "string",
+                "description": "With background=true: backend release/pin of the coding worker, when known. Optional."
+            },
+            "coding_session_id": {
+                "type": "string",
+                "description": "With background=true: the worker's external session/thread id, when known at launch. Optional."
+            },
+            "coding_model": {
+                "type": "string",
+                "description": "With background=true: effective model of the coding worker as launched. Optional; only ids and model names are stored, never credentials."
+            },
+            "coding_capabilities": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "With background=true: capability flags of the coding worker (e.g. 'hot_switch', 'structured_api'). Optional."
+            },
+            "coding_resume_command": {
+                "type": "string",
+                "description": "With background=true: resume template for re-entering the coding session after a restart (e.g. 'codex resume <id>'). Stored as a template, never derived from the launch line. Optional."
+            }
         },
         "required": ["command"]
     }
@@ -1262,6 +1302,14 @@ def _handle_terminal(args, **kw):
                 "tracked background process). Retry as terminal(command=..., "
                 "background=true, pty=true)."
             )
+        if any(args.get(f"coding_{key}") for key in (
+                "backend", "backend_version", "session_id", "model",
+                "capabilities", "resume_command")):
+            return tool_error(
+                "coding_* params only apply to background commands (they tag "
+                "the tracked coding-worker session). Retry as "
+                "terminal(command=..., background=true, coding_backend=...)."
+            )
     if notify is not None:
         if isinstance(notify, bool):
             notify_on_complete = notify
@@ -1284,6 +1332,12 @@ def _handle_terminal(args, **kw):
         pty=args.get("pty", False),
         notify_on_complete=notify_on_complete,
         watch_patterns=watch_patterns,
+        coding_backend=args.get("coding_backend", ""),
+        coding_backend_version=args.get("coding_backend_version", ""),
+        coding_session_id=args.get("coding_session_id", ""),
+        coding_model=args.get("coding_model", ""),
+        coding_capabilities=args.get("coding_capabilities"),
+        coding_resume_command=args.get("coding_resume_command", ""),
     )
 
 

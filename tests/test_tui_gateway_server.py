@@ -17909,13 +17909,16 @@ def test_make_agent_nested_max_turns_takes_priority(monkeypatch):
     assert mock_agent.call_args.kwargs["max_iterations"] == 400
 
 
-def test_make_agent_defaults_to_500(monkeypatch):
+def test_make_agent_defaults_to_unlimited(monkeypatch):
+    from hermes_cli.config import TURN_LIMIT_UNLIMITED
+
+    monkeypatch.delenv("HERMES_TUI_MAX_TURNS", raising=False)
     _setup_make_agent_mocks(monkeypatch, {})
 
     with patch("run_agent.AIAgent") as mock_agent:
         server._make_agent("sid1", "key1")
 
-    assert mock_agent.call_args.kwargs["max_iterations"] == 500
+    assert mock_agent.call_args.kwargs["max_iterations"] == TURN_LIMIT_UNLIMITED
 
 
 def test_make_agent_uses_session_runtime_overrides(monkeypatch):
@@ -18035,6 +18038,24 @@ def test_config_show_displays_nested_max_turns(monkeypatch):
     )
 
     assert ["Max Turns", "120"] in agent_rows
+
+
+def test_config_show_displays_unlimited_max_turns_when_absent(monkeypatch):
+    monkeypatch.delenv("HERMES_TUI_MAX_TURNS", raising=False)
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"agent": {}, "enabled_toolsets": [], "verbose": False},
+    )
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    resp = server.handle_request({"id": "1", "method": "config.show", "params": {}})
+    sections = resp["result"]["sections"]
+    agent_rows = next(
+        section["rows"] for section in sections if section["title"] == "Agent"
+    )
+
+    assert ["Max Turns", "unlimited"] in agent_rows
 
 
 def test_notification_poller_delivers_completion(monkeypatch):

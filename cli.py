@@ -395,7 +395,7 @@ def _cli_config_defaults():
         # threshold: fraction of the model's context limit; min_tail: real user messages kept in the tail
         "compression": {"enabled": True, "threshold": 0.50, "min_tail_user_messages": 1},
         "agent": {
-            "max_turns": 500, "verbose": False, "system_prompt": "", "prefill_messages_file": "",  # max_turns shared with subagents
+            "max_turns": None, "verbose": False, "system_prompt": "", "prefill_messages_file": "",  # unset resolves to unlimited
             "reasoning_effort": "", "service_tier": "",
             "personalities": {},  # user overrides merged by name over hermes_cli.personality builtins
         },
@@ -3117,6 +3117,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         # LIVE agent's key: the constructor seeds self.api_key from env before provider
         # resolution, so on non-OpenAI providers it can be another vendor's key.
         from agent.azure_identity_adapter import is_token_provider
+        from hermes_cli.config import TURN_LIMIT_UNLIMITED
 
         display_key = self.api_key
         if self.agent is not None and getattr(self.agent, "api_key", None):
@@ -3135,6 +3136,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
             f"{os.getenv('TERMINAL_SSH_USER', 'not set')}@{os.getenv('TERMINAL_SSH_HOST', 'not set')}"
             f":{os.getenv('TERMINAL_SSH_PORT', '22')}"
         ) if terminal_env == "ssh" else None
+        max_turns_display = "unlimited" if self.max_turns == TURN_LIMIT_UNLIMITED else self.max_turns
         sections = (
             ("Model", (("Model:    ", self.model), ("Base URL: ", self.base_url), ("API Key:  ", api_key_display))),
             ("Terminal", (
@@ -3144,7 +3146,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
                 ("Timeout:     ", f"{terminal_timeout}s"),
             )),
             ("Agent", (
-                ("Max Turns: ", self.max_turns),
+                ("Max Turns: ", max_turns_display),
                 ("Toolsets:  ", ", ".join(self.enabled_toolsets) if self.enabled_toolsets else "all"),
                 ("Verbose:   ", self.verbose),
             )),
@@ -4505,7 +4507,7 @@ def main(
         reasoning: Reasoning effort for this run (none|minimal|low|medium|high|xhigh|max|ultra). Overrides agent.reasoning_effort.
         api_key: API key for authentication
         base_url: Base URL for the API
-        max_turns: Maximum tool-calling iterations (default: 60)
+        max_turns: Maximum tool-calling iterations (default: unlimited)
         verbose: Enable verbose logging
         compact: Use compact display mode
         list_tools: List available tools and exit

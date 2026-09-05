@@ -82,6 +82,16 @@ class TestMaxTurnsResolution:
         assert isinstance(cli.max_turns, int)
         assert cli.max_turns == sys.maxsize
 
+    def test_loader_default_max_turns_is_unset(self, monkeypatch, tmp_path):
+        import cli as cli_module
+
+        monkeypatch.setattr(cli_module, "_hermes_home", tmp_path)
+        monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
+
+        config = cli_module.load_cli_config()
+
+        assert config["agent"]["max_turns"] is None
+
     def test_explicit_max_turns_honored(self):
         cli = _make_cli(max_turns=25)
         assert cli.max_turns == 25

@@ -13,6 +13,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 from cli import HermesCLI
+from hermes_cli.config import TURN_LIMIT_UNLIMITED
 
 
 def _run_show_config(stand_in, capsys):
@@ -42,6 +43,14 @@ class TestShowConfigCredentialSource:
         )
         assert "nous-REA" in out
         assert "sk-proj-" not in out
+
+    def test_displays_unlimited_turn_limit(self, capsys):
+        stand_in = _make_stand_in(cli_key="nous-REALKEY-abcdef9876", agent_key=None)
+        stand_in.max_turns = TURN_LIMIT_UNLIMITED
+
+        out = _run_show_config(stand_in, capsys)
+
+        assert "Max Turns:  unlimited" in out
 
     def test_falls_back_to_cli_key_without_agent(self, capsys):
         out = _run_show_config(

@@ -33,6 +33,12 @@ export interface PoolStopperDeps {
   stopChild: (child: unknown) => void
   /** Bounded wait: resolves when the child exits, escalating to SIGKILL. */
   waitForExit: (child: unknown) => Promise<void>
+  /**
+   * Optional scope cleanup that must finish before the key may respawn.
+   * Remote pool entries have no local child, but can still own an SSH tunnel
+   * and a detached ``serve --isolated`` process on the remote host.
+   */
+  afterStop?: (key: string, entry: PoolStopEntry) => Promise<void>
 }
 
 export interface PoolStopper {
@@ -67,6 +73,7 @@ export function createPoolStopper(deps: PoolStopperDeps): PoolStopper {
     const stopping = (async () => {
       deps.stopChild(entry.process)
       await deps.waitForExit(entry.process)
+      await deps.afterStop?.(key, entry)
     })().finally(() => {
       stops.delete(key)
     })

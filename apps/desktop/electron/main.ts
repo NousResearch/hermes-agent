@@ -11607,6 +11607,12 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
   }
 
   const key = backendScopeKey(id, profile)
+  const stopping = poolStopper.inFlight(key)
+
+  if (stopping) {
+    await stopping
+  }
+
   const existing = backendPool.get(key)
 
   if (existing) {
@@ -11772,6 +11778,12 @@ async function ensureManagedSshBackend(source, profile, correlationId) {
 
 async function ensureManagedSshBackendAtKey(source, profile, key, correlationId, tokenPersistenceSource = '') {
   managedConnectionUpdateGate.assertCanDial(source.id, correlationId)
+  const stopping = poolStopper.inFlight(key)
+
+  if (stopping) {
+    await stopping
+  }
+
   const existing = backendPool.get(key)
 
   if (existing) {
@@ -12647,7 +12659,15 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
 const poolStopper = createPoolStopper({
   pool: backendPool,
   stopChild: child => stopBackendChild(child),
-  waitForExit: child => waitForBackendExit(child)
+  waitForExit: child => waitForBackendExit(child),
+  // A pooled SSH descriptor has no local child, but it owns a detached
+  // `serve --isolated` on the remote host. Keep the stop claim active through
+  // ownership-checked remote cleanup so the idle reaper cannot merely forget
+  // the descriptor (and so a concurrent reconnect cannot race the old serve).
+  afterStop: async key => {
+    await sshBootstrapCoordinator.cancelAndWait(key)
+    await teardownSshConnection(key)
+  }
 })
 
 async function stopPoolBackend(profile: string) {

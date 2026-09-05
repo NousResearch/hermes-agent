@@ -125,7 +125,7 @@ export function adoptSpokenReplySession(
   const fromKey = sessionKey(fromSessionId)
   const toKey = sessionKey(toSessionId)
 
-  if (fromKey === toKey || fromKey !== NO_SESSION) {
+  if (fromKey !== NO_SESSION || toKey === NO_SESSION) {
     return
   }
 
@@ -135,6 +135,7 @@ export function adoptSpokenReplySession(
     return
   }
 
+  // Dropped even when not adopted below: the anchor belongs to this chat.
   lastSpokenBySession.delete(fromKey)
 
   if (!lastSpokenBySession.has(toKey)) {

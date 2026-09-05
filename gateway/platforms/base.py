@@ -1525,6 +1525,54 @@ class ProcessingOutcome(Enum):
     CANCELLED = "cancelled"
 
 
+@dataclass(frozen=True)
+class ContractorTurnContext:
+    """Registry-authorized policy for one persistence-isolated contractor turn."""
+
+    contractor_id: str
+    contractor_version: int
+    memory_policy: str
+    continuity: bool
+    required_skills: tuple[str, ...]
+    profile_name: str
+    project_root: str
+
+    def __post_init__(self) -> None:
+        contractor_id = str(self.contractor_id or "")
+        if not contractor_id or contractor_id != contractor_id.strip():
+            raise ValueError("contractor_id must be a non-empty canonical string")
+        if type(self.contractor_version) is not int or self.contractor_version < 1:
+            raise ValueError("contractor_version must be a positive integer")
+        if self.memory_policy != "none":
+            raise ValueError("memory_policy must be exactly 'none'")
+        if self.continuity is not False:
+            raise ValueError("continuity must be exactly false")
+        if not isinstance(self.required_skills, tuple) or not self.required_skills:
+            raise ValueError("required_skills must be a non-empty ordered tuple")
+        normalized_skills: list[str] = []
+        for skill in self.required_skills:
+            if not isinstance(skill, str) or not skill.strip() or skill != skill.strip():
+                raise ValueError(
+                    "required_skills entries must be non-empty canonical strings"
+                )
+            normalized_skills.append(skill)
+        if len(set(normalized_skills)) != len(normalized_skills):
+            raise ValueError("required_skills must not contain duplicates")
+        profile_name = str(self.profile_name or "")
+        if not profile_name or profile_name != profile_name.strip():
+            raise ValueError("profile_name must be a non-empty canonical string")
+        root = Path(str(self.project_root or "")).expanduser()
+        if not root.is_absolute():
+            raise ValueError("project_root must be an absolute path")
+        try:
+            resolved_root = root.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise ValueError("project_root must resolve to an existing directory") from exc
+        if not resolved_root.is_dir():
+            raise ValueError("project_root must resolve to an existing directory")
+        object.__setattr__(self, "project_root", str(resolved_root))
+
+
 @dataclass
 class MessageEvent:
     """Incoming message from a platform — the normalized shape all adapters produce."""
@@ -1567,6 +1615,9 @@ class MessageEvent:
     # May this event resolve gateway commands / control prompts? Proactive plugin events set False
     # so untrusted payload text stays conversational. Kept last for positional compat.
     allow_gateway_control: bool = True
+    # Typed, registry-resolved policy for a one-shot contractor invocation. Ordinary adapters leave this
+    # unset and retain the normal session path.
+    contractor_context: Optional[ContractorTurnContext] = None
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
@@ -1873,6 +1924,9 @@ class BasePlatformAdapter(ABC):
     # adapters (API server). Propagated to ``HERMES_SESSION_ASYNC_DELIVERY`` so tools never promise
     # a delivery they can't keep.
     supports_async_delivery: bool = True
+    # Explicit lifecycle contract for transports whose conversations end with each request. Contractor
+    # events apply the same cleanup boundary even if their adapter leaves this False.
+    close_after_turn: bool = False
     # ``send()`` chunks natively via ``truncate_message()`` -> the router skips its truncation.
     splits_long_messages: bool = False
     # Prefix users can always TYPE for Hermes commands ("!" where the client eats a leading "/").
@@ -3379,6 +3433,20 @@ class BasePlatformAdapter(ABC):
         if state is not None:
             state.cancel_timer()
 
+    def clear_session(self, session_key: str) -> None:
+        """Clear adapter-owned state for one completed stateless turn.
+
+        Persistent conversation state is owned by ``GatewayRunner`` and intentionally remains untouched.
+        """
+        self._active_sessions.pop(session_key, None)
+        self._pending_messages.pop(session_key, None)
+        self._session_tasks.pop(session_key, None)
+        self._post_delivery_callbacks.pop(session_key, None)
+        debounce_state = self._text_debounce_store().pop(session_key, None)
+        cancel_timer = getattr(debounce_state, "cancel_timer", None)
+        if callable(cancel_timer):
+            cancel_timer()
+
     # ── Session task + guard ownership helpers: paired with the _session_tasks owner map so
     # reconciliation is deterministic across completion, /stop /new /reset, and stale-lock heal.
 
@@ -4009,6 +4077,14 @@ class BasePlatformAdapter(ABC):
             # Flush any timer that missed the in-band drain, then reconcile ownership.
             await self._flush_text_debounce_now(session_key)
             self._finish_session_task(session_key, interrupt_event)
+            if (
+                (
+                    getattr(self, "close_after_turn", False) is True
+                    or getattr(event, "contractor_context", None) is not None
+                )
+                and session_key not in self._active_sessions
+            ):
+                self.clear_session(session_key)
 
     def _spawn_drain_task(self, pending_event: MessageEvent, session_key: str) -> None:
         """Hand the session to a fresh task for a queued follow-up — never recurse (chained

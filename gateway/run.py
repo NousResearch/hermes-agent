@@ -2018,7 +2018,12 @@ from gateway.session import (
 # send (via DeliveryRouter) and the media send agree.
 from gateway.delivery import DeliveryRouter
 from gateway.turn_lease import SessionTurnLeaseRegistry
-from gateway.session_state import SessionState, legacy_dict_property, legacy_lease_token_property
+from gateway.session_state import (
+    SERVICE_TIER_UNSET as _SERVICE_TIER_UNSET,
+    SessionState,
+    legacy_dict_property,
+    legacy_lease_token_property,
+)
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
@@ -2037,6 +2042,7 @@ from gateway.run_goals import GatewayGoalsMixin
 from gateway.run_agent_cache import GatewayAgentCacheMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    ContractorTurnContext,
     MessageEvent,
     MessageType,
     _reply_anchor_for_event,
@@ -3224,7 +3230,496 @@ def _instantiate_builtin_adapter(platform: Platform, config: Any) -> Optional[Ba
     return adapter_cls(config)
 
 
+class ContractorTurnRejected(RuntimeError):
+    """A contractor policy invariant failed before safe model execution."""
+
+
+class ContractorTurnCleanupFailed(ContractorTurnRejected):
+    """A contractor completed work but its ephemeral resources did not close cleanly."""
+
+
+class GatewayContractorTurnsMixin:
+    """Persistence-isolated contractor turns layered over the decomposed gateway runner.
+
+    The normal gateway remains responsible for ordinary conversations through its existing mixins. This
+    mixin intercepts only typed, registry-authorized contractor events before any session state, command
+    routing, lifecycle hook, or cached agent can observe them.
+    """
+
+    async def _handle_message(self, event: MessageEvent) -> Optional[str]:
+        context = getattr(event, "contractor_context", None)
+        if context is not None:
+            source = getattr(event, "source", None)
+            if source is None:
+                raise ContractorTurnRejected("contractor turn requires a source")
+            return await self._handle_contractor_turn(event, source, context)
+        return await super()._handle_message(event)
+
+    async def _handle_message_with_agent(
+        self,
+        event: MessageEvent,
+        source: SessionSource,
+        quick_key: str,
+        run_generation: int,
+    ):
+        """Keep the no-session boundary intact for direct turn-runner callers too."""
+        context = getattr(event, "contractor_context", None)
+        if context is not None:
+            return await self._handle_contractor_turn(event, source, context)
+        return await super()._handle_message_with_agent(
+            event, source, quick_key, run_generation
+        )
+
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        model: str,
+        runtime_kwargs: dict,
+        service_tier: Any = _SERVICE_TIER_UNSET,
+    ) -> dict:
+        """Resolve normal turns unchanged, while keeping explicit contractor tiers local.
+
+        The upstream turn mixin derives its tier from shared runner state. A contractor needs an explicit
+        ``None`` to mean normal service without changing that shared state, so only the explicit path is
+        reproduced here.
+        """
+        if service_tier is _SERVICE_TIER_UNSET:
+            return super()._resolve_turn_agent_config(
+                user_message, model, runtime_kwargs
+            )
+
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        runtime = {
+            key: runtime_kwargs.get(key)
+            for key in (
+                "api_key",
+                "base_url",
+                "provider",
+                "requested_provider",
+                "api_mode",
+                "command",
+                "args",
+                "credential_pool",
+                "max_tokens",
+                "capabilities",
+            )
+        }
+        runtime["args"] = list(runtime["args"] or [])
+        runtime["capabilities"] = dict(runtime["capabilities"] or {})
+        base_request_overrides = dict(runtime_kwargs.get("request_overrides") or {})
+        route = {
+            "model": model,
+            "runtime": runtime,
+            "signature": (
+                model,
+                runtime["provider"],
+                runtime["requested_provider"],
+                runtime["base_url"],
+                runtime["api_mode"],
+                runtime["command"],
+                tuple(runtime["args"]),
+            ),
+        }
+        if service_tier != "priority":
+            route["request_overrides"] = base_request_overrides
+            return route
+        try:
+            overrides = resolve_fast_mode_overrides(
+                route["model"],
+                provider=runtime["provider"],
+                base_url=runtime["base_url"],
+            )
+        except Exception:
+            overrides = None
+        route["request_overrides"] = _deep_merge_request_overrides(
+            base_request_overrides, overrides or {}
+        )
+        return route
+
+    def _cleanup_agent_resources(self, agent: Any, *, reraise: bool = False) -> None:
+        """Keep ordinary cleanup upstream-owned; expose failures for stateless contractor cleanup."""
+        if not reraise:
+            return GatewayShutdownMixin._cleanup_agent_resources(self, agent)
+        if agent is None:
+            return
+
+        cleanup_errors: list[Exception] = []
+        try:
+            if hasattr(agent, "shutdown_memory_provider"):
+                memory_manager = getattr(agent, "_memory_manager", None)
+                if memory_manager is not None and hasattr(memory_manager, "flush_pending"):
+                    try:
+                        memory_manager.flush_pending(timeout=10)
+                    except Exception as exc:
+                        cleanup_errors.append(exc)
+                session_messages = getattr(agent, "_session_messages", None)
+                if isinstance(session_messages, list):
+                    agent.shutdown_memory_provider(session_messages)
+                else:
+                    agent.shutdown_memory_provider()
+        except Exception as exc:
+            cleanup_errors.append(exc)
+        try:
+            if hasattr(agent, "close"):
+                agent.close()
+        except Exception as exc:
+            cleanup_errors.append(exc)
+        try:
+            from agent.auxiliary_client import cleanup_stale_async_clients
+
+            cleanup_stale_async_clients()
+        except Exception as exc:
+            cleanup_errors.append(exc)
+        if cleanup_errors:
+            raise cleanup_errors[0]
+
+    @staticmethod
+    def _contractor_tool_names(tools: Any) -> set[str]:
+        """Return normalized function names from an agent tool schema list."""
+        names: set[str] = set()
+        for tool in tools or []:
+            if not isinstance(tool, dict):
+                continue
+            function = tool.get("function")
+            name = function.get("name") if isinstance(function, dict) else tool.get("name")
+            if isinstance(name, str) and name.strip():
+                names.add(name.strip().lower().replace("-", "_"))
+        return names
+
+    @staticmethod
+    def _is_contractor_memory_tool(name: str) -> bool:
+        """Fail closed on built-in or provider-shaped recall/history tools."""
+        return (
+            name in {"memory", "session_search"}
+            or name.startswith("memory_")
+            or name.startswith("session_search_")
+            or name.startswith("conversation_history")
+            or name.endswith("_memory")
+        )
+
+    def _set_active_contractor_agent(self, session_id: str, agent: Any) -> None:
+        lock = getattr(self, "_contractor_agents_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._contractor_agents_lock = lock
+        with lock:
+            agents = getattr(self, "_contractor_agents", None)
+            if agents is None:
+                agents = {}
+                self._contractor_agents = agents
+            if agent is None:
+                agents.pop(session_id, None)
+            else:
+                agents[session_id] = agent
+
+    def _interrupt_contractor_agent(self, session_id: str) -> None:
+        lock = getattr(self, "_contractor_agents_lock", None)
+        agents = getattr(self, "_contractor_agents", None)
+        if lock is None or not isinstance(agents, dict):
+            return
+        with lock:
+            agent = agents.get(session_id)
+        if agent is not None:
+            request_hard_interrupt(
+                agent,
+                "Contractor delivery was cancelled",
+                tool_reason="gateway_turn_cancelled",
+            )
+
+    def _run_contractor_agent_sync(
+        self,
+        prompt: str,
+        source: SessionSource,
+        context: ContractorTurnContext,
+        session_id: str,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> dict[str, Any]:
+        """Construct and run one fresh, persistence-isolated contractor agent."""
+        if cancel_event is not None and cancel_event.is_set():
+            raise ContractorTurnRejected("contractor turn was cancelled before execution")
+
+        from agent.skill_utils import parse_config_string_list
+        from run_agent import AIAgent
+
+        user_config = _load_gateway_config()
+        platform_key = _platform_config_key(source.platform)
+        enabled_toolsets = self._resolve_enabled_toolsets_for_source(
+            user_config, source, platform_key
+        )
+        agent_config = user_config.get("agent") or {}
+        if not isinstance(agent_config, dict):
+            agent_config = {}
+        disabled_toolsets = list(
+            parse_config_string_list(agent_config.get("disabled_toolsets")) or []
+        )
+        for stateful_toolset in ("memory", "session_search"):
+            if stateful_toolset not in disabled_toolsets:
+                disabled_toolsets.append(stateful_toolset)
+
+        model, runtime_kwargs = self._resolve_session_agent_runtime(
+            source=None,
+            session_key=None,
+            user_config=user_config,
+        )
+        reasoning_config = self._resolve_session_reasoning_config(
+            source=None,
+            session_key=None,
+            model=model,
+        )
+        service_tier = self._resolve_session_service_tier(
+            source=None,
+            session_key=None,
+        )
+        turn_route = self._resolve_turn_agent_config(
+            prompt, model, runtime_kwargs, service_tier=service_tier
+        )
+        configured_routing = user_config.get("provider_routing")
+        provider_routing = (
+            configured_routing
+            if isinstance(configured_routing, dict)
+            else getattr(self, "_provider_routing", {}) or {}
+        )
+        agent = AIAgent(
+            model=turn_route["model"],
+            **turn_route["runtime"],
+            **_checkpoint_agent_kwargs(user_config),
+            max_iterations=_current_max_iterations(),
+            quiet_mode=True,
+            verbose_logging=False,
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            ephemeral_system_prompt=None,
+            prefill_messages=None,
+            reasoning_config=reasoning_config,
+            service_tier=service_tier,
+            request_overrides=turn_route.get("request_overrides"),
+            providers_allowed=provider_routing.get("only"),
+            providers_ignored=provider_routing.get("ignore"),
+            providers_order=provider_routing.get("order"),
+            provider_sort=provider_routing.get("sort"),
+            provider_require_parameters=provider_routing.get("require_parameters", False),
+            provider_data_collection=provider_routing.get("data_collection"),
+            session_id=session_id,
+            platform=platform_key,
+            user_id=source.user_id,
+            user_id_alt=source.user_id_alt,
+            user_name=source.user_name,
+            chat_id=source.chat_id,
+            chat_name=source.chat_name,
+            chat_type=source.chat_type,
+            thread_id=source.thread_id,
+            gateway_session_key=None,
+            session_db=None,
+            fallback_model=self._refresh_fallback_model(),
+            skip_context_files=False,
+            load_soul_identity=True,
+            skip_memory=True,
+            skip_background_review=True,
+        )
+        self._set_active_contractor_agent(session_id, agent)
+        result: Optional[dict[str, Any]] = None
+        try:
+            if cancel_event is not None and cancel_event.is_set():
+                raise ContractorTurnRejected("contractor turn was cancelled before execution")
+
+            agent._persist_disabled = True
+            agent.memory_notifications = "off"
+            memory_state = any(
+                (
+                    getattr(agent, "_memory_manager", None) is not None,
+                    getattr(agent, "_memory_store", None) is not None,
+                    bool(getattr(agent, "_memory_enabled", False)),
+                    bool(getattr(agent, "_user_profile_enabled", False)),
+                )
+            )
+            if memory_state:
+                raise ContractorTurnRejected(
+                    "contractor agent initialized persistent memory state"
+                )
+            forbidden = sorted(
+                name
+                for name in self._contractor_tool_names(getattr(agent, "tools", []))
+                if self._is_contractor_memory_tool(name)
+            )
+            if forbidden:
+                raise ContractorTurnRejected(
+                    "contractor agent exposed forbidden memory/history tool(s): "
+                    + ", ".join(forbidden)
+                )
+
+            result = agent.run_conversation(
+                prompt,
+                conversation_history=[],
+                task_id=session_id,
+            )
+            if not isinstance(result, dict):
+                raise ContractorTurnRejected(
+                    "contractor agent returned an invalid execution result"
+                )
+        finally:
+            self._set_active_contractor_agent(session_id, None)
+            cleanup_error = None
+            try:
+                self._cleanup_agent_resources(agent, reraise=True)
+            except Exception as exc:
+                cleanup_error = str(exc)
+                logger.warning(
+                    "Contractor agent cleanup failed for %s: %s", session_id, exc
+                )
+            if cleanup_error is not None:
+                active_exc = sys.exc_info()[1]
+                if active_exc is not None:
+                    active_exc.add_note(
+                        f"Contractor agent cleanup also failed: {cleanup_error}"
+                    )
+                elif isinstance(result, dict):
+                    result["cleanup_error"] = cleanup_error
+        return result
+
+    async def _handle_contractor_turn(
+        self,
+        event: MessageEvent,
+        source: SessionSource,
+        context: ContractorTurnContext,
+    ) -> str:
+        """Run one registry-pinned turn without session, history, or memory persistence."""
+        if not isinstance(context, ContractorTurnContext):
+            raise ContractorTurnRejected("contractor context has an invalid type")
+        if getattr(event, "internal", False) is not True:
+            raise ContractorTurnRejected("contractor turns must be internal events")
+        source_profile = str(getattr(source, "profile", "") or "").strip()
+        if source_profile != context.profile_name:
+            raise ContractorTurnRejected(
+                "contractor profile does not match the authorized route"
+            )
+        command_id = str(getattr(event, "message_id", "") or "").strip()
+        if not command_id:
+            raise ContractorTurnRejected("contractor turn requires a command identity")
+        session_id = f"contractor:{context.contractor_id}:{command_id}"
+
+        try:
+            profile_home = Path(self._resolve_profile_home_for_source(source)).resolve(
+                strict=True
+            )
+        except Exception as exc:
+            raise ContractorTurnRejected(
+                "could not resolve canonical profile home for contractor runtime"
+            ) from exc
+        if not profile_home.is_dir():
+            raise ContractorTurnRejected(
+                "contractor profile home must resolve to an existing directory"
+            )
+        try:
+            project_root = Path(context.project_root).resolve(strict=True)
+        except Exception as exc:
+            raise ContractorTurnRejected(
+                "contractor project root must resolve to an existing directory"
+            ) from exc
+        if not project_root.is_dir():
+            raise ContractorTurnRejected(
+                "contractor project root must resolve to an existing directory"
+            )
+
+        async with _async_profile_runtime_scope(profile_home):
+            from agent.skill_commands import _build_skill_message, _load_skill_payload
+            from gateway.session_context import clear_session_vars, set_session_vars
+
+            platform_value = (
+                source.platform.value
+                if hasattr(source.platform, "value")
+                else str(source.platform)
+            )
+            tokens = set_session_vars(
+                platform=platform_value,
+                chat_id=str(source.chat_id or ""),
+                chat_type=str(source.chat_type or ""),
+                chat_name=str(source.chat_name or ""),
+                thread_id=str(source.thread_id or ""),
+                user_id=str(source.user_id or ""),
+                user_id_alt=str(source.user_id_alt or ""),
+                user_name=str(source.user_name or ""),
+                scope_id=str(getattr(source, "scope_id", "") or ""),
+                session_key=session_id,
+                session_id=session_id,
+                message_id=command_id,
+                profile=context.profile_name,
+                cwd=str(project_root),
+                async_delivery=False,
+                cron_session="",
+            )
+            try:
+                loaded_skills: list[tuple[Any, Any, str, str]] = []
+                for required_skill in context.required_skills:
+                    loaded = _load_skill_payload(required_skill, task_id=command_id)
+                    if loaded is None:
+                        raise ContractorTurnRejected(
+                            f"required contractor skill {required_skill!r} is unavailable"
+                        )
+                    loaded_skill, skill_dir, display_name = loaded
+                    loaded_skills.append(
+                        (loaded_skill, skill_dir, display_name, required_skill)
+                    )
+
+                skill_parts: list[str] = []
+                for loaded_skill, skill_dir, display_name, required_skill in loaded_skills:
+                    activation_note = (
+                        f'[IMPORTANT: The "{display_name}" skill is required for '
+                        "this contractor turn. Follow its instructions.]"
+                    )
+                    part = _build_skill_message(
+                        loaded_skill,
+                        skill_dir,
+                        activation_note,
+                        session_id=session_id,
+                    )
+                    if not str(part or "").strip():
+                        raise ContractorTurnRejected(
+                            f"required contractor skill {required_skill!r} is empty"
+                        )
+                    skill_parts.append(part)
+                prompt = "\n\n".join([*skill_parts, str(event.text or "")])
+                cancel_event = threading.Event()
+                try:
+                    result = await self._run_in_executor_with_context(
+                        self._run_contractor_agent_sync,
+                        prompt,
+                        source,
+                        context,
+                        session_id,
+                        cancel_event,
+                    )
+                except asyncio.CancelledError:
+                    cancel_event.set()
+                    self._interrupt_contractor_agent(session_id)
+                    raise
+            finally:
+                clear_session_vars(tokens)
+
+        if (
+            not isinstance(result, dict)
+            or result.get("failed") is True
+            or result.get("completed") is not True
+        ):
+            failure = ContractorTurnRejected(
+                "contractor agent did not complete successfully"
+            )
+            cleanup_error = result.get("cleanup_error") if isinstance(result, dict) else None
+            if cleanup_error:
+                failure.add_note(
+                    f"Contractor agent cleanup also failed: {cleanup_error}"
+                )
+            raise failure
+        cleanup_error = result.get("cleanup_error")
+        if cleanup_error:
+            raise ContractorTurnCleanupFailed(
+                f"contractor agent cleanup failed: {cleanup_error}"
+            )
+        return str(result.get("final_response") or "")
+
+
 class GatewayRunner(
+    GatewayContractorTurnsMixin,
     GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin,
     GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
@@ -3349,6 +3844,8 @@ class GatewayRunner(
         self._init_startup_checks()
         self._init_session_db()
         self._init_registries_and_clocks()
+        self._contractor_agents_lock = threading.Lock()
+        self._contractor_agents: dict[str, Any] = {}
 
     def _init_runtime_settings(self) -> None:
         """Load ephemeral per-call config (prefill, reasoning, busy modes, timeouts, routing)."""

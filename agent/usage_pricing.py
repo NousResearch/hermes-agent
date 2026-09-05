@@ -325,6 +325,14 @@ def resolve_billing_route(
 
     if provider_name == "openai-codex":
         return BillingRoute(provider="openai-codex", model=model, base_url=url, billing_mode="subscription_included")
+    # The global Coding Plan route is a flat credit-window subscription. Keep
+    # this exact: metered, China, and lookalike custom routes have not been
+    # confirmed to share its billing contract.
+    if (
+        provider_name in {"zai", "glm", "z-ai", "z.ai", "zhipu", "zai-coding", "zai-coding-plan", "glm-coding"}
+        and base.rstrip("/") == "https://api.z.ai/api/coding/paas/v4"
+    ):
+        return BillingRoute(provider="zai-coding", model=bare, base_url=url, billing_mode="subscription_included")
     if provider_name == "openrouter" or host("openrouter.ai"):
         return BillingRoute(provider="openrouter", model=model, base_url=url, billing_mode="official_models_api")
     if provider_name == "nous" or host("inference-api.nousresearch.com"):

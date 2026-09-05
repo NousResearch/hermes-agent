@@ -3490,6 +3490,10 @@ export const zh: Translations = {
       copyUrl: '复制 URL',
       copyResolvedUrl: '复制解析后的 URL'
     },
+    file: {
+      openPreview: '在预览中打开',
+      openDefaultApp: '用默认应用打开'
+    },
     image: {
       copyImage: '复制图片',
       copyImageAddress: '复制图片地址',

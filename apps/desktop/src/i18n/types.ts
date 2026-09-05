@@ -2884,6 +2884,10 @@ export interface Translations {
       copyUrl: string
       copyResolvedUrl: string
     }
+    file: {
+      openPreview: string
+      openDefaultApp: string
+    }
     image: {
       copyImage: string
       copyImageAddress: string

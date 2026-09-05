@@ -3344,6 +3344,10 @@ export const en: Translations = {
       copyUrl: 'Copy URL',
       copyResolvedUrl: 'Copy resolved URL'
     },
+    file: {
+      openPreview: 'Open in preview',
+      openDefaultApp: 'Open with default app'
+    },
     image: {
       copyImage: 'Copy image',
       copyImageAddress: 'Copy image address',

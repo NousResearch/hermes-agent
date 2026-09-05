@@ -494,7 +494,7 @@ function Column({
           ? lanes.map(([assignee, tasks]) => (
               <div className="flex flex-col gap-2" key={assignee}>
                 <div className="flex items-center gap-1.5 px-1 pt-1 text-[0.625rem] text-(--ui-text-quaternary)">
-                  {assignee !== UNASSIGNED_LANE && <Avatar name={assignee} size="0.875rem" />}
+                  {assignee !== UNASSIGNED_LANE && <Avatar name={assignee} size="0.875rem" title={true} />}
                   {assignee}
                   <span className="tabular-nums">{tasks.length}</span>
                 </div>
@@ -936,7 +936,7 @@ function FilterMenu({
         </DropdownMenuItem>
         {board.assignees.map(name => (
           <DropdownMenuItem key={name} onSelect={() => onAssignee(name)}>
-            <Avatar name={name} size="0.875rem" />
+            <Avatar name={name} size="0.875rem" title={true} />
             {name}
             {check(assignee === name)}
           </DropdownMenuItem>
@@ -1071,7 +1071,7 @@ function SelectionBar({
                 key={profile.name}
                 onSelect={() => bulk.mutate({ assignee: profile.name, reclaim_first: true })}
               >
-                <Avatar name={profile.name} size="0.875rem" />
+                <Avatar name={profile.name} size="0.875rem" title={true} />
                 {profile.name}
               </DropdownMenuItem>
             ))}

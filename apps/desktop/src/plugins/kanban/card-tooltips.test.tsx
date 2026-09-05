@@ -206,6 +206,44 @@ describe('board card tooltips', () => {
     expect(text).toContain('3 children')
   })
 
+  it('pluralizes children correctly at the child plural boundary (single child)', async () => {
+    // Fixture {parents:0, children:1}: total = 1 -> "1 other task" (singular
+    // TOTAL boundary), and children = 1 -> "1 child" NOT "1 children" (the
+    // child plural-boundary mutation flips `children === 1 ? '' : 'ren'`).
+    const singleChildBoard: KanbanBoard = {
+      ...testBoard,
+      columns: [
+        {
+          name: 'done',
+          tasks: [
+            {
+              ...testBoard.columns[0].tasks[0],
+              id: 't_singlechild',
+              link_counts: { children: 1, parents: 0 },
+              title: 'Single child links card'
+            }
+          ]
+        }
+      ]
+    }
+    const api = await import('./api')
+    ;(api.fetchBoard as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(singleChildBoard)
+
+    await renderBoard('Single child links card')
+
+    const trigger = document.querySelector('.codicon-references')!.closest('[data-slot="tooltip-trigger"]')!
+    await hoverTip(trigger)
+
+    const text = screen.getByRole('tooltip').textContent
+    // Total plural boundary: n === 1 -> "task", not "tasks".
+    expect(text).toContain('Linked to 1 other task:')
+    expect(text).not.toContain('Linked to 1 other tasks')
+    // Child plural boundary: children === 1 -> "child", not "children".
+    expect(text).toContain('1 child.')
+    expect(text).not.toContain('1 children')
+    expect(text).toContain('0 parents')
+  })
+
   it('shows a tooltip on the warnings badge including the highest severity', async () => {
     await renderBoard()
 
@@ -213,6 +251,47 @@ describe('board card tooltips', () => {
     await hoverTip(trigger)
 
     expect(screen.getByRole('tooltip').textContent).toContain('critical')
+  })
+
+  it('renders the warnings badge count bound to the task warnings.count', async () => {
+    // Binds the VISIBLE badge number to warnings.count so a mutation that
+    // silently unbinds it (e.g. rendering a constant or a different field)
+    // is caught. testBoard's card has warnings.count === 2.
+    await renderBoard()
+
+    const warningIcon = document.querySelector('.codicon-warning')!
+    // The count text sits alongside the icon inside the same tooltip-trigger
+    // span; assert the trigger renders exactly the bound count "2".
+    const badge = warningIcon.closest('[data-slot="tooltip-trigger"]')!
+    expect(badge.textContent).toContain('2')
+
+    // And a distinct fixture with a different count renders THAT count,
+    // proving the number tracks warnings.count rather than a constant.
+    cleanup()
+    const sevenWarnBoard: KanbanBoard = {
+      ...testBoard,
+      columns: [
+        {
+          name: 'done',
+          tasks: [
+            {
+              ...testBoard.columns[0].tasks[0],
+              id: 't_sevenwarn01',
+              title: 'Seven warnings card',
+              warnings: { count: 7, highest_severity: 'critical' }
+            }
+          ]
+        }
+      ]
+    }
+    const api = await import('./api')
+    ;(api.fetchBoard as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(sevenWarnBoard)
+
+    await renderBoard('Seven warnings card')
+
+    const badge7 = document.querySelector('.codicon-warning')!.closest('[data-slot="tooltip-trigger"]')!
+    expect(badge7.textContent).toContain('7')
+    expect(badge7.textContent).not.toContain('2')
   })
 
   it('omits the severity clause entirely when highest_severity is null', async () => {
@@ -259,6 +338,9 @@ describe('board card tooltips', () => {
 
     const avatarInitials = screen.getByText('A')
     expect(avatarInitials.closest('span')?.hasAttribute('title')).toBe(false)
+    // A11y: title suppressed on a Tip-wrapped Avatar still exposes the name
+    // via aria-label so it is not mouse-hover-only (round-2 m1).
+    expect(avatarInitials.closest('span')?.getAttribute('aria-label')).toBe('alice')
     const trigger = avatarInitials.closest('[data-slot="tooltip-trigger"]')!
     expect(trigger).toBeTruthy()
 

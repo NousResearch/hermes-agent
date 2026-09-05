@@ -122,6 +122,32 @@ describe('drawer tooltips', () => {
     expect(screen.getByRole('tooltip').textContent).toContain('reassign')
   })
 
+  it('has NO native [title] descendant on the Tip-wrapped reassign trigger (no double tooltip)', async () => {
+    // The Major from round 2: the reassign button is wrapped in <Tip>, but its
+    // inner <Avatar> was still emitting title={name}, stacking a native OS
+    // tooltip on top of the Tip. Assert the Tip trigger subtree carries no
+    // [title] so the Tip is the single tooltip source.
+    await renderDrawer()
+
+    const trigger = screen.getByText('alice').closest('[data-slot="tooltip-trigger"]') as HTMLElement
+    expect(trigger).toBeTruthy()
+    expect(trigger.querySelector('[title]')).toBeNull()
+    // The trigger element itself must not carry a native title either.
+    expect(trigger.hasAttribute('title')).toBe(false)
+  })
+
+  it('keeps the assignee name accessible via aria-label when the native title is suppressed', async () => {
+    // A11y (round-2 m1): suppressing the Avatar's native title dropped the
+    // accessible description on live cards. When title is false, the Avatar
+    // must render aria-label={name} so the name is not mouse-hover-only.
+    await renderDrawer()
+
+    const avatarInitials = screen.getByText('A')
+    const avatar = avatarInitials.closest('span')!
+    expect(avatar.hasAttribute('title')).toBe(false)
+    expect(avatar.getAttribute('aria-label')).toBe('alice')
+  })
+
   it('shows distinct tooltips on parent vs child dependency chips', async () => {
     await renderDrawer()
 

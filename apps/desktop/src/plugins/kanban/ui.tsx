@@ -166,13 +166,14 @@ function initials(name: string): string {
 export function Avatar({
   name,
   size = '1.25rem',
-  title = true
+  title = false
 }: {
   name: string
   size?: string
-  /** Set false when the caller already wraps this Avatar in a `<Tip>` — a
-   *  native title= would otherwise stack a second, un-themed OS tooltip on
-   *  top of the Tip's own chip. */
+  /** Set true when the caller wants the native browser tooltip (opt-in).
+   *  Defaults to false so that callers wrapping Avatar in <Tip> don't get
+   *  a double tooltip. When title is suppressed, aria-label is rendered
+   *  so the assignee name remains accessible. */
   title?: boolean
 }) {
   // Same identity hue the rest of the app uses (profileColor); default/empty
@@ -190,6 +191,7 @@ export function Avatar({
         width: size
       }}
       title={title ? name : undefined}
+      aria-label={title ? undefined : name}
     >
       {initials(name)}
     </span>

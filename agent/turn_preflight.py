@@ -380,4 +380,29 @@ def compress_after_tool_results(
             # stale in-place flag the helper could seed unpersisted rows.
             if _pruned_n and _pruned_msgs is not messages:
                 messages = _pruned_msgs
+                _reset_proactive_prune_dedup(agent, effective_task_id)
     return _verdict(False)
+
+
+def _reset_proactive_prune_dedup(agent, task_id):
+    """A committed prune removed retrieval bodies; permit a full reload per task."""
+    from importlib import import_module
+
+    for cache, module, reset_name in (
+        ("skill_view", "tools.skills_tool", "reset_skill_view_dedup"),
+        ("read_file", "tools.file_tools_read_tracking", "reset_file_dedup"),
+    ):
+        try:
+            getattr(import_module(module), reset_name)(task_id)
+        except Exception as exc:
+            warned = getattr(agent, "_proactive_prune_reset_warnings", None)
+            if warned is None:
+                warned = set()
+                agent._proactive_prune_reset_warnings = warned
+            key = (cache, task_id)
+            if key not in warned:
+                warned.add(key)
+                logger.warning(
+                    "failed to reset %s dedup after proactive prune (task=%s): %s",
+                    cache, task_id, exc, exc_info=True,
+                )

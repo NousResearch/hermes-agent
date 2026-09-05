@@ -367,15 +367,12 @@ class GatewayBusySessionMixin:
         await self._send_busy_reply(event, adapter, message)
 
     # Bare-word approval replies → (verb, args) for the synthesized slash command.
-    _PLAINTEXT_APPROVAL_WORDS: Dict[str, tuple] = {
-        **{w: ("approve", "") for w in ("approve", "yes", "ok", "okay", "confirm", "y", "👍")},
-        **{w: ("deny", "") for w in ("deny", "no", "reject", "cancel", "n", "👎")},
-        **{w: ("approve", "always") for w in ("always", "approve always", "always approve")},
-        **{w: ("approve", "session") for w in ("session", "approve session", "session approve")},
-    }
+    # Table + normalization live in gateway/plaintext_approval.py so the matcher can be
+    # unit-tested without a runner, and so the phrase set is one auditable list.
 
     async def _route_plaintext_approval_while_busy(self, event: MessageEvent, session_key: str) -> bool:
-        """Route a bare "yes"/"no" to the approval handlers while a dangerous-command approval blocks.
+        """Route a conversational "sure, go ahead" / "no" to the approval handlers while a
+        dangerous-command approval blocks.
 
         Returns True when the message was consumed as an approval response.
         """
@@ -384,11 +381,12 @@ class GatewayBusySessionMixin:
         # has_blocking_approval so a conversational "yes" never fires a command.
         try:
             from tools.approval import has_blocking_approval
+            from gateway.plaintext_approval import match_conversational_approval
             # --- Approval response routing (#46866) --- When the agent is blocked waiting for a
             # dangerous-command approval, plain-text responses like "yes" or "approve" must be routed to the
             # approval handler instead of being steered/queued/interrupted. Slash forms (/approve, /deny)
-            # already bypass to the runner at the base-adapter guard. This handles the bare-word forms
-            # (Signal/SMS users naturally type "yes" rather than "/approve"). Gating on
+            # already bypass to the runner at the base-adapter guard. This handles the conversational forms
+            # (iMessage/Signal/SMS users type "sure, go ahead", not "/approve"). Gating on
             # has_blocking_approval(session_key) is the disambiguator that keeps a conversational "yes" from
             # triggering a dangerous command when no approval is actually pending (design intent — see
             # run.py "Pending exec approvals are handled by /approve and /deny" note). We reuse the
@@ -397,8 +395,7 @@ class GatewayBusySessionMixin:
             # The busy-handler path does not auto-send that return, so we deliver it ourselves (mirroring
             # the draining-case send above).
             if event.allow_gateway_control and has_blocking_approval(session_key):
-                _raw_text = (event.text or "").strip().lower()
-                _match = self._PLAINTEXT_APPROVAL_WORDS.get(_raw_text)
+                _match = match_conversational_approval(event.text or "")
                 if _match is not None:
                     _verb, _normalized_args = _match
                     _approval_handler = (

@@ -1275,8 +1275,12 @@ class TurnRunner:
             except Exception as e:
                 logger.warning("Button-based approval failed, falling back to text: %s", e)
         # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
-        # in Slack threads and reserved by Matrix clients.
-        msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
+        # in Slack threads and reserved by Matrix clients. Button-less texting surfaces
+        # (``conversational_approval``) get plain-language wording instead of slash instructions;
+        # gateway.plaintext_approval resolves the "yes"/"no" reply.
+        msg = _format_exec_approval_fallback(
+            cmd, desc, getattr(adapter, "typed_command_prefix", "/"),
+            conversational=bool(getattr(adapter, "conversational_approval", False)), **flags)
         try:
             # Mark as approval prompt so WeCom routes through the control lane.
             metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}

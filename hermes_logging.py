@@ -383,6 +383,17 @@ class _ProfileRoutingFileHandler(logging.Handler):
             candidate = Path(raw_home).expanduser().resolve()
         except (TypeError, ValueError, OSError):
             candidate = self._default_home
+        if (
+            candidate != self._default_home
+            and candidate in self._profile_homes
+            and not candidate.is_dir()
+        ):
+            # The profile was deleted underneath this long-lived process — the
+            # startup ``_profile_homes`` snapshot is static, so its handler would
+            # retry (and stderr-spam) the vanished logs/ path on every record
+            # (#103777). Fall back to the default home; mirrors the cron
+            # scheduler's ``_existing_profile_homes()`` is_dir() filter.
+            return self._default_home
         return candidate if candidate in self._profile_homes else self._default_home
 
     def _handler_for_home(self, home: Path) -> _ManagedRotatingFileHandler:

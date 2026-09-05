@@ -5657,9 +5657,10 @@ class TelegramAdapter(BasePlatformAdapter):
         return False
 
     async def _build_triggered_event(self, msg, update, msg_type: MessageType) -> MessageEvent:
-        """Event for an addressed text/command: trigger text cleaned, replied-to media cached, attribution applied."""
+        """Keep group conversation addressing; normalize command triggers for dispatch."""
         event = self._build_message_event(msg, msg_type, update_id=update.update_id)
-        event.text = self._clean_bot_trigger_text(event.text)
+        if msg_type == MessageType.COMMAND or not self._is_group_chat(msg):
+            event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         return self._apply_telegram_group_observe_attribution(event)
 
@@ -5978,13 +5979,13 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._should_observe_unmentioned_group_message(msg):
                 _event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
                 if msg.caption:
-                    _event.text = self._clean_bot_trigger_text(msg.caption)
+                    _event.text = msg.caption
                 await self._cache_observed_media(msg, _event)
                 self._observe_unmentioned_group_message(msg, _event.message_type, update_id=update.update_id, event=_event)
             return
         event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
         if msg.caption:
-            event.text = self._clean_bot_trigger_text(msg.caption)
+            event.text = msg.caption if self._is_group_chat(msg) else self._clean_bot_trigger_text(msg.caption)
         # Stickers: _handle_sticker overwrites event.text with its vision description, so observe attribution must run after it.
         if msg.sticker:
             await self._handle_sticker(msg, event)
@@ -6281,12 +6282,14 @@ class TelegramAdapter(BasePlatformAdapter):
             is_bot=bool(getattr(user, "is_bot", False)) if user else False)
         reply_to_id, reply_to_text = self._reply_context(message)
         from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
+        from plugins.platforms.telegram.telegram_context import group_addressing_prompt
         _chat_id_str = str(chat.id)
+        channel_prompt = resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None)
         return MessageEvent(
             text=message.text or "", message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.message_id), platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
-            channel_prompt=resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None),
+            channel_prompt=group_addressing_prompt(self, message, channel_prompt),
             timestamp=message.date)
 
     # -- Message reactions (processing lifecycle) --

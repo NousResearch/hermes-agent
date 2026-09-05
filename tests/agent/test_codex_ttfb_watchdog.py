@@ -1,4 +1,4 @@
-"""Regression tests for the Codex time-to-first-byte (TTFB) watchdog.
+"""Regression tests for the Codex TTFB (first parsed stream event) watchdog.
 
 The chatgpt.com/backend-api/codex endpoint has an intermittent failure mode
 where it accepts the connection but never emits a single stream event. The
@@ -8,10 +8,12 @@ retry loop can reconnect promptly. Once any stream event arrives, the TTFB
 watchdog is satisfied and a separate idle watchdog handles streams that stop
 emitting SSE events.
 
-The "bytes flowing" signal is ``agent._codex_stream_last_event_ts``, set on
-*any* event by ``codex_runtime.run_codex_stream`` — so reasoning-only or
-tool-call-only turns (which emit no output-text deltas) are not mistaken for a
-stall.
+Parsed-event activity is recorded in ``agent._codex_stream_last_event_ts``;
+substantive model progress is recorded separately. For the implicit official
+OpenAI Codex policy on large contexts, lifecycle frames satisfy TTFB without
+arming the short post-progress idle budget. Small requests, explicit overrides,
+and compatible backends retain their first-parsed-event semantics. Raw SSE
+comments are outside this layer.
 """
 
 from __future__ import annotations
@@ -29,7 +31,13 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 
-def _make_codex_agent(tmp_path, monkeypatch):
+def _make_codex_agent(
+    tmp_path,
+    monkeypatch,
+    *,
+    provider="openai-codex",
+    base_url="https://chatgpt.com/backend-api/codex",
+):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / ".env").write_text("", encoding="utf-8")
     (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
@@ -37,9 +45,9 @@ def _make_codex_agent(tmp_path, monkeypatch):
 
     agent = AIAgent(
         model="gpt-5.5",
-        provider="openai-codex",
+        provider=provider,
         api_key="sk-dummy",
-        base_url="https://chatgpt.com/backend-api/codex",
+        base_url=base_url,
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
@@ -57,12 +65,40 @@ def _make_codex_agent(tmp_path, monkeypatch):
     return agent
 
 
+def _shorten_implicit_idle_watchdog(monkeypatch, helpers, timeout=2.0):
+    """Keep the resolver on its implicit branch while scaling time for tests."""
+    monkeypatch.delenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", raising=False)
+    original = helpers._resolve_nonstream_watchdogs
+
+    def resolve(agent, api_kwargs):
+        watchdogs = original(agent, api_kwargs)
+        watchdogs.idle_timeout = timeout
+        return watchdogs
+
+    monkeypatch.setattr(helpers, "_resolve_nonstream_watchdogs", resolve)
 
 
+def _install_codex_event_stream(agent, monkeypatch, event_factory, closes):
+    client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **_kwargs: event_factory())
+    )
+    monkeypatch.setattr(
+        agent, "_create_request_openai_client", lambda **_kwargs: client
+    )
+    monkeypatch.setattr(
+        agent,
+        "_abort_request_openai_client",
+        lambda _client, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_close_request_openai_client",
+        lambda _client, reason=None: closes.append(reason),
+    )
 
 
 def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
-    """The no-first-byte watchdog should surface the same actionable hint as the
+    """The no-first-event watchdog should surface the same actionable hint as the
     stale-call timeout path when the model matches the silent-hang heuristic."""
     from agent import chat_completion_helpers as h
 
@@ -216,9 +252,15 @@ def test_ttfb_does_not_kill_when_events_flow(tmp_path, monkeypatch):
     sentinel = SimpleNamespace(ok=True)
 
     def fake_stream(api_kwargs, client=None, on_first_delta=None):
-        # Bytes flowing: mark stream activity right away, then keep generating
+        # A parsed event marks stream activity right away; then keep generating
         # past the 0.4s TTFB cutoff before returning a real response.
-        agent._codex_stream_last_event_ts = time.time()
+        from agent.codex_runtime import _codex_watchdog_state_var
+
+        now = time.time()
+        state = _codex_watchdog_state_var.get()
+        with state.lock:
+            state.last_event_ts = now
+        agent._codex_stream_last_event_ts = now
         if on_first_delta:
             on_first_delta()
         time.sleep(0.9)
@@ -231,10 +273,125 @@ def test_ttfb_does_not_kill_when_events_flow(tmp_path, monkeypatch):
     assert "codex_ttfb_kill" not in closes
 
 
+@pytest.mark.parametrize(
+    ("provider", "base_url", "input_chars", "idle_env", "idle_enabled", "requires_progress"),
+    [
+        ("openai-codex", "https://chatgpt.com/backend-api/codex", 40_004, None, True, True),
+        ("openai-codex", "https://chatgpt.com/backend-api/codex", 40_004, "2", True, False),
+        ("openai-codex", "https://chatgpt.com/backend-api/codex", 40_000, None, True, False),
+        ("xai-oauth", "https://api.x.ai/v1", 40_004, None, True, False),
+        ("openai-codex", "https://chatgpt.com/backend-api/codex", 40_004, "", True, True),
+        ("openai-codex", "https://chatgpt.com/backend-api/codex", 40_004, "invalid", True, True),
+        ("openai-codex", "https://chatgpt.com/backend-api/codex", 40_004, "0", False, False),
+    ],
+)
+def test_idle_phase_policy_is_narrow_and_preserves_operator_overrides(
+    tmp_path,
+    monkeypatch,
+    provider,
+    base_url,
+    input_chars,
+    idle_env,
+    idle_enabled,
+    requires_progress,
+):
+    """Only an implicit, large, official request uses progress-phase arming."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(
+        tmp_path, monkeypatch, provider=provider, base_url=base_url
+    )
+    if idle_env is None:
+        monkeypatch.delenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", idle_env)
+
+    watchdogs = h._resolve_nonstream_watchdogs(
+        agent, {"model": "gpt-5.6-sol", "input": "x" * input_chars}
+    )
+
+    assert watchdogs.est_tokens == input_chars // 4
+    assert watchdogs.idle_enabled is idle_enabled
+    assert watchdogs.idle_requires_progress is requires_progress
 
 
+@pytest.mark.parametrize(
+    "mode", ["initial_gap", "stall", "retry_gap", "retry_no_event"]
+)
+def test_event_stale_phase_is_scoped_to_physical_stream_attempt(
+    tmp_path, monkeypatch, mode
+):
+    """Retry lifecycle resets phase without hiding a zero-event reconnect hang."""
+    from agent import chat_completion_helpers as h
 
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    _shorten_implicit_idle_watchdog(monkeypatch, h)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "2")
+    monkeypatch.setenv("HERMES_CODEX_TTFB_STRICT", "1")
+    monkeypatch.setenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", "5")
 
+    closes: list = []
+    attempts = {"count": 0}
+
+    def stream_attempt():
+        attempts["count"] += 1
+        if mode == "initial_gap":
+            yield SimpleNamespace(type="response.created")
+            yield SimpleNamespace(type="response.in_progress")
+            time.sleep(3.0)
+            yield SimpleNamespace(type="response.reasoning_text.delta", delta="working")
+            yield SimpleNamespace(type="response.output_text.delta", delta="done")
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed", id="resp-1", usage=None),
+            )
+            return
+        if mode == "retry_no_event" and attempts["count"] == 2:
+            while getattr(agent, "_active_codex_stream_request_token", None) is not None:
+                time.sleep(0.02)
+            raise RuntimeError("retired zero-event retry")
+        if mode == "retry_gap" and attempts["count"] == 2:
+            yield SimpleNamespace(type="response.created")
+            yield SimpleNamespace(type="response.in_progress")
+            time.sleep(3.0)
+            yield SimpleNamespace(type="response.reasoning_text.delta", delta="retry step")
+            yield SimpleNamespace(type="response.output_text.delta", delta="done")
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed", id="resp-2", usage=None),
+            )
+            return
+
+        yield SimpleNamespace(type="response.created")
+        if mode != "retry_no_event":
+            yield SimpleNamespace(type="response.reasoning_text.delta", delta="first step")
+        if mode in {"retry_gap", "retry_no_event"}:
+            raise ConnectionError("retry physical stream")
+        while getattr(agent, "_active_codex_stream_request_token", None) is not None:
+            time.sleep(0.02)
+        raise ConnectionError("retired stalled stream")
+
+    _install_codex_event_stream(agent, monkeypatch, stream_attempt, closes)
+
+    if mode in {"initial_gap", "retry_gap"}:
+        response = h.interruptible_api_call(
+            agent, {"model": "gpt-5.6-sol", "input": "x" * 40_004}
+        )
+        assert response.output_text == "done"
+        assert attempts["count"] == (1 if mode == "initial_gap" else 2)
+    else:
+        error_match = "no parsed stream event" if mode == "retry_no_event" else "no SSE events"
+        with pytest.raises(TimeoutError, match=error_match):
+            h.interruptible_api_call(
+                agent, {"model": "gpt-5.6-sol", "input": "x" * 40_004}
+            )
+
+    assert ("codex_stream_idle_kill" in closes) is (mode == "stall")
+    assert ("codex_ttfb_kill" in closes) is (mode == "retry_no_event")
+    if mode == "stall":
+        assert attempts["count"] == 1
+    if mode == "retry_no_event":
+        assert attempts["count"] == 2
 
 
 @pytest.mark.parametrize(
@@ -252,9 +409,12 @@ def test_wait_notice_omits_reconnect_when_all_deadlines_are_non_finite(
         ttfb_enabled=False,
         ttfb_timeout=float("nan"),
         last_event_ts=None,
+        last_progress_ts=None,
+        retry_started_ts=None,
         call_start=100.0,
         idle_enabled=False,
         idle_timeout=float("nan"),
+        idle_requires_progress=False,
         elapsed=30.0,
     )
 
@@ -378,7 +538,7 @@ def test_wait_notice_formatting_error_does_not_abort_request(monkeypatch):
 
 def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkeypatch):
     """#64507 regression: a large Codex request (TTFB watchdog disabled by the
-    size gate, stale floor *raised*) that never emits a single byte must still
+    size gate, stale floor *raised*) that never emits a parsed event must still
     be reclaimed at a finite hard ceiling — not hang for 13+ minutes while the
     worker stays idle and the session shows as active.
 
@@ -389,7 +549,7 @@ def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkey
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
     # Real default TTFB threshold (no HERMES_CODEX_TTFB_* override) → for a
-    # >10k-token request the no-byte TTFB watchdog is auto-disabled.
+    # >10k-token request the no-event TTFB watchdog is auto-disabled.
     monkeypatch.setenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", "3")
 
     closes: list = []
@@ -428,7 +588,3 @@ def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkey
         assert "with no response" in str(excinfo.value)
     finally:
         stop["flag"] = True
-
-
-
-

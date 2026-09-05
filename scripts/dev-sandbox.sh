@@ -534,7 +534,6 @@ slirp_log="$SANDBOX_ROOT/root/logs/slirp.log"
 : > "$sandbox_pid_file"
 : > "$slirp_ready"
 
-env \
   DEV_SANDBOX_ROOT="$SANDBOX_ROOT" \
   DEV_SANDBOX_BASH="$(command -v bash)" \
   DEV_SANDBOX_REAL_CA_CERT="$REAL_CA_CERT" \

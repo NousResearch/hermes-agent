@@ -435,6 +435,13 @@ def _run_install_with_heartbeat(
     """Run a dependency install, printing an elapsed-time heartbeat while pip/uv is silent.
 
     Resolvers/build backends compiling Rust/C extensions can stay quiet for minutes.
+
+    Captures stderr (``stderr=PIPE``) so that on failure the
+    ``CalledProcessError`` carries the installer's actual error output
+    (``e.stderr``). Stdout is inherited (live passthrough): the heartbeat
+    thread already provides elapsed-time feedback, and unbuffered stdout
+    passthrough preserves live installer progress that ``capture_output``
+    would buffer away (#85840).
     """
     from hermes_cli.main import PROJECT_ROOT
     done = threading.Event()
@@ -452,7 +459,17 @@ def _run_install_with_heartbeat(
     t = threading.Thread(target=_heartbeat, daemon=True)
     t.start()
     try:
-        subprocess.run(cmd, cwd=PROJECT_ROOT, check=True, env=env)
+        subprocess.run(
+            cmd,
+            cwd=PROJECT_ROOT,
+            check=True,
+            env=env,
+            stdout=None,  # inherit → live passthrough; preserves ANSI progress bars
+            stderr=subprocess.PIPE,  # capture stderr only → e.stderr on failure
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
     finally:
         done.set()
         t.join(timeout=0.2)

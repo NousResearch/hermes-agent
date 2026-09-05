@@ -31,7 +31,7 @@ class CompactionOutcome:
     active_system_prompt: Optional[str]
     conversation_history: Optional[List[Dict[str, Any]]]
     current_turn_user_idx: int
-    # A preflight pass (threshold or engine-driven) actually rebuilt ``messages``.
+    # A turn-start compaction (idle or preflight) actually rebuilt ``messages``.
     compressed: bool = False
     # Preflight proved an immediate retry ineffective (no progress / insufficient).
     blocked: bool = False
@@ -202,6 +202,7 @@ def _idle_compaction(
     # ``_compress_context`` returns the INPUT list object when it skips; only
     # re-baseline and re-anchor after a real compaction.
     if out.messages is not messages:
+        out.compressed = True
         out.conversation_history = conversation_history_after_compression(
             agent, out.messages, out.conversation_history
         )
@@ -233,6 +234,8 @@ def _preflight_compression(
     agent._turn_preflight_display_snapshot = None
     if not agent.compression_enabled:
         _rearm_uncompressed_overflow_warn(agent, out.messages, out.active_system_prompt)
+        return
+    if out.compressed:
         return
     _compressor = agent.context_compressor
     if _tc._review_fork_first_request_pending(agent) or not _tc._should_run_preflight_estimate(

@@ -42,6 +42,7 @@ def _prep_idle_agent(db: SessionDB, session_id: str, *, idle_after: int = 60,
     # The idle block reads these from the compressor; give the MagicMock real
     # numbers so the floor computation and the preflight gate behave.
     agent.context_compressor.threshold_tokens = 100_000
+    agent.context_compressor.context_length = 200_000
     agent.context_compressor.summary_target_ratio = 0.20
     agent.context_compressor.protect_first_n = 2
     agent.context_compressor.protect_last_n = 2
@@ -53,18 +54,24 @@ def _prep_idle_agent(db: SessionDB, session_id: str, *, idle_after: int = 60,
     return agent
 
 
-def _run_prologue(agent, history, user_message="hello again",
-                  rough_tokens: int = 999_999):
+def _run_prologue(
+    agent,
+    history,
+    user_message="hello again",
+    *,
+    rough_tokens: int = 999_999,
+    preflight_estimate=False,
+):
     """Invoke ``build_turn_context`` the way ``conversation_loop`` does.
 
-    The token-threshold preflight gate is pinned False so these tests
-    exercise the IDLE trigger in isolation (the preflight path has its own
-    coverage in ``test_turn_context.py``). ``rough_tokens`` pins the estimate
+    The token-threshold preflight gate is pinned False by default so most tests
+    exercise the IDLE trigger in isolation.  A regression test can opt in to
+    prove the idle/preflight interaction. ``rough_tokens`` pins the estimate
     that the idle floor is compared against.
     """
     with patch("agent.auxiliary_client.set_runtime_main", lambda *a, **k: None), \
          patch("agent.turn_context._should_run_preflight_estimate",
-               return_value=False), \
+               return_value=preflight_estimate), \
          patch("agent.turn_context.estimate_request_tokens_rough",
                return_value=rough_tokens):
         return build_turn_context(
@@ -87,11 +94,6 @@ def _run_prologue(agent, history, user_message="hello again",
 
 def _history(n: int = 20) -> list:
     return [{"role": "user", "content": f"m{i}"} for i in range(n)]
-
-
-
-
-
 
 def test_idle_compaction_status_emitted_by_default(tmp_path: Path) -> None:
     """Control: the default engine keeps the 💤 idle-resume status line."""
@@ -277,5 +279,64 @@ def test_idle_compaction_respects_anti_thrash_breaker(tmp_path: Path) -> None:
     assert len(ctx.messages) == len(_history()) + 1
 
 
+def test_successful_idle_compaction_does_not_repeat_in_preflight(
+    tmp_path: Path,
+) -> None:
+    """A turn-start idle boundary must not be rewritten again by preflight.
 
+    Regression: after the idle pass returned a distinct compacted transcript,
+    the rough threshold gate immediately compacted that same transcript again
+    before any provider usage could judge the first boundary.  In-place
+    persistence archived and reinserted the live tail twice, leaving duplicate
+    active completion rows.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "IDLE_THEN_PREFLIGHT"
+    db.create_session(sid, source="cli")
+    agent = _prep_idle_agent(db, sid)
+    calls = []
 
+    def _compress_once(messages, *_args, **_kwargs):
+        calls.append(list(messages))
+        agent._last_compaction_in_place = True
+        return list(messages), "SYSTEM"
+
+    agent._compress_context = _compress_once
+    compressor = getattr(agent, "context_compressor")
+    compressor.should_compress = MagicMock(return_value=True)
+    compressor.should_defer_preflight_to_real_usage = MagicMock(
+        return_value=False
+    )
+    db.set_latest_user_api_content = MagicMock(return_value=1)
+
+    with patch(
+        "hermes_cli.plugins.invoke_hook",
+        return_value=[{"context": "PLUGIN-CTX"}],
+    ):
+        ctx = _run_prologue(
+            agent,
+            _history(),
+            preflight_estimate=True,
+        )
+
+    assert len(calls) == 1
+    assert len(ctx.messages) == len(_history()) + 1
+    compressor.should_compress.assert_not_called()
+    db.set_latest_user_api_content.assert_called_once_with(
+        sid, "hello again", "hello again\n\nPLUGIN-CTX"
+    )
+
+    # The suppression is scoped to this prologue invocation, not latched on
+    # the agent. On the next non-idle turn, threshold preflight runs normally.
+    calls.clear()
+    compressor.should_compress.reset_mock()
+    agent._last_activity_ts = time.time()
+
+    _run_prologue(
+        agent,
+        _history(),
+        preflight_estimate=True,
+    )
+
+    assert len(calls) == 1
+    compressor.should_compress.assert_called_once()

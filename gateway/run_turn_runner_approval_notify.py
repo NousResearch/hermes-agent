@@ -31,6 +31,7 @@ def notify_approval(self, approval_data: dict) -> None:
     approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps."""
     from gateway.run_turn_runner import _CARD_DESTINATION_REFUSALS, logger
 
+    from gateway.approval_bridge import _build_exec_approval_metadata
     from gateway.run import _approval_send_outcome, _format_exec_approval_fallback, _interim_metadata, _redact_approval_command
     from gateway.run_turn_runner_approval_settle import register_timeout_notice
     ctx = self._ctx
@@ -51,7 +52,7 @@ def notify_approval(self, approval_data: dict) -> None:
             fut = self._schedule(
                 adapter.send_exec_approval(
                     chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                    description=desc, metadata=ctx._status_thread_metadata, **flags,
+                    description=desc, metadata=_build_exec_approval_metadata(ctx._status_thread_metadata, approval_data), **flags,
                 ),
                 "send_exec_approval scheduling error",
             )
@@ -110,10 +111,15 @@ def notify_approval(self, approval_data: dict) -> None:
             logger.warning("Button-based approval failed, falling back to text: %s", e)
     # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
     # in Slack threads and reserved by Matrix clients.
-    msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
+    msg = _format_exec_approval_fallback(
+        cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags,
+        full_command=bool(getattr(adapter, "approval_fallback_single_event", False)),
+    )
     try:
         # Mark as approval prompt so WeCom routes through the control lane.
         metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
+        if getattr(adapter, "approval_fallback_single_event", False):
+            metadata["matrix_formatted_body"] = ""
         fut = self._schedule(
             adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
         )

@@ -17,6 +17,7 @@ from hermes_cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
+    _ServeDirective,
     _dispatch_pre_tool_call_hooks,
     get_plugin_command_handler,
     get_plugin_commands,
@@ -1435,7 +1436,7 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"path": "/safe/dir"}}
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _ = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/unsafe/dir", "content": "x"}
         )
         assert block_msg is None
@@ -1450,7 +1451,7 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"content": "fixed"}},
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _ = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/unsafe", "content": "original"}
         )
         assert block_msg is None
@@ -1465,7 +1466,7 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"path": "/second"}},
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _ = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/original"}
         )
         assert modified == {"path": "/second"}
@@ -1479,14 +1480,14 @@ class TestPreToolCallModify:
                 {"action": "block", "message": "still blocked"},
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _ = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/unsafe"}
         )
         assert block_msg == "still blocked"
         assert modified == {"path": "/safe"}
 
-    def test_modify_after_block_is_invisible(self, monkeypatch):
-        """A modify after a block is never reached — first block wins."""
+    def test_modify_after_block_still_accumulates(self, monkeypatch):
+        """A modify after a block still accumulates — modify is orthogonal to the lattice."""
         monkeypatch.setattr(
             "hermes_cli.plugins.invoke_hook",
             lambda hook_name, **kwargs: [
@@ -1494,11 +1495,11 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"path": "/invisible"}},
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _ = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/original"}
         )
         assert block_msg == "stopped"
-        assert modified is None
+        assert modified == {"path": "/invisible"}
 
     def test_modify_with_none_args(self, monkeypatch):
         """Modify should handle None args gracefully."""
@@ -1508,7 +1509,7 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"path": "/safe"}}
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks("write_file", None)
+        block_msg, modified, _ = _dispatch_pre_tool_call_hooks("write_file", None)
         assert block_msg is None
         assert modified == {"path": "/safe"}
 
@@ -1518,7 +1519,7 @@ class TestPreToolCallModify:
             "hermes_cli.plugins.invoke_hook",
             lambda hook_name, **kwargs: [],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _ = _dispatch_pre_tool_call_hooks(
             "terminal", {"cmd": "ls"}
         )
         assert block_msg is None
@@ -1534,10 +1535,190 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"path": "/real"}},
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _ = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/original"}
         )
         assert modified == {"path": "/real"}
+
+
+class TestPreToolCallServe:
+    """`pre_tool_call` serve directive — supply a tool result without executing the tool."""
+
+    def test_serve_returns_result(self, monkeypatch):
+        """A serve directive returns its result inside a ``_ServeDirective``."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "serve", "result": "cached"}],
+        )
+        block_msg, modified, served = _dispatch_pre_tool_call_hooks("read_file", {"path": "/x"})
+        assert block_msg is None
+        assert modified is None
+        assert isinstance(served, _ServeDirective)
+        assert served.result == "cached"
+
+    def test_serve_without_result_key_is_ignored(self, monkeypatch):
+        """A serve without a result key is ignored (fail-open to normal execution)."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "serve"}],
+        )
+        block_msg, _, served = _dispatch_pre_tool_call_hooks("read_file", {"path": "/x"})
+        assert block_msg is None
+        assert served is None
+
+    def test_serve_result_is_json_string(self, monkeypatch):
+        """Tool results are JSON strings; serve carries them inside ``_ServeDirective``."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "serve", "result": '{"content": "hi"}'}],
+        )
+        _, _, served = _dispatch_pre_tool_call_hooks("read_file", {"path": "/x"})
+        assert isinstance(served, _ServeDirective)
+        assert served.result == '{"content": "hi"}'
+
+    def test_serve_null_result_is_a_serve_not_absent(self, monkeypatch):
+        """``result: null`` is a serve of ``None``, distinguishable from no directive."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "serve", "result": None}],
+        )
+        block_msg, _, served = _dispatch_pre_tool_call_hooks("read_file", {"path": "/x"})
+        assert block_msg is None
+        assert served is not None
+        assert served.result is None
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda hook_name, **kwargs: [])
+        _, _, absent = _dispatch_pre_tool_call_hooks("read_file", {"path": "/x"})
+        assert absent is None
+
+    def test_serve_does_not_beat_block(self, monkeypatch):
+        """block dominates serve regardless of registration order (serve first)."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "serve", "result": "cached"},
+                {"action": "block", "message": "veto"},
+            ],
+        )
+        block_msg, _, served = _dispatch_pre_tool_call_hooks("read_file", {"path": "/x"})
+        assert block_msg == "veto"
+        assert served is None
+
+    def test_block_beats_serve(self, monkeypatch):
+        """block dominates serve regardless of registration order (block first)."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "block", "message": "veto"},
+                {"action": "serve", "result": "cached"},
+            ],
+        )
+        block_msg, _, served = _dispatch_pre_tool_call_hooks("read_file", {"path": "/x"})
+        assert block_msg == "veto"
+        assert served is None
+
+    def test_serve_then_approve_still_gates(self, monkeypatch):
+        """approve outranks serve in both orders — serve never bypasses the human gate."""
+        from hermes_cli.plugins import get_pre_tool_call_directive, _get_pre_tool_call_directive_details
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "serve", "result": "cached"},
+                {"action": "approve", "message": "ask human"},
+            ],
+        )
+        assert get_pre_tool_call_directive("read_file", {"path": "/x"}) == ("approve", "ask human")
+        details = _get_pre_tool_call_directive_details("read_file", {"path": "/x"})
+        assert details.action == "approve"
+        assert details.serve is None
+
+    def test_approve_then_serve_still_gates(self, monkeypatch):
+        """approve outranks serve in both orders — serve never bypasses the human gate."""
+        from hermes_cli.plugins import get_pre_tool_call_directive, _get_pre_tool_call_directive_details
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "approve", "message": "ask human"},
+                {"action": "serve", "result": "cached"},
+            ],
+        )
+        assert get_pre_tool_call_directive("read_file", {"path": "/x"}) == ("approve", "ask human")
+        details = _get_pre_tool_call_directive_details("read_file", {"path": "/x"})
+        assert details.action == "approve"
+        assert details.serve is None
+
+    def test_multiple_serve_first_wins(self, monkeypatch):
+        """Two serve directives: the first registered wins the tie."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "serve", "result": "a"},
+                {"action": "serve", "result": "b"},
+            ],
+        )
+        block_msg, _, served = _dispatch_pre_tool_call_hooks("read_file", {"path": "/x"})
+        assert block_msg is None
+        assert isinstance(served, _ServeDirective)
+        assert served.result == "a"
+
+    def test_serve_with_modify_combined(self, monkeypatch):
+        """modify accumulates while serve still carries its result."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "modify", "args": {"path": "/safe"}},
+                {"action": "serve", "result": "R"},
+            ],
+        )
+        block_msg, modified, served = _dispatch_pre_tool_call_hooks("read_file", {"path": "/orig"})
+        assert block_msg is None
+        assert isinstance(served, _ServeDirective)
+        assert served.result == "R"
+        assert modified == {"path": "/safe"}
+
+    def test_modify_after_serve_still_accumulates(self, monkeypatch):
+        """modify accumulates regardless of order relative to serve."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "serve", "result": "R"},
+                {"action": "modify", "args": {"path": "/safe"}},
+            ],
+        )
+        block_msg, modified, served = _dispatch_pre_tool_call_hooks("read_file", {"path": "/orig"})
+        assert block_msg is None
+        assert isinstance(served, _ServeDirective)
+        assert served.result == "R"
+        assert modified == {"path": "/safe"}
+
+    def test_thread_whitelist_rejection_dominates_serve(self, monkeypatch):
+        """Thread-whitelist rejection blocks before any hook, so serve cannot win."""
+        from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "serve", "result": "cached"}],
+        )
+        set_thread_tool_whitelist({"read_file"})
+        try:
+            block_msg, _, served = _dispatch_pre_tool_call_hooks("write_file", {"path": "/x"})
+        finally:
+            clear_thread_tool_whitelist()
+        assert block_msg is not None
+        assert served is None
+
+    def test_modify_block_serve_triple_merges_args_block_beats_serve(self, monkeypatch):
+        """modify merges args while block beats serve in a three-way directive."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "modify", "args": {"path": "/safe"}},
+                {"action": "serve", "result": "cached"},
+                {"action": "block", "message": "veto"},
+            ],
+        )
+        block_msg, modified, served = _dispatch_pre_tool_call_hooks("write_file", {"path": "/orig"})
+        assert block_msg == "veto"
+        assert served is None
+        assert modified == {"path": "/safe"}
 
 
 class TestGetPreVerifyContinueMessage:

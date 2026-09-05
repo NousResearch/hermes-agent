@@ -2165,19 +2165,20 @@ def switch_model(
 
 
 def _pre_tool_block_message(agent, function_name, function_args, effective_task_id, tool_call_id, middleware_trace):
-    """Plugin pre-tool-call hook verdict: ``(block_message, function_args)``; failures never block."""
+    """Plugin pre-tool-call hook verdict: ``(block_message, function_args, serve)``;
+    ``serve: Optional[_ServeDirective]``; failures never block."""
     try:
         from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
-        block_message, modified_args = _dispatch_pre_tool_call_hooks(
+        block_message, modified_args, serve = _dispatch_pre_tool_call_hooks(
             function_name, function_args, task_id=effective_task_id or "",
             session_id=getattr(agent, "session_id", "") or "", tool_call_id=tool_call_id or "",
             turn_id=getattr(agent, "_current_turn_id", "") or "",
             api_request_id=getattr(agent, "_current_api_request_id", "") or "",
             middleware_trace=list(middleware_trace),
         )
-        return block_message, (modified_args if modified_args is not None else function_args)
+        return block_message, (modified_args if modified_args is not None else function_args), serve
     except Exception:
-        return None, function_args
+        return None, function_args, None
 
 
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
@@ -2205,8 +2206,9 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     except Exception as _mw_err:
         logger.debug("tool_request middleware error: %s", _mw_err)
     block_message: Optional[str] = None
+    serve = None
     if not pre_tool_block_checked:
-        block_message, function_args = _pre_tool_block_message(
+        block_message, function_args, serve = _pre_tool_block_message(
             agent, function_name, function_args, effective_task_id, tool_call_id, _tool_middleware_trace
         )
     if block_message is not None:
@@ -2218,6 +2220,21 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             middleware_trace=_tool_middleware_trace,
         )
         return result
+    if serve is not None:
+        # serve: emit the RAW served value to post_tool_call (cache plugins observe it
+        # pre-transform), then re-apply transform_tool_result so sanitization runs before
+        # the model sees replayed cache data; normalize None -> "" for the ``-> str``
+        # contract (callers that ``json.loads`` the result never see a null value).
+        emit_terminal_post_tool_call(
+            agent, function_name=function_name, function_args=function_args, result=serve.result,
+            effective_task_id=effective_task_id, tool_call_id=tool_call_id, status="cached",
+            error_type=None, error_message=None, middleware_trace=_tool_middleware_trace,
+        )
+        from model_tools import _apply_transform_tool_result_hook, _CallIds
+        result = _apply_transform_tool_result_hook(
+            function_name, function_args, serve.result, 0, _CallIds(**hook_ids),
+        )
+        return "" if result is None else result
     tool_start_time = time.monotonic()
     inline_executor = resolve_invoke_tool_executor(agent, function_name)
     if inline_executor is not None:

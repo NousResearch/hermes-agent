@@ -696,27 +696,36 @@ def _apply_request_middleware(
 
 def _pre_dispatch_guards(function_name: str, function_args: Dict[str, Any], skip_pre_tool_call_hook: bool,
                          ids: _CallIds, middleware_trace: List[Dict[str, Any]],
-                         ) -> Tuple[Dict[str, Any], Optional[Tuple[Any, str, Optional[str]]]]:
+                         ) -> Tuple[Dict[str, Any], Optional[Tuple[Any, str, Optional[str], Optional[str]]]]:
     """Plugin pre_tool_call hook, then ACP edit approval.
 
     ``(args, None)`` to proceed (args possibly plugin-modified), or
-    ``(args, (result, error_type, error_message))`` when blocked.
+    ``(args, (result, status, error_type, error_message))`` when blocked or
+    served (a plugin-supplied result that skips execution, e.g. a cache hit).
     """
     # pre_tool_call fires exactly once per execution: one invoke_hook pass yields
     # both the block message and modified args. skip=True: caller already fired it.
     if not skip_pre_tool_call_hook:
         block_message: Optional[str] = None
+        serve = None                                     # Optional[_ServeDirective]
         try:
             from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
-            block_message, modified_args = _dispatch_pre_tool_call_hooks(
+            block_message, modified_args, serve = _dispatch_pre_tool_call_hooks(
                 function_name, function_args, middleware_trace=list(middleware_trace), **ids.hook_kwargs(),
             )
             if modified_args is not None:
                 function_args = modified_args
         except Exception as _hook_err:
             logger.debug("pre_tool_call hook error: %s", _hook_err)
+        # block wins over serve (defense-in-depth: the lattice lives in the dispatcher,
+        # but the caller must not re-introduce serve shadowing a block).
         if block_message is not None:
-            return function_args, (tool_error(block_message), "plugin_block", block_message)
+            return function_args, (tool_error(block_message), "blocked", "plugin_block", block_message)
+        if serve is not None:
+            # serve directive: the plugin supplied the RAW tool result (e.g. a cache
+            # hit) — skip execution and emit with status="cached". handle_function_call
+            # re-applies transform_tool_result before returning.
+            return function_args, (serve.result, "cached", None, None)
 
     # ACP/Zed edit approval before any file mutation. The requester is bound
     # via ContextVar only for ACP sessions, so CLI/gateway paths are unaffected.
@@ -724,11 +733,11 @@ def _pre_dispatch_guards(function_name: str, function_args: Dict[str, Any], skip
         from acp_adapter.edit_approval import maybe_require_edit_approval
         edit_block_message = maybe_require_edit_approval(function_name, function_args)
         if edit_block_message is not None:
-            return function_args, (edit_block_message, "edit_approval_denied", None)
+            return function_args, (edit_block_message, "blocked", "edit_approval_denied", None)
     except Exception as _edit_approval_err:
         logger.debug("ACP edit approval guard error: %s", _edit_approval_err)
         if function_name in {"write_file", "patch"}:
-            return function_args, (tool_error("Edit approval denied: approval guard failed"), "edit_approval_error", None)
+            return function_args, (tool_error("Edit approval denied: approval guard failed"), "blocked", "edit_approval_error", None)
     return function_args, None
 
 
@@ -853,8 +862,16 @@ def handle_function_call(
 
         function_args, blocked = _pre_dispatch_guards(function_name, function_args, skip_pre_tool_call_hook, ids, trace)
         if blocked is not None:
-            result, error_type, error_message = blocked
-            return _emit(result, status="blocked", error_type=error_type, error_message=error_message)
+            result, status, error_type, error_message = blocked
+            if status == "cached":
+                # serve: the served value is RAW (what a cache plugin observed via
+                # post_tool_call, before transform_tool_result). Re-apply the transform
+                # so sanitization (e.g. security-guidance) still runs before the model
+                # sees replayed cache data.
+                _emit(result, status=status, error_type=error_type, error_message=error_message)
+                transformed = _apply_transform_tool_result_hook(function_name, function_args, result, 0, ids)
+                return "" if transformed is None else transformed
+            return _emit(result, status=status, error_type=error_type, error_message=error_message)
 
         # Any non-read/search tool resets the consecutive-read-loop counter.
         if function_name not in _READ_SEARCH_TOOLS:

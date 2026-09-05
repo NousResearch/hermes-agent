@@ -327,6 +327,101 @@ class TestGatewayRuntimeStatus:
                 == 139
             ), cmdline
 
+    def test_runtime_status_running_pid_prefers_live_gateway_cmdline_over_stale_start_time(
+        self, monkeypatch
+    ):
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            "start_time": 100,
+        }
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: pid == 139)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 200)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda pid: "hermes gateway run --replace --external-supervisor",
+        )
+
+        assert status.get_runtime_status_running_pid(payload) == 139
+
+    @pytest.mark.parametrize(
+        "cmdline",
+        [
+            "hermes -p coder2 gateway run --replace",
+            "hermes_home=/opt/data/profiles/coder2 hermes gateway run --replace",
+        ],
+    )
+    def test_runtime_status_running_pid_rejects_profile_prefix_with_stale_start_time(
+        self, monkeypatch, cmdline
+    ):
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            "start_time": 100,
+        }
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: pid == 139)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 200)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: cmdline)
+
+        assert (
+            status.get_runtime_status_running_pid(
+                payload, expected_home=Path("/opt/data/profiles/coder")
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize(
+        "cmdline",
+        [
+            "hermes --profile=coder gateway run --replace --external-supervisor",
+            "hermes_home=/opt/data/profiles/coder hermes gateway run --replace",
+        ],
+    )
+    def test_runtime_status_running_pid_accepts_exact_profile_with_stale_start_time(
+        self, monkeypatch, cmdline
+    ):
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            "start_time": 100,
+        }
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: pid == 139)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 200)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: cmdline)
+
+        assert (
+            status.get_runtime_status_running_pid(
+                payload, expected_home=Path("/opt/data/profiles/coder")
+            )
+            == 139
+        )
+
+    def test_runtime_status_running_pid_keeps_start_time_guard_without_live_gateway_identity(
+        self, monkeypatch
+    ):
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            "start_time": 100,
+        }
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: pid == 139)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 200)
+
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "python unrelated.py")
+        assert status.get_runtime_status_running_pid(payload) is None
+
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+        assert status.get_runtime_status_running_pid(payload) is None
+
 
     def test_command_line_belongs_to_profile_normalizes_separators(self):
         """A Windows argv renders HERMES_HOME with backslashes while the

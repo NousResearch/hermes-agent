@@ -86,9 +86,12 @@ class SubagentWorktreeTests(unittest.TestCase):
         self.assertTrue(info["base_commit"])
         # Worktree carries the committed file
         self.assertTrue((Path(info["path"]) / "README.md").exists())
-        # .gitignore gained the .worktrees/ entry
+        # .worktrees/ is excluded via .git/info/exclude (untracked, local-only) —
+        # the parent's tracked .gitignore must not be touched.
+        self.assertFalse((repo / ".gitignore").exists())
         self.assertIn(
-            ".worktrees/", (repo / ".gitignore").read_text(encoding="utf-8").splitlines()
+            ".worktrees/",
+            (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8").splitlines(),
         )
         # A write in the worktree does not touch the parent checkout
         (Path(info["path"]) / "child.txt").write_text("x", encoding="utf-8")

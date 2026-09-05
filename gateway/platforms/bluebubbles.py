@@ -61,6 +61,15 @@ _PAGINATION_SUFFIX_RE = re.compile(r"\s*\(\d+/\d+\)$")
 _ADDRESS_RE = re.compile(r"^\+\d+")
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
+_SEEN_EVENT_CACHE_SIZE = 1000  # LRU cap for webhook message-guid dedupe
+_RECENT_EVENT_CACHE_SIZE = 200  # LRU cap for guid-less duplicate-delivery window
+_DUPLICATE_DELIVERY_WINDOW_S = 5.0  # BB re-sends the same message in variant payloads within ~1s
+
+# Chat-GUID service prefixes. BlueBubbles guids look like ``iMessage;-;+1555...`` / ``any;-;+1555...`` /
+# ``SMS;-;+1555...``; the prefix is the delivery-service hint, not a distinct conversation. A bare
+# address (``+1555...``) is the canonical 1:1 key: ``send()`` resolves it via ``_resolve_chat_guid``
+# (exact chatIdentifier match), which BB accepts for the same DM regardless of the inbound prefix.
+_GUID_SERVICE_PREFIXES = ("iMessage", "any", "SMS", "sms")
 _LOCAL_HOSTS = {"0.0.0.0", "127.0.0.1", "localhost", "::"}
 
 
@@ -132,6 +141,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        # Inbound duplicate-delivery guards: BB fires the same message multiple times in variant
+        # payload shapes (guid present → ``iMessage;-;addr``, guid absent → bare address), which
+        # used to fragment into separate sessions. Keyed on message guid when available; guid-less
+        # events fall back to a short (sender, text) window. See #bluebubbles-duplicate-delivery.
+        self._seen_event_ids: OrderedDict[str, datetime] = OrderedDict()
+        self._recent_events: OrderedDict[tuple, tuple] = OrderedDict()
 
     # --- API helpers ---
 
@@ -538,6 +553,51 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return (request.query.get("password") or request.query.get("guid") or request.headers.get("x-password")
                 or request.headers.get("x-guid") or request.headers.get("x-bluebubbles-guid"))
 
+    @staticmethod
+    def _canonical_chat_id(chat_guid: Optional[str], chat_identifier: Optional[str], sender: Optional[str]) -> str:
+        """One DM, one session key: BlueBubbles delivers the same 1:1 chat as ``iMessage;-;+1...``,
+        ``any;-;+1...`` or a bare ``+1...`` depending on payload shape; the service prefix is a
+        delivery hint, not a distinct conversation. Canonical form is the bare address for 1:1
+        chats (``send()`` re-resolves it via ``_resolve_chat_guid``); group/unknown-prefix guids
+        pass through untouched. Never returns an empty string (caller guarantees an id exists)."""
+        for raw in (chat_guid, chat_identifier, sender):
+            if raw:
+                parts = raw.split(";-;", 1)
+                if len(parts) == 2 and parts[0] in _GUID_SERVICE_PREFIXES:
+                    return parts[1]
+                return raw
+        return ""
+
+    def _is_duplicate_delivery(self, message_id: Optional[str], sender: Optional[str], text: str) -> bool:
+        """True when this webhook event is a re-delivery of a message we already dispatched.
+
+        BB double-fires the same message in variant payload shapes (~1s apart): one carries the
+        message guid + ``iMessage;-;addr`` chat, the other omits the guid and uses a bare address.
+        Guards: (1) exact guid replay is always suppressed; (2) a (sender, text) match inside a
+        short window suppresses the guid-less variant AND the guid-bearing variant when the prior
+        event was guid-less (either delivery order). Two distinct guid-bearing messages with the
+        same text inside the window still both deliver. Cost of the guard: repeated guid-less
+        identical texts inside the window are indistinguishable from duplicates and suppressed.
+        """
+        now = datetime.now()
+        if message_id and message_id in self._seen_event_ids:
+            return True
+        key = (sender or "", text)
+        last = self._recent_events.get(key)
+        if last is not None and (now - last[0]).total_seconds() <= _DUPLICATE_DELIVERY_WINDOW_S:
+            if not message_id or last[1] is None:
+                if message_id:  # attach the guid the earlier guid-less event was missing
+                    self._recent_events[key] = (now, message_id)
+                return True
+        if message_id:
+            self._seen_event_ids[message_id] = now
+            while len(self._seen_event_ids) > _SEEN_EVENT_CACHE_SIZE:
+                self._seen_event_ids.popitem(last=False)
+        self._recent_events[key] = (now, message_id)
+        while len(self._recent_events) > _RECENT_EVENT_CACHE_SIZE:
+            self._recent_events.popitem(last=False)
+        return False
+
     def _resolve_chat_and_sender(self, payload: Dict[str, Any], record: Dict[str, Any]):
         """Returns ``(chat_guid, chat_identifier, sender)`` from the many BlueBubbles payload shapes."""
         chat_guid = self._value(record.get("chatGuid"), payload.get("chatGuid"), record.get("chat_guid"),
@@ -581,7 +641,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         chat_guid, chat_identifier, sender = self._resolve_chat_and_sender(payload, record)
         if not sender or not (chat_guid or chat_identifier) or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
-        session_chat_id = chat_guid or chat_identifier
+        if self._is_duplicate_delivery(
+                self._value(record.get("guid"), record.get("messageGuid"), record.get("id")), sender, text):
+            return _ok()
+        # One DM, one session: BB delivers the same chat as `iMessage;-;addr` / `any;-;addr` / bare
+        # `addr` depending on payload shape; without this the gateway fragments one conversation
+        # into parallel sessions with separate context histories. Groups keep their raw guid.
+        session_chat_id = self._canonical_chat_id(chat_guid, chat_identifier, sender) or chat_guid or chat_identifier or ""
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
         if is_group and self.require_mention:
             if not self._message_matches_mention_patterns(text):

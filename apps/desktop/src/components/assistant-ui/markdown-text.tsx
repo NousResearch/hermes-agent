@@ -17,7 +17,7 @@ import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
-import { createMemoizedMathPlugin } from '@/lib/katex-memo'
+import { useLazyMathPlugin } from '@/lib/lazy-math-plugin'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
@@ -42,20 +42,6 @@ import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
 import { paragraphPlainText, TranscriptDirectiveLeaf, useIsClaimedDirective } from './transcript-directive'
-
-// Math rendering plugin (KaTeX). Configured once at module scope — the
-// plugin is stateless beyond its internal cache so re-creating per-render
-// would needlessly thrash. We use a memoizing wrapper around rehype-katex
-// (see lib/katex-memo.ts) so that during streaming we re-katex only the
-// equations whose source actually changed since the last token. With the
-// stock @streamdown/math plugin every equation re-renders on every token,
-// which throttles UI updates badly for math-heavy responses; the memoized
-// plugin keeps the steady-state work proportional to "new equations
-// arriving" rather than "equations × tokens-per-second".
-//
-// `singleDollarTextMath: true` enables `$x^2$` for inline math (de-facto
-// LLM convention). The default false-setting only accepts `$$...$$`.
-const mathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
 
 // `@streamdown/code` statically imports ALL of shiki (every grammar + theme —
 // the single largest chunk in the renderer), so it must never sit on the
@@ -547,7 +533,12 @@ function MarkdownTextSurface({
   // `SyntaxHighlighter` below when `isStreaming` is true, and the code plugin
   // itself arrives async (useCodePlugin) so shiki never blocks cold start.
   const code = useCodePlugin()
-  const plugins = useMemo(() => (code ? { math: mathPlugin, code } : { math: mathPlugin }), [code])
+  const math = useLazyMathPlugin(text)
+
+  const plugins = useMemo(
+    () => ({ ...(code ? { code } : {}), ...(math ? { math } : {}) }),
+    [code, math]
+  )
 
   const components = useMemo(
     () =>

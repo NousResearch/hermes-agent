@@ -2,6 +2,7 @@ import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
+import { withAgentLocality } from '@/lib/agent-locality'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
 import { $gateway } from '@/store/gateway'
@@ -139,11 +140,17 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
     if (requestId) {
       const read = window.hermesDesktop?.readWindowBelow
 
-      const answer = (result: unknown) =>
-        $gateway.get()?.request('window.read.respond', {
+      const answer = (result: unknown) => {
+        // The window is on THIS machine; computer_use runs wherever the agent
+        // does. On a remote gateway those differ, and the answer is the only
+        // place the agent learns it — see withAgentLocality.
+        const located = withAgentLocality(result)
+
+        return $gateway.get()?.request('window.read.respond', {
           request_id: requestId,
-          text: result ? JSON.stringify(result) : ''
+          text: located ? JSON.stringify(located) : ''
         })
+      }
 
       // .catch: ipcRenderer.invoke rejects on an older shell without the
       // handler or a main-side throw — without an empty answer the tool

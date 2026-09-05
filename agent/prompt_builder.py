@@ -531,6 +531,11 @@ def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
     A per-turn fact, not a platform (one session alternates between app window and HUD), so it rides the
     model-bound message, never the byte-stable system prompt. Each sentence is gated on the tool it names (an
     unknown tool name invites a hallucinated call); without read_window_below the whole note is withheld.
+
+    The one thing the note cannot know is whether computer_use reaches the window at all: on a remote
+    gateway it drives the backend host's desktop while the HUD floats over the user's. That is resolved
+    when the agent asks — read_window_below returns an `agent_host` — so the prior defers to it rather
+    than carrying a locality bit that would be stale by the time anyone read it back.
     """
     names = valid_tool_names or set()
     if "read_window_below" not in names:
@@ -547,7 +552,9 @@ def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
          "ago, and a single message can span both."),
         ("computer_use" in names,
          "Prefer carrying the work out in that same app — computer_use "
-         "takes its name in `app` — over pulling the task into a surface of your own."),
+         "takes its name in `app` — over pulling the task into a surface of your own, unless "
+         "read_window_below reports an `agent_host`, which means computer_use drives a different "
+         "machine than the one the window is on."),
         ("computer_use" in names and "browser_navigate" in names,
          "When the app underneath is a browser, that means driving the "
          "user's browser rather than opening yours with browser_navigate."),

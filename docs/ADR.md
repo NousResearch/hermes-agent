@@ -75,3 +75,57 @@ Consequences:
 - Regression coverage exercises the real production path
   (`set_hermes_home_override()`) rather than only the env-var path, and
   includes a dedicated relative-import leak test.
+
+## 2026-08-21: Configured intent does not confer effective capability
+
+Status: Proposed
+
+Context:
+Hermes expresses intended capability through configuration, manifests,
+catalog entries, authenticated accounts, remembered routes, deployment
+plans, process identifiers, and resolved paths. Those values can select a
+candidate, but runtime revocation, credential rotation, policy changes,
+ambiguous ownership, process replacement, optional component absence, or
+substrate failure can invalidate the candidate before the side effect.
+
+Several concrete paths already depend on this distinction: browser control
+must observe live Developer Mode revocation (#91695), Nix startup must wait for
+the actual bind target (#91720), optional Desktop plugin entries must represent
+absence without operational failure (#91828), durable gateway routing needs a
+current credential claimant and adapter generation (#89252), and deployment
+admission remains incomplete until physical consumers execute the admitted
+plan without reconstructing or widening it (#91316).
+
+Decision:
+- Adopt [Effective Capability at Consuming Boundaries](effective-capability-contract.md)
+  as the cross-cutting contract.
+- Preserve the state progression `configured -> resolvable -> authenticated ->
+  policy-admitted -> currently effective -> exercised -> settled`; no earlier
+  state implies a later one.
+- Require the component that owns the side effect to obtain or revalidate a
+  current, scope-bound proof for the exact actor, operation, target, namespace,
+  generation, policy, and realized substrate.
+- Consume that proof atomically with the effect, or revalidate immediately
+  before the effect after any asynchronous, retry, redirect, process, or lock
+  boundary that can invalidate it.
+- Represent absence, denial, ambiguity, unavailability, and staleness as
+  distinct outcomes instead of overloading a configured/effective boolean.
+- Keep exercise separate from settlement; operation acceptance or exit status
+  does not prove terminal postconditions.
+- Treat the contract as semantic rather than mandating one universal runtime
+  class. Each subsystem retains its existing implementation owner and native
+  types.
+
+Consequences:
+- Configured booleans, display names, catalog membership, successful adjacent
+  API calls, path/PID/file existence, and old-generation capability verdicts
+  may describe or select candidates but cannot independently authorize
+  mutation.
+- Legacy and inferred values may remain available for display, diagnostics, or
+  explicitly read-only degradation. They fail closed for mutation when exact
+  authority is absent.
+- Capability-sensitive tests must reach the real consuming boundary and include
+  relevant revocation, replacement, rotation, duplicate-claim, and stale-proof
+  cases.
+- The decision composes #90866, #90142, #90144, #90145, #90049, #90150,
+  #90200/#90230, and #91230 rather than creating another architecture owner.

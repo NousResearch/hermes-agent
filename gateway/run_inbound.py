@@ -605,6 +605,18 @@ class GatewayInboundMixin:
             return _result
 
         effective_busy_input_mode = self._effective_busy_input_mode(source)
+        if (
+            effective_busy_input_mode == "interrupt"
+            and self._should_auto_queue_busy_followup(event)
+        ):
+            logger.info(
+                "PRIORITY demoting Telegram busy follow-up from interrupt to queue for session %s",
+                _quick_key,
+            )
+            # The adapter pending slot is what the priority path already drains;
+            # merge text here so rapid Telegram follow-ups retain its established behavior.
+            self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)
+            return None
         if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
             return None
 

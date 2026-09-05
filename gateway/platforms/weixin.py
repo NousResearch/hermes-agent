@@ -560,7 +560,9 @@ def _message_type_from_media(media_types: List[str], text: str) -> MessageType:
     for prefix, message_type in _MIME_PREFIX_TYPES:
         if any(m.startswith(prefix) for m in media_types):
             return message_type
-    return MessageType.DOCUMENT if media_types else MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
+    # lstrip: leading whitespace (mobile keyboards, Slack-style " /cmd" habits) must not demote a
+    # command to TEXT — TEXT is debounced/merged while COMMAND dispatches immediately.
+    return MessageType.DOCUMENT if media_types else MessageType.COMMAND if text.lstrip().startswith("/") else MessageType.TEXT
 
 
 def _load_sync_buf(hermes_home: str, account_id: str) -> str:

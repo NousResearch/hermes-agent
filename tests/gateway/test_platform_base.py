@@ -98,6 +98,16 @@ class TestMessageEventIsCommand:
         event = MessageEvent(text="/new")
         assert event.is_command() is True
 
+    @pytest.mark.parametrize("text", [" /restart", "\n/restart", "\t/restart", "  /new  "])
+    def test_leading_whitespace_is_still_a_command(self, text):
+        # Slack swallows a leading "/" (its own slash-command handling), so " /restart" is the
+        # only way the text reaches Hermes; mobile keyboards insert leading spaces/newlines.
+        assert MessageEvent(text=text).is_command() is True
+
+    @pytest.mark.parametrize("text", ["  hello", "\nhello /new", "   "])
+    def test_leading_whitespace_non_command_stays_text(self, text):
+        assert MessageEvent(text=text).is_command() is False
+
 
 class TestMessageEventGetCommand:
     def test_simple_command(self):
@@ -112,11 +122,40 @@ class TestMessageEventGetCommand:
         event = MessageEvent(text="hello")
         assert event.get_command() is None
 
+    @pytest.mark.parametrize(
+        "text,expected", [(" /restart", "restart"), ("\n/restart", "restart"), ("  /new  ", "new")]
+    )
+    def test_leading_whitespace_command_name(self, text, expected):
+        assert MessageEvent(text=text).get_command() == expected
+
+    def test_bot_suffix_stripped_with_leading_whitespace(self):
+        assert MessageEvent(text=" /cmd@botname").get_command() == "cmd"
+        assert MessageEvent(text="/cmd@botname").get_command() == "cmd"
+
+    def test_file_path_rejected_even_with_leading_whitespace(self):
+        assert MessageEvent(text="/path/to/file").get_command() is None
+        assert MessageEvent(text="  /path/to/file").get_command() is None
+
 
 class TestMessageEventGetCommandArgs:
     def test_command_with_args(self):
         event = MessageEvent(text="/new session id 123")
         assert event.get_command_args() == "session id 123"
+
+    def test_leading_whitespace_command_args(self):
+        event = MessageEvent(text="  /model gpt-6-astra")
+        assert event.get_command() == "model"
+        assert event.get_command_args() == "gpt-6-astra"
+
+    def test_ios_dash_normalization_with_leading_whitespace(self):
+        # iOS auto-corrects -- to em dash and - to en dash; normalization must survive lstrip.
+        event = MessageEvent(text=" /model \u2014force \u2013v gpt-6")
+        assert event.get_command_args() == "--force -v gpt-6"
+
+    def test_non_command_returns_raw_text_unmodified(self):
+        # get_command_args on a non-command returns self.text verbatim (leading space intact).
+        event = MessageEvent(text="  hello")
+        assert event.get_command_args() == "  hello"
 
 
 # ---------------------------------------------------------------------------

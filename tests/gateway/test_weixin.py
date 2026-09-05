@@ -880,3 +880,38 @@ class TestWeixinVoiceGatewayHandoff:
             "the wrong transcript instead of re-transcribing (#27300)."
         )
 
+
+class TestWeixinMessageTypeClassification:
+    """``_message_type_from_media`` must classify a whitespace-prefixed command as COMMAND.
+
+    COMMAND dispatches immediately; TEXT is debounced/merged with adjacent messages.  A leading
+    space is not exotic: Slack swallows a leading "/" as its own slash command so users learn to
+    type " /restart", and mobile IMEs insert leading spaces/newlines.  ``MessageEvent`` already
+    lstrips before its ``startswith("/")`` check, so an unstripped check here silently disagrees
+    with the rest of the gateway about what counts as a command.
+    """
+
+    @pytest.mark.parametrize("text", ["/restart", " /restart", "\n/restart", "\t/new", "  /model gpt-6"])
+    def test_command_text_classifies_as_command(self, text):
+        assert weixin._message_type_from_media([], text) == MessageType.COMMAND
+
+    @pytest.mark.parametrize("text", ["hello", "  hello", "", "   ", "not /a/command"])
+    def test_non_command_text_classifies_as_text(self, text):
+        assert weixin._message_type_from_media([], text) == MessageType.TEXT
+
+    def test_classification_agrees_with_message_event(self):
+        # The invariant that matters: this helper and MessageEvent.is_command() must never
+        # disagree about whether a given body is a command.
+        for text in ("/restart", " /restart", "\n/new", "hello", "  hello", "   "):
+            helper_says_command = weixin._message_type_from_media([], text) == MessageType.COMMAND
+            assert helper_says_command is MessageEvent(text=text).is_command(), text
+
+    @pytest.mark.parametrize("media_types,expected", [
+        (["image/png"], MessageType.PHOTO),
+        (["video/mp4"], MessageType.VIDEO),
+        (["audio/ogg"], MessageType.VOICE),
+        (["application/pdf"], MessageType.DOCUMENT),
+    ])
+    def test_media_wins_over_command_text(self, media_types, expected):
+        # Media classification takes precedence even when the caption looks like a command.
+        assert weixin._message_type_from_media(media_types, " /restart") == expected

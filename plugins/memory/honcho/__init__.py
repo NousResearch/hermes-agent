@@ -8,7 +8,6 @@ Config chain: $HERMES_HOME/honcho.json -> ~/.honcho/config.json -> env vars.
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import re
 import threading
@@ -20,7 +19,7 @@ from agent.memory_provider import MemoryProvider, is_trivial_prompt
 from plugins.memory.honcho.client import spawn_context_thread
 from plugins.memory.honcho.dialectic import DialecticMixin
 from plugins.memory.honcho.tool_schemas import ALL_TOOL_SCHEMAS
-from tools.registry import tool_error
+from tools.registry import tool_error, tool_result
 
 logger = logging.getLogger(__name__)
 
@@ -679,16 +678,16 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             result = self._manager.set_peer_card(self._session_key, card_update, peer=peer)
             if result is None:
                 return tool_error("Failed to update peer card.")
-            return json.dumps({"result": f"Peer card updated ({len(result)} facts).", "card": result})
+            return tool_result({"result": f"Peer card updated ({len(result)} facts).", "card": result})
         card = self._manager.get_peer_card(self._session_key, peer=peer)
-        return json.dumps({"result": card} if card else self._empty_profile_hint(peer))
+        return tool_result({"result": card} if card else self._empty_profile_hint(peer))
 
     def _tool_search(self, args: dict) -> str:
         if not (query := (args.get("query") or "").strip()):
             return tool_error("Missing required parameter: query")
         max_tokens = min(int(args.get("max_tokens", 800)), 2000)
         result = self._manager.search_context(self._session_key, query, max_tokens=max_tokens, peer=args.get("peer", "user"))
-        return json.dumps({"result": result or "No relevant context found."})
+        return tool_result({"result": result or "No relevant context found."})
 
     def _tool_reasoning(self, args: dict) -> str:
         from plugins.memory.honcho.session import HonchoAuthError
@@ -714,18 +713,18 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             )
         # Auto-injection respects the cadence gap after an explicit call.
         self._last_dialectic_turn = self._turn_count
-        return json.dumps({"result": result or "No result from Honcho."})
+        return tool_result({"result": result or "No result from Honcho."})
 
     def _tool_context(self, args: dict) -> str:
         ctx = self._manager.get_session_context(self._session_key, peer=args.get("peer", "user"))
         if not ctx:
-            return json.dumps({"result": "No context available yet."})
+            return tool_result({"result": "No context available yet."})
         parts = [f"## {header}\n{ctx[key]}"
                  for key, header in (("summary", "Summary"), ("representation", "Representation"), ("card", "Card"))
                  if ctx.get(key)]
         if recent := ctx.get("recent_messages"):
             parts.append("## Recent messages\n" + "\n".join(f"  [{m['role']}] {m['content'][:200]}" for m in recent[-5:]))
-        return json.dumps({"result": "\n\n".join(parts) or "No context available."})
+        return tool_result({"result": "\n\n".join(parts) or "No context available."})
 
     def _tool_conclude(self, args: dict) -> str:
         delete_id = (args.get("delete_id") or "").strip()
@@ -739,13 +738,13 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             return tool_error("query is only valid when list is true.")
 
         if list_mode:
-            return json.dumps({"conclusions": self._manager.list_conclusions(self._session_key, query=query or None, peer=peer)})
+            return tool_result({"conclusions": self._manager.list_conclusions(self._session_key, query=query or None, peer=peer)})
         if delete_id:
             if self._manager.delete_conclusion(self._session_key, delete_id, peer=peer):
-                return json.dumps({"result": f"Conclusion {delete_id} deleted."})
+                return tool_result({"result": f"Conclusion {delete_id} deleted."})
             return tool_error(f"Failed to delete conclusion {delete_id}.")
         if self._manager.create_conclusion(self._session_key, conclusion, peer=peer):
-            return json.dumps({"result": f"Conclusion saved for {peer}: {conclusion}"})
+            return tool_result({"result": f"Conclusion saved for {peer}: {conclusion}"})
         return tool_error("Failed to save conclusion.")
 
     _TOOL_HANDLERS = {

@@ -347,66 +347,55 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
 # --- Codex app-server turn ----------------------------------------------------
 
 
-def _codex_thread_store_path():
-    from hermes_constants import get_hermes_home
+def _codex_thread_scope() -> str:
+    from pathlib import Path
 
-    return get_hermes_home() / "codex_threads.json"
+    return str(Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser().resolve())
 
 
-def _load_codex_thread_id(agent) -> "str | None":
-    """The codex thread id this Hermes session last ran on, if any.
+def _load_codex_thread_id(agent) -> str | None:
+    """Read the binding from the same profile-scoped DB as the transcript.
 
-    Codex threads persist on disk, so resuming one across an agent-cache
-    eviction or gateway restart is what keeps conversation memory alive —
-    the app-server path never replays Hermes' local transcript into a new
-    thread. Persistence failures must never break a turn: every path here
-    degrades to None (fresh thread), which is the pre-resume behavior.
+    A failed read must not look like a new conversation. Scope mismatches
+    require an explicit new session rather than borrowing another Codex home.
     """
+    db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
-    if not session_id or getattr(agent, "platform", "") == "gateway_hygiene":
+    if db is None or not session_id or getattr(agent, "platform", "") == "gateway_hygiene":
         return None
-    try:
-        with open(_codex_thread_store_path(), encoding="utf-8") as fh:
-            entry = json.load(fh).get(session_id)
-        return entry.get("thread_id") if isinstance(entry, dict) else None
-    except Exception:
+    session = db.get_session(session_id)
+    if not session:
+        raise RuntimeError("Cannot load the saved Hermes session; conversation was not reset.")
+    raw = session.get("model_config")
+    config = json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
+    binding = config.get("codex_thread_binding")
+    if binding is None:
         return None
+    if (not isinstance(binding, dict)
+            or not isinstance(binding.get("thread_id"), str)
+            or not binding["thread_id"]
+            or binding.get("codex_home") != _codex_thread_scope()):
+        raise RuntimeError("Cannot resume the saved Codex conversation in this profile/home. "
+                           "Restore the original Codex home or use /new to explicitly start over.")
+    return binding["thread_id"]
 
 
-def _store_codex_thread_id(agent, thread_id: "str | None") -> None:
+def _store_codex_thread_id(agent, thread_id: str | None) -> None:
+    """Atomically merge one binding; concurrent sessions cannot overwrite it.
+
+    Store before sending the user turn so a crash during execution cannot
+    orphan the provider thread. No pruning: the binding lives with its session.
+    """
+    db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
-    if (
-        not session_id
-        or not thread_id
-        or getattr(agent, "platform", "") == "gateway_hygiene"
-    ):
+    if db is None or not session_id or getattr(agent, "platform", "") == "gateway_hygiene":
         return
-    path = _codex_thread_store_path()
-    try:
-        try:
-            with open(path, encoding="utf-8") as fh:
-                store = json.load(fh)
-            if not isinstance(store, dict):
-                store = {}
-        except Exception:
-            store = {}
-        prior = store.get(session_id)
-        if isinstance(prior, dict) and prior.get("thread_id") == thread_id:
-            return
-        store[session_id] = {"thread_id": thread_id, "updated": time.time()}
-        if len(store) > 200:  # prune dead sessions oldest-first
-            for key, _ in sorted(
-                store.items(),
-                key=lambda kv: kv[1].get("updated", 0)
-                if isinstance(kv[1], dict) else 0,
-            )[: len(store) - 200]:
-                store.pop(key, None)
-        tmp = str(path) + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(store, fh, indent=1)
-        os.replace(tmp, path)
-    except Exception:
-        logger.debug("codex thread-id persistence failed", exc_info=True)
+    if not thread_id:
+        raise RuntimeError("Codex did not return a conversation ID; no user turn was sent.")
+    binding = {"thread_id": thread_id, "codex_home": _codex_thread_scope()}
+    db.patch_session_model_config(session_id, {"codex_thread_binding": binding})
+    if _load_codex_thread_id(agent) != thread_id:
+        raise RuntimeError("Could not save the Codex conversation binding; no user turn was sent.")
 
 
 def _close_codex_session(agent) -> None:
@@ -426,10 +415,17 @@ def _consume_user_interrupt(agent, active: bool = True) -> tuple[bool, Any]:
     return interrupted, message
 
 
-def _ensure_codex_session(agent) -> None:
+def _ensure_codex_session(agent, messages=None) -> None:
     """Lazily spawn one CodexAppServerSession per AIAgent (reused across turns, closed by the _cleanup hook)."""
     if getattr(agent, "_codex_session", None) is not None:
         return
+    resume_thread_id = _load_codex_thread_id(agent)
+    if not resume_thread_id and any(m.get("role") == "assistant" for m in (messages or [])):
+        raise RuntimeError(
+            "This conversation has history but no saved Codex thread binding. "
+            "Restore its binding or use /new to explicitly start over; "
+            "no empty replacement conversation was started."
+        )
     from agent.runtime_cwd import resolve_agent_cwd
     from agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
     # Approval callback: Hermes' standard prompt flow when a CLI thread installed one.
@@ -454,7 +450,7 @@ def _ensure_codex_session(agent) -> None:
         cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
         request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
         on_event=make_codex_app_server_event_bridge(agent),
-        resume_thread_id=_load_codex_thread_id(agent),
+        resume_thread_id=resume_thread_id,
     )
 
 
@@ -517,10 +513,10 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         from agent.conversation_compression import _checkpoint_blocked
         raise _checkpoint_blocked("codex_app_server owns the authoritative thread and compacts it "
                                   "without a truthful pre-compaction transcript boundary")
-    _ensure_codex_session(agent)
     try:
+        _ensure_codex_session(agent, messages)
+        _store_codex_thread_id(agent, agent._codex_session.ensure_started())
         turn = agent._codex_session.run_turn(user_input=user_message)
-        _store_codex_thread_id(agent, getattr(turn, "thread_id", None))
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         _close_codex_session(agent)

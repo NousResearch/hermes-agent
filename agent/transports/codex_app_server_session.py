@@ -201,38 +201,22 @@ class CodexAppServerSession:
         # Permissions are NOT sent on thread/start: codex gates ``thread/start.permissions``
         # behind experimentalApi + a matching ``[permissions]`` table in ~/.codex/config.toml.
         if self._resume_thread_id:
-            try:
-                result = self._client.request(
-                    "thread/resume",
-                    {"threadId": self._resume_thread_id, "cwd": self._cwd},
-                    timeout=15,
+            # Never replace a continuation with an empty thread. Transient
+            # errors can be retried; a deliberate reset gets a new Hermes ID.
+            result = self._client.request(
+                "thread/resume",
+                {"threadId": self._resume_thread_id, "cwd": self._cwd},
+                timeout=15,
+            )
+            thread_id = _extract_thread_id(result)
+            if thread_id != self._resume_thread_id:
+                raise CodexAppServerError(
+                    code=-32603,
+                    message="Codex did not resume the saved thread; conversation was not reset.",
                 )
-                thread_id = _extract_thread_id(result)
-                if thread_id:
-                    self._thread_id = thread_id
-                    logger.info(
-                        "codex app-server thread resumed: id=%s profile=%s "
-                        "cwd=%s",
-                        self._thread_id[:8],
-                        self._permission_profile,
-                        self._cwd,
-                    )
-                    return self._thread_id
-                logger.warning(
-                    "codex thread/resume returned no thread id "
-                    "(payload keys: %s) — starting a fresh thread",
-                    sorted(result.keys()),
-                )
-            except (CodexAppServerError, TimeoutError) as exc:
-                # Rollout gone, codex too old, or id from another CODEX_HOME
-                # — a fresh thread is the correct degraded behavior either
-                # way, so resume failures must never fail the turn.
-                logger.warning(
-                    "codex thread/resume failed for id=%s (%s) — starting "
-                    "a fresh thread",
-                    self._resume_thread_id[:8],
-                    exc,
-                )
+            self._thread_id = thread_id
+            logger.info("codex app-server thread resumed: id=%s", thread_id[:8])
+            return thread_id
 
         result = self._client.request("thread/start", {"cwd": self._cwd}, timeout=15)
         # Different codex versions serialize the id under thread.id / sessionId / threadId.

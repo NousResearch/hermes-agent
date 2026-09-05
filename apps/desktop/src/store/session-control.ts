@@ -140,6 +140,7 @@ const DISPATCH_TYPES = new Set<SessionControlDispatch['type']>(['exec', 'send'])
 const ERROR_LIMIT = 240
 
 const versions = new Map<string, number>()
+const eventVersions = new Map<string, number>()
 
 export const $sessionControlBySession = atom<Record<string, SessionControlEntry>>({})
 
@@ -502,6 +503,17 @@ function advanceVersion(sessionId: string): number {
   return next
 }
 
+function currentEventVersion(sessionId: string): number {
+  return eventVersions.get(sessionId) ?? 0
+}
+
+function advanceEventVersion(sessionId: string): number {
+  const next = currentEventVersion(sessionId) + 1
+  eventVersions.set(sessionId, next)
+
+  return next
+}
+
 function isCurrent(sessionId: string, token: number): boolean {
   return currentVersion(sessionId) === token
 }
@@ -556,7 +568,35 @@ export function applySessionControlSnapshot(sessionId: string, rawSnapshot: unkn
 
 /** Applies an event update; invalid updates are deliberately a claimed no-op. */
 export function applySessionControlUpdate(sessionId: string, rawSnapshot: unknown): SessionControlEntry | undefined {
-  return applySessionControlSnapshot(sessionId, rawSnapshot)
+  if (!sessionId) {
+    return undefined
+  }
+
+  const snapshot = parseSessionControlSnapshot(rawSnapshot)
+
+  if (!snapshot) {
+    return undefined
+  }
+
+  const current = $sessionControlBySession.get()[sessionId] ?? emptyEntry()
+  const actionIsPending = current.pendingAction !== null
+
+  advanceEventVersion(sessionId)
+
+  if (!actionIsPending) {
+    advanceVersion(sessionId)
+  }
+
+  const nextSnapshot = current.snapshot?.revision === snapshot.revision ? current.snapshot : snapshot
+
+  return publishEntry(sessionId, {
+    ...current,
+    capability: 'supported',
+    error: null,
+    loading: actionIsPending ? current.loading : false,
+    pendingAction: actionIsPending ? current.pendingAction : null,
+    snapshot: nextSnapshot
+  })
 }
 
 export function clearSessionControl(sessionId: string): void {
@@ -584,12 +624,16 @@ export function resetSessionControlAfterGatewayRebind(): void {
   for (const [sessionId, entry] of Object.entries(entries)) {
     advanceVersion(sessionId)
 
-    if (entry.capability === 'unsupported') {
-      nextEntries[sessionId] = { ...entry, capability: 'unknown', error: null, loading: false, pendingAction: null }
-      changed = true
-    } else {
-      nextEntries[sessionId] = entry
+    const nextEntry: SessionControlEntry = {
+      ...entry,
+      capability: entry.capability === 'unsupported' ? 'unknown' : entry.capability,
+      error: null,
+      loading: false,
+      pendingAction: null
     }
+
+    nextEntries[sessionId] = nextEntry
+    changed ||= !sameEntry(entry, nextEntry)
   }
 
   if (changed) {
@@ -605,6 +649,7 @@ export function resetSessionControlForTests(): void {
 
   $sessionControlBySession.set({})
   versions.clear()
+  eventVersions.clear()
 }
 
 function beginRead(sessionId: string, background: boolean): number {
@@ -627,7 +672,7 @@ function beginAction(sessionId: string, action: SessionControlAction): number {
   publishEntry(sessionId, {
     ...current,
     error: null,
-    loading: false,
+    loading: true,
     pendingAction: action
   })
 
@@ -794,6 +839,7 @@ export async function runSessionControlAction(
     throw new Error('Session control gateway is unavailable')
   }
 
+  const eventVersion = currentEventVersion(sessionId)
   const token = beginAction(sessionId, action)
 
   try {
@@ -818,7 +864,15 @@ export async function runSessionControlAction(
 
     return dispatch
   } catch (error) {
-    if (isSessionGoneForBackgroundPolling(error)) {
+    if (isMethodNotFound(error)) {
+      const transitioned = eventVersion === currentEventVersion(sessionId) ? markUnsupported(sessionId, token) : false
+
+      if (transitioned) {
+        await refreshSessionGoal(sessionId)
+      } else {
+        publishFailure(sessionId, token, error, true)
+      }
+    } else if (isSessionGoneForBackgroundPolling(error)) {
       finishGoneRequest(sessionId, token, true)
     } else {
       publishFailure(sessionId, token, error, true)

@@ -23,7 +23,7 @@ _mandatory_aslr_enabled_cache: "bool | None" = None
 # misses Git-for-Windows fork/spawn failures under system-wide Mandatory ASLR.
 _BASH_EXTERNAL_PROGRAM_PROBE = "/usr/bin/true; /usr/bin/cat --version >/dev/null"
 
-_MSYS_SPAWN_FAILURE_MARKERS = ("dofork:", "child_copy:", "0xc0000142", "0xc0000005")
+_MSYS_SPAWN_FAILURE_MARKERS = ("dofork:", "child_copy:", "0xc0000142", "0xc0000005", "timed out", "hang", "deadlock")
 
 
 def _looks_like_msys_spawn_failure(details: str) -> bool:
@@ -80,6 +80,44 @@ def _git_bash_aslr_help(bash: str, details: str = "") -> str:
     )
 
 
+def _run_probe_command(cmd: list[str], timeout: float = 5.0) -> tuple[int, str]:
+    """Execute a probe command bounded by a timeout, terminating the entire process tree on Windows."""
+    creationflags = windows_hide_flags() if _IS_WINDOWS else 0
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=creationflags,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return proc.returncode, f"{stdout or ''}{stderr or ''}".strip()
+    except subprocess.TimeoutExpired:
+        if _IS_WINDOWS:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    capture_output=True,
+                    timeout=5,
+                    creationflags=windows_hide_flags(),
+                )
+            except Exception:
+                pass
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        try:
+            proc.communicate(timeout=2)
+        except Exception:
+            pass
+        return -1, f"Git Bash probe timed out after {timeout}s (process hang/deadlock)"
+
+
 def _bash_starts(bash: str) -> bool:
     """True if *bash* can launch external MSYS programs (cached per path).
     ``--noprofile --norc`` so a broken login post-install (``Directory
@@ -87,18 +125,18 @@ def _bash_starts(bash: str) -> bool:
     if bash in _bash_starts_cache:
         return _bash_starts_cache[bash]
     try:
-        result = subprocess.run(
+        returncode, output = _run_probe_command(
             [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=15, creationflags=windows_hide_flags() if _IS_WINDOWS else 0)
-        ok = result.returncode == 0
+            timeout=5.0,
+        )
+        ok = returncode == 0
         if not ok:
-            combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
-            _bash_probe_details_cache[bash] = combined[:2000]
-            logger.debug("bash probe failed for %s: %s", bash, combined[:200])
+            _bash_probe_details_cache[bash] = output[:2000]
+            logger.debug("bash probe failed for %s (exit %d): %s", bash, returncode, output[:200])
     except Exception as exc:
         _bash_probe_details_cache[bash] = str(exc)[:2000]
         logger.debug("bash probe error for %s: %s", bash, exc)
         ok = False
     _bash_starts_cache[bash] = ok
     return ok
+

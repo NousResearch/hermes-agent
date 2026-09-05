@@ -343,20 +343,29 @@ def build_subprocess_env(
 
 # --- Shell discovery ---
 def _windows_bash_candidates(custom: "str | None") -> list[str]:
-    """Ordered bash.exe candidates on Windows: HERMES_GIT_BASH_PATH, our portable Git
-    under %LOCALAPPDATA%\\hermes\\git (PortableGit ``bin`` and MinGit ``usr\\bin``),
-    known Git-for-Windows dirs, then PATH last — ``shutil.which`` may return WSL's
-    bash, which fails silently on Windows paths."""
+    """Ordered bash.exe candidates on Windows: HERMES_GIT_BASH_PATH (and its direct usr/bin counterpart),
+    our portable Git under %LOCALAPPDATA%\\hermes\\git (PortableGit ``bin`` and MinGit ``usr\\bin``),
+    known Git-for-Windows dirs (both ``bin`` and ``usr\\bin``), then PATH last — ``shutil.which``
+    may return WSL's bash, which fails silently on Windows paths."""
     getenv = os.environ.get
     lad = getenv("LOCALAPPDATA", "")
     roots = [
         lad and os.path.join(lad, "hermes", "git", "bin"),
         lad and os.path.join(lad, "hermes", "git", "usr", "bin"),
         os.path.join(getenv("ProgramFiles", r"C:\Program Files"), "Git", "bin"),
+        os.path.join(getenv("ProgramFiles", r"C:\Program Files"), "Git", "usr", "bin"),
         os.path.join(getenv("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin"),
+        os.path.join(getenv("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "usr", "bin"),
         lad and os.path.join(lad, "Programs", "Git", "bin"),
+        lad and os.path.join(lad, "Programs", "Git", "usr", "bin"),
     ]
-    raw = [custom or "", *(os.path.join(r, "bash.exe") for r in roots if r)]
+    raw = [custom or ""]
+    if custom and os.path.normpath(custom).lower().endswith(os.path.join("bin", "bash.exe").lower()):
+        # Check if the direct MSYS2 bash under usr\bin exists for the custom installation
+        usr_candidate = os.path.join(os.path.dirname(os.path.dirname(os.path.normpath(custom))), "usr", "bin", "bash.exe")
+        if os.path.isfile(usr_candidate):
+            raw.append(usr_candidate)
+    raw.extend(os.path.join(r, "bash.exe") for r in roots if r)
     candidates = list(dict.fromkeys(c for c in raw if c and os.path.isfile(c)))
     found = shutil.which("bash")
     if found and found not in candidates:

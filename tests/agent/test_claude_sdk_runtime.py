@@ -4675,6 +4675,78 @@ class TestGatewayApprovalBridge:
             approval_mod.unregister_gateway_notify(sk)
             approval_ctx.reset_current_session_key(token)
 
+    @pytest.mark.parametrize(
+        "tirith_action", ["error", "unknown", "ask", None, "BLOCK", " warn", ""],
+    )
+    def test_smart_prefilter_escalates_an_unrecognised_tirith_action(
+        self, monkeypatch, tirith_action,
+    ):
+        """Only an explicit "allow" clears; anything else consults the evaluator.
+
+        Screening on a deny-list made every other value -- an error verdict, an
+        action added later, a case or whitespace variant -- fall through to a
+        grant. The scanner only emits allow/warn/block today, so this is a
+        latent trap rather than a live hole, but a security verdict should fail
+        closed on anything it does not recognise.
+        """
+        sk = "sess-prefilter-tirith-unknown-" + (
+            str(tirith_action).strip().lower() or "empty"
+        )
+        approval_mod, token = self._gateway_ctx(monkeypatch, sk)
+        cards = []
+        try:
+            import tools.tirith_security as tirith_mod
+
+            monkeypatch.setattr(
+                tirith_mod, "check_command_security",
+                lambda command, **k: {
+                    "action": tirith_action, "findings": [], "summary": "",
+                },
+            )
+            monkeypatch.setattr(
+                approval_ctx, "_get_approval_config",
+                lambda: {"mode": "smart", "timeout": 5},
+            )
+            smart_calls = self._smart_recorder(monkeypatch)
+            approval_mod.register_gateway_notify(sk, lambda data: cards.append(dict(data)))
+            cb = sdk_gateway.build_sdk_gateway_approval_callback()
+            result = self._call_gateway(cb, "echo hello")
+            assert len(smart_calls) == 1, "an unrecognised verdict must not auto-clear"
+            assert result == "once"
+        finally:
+            approval_mod.unregister_gateway_notify(sk)
+            approval_ctx.reset_current_session_key(token)
+
+    def test_smart_prefilter_escalates_a_verdict_with_no_action_key(self, monkeypatch):
+        """A verdict dict carrying no "action" at all must not clear.
+
+        Native reads `tirith_result["action"]` and would raise; the pre-filter's
+        `.get` returns None, which the deny-list check treated as a pass.
+        """
+        sk = "sess-prefilter-tirith-noaction"
+        approval_mod, token = self._gateway_ctx(monkeypatch, sk)
+        cards = []
+        try:
+            import tools.tirith_security as tirith_mod
+
+            monkeypatch.setattr(
+                tirith_mod, "check_command_security",
+                lambda command, **k: {"findings": [], "summary": ""},
+            )
+            monkeypatch.setattr(
+                approval_ctx, "_get_approval_config",
+                lambda: {"mode": "smart", "timeout": 5},
+            )
+            smart_calls = self._smart_recorder(monkeypatch)
+            approval_mod.register_gateway_notify(sk, lambda data: cards.append(dict(data)))
+            cb = sdk_gateway.build_sdk_gateway_approval_callback()
+            result = self._call_gateway(cb, "echo hello")
+            assert len(smart_calls) == 1
+            assert result == "once"
+        finally:
+            approval_mod.unregister_gateway_notify(sk)
+            approval_ctx.reset_current_session_key(token)
+
     def test_smart_prefilter_does_not_apply_to_non_bash_tools(self, monkeypatch):
         """Only Bash carries a shell command; every other tool is unchanged."""
         sk = "sess-prefilter-nonbash"

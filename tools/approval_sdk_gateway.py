@@ -211,7 +211,7 @@ def sdk_bash_prefilter_clears(request: dict) -> bool:
         tirith_result = _approval._tirith_scan(command)
         if type(tirith_result) is not dict:
             return False
-        if tirith_result.get("action") in {"block", "warn"}:
+        if tirith_result.get("action") != "allow":
             return False
         return not detect_dangerous_command(command)[0]
     except Exception:

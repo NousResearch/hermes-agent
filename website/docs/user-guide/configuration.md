@@ -685,6 +685,26 @@ See [Code Execution](features/code-execution.md) and the [Terminal section of th
 
 ## Skill Settings
 
+### System prompt skill index
+
+Hermes includes the `<available_skills>` catalogue in new sessions by default.
+Disable only that catalogue when another discovery surface supplies the skill
+list; `skills_list`, `skill_view`, and `skill_manage` remain available.
+
+```yaml
+skills:
+  inject_index: false   # default: true
+```
+
+The system prompt is frozen per running agent. Restart Hermes after changing
+this setting; it never rewrites an active conversation.
+
+For one run, use `hermes chat --no-skills-index` (classic CLI or TUI) or
+`hermes --no-skills-index -z "..."`. The flag overrides `inject_index: true`
+for that agent only.
+
+### Per-skill settings
+
 Skills can declare their own configuration settings via their SKILL.md frontmatter. These are non-secret values (paths, preferences, domain settings) stored under the `skills.config` namespace in `config.yaml`.
 
 ```yaml

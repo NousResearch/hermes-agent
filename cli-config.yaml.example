@@ -1062,6 +1062,10 @@ streaming:
 # also create new skills after completing complex tasks.
 #
 skills:
+  # Include the <available_skills> discovery index in the system prompt.
+  # Skill tools remain available when this is false.
+  inject_index: true
+
   # Nudge the agent to create skills after complex tasks.
   # Every N tool-calling iterations, remind the model to consider saving a skill.
   # Set to 0 to disable.

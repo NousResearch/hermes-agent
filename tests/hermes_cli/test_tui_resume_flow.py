@@ -209,11 +209,12 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
         mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: {"session_search"}),
     )
 
-    text, result = _run_agent("recall this")
+    text, result = _run_agent("recall this", inject_skills_index=False)
     assert text == "ok"
     assert not result.get("failed")
     assert captured["session_db"] is sentinel_db
     assert captured["enabled_toolsets"] == ["session_search"]
+    assert captured["inject_skills_index"] is False
     assert captured["prompt"] == "recall this"
 
 
@@ -236,7 +237,10 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
 
     with pytest.raises(SystemExit):
         main_mod._launch_tui(
-            model="nous/hermes-test", provider="nous", toolsets="web, terminal"
+            model="nous/hermes-test",
+            provider="nous",
+            toolsets="web, terminal",
+            no_skills_index=True,
         )
 
     env = captured["env"]
@@ -245,6 +249,7 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     assert env["HERMES_TUI_PROVIDER"] == "nous"
     assert env["HERMES_INFERENCE_PROVIDER"] == "nous"
     assert env["HERMES_TUI_TOOLSETS"] == "web,terminal"
+    assert env["HERMES_TUI_NO_SKILLS_INDEX"] == "1"
     active_path = Path(env["HERMES_TUI_ACTIVE_SESSION_FILE"])
     assert active_path.name.startswith("hermes-tui-active-session-")
     assert active_path.suffix == ".json"

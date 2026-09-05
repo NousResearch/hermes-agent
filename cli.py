@@ -1030,8 +1030,7 @@ from hermes_cli.worktree_ops import (
 )
 
 # ============================================================================= Git Worktree Isolation
-# (#652) =============================================================================
-_active_worktree: Optional[Dict[str, str]] = None
+# (#652) ======================================================================_active_worktree: Optional[Dict[str, str]] = None
 
 
 def _cleanup_worktree(info: Dict[str, str] = None) -> None:

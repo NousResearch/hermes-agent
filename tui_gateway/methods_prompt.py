@@ -478,6 +478,9 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
     # expires. See #63078.
     err = _wait_agent_for_prompt(session, rid, sid)
     if err:
+        if classic_admission is not None:
+            from tui_gateway.classic_exports import abort_before_run
+            abort_before_run(session)
         # Terminal frame + retained snapshot (not a bare "error" event): the snapshot is
         # the only way resume shows this to a disconnected client.
         _emit_terminal_turn_error(
@@ -490,6 +493,9 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
         return
     with session["history_lock"]:
         if session.get("_turn_cancel_requested") or not session.get("running"):
+            if classic_admission is not None:
+                from tui_gateway.classic_exports import abort_before_run
+                abort_before_run(session)
             session["running"] = False
             _clear_inflight_turn(session)
             # Without this emit the turn vanishes silently after {"status": "streaming"}.
@@ -646,19 +652,36 @@ def _(rid, params: dict) -> dict:
             "compute-host dispatch failed for session %s; falling back inline: %s", sid,
             isolated_response["error"].get("message", "unknown error"))
     if (err := _persist_session_row_for_submit(rid, session)) is not None:
+        if params.get("classic_export") is not None:
+            _abort_classic_prompt_start(session)
         return err
     # A completed FAILED build must not wedge the session: rebuild, don't replay it.
-    if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
-        _start_agent_build(sid, session)
-    classic_admission = session.get("_classic_export_admission") if params.get("classic_export") is not None else None
-    run_thread = threading.Thread(
-        target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, hosted_terminal_callback, classic_admission),
-        daemon=True)
-    # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
-    session["_run_thread"] = run_thread
-    run_thread.start()
+    try:
+        if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
+            _start_agent_build(sid, session)
+        classic_admission = session.get("_classic_export_admission") if params.get("classic_export") is not None else None
+        run_thread = threading.Thread(
+            target=lambda: _run_after_agent_ready(
+                rid, sid, session, text, display_kind, hosted_terminal_callback, classic_admission),
+            daemon=True)
+        # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
+        session["_run_thread"] = run_thread
+        run_thread.start()
+    except Exception:
+        if params.get("classic_export") is None:
+            raise
+        _abort_classic_prompt_start(session)
+        logger.exception("Classic member turn failed before worker start")
+        return _err(rid, 4151, "Classic member turn could not start; its admission was not replayed")
     return _ok(rid, {"status": "streaming", **survivor_fields})
+
+
+def _abort_classic_prompt_start(session):
+    from tui_gateway.classic_exports import abort_before_run
+    abort_before_run(session)
+    with session["history_lock"]:
+        session["running"] = False
+        _clear_inflight_turn(session)
 
 
 # ── attachments ─────────────────────────────────────────────────────────────

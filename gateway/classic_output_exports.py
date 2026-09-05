@@ -47,13 +47,11 @@ class ClassicExportScope:
         return hashlib.sha256(self.lineage_json.encode()).hexdigest()
 
 
-def validate_write(conn, scope, *, quota=True):
+def validate_write(conn, scope):
     row = conn.execute("SELECT state, expires FROM classic_output_exports WHERE export_id=? AND generation=?",
                        (scope.export_id, scope.execution_generation)).fetchone()
     if row is None or row["state"] != "running" or row["expires"] <= time.time():
         raise RoomArtifactError("Classic export is not an active admitted turn")
-    if quota and conn.execute("SELECT COUNT(*) FROM hosted_room_output_artifacts WHERE acknowledged_at IS NULL").fetchone()[0] >= MAX_FILES:
-        raise RoomArtifactError("Gateway file count quota exceeded; retire existing files first")
 
 
 class ClassicExports:
@@ -153,7 +151,7 @@ class ClassicExports:
             return
         with self.outbox._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            validate_write(conn, self.scope(row), quota=False)
+            validate_write(conn, self.scope(row))
             has_files = conn.execute("SELECT 1 FROM hosted_room_output_artifacts WHERE scope_key=? LIMIT 1",
                                      (self.scope(row).key,)).fetchone()
             conn.execute("UPDATE classic_output_exports SET state=?,text=? WHERE export_id=?",
@@ -181,6 +179,8 @@ class ClassicExports:
         row = self.lookup(export_id)
         with self.outbox._connect() as conn:
             conn.execute("UPDATE classic_output_exports SET state='retired' WHERE export_id=?", (export_id,))
+            conn.execute("UPDATE hosted_room_output_artifacts SET cleanup_required_at=? WHERE scope_key=?",
+                         (time.time(), self.scope(row).key))
             conn.commit()
         self.outbox.discard(self.scope(row))
 
@@ -191,8 +191,13 @@ class ClassicExports:
             if not existing and conn.execute("SELECT COUNT(*) FROM classic_retired_groups").fetchone()[0] >= MAX_EXPORTS:
                 raise RoomArtifactError("Classic retirement metadata quota exceeded")
             conn.execute("INSERT OR IGNORE INTO classic_retired_groups VALUES (?,?)", (self.home, identifier(group_id)))
-            rows = conn.execute("SELECT export_id FROM classic_output_exports WHERE profile_home=? AND json_extract(binding,'$.group_id')=?",
+            rows = conn.execute("SELECT export_id, generation FROM classic_output_exports WHERE profile_home=? AND json_extract(binding,'$.group_id')=?",
                                 (self.home, identifier(group_id))).fetchall()
+            conn.execute("UPDATE classic_output_exports SET state='retired' WHERE profile_home=? AND json_extract(binding,'$.group_id')=?",
+                         (self.home, group_id))
+            for row in rows:
+                conn.execute("UPDATE hosted_room_output_artifacts SET cleanup_required_at=? WHERE scope_key=?",
+                             (time.time(), self.scope(row).key))
             conn.commit()
         for row in rows:
-            self.retire(row[0])
+            self.outbox.discard(self.scope(row))

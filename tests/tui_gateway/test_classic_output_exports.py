@@ -254,3 +254,59 @@ def test_runtime_scope_cannot_borrow_another_profile_home(custody, tmp_path):
     finally:
         reset_hermes_home_override(home_token)
         classic_exports.reset(token)
+
+
+def test_group_retirement_fences_every_export_before_cleanup_and_recovers(custody, monkeypatch):
+    exports = []
+    for index in range(3):
+        row, _ = custody.admit('writer', {**REQUEST, 'request_id': f'retire-{index}'}, 'share')
+        path = custody.outbox.db_path.parent / f'output-{index}.txt'
+        path.write_text(f'file {index}')
+        result = share(custody, row, path)
+        assert result['ok']
+        if index < 2:
+            custody.settle(row['export_id'], 'shared', True)
+        exports.append((row, result, path))
+    blobs = list(custody.outbox.blob_root.glob('blob_*'))
+
+    def fail_cleanup(_scope):
+        raise OSError('forced cleanup failure after durable retirement')
+
+    monkeypatch.setattr(custody.outbox, 'discard', fail_cleanup)
+    with pytest.raises(OSError, match='forced cleanup'):
+        custody.retire_group(REQUEST['group_id'])
+    assert all(path.exists() for path in blobs)
+    for row, result, path in exports:
+        assert custody.lookup(row['export_id'])['state'] == 'retired'
+        with pytest.raises(RoomArtifactError, match='not published'):
+            custody.read(row['export_id'], result['artifact_id'])
+        assert share(custody, row, path)['ok'] is False
+    with pytest.raises(RoomArtifactError, match='active admitted'):
+        custody.settle(exports[-1][0]['export_id'], 'late completion', True)
+
+    recovered = ClassicExports(custody.home)
+    assert not any(path.exists() for path in blobs)
+    for row, result, path in exports:
+        with pytest.raises(RoomArtifactError, match='not published'):
+            recovered.read(row['export_id'], result['artifact_id'])
+        assert share(recovered, row, path)['ok'] is False
+    recovered.retire_group(REQUEST['group_id'])
+    recovered.retire_group(REQUEST['group_id'])
+
+
+def test_identical_tool_share_replays_at_full_count_without_allocating(custody, monkeypatch):
+    monkeypatch.setattr('gateway.classic_output_exports.MAX_FILES', 1)
+    row, _ = custody.admit('writer', REQUEST, 'share')
+    path = custody.outbox.db_path.parent / 'same.txt'
+    path.write_text('same bytes')
+    first = share(custody, row, path)
+    assert first['ok']
+    blobs = set(custody.outbox.blob_root.iterdir())
+    second = share(custody, row, path)
+    assert second['ok'] and second['artifact_id'] == first['artifact_id']
+    assert set(custody.outbox.blob_root.iterdir()) == blobs
+    other = path.with_name('other.txt')
+    other.write_text('new bytes')
+    assert share(custody, row, other)['ok'] is False
+    custody.settle(row['export_id'], 'shared', True)
+    assert custody.read(row['export_id'], first['artifact_id'])[1] == b'same bytes'

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from dataclasses import dataclass
 from contextvars import ContextVar
 
@@ -113,10 +114,18 @@ def settle(session, text, success):
 
 
 def finish(session):
-    admission = session.pop("_classic_export_admission", None)
+    admission = session.get("_classic_export_admission")
     if isinstance(admission, Admission):
         if admission.store.lookup(admission.row["export_id"])["state"] == "running":
             admission.store.retire(admission.row["export_id"])
+        session.pop("_classic_export_admission", None)
+
+
+def abort_before_run(session):
+    try:
+        finish(session)
+    except Exception:
+        logging.getLogger(__name__).exception("Classic start failed; durable cleanup remains pending, never replay the request")
 
 
 def register(server):

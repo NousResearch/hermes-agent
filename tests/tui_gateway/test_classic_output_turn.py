@@ -70,3 +70,46 @@ def test_real_submit_publication_and_recipient_bytes(turn_env, tmp_path, monkeyp
     finally:
         reset_transport(transport_token)
         reset_hermes_home_override(token)
+
+
+@pytest.mark.parametrize('failure', ['persistence', 'build_start', 'build_ready'])
+def test_pre_run_failure_retires_admission_without_model_or_replay(turn_env, tmp_path, monkeypatch, failure):
+    home = tmp_path / 'failed-writer'
+    home.mkdir()
+    token = set_hermes_home_override(home)
+    transport = SimpleNamespace(write=lambda frame: True)
+    transport_token = bind_transport(transport)
+    calls = []
+    agent = SimpleNamespace(session_id='failed-session', tools=[], valid_tool_names=set(), platform='desktop',
+                            clear_interrupt=lambda: None, run_conversation=lambda *a, **kw: calls.append(a))
+    session = _session(agent, profile_home=str(home), room_plumbing=True, transport=transport, cwd=str(home))
+    monkeypatch.setitem(server._sessions, 'failed-runtime', session)
+    monkeypatch.setattr(server, '_session_cwd', lambda value: value['cwd'])
+    classic_exports.install_schema(session)
+    if failure == 'persistence':
+        monkeypatch.setattr(server, '_ensure_session_db_row', lambda _: False)
+    elif failure == 'build_start':
+        monkeypatch.setattr(server, '_restart_completed_failed_agent_build', lambda *a: False)
+        def fail_build(*args):
+            raise RuntimeError('forced builder startup failure')
+        monkeypatch.setattr(server, '_start_agent_build', fail_build)
+    else:
+        monkeypatch.setattr(server, '_start_agent_build', lambda *a: None)
+        monkeypatch.setattr(server, '_wait_agent_for_prompt', lambda *a: server._err(1, 5032, 'forced build failure'))
+    request = {'request_id': f'failed-{failure}', 'issued_at': time.time(), 'group_id': 'workshop', 'thread_id': 'thread',
+               'recipients': [{'installation': 'reviewer-install', 'profile': 'reviewer'}]}
+    params = {'session_id': 'failed-runtime', 'text': 'create and share', 'classic_export': request}
+    try:
+        response = server._methods['prompt.submit'](1, params)
+        assert 'error' in response or response['result']['status'] == 'streaming'
+        store = classic_exports.store_for(session)
+        row = store.prior(session['session_key'], request['request_id'])
+        assert row['state'] == 'retired'
+        assert not session['running']
+        assert '_classic_export_admission' not in session
+        repeated = server._methods['prompt.submit'](2, params)
+        assert repeated['result']['classic_export']['state'] == 'retired'
+        assert calls == []
+    finally:
+        reset_transport(transport_token)
+        reset_hermes_home_override(token)

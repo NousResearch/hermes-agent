@@ -964,6 +964,10 @@ class RoomArtifactOutbox:
             ).fetchone()
             if existing is not None:
                 return self._manifest(existing)
+            if scope.as_mapping().get("kind") == "classic":
+                from gateway.classic_output_exports import MAX_FILES
+                if conn.execute("SELECT COUNT(*) FROM hosted_room_output_artifacts WHERE acknowledged_at IS NULL").fetchone()[0] >= MAX_FILES:
+                    raise RoomArtifactError("Gateway file count quota exceeded; retire existing files first")
             totals = conn.execute(
                 """SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes
                    FROM hosted_room_output_artifacts
@@ -1193,7 +1197,12 @@ class RoomArtifactOutbox:
         removed = 0
         for row in rows:
             try:
-                scope = RoomArtifactScope.from_mapping(json.loads(row["scope_json"]))
+                mapping = json.loads(row["scope_json"])
+                if mapping.get("kind") == "classic":
+                    from gateway.classic_output_exports import ClassicExportScope
+                    scope = ClassicExportScope(mapping["export_id"], mapping["execution_generation"])
+                else:
+                    scope = RoomArtifactScope.from_mapping(mapping)
                 removed += self.discard(scope)
             except Exception:
                 continue

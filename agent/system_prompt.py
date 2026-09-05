@@ -538,12 +538,34 @@ def _alibaba_identity_part(agent: Any) -> List[str]:
 
 def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
     """``(prefix, workspace, trailing)`` coding-posture blocks; all empty
-    without tools or when probing fails (it must never block prompt build)."""
+    without tools or when probing fails (it must never block prompt build).
+
+    The workspace block is a LIVE ``git status``/``git log`` probe and it leads the
+    context tier — ahead of the entire volatile band.  Since #98426 the builder runs
+    again at every compaction boundary, so re-probing here re-emits different bytes on
+    any session whose repo moved (a commit, one edited or untracked file), pushing the
+    prefix-cache divergence point in front of skills, memory and the timestamp line and
+    making #98426's byte-equality keep-prompt fast path unreachable in a coding session.
+    It also contradicts the block's own "snapshot at session start" wording and the
+    freeze ``coding_context`` documents.  So the first build pins the bytes on the agent,
+    keyed by the resolved cwd (one gateway serves many cwds, and the per-turn terminal
+    scope can move it), and later rebuilds replay them instead of shelling out again.
+    A resumed process has no pin and legitimately re-snapshots at its own session start.
+    """
     try:
         from agent.coding_context import coding_system_prompt_parts
-        if agent.valid_tool_names:
-            return coding_system_prompt_parts(platform=agent.platform, cwd=resolve_context_cwd(),
-                                              model=agent.model, valid_tool_names=agent.valid_tool_names)
+        if not agent.valid_tool_names:
+            return [], [], []
+        cwd = resolve_context_cwd()
+        cwd_key = str(cwd) if cwd is not None else ""
+        pinned = getattr(agent, "_frozen_workspace_snapshot", None)
+        # "" is a real pinned value (no workspace here) — only a cwd mismatch re-probes.
+        replay = pinned[1] if isinstance(pinned, tuple) and len(pinned) == 2 and pinned[0] == cwd_key else None
+        parts = coding_system_prompt_parts(platform=agent.platform, cwd=cwd, model=agent.model,
+                                           valid_tool_names=agent.valid_tool_names, workspace_block=replay)
+        if replay is None:
+            agent._frozen_workspace_snapshot = (cwd_key, parts[1][0] if parts[1] else "")
+        return parts
     except Exception:
         pass
     return [], [], []

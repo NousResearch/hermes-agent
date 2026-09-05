@@ -564,6 +564,10 @@ _SESSION_STATE: Dict[str, Any] = {
     # prefix, kept separately only to place an early cache marker.
     "_cached_system_prompt": None,
     "_cached_system_prompt_static": None,
+    # ``(cwd, workspace_block)`` pinned on the first build: the git/workspace snapshot is
+    # probed once per session and replayed on every rebuild, so a moving repo can't push the
+    # prefix-cache divergence point ahead of the volatile band at a compaction boundary.
+    "_frozen_workspace_snapshot": None,
     # Whether close() also closes _session_db. False: a caller-supplied handle is usually the
     # SHARED launch handle; callers handing over a DEDICATED handle set True.
     "_owns_session_db": False,

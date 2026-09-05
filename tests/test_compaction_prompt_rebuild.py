@@ -23,6 +23,12 @@ def _agent(**over):
         _cached_system_prompt="OLD PROMPT",
         _cached_system_prompt_static="OLD",
         _memory_store=None,
+        _memory_manager=None,
+        provider="",
+        model="",
+        platform="",
+        _memory_enabled=False,
+        _user_profile_enabled=False,
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -87,6 +93,134 @@ class TestCommitAlwaysRebuilds(unittest.TestCase):
     def test_drift_rebuild_is_logged(self):
         src = self._src()
         self.assertIn("Compaction rebuilt a drifted system prompt", src)
+
+
+class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
+    """Compaction rebuilds must not invalidate the prefix at the workspace snapshot (#103326)."""
+
+    def test_workspace_snapshot_replayed_across_rebuilds_when_repo_mutates(self):
+        import tempfile, shutil, subprocess
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt, invalidate_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-ws-"))
+        try:
+            repo = tmp / "proj"
+            repo.mkdir()
+            for cmd in (
+                ["git", "init", "-q", "-b", "main"],
+                ["git", "config", "user.email", "t@t"],
+                ["git", "config", "user.name", "t"],
+                ["git", "config", "core.autocrlf", "false"],
+            ):
+                subprocess.run(cmd, cwd=repo, check=True)
+            (repo / "main.py").write_text("print(1)\n")
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "init commit"], cwd=repo, check=True)
+
+            agent = _agent(
+                load_soul_identity=False,
+                skip_context_files=True,
+                valid_tool_names={"terminal", "file_write"},
+                platform="cli",
+                model="gpt-4o",
+                _memory_enabled=False,
+                _user_profile_enabled=False,
+                _task_completion_guidance=False,
+                _parallel_tool_call_guidance=False,
+                _tool_use_enforcement=False,
+                _execution_guidance=False,
+                _environment_probe=False,
+                _bot_mode_protocol=False,
+                _kanban_worker_guidance="",
+                pass_session_id=False,
+                session_id="s1",
+                _emit_status=lambda *a, **k: None,
+            )
+
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+
+                # First build: pins the snapshot
+                p1 = build_system_prompt(agent)
+                self.assertIn("Workspace (snapshot at session start", p1)
+                self.assertIsNotNone(agent._frozen_workspace_snapshot)
+                self.assertEqual(agent._frozen_workspace_snapshot[0], str(repo))
+
+                # Now repo mutates (agent touched and committed new files)
+                (repo / "new_file.py").write_text("print(2)\n")
+                subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+                subprocess.run(["git", "commit", "-qm", "second commit"], cwd=repo, check=True)
+                (repo / "untracked.txt").write_text("wip\n")
+
+                # Invalidate prompt (as happens during context compression)
+                invalidate_system_prompt(agent)
+
+                # Second build: must replay pinned snapshot without re-probing git
+                p2 = build_system_prompt(agent)
+                self.assertEqual(p1, p2, "Prompt must remain byte-identical despite repo mutations")
+                self.assertNotIn("second commit", p2, "Rebuilt prompt must not leak mutated git log")
+
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_workspace_snapshot_reprobes_when_cwd_changes(self):
+        import tempfile, shutil, subprocess
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-cwd-"))
+        try:
+            repo1 = tmp / "r1"; repo1.mkdir()
+            repo2 = tmp / "r2"; repo2.mkdir()
+            for r in (repo1, repo2):
+                for cmd in (
+                    ["git", "init", "-q", "-b", "main"],
+                    ["git", "config", "user.email", "t@t"],
+                    ["git", "config", "user.name", "t"],
+                    ["git", "config", "core.autocrlf", "false"],
+                ):
+                    subprocess.run(cmd, cwd=r, check=True)
+                (r / "main.py").write_text("print(1)\n")
+                subprocess.run(["git", "add", "-A"], cwd=r, check=True)
+                subprocess.run(["git", "commit", "-qm", f"init {r.name}"], cwd=r, check=True)
+
+            agent = _agent(
+                load_soul_identity=False,
+                skip_context_files=True,
+                valid_tool_names={"terminal"},
+                platform="cli",
+                model="gpt-4o",
+                _memory_enabled=False,
+                _user_profile_enabled=False,
+                _task_completion_guidance=False,
+                _parallel_tool_call_guidance=False,
+                _tool_use_enforcement=False,
+                _execution_guidance=False,
+                _environment_probe=False,
+                _bot_mode_protocol=False,
+                _kanban_worker_guidance="",
+                pass_session_id=False,
+                session_id="s1",
+                _emit_status=lambda *a, **k: None,
+            )
+
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo1):
+                p1 = build_system_prompt(agent)
+                self.assertIn(f"init {repo1.name}", p1)
+
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo2):
+                p2 = build_system_prompt(agent)
+                self.assertIn(f"init {repo2.name}", p2)
+                self.assertEqual(agent._frozen_workspace_snapshot[0], str(repo2))
+
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

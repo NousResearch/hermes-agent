@@ -237,6 +237,13 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "create a new session with that title and proceed (instead of "
         "failing with a not-found error). Programmatic callers that "
         "want 'send to this named thread, making it if needed'."))
+    add("--allow-self-bot-chat", action="store_true", default=SUPPRESS, help=(
+        "Override the self-DM guard for `chat -c \"Bot Chat\"`: permitted "
+        "only when the launching context is an agent session of the SAME "
+        "profile. The guard exists because that shape forks a second, "
+        "unregistered agent context of the profile (its board actions are "
+        "attributed to the profile and can clobber a live claimant's run). "
+        "Cross-profile relays never trip the guard."))
     add("--worktree", "-w", action="store_true", default=SUPPRESS,
         help="Run in an isolated git worktree (for parallel agents on the same repo)")
     inherited(chat_parser, "--accept-hooks", action="store_true", default=SUPPRESS, help=(

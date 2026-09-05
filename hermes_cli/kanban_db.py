@@ -796,12 +796,15 @@ class Comment:
     author: str
     body: str
     created_at: int
+    session_id: Optional[str] = None
 
     @classmethod
     def from_row(cls, r: sqlite3.Row) -> "Comment":
+        keys = r.keys() if hasattr(r, "keys") else ()
         return cls(
             id=r["id"], task_id=r["task_id"], author=r["author"],
             body=r["body"], created_at=r["created_at"],
+            session_id=r["session_id"] if "session_id" in keys else None,
         )
 
 
@@ -954,7 +957,8 @@ CREATE TABLE IF NOT EXISTS task_comments (
     task_id    TEXT NOT NULL,
     author     TEXT NOT NULL,
     body       TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    session_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_events (
@@ -1678,7 +1682,16 @@ def task_graph_context(conn: sqlite3.Connection, task_id: str) -> dict:
 
 # --- Comments & events ---
 
-def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str) -> int:
+def add_comment(
+    conn: sqlite3.Connection, task_id: str, author: str, body: str,
+    *, session_id: Optional[str] = None,
+) -> int:
+    """Append a comment row. ``session_id`` records authorship provenance at
+    call time (the calling agent's session, when known): on a claimed task,
+    the ``author`` profile alone cannot distinguish the claimant's writer from
+    a second agent context running under the same profile (the bot-mode
+    self-DM fork incident class). Written once here; no code path ever
+    updates it."""
     if not body or not body.strip():
         raise ValueError("comment body is required")
     if not author or not author.strip():
@@ -1689,8 +1702,10 @@ def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str) 
     with write_txn(conn, allow_nested=True):
         _require_task(conn, task_id)
         cur = conn.execute(
-            "INSERT INTO task_comments (task_id, author, body, created_at) "
-            "VALUES (?, ?, ?, ?)", (task_id, author.strip(), body.strip(), now),
+            "INSERT INTO task_comments (task_id, author, body, created_at, session_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (task_id, author.strip(), body.strip(), now,
+             session_id.strip() if session_id and session_id.strip() else None),
         )
         _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
         return int(cur.lastrowid or 0)
@@ -2581,6 +2596,13 @@ def complete_task(
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
+        else:
+            # Run-identity CAS: no expected run means the row must STILL be
+            # unclaimed at the write. ``None`` never compiles to a
+            # predicate-free UPDATE — "no proof" is "IS NULL", not "anyone"
+            # (probe-before-mutation window; see _claim_run_identity_probe
+            # in tools/kanban_tools.py).
+            sql += " AND current_run_id IS NULL"
         if conn.execute(sql, params).rowcount != 1:
             return False
         if isinstance(metadata, dict):
@@ -2938,6 +2960,10 @@ def block_task(
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
+        else:
+            # Run-identity CAS: None means "row still unclaimed at the write",
+            # never a predicate-free UPDATE (see complete_task).
+            sql += " AND current_run_id IS NULL"
         if conn.execute(sql, params).rowcount != 1:
             return False
         run_id = _end_or_synthesize_run(
@@ -3047,7 +3073,16 @@ def request_review(
                 )
         reviewer = _canonical_assignee(reviewer)
         assignee_sql = ", assignee = ?" if reviewer is not None else ""
-        run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
+        if expected_run_id is not None:
+            run_guard = " AND current_run_id = ?"
+        elif not force:
+            # Run-identity CAS: None binds the write to an unclaimed row
+            # instead of omitting the ownership predicate (see complete_task).
+            # force=True skips it: that is the explicit human override of a
+            # live claim, and IS NULL would contradict its contract.
+            run_guard = " AND current_run_id IS NULL"
+        else:
+            run_guard = ""
         params: tuple[Any, ...] = (
             *(() if reviewer is None else (reviewer,)), task_id,
             *(() if expected_run_id is None else (int(expected_run_id),)),
@@ -3909,7 +3944,11 @@ def _ctx_comments(lines: list[str], comments: list[Comment], now: int) -> None:
     """Newest ``_CTX_MAX_COMMENTS`` comments. The explicit "comment from
     worker" framing stops an operator-controlled HERMES_PROFILE like
     "hermes-system" being read as a system directive above an
-    attacker-influenceable body (defense-in-depth)."""
+    attacker-influenceable body (defense-in-depth). Comments that carry a
+    session id (authorship provenance, #103457) render it after the stamp so
+    a next worker can tell WHICH execution wrote the comment — the #98750
+    stale-comment symptom; interpreting that id against the current-vs-ended
+    run remains complementary open work, this is provenance disclosure only."""
     shown, omitted_note = _ctx_tail(comments, _CTX_MAX_COMMENTS, "comment")
     if not shown:
         return
@@ -3922,7 +3961,10 @@ def _ctx_comments(lines: list[str], comments: list[Comment], now: int) -> None:
         # directive above the (attacker-influenceable) comment body. Defense-in-depth — the LLM-controlled
         # author-forgery surface was already closed in #22435. See #22452.
         safe_author = (c.author or "").replace("`", "")
-        lines.append(f"comment from worker `{safe_author}` at {_ctx_stamp(c.created_at, now)}:")
+        session_note = (f" (commenting session: `{c.session_id}`)"
+                        if c.session_id else "")
+        lines.append(f"comment from worker `{safe_author}` at "
+                     f"{_ctx_stamp(c.created_at, now)}{session_note}:")
         lines.append(_ctx_cap(c.body, _CTX_MAX_COMMENT_BYTES))
         lines.append("")
 

@@ -36,19 +36,24 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _running_task(conn, title="t"):
-    """Create a task and drive it to ``running`` so block_task can act."""
+    """Create a task and drive it to ``running`` so block_task can act.
+    Returns ``(task_id, run_id)`` — the run id is the block caller's
+    ownership proof under the run-identity CAS."""
     tid = kb.create_task(conn, title=title, assignee="worker")
     with kb.write_txn(conn):
         conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
     claimed = kb.claim_task(conn, tid, claimer="worker")
     assert claimed is not None
-    return tid
+    return tid, claimed.current_run_id
 
 
 def _make_running_again(conn, tid):
+    """Re-claim the task; returns the new run id (ownership proof)."""
     with kb.write_txn(conn):
         conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
-    assert kb.claim_task(conn, tid, claimer="worker") is not None
+    claimed = kb.claim_task(conn, tid, claimer="worker")
+    assert claimed is not None
+    return claimed.current_run_id
 
 
 # ---------------------------------------------------------------------------
@@ -66,11 +71,13 @@ def _make_running_again(conn, tid):
 
 def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
     with kbc.connect_closing() as conn:
-        tid = _running_task(conn)
-        kb.block_task(conn, tid, reason="x", kind="capability")
+        tid, run_id = _running_task(conn)
+        kb.block_task(conn, tid, reason="x", kind="capability",
+                      expected_run_id=run_id)
         kb.unblock_task(conn, tid)
-        _make_running_again(conn, tid)
-        kb.block_task(conn, tid, reason="x", kind="capability")
+        run_id2 = _make_running_again(conn, tid)
+        kb.block_task(conn, tid, reason="x", kind="capability",
+                      expected_run_id=run_id2)
         events = [e for e in kb.list_events(conn, tid)
                   if e.kind == "block_loop_detected"]
         assert events, "expected a block_loop_detected event"
@@ -88,15 +95,17 @@ def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
     """A dependency-parked child becomes ready once its parent completes."""
     with kbc.connect_closing() as conn:
         parent = kb.create_task(conn, title="parent", assignee="worker")
-        child = _running_task(conn, title="child")
+        child, child_run_id = _running_task(conn, title="child")
         kb.link_tasks(conn, parent_id=parent, child_id=child)
-        kb.block_task(conn, child, reason="wait", kind="dependency")
+        kb.block_task(conn, child, reason="wait", kind="dependency",
+                      expected_run_id=child_run_id)
         assert kb.get_task(conn, child).status == "todo"
         # Finish the parent, then let recompute_ready run.
         with kb.write_txn(conn):
             conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (parent,))
-        kb.claim_task(conn, parent, claimer="worker")
-        kb.complete_task(conn, parent, result="done")
+        parent_claim = kb.claim_task(conn, parent, claimer="worker")
+        kb.complete_task(conn, parent, result="done",
+                         expected_run_id=parent_claim.current_run_id)
         kb.recompute_ready(conn)
         assert kb.get_task(conn, child).status == "ready"
 

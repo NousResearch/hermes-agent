@@ -177,6 +177,61 @@ def _enforce_worker_task_ownership(tid: str) -> None:
             f"to hand off information to other tasks, or kanban_create to spawn follow-up work.")
 
 
+# Test hook: invoked by _claim_run_identity_probe after the no-run read and
+# before the lifecycle mutation, so an adversarial test can interleave a
+# second-connection claim into the probe-to-write window. Production keeps
+# this None; the hook can never widen the caller's authority — the DB sink
+# re-checks ownership inside the write txn.
+_PRE_MUTATION_OBSERVER: Optional[Callable[[str, Any, Any], None]] = None
+
+
+def _claim_run_identity_probe(kb: Any, conn: Any, tid: str) -> bool:
+    """Does THIS caller hold run identity for ``tid``?
+
+    Claim-scoped lifecycle tools (kanban_complete / kanban_block /
+    kanban_request_review / kanban_request_changes) may only terminate a run
+    they can name. Incident class: a bot-mode self-DM spawned a second full
+    agent context of the same profile with no dispatcher run record; that
+    fork passed the worker-scope guard (no ``HERMES_KANBAN_TASK`` looks like
+    an "orchestrator") and terminated the LIVE claimant's run mid-flight.
+
+    Two-part authority check — this probe is only the advisory half:
+
+      * caller scoped to the task (``HERMES_KANBAN_RUN_ID``) → True; the
+        sink's ``expected_run_id`` CAS is the exact identity check.
+      * no run identity → False. The task must be unclaimed, and the DB
+        sink ENFORCES that at the write: ``expected_run_id=None`` compiles
+        to ``AND current_run_id IS NULL`` inside the mutation txn — never a
+        predicate-free UPDATE. A dispatcher claim landing between this
+        probe and the write makes the no-run mutation a no-op rowcount=0,
+        and the new claim survives.
+
+    Board probe failure fails open (True): the guard must never strand a
+    live worker on an infra error — and unlike a read-side guard, fail-open
+    here stays bounded, because a no-run-env caller still carries the
+    ``IS NULL`` predicate in the sink.
+    """
+    if _worker_run_id(tid) is not None:
+        return True  # caller holds its own run identity for this task
+    try:
+        active_run_id = kb._current_run_id(conn, tid)
+    except Exception:
+        return True  # fail-open: never strand a live worker on a probe error
+    if active_run_id:
+        raise _Reject(
+            f"{tid} is currently claimed by run #{active_run_id}, and this session "
+            f"holds no run identity for it. Claim-scoped lifecycle tools "
+            f"(kanban_complete/kanban_block/kanban_request_review/"
+            f"kanban_request_changes) refuse to terminate another run's claim — "
+            f"operating a claimed task with no dispatcher run record usually means "
+            f"a second agent context was spawned for this profile. Report via "
+            f"kanban_comment instead.")
+    observer = _PRE_MUTATION_OBSERVER
+    if observer is not None:
+        observer(tid, kb, conn)
+    return False  # orchestrator-shaped: sink binds the write to IS NULL
+
+
 def _worker_guard(tool_name: str, args: dict) -> str:
     """Worker mutation preamble, in order: delegate-child rejection, task id
     resolution, task-scope ownership. Returns the task id."""
@@ -557,6 +612,7 @@ def _handle_complete(args: dict, **kw) -> str:
     _require_dict_metadata(metadata)
     metadata = _stamp_worker_session_metadata(tid, metadata)
     with _board(args.get("board")) as (kb, conn):
+        _claim_run_identity_probe(kb, conn, tid)
         # Goal-mode pre-completion judge gate (Issue #38367). Prevent workers from bypassing the auxiliary
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
@@ -600,6 +656,7 @@ def _handle_block(args: dict, **kw) -> str:
         _require_text(args, "reason", "reason is required — explain what input you need"))
     kind = args.get("kind")
     with _board(args.get("board")) as (kb, conn):
+        _claim_run_identity_probe(kb, conn, tid)
         _check(kind is None or kind in kb.VALID_BLOCK_KINDS,
                f"kind must be one of {sorted(kb.VALID_BLOCK_KINDS)} (or omit it)")
         # The goal loop treats ANY blocked status as terminal, so kanban_block
@@ -639,6 +696,7 @@ def _handle_request_review(args: dict, **kw) -> str:
     # Reviewer is model-supplied free text stored durably on the event payload.
     reviewer = _redact_opt(args.get("reviewer") or None)
     with _board(args.get("board")) as (kb, conn):
+        _claim_run_identity_probe(kb, conn, tid)
         _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
         ok, fail_reason = kb.request_review(
             conn, tid, summary=summary, metadata=metadata, reviewer=reviewer,
@@ -655,6 +713,7 @@ def _handle_request_changes(args: dict, **kw) -> str:
     reason = _redact(
         _require_text(args, "reason", "reason is required — describe the changes needed"))
     with _board(args.get("board")) as (kb, conn):
+        _claim_run_identity_probe(kb, conn, tid)
         ok, detail = kb.request_changes(
             conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
         _check(ok, f"could not request changes for {tid}: {detail or 'invalid review state'}")
@@ -695,8 +754,21 @@ def _handle_comment(args: dict, **kw) -> str:
     # comment from an authoritative-looking name like ``hermes-system`` and poison the future-worker context
     # with what reads as a system directive. See #19713.
     author = os.environ.get("HERMES_PROFILE") or "worker"
+    # Authorship provenance: the calling SESSION id, recorded once at call
+    # time. Two agent contexts can share one profile (the bot-mode self-DM
+    # fork incident class) — on a claimed card, the author profile alone
+    # cannot tell the claimant's writer from a fork's. Read TASK-LOCAL first:
+    # gateway session identity lives in ContextVars (gateway.session_context)
+    # so concurrent tasks in one process cannot clobber each other — the
+    # process env can record a different concurrent session or stale state;
+    # it remains the fallback for CLI/cron/test callers with no bound
+    # context. No caller-supplied override: same forgery rule as author.
+    from gateway.session_context import get_session_env
+    session_id = (get_session_env("HERMES_SESSION_ID", "")
+                  or os.environ.get("HERMES_SESSION_ID")) or None
     with _board(args.get("board")) as (kb, conn):
-        cid = kb.add_comment(conn, tid, author=author, body=str(body))
+        cid = kb.add_comment(conn, tid, author=author, body=str(body),
+                             session_id=session_id)
         return _ok(task_id=tid, comment_id=cid)
 
 

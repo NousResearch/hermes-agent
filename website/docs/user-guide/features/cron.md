@@ -718,6 +718,7 @@ Semantics:
 - Non-zero exit or timeout → an error alert is delivered, so a broken watchdog can't fail silently.
 - `{"wakeAgent": false}` on the last line → silent tick (same gate LLM jobs use).
 - No tokens, no model, no provider fallback — the job never touches the inference layer.
+- **Self-sending scripts** (scripts that call a messaging API themselves for files/multi-part reports): set `deliver: local`. Otherwise Hermes will also deliver stdout to the chat target after the script finishes, which can duplicate the user-facing message or fail independently of the script's own sends. See the [Script-Only Cron Jobs guide](/guides/cron-script-only#scripts-that-already-send-messages-themselves).
 
 `.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash` (important on Windows Git Bash). Anything else runs under the current Python interpreter (`sys.executable`). Scripts must resolve inside `$HERMES_HOME/scripts/` — relative names, absolute paths, and `~`-prefixed paths are accepted when the resolved target stays in that directory; paths that escape it are rejected. Subprocess env is sanitized (`_sanitize_subprocess_env`): provider API credentials and other Hermes-managed secrets are **not** inherited by cron scripts.
 

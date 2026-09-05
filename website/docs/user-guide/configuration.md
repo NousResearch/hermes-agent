@@ -289,6 +289,7 @@ terminal:
   docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
   docker_mount_cwd_to_workspace: false  # Mount launch dir into /workspace
   docker_run_as_host_user: false   # See "Running container as host user" below
+  docker_snap_compat: false        # See "Snap-packaged Docker (AppArmor)" below
   docker_forward_env:              # Host env vars to forward into container
     - "GITHUB_TOKEN"
   docker_env:                      # Literal env vars to inject (KEY=value)
@@ -377,6 +378,7 @@ Every key under `terminal:` has an env-var override of the form `TERMINAL_<KEY_U
 | `TERMINAL_DOCKER_EXTRA_ARGS` | `docker_extra_args` | JSON array |
 | `TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE` | `docker_mount_cwd_to_workspace` | `true` / `false` |
 | `TERMINAL_DOCKER_RUN_AS_HOST_USER` | `docker_run_as_host_user` | `true` / `false` |
+| `TERMINAL_DOCKER_SNAP_COMPAT` | `docker_snap_compat` | `true` / `false` — default `false` |
 | `TERMINAL_DOCKER_NETWORK` | `docker_network` | `true` / `false` — default `true`; `false` = `--network=none` |
 | `TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES` | `docker_persist_across_processes` | `true` / `false` — default `true` |
 | `TERMINAL_DOCKER_SHARED_CONTAINER_KEY` | `docker_shared_container_key` | Explicit shared identity for trusted profiles; empty by default |
@@ -615,6 +617,24 @@ terminal:
 When enabled, Hermes appends `--user $(id -u):$(id -g)` to the `docker run` command so files written into bind-mounted directories (`/workspace`, `/root`, anything in `docker_volumes`) are owned by your host user, not root. The trade-off: the container can no longer `apt install` or write to root-owned paths like `/root/.npm` — use a base image whose `HOME` is owned by a non-root user (or add your required tooling at image build time) if you need both.
 
 Leave this `false` (the default) for backwards-compatible behavior. Turn it on when your workflow is mostly "edit mounted host files" and you're tired of `sudo chown -R`.
+
+### Snap-packaged Docker (AppArmor)
+
+On hosts where Docker was installed as a snap (common on Ubuntu cloud images, e.g. Azure VMs), the snap's AppArmor confinement rejects two of the sandbox's hardening flags and the container dies at start:
+
+```
+exec /sbin/docker-init: operation not permitted     # --init
+exec /usr/bin/sleep: operation not permitted        # --security-opt no-new-privileges
+```
+
+This is a snapd limitation ([LP#1908448](https://bugs.launchpad.net/snapd/+bug/1908448)), not something Hermes can probe around. Either install Docker from Docker's apt repository instead of the snap (preferred — all hardening stays on), or opt in:
+
+```yaml
+terminal:
+  docker_snap_compat: true   # drops --init and no-new-privileges; cap-drop, tmpfs, PID limits stay
+```
+
+With it on, zombie processes inside the sandbox are not reaped by an init and a setuid binary inside the container can regain privileges; a warning is logged at container start.
 
 ### Optional: Mount the Launch Directory into `/workspace`
 

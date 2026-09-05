@@ -85,6 +85,7 @@ import {
 } from '@/store/profile'
 import {
   $activeProjectId,
+  $newProjectDropPlacement,
   $projects,
   $projectScope,
   $projectTree,
@@ -127,7 +128,7 @@ import {
 import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $removedSessionIds } from '@/store/session-removal'
-import { $focusedStoredSessionId, $workingSessionIds, type SplitDir } from '@/store/session-states'
+import { $focusedStoredSessionId, $workingSessionIds } from '@/store/session-states'
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
@@ -143,7 +144,9 @@ import {
   SKILLS_ROUTE
 } from '../../routes'
 import type { SidebarNavItem } from '../../types'
+import { type NewSessionSplitHandler, startNewSessionDrag } from '../new-session-drag'
 
+import { SidebarSectionAddButton } from './chrome'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarFilterMenu } from './filter-menu'
 import { SidebarLoadMoreRow } from './load-more-row'
@@ -302,8 +305,13 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onArchiveSession: (sessionId: string) => void
   onBranchSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
-  /** Create a brand-new session and open it as a tile on `dir`. */
-  onNewSessionSplit: (dir: SplitDir) => void
+  /** Create a brand-new session and open it as a tile. `dir` is the dock edge
+   *  (or `center` to stack a tab); `anchor`/`before` optionally pin it to a
+   *  specific zone / tab-strip slot, and `cwd` pins it to a project's path —
+   *  used by the new-session drags (the "New session" row and the project "+"
+   *  buttons), which land a fresh session exactly where it's dropped. The
+   *  context-menu "Open in split" path passes just a `dir`. */
+  onNewSessionSplit: NewSessionSplitHandler
   onManageCronJob: (jobId: string) => void
   onTriggerCronJob: (jobId: string) => Promise<void>
 }
@@ -1525,6 +1533,25 @@ export function ChatSidebar({
 
                       onNavigate(item)
                     }}
+                    onPointerDown={event => {
+                      // The "New session" row is a drag source too: drag it onto
+                      // a chat zone's tab strip / edge / center to create the
+                      // session exactly there (stack / split). The pointer drag
+                      // session owns the gesture — a sub-threshold release falls
+                      // through to the onClick above (ordinary new session), and
+                      // an engaged drag suppresses that click so it never
+                      // double-creates. The create callback sets $newChatProfile
+                      // itself (the suppressed click can't), so a dragged new
+                      // session lands in the same profile a click would.
+                      if (!isNewSession) {
+                        return
+                      }
+
+                      startNewSessionDrag(placement => {
+                        $newChatProfile.set(null)
+                        onNewSessionSplit(placement.dir, { anchor: placement.anchor, before: placement.before })
+                      }, event)
+                    }}
                     tooltip={
                       item.keybindActionId
                         ? {
@@ -1777,27 +1804,35 @@ export function ChatSidebar({
                       </div>
                     ) : (
                       <>
-                        {!showAllProfiles ? (
-                          <Tip label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}>
-                            <Button
-                              aria-label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
-                              className={HEADER_ACTION_BTN}
-                              onClick={event => {
-                                event.stopPropagation()
-
-                                if (agentsGrouped) {
-                                  openProjectCreate()
-                                } else {
-                                  onNewSessionInWorkspace(null)
+                        {/* The flat-list header "+" is a drag source too — the
+                            same gesture as the nav's "New session" row: drag
+                            it onto a chat zone's tab strip / edge / center to
+                            create the session exactly there. Project-overview
+                            mode drags its "+" (the "New project" button) with
+                            the project-drag variant: a drop opens the SAME
+                            project dialog, and the created project starts at
+                            the dropped spot. */}
+                        <SidebarSectionAddButton
+                          ariaLabel={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
+                          onNewProjectDrag={
+                            agentsGrouped
+                              ? {
+                                  // Dragging the "New project" + arms WHERE the
+                                  // project should start; the dialog flow consumes
+                                  // it on create (see $newProjectDropPlacement).
+                                  onArm: placement => $newProjectDropPlacement.set(placement)
                                 }
-                              }}
-                              size="icon-xs"
-                              variant="ghost"
-                            >
-                              <Codicon name="add" size="0.75rem" />
-                            </Button>
-                          </Tip>
-                        ) : null}
+                              : undefined
+                          }
+                          onNewSessionSplit={agentsGrouped ? undefined : onNewSessionSplit}
+                          onPlainClick={() => {
+                            if (agentsGrouped) {
+                              openProjectCreate()
+                            } else {
+                              onNewSessionInWorkspace(null)
+                            }
+                          }}
+                        />
                         <div className="grid size-6 place-items-center">
                           <SidebarFilterMenu className={HEADER_NAV_BTN} />
                         </div>
@@ -1819,10 +1854,8 @@ export function ChatSidebar({
                 onBranchSession={onBranchSession}
                 onDeleteSession={onDeleteSession}
                 onEnterProject={onEnterProject}
-                // Unlike reorder below, this stays on across profiles: a folder
-                // is a folder, and the new session lands in the active profile
-                // — the same one the composer would have started it in.
                 onNewSessionInWorkspace={onNewSessionInWorkspace}
+                onNewSessionSplit={onNewSessionSplit}
                 onReorderProjects={showAllProfiles ? undefined : reorderProjects}
                 onReorderSessions={showAllProfiles ? undefined : reorderSessions}
                 onResumeSession={onResumeSession}

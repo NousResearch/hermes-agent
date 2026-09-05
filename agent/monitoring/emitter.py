@@ -1,22 +1,9 @@
-"""Monitoring emitter: fire-and-forget queue + background dispatcher.
-
-The emitter is the single seam between producers (gateway status hooks, the
-diagnostic log handler) and consumers (the OTLP streamers). Its contract is
-the hot-path invariant:
-
-    ``emit()`` MUST return in O(microseconds), MUST NOT block on disk/network,
-    and MUST NEVER raise into the caller. A monitoring failure is logged
-    locally and dropped — it can never affect the gateway or a session.
-
-Mechanism:
-  * ``emit(event)`` does a non-blocking ``queue.put_nowait`` wrapped in a bare
-    except. On a full queue it drops the *oldest* event and counts the drop.
-  * A daemon thread drains the queue and fans each batch out to subscribers
-    (the OTLP metric/span/log streamers). Each subscriber is fail-isolated —
-    a slow or raising subscriber never affects the hot path or its peers.
-
-Nothing is persisted here. Monitoring is an egress path, not a local store;
-if no subscriber is attached, events simply age out of the ring buffer.
+"""Monitoring emitter: fire-and-forget queue + background dispatcher — the single seam between
+producers (gateway status hooks, diagnostic log handler) and consumers (OTLP streamers).
+Hot-path invariant: ``emit()`` MUST return in O(microseconds), MUST NOT block on disk/network, and
+MUST NEVER raise into the caller — a monitoring failure is logged locally and dropped.  On a full
+queue the *oldest* event is dropped.  A daemon thread fans batches out to fail-isolated
+subscribers.  Nothing is persisted: monitoring is an egress path, not a store.
 """
 
 from __future__ import annotations
@@ -25,6 +12,7 @@ import logging
 import queue
 import threading
 import time
+from contextlib import suppress
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -45,16 +33,12 @@ class MonitoringEmitter:
         self._started = False
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
-        # Live subscribers (the OTLP streamers). Called from the dispatcher
-        # thread, fully fail-isolated. Each subscriber is callable(batch: list[dict]).
+        # Subscribers are callable(batch: list[dict]), invoked on the dispatcher thread.
         self._subscribers: list = []
 
     # ── public API (hot path) ───────────────────────────────────────────────
     def emit(self, event: Any) -> None:
-        """Enqueue an event. Never blocks, never raises.
-
-        ``event`` may be a dataclass with ``to_dict()`` or a plain dict.
-        """
+        """Enqueue a dataclass with ``to_dict()`` or a plain dict. Never blocks, never raises."""
         if not self._enabled:
             return
         try:
@@ -82,9 +66,7 @@ class MonitoringEmitter:
         with self._lock:
             if self._started:
                 return
-            self._thread = threading.Thread(
-                target=self._run, name="hermes-monitoring-dispatch", daemon=True
-            )
+            self._thread = threading.Thread(target=self._run, name="hermes-monitoring-dispatch", daemon=True)
             self._thread.start()
             self._started = True
 
@@ -107,7 +89,6 @@ class MonitoringEmitter:
                     self._q.task_done()
 
     def _dispatch(self, batch) -> None:
-        # Fan-out to subscribers (OTLP streamers) — fully fail-isolated.
         for sub in list(self._subscribers):
             try:
                 sub(batch)
@@ -116,16 +97,14 @@ class MonitoringEmitter:
         self._dispatched += len(batch)
 
     def subscribe(self, callback) -> None:
-        """Register a live batch subscriber (callable(batch: list[dict]))."""
+        """Register a live batch subscriber; the first subscriber enables collection."""
         if callback not in self._subscribers:
             self._subscribers.append(callback)
         self._enabled = True
 
     def unsubscribe(self, callback) -> None:
-        try:
+        with suppress(ValueError):
             self._subscribers.remove(callback)
-        except ValueError:
-            pass
         if not self._subscribers:
             self._enabled = False
 
@@ -134,28 +113,17 @@ class MonitoringEmitter:
         """Wait boundedly for queued and in-flight batches to finish dispatch."""
         if timeout <= 0:
             return
-
         finished = threading.Event()
 
         def _wait_for_completion() -> None:
             self._q.join()
             finished.set()
 
-        waiter = threading.Thread(
-            target=_wait_for_completion,
-            name="hermes-monitoring-flush",
-            daemon=True,
-        )
-        waiter.start()
+        threading.Thread(target=_wait_for_completion, name="hermes-monitoring-flush", daemon=True).start()
         finished.wait(timeout=timeout)
 
     def stats(self) -> Dict[str, int]:
-        return {
-            "queued": self._q.qsize(),
-            "dispatched": self._dispatched,
-            "dropped": self._dropped,
-            "subscribers": len(self._subscribers),
-        }
+        return {"queued": self._q.qsize(), "dispatched": self._dispatched, "dropped": self._dropped, "subscribers": len(self._subscribers)}
 
     def close(self) -> None:
         self._stop.set()
@@ -176,8 +144,7 @@ def get_emitter() -> MonitoringEmitter:
         return _EMITTER
     with _EMITTER_LOCK:
         if _EMITTER is None:
-            # Collection is opt-in. A plane exporter enables the singleton by
-            # attaching its first subscriber; until then producers are no-ops.
+            # Collection is opt-in: disabled until a plane exporter attaches its first subscriber.
             _EMITTER = MonitoringEmitter(enabled=False)
     return _EMITTER
 
@@ -192,20 +159,18 @@ def reset_emitter_for_tests(emitter: Optional[MonitoringEmitter] = None) -> None
     global _EMITTER
     with _EMITTER_LOCK:
         if _EMITTER is not None and emitter is not _EMITTER:
-            try:
+            with suppress(Exception):
                 _EMITTER.close()
-            except Exception:
-                pass
         _EMITTER = emitter
 
 
-# Back-compat alias for the salvaged class name used in emozilla's tests.
-TelemetryEmitter = MonitoringEmitter
+__all__ = ["MonitoringEmitter", "get_emitter", "emit", "reset_emitter_for_tests"]
 
-__all__ = [
-    "MonitoringEmitter",
-    "TelemetryEmitter",
-    "get_emitter",
-    "emit",
-    "reset_emitter_for_tests",
-]
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+
+TelemetryEmitter = MonitoringEmitter
+# ---- END PLUGIN-COMPAT ----

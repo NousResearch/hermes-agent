@@ -1,173 +1,71 @@
-"""
-TTS Provider Registry
-=====================
+"""TTS Provider Registry.
 
-Central map of registered TTS providers. Populated by plugins at
-import-time via :meth:`PluginContext.register_tts_provider`; consumed
-by :mod:`tools.tts_tool` to dispatch ``text_to_speech`` tool calls to
-the active plugin backend **when** the configured ``tts.provider``
-name is neither a built-in nor a command-type provider.
-
-Built-ins-always-win
---------------------
-Plugin names that collide with a built-in TTS provider (``edge``,
-``openai``, ``elevenlabs``, ``minimax``, ``gemini``, ``mistral``,
-``xai``, ``piper``, ``kittentts``, ``neutts``) are rejected at
-registration with a warning. This invariant is also re-checked at
-dispatch time in :func:`tools.tts_tool._dispatch_to_plugin_provider`.
-
-Command-providers-win-over-plugins
-----------------------------------
-This registry doesn't enforce the command-vs-plugin precedence — that
-lives in the dispatcher, which checks for a same-name
-``tts.providers.<name>: type: command`` entry before consulting the
-registry. The rationale is locality: a name declared in the user's
-``config.yaml`` is more specific to their setup than a plugin that
-happens to be installed.
+Registered plugin TTS providers, populated at import-time via
+:meth:`PluginContext.register_tts_provider` and consulted by :mod:`tools.tts_tool`
+only when ``tts.provider`` is neither a built-in nor a command-type provider.
+Built-ins always win: a colliding plugin name is rejected here with a warning
+(re-checked at dispatch). Command-providers-win-over-plugins is enforced by the
+dispatcher (a name in the user's config.yaml is more specific than a plugin).
 """
 
 from __future__ import annotations
 
 import logging
-import threading
-from typing import Dict, List, Optional
 
+from agent.provider_registry import ProviderRegistry, lower_key
 from agent.tts_provider import TTSProvider
-from hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
 
 
-# Names reserved for native built-in TTS handlers. Plugins cannot
-# register a name in this set — the registration call is rejected with
-# a warning. **Kept in sync with ``BUILTIN_TTS_PROVIDERS`` in
-# :mod:`tools.tts_tool`** — a regression test in
-# ``tests/agent/test_tts_registry.py::TestBuiltinSync`` fails if the
-# two lists drift. Importing from ``tools.tts_tool`` directly would
-# create a circular dependency (``tools.tts_tool`` imports
-# ``agent.tts_registry`` for dispatch).
+# Names reserved for native built-in TTS handlers. **Kept in sync with
+# ``BUILTIN_TTS_PROVIDERS`` in :mod:`tools.tts_tool`** (``TestBuiltinSync`` in
+# ``tests/agent/test_tts_registry.py`` fails on drift); importing it directly
+# would be a circular import.
 _BUILTIN_NAMES = frozenset({
-    "edge",
-    "elevenlabs",
-    "openai",
-    "minimax",
-    "xai",
-    "mistral",
-    "gemini",
-    "neutts",
-    "kittentts",
-    "piper",
-    "deepinfra",
+    "edge", "elevenlabs", "openai", "minimax", "xai", "mistral", "gemini", "neutts", "kittentts",
+    "piper", "deepinfra",
 })
 
 
-_providers: Dict[str, TTSProvider] = {}
-_scoped_providers: Dict[str, Dict[str, TTSProvider]] = {}
-_lock = threading.Lock()
+def _warn_builtin_collision(key: str) -> None:
+    logger.warning(
+        "TTS provider '%s' shadows a built-in name; registration ignored. "
+        "Built-in TTS providers (%s) always win — pick a different name.",
+        key, ", ".join(sorted(_BUILTIN_NAMES)),
+    )
 
 
-def register_provider(provider: TTSProvider, *, scope: Optional[str] = None) -> None:
-    """Register a TTS provider.
-
-    Rejects:
-
-    - Non-:class:`TTSProvider` instances (raises :class:`TypeError`).
-    - Empty/whitespace ``.name`` (raises :class:`ValueError`).
-    - Names colliding with a built-in (logs a warning, silently
-      ignores — built-ins-always-win invariant).
-
-    Re-registration (same ``name``) overwrites the previous entry and
-    logs a debug message — makes hot-reload scenarios (tests, dev
-    loops) behave predictably.
-    """
-    if not isinstance(provider, TTSProvider):
-        raise TypeError(
-            f"register_provider() expects a TTSProvider instance, "
-            f"got {type(provider).__name__}"
-        )
-    name = provider.name
-    if not isinstance(name, str) or not name.strip():
-        raise ValueError("TTS provider .name must be a non-empty string")
-    key = name.strip().lower()
-    if key in _BUILTIN_NAMES:
-        logger.warning(
-            "TTS provider '%s' shadows a built-in name; registration ignored. "
-            "Built-in TTS providers (%s) always win — pick a different name.",
-            key, ", ".join(sorted(_BUILTIN_NAMES)),
-        )
-        return
-    with _lock:
-        target = _providers if scope is None else _scoped_providers.setdefault(scope, {})
-        existing = target.get(key)
-        target[key] = provider
-    if existing is not None:
-        logger.debug(
-            "TTS provider '%s' re-registered (was %r)",
-            key, type(existing).__name__,
-        )
-    else:
-        logger.debug(
-            "Registered TTS provider '%s' (%s)",
-            key, type(provider).__name__,
-        )
+# Case-insensitive, whitespace-tolerant keys mirror how
+# ``tools.tts_tool._get_provider`` normalizes the configured ``tts.provider``.
+_registry: ProviderRegistry[TTSProvider] = ProviderRegistry(
+    label="TTS", provider_cls=TTSProvider, logger=logger, normalize=lower_key,
+    builtin_names=_BUILTIN_NAMES, on_builtin_collision=_warn_builtin_collision,
+)
+_registry.export(globals())
 
 
-def list_providers(*, scope: Optional[str] = None) -> List[TTSProvider]:
-    """Return all registered providers, sorted by name."""
-    with _lock:
-        merged = dict(_providers)
-        merged.update(_scoped_providers.get(scope or hermes_home_key(), {}))
-        items = list(merged.values())
-    return sorted(items, key=lambda p: p.name)
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+from typing import Dict  # noqa: F401,E402
+from typing import List  # noqa: F401,E402
+from typing import Optional  # noqa: F401,E402
+import threading  # noqa: F401,E402
 
 
-def get_provider(name: str, *, scope: Optional[str] = None) -> Optional[TTSProvider]:
-    """Return the provider registered under *name*, or None.
-
-    Name matching is case-insensitive and whitespace-tolerant — mirrors
-    how ``tools.tts_tool._get_provider`` normalizes the configured
-    ``tts.provider`` value.
-    """
-    if not isinstance(name, str):
-        return None
-    key = name.strip().lower()
-    with _lock:
-        return _scoped_providers.get(scope or hermes_home_key(), {}).get(key) or _providers.get(key)
+_PLUGIN_COMPAT_LAZY = {
+    'hermes_home_key': ('hermes_constants', 'hermes_home_key'),
+}
 
 
-def snapshot_registration(
-    name: str, *, scope: Optional[str] = None
-) -> Optional[TTSProvider]:
-    key = name.strip().lower()
-    with _lock:
-        target = _providers if scope is None else _scoped_providers.get(scope, {})
-        return target.get(key)
-
-
-def restore_registration(
-    name: str,
-    current: TTSProvider,
-    previous: Optional[TTSProvider],
-    *,
-    scope: Optional[str] = None,
-) -> bool:
-    """Restore a plugin registration only when *current* is still installed."""
-    key = name.strip().lower()
-    with _lock:
-        target = _providers if scope is None else _scoped_providers.setdefault(scope, {})
-        if target.get(key) is not current:
-            return False
-        if previous is None:
-            target.pop(key, None)
-        else:
-            target[key] = previous
-        if scope is not None and not target:
-            _scoped_providers.pop(scope, None)
-    return True
-
-
-def _reset_for_tests() -> None:
-    """Clear the registry. **Test-only.**"""
-    with _lock:
-        _providers.clear()
-        _scoped_providers.clear()
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

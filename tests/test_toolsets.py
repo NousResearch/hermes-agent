@@ -6,7 +6,6 @@ from toolsets import (
     TOOLSETS,
     get_toolset,
     resolve_toolset,
-    resolve_multiple_toolsets,
     get_all_toolsets,
     validate_toolset,
     create_custom_toolset,
@@ -105,15 +104,15 @@ class TestResolveToolset:
 
 
 
-class TestResolveMultipleToolsets:
-    def test_combines_and_deduplicates(self):
-        tools = resolve_multiple_toolsets(["web", "terminal"])
+
+class TestResolveToolsetComposition:
+    def test_union_over_names_combines_and_deduplicates(self):
+        tools = sorted({t for name in ("web", "terminal") for t in resolve_toolset(name)})
         assert "web_search" in tools
         assert "web_extract" in tools
         assert "terminal" in tools
         # No duplicates
         assert len(tools) == len(set(tools))
-
 
 
 class TestValidateToolset:

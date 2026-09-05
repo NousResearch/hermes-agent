@@ -142,7 +142,7 @@ async def test_stop_interrupts_deferred_worker_before_teardown():
         patch("cron.scheduler.mark_job_run"),
         patch("tools.process_registry.process_registry.kill_all", return_value=0),
         patch("tools.terminal_tool.cleanup_all_environments"),
-        patch("tools.browser_tool.cleanup_all_browsers"),
+        patch("tools.browser_tool_lifecycle.cleanup_all_browsers"),
     ):
         await runner.stop()
 

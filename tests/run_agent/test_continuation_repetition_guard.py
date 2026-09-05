@@ -97,3 +97,40 @@ class TestContinuationRepetitionGuard:
 
         assert result["partial"] is True
         assert loop_agent.client.chat.completions.create.call_count == 4
+
+    def test_repetition_dominated_tool_call_arguments_aborts(self, loop_agent):
+        # Degenerate tool call arguments (issue #103599) must abort cleanly
+        # rather than executing pathological commands or continuing.
+        from tests.run_agent.test_run_agent import _mock_assistant_msg
+
+        echo_cmd = ("echo 'amen shalom salaam peace out yo wassup'; " * 200)
+        tool_call = SimpleNamespace(
+            id="call_rep_1",
+            type="function",
+            function=SimpleNamespace(
+                name="terminal",
+                arguments=f'{{"command": "{echo_cmd}"}}'
+            )
+        )
+        msg = _mock_assistant_msg(content=None, tool_calls=[tool_call])
+        stub_resp = SimpleNamespace(
+            id=PARTIAL_STREAM_STUB_ID,
+            model="test/model",
+            choices=[SimpleNamespace(
+                index=0,
+                message=msg,
+                finish_reason=FINISH_REASON_LENGTH,
+            )],
+            usage=None,
+        )
+
+        loop_agent.client.chat.completions.create.side_effect = [stub_resp]
+
+        result = _run(loop_agent, "run long script")
+
+        assert result["completed"] is False
+        assert result["partial"] is True
+        assert "Repetition" in (result["final_response"] or "")
+        # Exactly one API call — no continuation was attempted.
+        assert loop_agent.client.chat.completions.create.call_count == 1
+

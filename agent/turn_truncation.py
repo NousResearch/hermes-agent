@@ -138,11 +138,20 @@ class _Trunc(TruncationVerdict):
         return getattr(self.response, "id", "") == PARTIAL_STREAM_STUB_ID
 
 
-def _abort_reason(agent: Any, content: Any, has_tool_calls: bool) -> Optional[tuple]:
+def _abort_reason(agent: Any, content: Any, has_tool_calls: bool, trunc_msg: Any = None) -> Optional[tuple]:
     """``(vprint, user response, error)`` when continuation must NOT be attempted:
     thinking exhausted the budget (reasoning blocks with no visible text after them —
     ``content=None`` from non-<think> models is normal truncation), or a repetition loop
-    burned the budget on one fragment (reasoning stripped first)."""
+    burned the budget on one fragment (reasoning stripped first), or tool-call arguments
+    are repetition-dominated degenerate output (#103599)."""
+    if trunc_msg is not None:
+        tool_calls = getattr(trunc_msg, "tool_calls", None) or []
+        for tc in tool_calls:
+            fn = getattr(tc, "function", None)
+            args = getattr(fn, "arguments", None) if fn else (tc.get("function", {}).get("arguments") if isinstance(tc, dict) else None)
+            if isinstance(args, str) and is_repetition_dominated(args):
+                return _REPETITION_DOMINATED
+
     if has_tool_calls:
         return None
     if content and _THINK_TAG_RE.search(content) and not agent._has_content_after_think_block(content):
@@ -330,7 +339,7 @@ def recover_from_truncation(
     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
     _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
 
-    abort = _abort_reason(agent, _trunc_content, _trunc_has_tool_calls)
+    abort = _abort_reason(agent, _trunc_content, _trunc_has_tool_calls, _trunc_msg)
     if abort is not None:
         line, user_response, error = abort
         agent._vprint(f"{agent.log_prefix}{line}", force=True)

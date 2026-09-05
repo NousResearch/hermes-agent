@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { createKeepAwake, type PowerSaveBlockerLike } from './power-save'
+import { createKeepAwake, type PowerSaveBlockerLike, shouldHoldAwake } from './power-save'
 
 function fakeBlocker() {
   let next = 1
@@ -54,5 +54,30 @@ describe('createKeepAwake', () => {
     createKeepAwake(blocker, 'prevent-display-sleep').set(true)
 
     expect(blocker.start).toHaveBeenCalledWith('prevent-display-sleep')
+  })
+})
+
+describe('shouldHoldAwake', () => {
+  it('never holds while the preference is off', () => {
+    expect(shouldHoldAwake(false, 0)).toBe(false)
+    expect(shouldHoldAwake(false, 3)).toBe(false)
+  })
+
+  it('holds only while a turn is in flight', () => {
+    expect(shouldHoldAwake(true, 0)).toBe(false)
+    expect(shouldHoldAwake(true, 1)).toBe(true)
+  })
+
+  it('drives the blocker through a run lifecycle', () => {
+    const { blocker } = fakeBlocker()
+    const keepAwake = createKeepAwake(blocker)
+    const apply = (turns: number) => keepAwake.set(shouldHoldAwake(true, turns))
+
+    expect(apply(0)).toBe(false) // preference on, nothing running: let it sleep
+    expect(apply(1)).toBe(true) // run starts
+    expect(apply(2)).toBe(true) // second window joins — still one blocker
+    expect(blocker.start).toHaveBeenCalledTimes(1)
+    expect(apply(0)).toBe(false) // last run ends: released immediately
+    expect(blocker.stop).toHaveBeenCalledTimes(1)
   })
 })

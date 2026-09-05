@@ -6,6 +6,9 @@
  * owns the preference (persisted in localStorage) and mirrors it here over
  * IPC; the main process owns the one native blocker, same authority split as
  * translucency/zoom. Electron auto-releases the blocker on quit.
+ *
+ * The preference alone does not hold the blocker: it is scoped to agent runs
+ * (see `shouldHoldAwake`), so an idle Hermes lets the machine sleep normally.
  */
 
 export type KeepAwakeType = 'prevent-app-suspension' | 'prevent-display-sleep'
@@ -21,6 +24,15 @@ export interface KeepAwake {
   /** Turn the blocker on/off (idempotent). Returns the resulting state. */
   set(on: boolean): boolean
   isActive(): boolean
+}
+
+/**
+ * Whether the blocker should be held right now: only while the user has the
+ * preference on AND at least one agent turn is in flight. Releasing at idle is
+ * the whole point — a finished overnight run must let the machine sleep.
+ */
+export function shouldHoldAwake(preferenceOn: boolean, activeTurnCount: number): boolean {
+  return preferenceOn && activeTurnCount > 0
 }
 
 export function createKeepAwake(

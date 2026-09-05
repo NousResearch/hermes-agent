@@ -753,7 +753,7 @@ export const zhHant = defineLocale({
       imported: '設定已匯入',
       invalidJson: '設定 JSON 無效',
       keepAwakeTitle: '保持電腦喚醒',
-      keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。'
+      keepAwakeDesc: '任務執行期間阻止本機睡眠，任務結束後恢復正常睡眠。螢幕仍可變暗。'
     },
     quickEntry: {
       enabledTitle: '快速輸入',

@@ -293,7 +293,7 @@ import {
 } from './pool-spawn-coordinator'
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
-import { createKeepAwake } from './power-save'
+import { createKeepAwake, shouldHoldAwake } from './power-save'
 import { capturePreviewContents } from './preview-capture'
 import { PreviewReachRegistry } from './preview-reach'
 import {
@@ -16985,18 +16985,25 @@ function updateStreamThrottleFromActiveWork() {
   streamThrottle.update(mergeActiveWork(activeWorkByWebContents.values()).count > 0)
 }
 
+// Everything keyed off "is a turn in flight": throttling above, and the
+// keep-awake blocker (declared further down, so this only runs at IPC time).
+function onActiveWorkChanged() {
+  updateStreamThrottleFromActiveWork()
+  applyKeepAwake()
+}
+
 ipcMain.on('hermes:active-work', (event, payload) => {
   const id = event.sender.id
 
   if (!activeWorkByWebContents.has(id)) {
     event.sender.once('destroyed', () => {
       activeWorkByWebContents.delete(id)
-      updateStreamThrottleFromActiveWork()
+      onActiveWorkChanged()
     })
   }
 
   activeWorkByWebContents.set(id, normalizeActiveWork(payload))
-  updateStreamThrottleFromActiveWork()
+  onActiveWorkChanged()
 })
 
 ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
@@ -17126,12 +17133,16 @@ ipcMain.on('hermes:translucency', (_event, payload) => {
   }
 })
 
-// Keep-awake: hold the machine awake for long/overnight runs. Main owns the one
-// blocker and its persisted state so a cold launch restores it (applied on
-// ready — powerSaveBlocker needs the app ready). The renderer toggles it from
-// Settings → Advanced over IPC. See store/keep-awake.
+// Keep-awake: hold the machine awake while an agent run is in flight. Main owns
+// the one blocker and the persisted preference so a cold launch restores the
+// preference (read on ready — powerSaveBlocker needs the app ready). The
+// renderer toggles the preference from Settings → Advanced over IPC (see
+// store/keep-awake); the blocker itself is gated on the merged active-work
+// picture, arming when a turn starts and releasing when the last one ends, so
+// an idle Hermes lets the machine sleep normally (#101991).
 const KEEP_AWAKE_CONFIG_PATH = path.join(app.getPath('userData'), 'keep-awake.json')
 const keepAwake = createKeepAwake(powerSaveBlocker)
+let keepAwakePreferred = false
 
 function readPersistedKeepAwake() {
   try {
@@ -17141,13 +17152,17 @@ function readPersistedKeepAwake() {
   }
 }
 
+function applyKeepAwake() {
+  keepAwake.set(shouldHoldAwake(keepAwakePreferred, mergeActiveWork(activeWorkByWebContents.values()).count))
+}
+
 ipcMain.on('hermes:keep-awake', (_event, on) => {
-  const enabled = Boolean(on)
-  keepAwake.set(enabled)
+  keepAwakePreferred = Boolean(on)
+  applyKeepAwake()
 
   try {
     fs.mkdirSync(path.dirname(KEEP_AWAKE_CONFIG_PATH), { recursive: true })
-    fs.writeFileSync(KEEP_AWAKE_CONFIG_PATH, JSON.stringify({ on: enabled }, null, 2), 'utf8')
+    fs.writeFileSync(KEEP_AWAKE_CONFIG_PATH, JSON.stringify({ on: keepAwakePreferred }, null, 2), 'utf8')
   } catch (error) {
     rememberLog(`[keep-awake] write failed: ${error.message}`)
   }
@@ -17956,7 +17971,9 @@ app.whenReady().then(() => {
   ensureWslWindowsFonts()
   configureSpellChecker()
   registerPowerResumeListeners()
-  keepAwake.set(readPersistedKeepAwake())
+  // Restores the preference only; the blocker arms once a turn is in flight.
+  keepAwakePreferred = readPersistedKeepAwake()
+  applyKeepAwake()
   f12Blocked = readPersistedDisableF12()
   // Seed this before the first window exists: a picker can open before
   // startHermes() finishes resolving the configured backend.

@@ -126,6 +126,27 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
         "3. Restore from a backup in ~/.hermes/backups/\n"
         "Then send your message again."
     ),
+    # SQLite scoped the corruption to the FTS index and the derived indexes could not be
+    # detached, so this write did not land; the message store itself is intact (#97794).
+    "fts_index": (
+        "the turn was stopped because the session search index (FTS5) "
+        "is corrupt and could not be detached, so this message was not "
+        "saved. The message store itself is not damaged: do not run "
+        "recovery tools or restore a backup. Run `hermes doctor --fix` "
+        "(or restart Hermes, which repairs the index on open), then "
+        "send your message again."
+    ),
+    # Unscoped corruption report, but a read-only quick_check found the canonical tables
+    # intact: the handle is still quarantined (restart), the recover/restore advice is not.
+    "corrupt_unconfirmed": (
+        "the turn was stopped because the state database reported a "
+        "corruption error, but a read-only verification pass found the "
+        "message tables intact. This process stopped writing to state.db "
+        "as a precaution: restart Hermes to resume. Unwritten messages "
+        "were diverted to sessions/<session_id>.jsonl. Do not run "
+        "recovery tools or restore a backup unless `hermes doctor` "
+        "confirms damage."
+    ),
     "disk": (
         "the turn was stopped because session storage could not "
         "be written (the transcript would have been lost on "

@@ -3,7 +3,9 @@ Shared by hermes_state and its mixins; string predicates match wrapped RPC
 strings as well as live sqlite3 exceptions."""
 
 import errno
+import re
 import sqlite3
+from pathlib import Path
 
 # Malformed schema: ``sqlite_master`` itself is inconsistent (typically a DUPLICATE
 # ``CREATE VIRTUAL TABLE messages_fts`` row). SQLite parses the whole schema while
@@ -74,8 +76,8 @@ def is_disk_full_error(exc: BaseException | str | None) -> bool:
 
 # Every classify_persistence_error bucket; consumers enumerate this tuple.
 PERSISTENCE_ERROR_CAUSES = (
-    "locked", "compression", "compression_closed", "turn_lease", "corrupt", "replaced", "disk",
-    "unknown",
+    "locked", "compression", "compression_closed", "turn_lease", "corrupt", "corrupt_unconfirmed",
+    "fts_index", "replaced", "disk", "unknown",
 )
 
 
@@ -87,6 +89,72 @@ PERSISTENCE_ERROR_CAUSES = (
 _DB_CORRUPTION_MARKERS = (
     "malformed", "file is not a database", "not a database", "database corruption",
 )
+
+# SQLite result codes: the module constants exist on Python 3.11+, the numeric values are
+# stable across every SQLite release.
+SQLITE_CORRUPT = getattr(sqlite3, "SQLITE_CORRUPT", 11)
+SQLITE_NOTADB = getattr(sqlite3, "SQLITE_NOTADB", 26)
+SQLITE_CORRUPT_VTAB = getattr(sqlite3, "SQLITE_CORRUPT_VTAB", 267)
+
+# Every FTS object hangs off this prefix: the virtual tables and their _data/_idx/_content/
+# _docsize/_config shadow b-trees. FTS5 names the table in its own corruption reports.
+_FTS_OBJECT_RE = re.compile(r"\bmessages_fts\w*")
+
+
+def is_fts_scoped_corruption_error(exc_or_str) -> bool:
+    """Corruption SQLite itself attributes to the FTS index layer: the ONE provenance rule
+    shared by the write-repair gate (``SessionDB._is_fts_write_corruption_error``), the
+    gateway transcript retry and :func:`classify_persistence_error` (#96038, #97794).
+
+    A known result code outranks prose: ``SQLITE_CORRUPT_VTAB`` is FTS-scoped even with
+    the generic malformed-image text older SQLite builds emit, while bare ``SQLITE_CORRUPT``
+    / ``SQLITE_NOTADB`` carry no object scope and any other known code contradicts
+    FTS-looking prose, so both fail closed. Only without a code (Python < 3.11, RPC-wrapped
+    strings) does the text decide, and then only an ``fts5:`` corruption report or a
+    corruption marker that names a ``messages_fts*`` object counts.
+    """
+    if exc_or_str is None:
+        return False
+    code = getattr(exc_or_str, "sqlite_errorcode", None)
+    if code is not None:
+        return code == SQLITE_CORRUPT_VTAB
+    text = (exc_or_str if isinstance(exc_or_str, str) else str(exc_or_str)).lower()
+    if not _FTS_OBJECT_RE.search(text):
+        return False
+    if text.startswith("fts5:") and "corrupt" in text:
+        return True
+    return any(marker in text for marker in _DB_CORRUPTION_MARKERS)
+
+
+def _is_unscoped_corruption_code(code) -> bool:
+    """No code at all, or a corruption-class primary code that names no object."""
+    return code is None or (int(code) & 0xFF) in (SQLITE_CORRUPT, SQLITE_NOTADB)
+
+
+def verify_canonical_tables_healthy(db_path) -> bool:
+    """Read-only ``PRAGMA quick_check`` on a fresh connection; True only when every reported
+    problem names a ``messages_fts*`` object (or there is none).
+
+    Answers "is this corruption report confined to the derived index layer?" for errors whose
+    result code carries no scope (#97794: a healthy 22k-message store was declared structurally
+    corrupt on the strength of an FTS-layer error). quick_check walks every b-tree page, the
+    damage class behind a malformed-image error, and skips only the index-content cross-check
+    that never raises on a write; on a multi-GB store that is seconds instead of minutes. Any
+    probe failure (cannot open, locked, the check itself raising) returns False so callers keep
+    the conservative verdict.
+    """
+    try:
+        conn = sqlite3.connect(f"file:{Path(db_path)}?mode=ro", uri=True, timeout=1.0)
+    except sqlite3.Error:
+        return False
+    try:
+        rows = conn.execute("PRAGMA quick_check").fetchall()
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+    problems = [str(row[0]) for row in rows if row and str(row[0]).lower() != "ok"]
+    return all(_FTS_OBJECT_RE.search(line.lower()) for line in problems)
 
 
 class CompressionSessionClosedError(RuntimeError):
@@ -195,12 +263,40 @@ _PERSISTENCE_CAUSE_BY_PHRASE = (
 )
 
 
+def _refine_corrupt_cause(exc_or_str) -> str:
+    """``corrupt`` unless the error carries the store's ``db_path`` (stamped by the SessionDB
+    quarantine), its result code is unscoped, and a read-only quick_check finds the canonical
+    tables intact: then ``corrupt_unconfirmed``. The quarantine itself is untouched (a live
+    handle that observed corruption must stop writing either way); only the guidance changes,
+    so a healthy file is never sent down the recover / restore path (#97794). Memoised on the
+    error object so the probe runs once per failure, not once per consumer."""
+    cached = getattr(exc_or_str, "_persistence_cause", None)
+    if cached is not None:
+        return cached
+    cause = "corrupt"
+    db_path = getattr(exc_or_str, "db_path", None)
+    if (
+        db_path
+        and _is_unscoped_corruption_code(getattr(exc_or_str, "sqlite_errorcode", None))
+        and verify_canonical_tables_healthy(db_path)
+    ):
+        cause = "corrupt_unconfirmed"
+    try:
+        exc_or_str._persistence_cause = cause
+    except (AttributeError, TypeError):  # plain strings
+        pass
+    return cause
+
+
 def classify_persistence_error(exc_or_str) -> str:
     """Coarse cause bucket (PERSISTENCE_ERROR_CAUSES) so the user's guidance
     matches: "locked" = busy, retry; "disk" = full/read-only/permissions;
     "compression" = a live lease refused the write; "compression_closed" = adopt
     the rotated session id; "turn_lease" = fencing, not storage; "corrupt" =
-    file damage (repair path, not disk space); "replaced" = stop writing."""
+    file damage (repair path, not disk space); "corrupt_unconfirmed" = corruption
+    reported but the canonical tables verify intact (restart, do not recover);
+    "fts_index" = SQLite scoped the corruption to the FTS index (the transcript
+    store is not damaged); "replaced" = stop writing."""
     if exc_or_str is None:
         return "unknown"
     # Lease refusals contain neither "locked" nor "busy": match by type first,
@@ -209,11 +305,15 @@ def classify_persistence_error(exc_or_str) -> str:
     # BEFORE the lock/disk buckets ("disk image is malformed" contains "disk").
     for exc_type, cause in _PERSISTENCE_CAUSE_BY_TYPE:
         if isinstance(exc_or_str, exc_type):
-            return cause
+            return _refine_corrupt_cause(exc_or_str) if cause == "corrupt" else cause
+    # Provenance before prose: an FTS-scoped result code (or, without one, an fts5 report
+    # naming messages_fts*) is index damage, never whole-file corruption (#97794).
+    if is_fts_scoped_corruption_error(exc_or_str):
+        return "fts_index"
     text = str(exc_or_str).lower()
     for markers, cause in _PERSISTENCE_CAUSE_BY_PHRASE:
         if any(marker in text for marker in markers):
-            return cause
+            return _refine_corrupt_cause(exc_or_str) if cause == "corrupt" else cause
     if is_disk_full_error(exc_or_str) or any(m in text for m in ("disk", "readonly", "read-only")):
         return "disk"
     return "unknown"

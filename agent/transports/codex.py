@@ -443,6 +443,7 @@ class ResponsesApiTransport(ProviderTransport):
         return _chat_messages_to_responses_input(
             messages, is_xai_responses=kwargs.get("is_xai_responses") is True,
             is_github_responses=kwargs.get("is_github_responses") is True,
+            is_azure_foundry=kwargs.get("is_azure_foundry") is True or _is_azure_foundry_responses(kwargs),
             replay_encrypted_reasoning=bool(kwargs.get("replay_encrypted_reasoning", True)),
             current_issuer_kind=self._resolve_issuer_kind(kwargs),
             native_compaction_eligible=_native_compaction_active(kwargs.get("context_management")),
@@ -491,6 +492,7 @@ class ResponsesApiTransport(ProviderTransport):
         is_github_responses = params.get("is_github_responses") is True
         is_codex_backend = params.get("is_codex_backend") is True
         is_xai_responses = params.get("is_xai_responses") is True
+        is_azure_foundry = _is_azure_foundry_responses(params)
         # Foundry 400s on encrypted-reasoning replay only in the post-tool follow-up turn.
         replay_encrypted_reasoning = bool(params.get("replay_encrypted_reasoning", True)) and not (
             _is_azure_foundry_responses(params) and _is_post_tool_replay(payload_messages)
@@ -510,6 +512,7 @@ class ResponsesApiTransport(ProviderTransport):
             "instructions": instructions,
             "input": self.convert_messages(
                 payload_messages, is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
+                is_azure_foundry=is_azure_foundry,
                 replay_encrypted_reasoning=replay_encrypted_reasoning, base_url=params.get("base_url"),
                 is_codex_backend=is_codex_backend, context_management=context_management,
             ),
@@ -653,6 +656,7 @@ class ResponsesApiTransport(ProviderTransport):
 
     def preflight_kwargs(
         self, api_kwargs: Any, *, allow_stream: bool = False, is_github_responses: bool = False,
+        is_azure_foundry: bool = False, provider: str | None = None, base_url: str | None = None,
         sanitize_harmony_tokens: bool = False,
     ) -> dict:
         """Validate and sanitize Codex API kwargs before the call.
@@ -661,8 +665,12 @@ class ResponsesApiTransport(ProviderTransport):
         """
         from agent.codex_responses_adapter import _preflight_codex_api_kwargs
 
+        is_azure_foundry = is_azure_foundry or _is_azure_foundry_responses(
+            {"provider": provider, "base_url": base_url}
+        )
         normalized = _preflight_codex_api_kwargs(
             api_kwargs, allow_stream=allow_stream, is_github_responses=is_github_responses,
+            is_azure_foundry=is_azure_foundry,
             sanitize_harmony_tokens=sanitize_harmony_tokens,
         )
         _bound_prompt_cache_key_field(normalized)

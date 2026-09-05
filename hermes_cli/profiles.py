@@ -1085,6 +1085,12 @@ def _rmtree_make_writable(func, path, exc):
         exc = exc[1]
     if not isinstance(exc, PermissionError):
         raise
+    # macOS: files with the uchg (user immutable) flag can't be removed even
+    # with chmod +w. Try clearing the flag first. (#43340)
+    try:
+        os.chflags(path, 0)
+    except (AttributeError, OSError):
+        pass
     for target in (path, os.path.dirname(path)):  # parent needed for unlink/rmdir
         if target:
             with contextlib.suppress(OSError):

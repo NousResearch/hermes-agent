@@ -575,6 +575,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/security/security-1password',
                     'user-guide/skills/optional/security/security-godmode',
                     'user-guide/skills/optional/security/security-oss-forensics',
+                    'user-guide/skills/optional/security/security-pre-publish-security-review',
                     'user-guide/skills/optional/security/security-sherlock',
                     'user-guide/skills/optional/security/security-unbroker',
                     'user-guide/skills/optional/security/security-web-pentest',

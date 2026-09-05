@@ -157,8 +157,10 @@ beforeEach(() => {
   })
 })
 
-afterEach(() => {
+afterEach(async () => {
   cleanup()
+  // Radix schedules focus restoration after unmount; finish it before jsdom teardown.
+  await new Promise(resolve => setTimeout(resolve, 0))
 })
 
 describe('materializing the draft profile', () => {

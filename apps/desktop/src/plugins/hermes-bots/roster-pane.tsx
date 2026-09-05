@@ -56,7 +56,7 @@ import {
   useRoster
 } from './data'
 import { EditProfileDialog } from './edit-profile-dialog'
-import { $groupChats, $groupChatWorkspace, $groupNeedsYou } from './group-chat'
+import { $groupChats, $groupChatWorkspace, $groupHostedNeedsYou, $groupNeedsYou } from './group-chat'
 import { disbandGroupChat, GroupChatWorkspace, openGroupChat } from './group-chat-view'
 import { groupChatMemberBots, groupChatNames, groupLastActivity } from './group-membership'
 import { $groupMainTabsRev, shouldRenderGroupChatInPane } from './group-panes'
@@ -289,6 +289,7 @@ export function BotsPane() {
   // room beside a live main tab and stick).
   useValue($groupMainTabsRev)
   const groupNeedsYou = useValue($groupNeedsYou)
+  const groupHostedNeedsYou = useValue($groupHostedNeedsYou)
   const groupRooms = useValue($groupChats)
   const rememberedSources = useValue($lastSources)
   const rosterHydrated = useValue($rosterHydrated)
@@ -572,7 +573,7 @@ export function BotsPane() {
       group={row.name}
       key={`group:${row.name}`}
       members={row.members}
-      needsYou={Boolean(groupNeedsYou[row.name])}
+      needsYou={Boolean(groupNeedsYou[row.name] || groupHostedNeedsYou[row.name])}
       onDisband={setDeletingGroup}
       onOpen={openGroupChat}
     />

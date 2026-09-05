@@ -12,6 +12,7 @@ import { recordGroupActivity } from './group-activity'
 import { $groupChats, $groupClarify, $groupNeedsYou, appendGroupChatEntry, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { groupMemberKey, groupSessionOwner } from './group-membership'
+import { approveHostedGroupChat } from './hosted-room-runtime'
 import { botConnectionRoute, requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupPrompt, GroupPromptQuestion, ProfileRoute } from './types'
 
@@ -536,11 +537,17 @@ export async function answerGroupClarify(
   answers: Record<string, string> | string | undefined
 ) {
   if (entry.kind === 'approval') {
-    await requestForBot(member, 'approval.respond', {
-      session_id: entry.sessionId || undefined,
-      request_id: entry.requestId,
-      choice: typeof answers === 'string' && answers ? answers : 'deny'
-    })
+    const choice = typeof answers === 'string' && answers ? answers : 'deny'
+
+    if (entry.hostedApproval) {
+      await approveHostedGroupChat(entry, choice)
+    } else {
+      await requestForBot(member, 'approval.respond', {
+        session_id: entry.sessionId || undefined,
+        request_id: entry.requestId,
+        choice
+      })
+    }
   } else if (entry.questions && entry.questions.length) {
     for (const question of entry.questions) {
       // Question ids are opaque on the wire (`GroupPrompt.questions` types

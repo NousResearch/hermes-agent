@@ -757,6 +757,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATRIX)
+        reply_to_mode = str(config.reply_to_mode or "first").strip().lower()
+        self._reply_to_mode = reply_to_mode if reply_to_mode in {"off", "first", "all"} else "first"
         self.max_message_length = _resolve_max_message_length(config)
         self.MAX_MESSAGE_LENGTH = self.max_message_length  # mirrors other adapters for tooling
         # A chunk near the outbound limit almost certainly has a continuation.
@@ -1317,9 +1319,12 @@ class MatrixAdapter(BasePlatformAdapter):
         for i, chunk in enumerate(chunks):
             msg_content = self._build_text_message_content(chunk)
 
-            # Quote the parent once, not mid-answer; tails still belong to the thread.
+            # Default to one quote; explicit modes change fallback, not thread routing.
             self._apply_relation_metadata(
-                msg_content, reply_to=reply_to, metadata=metadata, include_reply_fallback=i == 0)
+                msg_content, reply_to=reply_to, metadata=metadata,
+                include_reply_fallback=(
+                    self._reply_to_mode == "all"
+                    or (self._reply_to_mode == "first" and i == 0)))
 
             try:
                 last_event_id = await self._send_room_message(chat_id, msg_content)
@@ -2664,8 +2669,8 @@ class MatrixAdapter(BasePlatformAdapter):
             relates_to = msg_content.get("m.relates_to", {})
             relates_to["rel_type"] = "m.thread"
             relates_to["event_id"] = thread_id
-            # Non-thread clients get context on the first chunk. Tails use a
-            # bare m.thread relation: is_falling_back denotes a reply fallback.
+            # A bare thread relation must not claim to carry reply fallback.
+            # send() selects fallback per chunk according to reply_to_mode.
             if include_reply_fallback:
                 relates_to["is_falling_back"] = True
                 relates_to.setdefault("m.in_reply_to", {"event_id": reply_to or thread_id})

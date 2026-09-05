@@ -631,6 +631,35 @@ class TestMatrixRenderingPayloads:
 
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["off", "first", "all", " ALL ", "invalid"])
+    @pytest.mark.parametrize("thread_id", [None, "$root"])
+    async def test_split_reply_modes(self, mode, thread_id):
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        config = self.adapter.config
+        config.reply_to_mode = mode
+        adapter = MatrixAdapter(config)
+        adapter._client = self.adapter._client
+        with patch.object(adapter, "truncate_message", return_value=["first", "tail"]):
+            result = await adapter.send("!room:example.org", "answer", reply_to="$parent",
+                                        metadata={"thread_id": thread_id})
+        assert result.success
+        contents = self._sent_contents()
+        assert len(contents) == 2
+        normalized = mode.strip().lower()
+        if normalized not in {"off", "first", "all"}:
+            normalized = "first"
+        for i, content in enumerate(contents):
+            relation = content.get("m.relates_to", {})
+            fallback = normalized == "all" or (normalized == "first" and i == 0)
+            assert ("m.in_reply_to" in relation) == fallback
+            assert ("is_falling_back" in relation) == bool(thread_id and fallback)
+            if fallback:
+                assert relation["m.in_reply_to"] == {"event_id": "$parent"}
+            if thread_id:
+                assert relation["event_id"] == thread_id
+                assert relation["rel_type"] == "m.thread"
+
+    @pytest.mark.asyncio
     async def test_thread_payload_uses_m_thread_with_reply_fallback(self):
         result = await self.adapter.send(
             "!room:example.org",

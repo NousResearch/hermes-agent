@@ -21,7 +21,7 @@ class RecordingEnvironment:
 
     def execute(self, command, **kwargs):
         self.commands.append(command)
-        if command.startswith("test -e "):
+        if command.startswith(("test -e ", "if test -L ")):
             return {"output": "exists\n", "returncode": 0}
         if command.startswith("command -v rg"):
             return {"output": "/opt/Rip Grep/rg\n", "returncode": 0}
@@ -65,7 +65,7 @@ def test_bounded_filename_total_is_serialized_as_a_lower_bound(engine, monkeypat
 
     def execute(command, **kwargs):
         env.commands.append(command)
-        if command.startswith("test -e "):
+        if command.startswith(("test -e ", "if test -L ")):
             return {"output": "exists\n", "returncode": 0}
         if command.startswith("command -v rg"):
             return {
@@ -138,7 +138,7 @@ def test_modified_requires_parseable_ripgrep_14_before_search(version):
 
     def execute(command, **kwargs):
         env.commands.append(command)
-        if command.startswith("test -e "):
+        if command.startswith(("test -e ", "if test -L ")):
             return {"output": "exists\n", "returncode": 0}
         if command.startswith("command -v rg"):
             return {"output": "/opt/Rip Grep/rg\n", "returncode": 0}
@@ -222,15 +222,17 @@ def test_modified_capability_failure_is_actionable_and_not_downgraded():
 
 
 @pytest.mark.parametrize("order", ["discovery", "modified"])
-def test_rg_partial_output_with_error_exit_fails_closed(order):
+def test_rg_partial_output_with_error_exit_preserves_results_and_warns(order):
     env = RecordingEnvironment(rg_output="/repo/partial.py\n", rg_code=2)
 
     result = ShellFileOperations(env).search(
         "*.py", path="/repo", target="files", order=order
     )
 
-    assert result.error is not None
-    assert result.files == []
+    assert result.error is None
+    assert result.files == ["/repo/partial.py"]
+    assert "partial results" in (result.warning or "").lower()
+    assert "status 2" in (result.warning or "").lower()
     assert len(env.rg_commands) == 1
 
 
@@ -308,7 +310,7 @@ def test_repeated_search_key_distinguishes_order(monkeypatch):
 class RipgrepInvocationEnvironment(RecordingEnvironment):
     def execute(self, command, **kwargs):
         self.commands.append(command)
-        if command.startswith("test -e "):
+        if command.startswith(("test -e ", "if test -L ")):
             return {"output": "exists\n", "returncode": 0}
         if command.startswith("command -v rg"):
             return {"output": "/opt/Rip Grep/rg\n", "returncode": 0}
@@ -401,7 +403,7 @@ def test_remote_msys_shaped_executable_is_not_rewritten_as_controller_path():
 
     def execute(command, **kwargs):
         env.commands.append(command)
-        if command.startswith("test -e "):
+        if command.startswith(("test -e ", "if test -L ")):
             return {"output": "exists\n", "returncode": 0}
         if command.startswith("command -v rg"):
             return {"output": "/c/remote-tools/rg\n", "returncode": 0}
@@ -436,7 +438,7 @@ def test_modified_multi_path_search_preserves_exact_order_request():
 
     def execute(command, **kwargs):
         env.commands.append(command)
-        if command.startswith("test -e "):
+        if command.startswith(("test -e ", "if test -L ")):
             if "'/one /two'" in command:
                 return {"output": "not_found\n", "returncode": 0}
             return {"output": "exists\n", "returncode": 0}
@@ -469,7 +471,7 @@ def test_comma_delimited_file_roots_preserve_internal_spaces_in_one_search():
     def execute(command, **kwargs):
         nonlocal path_checks
         env.commands.append(command)
-        if command.startswith("test -e "):
+        if command.startswith(("test -e ", "if test -L ")):
             path_checks += 1
             output = "not_found\n" if path_checks == 1 else "exists\n"
             return {"output": output, "returncode": 0}
@@ -496,7 +498,7 @@ def test_multi_path_modified_capability_error_propagates():
 
     def execute(command, **kwargs):
         env.commands.append(command)
-        if command.startswith("test -e "):
+        if command.startswith(("test -e ", "if test -L ")):
             output = "not_found\n" if "'/one /two'" in command else "exists\n"
             return {"output": output, "returncode": 0}
         if command.startswith("command -v rg"):

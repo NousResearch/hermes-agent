@@ -107,7 +107,7 @@ class FindRecordingEnvironment:
 class MultiRootFindEnvironment(FindRecordingEnvironment):
     def execute(self, command, **kwargs):
         self.commands.append((command, kwargs))
-        if command.startswith("test -e "):
+        if command.startswith(("test -e ", "if test -L ")):
             output = "not_found\n" if "'/one/.hidden /two/.cache'" in command else "exists\n"
             return {"output": output, "returncode": 0}
         if command.startswith("command -v find"):

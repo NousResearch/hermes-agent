@@ -3,6 +3,8 @@
 import re
 from pathlib import Path
 
+import pytest
+
 import tools.file_operations as file_operations
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import ShellFileOperations
@@ -16,7 +18,7 @@ class RecordingEnvironment:
 
     def execute(self, command, cwd=None, **kwargs):
         self.commands.append(command)
-        if command.startswith("test -e"):
+        if command.startswith(("test -e", "if test -L")):
             return {"output": "exists\n", "returncode": 0}
         if command.startswith("command -v"):
             return {"output": "yes\n", "returncode": 0}
@@ -219,7 +221,7 @@ def _multi_root_protected_search(tmp_path, monkeypatch, engine):
     def execute(command, cwd=None, **kwargs):
         nonlocal path_checks
         env.commands.append(command)
-        if command.startswith("test -e"):
+        if command.startswith(("test -e", "if test -L")):
             path_checks += 1
             output = "not_found\n" if path_checks == 1 else "exists\n"
             return {"output": output, "returncode": 0}
@@ -243,7 +245,7 @@ def test_rg_multi_root_keeps_explicit_protected_root_and_reports_actual_skips(
     absolute_operand = downloads.as_posix() in command
     anchored_operand = (
         f"cd {ops._escape_shell_arg(downloads.parent.as_posix())} &&" in command
-        and " -- '.' 'Downloads' 2>/dev/null" in command
+        and " -- '.' 'Downloads'" in command
     )
     assert absolute_operand or anchored_operand
     assert "!Downloads/**" not in command
@@ -279,7 +281,7 @@ def test_rg_multi_root_scopes_protected_globs_and_restores_absolute_paths(monkey
 
     def execute(command, cwd=None, **kwargs):
         env.commands.append(command)
-        if command.startswith("test -e"):
+        if command.startswith(("test -e", "if test -L")):
             output = "not_found\n" if "'/Users/alice /repo'" in command else "exists\n"
             return {"output": output, "returncode": 0}
         if command.startswith("command -v rg"):
@@ -301,7 +303,7 @@ def test_rg_multi_root_scopes_protected_globs_and_restores_absolute_paths(monkey
     commands = _rg_files_commands(env.commands)
     assert len(commands) == 1
     command = commands[0]
-    assert command.startswith("set -o pipefail; cd '/' && ")
+    assert "cd '/' && " in command
     assert "--sortr=modified" in command
     assert "'!Users/alice/Downloads/**'" in command
     assert "'!repo/Downloads/**'" not in command
@@ -320,7 +322,7 @@ def test_rg_scoped_multi_root_handles_dot_spaces_and_overlapping_roots(monkeypat
 
     def execute(command, cwd=None, **kwargs):
         env.commands.append(command)
-        if command.startswith("test -e"):
+        if command.startswith(("test -e", "if test -L")):
             output = "not_found\n" if "'., /Users/alice'" in command else "exists\n"
             return {"output": output, "returncode": 0}
         if command.startswith("command -v rg"):
@@ -347,7 +349,7 @@ def test_rg_scoped_multi_root_terminates_options_before_dash_prefixed_root(monke
 
     def execute(command, cwd=None, **kwargs):
         env.commands.append(command)
-        if command.startswith("test -e"):
+        if command.startswith(("test -e", "if test -L")):
             output = "not_found\n" if "'., --version'" in command else "exists\n"
             return {"output": output, "returncode": 0}
         if command.startswith("command -v rg"):
@@ -361,7 +363,7 @@ def test_rg_scoped_multi_root_terminates_options_before_dash_prefixed_root(monke
 
     command = _rg_files_commands(env.commands)[0]
     assert "cd '/Users/alice' &&" in command
-    assert " -- '.' '--version' 2>/dev/null" in command
+    assert " -- '.' '--version'" in command
     assert result.error is None
 
 
@@ -382,3 +384,46 @@ def test_real_ripgrep_does_not_descend_into_protected_folder(tmp_path, monkeypat
     paths = [match.path for match in result.matches]
     assert any("visible.txt" in path for path in paths)
     assert all("protected.txt" not in path for path in paths)
+
+
+def test_protected_globs_survive_shell_cwd_outside_search_root(tmp_path, monkeypatch):
+    """rg anchors --glob to the shell cwd, not the search root. With cwd at
+    ~/workspace and the search rooted at ~, the root-relative ``!Library/**``
+    never matches, so the walk descends into ~/Library. The ``**/`` form must
+    also be emitted, on the main pass and on every zero-match probe."""
+    import shutil
+    if not shutil.which("rg"):
+        pytest.skip("ripgrep not installed")
+    home = tmp_path / "Users" / "alice"
+    workspace = home / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "notes.txt").write_text("needle here\n")
+    library = home / "Library" / "App"
+    library.mkdir(parents=True)
+    (library / "secret.txt").write_text("needle protected\n")
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(workspace)))
+
+    result = ops.search("needle", path=str(home), target="content")
+
+    matched_paths = [m.path for m in (result.matches or [])]
+    assert any(str(workspace / "notes.txt") in p for p in matched_paths)
+    assert not any(str(library / "secret.txt") in p for p in matched_paths)
+
+
+def test_zero_match_probes_carry_protected_globs(tmp_path, monkeypatch):
+    home = tmp_path / "Users" / "alice"
+    home.mkdir(parents=True)
+    env = RecordingEnvironment(home / "workspace")
+    ops = ShellFileOperations(env)
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
+
+    ops.search("needle", path=str(home), target="content")
+
+    probes = [c for c in env.commands if "--count-matches" in c]
+    assert probes, "zero-match probes should run on an empty result"
+    for command in probes:
+        for dirname in PROTECTED_NAMES:
+            assert f"!**/{dirname}/**" in command

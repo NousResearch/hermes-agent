@@ -525,9 +525,6 @@ def _load_yaml_dict(path: Path) -> Optional[dict]:
     except Exception:
         return None
     return data if isinstance(data, dict) else None
-    except Exception:
-        return None
-    return data if isinstance(data, dict) else None
 
 
 def _read_distribution_meta(profile_dir: Path) -> tuple:

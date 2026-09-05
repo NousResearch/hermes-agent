@@ -292,6 +292,10 @@ def _codex_backend_urls(base_url: str) -> tuple[str, str, str]:
     return (prefix + "/usage", prefix + "/rate-limit-reset-credits", prefix + "/rate-limit-reset-credits/consume")
 
 
+def _resolve_codex_usage_url(base_url: str) -> str:
+    return _codex_backend_urls(base_url)[0]
+
+
 def _codex_usage_unavailable_reason(status_code: int, body: str) -> str:
     body = (body or "").lower()
     if status_code == 401:

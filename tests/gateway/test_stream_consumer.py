@@ -595,6 +595,41 @@ class TestFinalResponseDeliveryGuard:
         adapter.edit_message.assert_not_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("text, bubbles", [
+        # URL on its own single-newline line is hoisted into its own bubble, so the
+        # "\n\n"-joined delivered prefix is NOT a prefix of the buffered text.
+        ("See:\nhttps://example.com\nDone.", ["See:", "https://example.com", "Done."]),
+        # Splitting normalizes "\n\n\n" and trailing whitespace away.
+        ("A.  \n\n\nB.\n\nC.", ["A.", "B.", "C."]),
+    ])
+    async def test_first_send_partial_bubbles_never_replays_delivered_bubbles(self, text, bubbles):
+        """Partial multi-bubble failure must retry ONLY the undelivered tail, even when
+        bubble splitting rewrote the text so the delivered prefix no longer matches."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import SendResult
+        from plugins.platforms.photon.adapter import PhotonAdapter
+
+        adapter = PhotonAdapter(PlatformConfig(enabled=True, token="", extra={}))
+        adapter._sidecar_send = AsyncMock(side_effect=[
+            SendResult(success=True, message_id="m1"),
+            SendResult(success=True, message_id="m2"),
+            SendResult(success=False, error="third bubble failed"),
+            SendResult(success=True, message_id="m3"),
+        ])
+        adapter.edit_message = AsyncMock()
+
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_1", StreamConsumerConfig(buffer_only=True, cursor=""))
+        consumer.on_delta(text)
+        consumer.finish()
+        await consumer.run()
+
+        sent = [call.args[1] for call in adapter._sidecar_send.await_args_list]
+        assert sent == bubbles + [bubbles[-1]], sent
+        assert consumer.final_response_sent
+        adapter.edit_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_split_overflow_failed_send_does_not_mark_final_sent(self):
         """Split-overflow path: if every chunk send fails on done frame,
         _final_response_sent must stay False so the gateway falls back."""

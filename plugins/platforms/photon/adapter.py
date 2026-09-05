@@ -1190,11 +1190,15 @@ class PhotonAdapter(BasePlatformAdapter):
         raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
         delivered_prefix = "\n\n".join(bubbles[:delivered_count])
         last_message_id = message_ids[-1] if message_ids else None
+        # Same contract Telegram/Discord emit for split overflow, so the stream consumer's
+        # single partial-delivery branch handles bubbles too. ``undelivered_content`` is the
+        # exact owed tail: splitting normalizes text, so the joined prefix need not be a
+        # string prefix of the original.
         raw.update({
-            "partial_bubble_delivery": True,
+            "partial_overflow": True,
             "message_ids": message_ids,
-            "delivered_bubbles": delivered_count,
-            "total_bubbles": len(bubbles),
+            "delivered_chunks": delivered_count,
+            "total_chunks": len(bubbles),
             "delivered_prefix": delivered_prefix,
             "last_message_id": last_message_id,
             "undelivered_content": "\n\n".join(bubbles[delivered_count:]),

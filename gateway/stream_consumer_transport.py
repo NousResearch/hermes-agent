@@ -422,18 +422,8 @@ class StreamTransportMixin:
             metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
         if not result.success:
             raw_response = getattr(result, "raw_response", None)
-            if isinstance(raw_response, dict) and raw_response.get("partial_bubble_delivery"):
-                delivered_prefix = raw_response.get("delivered_prefix")
-                if isinstance(delivered_prefix, str) and delivered_prefix:
-                    self._last_sent_text = delivered_prefix
-                    self._fallback_preserve_partial_messages = True
-                    self._enter_fallback_mode(delivered_prefix)
-                last_message_id = (raw_response.get("last_message_id")
-                                   or getattr(result, "message_id", None))
-                if last_message_id:
-                    self._adopt_message_id(str(last_message_id))
-                else:
-                    self._message_id = "__no_edit__"
+            if isinstance(raw_response, dict) and raw_response.get("partial_overflow"):
+                self._adopt_partial_delivery(result, raw_response, text=text)
             self._edit_supported = False
             return False
         self._already_sent = True
@@ -496,6 +486,38 @@ class StreamTransportMixin:
         self._edit_supported = False
         self._already_sent = True
 
+    def _adopt_partial_delivery(self, result, raw_response: dict, *, text: str) -> None:
+        """Some chunks/bubbles of ``text`` landed but not all: retarget at the last delivered
+        message and enter fallback so got_done sends only the missing tail.
+
+        Adapters that split the text before sending (Photon bubbles) also report the exact
+        ``undelivered_content``; that is authoritative, because splitting may normalize the
+        text (URL lines hoisted, blank runs collapsed, markdown stripped) so the delivered
+        prefix is no longer a string prefix of ``text`` and prefix arithmetic would replay
+        every delivered bubble.
+        """
+        last_message_id = raw_response.get("last_message_id") or getattr(result, "message_id", None)
+        if last_message_id:
+            self._adopt_message_id(str(last_message_id))
+        elif not self._message_id:
+            self._adopt_message_id(None)
+        delivered_prefix = raw_response.get("delivered_prefix")
+        undelivered = raw_response.get("undelivered_content")
+        if isinstance(undelivered, str) and undelivered:
+            self._last_sent_text = delivered_prefix if isinstance(delivered_prefix, str) else ""
+            self._fallback_preserve_partial_messages = True
+            self._fallback_tail_override = undelivered
+            self._enter_fallback_mode(delivered_prefix or "")
+        elif isinstance(delivered_prefix, str) and delivered_prefix:
+            self._last_sent_text = delivered_prefix
+            self._fallback_preserve_partial_messages = text.startswith(delivered_prefix)
+            self._enter_fallback_mode(delivered_prefix)
+        else:
+            self._fallback_preserve_partial_messages = False
+            self._enter_fallback_mode(self._visible_prefix())
+        if getattr(result, "continuation_message_ids", ()):
+            self._notify_new_message()
+
     async def _on_edit_failure(self, result, text: str, *, finalize: bool, is_turn_final: bool,
                                ) -> bool:
         """Classify a failed edit: partial overflow, flood backoff, or fallback mode.  Always
@@ -514,20 +536,7 @@ class StreamTransportMixin:
         # duplicate #45517 fixed (#36965 / #25349).
         raw_response = getattr(result, "raw_response", None)
         if isinstance(raw_response, dict) and raw_response.get("partial_overflow"):
-            # Some overflow chunks landed but not the whole response: preserve the
-            # visible prefix so got_done sends the missing tail.
-            self._message_id = str(raw_response.get("last_message_id") or result.message_id
-                                   or self._message_id)
-            delivered_prefix = raw_response.get("delivered_prefix")
-            if isinstance(delivered_prefix, str) and delivered_prefix:
-                self._last_sent_text = delivered_prefix
-                self._fallback_preserve_partial_messages = text.startswith(delivered_prefix)
-                self._enter_fallback_mode(delivered_prefix)
-            else:
-                self._fallback_preserve_partial_messages = False
-                self._enter_fallback_mode(self._visible_prefix())
-            if getattr(result, "continuation_message_ids", ()):
-                self._notify_new_message()
+            self._adopt_partial_delivery(result, raw_response, text=text)
             return False
 
         # Flood control: adaptive backoff (double the interval); disable edits only

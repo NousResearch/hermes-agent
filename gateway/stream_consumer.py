@@ -190,6 +190,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._fallback_prefix = ""
         # Fallback sends only the missing tail after a partial overflow delivery.
         self._fallback_preserve_partial_messages = False
+        # Exact undelivered tail reported by a splitting adapter (Photon bubbles); wins over
+        # prefix arithmetic in _continuation_text, consumed by the next fallback final.
+        self._fallback_tail_override = ""
         self._segment_preview_message_ids: "set[str]" = set()
         # Tool-progress overlay (native only): shown in the bubble until text arrives.
         self._tool_progress_lines: list[str] = []
@@ -754,6 +757,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if tick.got_segment_break:
             self._fallback_final_send = False
             self._fallback_prefix = ""
+            self._fallback_tail_override = ""
             if not self._accumulated:
                 return False
         # Early `continue` skips the bottom-of-loop flush signal.

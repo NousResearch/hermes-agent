@@ -290,29 +290,42 @@ async function desktopSessionCreateParams(
   cwd: string,
   capturedRoute = resolveNewChatOwnerRoute()
 ): Promise<Record<string, unknown>> {
-  // Treat Send as the linearization point for the visible selector state. The
-  // profile handshake below can yield long enough for background config/model
-  // refreshes to finish; reading atoms afterward would silently create the
-  // session with a different selection than the one the user submitted.
   // Settings → Model while a session is live leaves $currentModel painted with
   // the live agent (applySavedMainModel) and only flips the source to 'default'.
   // Shipping that stale value as an override pins every new chat to the old
   // model. Omit model/provider unless the source is 'manual'.
-  const isManualSelection = getCurrentModelSource() === 'manual'
+  const readManualSelection = () => {
+    const isManualSelection = getCurrentModelSource() === 'manual'
 
-  const selection = {
-    effort: $currentReasoningEffort.get().trim(),
-    fast: $currentFastMode.get(),
-    model: isManualSelection ? $currentModel.get().trim() : '',
-    provider: isManualSelection ? $currentProvider.get().trim() : ''
+    return {
+      effort: $currentReasoningEffort.get().trim(),
+      fast: $currentFastMode.get(),
+      model: isManualSelection ? $currentModel.get().trim() : '',
+      provider: isManualSelection ? $currentProvider.get().trim() : ''
+    }
   }
 
+  // Treat Send as the linearization point for the visible selector state when
+  // the create stays on the same profile. The handshake below can yield long
+  // enough for background config/model refreshes to finish; reading atoms
+  // afterward on a same-profile create would silently rewrite the submitted
+  // pick. When the create activates a different profile, re-read after the
+  // handshake so a prior profile's sticky manual pair cannot ride along
+  // (#101091).
+  const profileAtSubmit = normalizeProfileKey($activeGatewayProfile.get())
+  let selection = readManualSelection()
+
   const profile = capturedRoute?.profile || $newChatProfile.get() || normalizeProfileKey($activeGatewayProfile.get())
+  const targetProfile = normalizeProfileKey(profile)
 
   if (capturedRoute) {
     await ensureGatewayAgent(capturedRoute.connectionId, profile)
   } else {
     await ensureGatewayProfile(profile)
+  }
+
+  if (targetProfile !== profileAtSubmit) {
+    selection = readManualSelection()
   }
 
   return {

@@ -534,10 +534,17 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     // ONE publication frame. batch() defers Nanostores' notifications to the
     // end of the callback, so the profile pointer and the connection
     // descriptor become visible together; a null descriptor (no bridge, or a
-    // failed best-effort lookup) keeps the previous one — fail open.
+    // failed best-effort lookup) keeps the previous one — fail open. Stamp the
+    // activated profile onto the descriptor and (when a connection id exists)
+    // the composer owner so local multi-profile switches cannot keep sharing a
+    // sticky model/provider pair (#101091).
     batch(() => {
       if (connection) {
-        setConnection(connection)
+        setConnection({ ...connection, profile: target })
+
+        if (connection.connectionId) {
+          setComposerSelectionOwner(connection.connectionId, target)
+        }
       } else {
         clearComposerSelectionOwner()
       }

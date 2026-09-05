@@ -457,3 +457,34 @@ describe("ChatPage PTY ticket connect deadline", () => {
     expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("ChatPage mobile model/tools drawer surface", () => {
+  // Stock themes define no componentStyles.sidebar.background, so
+  // --component-sidebar-background is never injected by the theme context.
+  // The drawer's arbitrary background property must therefore carry an opaque
+  // var(--background-base) fallback; without it the declaration is invalid at
+  // computed-value time and the panel renders transparent over the page
+  // (#102695).
+  it("keeps the mobile drawer opaque when the theme defines no sidebar background", async () => {
+    vi.stubGlobal("matchMedia", () => ({
+      addEventListener() {},
+      matches: true,
+      media: "(max-width: 1023px)",
+      removeEventListener() {},
+    }));
+
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    const drawer = document.getElementById("chat-side-panel");
+    expect(drawer).not.toBeNull();
+    expect(drawer!.className).toContain(
+      "[background:var(--component-sidebar-background,var(--background-base))]",
+    );
+  });
+});

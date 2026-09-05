@@ -300,6 +300,68 @@ class TestValidateSignature:
         )
         assert adapter._validate_signature(req, body, secret) is True
 
+    # -- Standard Webhooks: webhook-id / webhook-timestamp / webhook-signature (#47451, #101837) --
+    # Same scheme as Svix (which co-authored the spec), only the header names differ.
+
+    @staticmethod
+    def _standard_webhooks_headers(body: bytes, secret: str, msg_id: str = "msg_std", timestamp: str | None = None):
+        timestamp = timestamp or str(int(time.time()))
+        return {
+            "webhook-id": msg_id,
+            "webhook-timestamp": timestamp,
+            "webhook-signature": _svix_signature(body, secret, msg_id, timestamp),
+        }
+
+    def test_standard_webhooks_whsec_secret_valid(self):
+        """A spec-conformant sender using the standard's own header names validates with a whsec_ secret."""
+        adapter = _make_adapter()
+        body = b'{"type":"feed.news_item.emitted"}'
+        secret = "whsec_" + base64.b64encode(b"0123456789abcdef0123456789abcdef").decode()
+        req = _mock_request(headers=self._standard_webhooks_headers(body, secret))
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_standard_webhooks_raw_secret_valid(self):
+        """Raw shared secrets work for webhook-* senders exactly as they do for svix-* senders."""
+        adapter = _make_adapter()
+        body = b'{"type":"invoice.created"}'
+        secret = "raw-shared-secret"
+        req = _mock_request(headers=self._standard_webhooks_headers(body, secret))
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_standard_webhooks_tampered_body_rejects(self):
+        """The signature binds the raw body: a modified body must fail."""
+        adapter = _make_adapter()
+        secret = "whsec_" + base64.b64encode(b"0123456789abcdef0123456789abcdef").decode()
+        req = _mock_request(headers=self._standard_webhooks_headers(b'{"amount":10}', secret))
+        assert adapter._validate_signature(req, b'{"amount":1000}', secret) is False
+
+    def test_standard_webhooks_wrong_secret_rejects(self):
+        adapter = _make_adapter()
+        body = b'{"type":"invoice.created"}'
+        req = _mock_request(headers=self._standard_webhooks_headers(body, "attacker-key"))
+        assert adapter._validate_signature(req, body, "real-secret") is False
+
+    def test_standard_webhooks_stale_timestamp_rejects(self):
+        """webhook-timestamp is bound by the same +/-300s replay window as svix-timestamp."""
+        adapter = _make_adapter()
+        body = b'{"type":"invoice.created"}'
+        secret = "raw-shared-secret"
+        stale = str(int(time.time()) - 3600)
+        req = _mock_request(headers=self._standard_webhooks_headers(body, secret, timestamp=stale))
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_standard_webhooks_partial_headers_fail_closed(self):
+        """Presence of any webhook-* header commits to the scheme: a missing timestamp must not fall through
+        to the body-only generic validator."""
+        adapter = _make_adapter()
+        body = b'{"type":"invoice.created"}'
+        secret = "raw-shared-secret"
+        headers = self._standard_webhooks_headers(body, secret)
+        del headers["webhook-timestamp"]
+        headers["X-Webhook-Signature"] = _generic_signature(body, secret)  # would validate on its own
+        req = _mock_request(headers=headers)
+        assert adapter._validate_signature(req, body, secret) is False
+
 
 # ===================================================================
 # Prompt rendering
@@ -537,6 +599,24 @@ class TestIdempotency:
             assert resp2.status == 200
             data = await resp2.json()
             assert data["status"] == "duplicate"
+
+    @pytest.mark.asyncio
+    async def test_standard_webhooks_id_is_the_delivery_id(self):
+        """Standard Webhooks senders retry with the same webhook-id, so it must feed the idempotency cache."""
+        routes = {"idem": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            headers = {"webhook-id": "msg_2abc"}
+            resp1 = await cli.post("/webhooks/idem", json={"a": 1}, headers=headers)
+            assert resp1.status == 202
+            assert (await resp1.json())["delivery_id"] == "msg_2abc"
+
+            resp2 = await cli.post("/webhooks/idem", json={"a": 1}, headers=headers)
+            assert resp2.status == 200
+            assert (await resp2.json())["status"] == "duplicate"
 
 
 # ===================================================================

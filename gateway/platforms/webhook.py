@@ -1,5 +1,5 @@
 """Generic webhook platform adapter: aiohttp server that validates HMAC-signed POSTs (GitHub, GitLab,
-Svix, Linear, generic), renders payloads into agent prompts, and routes responses back (github_comment
+Svix / Standard Webhooks, Linear, generic), renders payloads into agent prompts, and routes responses back (github_comment
 or any gateway platform). Routes live under platforms.webhook.extra.routes: events (header filter),
 secret (REQUIRED; "INSECURE_NO_AUTH" skips validation, loopback only), prompt template, skills,
 deliver/deliver_extra, deliver_only (rendered prompt IS the message). Per-route rate limiting,
@@ -548,8 +548,8 @@ class WebhookAdapter(BasePlatformAdapter):
             prompt = self._render_prompt(route_config.get("prompt", ""), payload, event_type, route_name)
             if skills := route_config.get("skills", []):
                 prompt = self._apply_skills(prompt, skills)
-        delivery_id = headers.get("X-GitHub-Delivery", headers.get(
-            "svix-id", headers.get("X-Request-ID", str(int(time.time() * 1000)))))
+        delivery_id = next((headers[name] for name in ("X-GitHub-Delivery", "svix-id", "webhook-id", "X-Request-ID")
+                            if headers.get(name)), str(int(time.time() * 1000)))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
         if not self._record_delivery_id(delivery_id, now):
             logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)
@@ -617,14 +617,17 @@ class WebhookAdapter(BasePlatformAdapter):
     # --- Signature validation ---
 
     def _validate_signature(self, request: "web.Request", body: bytes, secret: str) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, Linear, generic HMAC-SHA256)."""
+        """Validate webhook signature (GitHub, GitLab, Svix / Standard Webhooks, Linear, generic HMAC-SHA256)."""
         headers = request.headers
 
         def _header(name: str) -> str:
             return headers.get(name, "") or headers.get(name.lower(), "") or headers.get(name.upper(), "")
 
-        # Svix / AgentMail: signed content is "{id}.{timestamp}.{raw_body}".
-        svix = [_header(name) for name in ("svix-id", "svix-timestamp", "svix-signature")]
+        # Svix / AgentMail, and the Standard Webhooks spec Svix co-authored (webhook-id / webhook-timestamp /
+        # webhook-signature): identical scheme, signed content "{id}.{timestamp}.{raw_body}", "v1,<base64>"
+        # signatures and whsec_ secrets, so both header families share one validator (#47451, #101837).
+        svix = [_header(svix_name) or _header(standard_name) for svix_name, standard_name in (
+            ("svix-id", "webhook-id"), ("svix-timestamp", "webhook-timestamp"), ("svix-signature", "webhook-signature"))]
         if any(svix):
             return _validate_svix_signature(body, secret, *svix)
         # Linear (any header case): hex HMAC of the body. GitHub: sha256=<hex>. GitLab: plain token.

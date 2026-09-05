@@ -766,6 +766,7 @@ export function useRoster() {
 
       return {
         ...(ownedLocal && typeof ownedLocal === 'object' ? ownedLocal : {}),
+        profiles: ownedLocal?.profiles ?? [],
         fetchedAt: issuedAt
       }
     },

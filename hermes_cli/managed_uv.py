@@ -848,7 +848,7 @@ def _result(
 
 
 def _repair_windows_preflight(
-    root: Path, live: Path, current: SQLiteRuntimeInfo) -> RuntimeRepairResult | None:
+    root: Path, live: Path, current: SQLiteRuntimeInfo, uv_bin: str) -> RuntimeRepairResult | None:
     """Defer the repair when Windows holders make the venv rename impossible; else ``None``."""
     blocked, detail = _windows_runtime_holders()
     if blocked:
@@ -859,15 +859,26 @@ def _repair_windows_preflight(
         # Structural, not transient: this process maps the live venv's own executable, so the
         # park rename fails identically on every run. Defer BEFORE provisioning — a candidate
         # staged for a cutover that can never run only leaks an incomplete generation.
+        # PowerShell single-quoted literals preserve spaces, dollar signs and apostrophes.
+        quoted_root = "'" + str(root).replace("'", "''") + "'"
+        quoted_uv = "'" + uv_bin.replace("'", "''") + "'"
         for line in (
             f"  ⚠ SQLite runtime repair deferred: {self_detail}.",
             # See #93032.
             "    Retrying `hermes update` from inside this venv cannot help: "
             "the mapped executable is released only when this process exits.",
-            "    To complete the repair, run the updater from an interpreter "
-            "that lives outside this venv, e.g.:",
-            f"      cd {root}",
-            "      <system Python> -m hermes_cli.main update",
+            "    After this updater exits, run these commands in PowerShell, "
+            "continuing only when each command succeeds:",
+            "    This installs the updater's dependencies in a temporary environment "
+            "outside the live venv (requires internet access).",
+            '      $repairEnv = Join-Path ([IO.Path]::GetTempPath()) ("hermes-updater-" + [guid]::NewGuid())',
+            f"      & {quoted_uv} venv --managed-python --python 3.11 $repairEnv",
+            '      $repairPython = Join-Path $repairEnv "Scripts\\python.exe"',
+            f"      & {quoted_uv} pip install --python $repairPython --editable {quoted_root}",
+            f"      Set-Location -LiteralPath {quoted_root}",
+            "      & $repairPython -m hermes_cli.main update",
+            "    After the update succeeds and exits, remove the temporary updater environment:",
+            "      Remove-Item -LiteralPath $repairEnv -Recurse -Force",
             "    Sessions stay protected meanwhile: Hermes keeps databases "
             "out of WAL mode on this SQLite build."):
             print(line)
@@ -952,7 +963,7 @@ def repair_vulnerable_runtime(
         # See #73109.
         _sweep_stale_runtime_backups(live, root=root)
         return _result("safe", current, sqlite_after=current.sqlite_version_string)
-    deferred = _repair_windows_preflight(root, live, current)
+    deferred = _repair_windows_preflight(root, live, current, uv_bin)
     if deferred is not None:
         return deferred
     runtime_root = root / _RUNTIME_DIR_NAME

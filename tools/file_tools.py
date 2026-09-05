@@ -885,9 +885,12 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
     try:
         offset, limit = normalize_search_pagination(offset, limit)
 
-        # Pagination args (and order) are part of the key so paging through truncated
-        # results doesn't trip the repeated-search guard.
-        search_key = ("search", pattern, target, str(path), file_glob or "", limit, offset, order)
+        # Pagination, output shape, context, and order are part of the key so
+        # changing the requested search does not trip the repeat guard.
+        search_key = (
+            "search", pattern, target, str(path), file_glob or "",
+            limit, offset, output_mode, context, order,
+        )
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0, "read_history": set()})

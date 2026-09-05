@@ -177,37 +177,40 @@ describe('subagent store', () => {
     expect(item?.summary).toBe('finished later')
   })
 
-  it('materializes an authoritative completion when renderer reload removed the row', () => {
-    upsertSubagent(
-      's1',
-      { status: 'completed', subagent_id: 'finished-during-reload', summary: 'finished while reconnecting' },
-      false,
-      'subagent.complete'
-    )
+  it.each(['completed', 'failed', 'interrupted'] as const)(
+    'keeps an authoritative %s row when a stale running snapshot arrives',
+    status => {
+      upsertSubagent(
+        's1',
+        { status, subagent_id: 'finished-during-reload', summary: 'finished while reconnecting' },
+        false,
+        'subagent.complete'
+      )
 
-    expect(listFor('s1')).toMatchObject([
-      {
+      expect(listFor('s1')).toMatchObject([
+        {
+          id: 'finished-during-reload',
+          status,
+          summary: 'finished while reconnecting'
+        }
+      ])
+
+      restoreActiveSubagents('s1', [
+        {
+          goal: 'stale running snapshot',
+          owner_agent_session_id: 'stored-owner',
+          status: 'running',
+          subagent_id: 'finished-during-reload'
+        }
+      ])
+
+      expect(listFor('s1')[0]).toMatchObject({
         id: 'finished-during-reload',
-        status: 'completed',
+        status,
         summary: 'finished while reconnecting'
-      }
-    ])
-
-    restoreActiveSubagents('s1', [
-      {
-        goal: 'stale running snapshot',
-        owner_agent_session_id: 'stored-owner',
-        status: 'running',
-        subagent_id: 'finished-during-reload'
-      }
-    ])
-
-    expect(listFor('s1')[0]).toMatchObject({
-      id: 'finished-during-reload',
-      status: 'completed',
-      summary: 'finished while reconnecting'
-    })
-  })
+      })
+    }
+  )
 
   it('pruneFinishedSessionSubagents leaves other sessions untouched', () => {
     upsertSubagent('s1', { goal: 'live', status: 'running', subagent_id: 'a', task_index: 0 })

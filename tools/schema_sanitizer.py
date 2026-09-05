@@ -228,7 +228,13 @@ def _normalize_type_array(value: list, out: dict) -> None:
     if len(non_null) == 1:
         out["type"] = non_null[0]
     else:
-        out["anyOf"] = [{"type": t} for t in non_null]
+        # Route each synthesized branch back through ``_sanitize_node`` so a
+        # branch that is itself hostile gets repaired -- notably an ``"array"``
+        # branch gains ``items: {}`` and an ``"object"`` branch gains
+        # ``properties: {}``. A bare ``{"type": "array"}`` here would otherwise
+        # skip the array-``items`` injection (that runs on ``out.type``, not on
+        # anyOf members) and Gemini would still 400 the declaration (#71804).
+        out["anyOf"] = [_sanitize_node({"type": t}, f"anyOf[{i}]") for i, t in enumerate(non_null)]
     if has_null:
         out.setdefault("nullable", True)
 
@@ -248,7 +254,13 @@ def _sanitize_node(node: Any, path: str) -> Any:
         if node in _BARE_TYPE_NAMES:
             logger.debug("schema_sanitizer[%s]: replacing bare-string schema %r with {'type': %r}",
                          path, node, node)
-            return _empty_object() if node == "object" else {"type": node}
+            if node == "object":
+                return _empty_object()
+            # A bare-string ``"array"`` must gain ``items`` too, or Gemini
+            # rejects the resulting ``{"type": "array"}`` node (#71804).
+            if node == "array":
+                return {"type": "array", "items": {}}
+            return {"type": node}
         logger.debug("schema_sanitizer[%s]: replacing non-schema string %r "
                      "with empty object schema", path, node)
         return _empty_object()
@@ -298,6 +310,14 @@ def _sanitize_node(node: Any, path: str) -> Any:
                 out["required"] = valid
             else:
                 del out["required"]
+
+    # Array nodes without ``items``: inject a permissive ``items: {}``.
+    # OpenAI-compatible backends tolerate a bare ``{"type": "array"}``, but
+    # Gemini strictly validates function declarations and 400s the whole
+    # request with ``...items: missing field`` (#71804). An empty ``items``
+    # schema is the minimal, universally-accepted form (any element type).
+    if out.get("type") == "array" and "items" not in out:
+        out["items"] = {}
     return out
 
 

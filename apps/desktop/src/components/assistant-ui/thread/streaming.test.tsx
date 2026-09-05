@@ -538,6 +538,37 @@ describe('assistant-ui streaming renderer', () => {
     expect(finalRoot?.querySelector('[data-slot="aui_msg-actions"]')).toBeTruthy()
   })
 
+  it('labels sealed interim commentary as working and de-emphasizes it, keeping the final reply full-weight', () => {
+    const { container } = render(
+      <TranscriptHarness
+        messages={[
+          userMessage(),
+          assistantInterimMessage('Let me check the files.'),
+          assistantInterimMessage('Now applying the patch.', 'assistant-interim-2'),
+          assistantMessage('All done — patch applied.', false)
+        ]}
+      />
+    )
+
+    const roots = [...container.querySelectorAll('[data-slot="aui_assistant-message-root"]')]
+    const interimRoots = roots.filter(root => root.querySelector('[data-slot="aui_interim-label"]'))
+    const finalRoot = roots.find(root => root.textContent?.includes('All done — patch applied.'))
+
+    // Every sealed interim carries the working label; the final reply does not.
+    expect(interimRoots).toHaveLength(2)
+    expect(interimRoots.every(root => root.textContent?.includes('Working'))).toBe(true)
+    expect(finalRoot?.querySelector('[data-slot="aui_interim-label"]')).toBeNull()
+
+    // Interim content is de-emphasized (smaller, muted); the final keeps the
+    // full-weight conversation text.
+    const interimContent = interimRoots[0]?.querySelector('[data-slot="aui_assistant-message-content"]')
+    const finalContent = finalRoot?.querySelector('[data-slot="aui_assistant-message-content"]')
+    expect(interimContent?.className).toContain('text-muted-foreground/80')
+    expect(interimContent?.className).toContain('text-[0.8125rem]')
+    expect(finalContent?.className).toContain('text-foreground')
+    expect(finalContent?.className).not.toContain('text-muted-foreground/80')
+  })
+
   it('puts the turn duration on the action bar row instead of a line of its own', () => {
     const settled = {
       ...assistantMessage('All done.', false),

@@ -228,8 +228,22 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
     >
       {collapsedNotice ?? (
         <>
+          {isInterim && (
+            <div
+              className="flex items-center gap-1.5 px-(--message-text-indent) pb-1 text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground/60"
+              data-slot="aui_interim-label"
+            >
+              <span className="size-1.5 rounded-full bg-muted-foreground/50" />
+              {t.assistant.thread.working}
+            </div>
+          )}
           <div
-            className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
+            className={cn(
+              'wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty',
+              isInterim
+                ? 'text-[0.8125rem] leading-5 text-muted-foreground/80'
+                : 'text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground'
+            )}
             data-slot="aui_assistant-message-content"
           >
             {/* Todos render in the composer status stack now, not inline. */}

@@ -3516,6 +3516,7 @@ export const zh: Translations = {
       thinking: '思考中',
       thought: '已思考',
       thoughtBriefly: '思考了片刻',
+      working: '工作中',
       thoughtFor: duration => `思考了 ${duration}`,
       turnDuration: duration => `本轮耗时 ${duration}`,
       today: time => `今天，${time}`,

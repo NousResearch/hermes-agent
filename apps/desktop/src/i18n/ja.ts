@@ -2970,6 +2970,7 @@ export const ja = defineLocale({
       thinking: '考え中',
       thought: '思考済み',
       thoughtBriefly: '少し思考',
+      working: '作業中',
       thoughtFor: duration => `${duration} 思考`,
       turnDuration: duration => `このターンの所要時間: ${duration}`,
       today: time => `今日 ${time}`,

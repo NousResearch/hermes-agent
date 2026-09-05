@@ -2910,6 +2910,9 @@ export interface Translations {
       thinking: string
       thought: string
       thoughtBriefly: string
+      /** Label on a sealed interim commentary bubble (mid-turn working note,
+       *  not the turn's final answer). */
+      working: string
       thoughtFor: (duration: string) => string
       turnDuration: (duration: string) => string
       today: (time: string) => string

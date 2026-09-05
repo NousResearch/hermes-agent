@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+
 import threading
 from types import SimpleNamespace
 
@@ -15,7 +17,12 @@ from tui_gateway.hosted_room_server_rpc import (
 
 
 def _server():
-    sessions = {}
+    sessions = {
+        "runtime": {
+            "history_lock": threading.Lock(),
+            "attached_images": [],
+        }
+    }
     calls = []
 
     def method(name, result):
@@ -37,6 +44,14 @@ def _server():
         "session.interrupt": method("session.interrupt", {"result": {"interrupted": True}}),
         "approval.respond": method("approval.respond", {"result": {"resolved": 1}}),
         "prompt.submit": method("prompt.submit", {"result": {"status": "streaming"}}),
+        "image.attach_bytes": method(
+            "image.attach_bytes", {"result": {"attached": True}}
+        ),
+        "pdf.attach": method("pdf.attach", {"result": {"attached": True}}),
+        "file.attach": method(
+            "file.attach",
+            {"result": {"attached": True, "ref_text": "@file:attachments/notes.txt"}},
+        ),
     }
     server = SimpleNamespace(
         _methods=methods,
@@ -175,3 +190,188 @@ def test_prompt_rejection_is_proven_not_admitted():
 
     assert exc.value.code == 4121
     assert exc.value.not_admitted is True
+
+
+def test_attachment_staging_rollback_deletes_only_attempt_uploaded_files(tmp_path):
+    server, calls = _server()
+    attachment_dir = tmp_path / "attachments"
+    attachment_dir.mkdir()
+    uploaded = attachment_dir / "notes.txt"
+    uploaded.write_text("release notes", encoding="utf-8")
+    preserved = attachment_dir / "existing.txt"
+    preserved.write_text("keep", encoding="utf-8")
+    server._session_home_dir = lambda _session, name: attachment_dir
+    server._methods["file.attach"] = lambda rid, params: {
+        "id": rid,
+        "result": {
+            "attached": True,
+            "path": str(uploaded),
+            "ref_text": "@file:attachments/notes.txt",
+            "uploaded": True,
+        },
+    }
+    rpc = HostedRoomServerRPC(server)
+    attachment = {
+        "attachment_id": f"att_{'3' * 32}",
+        "kind": "file",
+        "name": "notes.txt",
+        "mime": "text/plain",
+    }
+
+    rpc.stage_attachment(
+        profile="ops",
+        session_id="runtime",
+        source="bot_room",
+        attachment=attachment,
+        data=b"release notes",
+        execution_generation=9,
+    )
+    rpc.rollback_attachment_staging(
+        profile="ops",
+        session_id="runtime",
+        source="bot_room",
+        execution_generation=9,
+    )
+
+    assert not uploaded.exists()
+    assert preserved.read_text(encoding="utf-8") == "keep"
+    assert any(method == "file.attach" for method, _params in calls) is False
+
+
+def test_attachment_staging_rollback_restores_pending_images_and_clears_cache():
+    server, calls = _server()
+    session = server._sessions["runtime"]
+
+    def attach_image(rid, params):
+        calls.append(("image.attach_bytes", params))
+        session["attached_images"].append("/images/diagram.png")
+        return {
+            "id": rid,
+            "result": {
+                "attached": True,
+                "path": "/images/diagram.png",
+            },
+        }
+
+    def fail_pdf_after_partial_mutation(rid, params):
+        calls.append(("pdf.attach", params))
+        session["attached_images"].append("/images/brief-page-1.png")
+        return {
+            "id": rid,
+            "error": {"code": 5028, "message": "second attachment failed"},
+        }
+
+    server._methods["image.attach_bytes"] = attach_image
+    server._methods["pdf.attach"] = fail_pdf_after_partial_mutation
+    rpc = HostedRoomServerRPC(server)
+    image = {
+        "attachment_id": f"att_{'1' * 32}",
+        "kind": "image",
+        "name": "diagram.png",
+        "mime": "image/png",
+    }
+    pdf = {
+        "attachment_id": f"att_{'2' * 32}",
+        "kind": "pdf",
+        "name": "brief.pdf",
+        "mime": "application/pdf",
+    }
+
+    rpc.stage_attachment(
+        profile="ops",
+        session_id="runtime",
+        source="bot_room",
+        attachment=image,
+        data=b"image",
+        execution_generation=7,
+    )
+    with pytest.raises(HostedRoomSessionError, match="second attachment failed"):
+        rpc.stage_attachment(
+            profile="ops",
+            session_id="runtime",
+            source="bot_room",
+            attachment=pdf,
+            data=b"pdf",
+            execution_generation=7,
+        )
+
+    assert session["attached_images"] == [
+        "/images/diagram.png",
+        "/images/brief-page-1.png",
+    ]
+    rpc.rollback_attachment_staging(
+        profile="ops",
+        session_id="runtime",
+        source="bot_room",
+        execution_generation=7,
+    )
+    assert session["attached_images"] == []
+
+    rpc.stage_attachment(
+        profile="ops",
+        session_id="runtime",
+        source="bot_room",
+        attachment=image,
+        data=b"image",
+        execution_generation=7,
+    )
+    assert len([called for called, _params in calls if called == "image.attach_bytes"]) == 2
+
+
+@pytest.mark.parametrize(
+    ("kind", "name", "mime", "method"),
+    [
+        ("image", "diagram.png", "image/png", "image.attach_bytes"),
+        ("pdf", "brief.pdf", "application/pdf", "pdf.attach"),
+        ("file", "notes.txt", "text/plain", "file.attach"),
+    ],
+)
+def test_attachment_staging_uses_existing_attach_rpcs_and_deduplicates_attempt(
+    kind, name, mime, method
+):
+    server, calls = _server()
+    rpc = HostedRoomServerRPC(server)
+    attachment = {
+        "attachment_id": f"att_{'1' * 32}",
+        "kind": kind,
+        "name": name,
+        "size": 5,
+        "mime": mime,
+    }
+
+    first = rpc.stage_attachment(
+        profile="ops",
+        session_id="runtime",
+        source="bot_room",
+        attachment=attachment,
+        data=b"bytes",
+        execution_generation=1,
+    )
+    repeated = rpc.stage_attachment(
+        profile="ops",
+        session_id="runtime",
+        source="bot_room",
+        attachment=attachment,
+        data=b"bytes",
+        execution_generation=1,
+    )
+    rpc.stage_attachment(
+        profile="ops",
+        session_id="runtime",
+        source="bot_room",
+        attachment=attachment,
+        data=b"bytes",
+        execution_generation=2,
+    )
+
+    assert first == repeated
+    matching = [params for called, params in calls if called == method]
+    assert len(matching) == 2
+    if kind == "file":
+        assert matching[0]["data_url"] == (
+            f"data:{mime};base64,{base64.b64encode(b'bytes').decode('ascii')}"
+        )
+    else:
+        assert matching[0]["content_base64"] == base64.b64encode(b"bytes").decode(
+            "ascii"
+        )

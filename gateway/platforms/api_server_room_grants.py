@@ -1,5 +1,6 @@
 """RoomLink room-member grants and capability HTTP handlers."""
 
+import asyncio
 import time
 import uuid
 from typing import Any, Optional
@@ -47,10 +48,21 @@ def _room_identity(source: dict[str, Any], *, coerce: bool = False) -> dict[str,
     return {k: int(source[k]) if k == "authority_epoch" else text(source[k]) for k in _ROOM_IDENTITY_FIELDS}
 
 
+def _effective_room_profile(_api_request_profile) -> str:
+    """Resolve the middleware selection or the daemon's active profile scope."""
+    from hermes_cli.profiles import get_active_profile_name, profile_matches_home
+
+    selected = _api_request_profile.get()
+    if selected:
+        return selected
+    active = get_active_profile_name()
+    return "default" if active == "custom" and not profile_matches_home(active) else active
+
+
 def _local_target(claims: dict[str, Any] | None, _api_request_profile) -> tuple[str, str]:
     """Return ``(profile, installation_id)`` for this gateway; *claims* must target it."""
     from gateway import hosted_rooms
-    profile = _api_request_profile.get() or "default"
+    profile = _effective_room_profile(_api_request_profile)
     installation_id = hosted_rooms.local_authority_gateway_id()
     if claims is not None and (claims["target_profile"], claims["target_install_id"]) != (profile, installation_id):
         raise ValueError("room grant target does not match this profile")
@@ -61,21 +73,41 @@ def _local_room_catalog(self, profile: str, installation_id: str) -> tuple[dict,
     """Return ``(execution_policy, catalog)`` for this gateway's *profile*."""
     from gateway.hosted_room_peer import PROTOCOL_VERSION, catalog_mapping
     from gateway.hosted_room_execution_policy import execution_policy_mapping
+    from gateway.platforms.api_server_room_attachments import roomlink_attachments_available
     with self._profile_scope(profile):
         execution_policy = execution_policy_mapping(target_profile=profile)
     catalog = catalog_mapping(
         installation_id=installation_id, protocol_versions=(PROTOCOL_VERSION,), link_modes=("direct",),
-        persistent_process=True, text=True, attachments=False, target_profile=profile,
+        persistent_process=True, text=True, attachments=roomlink_attachments_available(), target_profile=profile,
         execution_policy=execution_policy)
     return execution_policy, catalog
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
+    from gateway.platforms import api_server_room_attachments
+
     return [
-        ("POST", "/v1/room-members/invitations", self._handle_room_member_invitation),
-        ("GET", "/v1/room-members/capabilities", self._handle_room_member_capabilities),
-        ("POST", "/v1/room-members/grants/refresh", self._handle_room_member_grant_refresh),
-        ("POST", "/v1/room-members/grants/revoke", self._handle_room_member_grant_revoke)]
+        (
+            "POST",
+            "/v1/room-members/invitations",
+            self._handle_room_member_invitation,
+        ),
+        (
+            "GET",
+            "/v1/room-members/capabilities",
+            self._handle_room_member_capabilities,
+        ),
+        (
+            "POST",
+            "/v1/room-members/grants/refresh",
+            self._handle_room_member_grant_refresh,
+        ),
+        (
+            "POST",
+            "/v1/room-members/grants/revoke",
+            self._handle_room_member_grant_revoke,
+        ),
+    ] + api_server_room_attachments._http_routes(self)
 
 
 def _room_grant_token(request: "web.Request") -> str:
@@ -88,13 +120,15 @@ def _room_grant_secret(self) -> bytes:
     return gateway_room_grant_secret()
 
 
-def _decode_request_grant(self, request: "web.Request", *, permission: str) -> dict[str, Any]:
+def _decode_request_grant(self, request: "web.Request", *, permission: str,
+                          allow_expired_for_revocation: bool = False) -> dict[str, Any]:
     """Signature/scope/horizon check only (no revocation lookup)."""
     from gateway.hosted_room_peer import decode_room_grant
     token = self._room_grant_token(request)
     if not token:
         raise ValueError("room grant is missing")
-    return decode_room_grant(self._room_grant_secret(), token, permission=permission)
+    return decode_room_grant(self._room_grant_secret(), token, permission=permission,
+                             allow_expired_for_revocation=allow_expired_for_revocation)
 
 
 def _room_grant_claims(self, request: "web.Request", *, permission: str) -> dict[str, Any]:
@@ -218,11 +252,18 @@ async def _handle_room_member_grant_revoke(
     try:
         from gateway import hosted_rooms
         # Idempotent: a response-lost retry authenticates with the grant just denylisted, so
-        # verify signature/scope/horizon directly (not _room_grant_claims) and upsert the id.
-        claims = _decode_request_grant(self, request, permission="status")
+        # verify signature/scope directly (not _room_grant_claims) and upsert the id,
+        # even after expiry; this does not restore operational authority.
+        claims = _decode_request_grant(self, request, permission="status", allow_expired_for_revocation=True)
         _local_target(claims, _api_request_profile)
         hosted_rooms.revoke_room_grant_scope(
             hosted_rooms.default_db_path(), claims=claims, expires_at=_hard_expiry(claims))
+        try:
+            from gateway.platforms.api_server_room_attachments import _default_spool
+            await asyncio.to_thread(_default_spool().discard_scope, claims)
+        except Exception:
+            # Authorization is already revoked; bounded expiry backs up failed cleanup.
+            pass
     except Exception:
         return _room_grant_error_response(_openai_error=_openai_error)
     return web.json_response({"object": "hermes.room_member.grant.revocation", "revoked": True})

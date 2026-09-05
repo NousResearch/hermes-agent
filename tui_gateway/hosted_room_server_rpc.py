@@ -4,9 +4,12 @@ task proof as an in-process-only Python object that JSON clients cannot forge.""
 
 from __future__ import annotations
 
+import base64
 import itertools
+import stat
 import threading
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable
 
@@ -30,6 +33,9 @@ class HostedRoomServerRPC:
     def __init__(self, server: ModuleType) -> None:
         self.server = server
         self._ids = itertools.count(1)
+        self._attachment_lock = threading.Lock()
+        self._staged_attachments: dict[tuple[str, str, int], dict[str, Any]] = {}
+        self._attachment_attempts: dict[tuple[str, int], tuple[str, ...]] = {}
 
     def _call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         envelope = self.server._methods[method](f"hosted-room-{next(self._ids)}", params)
@@ -126,3 +132,195 @@ class HostedRoomServerRPC:
         return self._call("session.interrupt", {
             "profile": profile, "session_id": session_id,
             "expected_hosted_task_id": expected_task_id})
+
+
+    def _forget_attachment_attempt(
+        self, session_id: str, execution_generation: int
+    ) -> None:
+        attempt_key = (session_id, int(execution_generation))
+        with self._attachment_lock:
+            self._attachment_attempts.pop(attempt_key, None)
+            stale_keys = [
+                key
+                for key in self._staged_attachments
+                if key[0] == session_id and key[2] == int(execution_generation)
+            ]
+            for key in stale_keys:
+                self._staged_attachments.pop(key, None)
+
+
+    def _remove_attempt_uploaded_file(
+        self, session_id: str, result: Mapping[str, Any]
+    ) -> None:
+        """Delete only files materialized by this failed staging attempt."""
+
+        if result.get("uploaded") is not True:
+            return
+        raw_path = str(result.get("path") or "")
+        if not raw_path:
+            return
+        record = self._session_record(session_id)
+        attachment_dir = getattr(self.server, "_session_home_dir", None)
+        if record is None or not callable(attachment_dir):
+            return
+        try:
+            root = Path(attachment_dir(record, "attachments")).resolve()
+            candidate = Path(raw_path).resolve()
+            candidate.relative_to(root)
+            info = candidate.lstat()
+            if stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+                candidate.unlink(missing_ok=True)
+        except (FileNotFoundError, OSError, ValueError):
+            return
+
+
+    def rollback_attachment_staging(
+        self,
+        *,
+        profile: str,
+        session_id: str,
+        source: str,
+        execution_generation: int,
+    ) -> None:
+        """Restore the pending-image queue after a pre-submit failure."""
+
+        del profile, source
+        attempt_key = (session_id, int(execution_generation))
+        with self._attachment_lock:
+            snapshot = self._attachment_attempts.pop(attempt_key, None)
+            stale_keys = [
+                key
+                for key in self._staged_attachments
+                if key[0] == session_id and key[2] == int(execution_generation)
+            ]
+            staged_results = [
+                dict(self._staged_attachments.get(key) or {}) for key in stale_keys
+            ]
+            for key in stale_keys:
+                self._staged_attachments.pop(key, None)
+        for result in staged_results:
+            self._remove_attempt_uploaded_file(session_id, result)
+        if snapshot is None:
+            return
+        record = self._session_record(session_id)
+        if record is None:
+            return
+        lock = record.get("history_lock")
+        if lock is None:
+            return
+        with lock:
+            record["attached_images"] = list(snapshot)
+
+
+    def commit_attachment_staging(
+        self,
+        *,
+        profile: str,
+        session_id: str,
+        source: str,
+        execution_generation: int,
+    ) -> None:
+        """Drop attempt bookkeeping after prompt admission becomes ambiguous."""
+
+        del profile, source
+        self._forget_attachment_attempt(session_id, execution_generation)
+
+
+    def begin_attachment_staging(
+        self,
+        *,
+        profile: str,
+        session_id: str,
+        source: str,
+        execution_generation: int,
+    ) -> None:
+        """Capture the canonical session's pending-image queue once."""
+
+        del profile, source
+        attempt_key = (session_id, int(execution_generation))
+        with self._attachment_lock:
+            if attempt_key in self._attachment_attempts:
+                return
+        record = self._session_record(session_id)
+        if record is None:
+            raise HostedRoomSessionError(
+                "attachment.stage", 4007, "session not found"
+            )
+        lock = record.get("history_lock")
+        if lock is None:
+            raise HostedRoomSessionError(
+                "attachment.stage", 5000, "session has no history lock"
+            )
+        with lock:
+            snapshot = tuple(str(path) for path in record.get("attached_images", []))
+        with self._attachment_lock:
+            self._attachment_attempts.setdefault(attempt_key, snapshot)
+
+
+    def stage_attachment(
+        self,
+        *,
+        profile: str,
+        session_id: str,
+        source: str,
+        attachment: Mapping[str, Any],
+        data: bytes,
+        execution_generation: int,
+    ) -> Mapping[str, Any]:
+        """Stage canonical bytes through the existing session attachment RPCs."""
+
+        self.begin_attachment_staging(
+            profile=profile,
+            session_id=session_id,
+            source=source,
+            execution_generation=execution_generation,
+        )
+        attachment_id = str(attachment.get("attachment_id") or "")
+        key = (session_id, attachment_id, int(execution_generation))
+        with self._attachment_lock:
+            cached = self._staged_attachments.get(key)
+            if cached is not None:
+                return dict(cached)
+
+        encoded = base64.b64encode(data).decode("ascii")
+        kind = str(attachment.get("kind") or "")
+        name = str(attachment.get("name") or "attachment")
+        mime = str(attachment.get("mime") or "application/octet-stream")
+        if kind == "image":
+            result = self._call(
+                "image.attach_bytes",
+                {
+                    "session_id": session_id,
+                    "content_base64": encoded,
+                    "filename": name,
+                },
+            )
+        elif kind == "pdf":
+            result = self._call(
+                "pdf.attach",
+                {
+                    "session_id": session_id,
+                    "content_base64": encoded,
+                    "filename": name,
+                },
+            )
+        elif kind == "file":
+            result = self._call(
+                "file.attach",
+                {
+                    "session_id": session_id,
+                    "data_url": f"data:{mime};base64,{encoded}",
+                    "name": name,
+                },
+            )
+        else:
+            raise HostedRoomSessionError(
+                "attachment.stage", 4016, "unsupported hosted attachment kind"
+            )
+        if result.get("attached") is not True:
+            raise HostedRoomSessionError(
+                f"{kind}.attach", 5028, "attachment staging was not acknowledged"
+            )
+        with self._attachment_lock:
+            self._staged_attachments[key] = dict(result)
+        return result

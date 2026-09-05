@@ -30,6 +30,9 @@ from gateway.hosted_rooms_common import bounded_int, clock, compact_json, exact_
 PROTOCOL_VERSION = 2
 MAX_TOKEN_BYTES = 16 * 1024
 MAX_PROMPT_BYTES = 256 * 1024
+MAX_ROOM_LINK_ATTACHMENTS = 16
+MAX_ROOM_LINK_ATTACHMENT_BYTES = 15_000_000
+MAX_ROOM_LINK_ATTACHMENT_BATCH_BYTES = 50_000_000
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$")
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _LINK_MODES = frozenset({"direct", "overlay", "relay", "pull", "desktop"})
@@ -368,14 +371,19 @@ class HostedMemberDispatch:
     capability_digest: str
     execution_policy_digest: str
     trace_id: str
+    attachment_manifest_digest: str | None = None
 
     def as_mapping(self) -> dict[str, Any]:
         """Return the canonical wire mapping used for fingerprinting."""
-        return asdict(self)
+        mapping = asdict(self)
+        if self.attachment_manifest_digest is None:
+            mapping.pop("attachment_manifest_digest")
+        return mapping
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "HostedMemberDispatch":
-        _exact_fields(value, required=set(_DISPATCH_FIELDS) | {"prompt", "prompt_digest"}, label="dispatch")
+        _exact_fields(value, required=set(_DISPATCH_FIELDS) | {"prompt", "prompt_digest"},
+                      optional={"attachment_manifest_digest"}, label="dispatch")
         if not isinstance(prompt := value["prompt"], str) or not prompt.strip():
             raise HostedRoomPeerError("prompt must be a non-empty string")
         text(prompt, error=HostedRoomPeerError, label="prompt", max_bytes=MAX_PROMPT_BYTES, strip=False)
@@ -384,6 +392,9 @@ class HostedMemberDispatch:
             raise HostedRoomPeerError("prompt_digest does not match prompt")
         return cls(
             prompt=prompt, prompt_digest=prompt_digest,
+            attachment_manifest_digest=(
+                _digest(value["attachment_manifest_digest"], field="attachment_manifest_digest")
+                if "attachment_manifest_digest" in value else None),
             **{name: check(value[name], field=name) for name, check in _DISPATCH_FIELDS.items()})
 
 
@@ -394,7 +405,7 @@ _GRANT_SCOPE = (
 _GRANT_FIELDS = frozenset({
     "version", *_GRANT_SCOPE, "execution_policy_digest", "permissions", "issued_at", "expires_at"})
 _GRANT_REFRESH_FIELDS = _GRANT_FIELDS | {"status_expires_at"}
-_GRANT_PERMISSIONS = {"approve", "dispatch", "status", "stop"}
+_GRANT_PERMISSIONS = {"approve", "attachment.stage", "dispatch", "status", "stop"}
 MAX_DISPATCH_GRANT_TTL_SECONDS = 24 * 60 * 60
 MAX_STATUS_GRANT_TTL_SECONDS = 30 * 24 * 60 * 60
 
@@ -402,7 +413,8 @@ MAX_STATUS_GRANT_TTL_SECONDS = 30 * 24 * 60 * 60
 def issue_room_grant(
     secret: bytes, *, grant_id: str, room_id: str, home_install_id: str, authority_gateway_id: str,
     authority_epoch: int, member_id: str, target_install_id: str, target_profile: str,
-    execution_policy_digest: str | None = None, permissions: Iterable[str] = ("approve", "dispatch", "status", "stop"),
+    execution_policy_digest: str | None = None,
+    permissions: Iterable[str] = ("approve", "attachment.stage", "dispatch", "status", "stop"),
     issued_at: float | None = None, ttl_seconds: float = 3600, status_ttl_seconds: float | None = None,
     status_expires_at: float | None = None) -> str:
     """Issue a target-verifiable bearer grant scoped to one room member."""
@@ -449,8 +461,11 @@ def verify_room_grant(
     return payload
 
 
-def decode_room_grant(secret: bytes, token: str, *, permission: str, now: float | None = None) -> dict[str, Any]:
-    """Verify grant signature, lifetime and operation without a dispatch."""
+def decode_room_grant(secret: bytes, token: str, *, permission: str, now: float | None = None,
+                      allow_expired_for_revocation: bool = False) -> dict[str, Any]:
+    """Verify a signed grant without restoring expired operational authority."""
+    if allow_expired_for_revocation and permission != "status":
+        raise HostedRoomGrantError("expired grants are valid only for revocation")
     if not isinstance(token, str) or len(token.encode("utf-8")) > MAX_TOKEN_BYTES:
         raise HostedRoomGrantError("room grant is invalid")
     encoded, supplied_signature = _split_token(token)
@@ -474,7 +489,7 @@ def decode_room_grant(secret: bytes, token: str, *, permission: str, now: float 
     if not (all(map(math.isfinite, lifetimes)) and issued_at < expires_at <= status_expires_at):
         raise HostedRoomGrantError("room grant lifetime is invalid")
     operation_expires_at = status_expires_at if permission in {"approve", "status", "stop"} else expires_at
-    if checked_now < issued_at - 30 or checked_now >= operation_expires_at:
+    if not allow_expired_for_revocation and (checked_now < issued_at - 30 or checked_now >= operation_expires_at):
         raise HostedRoomGrantError("room grant is expired or not active")
     if not isinstance(permissions := payload.get("permissions"), list) or permission not in permissions:
         raise HostedRoomGrantError("room grant does not allow this operation")
@@ -542,3 +557,82 @@ def select_room_link(
         )
     return None
 # ---- END PLUGIN-COMPAT ----
+
+
+def attachment_manifest_digest(value: Any) -> str:
+    """Return the canonical SHA-256 identity for a validated manifest."""
+    manifest = canonical_attachment_manifest(value)
+    return hashlib.sha256(
+        json.dumps(
+            manifest,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("ascii")
+    ).hexdigest()
+
+
+def canonical_attachment_manifest(value: Any) -> list[dict[str, Any]]:
+    """Validate and normalize one bounded RoomLink attachment manifest.
+
+    The manifest contains metadata and content digests only. Bytes, local paths,
+    and bearer material are deliberately outside this durable wire contract.
+    Entry order is preserved because it is part of the user-visible message.
+    """
+    if not isinstance(value, list) or not value:
+        raise HostedRoomPeerError("attachment manifest must be a non-empty list")
+    if len(value) > MAX_ROOM_LINK_ATTACHMENTS:
+        raise HostedRoomPeerError("attachment manifest has too many entries")
+    required = {"attachment_id", "kind", "name", "size", "mime", "sha256"}
+    normalized: list[dict[str, Any]] = []
+    total = 0
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, Mapping):
+            raise HostedRoomPeerError("attachment manifest entries must be objects")
+        _exact_fields(raw, required=required, label="attachment manifest entry")
+        attachment_id = _identifier(raw["attachment_id"], field="attachment_id")
+        if attachment_id in seen:
+            raise HostedRoomPeerError("attachment ids must be unique")
+        seen.add(attachment_id)
+        kind = raw["kind"]
+        if kind not in {"image", "pdf", "file"}:
+            raise HostedRoomPeerError("attachment kind is unsupported")
+        name = raw["name"]
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or len(name) > 255
+            or name.strip() in {".", ".."}
+            or any(token in name for token in ("/", "\\", "\x00", "\n", "\r"))
+        ):
+            raise HostedRoomPeerError("attachment name must be a bounded basename")
+        mime = raw["mime"]
+        if (
+            not isinstance(mime, str)
+            or not mime.strip()
+            or len(mime) > 127
+            or "/" not in mime
+        ):
+            raise HostedRoomPeerError("attachment mime is invalid")
+        size = raw["size"]
+        if (
+            isinstance(size, bool)
+            or not isinstance(size, int)
+            or not 0 < size <= MAX_ROOM_LINK_ATTACHMENT_BYTES
+        ):
+            raise HostedRoomPeerError("attachment size is outside the RoomLink limit")
+        total += size
+        if total > MAX_ROOM_LINK_ATTACHMENT_BATCH_BYTES:
+            raise HostedRoomPeerError("attachment batch is too large")
+        normalized.append(
+            {
+                "attachment_id": attachment_id,
+                "kind": kind,
+                "name": name.strip(),
+                "size": size,
+                "mime": mime.strip().lower(),
+                "sha256": _digest(raw["sha256"], field="attachment sha256"),
+            }
+        )
+    return normalized

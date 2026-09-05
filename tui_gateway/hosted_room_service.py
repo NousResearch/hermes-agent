@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+from hashlib import sha256
 import os
+import shutil
 import threading
 import time
 from collections import Counter
@@ -18,9 +20,11 @@ from gateway import hosted_room_driver as driver
 from gateway import hosted_room_links
 from gateway import hosted_rooms
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint, PolicySnapshot
+from gateway.hosted_room_attachments import AttachmentData, HostedRoomAttachmentStore
 from gateway.hosted_room_peer import (
-    GatewayRoomCatalog, HostedMemberDispatch, PROTOCOL_VERSION, room_grant_needs_dispatch_refresh)
-from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime
+    GatewayRoomCatalog, HostedMemberDispatch, PROTOCOL_VERSION, room_grant_needs_dispatch_refresh,
+    attachment_manifest_digest)
+from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime, MemberTransportUnavailable
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
 from tui_gateway.hosted_room_peer_http import (
     PeerRunsHTTPClient, PeerRunsHTTPError, digest_reauthorization_error)
@@ -71,6 +75,7 @@ class HostedRoomService:
         self.server, self.db_path = server, Path(db_path or hosted_rooms.default_db_path())
         hosted_rooms.prune_disbanded_rooms(self.db_path)
         self._policy_lock = threading.RLock()
+        self.attachments = HostedRoomAttachmentStore(self.db_path)
         self._pending_actions: dict[tuple[str, str], dict[str, Any]] = {}
         self.policy_checkpoint = HostedRoomPolicyCheckpoint(self.db_path)
         self.rpc = HostedRoomServerRPC(server)
@@ -93,6 +98,7 @@ class HostedRoomService:
             transport_resolver=self._resolve_member_transport, turn_lock=self._turn_lock,
             prepare_room=self.prepare_room, publish_terminal=self.publish_terminal,
             pending_action=self._set_pending_action,
+            attachment_loader=self._load_task_attachments,
             poll_interval_seconds=_HOSTED_ROOM_IDLE_FALLBACK_SECONDS,
             active_poll_interval_seconds=_HOSTED_ROOM_ACTIVE_POLL_SECONDS,
             turn_timeout_seconds=_hosted_room_turn_timeout_seconds())
@@ -112,7 +118,7 @@ class HostedRoomService:
                 target_profile=stored.target_profile, capability_digest=catalog.catalog_digest,
                 execution_policy_digest=catalog.execution_policy.policy_digest,
                 cancellation_scope_id=stored.cancellation_scope_id, trace_id=stored.trace_id,
-                grant=stored.grant)
+                grant=stored.grant, attachments=catalog.attachments)
             self.peer_clients[key] = PeerRunsHTTPClient(
                 base_url=stored.target_url, api_key="", receipt_db_path=self.db_path)
             self._peer_route_status[key] = stored.status
@@ -139,19 +145,22 @@ class HostedRoomService:
     def _room(self, room_id: str) -> dict[str, Any]:
         return hosted_rooms.room_state(self.db_path, room_id=room_id)
 
-    def _owned_authority(self, room_id: str) -> tuple[str, int]:
-        """(gateway_id, epoch) of a room this gateway owns; conflict error otherwise."""
-        gateway_id, epoch = _authority(self._room(room_id))
+    def _owned_room(self, room_id: str) -> dict[str, Any]:
+        """Room snapshot owned by this gateway; conflict error otherwise."""
+        room = self._room(room_id)
+        gateway_id, _epoch = _authority(room)
         if gateway_id != hosted_rooms.local_authority_gateway_id():
             raise hosted_rooms.AuthorityConflictError(
                 "This Group Chat is managed by another gateway.")
-        return gateway_id, epoch
+        return room
 
     def _turn_lock(self, profile: str) -> contextlib.AbstractContextManager[Path]:
         from tools.bot_relay import acquire_turn_lock
         return acquire_turn_lock(self.root, profile)
 
     def start(self) -> None:
+        self.attachments.reconcile_room_events()
+        self.attachments.prune()
         self.runtime.start()
 
     def stop(self, *, timeout: float = 5.0) -> bool:
@@ -229,32 +238,51 @@ class HostedRoomService:
         route = self.peer_routes.get(key)
         if route is None:
             if self._member_is_peer(binding.room_id, member_id):
-                raise RuntimeError("peer room route is unavailable")
+                raise MemberTransportUnavailable("peer room route is unavailable")
             return self.rpc
         client = self.peer_clients.get(key)
         if client is None:
-            raise RuntimeError("peer room client is unavailable")
+            raise MemberTransportUnavailable("peer room client is unavailable")
         identity = task.get("identity")
         execution_generation = int(task.get("execution_generation") or 0)
         bind_observation = _hook(client, "bind_observation")
         if (
-            bind_observation is not None and isinstance(identity, driver.TaskIdentity)
-            and execution_generation > 0):
+            bind_observation is not None
+            and isinstance(identity, driver.TaskIdentity)
+            and execution_generation > 0
+        ):
             bind_observation(task_id=identity.task_id, execution_generation=execution_generation)
 
         def set_status(status: str):
             return lambda: self._set_route_status(*key, status)
+
         tracked_client = _RouteStatusPeerClient(
-            client, on_ready=set_status("ready"),
+            client,
+            on_ready=set_status("ready"),
             on_reauthorization=set_status("needs_reauthorization"),
             on_unavailable=set_status("unavailable"),
-            on_refreshed=lambda grant, catalog=None: self._rotate_route_grant(
-                *key, grant, catalog))
+            on_refreshed=lambda grant, catalog=None: self._rotate_route_grant(*key, grant, catalog),
+        )
+        if task.get("payload", {}).get("attachments"):
+            route = self._refresh_peer_attachment_catalog(
+                binding.room_id,
+                member_id,
+                route,
+                tracked_client,
+            )
+            if not route.attachments:
+                raise MemberTransportUnavailable(
+                    "The target gateway needs an update before it can receive files in this Group Chat."
+                )
         self._recover_peer_admission(binding, task, route, tracked_client)
         return PeerHostedRoomTransport(
-            binding=binding, route=route, client=tracked_client,
+            binding=binding,
+            route=route,
+            client=tracked_client,
             source_event_seq=int(payload.get("source_event_seq") or 0),
-            task_id=getattr(identity, "task_id", None), execution_generation=execution_generation)
+            task_id=getattr(identity, "task_id", None),
+            execution_generation=execution_generation,
+        )
 
     def _recover_peer_admission(
         self, binding: HostedRoomBinding, task: Mapping[str, Any], route: PeerMemberRoute,
@@ -272,10 +300,20 @@ class HostedRoomService:
         source_event_seq = int(payload.get("source_event_seq") or 0)
         if not isinstance(prompt, str) or source_event_seq < 1 or not route.trace_id:
             raise RuntimeError("peer room admission identity is unavailable for recovery")
+        attachment_payloads = [
+            {**dict(attachment), "sha256": sha256(data).hexdigest(), "data": data}
+            for attachment, data in self._load_task_attachments(binding, task)]
+        manifest = [{key: value for key, value in item.items() if key != "data"} for item in attachment_payloads]
         dispatch = build_member_dispatch(
             binding=binding, route=route, room_id=identity.room_id, task_id=identity.task_id,
             target_profile=route.target_profile, execution_generation=execution_generation,
-            source_event_seq=source_event_seq, prompt=prompt, trace_id=route.trace_id)
+            source_event_seq=source_event_seq, prompt=prompt, trace_id=route.trace_id,
+            attachment_digest=attachment_manifest_digest(manifest) if manifest else None)
+        if attachment_payloads:
+            stage = _hook(client, "stage_attachments")
+            if stage is None:
+                raise RuntimeError("The target gateway needs an update before it can receive files in this Group Chat.")
+            stage(dispatch=dispatch.as_mapping(), attachments=attachment_payloads, grant=route.grant)
         recover(dispatch=dispatch.as_mapping(), grant=route.grant)
 
     def _member_is_peer(self, room_id: str, member_id: str) -> bool:
@@ -370,16 +408,29 @@ class HostedRoomService:
                 room_id=room_id, task_id=task["identity"].task_id, status=status,
                 execution_generation=execution_generation):
                 continue
+            publication_cursor = int(self._room(room_id)["latest_seq"])
             task_events = self.policy_checkpoint.events_for_task(
-                room_id=room_id, source_event_seq=int(task["payload"]["source_event_seq"]))
+                room_id=room_id, source_event_seq=int(task["payload"]["source_event_seq"]),
+                input_context=task["payload"].get("input_context"), task_id=task["identity"].task_id)
             plan = discussion.reconstruct_task_plan(
                 room, task_events, task, local_profiles=local_profiles)
+            message_id = f"dmessage:{task['identity'].task_id.removeprefix('dtask:')}"
+            if any(event.get("event_id") == message_id and event["kind"] == "message.member" for event in task_events):
+                # Finish an already visible immutable reply even if a later request arrived.
+                task_events = [event for event in task_events if event["kind"] != "message.user"
+                               or int(event["seq"]) <= int(task["payload"]["source_event_seq"])]
             publication = discussion.plan_publication(
                 room, task_events, plan, status=status, result=task.get("result"),
                 execution_generation=execution_generation if status == "deferred" else None,
                 local_profiles=local_profiles)
-            for event in publication.events:
-                hosted_rooms.append_event(self.db_path, **event.append_kwargs(room_id))
+            try:
+                for event in publication.events:
+                    appended = hosted_rooms.append_event(self.db_path, **event.append_kwargs(room_id),
+                                                         expected_latest_seq=publication_cursor)
+                    publication_cursor = max(publication_cursor, int(appended["seq"]))
+            except hosted_rooms.EventCursorConflictError:
+                # Retry publication on an ordinary prepare poll, never rerun the model.
+                continue
             changed = True
         return changed
 
@@ -412,16 +463,23 @@ class HostedRoomService:
                 return
             decision = discussion.plan_next_task(
                 room, list(snapshot.events), local_profiles=self.local_profiles(),
-                initial_watermarks=snapshot.watermarks)
+                initial_watermarks=snapshot.watermarks, freeze_input_context=True)
             if decision.status == "task" and decision.task is not None:
-                driver.admit_task(
-                    self.db_path, decision.task.identity, payload=decision.task.payload,
-                    clock=time.time)
+                existing = driver.get_task_for_turn(self.db_path, decision.task.identity)
+                legacy_payload = dict(decision.task.payload)
+                legacy_payload.pop("input_context", None)
+                if existing is not None and existing["payload"] == legacy_payload:
+                    discussion.reconstruct_task_plan(room, list(snapshot.events), existing,
+                                                     local_profiles=self.local_profiles())
+                    admitted = existing
+                else:
+                    admitted = driver.admit_task(
+                        self.db_path, decision.task.identity, payload=decision.task.payload, clock=time.time)
                 # A stop can race the policy read from another process: re-read after admission
                 # and cancel a task whose source event is now behind the room stop fence.
                 fence = self._policy_snapshot(self._room(binding.room_id)).stopped_through_seq
                 if decision.source_event_seq is not None and decision.source_event_seq < fence:
-                    self.runtime.cancel(decision.task.identity, cancel_id=f"stop-fence:{fence}")
+                    self.runtime.cancel(admitted["identity"], cancel_id=f"stop-fence:{fence}")
             elif decision.status in {"settled", "bounded"}:
                 self._append_room_status(room, decision)
 
@@ -443,14 +501,66 @@ class HostedRoomService:
         self.runtime.wakeup()
         return room
 
-    def send(self, *, room_id: str, event_id: str, payload: Any) -> dict[str, Any]:
-        normalized = discussion.validate_user_payload(payload)
-        gateway_id, epoch = self._owned_authority(room_id)
-        event = hosted_rooms.append_event(
-            self.db_path, room_id=room_id, event_id=event_id, kind="message.user",
-            actor={"kind": "user", "id": "desktop"}, payload=normalized,
-            authority_gateway_id=gateway_id, authority_epoch=epoch)
-        binding = next((b for b in self.bindings() if b.room_id == room_id), None)
+
+    def send(
+        self,
+        *,
+        room_id: str,
+        event_id: str,
+        payload: Any,
+    ) -> dict[str, Any]:
+        room = self._owned_room(room_id)
+        member_ids = tuple(
+            str(member.get("member_id") or member.get("profile") or "")
+            for member in room["members"]
+        )
+        if isinstance(payload, Mapping) and "thread_id" not in payload:
+            payload = {**payload, "thread_id": event_id}
+        normalized = discussion.validate_user_payload(
+            payload,
+            member_ids=member_ids,
+        )
+        transitioned_attachment_ids: tuple[str, ...] = ()
+        if normalized.get("attachments"):
+            normalized["attachments"], transitioned_attachment_ids = (
+                self.attachments.commit_message_with_receipt(
+                    room_id=room_id,
+                    event_id=event_id,
+                    manifest=normalized["attachments"],
+                    recipient_member_ids=member_ids,
+                    viewer_access=True,
+                    hold_until_event=True,
+                )
+            )
+        try:
+            event = hosted_rooms.append_event(
+                self.db_path,
+                room_id=room_id,
+                event_id=event_id,
+                kind="message.user",
+                actor={"kind": "user", "id": "desktop"},
+                payload=normalized,
+                authority_gateway_id=str(room["authority_gateway_id"]),
+                authority_epoch=int(room["authority_epoch"]),
+            )
+        except Exception:
+            if transitioned_attachment_ids:
+                self.attachments.abort_message_commit(
+                    room_id=room_id,
+                    event_id=event_id,
+                    attachment_ids=transitioned_attachment_ids,
+                )
+            raise
+        if normalized.get("attachments"):
+            self.attachments.retain_event(room_id=room_id, event_id=event_id)
+        binding = next(
+            (
+                candidate
+                for candidate in self.bindings()
+                if candidate.room_id == room_id
+            ),
+            None,
+        )
         if binding is None:
             raise hosted_rooms.RoomNotFoundError("hosted room not found")
         self.prepare_room(binding)
@@ -459,7 +569,7 @@ class HostedRoomService:
 
     def stop_room(
         self, room_id: str, *, cancel_id: str, require_acknowledged: bool = False) -> int:
-        gateway_id, epoch = self._owned_authority(room_id)
+        gateway_id, epoch = _authority(self._owned_room(room_id))
         hosted_rooms.request_room_stop(
             self.db_path, room_id=room_id, cancel_id=cancel_id, expected_gateway_id=gateway_id,
             expected_epoch=epoch)
@@ -548,6 +658,203 @@ class HostedRoomService:
             "peer_routes": self._route_statuses(room_id)}
 
 
+    def read_attachment(
+        self,
+        *,
+        room_id: str,
+        attachment_id: str,
+        recipient_member_id: str | None,
+        event_id: str | None = None,
+        viewer: bool = False,
+    ) -> AttachmentData:
+        """Return verified bytes only when send-time recipient ownership permits it."""
+
+        if viewer:
+            room = self._owned_room(room_id)
+            return self.attachments.read_viewer(
+                room_id=room["room_id"],
+                attachment_id=attachment_id,
+                event_id=event_id,
+                recipient_member_id=recipient_member_id,
+                authority_gateway_id=room["authority_gateway_id"],
+                authority_epoch=room["authority_epoch"],
+            )
+        return self.attachments.read(
+            room_id=room_id,
+            attachment_id=attachment_id,
+            recipient_member_id=recipient_member_id,
+            event_id=event_id,
+            viewer=viewer,
+        )
+
+
+    def put_attachment(
+        self,
+        *,
+        room_id: str,
+        upload_id: str,
+        kind: str,
+        name: str,
+        mime: str,
+        data: bytes,
+    ) -> dict[str, Any]:
+        """Store one bounded upload for a live room without exposing its path."""
+
+        self._owned_room(room_id)
+        if kind == "pdf" and shutil.which("pdftoppm") is None:
+            raise hosted_rooms.HostedRoomError(
+                "This gateway cannot receive PDFs until Poppler is installed."
+            )
+        return self.attachments.put(
+            room_id=room_id,
+            upload_id=upload_id,
+            kind=kind,
+            name=name,
+            mime=mime,
+            data=data,
+        )
+
+
+    def _load_task_attachments(
+        self,
+        binding: HostedRoomBinding,
+        task: Mapping[str, Any],
+    ) -> Iterator[tuple[Mapping[str, Any], bytes]]:
+        """Resolve task manifests to verified bytes for one frozen room member."""
+
+        manifests = task.get("payload", {}).get("attachments") or []
+        if not manifests:
+            return
+        room = hosted_rooms.room_state(self.db_path, room_id=binding.room_id)
+        target_member_id = str(
+            task.get("payload", {}).get("target_member_id") or ""
+        )
+        profile = str(task.get("payload", {}).get("target_profile") or "")
+        member = next(
+            (
+                candidate
+                for candidate in room["members"]
+                if (
+                    str(candidate.get("member_id") or "") == target_member_id
+                    if target_member_id
+                    else str(candidate.get("profile") or "") == profile
+                )
+            ),
+            None,
+        )
+        if member is None:
+            raise RuntimeError("hosted attachment target is not in the frozen roster")
+        member_id = str(member.get("member_id") or "")
+        for manifest in manifests:
+            stored = self.attachments.read(
+                room_id=binding.room_id,
+                attachment_id=manifest.get("attachment_id"),
+                recipient_member_id=member_id,
+            )
+            safe = {
+                "attachment_id": stored.attachment["attachment_id"],
+                "kind": stored.attachment["kind"],
+                "name": stored.attachment["name"],
+                "size": stored.attachment["size"],
+                "mime": stored.attachment["mime"],
+            }
+            if safe != dict(manifest):
+                raise RuntimeError(
+                    "hosted attachment metadata changed after task admission"
+                )
+            yield safe, stored.data
+
+
+    def _refresh_peer_attachment_catalog(
+        self,
+        room_id: str,
+        member_id: str,
+        route: PeerMemberRoute,
+        client: Any,
+    ) -> PeerMemberRoute:
+        """Re-probe binary support so upgrades and downgrades fail truthfully."""
+
+        probe = getattr(client, "probe", None)
+        if not callable(probe):
+            return route
+        result = probe(grant=route.grant)
+        catalog = GatewayRoomCatalog.from_mapping(result.get("catalog"))
+        if (
+            catalog.installation_id != route.target_install_id
+            or not catalog.persistent_process
+            or not catalog.text
+        ):
+            raise RuntimeError("peer room capability identity changed")
+        key = (room_id, member_id)
+        stored = next(
+            (
+                link
+                for link in hosted_room_links.load_room_links(self.db_path)
+                if (link.room_id, link.member_id) == key
+            ),
+            None,
+        )
+        if stored is None:
+            # Explicitly supplied in-process routes are valid for tests and
+            # ephemeral callers, but cannot publish a refreshed catalog.
+            return replace(
+                route,
+                capability_digest=catalog.catalog_digest,
+                attachments=catalog.attachments,
+            )
+        refreshed = replace(
+            route,
+            capability_digest=catalog.catalog_digest,
+            attachments=catalog.attachments,
+        )
+        if (
+            stored.catalog.catalog_digest != catalog.catalog_digest
+            or stored.catalog.attachments != catalog.attachments
+        ):
+            hosted_room_links.save_room_link(
+                self.db_path,
+                hosted_room_links.make_stored_link(
+                    room_id=room_id,
+                    member_id=member_id,
+                    target_url=stored.target_url,
+                    target_profile=stored.target_profile,
+                    grant=route.grant,
+                    catalog=catalog,
+                    cancellation_scope_id=stored.cancellation_scope_id,
+                    trace_id=stored.trace_id,
+                ),
+            )
+            with self._policy_lock:
+                self.peer_routes[key] = refreshed
+                self._peer_route_status[key] = "ready"
+        return refreshed
+
+
+    def list_attachments(
+        self,
+        *,
+        room_id: str,
+        cursor: Any = None,
+        limit: Any = None,
+        query: Any = None,
+        producer_member_id: Any = None,
+        recipient_member_id: Any = None,
+    ) -> dict[str, Any]:
+        """List canonical files without starting or locking the execution worker."""
+
+        room = self._owned_room(room_id)
+        return self.attachments.list_published(
+            room_id=room_id,
+            authority_gateway_id=str(room["authority_gateway_id"]),
+            authority_epoch=int(room["authority_epoch"]),
+            cursor=cursor,
+            limit=limit,
+            query=query,
+            producer_member_id=producer_member_id,
+            recipient_member_id=recipient_member_id,
+        )
+
+
 class _RouteStatusPeerClient:
     """Classify scoped-auth failures without exposing route credentials."""
 
@@ -599,7 +906,7 @@ class _RouteStatusPeerClient:
             return value
 
         def tracked(*args, **kwargs):
-            if name in {"dispatch", "recover_dispatch"} and "grant" in kwargs:
+            if name in {"dispatch", "recover_dispatch", "stage_attachments"} and "grant" in kwargs:
                 kwargs = self._refresh_grant(kwargs)
             try:
                 result = value(*args, **kwargs)

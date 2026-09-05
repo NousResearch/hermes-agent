@@ -114,6 +114,24 @@ function readClarifyArgs(args: unknown): ClarifyArgs {
   }
 }
 
+function clarifyRequestMatchesArgs(request: ClarifyRequest | null, args: ClarifyArgs): boolean {
+  if (!request) {
+    return false
+  }
+
+  const requestQuestions = request.questions ?? []
+  const argQuestions = args.questions ?? []
+
+  if (requestQuestions.length > 0 || argQuestions.length > 0) {
+    return (
+      requestQuestions.length === argQuestions.length &&
+      requestQuestions.every((question, index) => question.question === argQuestions[index]?.question)
+    )
+  }
+
+  return !(args.question && request.question && args.question !== request.question)
+}
+
 interface ClarifyBatchResponse {
   id?: string
   question?: string
@@ -375,6 +393,7 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
   const $request = useMemo(() => sessionClarifyRequest(sessionId), [sessionId])
   const request = useStore($request)
   const fromArgs = useMemo(() => readClarifyArgs(props.args), [props.args])
+  const requestStillPending = clarifyRequestMatchesArgs(request, fromArgs)
   const messageRunning = useAuiState(selectMessageRunning)
   // Answering clears the request a beat before `tool.complete` swaps in the
   // settled card. Latch submit so that gap doesn't demote; Stop also clears
@@ -385,7 +404,7 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
   // `session.info` reports running=false while clarify is blocking, so the
   // running flag alone would remount the question as a tool row. Keep the
   // card while a request is open or this instance already submitted.
-  if (!messageRunning && !request && !answered) {
+  if (!messageRunning && !requestStillPending && !answered) {
     return <ToolFallback {...props} />
   }
 
@@ -1123,6 +1142,39 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
     [allStaged, confirmAll]
   )
 
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLFormElement>) => {
+      if (
+        event.key !== 'Enter' ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.shiftKey ||
+        event.nativeEvent.isComposing ||
+        event.defaultPrevented
+      ) {
+        return
+      }
+
+      // A choice is deliberately type="button" so staging never submits. Once
+      // focused, though, its native Enter activation would just pick it again.
+      // Own that one collision at the form boundary; text fields and the Skip /
+      // Confirm actions retain their native editing and button semantics.
+      const target = event.target
+
+      if (!(target instanceof HTMLButtonElement) || !target.hasAttribute('data-choice')) {
+        return
+      }
+
+      event.preventDefault()
+
+      if (allStaged && !submitting) {
+        void confirmAll()
+      }
+    },
+    [allStaged, confirmAll, submitting]
+  )
+
   if (!ready) {
     return (
       <ClarifyShell aria-label={copy.loadingQuestion} className="my-1.5 grid min-h-12 place-items-center" role="status">
@@ -1132,7 +1184,12 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
   }
 
   return (
-    <form className="my-1.5 grid gap-4" data-clarify-batch={questions.length} onSubmit={handleSubmit}>
+    <form
+      className="my-1.5 grid gap-4"
+      data-clarify-batch={questions.length}
+      onKeyDown={handleKeyDown}
+      onSubmit={handleSubmit}
+    >
       <ClarifyShell className="grid gap-3">
         <div className="flex items-start gap-2">
           <span className="flex-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">

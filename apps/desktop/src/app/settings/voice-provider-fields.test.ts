@@ -12,6 +12,10 @@ describe('voiceProviderKeys', () => {
     expect(voiceProviderKeys('tts', 'edge')).toEqual(['tts.edge.voice'])
   })
 
+  it('resolves user-defined command providers via their nested path', () => {
+    expect(voiceProviderKeys('tts', 'breeze')).toEqual(['tts.providers.breeze.voice'])
+  })
+
   it('covers every built-in TTS provider the Capabilities picker offers', () => {
     // Every provider key the backend TOOL_CATEGORIES["tts"] rows can carry
     // (tts_provider values) must resolve to at least one config field, so the

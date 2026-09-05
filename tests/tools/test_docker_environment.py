@@ -1726,3 +1726,12 @@ def test_docker_run_secret_values_never_in_argv(monkeypatch):
     assert "MY_TOKEN" in args
     assert all(secret not in str(a) for a in args)
     assert (kwargs.get("env") or {}).get("MY_TOKEN") == secret
+
+
+def test_docker_env_warnings_never_echo_values(caplog):
+    """Values in docker_env can be secrets; a rejected entry is logged by key and type only (#102308)."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="tools.environments.docker"):
+        docker_env._normalize_env_dict({"TOKEN": ["sk-live-value"], "OK": "1"})
+    assert "TOKEN" in caplog.text and "sk-live-value" not in caplog.text

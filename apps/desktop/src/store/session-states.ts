@@ -24,6 +24,7 @@ import { findGroup, findGroupOfPane, type LayoutNode } from '@/components/pane-s
 import {
   $activeTreeGroup,
   $layoutTree,
+  coalesceTreePaneIds,
   focusedSessionTabAnchor,
   isPaneVisible,
   moveTreePane,
@@ -46,11 +47,13 @@ import {
   $sessions,
   clearReadBaseline,
   getSessionOwnerHint,
+  idsShareLineage,
   knownSessionOwner,
   lineageAliases,
   markSessionRead,
   ownerLookupSessionRows,
   sessionMatchesStoredId,
+  sessionPinId,
   setActiveSessionStoredIdRotation,
   setAwaitingResponse,
   setBusy,
@@ -1145,6 +1148,163 @@ function rememberBotChatScope(storedSessionId: string, scope: SessionTileWorkspa
   writeJson(BOT_CHAT_SCOPE_KEY, next.size ? [...next] : null)
 }
 
+/** Stable pane identity for a stored session. A live compression tip resolves
+ * to its lineage root; unknown ids (new drafts and not-yet-listed sessions)
+ * remain unchanged until the authoritative session row arrives. */
+function canonicalSessionTileId(storedSessionId: string, sessions: readonly SessionInfo[] = $sessions.get()): string {
+  const row = sessions.find(session => sessionMatchesStoredId(session, storedSessionId))
+
+  return row ? sessionPinId(row) : storedSessionId
+}
+
+const tilePaneId = (storedSessionId: string) => `${TILE_PANE_PREFIX}${storedSessionId}`
+
+function sameSessionLineage(a: string, b: string, sessions: readonly SessionInfo[]): boolean {
+  return a === b || idsShareLineage(a, b, sessions)
+}
+
+/** Reconcile every open tile that answers to the same conversation onto one
+ * lineage-root identity. The focused tree occurrence supplies placement and
+ * presentation state; useful live/runtime metadata is retained from any
+ * duplicate. This runs before the pane mirror publishes the canonical id, so
+ * registry adoption cannot move the tab to a default zone in between. */
+function reconcileSessionTileLineage(
+  knownIds: readonly string[],
+  canonicalId: string,
+  sessions: readonly SessionInfo[]
+): string {
+  const known = new Set([...knownIds, canonicalId])
+  const tiles = $sessionTiles.get()
+
+  const related = tiles.filter(
+    tile =>
+      known.has(tile.storedSessionId) ||
+      [...known].some(id => sameSessionLineage(tile.storedSessionId, id, sessions))
+  )
+
+  if (related.length === 0) {
+    return canonicalId
+  }
+
+  const relatedIds = new Set(related.map(tile => tile.storedSessionId))
+  const needsRekey = related.length > 1 || related[0]?.storedSessionId !== canonicalId
+
+  if (!needsRekey) {
+    return canonicalId
+  }
+
+  const preferredPaneId = coalesceTreePaneIds(
+    related.map(tile => tilePaneId(tile.storedSessionId)),
+    tilePaneId(canonicalId)
+  )
+
+  const preferredStoredId = preferredPaneId?.startsWith(TILE_PANE_PREFIX)
+    ? preferredPaneId.slice(TILE_PANE_PREFIX.length)
+    : undefined
+
+  const preferred = related.find(tile => tile.storedSessionId === preferredStoredId) ?? related[0]
+  const live = related.find(tile => tile.runtimeId)
+  const errored = related.find(tile => tile.error)
+
+  const merged: SessionTile = {
+    ...preferred,
+    ...(preferred.error || !errored?.error ? {} : { error: errored.error }),
+    ...(preferred.runtimeId || !live?.runtimeId ? {} : { runtimeId: live.runtimeId }),
+    storedSessionId: canonicalId
+  }
+
+  const aliasPaneIds = new Set([...relatedIds].map(tilePaneId))
+  const canonicalPaneId = tilePaneId(canonicalId)
+
+  const remapPaneReference = (paneId: null | string | undefined) =>
+    paneId && aliasPaneIds.has(paneId) ? canonicalPaneId : paneId
+
+  const next: SessionTile[] = []
+
+  for (const tile of tiles) {
+    if (tile === preferred) {
+      next.push({
+        ...merged,
+        anchor: remapPaneReference(merged.anchor) ?? undefined,
+        before: remapPaneReference(merged.before)
+      })
+
+      continue
+    }
+
+    if (relatedIds.has(tile.storedSessionId)) {
+      continue
+    }
+
+    next.push({
+      ...tile,
+      anchor: remapPaneReference(tile.anchor) ?? undefined,
+      before: remapPaneReference(tile.before)
+    })
+  }
+
+  const botScopes = $botChatSessionIds.get()
+  const hadBotScope = [...relatedIds].some(id => botScopes.has(id))
+
+  if (hadBotScope) {
+    const nextBotScopes = new Set([...botScopes].filter(id => !relatedIds.has(id)))
+    const rememberedScopes = $botChatScopes.get()
+
+    const rememberedScope =
+      rememberedScopes[canonicalId] ??
+      rememberedScopes[preferred.storedSessionId] ??
+      [...relatedIds].map(id => rememberedScopes[id]).find(scope => scope !== undefined)
+
+    const nextRememberedScopes = Object.fromEntries(
+      Object.entries(rememberedScopes).filter(([id]) => !relatedIds.has(id))
+    )
+
+    nextBotScopes.add(canonicalId)
+
+    $botChatSessionIds.set(nextBotScopes)
+    $botChatScopes.set(
+      rememberedScope ? { ...nextRememberedScopes, [canonicalId]: rememberedScope } : nextRememberedScopes
+    )
+    writeJson(BOT_CHAT_SCOPE_KEY, nextBotScopes.size ? [...nextBotScopes] : null)
+  }
+
+  saveTiles(next)
+
+  return canonicalId
+}
+
+function reconcileSessionTileId(storedSessionId: string, sessions: readonly SessionInfo[] = $sessions.get()): string {
+  const canonicalId = canonicalSessionTileId(storedSessionId, sessions)
+
+  return reconcileSessionTileLineage([storedSessionId], canonicalId, sessions)
+}
+
+/** Rotation-edge reconciliation covers the brief gap before the next tip is
+ * listed. The previous row still reveals the durable root then; once the fresh
+ * row arrives, the sessions listener below repeats the same idempotent pass. */
+export function coalesceSessionTilesForStoredIdRotation(
+  previousStoredSessionId: string,
+  nextStoredSessionId: string
+): void {
+  const sessions = $sessions.get()
+
+  const row =
+    sessions.find(session => sessionMatchesStoredId(session, nextStoredSessionId)) ??
+    sessions.find(session => sessionMatchesStoredId(session, previousStoredSessionId))
+
+  const canonicalId = row ? sessionPinId(row) : previousStoredSessionId
+
+  reconcileSessionTileLineage([previousStoredSessionId, nextStoredSessionId], canonicalId, sessions)
+}
+
+// Persisted tiles can predate the current list page. As soon as backend truth
+// supplies lineage identity, normalize those raw-tip keys in place.
+$sessions.listen(sessions => {
+  for (const tile of [...$sessionTiles.get()]) {
+    reconcileSessionTileId(tile.storedSessionId, sessions)
+  }
+})
+
 /** True while this live session is a bot's chat rather than a working session.
  *  Surfaces read it to drop coding chrome that means nothing in a companion
  *  conversation — the composer's branch/worktree rail. */
@@ -1412,16 +1572,6 @@ export function openSessionTile(
   before?: null | string,
   explicitScope?: SessionTileWorkspaceScope
 ) {
-  const tiles = $sessionTiles.get()
-  const existing = tiles.find(t => t.storedSessionId === storedSessionId)
-
-  // No scope on an already-open tile is a MOVE (a split drag re-docking a tab),
-  // not a re-scope: keep the workspace it lives in instead of re-bucketing it
-  // into Sessions — a Bot tab used to vanish from the Bot workspace on drop.
-  const workspaceScope: SessionTileWorkspaceScope = explicitScope ?? {
-    workspaceMode: existing?.workspaceMode ?? 'sessions'
-  }
-
   // Opening a session in a tab/tile is "reading" it — clear its unread dot
   // exactly like main-thread resume does. Previously only
   // setSelectedStoredSessionId cleared unread, so tile-opened sessions kept
@@ -1430,9 +1580,25 @@ export function openSessionTile(
   markSessionRead(storedSessionId)
   ackStoredSessionId(storedSessionId)
 
-  const aliases = lineageAliases(storedSessionId, $sessions.get())
+  const sessions = $sessions.get()
+  const canonicalId = reconcileSessionTileId(storedSessionId, sessions)
+  const tiles = $sessionTiles.get()
+  const existing = tiles.find(tile => sameSessionLineage(tile.storedSessionId, canonicalId, sessions))
 
-  if (workspaceScope.workspaceMode === 'sessions' && aliases.includes($selectedStoredSessionId.get() ?? '')) {
+  // No scope on an already-open tile is a MOVE (a split drag re-docking a tab),
+  // not a re-scope: keep the workspace it lives in instead of re-bucketing it
+  // into Sessions — a Bot tab used to vanish from the Bot workspace on drop.
+  const workspaceScope: SessionTileWorkspaceScope = explicitScope ?? {
+    workspaceMode: existing?.workspaceMode ?? 'sessions'
+  }
+
+  const selectedStoredSessionId = $selectedStoredSessionId.get()
+
+  if (
+    workspaceScope.workspaceMode === 'sessions' &&
+    selectedStoredSessionId &&
+    sameSessionLineage(canonicalId, selectedStoredSessionId, sessions)
+  ) {
     return
   }
 
@@ -1440,7 +1606,7 @@ export function openSessionTile(
 
   const workspaceOwnerKey = workspaceScope.workspaceMode === 'bots' ? workspaceScope.workspaceOwnerKey : undefined
 
-  if (!tiles.some(t => aliases.includes(t.storedSessionId))) {
+  if (!tiles.some(t => t.storedSessionId === canonicalId)) {
     saveTiles([
       ...tiles,
       {
@@ -1456,7 +1622,7 @@ export function openSessionTile(
         // closes the unpinned socket (the resume/reclaim flicker loop,
         // #93892 shape).
         ownerRoute: workspaceScope.ownerRoute,
-        storedSessionId,
+        storedSessionId: canonicalId,
         workspaceMode: workspaceScope.workspaceMode,
         workspaceOwnerKey,
         workspaceTabTitle: workspaceScope.workspaceMode === 'bots' ? workspaceScope.workspaceTabTitle : undefined
@@ -1469,7 +1635,7 @@ export function openSessionTile(
   }
 
   if (explicitScope) {
-    setSessionTileWorkspaceScope(storedSessionId, explicitScope)
+    setSessionTileWorkspaceScope(canonicalId, explicitScope)
   }
 
   // Already open: relocate the existing pane to the drop target (pane-mirror
@@ -1478,8 +1644,8 @@ export function openSessionTile(
   const target = tree ? findGroupOfPane(tree, dock ?? 'workspace')?.id : null
 
   if (target) {
-    moveTreePane(`${TILE_PANE_PREFIX}${storedSessionId}`, { before: before ?? null, groupId: target, pos: dir })
-    patchSessionTile(storedSessionId, { anchor: dock, before: before ?? undefined, dir })
+    moveTreePane(`${TILE_PANE_PREFIX}${canonicalId}`, { before: before ?? null, groupId: target, pos: dir })
+    patchSessionTile(canonicalId, { anchor: dock, before: before ?? undefined, dir })
     syncTileStripOrder()
   }
 }
@@ -1538,13 +1704,12 @@ export function focusOpenSession(
   storedSessionId: string,
   workspaceScope: SessionTileWorkspaceScope = { workspaceMode: 'sessions' }
 ): 'main' | 'tile' | null {
-  // Compression rotates a conversation's tip id while tiles stay keyed by
-  // whichever segment id they were opened with. An exact-id test right after
-  // a rotation said "not open" for a conversation that IS on screen, and
-  // callers opened the same chat in a second tab. Match any id of the
-  // lineage instead, and front the tile under ITS key.
-  const aliases = lineageAliases(storedSessionId, $sessions.get())
-  const tile = $sessionTiles.get().find(t => aliases.includes(t.storedSessionId))
+  const sessions = $sessions.get()
+  const canonicalId = reconcileSessionTileId(storedSessionId, sessions)
+
+  const tile = $sessionTiles
+    .get()
+    .find(candidate => sameSessionLineage(candidate.storedSessionId, canonicalId, sessions))
 
   if (tile) {
     const paneId = `${TILE_PANE_PREFIX}${tile.storedSessionId}`
@@ -1563,7 +1728,13 @@ export function focusOpenSession(
 
   // Already the main session: front the workspace tab and drop tile focus so
   // the readouts + sidebar highlight come home (a no-op when main is focused).
-  if (workspaceScope.workspaceMode === 'sessions' && aliases.includes($selectedStoredSessionId.get() ?? '')) {
+  const selectedStoredSessionId = $selectedStoredSessionId.get()
+
+  if (
+    workspaceScope.workspaceMode === 'sessions' &&
+    selectedStoredSessionId &&
+    sameSessionLineage(canonicalId, selectedStoredSessionId, sessions)
+  ) {
     revealTreePane('workspace')
     noteActiveTreeGroup(null)
 

@@ -17,6 +17,7 @@ import { isBrowserWindow, isSecondaryWindow } from '@/store/windows'
 
 import {
   allPaneIds,
+  coalescePaneIds,
   type DropPosition,
   findGroup,
   findGroupOfPane,
@@ -819,6 +820,89 @@ export function removeTreePane(paneId: string) {
     rememberPaneShare(tree, paneId)
     commit(removePane(tree, paneId))
   }
+}
+
+/** Re-key duplicate pane ids for one logical surface without re-adopting it.
+ * The occurrence in the focused group wins, then the hovered/active/first
+ * occurrence. Its exact group, tab slot, zone attributes, and hidden state
+ * move to `canonicalPaneId`; every duplicate disappears. Returns the source
+ * id whose presentation state survived, or null when none is in the tree. */
+export function coalesceTreePaneIds(paneIds: readonly string[], canonicalPaneId: string): null | string {
+  const tree = $layoutTree.get()
+
+  if (!tree) {
+    return null
+  }
+
+  const aliases = new Set([...paneIds, canonicalPaneId])
+  const occurrences = allPaneIds(tree).filter(paneId => aliases.has(paneId))
+
+  if (occurrences.length === 0) {
+    return null
+  }
+
+  const preferredInGroup = (groupId: null | string): string | undefined => {
+    const group = groupId ? findGroup(tree, groupId) : null
+
+    if (!group) {
+      return undefined
+    }
+
+    return aliases.has(group.active) ? group.active : group.panes.find(paneId => aliases.has(paneId))
+  }
+
+  const preferredPaneId =
+    preferredInGroup($activeTreeGroup.get()) ??
+    preferredInGroup($hoveredTreeGroup.get()) ??
+    occurrences.find(paneId => findGroupOfPane(tree, paneId)?.active === paneId) ??
+    occurrences[0]
+
+  const remapMembership = (current: ReadonlySet<string>): Set<string> | null => {
+    const preferredPresent = current.has(preferredPaneId)
+    const next = new Set([...current].filter(paneId => !aliases.has(paneId)))
+
+    if (preferredPresent) {
+      next.add(canonicalPaneId)
+    }
+
+    if (next.size === current.size && [...next].every(paneId => current.has(paneId))) {
+      return null
+    }
+
+    return next
+  }
+
+  const hiddenTreePanes = remapMembership($hiddenTreePanes.get())
+
+  if (hiddenTreePanes) {
+    $hiddenTreePanes.set(hiddenTreePanes)
+  }
+
+  const hiddenStripTabs = remapMembership($hiddenStripTabs.get())
+
+  if (hiddenStripTabs) {
+    saveHiddenStripTabs(hiddenStripTabs)
+  }
+
+  const epochs = $treePaneEpochs.get()
+  const preferredEpoch = epochs[preferredPaneId]
+  const nextEpochs = Object.fromEntries(Object.entries(epochs).filter(([paneId]) => !aliases.has(paneId)))
+
+  if (preferredEpoch !== undefined) {
+    nextEpochs[canonicalPaneId] = preferredEpoch
+  }
+
+  if (Object.keys(nextEpochs).length !== Object.keys(epochs).length || preferredPaneId !== canonicalPaneId) {
+    $treePaneEpochs.set(nextEpochs)
+  }
+
+  const next = coalescePaneIds(tree, aliases, canonicalPaneId, preferredPaneId)
+
+  if (next !== tree) {
+    commit(next)
+  }
+
+  return preferredPaneId
 }
 
 /** The layout's root ROW — the split that contains main + the side columns.

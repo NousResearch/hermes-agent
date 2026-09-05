@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import io
 import os
+import shlex
 import stat
 import struct
+import subprocess
 import sys
 from pathlib import Path
 
@@ -21,6 +23,10 @@ def xdg_home(tmp_path, monkeypatch) -> Path:
     # Isolate the known-wrapper probe too: tests must never see the real
     # ~/.local/bin/hermes on the dev machine.
     monkeypatch.setenv("HOME", str(tmp_path))
+    # Tests in this module should start from the normal default-home behavior.
+    # The suite-wide isolation fixture injects a temporary HERMES_HOME; tests
+    # that exercise custom-home persistence set it explicitly themselves.
+    monkeypatch.delenv("HERMES_HOME", raising=False)
     monkeypatch.setattr(lde.sys, "platform", "linux")
     return data_home
 
@@ -660,6 +666,91 @@ def test_exec_arg_quoting_handles_spaces(tmp_path, xdg_home, monkeypatch):
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
     assert exec_line == f'"{spaced}" desktop'
+
+
+def test_install_preserves_nondefault_hermes_home_for_cold_desktop_launch(
+    tmp_path, xdg_home, monkeypatch
+):
+    """The menu launcher must retain custom state outside its shell env."""
+    root = _make_project(tmp_path)
+    hermes_bin = tmp_path / "bin" / "hermes"
+    hermes_bin.parent.mkdir()
+    hermes_bin.write_text("", encoding="utf-8")
+    custom_home = tmp_path / "managed Hermes home"
+    monkeypatch.setenv("HERMES_HOME", str(custom_home))
+    monkeypatch.setattr(
+        "hermes_cli.relaunch.resolve_hermes_bin", lambda: str(hermes_bin)
+    )
+    monkeypatch.setattr(lde.shutil, "which", lambda name: "/usr/bin/env")
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+
+    assert _parse(entry.read_text(encoding="utf-8"))["Exec"] == (
+        f'/usr/bin/env "HERMES_HOME={custom_home}" {hermes_bin} desktop'
+    )
+
+
+def test_generated_exec_resolves_custom_home_in_a_cold_process(
+    tmp_path, xdg_home, monkeypatch
+):
+    """Run the generated Exec= with no inherited HERMES_HOME or shell setup."""
+    root = _make_project(tmp_path)
+    receipt = tmp_path / "resolved-home.txt"
+    probe = tmp_path / "probe bin" / "hermes"
+    probe.parent.mkdir()
+    repo_root = Path(__file__).resolve().parents[2]
+    probe.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"sys.path.insert(0, {str(repo_root)!r})\n"
+        "from hermes_constants import get_hermes_home\n"
+        f"Path({str(receipt)!r}).write_text(str(get_hermes_home()), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    probe.chmod(0o755)
+    custom_home = tmp_path / "managed Hermes home"
+    monkeypatch.setenv("HERMES_HOME", str(custom_home))
+    monkeypatch.setattr(
+        "hermes_cli.relaunch.resolve_hermes_bin", lambda: str(probe)
+    )
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    exec_argv = shlex.split(_parse(entry.read_text(encoding="utf-8"))["Exec"])
+    cold_home = tmp_path / "cold-session-home"
+    cold_home.mkdir()
+    subprocess.run(
+        exec_argv,
+        cwd="/",
+        env={"HOME": str(cold_home), "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
+        check=True,
+        timeout=30,
+    )
+
+    assert receipt.read_text(encoding="utf-8") == str(custom_home)
+
+
+def test_install_does_not_prefix_default_hermes_home(
+    tmp_path, xdg_home, monkeypatch
+):
+    root = _make_project(tmp_path)
+    hermes_bin = tmp_path / "bin" / "hermes"
+    hermes_bin.parent.mkdir()
+    hermes_bin.write_text("", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(
+        "hermes_cli.relaunch.resolve_hermes_bin", lambda: str(hermes_bin)
+    )
+    monkeypatch.setattr(lde.shutil, "which", lambda name: "/usr/bin/env")
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+
+    assert _parse(entry.read_text(encoding="utf-8"))["Exec"] == (
+        f"{hermes_bin} desktop"
+    )
 
 
 @pytest.mark.skipif(

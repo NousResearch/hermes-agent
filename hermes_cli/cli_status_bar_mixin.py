@@ -949,8 +949,8 @@ class CLIStatusBarMixin:
 
         Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
         bg_tasks, bg_processes, bg_subagents, goal, duration, prompt_elapsed, idle_since,
-        focus, yolo, stash, battery, title, total_tokens (opt-in only). Order is fixed; the
-        config controls visibility only.
+        focus, yolo, stash, battery, title, total_tokens and session_usage (opt-in only).
+        Order is fixed; the config controls visibility only.
         """
         from cli import CLI_CONFIG
         if hasattr(self, "_status_bar_field_set_cache"):
@@ -1051,7 +1051,47 @@ class CLIStatusBarMixin:
             total_tokens = snapshot.get("session_total_tokens", 0)
             if total_tokens and field_set is not None and "total_tokens" in field_set:
                 segs.append([(_DIM, f"Σ{format_token_count_compact(total_tokens)}")])
+            # 📊 detailed session-usage breakdown — opt-in only, complements the Σ total.
+            if field_set is not None and "session_usage" in field_set:
+                usage_label = self._format_session_usage_segment(snapshot)
+                if usage_label:
+                    segs.append([(_DIM, usage_label)])
         return segs
+
+    def _format_session_usage_segment(self, snapshot: Dict[str, Any]) -> str:
+        """Detailed 📊 session-usage label (``13r · I 109K · O 6K · C 400K · T 515K``), or "".
+
+        Mirrors the gateway footer's ``session_tokens`` field but compact for one status-bar
+        slot. Buckets are disjoint and add up: I (input) + C (cache) + O (output) = T (total),
+        so each figure carries information on its own."""
+        from cli import format_token_count_compact
+        try:
+            api_calls = snapshot.get("session_api_calls", 0) or 0
+            input_tok = snapshot.get("session_input_tokens", 0) or 0
+            output_tok = snapshot.get("session_output_tokens", 0) or 0
+            cache_tok = (
+                (snapshot.get("session_cache_read_tokens", 0) or 0)
+                + (snapshot.get("session_cache_write_tokens", 0) or 0)
+            )
+            total = snapshot.get("session_total_tokens", 0) or 0
+            if not (api_calls or input_tok or output_tok or cache_tok or total):
+                return ""
+            pieces = []
+            if api_calls:
+                pieces.append(f"{api_calls}r")
+            if input_tok:
+                pieces.append(f"I {format_token_count_compact(input_tok)}")
+            if output_tok:
+                pieces.append(f"O {format_token_count_compact(output_tok)}")
+            if cache_tok:
+                pieces.append(f"C {format_token_count_compact(cache_tok)}")
+            if total:
+                pieces.append(f"T {format_token_count_compact(total)}")
+            if not pieces:
+                return ""
+            return "📊 " + " · ".join(pieces)
+        except Exception:
+            return ""
 
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         """Compact one-line session status string for the TUI footer."""

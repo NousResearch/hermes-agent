@@ -1454,9 +1454,25 @@ class GatewayTurnMixin:
         display_reasoning = escape_code_fences_for_display(display_reasoning)
         return f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
 
-    def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds):
+    def _hmwa_session_usage_row(self, session_entry, run_start_session_id=None):
+        """Persisted session counters (raw sync ``SessionDB`` row) for the ``session_tokens``
+        footer field. Read from the raw DB so they survive agent rebuilds; ``None`` (field
+        renders model-only) when there is no session id or any lookup failure."""
+        sid = getattr(session_entry, "session_id", None) or run_start_session_id
+        if not sid or self._session_db is None:
+            return None
+        try:
+            row = self._session_db._db.get_session(sid)
+            return row if isinstance(row, dict) else None
+        except Exception:
+            logger.debug("session_usage row lookup failed for %s", sid, exc_info=True)
+            return None
+
+    def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds,
+                                  session_entry=None, run_start_session_id=None):
         """Runtime-metadata footer for the FINAL message of the turn; off by default
-        (display.runtime_footer.enabled=false)."""
+        (display.runtime_footer.enabled=false). ``session_entry``/``run_start_session_id``
+        feed the persisted session counters used by the ``session_tokens`` footer field."""
         from gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
         try:
             from gateway.runtime_footer import build_footer_line as _bfl
@@ -1466,6 +1482,7 @@ class GatewayTurnMixin:
                 context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                 context_length=agent_result.get("context_length") or None,
                 cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,
+                session_usage=self._hmwa_session_usage_row(session_entry, run_start_session_id),
             )
         except Exception as _footer_err:
             logger.debug("runtime_footer build failed: %s", _footer_err)
@@ -1978,7 +1995,10 @@ class GatewayTurnMixin:
                 _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
             )
             response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
-            _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
+            _footer_line = self._hmwa_runtime_footer_line(
+                agent_result, source, _turn_seconds,
+                session_entry=session_entry, run_start_session_id=_run_start_session_id,
+            )
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"

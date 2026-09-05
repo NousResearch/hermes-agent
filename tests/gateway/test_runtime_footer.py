@@ -8,10 +8,12 @@ import os
 import pytest
 
 from gateway.runtime_footer import (
+    _DEFAULT_FIELDS,
     _home_relative_cwd,
     _model_short,
     build_footer_line,
     format_runtime_footer,
+    format_session_token_usage,
     resolve_footer_config,
 )
 
@@ -317,3 +319,96 @@ def test_default_build_footer_line_ignores_turn_seconds(monkeypatch):
     with_timing = build_footer_line(**common, turn_seconds=125.0)
     assert baseline == "gpt-5.4 · 5% · /var/data"
     assert with_timing == baseline
+
+
+# ---------------------------------------------------------------------------
+# context_usage + session_tokens — session metrics fields
+# ---------------------------------------------------------------------------
+
+def test_format_session_token_usage_matches_session_stats_shape():
+    out = format_session_token_usage({
+        "input_tokens": 373_606,
+        "output_tokens": 9_802,
+        "cache_read_tokens": 2_554_368,
+        "cache_write_tokens": 0,
+        "api_call_count": 27,
+    })
+    assert out == "📊 Sesión · 27 req · In: 2.9M (cache: 2.6M) · Out: 9.8K · Total: 2.9M"
+
+
+def test_format_session_token_usage_empty_returns_empty():
+    assert format_session_token_usage(None) == ""
+    assert format_session_token_usage({}) == ""
+    assert format_session_token_usage("nope") == ""
+
+
+def test_format_footer_context_usage_renders_tokens_and_pct():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=18_900,
+        context_length=210_000,
+        cwd="",
+        fields=("context_usage",),
+    )
+    assert out == "18.9K (9%)"
+
+
+def test_format_footer_context_usage_skipped_without_window():
+    out = format_runtime_footer(
+        model="m", context_tokens=500, context_length=None,
+        cwd="", fields=("context_usage",),
+    )
+    assert out == ""
+
+
+def test_format_footer_session_tokens_is_configurable():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=0,
+        context_length=None,
+        fields=("session_tokens",),
+        session_usage={
+            "input_tokens": 1_000,
+            "output_tokens": 25,
+            "cache_read_tokens": 2_000,
+            "api_call_count": 2,
+        },
+    )
+    assert out == "📊 Sesión · 2 req · In: 3.0K (cache: 2.0K) · Out: 25 · Total: 3.0K"
+
+
+def test_format_footer_session_tokens_skipped_without_usage():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=0,
+        context_length=None,
+        fields=("session_tokens",),
+        session_usage=None,
+    )
+    assert out == ""
+
+
+def test_build_footer_line_threads_session_usage():
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {"enabled": True},
+                "platforms": {
+                    "telegram": {"runtime_footer": {"fields": ["model", "session_tokens"]}},
+                },
+            },
+        },
+        platform_key="telegram",
+        model="deepseek/deepseek-v4-flash",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        session_usage={"input_tokens": 2_900_000, "output_tokens": 9_800, "api_call_count": 27},
+    )
+    assert out.startswith("deepseek-v4-flash")
+    assert "📊 Sesión · 27 req" in out
+
+
+def test_default_fields_exclude_session_fields():
+    assert "session_tokens" not in _DEFAULT_FIELDS
+    assert "context_usage" not in _DEFAULT_FIELDS

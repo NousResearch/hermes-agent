@@ -759,10 +759,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 # Pass the EVENT (not the key): the gateway callback resolves
                 # the source's ROUTED profile (catch-all routes included)
                 # before building the session key — the adapter's own
-                # _text_batch_key resolves to agent:default:... under
-                # multiplex (source.profile is stamped later, inside the
-                # handler), so keying the busy check here would never match
-                # the routed agent:henrique:... turn.
+                # The adapter's own key resolves to the default-profile lane
+                # under multiplex (source.profile is stamped later, inside
+                # the message handler), so keying the busy check here would
+                # never match the routed profile's live turn.
                 if busy_query(event):
                     asyncio.create_task(self.handle_message(event))
                     return

@@ -596,6 +596,14 @@ def unregister_live_transport(transport: Transport | None) -> None:
         _live_transports.discard(transport)
 
 
+def is_live_transport(transport: Transport | None) -> bool:
+    """Return whether *transport* still belongs to a connected WS peer."""
+    if transport is None:
+        return False
+    with _live_transports_lock:
+        return transport in _live_transports
+
+
 def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
     """Fan a session-less, surface-global event (``skin.changed``) to every connected client — background
     emitters bottom out at stdio in ``write_json``'s ladder. No registered transports (stdio TUI, tests) → ``_emit``."""

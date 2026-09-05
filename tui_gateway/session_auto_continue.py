@@ -123,29 +123,74 @@ def _ac_inflight_original(session: dict) -> str:
     return str(turn.get("user") or "").strip() if isinstance(turn, dict) else ""
 
 
-def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[str] | None = None) -> None:
+def _enqueue_prompt(
+    session: dict,
+    text: Any,
+    transport: Any,
+    image_paths: list[str] | None = None,
+    external_submission_id: str | None = None,
+) -> None:
     """Queue a message for the next turn. Text-only arrivals share a slot and merge losslessly (like the
     consecutive-user merge in ``repair_message_sequence``); image-bearing ones stay separate envelopes so attachment
-    chronology survives. ``transport`` is pinned so the drained turn streams to its sender."""
+    chronology survives. Interactive envelopes pin ``transport`` to their sender;
+    external envelopes keep it only as provenance because drain resolves the live owner."""
     image_paths = list(image_paths or [])
     # Scrub live-turn self-duplicates first so the text merge below can't glue "{original}\n\n{later}" and re-fire the
     # original after a correction settles.
     # See #84417.
     _drop_queued_duplicates_of_inflight_user(session)
-    text_only = not image_paths and isinstance(text, str)
+    text_only = not external_submission_id and not image_paths and isinstance(text, str)
     # Never queue a text-only self-copy of the live prompt: draining it would restart it.
     if text_only and text.strip() == _ac_inflight_original(session) != "":
         return
-    queued = {"text": text, "transport": transport, **({"image_paths": image_paths} if image_paths else {})}
+    queued = {
+        "text": text,
+        "transport": transport,
+        **({"image_paths": image_paths} if image_paths else {}),
+        **({"external_submission_id": external_submission_id} if external_submission_id else {}),
+    }
     existing = session.get("queued_prompt")
     if (existing and text_only and isinstance(existing.get("text"), str)
-            and not existing.get("image_paths") and not session.get("queued_prompts")):
+            and not existing.get("image_paths") and not existing.get("external_submission_id")
+            and not session.get("queued_prompts")):
         prev = existing["text"]
         existing["text"] = f"{prev}\n\n{text}" if prev and text else (prev or text)
     elif existing:
         session.setdefault("queued_prompts", []).append(queued)
     else:
         session["queued_prompt"] = queued
+
+
+def _queued_external_submission_ids(session: dict) -> list[str]:
+    """Return distinct accepted external IDs still waiting in the local queue."""
+    entries = [session.get("queued_prompt"), *(session.get("queued_prompts") or [])]
+    seen: set[str] = set()
+    result: list[str] = []
+    for entry in entries:
+        value = entry.get("external_submission_id") if isinstance(entry, dict) else None
+        if isinstance(value, str) and value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def _emit_external_queue_failure(sid: str, submission_id: str, message: str) -> None:
+    """Close one accepted external queue envelope without mutating the live turn."""
+    from tui_gateway.event_replay import events_since
+
+    already_started = any(
+        event.get("type") == "message.start"
+        and (event.get("payload") or {}).get("external_submission_id") == submission_id
+        for event in events_since(sid, 0)
+    )
+    if not already_started:
+        _emit("message.start", sid, {"external_submission_id": submission_id})
+    _emit("message.complete", sid, {
+        "text": "",
+        "status": "error",
+        "error": message,
+        "external_submission_id": submission_id,
+    })
 
 
 def _sanitize_queued_entry_vs_inflight_user(entry: Any, original: str) -> dict | None:
@@ -160,7 +205,12 @@ def _sanitize_queued_entry_vs_inflight_user(entry: Any, original: str) -> dict |
     if not isinstance(entry, dict):
         return None
     text = entry.get("text")
-    if not original or entry.get("image_paths") or not isinstance(text, str):
+    if (
+        not original
+        or entry.get("image_paths")
+        or entry.get("external_submission_id")
+        or not isinstance(text, str)
+    ):
         return entry
     # A lossless text-merge may have glued the live original onto a later follow-up: keep the remainder.
     rest = next((text[len(original + sep):] for sep in ("\n\n", "\n") if text.startswith(original + sep)), text).strip()
@@ -231,17 +281,28 @@ def _ac_try_correction(rid, session: dict, agent: Any, method: str, plain_text: 
     return _ok(rid, {"status": status})
 
 
-def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False) -> dict | None:
+def _handle_busy_submit(
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    transport: Any,
+    queued: bool = False,
+    external_submission_id: str | None = None,
+) -> dict | None:
     """Apply ``display.busy_input_mode`` to a mid-turn prompt instead of rejecting it (rejection made clients busy-retry
     and drop sends): ``interrupt`` (default) → redirect, falling back to hard interrupt + queue; ``queue`` → queue only;
     ``steer`` → inject after the current atomic action. ``queued=True`` (client queue drain) forces queue mode: a "run
     after" message must NEVER become a live correction."""
-    mode = "queue" if queued else _load_busy_input_mode()
+    # External controllers submit a next visible Desktop turn; never inherit the
+    # interactive owner's steer/redirect policy and lose a correlated receipt.
+    mode = "queue" if queued or external_submission_id else _load_busy_input_mode()
     agent = session.get("agent")
     with session["history_lock"]:
         if not session.get("running"):
             return None  # turn ended since prompt.submit's busy check; caller retries on the idle session
-        image_paths = list(session.get("attached_images", []))
+        # Files staged in the Desktop composer belong to the interactive owner.
+        image_paths = [] if external_submission_id else list(session.get("attached_images", []))
         if image_paths:
             session["attached_images"] = []  # claim now so a later paste isn't consumed when the turn yields
     plain_text = _coerce_message_text(text).strip() if not image_paths and _is_text_only_busy_payload(text) else ""
@@ -262,7 +323,9 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
             if image_paths:
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))
             return None
-        _enqueue_prompt(session, text, transport, image_paths=image_paths)
+        _enqueue_prompt(
+            session, text, transport, image_paths=image_paths,
+            external_submission_id=external_submission_id)
         session["last_active"] = time.time()
     # Attachments need their own model invocation: queue without cancelling so the user gets both results in order.
     # ``steer`` must NEVER escalate to a hard interrupt: it would kill the live turn AND drop ``AIAgent._pending_steer``
@@ -273,46 +336,110 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     # pending steer buffer — silently destroying the earlier messages of the burst. See #86134.
     if mode == "interrupt" and not image_paths:
         _interrupt_busy_session(sid, session, agent)
-    return _ok(rid, {"status": "queued"})
+    return _ok(rid, {
+        "status": "queued",
+        **(
+            {"external_submission_id": external_submission_id}
+            if external_submission_id else {}),
+    })
 
 
 def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     """Fire a queued next-turn prompt if one is waiting and the session is idle. True when dispatched: the caller
     skips lower-priority follow-ups this cycle (the user's message wins)."""
+    closing_external_ids: list[str] = []
+    queued = None
+    external_submission_id = None
+    queue_generation = 0
+    missing_external_owner = False
     with session["history_lock"]:
-        if session.get("_closing") or not (queued := session.get("queued_prompt")) or session.get("running"):
-            return False
-        queue_generation = int(session.get("_queued_prompt_generation", 0))
-        _ac_set_queue(session, session.get("queued_prompts") or [])
-        session["running"] = True
-        if queued.get("transport") is not None:
-            session["transport"] = queued["transport"]
-    use_compute_host = _session_uses_compute_host(session)
+        if session.get("_closing"):
+            closing_external_ids = _queued_external_submission_ids(session)
+            retained = [
+                entry
+                for entry in [session.get("queued_prompt"), *(session.get("queued_prompts") or [])]
+                if isinstance(entry, dict) and not entry.get("external_submission_id")
+            ]
+            _ac_set_queue(session, retained)
+        else:
+            queued = session.get("queued_prompt")
+            if not queued or session.get("running"):
+                return False
+            queue_generation = int(session.get("_queued_prompt_generation", 0))
+            _ac_set_queue(session, session.get("queued_prompts") or [])
+            external_submission_id = queued.get("external_submission_id")
+            if external_submission_id:
+                # The Desktop owner may have reconnected while this envelope waited.
+                # Never restore the controller's stale transport provenance.
+                if not is_live_transport(session.get("transport")):
+                    missing_external_owner = True
+            elif queued.get("transport") is not None:
+                session["transport"] = queued["transport"]
+            if not missing_external_owner:
+                session["running"] = True
+    if closing_external_ids:
+        for submission_id in closing_external_ids:
+            _emit_external_queue_failure(
+                sid, submission_id,
+                "External turn cancelled because the session closed before it started")
+        return False
+    if queued is None:
+        return False
+    if missing_external_owner:
+        assert isinstance(external_submission_id, str)
+        _emit_external_queue_failure(
+            sid, external_submission_id, "External turn has no live session owner")
+        # Keep draining so an interactive follow-up behind the failed external
+        # envelope is not stranded.
+        _drain_queued_prompt(rid, sid, session)
+        return True
+
+    # External submissions are admitted only for the in-process Desktop owner.
+    # A config flip while queued must not move them to an isolated host.
+    use_compute_host = False if external_submission_id else _session_uses_compute_host(session)
+    generation_cancelled = False
     with session["history_lock"]:
         if int(session.get("_queued_prompt_generation", 0)) != queue_generation:
-            # Generation bump cancelled the claim (Stop, compress re-anchor, …): don't dispatch, but restore the
-            # envelope (claimed head first, then whatever advanced into the slot) so a legitimate follow-up isn't dropped.
-            # See #84417.
-            advanced = session.get("queued_prompt")
-            _ac_set_queue(session, [queued, *([advanced] if advanced else []), *(session.get("queued_prompts") or [])])
+            generation_cancelled = True
+            if not external_submission_id:
+                advanced = session.get("queued_prompt")
+                _ac_set_queue(
+                    session,
+                    [queued, *([advanced] if advanced else []), *(session.get("queued_prompts") or [])],
+                )
             session["running"] = False
-            return True
+    if generation_cancelled:
+        if external_submission_id:
+            assert isinstance(external_submission_id, str)
+            _emit_external_queue_failure(
+                sid, external_submission_id, "External turn cancelled before dispatch")
+        return True
+
     kwargs: dict = {"queued_prompt_generation": queue_generation}
     if queued.get("image_paths"):
         kwargs["image_paths"] = queued["image_paths"]
+    if external_submission_id:
+        kwargs.update(external_submission_id=external_submission_id, image_paths=[])
     dispatch_failed = False
     try:
         if not use_compute_host:
             _run_prompt_submit(rid, sid, session, queued["text"], **kwargs)
-        elif (resp := _submit_prompt_to_compute_host(rid, sid, session, queued["text"], **kwargs)).get("error"):
+        elif (resp := _submit_prompt_to_compute_host(
+            rid, sid, session, queued["text"], **kwargs
+        )).get("error"):
             with session["history_lock"]:
                 session["running"] = False
                 _clear_inflight_turn(session)
-            _emit("error", sid, {"message": str((resp.get("error") or {}).get("message") or "queued prompt failed")})
+            _emit("error", sid, {
+                "message": str((resp.get("error") or {}).get("message") or "queued prompt failed")})
             dispatch_failed = True
     except Exception as exc:
         _notif_log_failure("queued prompt dispatch failed", exc)
         _notif_release_turn(session)
+        if external_submission_id:
+            _emit_external_queue_failure(
+                sid, external_submission_id,
+                "External turn failed before dispatch completed")
         dispatch_failed = True
     if dispatch_failed:
         with session["history_lock"]:
@@ -350,7 +477,8 @@ def _inflight_snapshot(session: dict) -> dict | None:
 
 
 def _emit_terminal_turn_error(
-    sid: str, session: dict, error: Any, error_surface: Optional[dict] = None, *, retire_marker: bool = True) -> None:
+    sid: str, session: dict, error: Any, error_surface: Optional[dict] = None, *,
+    retire_marker: bool = True, external_submission_id: str | None = None) -> None:
     """Close a failed turn with the same ``status: "error"`` ``message.complete`` frame as the returned-error path,
     retaining the turn so a client that missed the frame recovers it from ``session.resume``'s ``inflight``.
     ``error_surface`` ({layer, code, retryable}) is classified from an exception if absent."""
@@ -371,7 +499,8 @@ def _emit_terminal_turn_error(
         rendered = render_message(text, cols)
     payload = {"text": text, "usage": _get_usage(agent) if agent is not None else {}, "status": "error",
                "error": message, "recoverable": True, **({"error_surface": error_surface} if error_surface else {}),
-               **({"partial": True} if partial else {}), **({"rendered": rendered} if rendered else {})}
+               **({"partial": True} if partial else {}), **({"rendered": rendered} if rendered else {}),
+               **({"external_submission_id": external_submission_id} if external_submission_id else {})}
     if retire_marker:
         _retire_turn_marker(session)
     _emit("message.complete", sid, payload)

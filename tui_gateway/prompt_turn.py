@@ -81,7 +81,8 @@ def _plan_goal_compression_recovery(
 
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
-    queued_prompt_generation: int | None) -> tuple[list[str], Any] | None:
+    queued_prompt_generation: int | None,
+    external_submission_id: str | None = None) -> tuple[list[str], Any] | None:
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
@@ -93,25 +94,44 @@ def _admit_prompt_turn(
             getattr(ownership_refusal, "reason", None) or "refused")
         with session["history_lock"]:
             session["running"] = False
-        _emit("error", sid, {"message": str(ownership_refusal)})
+        if external_submission_id:
+            _emit("message.start", sid, {"external_submission_id": external_submission_id})
+            _emit_terminal_turn_error(
+                sid, session, ownership_refusal,
+                external_submission_id=external_submission_id)
+        else:
+            _emit("error", sid, {"message": str(ownership_refusal)})
         return None
+    prestart_error = None
     with session["history_lock"]:
-        if session.get("_closing") or (
-            queued_prompt_generation is not None
-            and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation):
+        if session.get("_closing"):
             session["running"] = False
-            return None
-        images = list(session.get("attached_images", []) if image_paths is None else image_paths)
-        if image_paths is None:
-            session["attached_images"] = []
-        inflight = session.get("inflight_turn")
-        # A retained failed turn (see _fail_inflight_turn) is a stale leftover
-        # by the time a new turn starts — replace it, never append onto it.
-        if not isinstance(inflight, dict) or inflight.get("status") == "error":
-            _start_inflight_turn(session, text)
-        agent = session["agent"]
-        with contextlib.suppress(Exception):
-            agent.clear_interrupt()
+            prestart_error = "Session closed before the external turn started"
+        elif (
+            queued_prompt_generation is not None
+            and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation
+        ):
+            session["running"] = False
+            prestart_error = "Queued external turn was cancelled before it started"
+        else:
+            images = list(session.get("attached_images", []) if image_paths is None else image_paths)
+            if image_paths is None:
+                session["attached_images"] = []
+            inflight = session.get("inflight_turn")
+            # A retained failed turn (see _fail_inflight_turn) is a stale leftover
+            # by the time a new turn starts — replace it, never append onto it.
+            if not isinstance(inflight, dict) or inflight.get("status") == "error":
+                _start_inflight_turn(session, text)
+            agent = session["agent"]
+            with contextlib.suppress(Exception):
+                agent.clear_interrupt()
+    if prestart_error:
+        if external_submission_id:
+            _emit("message.start", sid, {"external_submission_id": external_submission_id})
+            _emit_terminal_turn_error(
+                sid, session, prestart_error,
+                external_submission_id=external_submission_id)
+        return None
     return images, agent
 
 
@@ -421,6 +441,7 @@ class _TurnRun:
     one_turn_restore: Any
     terminal_callback: Any
     receipt_committed: bool
+    external_submission_id: str | None = None
     scopes: _TurnScopes = dataclasses.field(default_factory=_TurnScopes)
     result: Any = None  # read after the finally for leftover /steer
     tts_queue: Any = None
@@ -488,8 +509,14 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         ctx = preprocess_context_references(
             prompt, cwd=cwd, allowed_root=cwd, context_length=ctx_len)
         if ctx.blocked:
-            _emit(
-                "error", sid, {"message": "\n".join(ctx.warnings) or "Context injection refused."})
+            blocked_message = "\n".join(ctx.warnings) or "Context injection refused."
+            if st.external_submission_id:
+                _emit_terminal_turn_error(
+                    sid, session, blocked_message,
+                    external_submission_id=st.external_submission_id)
+                st.error_retained = True
+            else:
+                _emit("error", sid, {"message": blocked_message})
             return None
         prompt = ctx.message
     st.prompt_text = prompt if isinstance(prompt, str) else ""
@@ -625,6 +652,8 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     result, agent = st.result, st.agent
     raw, status, last_reasoning = _turn_outcome(result)
     payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+    if st.external_submission_id:
+        payload["external_submission_id"] = st.external_submission_id
     if last_reasoning:
         payload["reasoning"] = last_reasoning
     if status_note:
@@ -698,7 +727,9 @@ def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseExcept
             logger.exception("hosted room terminal receipt commit failed")
     try:
         # Same terminal error frame shape as the returned-error path.
-        _emit_terminal_turn_error(sid, session, e, retire_marker=st.receipt_committed)
+        _emit_terminal_turn_error(
+            sid, session, e, retire_marker=st.receipt_committed,
+            external_submission_id=st.external_submission_id)
         st.error_retained = True
         st.error_detail = _turn_failure_detail(e, type(e).__name__, st.prompt_text)
     except Exception as emit_exc:
@@ -754,8 +785,11 @@ def _run_prompt_submit(
     rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
-    terminal_callback: Callable[[dict[str, Any]], None] | None = None) -> bool:
-    admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation)
+    terminal_callback: Callable[[dict[str, Any]], None] | None = None,
+    external_submission_id: str | None = None) -> bool:
+    admitted = _admit_prompt_turn(
+        sid, session, text, image_paths, queued_prompt_generation,
+        external_submission_id)
     if admitted is None:
         return False
     images, agent = admitted
@@ -773,7 +807,10 @@ def _run_prompt_submit(
         "kind=%s chars=%s images=%d",
         sid, session.get("session_key") or "", getattr(agent, "session_id", "") or "",
         display_kind or "user", len(text) if isinstance(text, str) else "-", len(images))
-    _emit("message.start", sid)
+    _emit(
+        "message.start", sid,
+        {"external_submission_id": external_submission_id}
+        if external_submission_id else None)
 
     def run():
         # RPC-dispatcher ContextVars do not follow onto this thread: rebind the transport
@@ -782,7 +819,8 @@ def _run_prompt_submit(
         runtime_session_token = _current_runtime_session_record.set(session)
         st = _TurnRun(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
-            receipt_committed=terminal_callback is None)
+            receipt_committed=terminal_callback is None,
+            external_submission_id=external_submission_id)
         st.marker_key = _record_turn_marker(session, text)
         goal_followup = None
         try:
@@ -846,6 +884,10 @@ def _run_prompt_submit(
     if not can_start:
         with session["history_lock"]:
             session["running"] = False
+        if external_submission_id:
+            _emit_terminal_turn_error(
+                sid, session, "Session closed before the external turn started",
+                external_submission_id=external_submission_id)
     return can_start
 
 

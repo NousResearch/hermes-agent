@@ -2033,6 +2033,35 @@ def test_prompt_submit_typed_stop_passes_through_when_voice_off(monkeypatch):
     assert resp.get("result") != {"voice_stopped": True}
 
 
+def test_external_prompt_never_triggers_typed_voice_stop(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.voice_mode",
+        types.SimpleNamespace(
+            is_voice_stop_phrase=lambda _text: (_ for _ in ()).throw(
+                AssertionError("external prompts must bypass the voice stop matcher")
+            )
+        ),
+    )
+    monkeypatch.setenv("HERMES_VOICE", "1")
+
+    resp = server.dispatch(
+        {
+            "id": "external-stop",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "missing-sid",
+                "text": "stop",
+                "preserve_session_transport": True,
+                "external_submission_id": "gas-city-request-1",
+            },
+        }
+    )
+
+    assert resp.get("result") != {"voice_stopped": True}
+    assert os.environ["HERMES_VOICE"] == "1"
+
+
 def test_prompt_submit_longer_text_not_consumed_in_voice_mode(monkeypatch):
     """"stop the build" while voice is on must reach the agent path."""
     monkeypatch.setitem(
@@ -7377,12 +7406,13 @@ class _RecordingAgent:
 def test_run_prompt_submit_rejects_worker_when_close_wins_publication(
     monkeypatch, tmp_path
 ):
-    """A close claimed during message.start must prevent the worker from running."""
+    """A close during external start must reject work and close its receipt."""
     _configure_immediate_prompt_run(monkeypatch, tmp_path, immediate_threads=False)
     emit_entered = threading.Event()
     release_emit = threading.Event()
     dispatch_results = []
     turns = []
+    events = []
     popped = []
     sid = "close-wins-publication"
     session = _session(
@@ -7391,7 +7421,8 @@ def test_run_prompt_submit_rejects_worker_when_close_wins_publication(
         running=True,
     )
 
-    def _blocking_emit(event, *_args, **_kwargs):
+    def _blocking_emit(event, _sid, payload=None, **_kwargs):
+        events.append((event, payload or {}))
         if event == "message.start":
             emit_entered.set()
             assert release_emit.wait(timeout=2.0)
@@ -7400,7 +7431,13 @@ def test_run_prompt_submit_rejects_worker_when_close_wins_publication(
     server._sessions[sid] = session
     dispatch_thread = threading.Thread(
         target=lambda: dispatch_results.append(
-            server._run_prompt_submit("rid", sid, session, "turn")
+            server._run_prompt_submit(
+                "rid",
+                sid,
+                session,
+                "turn",
+                external_submission_id="gas-city-close-race",
+            )
         )
     )
 
@@ -7422,6 +7459,14 @@ def test_run_prompt_submit_rejects_worker_when_close_wins_publication(
     assert dispatch_results == [False]
     assert session["running"] is False
     assert turns == []
+    assert events[0] == (
+        "message.start",
+        {"external_submission_id": "gas-city-close-race"},
+    )
+    terminal_events = [payload for event, payload in events if event == "message.complete"]
+    assert len(terminal_events) == 1
+    assert terminal_events[0]["status"] == "error"
+    assert terminal_events[0]["external_submission_id"] == "gas-city-close-race"
 
 
 @pytest.mark.parametrize("exit_code", [0, 7])
@@ -19328,6 +19373,7 @@ def test_reset_session_agent_clears_session_overrides(monkeypatch):
     and /fast overrides do NOT carry into the fresh agent — it re-derives
     everything from config.yaml (#48055, #23131)."""
     captured = {}
+    failures = []
     new_agent = types.SimpleNamespace(model="openai/gpt-5.4", service_tier="")
     session = _session(
         agent=types.SimpleNamespace(
@@ -19338,6 +19384,11 @@ def test_reset_session_agent_clears_session_overrides(monkeypatch):
         model_override={"model": "openai/gpt-5.4"},
         create_reasoning_override={"enabled": True, "effort": "high"},
         create_service_tier_override="",
+        queued_prompt={
+            "text": "external wake",
+            "transport": object(),
+            "external_submission_id": "gas-city-request-1",
+        },
     )
 
     def make_agent(*_args, **kwargs):
@@ -19352,6 +19403,11 @@ def test_reset_session_agent_clears_session_overrides(monkeypatch):
     monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "all")
     monkeypatch.setattr(server, "_session_info", lambda *_args: {})
     monkeypatch.setattr(server, "_emit", lambda *_args: None)
+    monkeypatch.setattr(
+        server,
+        "_emit_external_queue_failure",
+        lambda *args: failures.append(args),
+    )
     monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args: None)
 
     server._reset_session_agent("sid", session)
@@ -19365,6 +19421,43 @@ def test_reset_session_agent_clears_session_overrides(monkeypatch):
     assert "create_reasoning_override" not in session
     assert "create_service_tier_override" not in session
     assert session["agent"] is new_agent
+    assert failures == [
+        (
+            "sid",
+            "gas-city-request-1",
+            "External turn cancelled by session reset before it started",
+        )
+    ]
+    assert session["queued_prompt"] is None
+
+
+def test_reset_session_agent_refuses_to_corrupt_an_active_turn(monkeypatch):
+    queued = {
+        "text": "external wake",
+        "transport": object(),
+        "external_submission_id": "gas-city-request-1",
+    }
+    session = _session(running=True, queued_prompt=queued)
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("active session must not be rebuilt")
+        ),
+    )
+    monkeypatch.setattr(
+        server,
+        "_emit_external_queue_failure",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("active owner's stream must not receive queue failure frames")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="while its turn is active"):
+        server._reset_session_agent("sid", session)
+
+    assert session["queued_prompt"] is queued
+    assert session["running"] is True
 
 
 @pytest.mark.parametrize(

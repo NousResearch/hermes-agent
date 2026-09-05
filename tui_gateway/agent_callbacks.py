@@ -357,29 +357,37 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
 
 
 def _reset_session_agent(sid: str, session: dict) -> dict:
-    tokens = _set_session_context(session["session_key"])
-    try:
-        # /new is a full conversation boundary: session-scoped runtime overrides (/model,
-        # /reasoning, /fast) do NOT carry forward and the pins are cleared so a rebuild can't
-        # resurrect them. Global process state is never touched (see _apply_model_switch).
-        for k in ("model_override", "create_reasoning_override", "create_service_tier_override", "one_turn_model_restore"):
-            session.pop(k, None)
-        new_agent = _make_agent(
-            sid, session["session_key"], session_id=session["session_key"],
-            platform_override=_session_source(session),
-            context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session))
-    finally:
-        _clear_session_context(tokens)
-    session.update(
-        agent=new_agent, config_model_seen=_config_model_target(), attached_images=[],
-        queued_prompt=None,
-        _queued_prompt_generation=int(session.get("_queued_prompt_generation", 0)) + 1,
-        edit_snapshots={}, image_counter=0, running=False, show_reasoning=_load_show_reasoning(),
-        tool_progress_mode=_load_tool_progress_mode(), tool_started_at={})
-    session.pop("queued_prompts", None)
     with session["history_lock"]:
+        run_thread = session.get("_run_thread")
+        if session.get("running") or (run_thread is not None and run_thread.is_alive()):
+            raise RuntimeError("cannot reset a session while its turn is active")
+        cancelled_external_ids = _queued_external_submission_ids(session)
+        tokens = _set_session_context(session["session_key"])
+        try:
+            # /new is a full conversation boundary: session-scoped runtime overrides (/model,
+            # /reasoning, /fast) do NOT carry forward and the pins are cleared so a rebuild can't
+            # resurrect them. Global process state is never touched (see _apply_model_switch).
+            for k in ("model_override", "create_reasoning_override", "create_service_tier_override", "one_turn_model_restore"):
+                session.pop(k, None)
+            new_agent = _make_agent(
+                sid, session["session_key"], session_id=session["session_key"],
+                platform_override=_session_source(session),
+                context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session))
+        finally:
+            _clear_session_context(tokens)
+        session.update(
+            agent=new_agent, config_model_seen=_config_model_target(), attached_images=[],
+            queued_prompt=None,
+            _queued_prompt_generation=int(session.get("_queued_prompt_generation", 0)) + 1,
+            edit_snapshots={}, image_counter=0, running=False, show_reasoning=_load_show_reasoning(),
+            tool_progress_mode=_load_tool_progress_mode(), tool_started_at={})
+        session.pop("queued_prompts", None)
         session["history"] = []
         session["history_version"] = int(session.get("history_version", 0)) + 1
+    for submission_id in cancelled_external_ids:
+        _emit_external_queue_failure(
+            sid, submission_id,
+            "External turn cancelled by session reset before it started")
     info = _session_info(new_agent, session)
     _emit("session.info", sid, info)
     _restart_slash_worker(sid, session)

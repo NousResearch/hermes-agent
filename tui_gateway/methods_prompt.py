@@ -465,7 +465,10 @@ def _persist_session_row_for_submit(rid, session):
     return None
 
 
-def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback):
+def _run_after_agent_ready(
+    rid, sid, session, text, display_kind, hosted_terminal_callback,
+    external_submission_id=None,
+):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
     # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
@@ -475,27 +478,43 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
     if err:
         # Terminal frame + retained snapshot (not a bare "error" event): the snapshot is
         # the only way resume shows this to a disconnected client.
+        if external_submission_id:
+            _emit("message.start", sid, {"external_submission_id": external_submission_id})
         _emit_terminal_turn_error(
             sid, session, (err.get("error") or {}).get("message", "agent initialization failed"),
-            error_surface={"layer": "runtime", "code": "agent_init_failed", "retryable": True})
+            error_surface={"layer": "runtime", "code": "agent_init_failed", "retryable": True},
+            external_submission_id=external_submission_id)
         with session["history_lock"]:
             session["running"] = False
             session["last_active"] = time.time()
         _emit("session.info", sid, _session_info(session.get("agent"), session))
         return
+    cancelled_message = None
     with session["history_lock"]:
         if session.get("_turn_cancel_requested") or not session.get("running"):
             session["running"] = False
-            _clear_inflight_turn(session)
-            # Without this emit the turn vanishes silently after {"status": "streaming"}.
-            _emit("error", sid, {"message": (
+            if not external_submission_id:
+                _clear_inflight_turn(session)
+            cancelled_message = (
                 "Turn cancelled before the agent was ready"
                 if session.get("_turn_cancel_requested")
-                else "Session no longer running before the agent was ready")})
-            return
+                else "Session no longer running before the agent was ready")
+    if cancelled_message:
+        # Without this terminal signal the accepted turn vanishes after
+        # {"status": "streaming"}.
+        if external_submission_id:
+            _emit("message.start", sid, {"external_submission_id": external_submission_id})
+            _emit_terminal_turn_error(
+                sid, session, cancelled_message,
+                external_submission_id=external_submission_id)
+        else:
+            _emit("error", sid, {"message": cancelled_message})
+        return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind,
-        terminal_callback=hosted_terminal_callback)
+        image_paths=[] if external_submission_id else None,
+        terminal_callback=hosted_terminal_callback,
+        external_submission_id=external_submission_id)
 
 
 _TRUNCATION_PARAMS = (
@@ -540,9 +559,29 @@ def _(rid, params: dict) -> dict:
     # Off-screen sends (widget intents) type the row so no client renders a bubble;
     # whitelisted to "hidden" — this RPC must not mint kinds.
     display_kind = "hidden" if params.get("display_kind") == "hidden" else None
-    if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
+    preserve_session_transport = params.get("preserve_session_transport") is True
+    external_submission_id = params.get("external_submission_id")
+    if preserve_session_transport != (external_submission_id is not None):
+        return _err(
+            rid, -32602,
+            "preserve_session_transport and external_submission_id must be supplied together")
+    if external_submission_id is not None and (
+        not isinstance(external_submission_id, str)
+        or not external_submission_id
+        or len(external_submission_id) > 128
+        or any(
+            not (character.isascii() and (character.isalnum() or character in ".:_-"))
+            for character in external_submission_id)
+    ):
+        return _err(
+            rid, -32602,
+            "external_submission_id must be 1-128 ASCII letters, digits, '.', ':', '_' or '-'")
+    if (
+        external_submission_id is None
+        and (stopped := _typed_stop_phrase_response(rid, text)) is not None
+    ):
         return stopped
-    if params.get("interrupted"):
+    if external_submission_id is None and params.get("interrupted"):
         # Client-side barge-in: latch so this turn's model message carries the note.
         from tools.tts_streaming import mark_speech_interrupted
         mark_speech_interrupted()
@@ -563,19 +602,31 @@ def _(rid, params: dict) -> dict:
         reason = getattr(limit_message, "reason", None)
         return _err(rid, 4090, str(limit_message), {"reason": reason} if reason else None)
     # Rewritten every submit: a session alternates app window / HUD; stale "hud" misinforms.
-    session["client_surface"] = "hud" if params.get("surface") == "hud" else ""
+    if not preserve_session_transport:
+        session["client_surface"] = "hud" if params.get("surface") == "hud" else ""
     has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
     if has_truncation and isinstance(text, str):
         # A rewind replays what the transcript shows: re-expand a skill invocation or
         # `/work fix it` sends nine literal chars.
         text = _expand_skill_invocation_for_replay(text, str(session.get("session_key") or ""))
     turn_isolation = _session_uses_compute_host(session, _load_dashboard_process_isolation_config())
-    if internal_hosted_submit and turn_isolation:
-        return _err(rid, 4121, "hosted room turns do not support isolated compute workers yet")
+    if (internal_hosted_submit or preserve_session_transport) and turn_isolation:
+        return _err(
+            rid, 4121,
+            "hosted room and external submissions do not support isolated compute workers yet")
     # Re-bind to the current transport: streaming must stay on the active websocket even
     # if a disconnect/fallback moved the session to stdio.
-    if (t := current_transport()) is not None:
-        session["transport"] = t
+    request_transport = current_transport()
+    if preserve_session_transport:
+        delivery_transport = session.get("transport")
+        if not is_live_transport(delivery_transport):
+            return _err(
+                rid, 4093,
+                "session has no live client transport to receive an external submission")
+    else:
+        delivery_transport = request_transport or session.get("transport")
+        if request_transport is not None:
+            session["transport"] = request_transport
     # Claim the turn against a possibly-running session (busy/queued reply, else fall
     # through once ``running`` is observed False).  The provider interrupt happens after
     # history_lock is released (a non-interruptible tool may hold it); if the old turn
@@ -587,9 +638,10 @@ def _(rid, params: dict) -> dict:
                 break
             if internal_hosted_submit:
                 return _err(rid, 4091, "hosted room member session is busy")
-            busy_transport = t or session.get("transport")
+            busy_transport = delivery_transport
         busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")))
+            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")),
+            external_submission_id=external_submission_id)
         if busy_response is not None:
             return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
@@ -625,12 +677,19 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, hosted_terminal_callback),
+            rid, sid, session, text, display_kind, hosted_terminal_callback,
+            external_submission_id),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
     run_thread.start()
-    return _ok(rid, {"status": "streaming", **survivor_fields})
+    return _ok(rid, {
+        "status": "streaming",
+        **(
+            {"external_submission_id": external_submission_id}
+            if external_submission_id else {}),
+        **survivor_fields,
+    })
 
 
 # ── attachments ─────────────────────────────────────────────────────────────

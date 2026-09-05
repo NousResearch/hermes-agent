@@ -376,11 +376,16 @@ def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None =
             _get_compute_host_supervisor().interrupt(sid, request_id=request_id)
     else:
         run_thread_alive = (rt := session.get("_run_thread")) is not None and rt.is_alive()
+    cancelled_external_ids: list[str] = []
     with session["history_lock"]:
         session["_turn_cancel_requested"] = True
+        cancelled_external_ids = _queued_external_submission_ids(session)
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
+    for submission_id in cancelled_external_ids:
+        _emit_external_queue_failure(
+            sid, submission_id, "External turn cancelled before it started")
     if not use_compute_host:
         if should_interrupt:
             from agent.interrupt_compat import request_hard_interrupt

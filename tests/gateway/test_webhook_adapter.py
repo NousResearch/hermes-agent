@@ -130,6 +130,70 @@ def _svix_signature(body: bytes, secret: str, msg_id: str, timestamp: str) -> st
 class TestValidateSignature:
     """Tests for WebhookAdapter._validate_signature."""
 
+    def test_validate_redmine_signature_valid(self):
+        """Redmine 7's X-Redmine-Signature-256 uses GitHub's HMAC format."""
+        adapter = _make_adapter()
+        body = b'{"type":"issue.updated","data":{"issue":{"id":42}}}'
+        secret = "redmine-webhook-secret"
+        sig = _github_signature(body, secret)
+        req = _mock_request(headers={"X-Redmine-Signature-256": sig})
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_redmine_signature_invalid(self):
+        """A Redmine signature computed for a different body is rejected."""
+        adapter = _make_adapter()
+        secret = "redmine-webhook-secret"
+        sig = _github_signature(b'{"type":"issue.created"}', secret)
+        req = _mock_request(headers={"X-Redmine-Signature-256": sig})
+        assert adapter._validate_signature(
+            req,
+            b'{"type":"issue.updated"}',
+            secret,
+        ) is False
+
+    @pytest.mark.asyncio
+    async def test_signed_redmine_post_authenticates_raw_http_body(self):
+        """A Redmine signature is accepted through the real HTTP handler."""
+        secret = "redmine-webhook-secret"
+        adapter = _make_adapter(
+            routes={
+                "redmine": {
+                    "secret": secret,
+                    "prompt": "Issue #{data.issue.id}",
+                }
+            }
+        )
+        adapter.handle_message = AsyncMock()
+        body = b'{"type":"issue.updated","data":{"issue":{"id":42}}}'
+
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            response = await cli.post(
+                "/webhooks/redmine",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Redmine-Signature-256": _github_signature(body, secret),
+                },
+            )
+
+            assert response.status == 202
+
+            await asyncio.gather(*adapter._background_tasks)
+
+        adapter.handle_message.assert_awaited_once()
+
+    def test_invalid_github_signature_does_not_fall_through_to_redmine(self):
+        """Multiple protocol headers commit to the first recognized format."""
+        adapter = _make_adapter()
+        body = b'{"type":"issue.updated"}'
+        secret = "redmine-webhook-secret"
+        req = _mock_request(
+            headers={
+                "X-Hub-Signature-256": "sha256=deadbeef",
+                "X-Redmine-Signature-256": _github_signature(body, secret),
+            }
+        )
+        assert adapter._validate_signature(req, body, secret) is False
 
     def test_validate_no_signature_with_secret_rejects(self):
         """Secret configured but no recognised signature header → reject."""
@@ -147,6 +211,7 @@ class TestValidateSignature:
         hostile = "ské-not-a-valid-signature"
         for header in (
             "X-Hub-Signature-256",
+            "X-Redmine-Signature-256",
             "X-Gitlab-Token",
             "X-Webhook-Signature",
             "linear-signature",

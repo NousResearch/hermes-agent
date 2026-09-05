@@ -4410,6 +4410,7 @@ class GatewayRunner(
         progress_grouping: Any = None
         _display_surface_mode: Any = None
         tool_progress_enabled: Any = None
+        tool_timer_enabled: Any = None
         _live_status_mode: Any = None
         _live_status_adapter: Any = None
         log_mode_enabled: Any = None

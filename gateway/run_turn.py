@@ -2699,24 +2699,32 @@ class GatewayTurnMixin:
                 _native_slack_task_cards = bool(adapter.native_task_cards_enabled())
             except Exception:
                 logger.debug("Slack native task-card config check failed", exc_info=True)
+        # Tool-timer animation (opt-in, native-stream bubbles): its lifecycle events (tool.started /
+        # tool.completed / llm.request_started) must reach the stream consumer even when
+        # display.tool_progress is off — otherwise setting only extra.tool_timer_enabled: true yields no
+        # ticks. Detect it from the adapter capability so the progress queue + callback are still allocated
+        # to carry the timer signals (#96942).
+        _tool_timer_enabled = bool(getattr(adapter, "SUPPORTS_TOOL_TIMER", False)) and not is_webhook
         return self._RunAgentDisplay(
             user_config=user_config, platform_key=platform_key, enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets, resolve_display_setting=resolve_display_setting,
             progress_mode=progress_mode, progress_grouping=progress_grouping,
             _display_surface_mode=_display_surface_mode,
-            tool_progress_enabled=tool_progress_enabled, _live_status_mode=_live_status_mode,
+            tool_progress_enabled=tool_progress_enabled, tool_timer_enabled=_tool_timer_enabled,
+            _live_status_mode=_live_status_mode,
             _live_status_adapter=_live_status_adapter, log_mode_enabled=log_mode_enabled,
             log_queue=queue.Queue() if log_mode_enabled else None,
             interim_assistant_messages_enabled=interim_assistant_messages_enabled,
             _thinking_enabled=_thinking_enabled, _native_slack_task_cards=_native_slack_task_cards,
-            needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards,
+            needs_progress_queue=(tool_progress_enabled or _thinking_enabled
+                                  or _native_slack_task_cards or _tool_timer_enabled),
             _generic_status_phrase=_generic_status_phrase,
         )
 
     # _RunAgentDisplay fields copied verbatim onto the TurnContext.
     _DISPLAY_TO_TURN_CTX = (
         "_live_status_adapter", "_live_status_mode", "_thinking_enabled", "progress_mode",
-        "progress_grouping", "tool_progress_enabled", "log_queue", "resolve_display_setting",
+        "progress_grouping", "tool_progress_enabled", "tool_timer_enabled", "log_queue", "resolve_display_setting",
         "user_config", "enabled_toolsets", "disabled_toolsets", "log_mode_enabled",
         "interim_assistant_messages_enabled", "needs_progress_queue", "_native_slack_task_cards",
     )

@@ -304,10 +304,16 @@ class StreamTransportMixin:
             self._message_created_ts = None
 
     async def _send_or_edit(
-        self, text: str, *, finalize: bool = False, is_turn_final: bool = True) -> bool:
+        self, text: str, *, finalize: bool = False, is_turn_final: bool = True,
+        _wire_full: bool = True, has_tool_overlay: bool = False) -> bool:
         """Send or edit the streaming message; True if delivered.  ``finalize`` marks the
         last edit.  Transport order: native frame → draft frame → edit existing → first
-        send; a transport returns None to fall through to the next."""
+        send; a transport returns None to fall through to the next.
+
+        ``_wire_full`` — native only: whether ``text`` is the FULL cumulative buffer (sliced at the
+        rotation split offset before it hits the wire) or a pre-sliced/pre-composed frame (sent verbatim).
+        ``has_tool_overlay`` — native only: this frame carries a transient tool-progress overlay, so the
+        adapter must not adopt it as the sealed body of record on a Layer 2 rotation."""
         text = self._clean_for_display(text)
         # Stream-is-the-message draft frames must stay prefix-stable: a closing ```
         # on a mid-code-block frame makes frame N not a prefix of N+1 and the
@@ -333,7 +339,8 @@ class StreamTransportMixin:
         # A failed native/draft transport disables itself and falls through so the
         # accumulated text still reaches the user via edit/send.
         if self._use_native_streaming:
-            ok = await self._native_push(text, finalize=finalize, is_turn_final=is_turn_final)
+            ok = await self._native_push(text, finalize=finalize, is_turn_final=is_turn_final,
+                                         wire_full=_wire_full, has_tool_overlay=has_tool_overlay)
             if ok is not None:
                 return ok
         if self._use_draft_streaming and self._message_id is None:
@@ -353,15 +360,24 @@ class StreamTransportMixin:
             return False
 
     async def _native_push(self, text: str, *, finalize: bool, is_turn_final: bool,
+                           wire_full: bool = True, has_tool_overlay: bool = False,
                            ) -> Optional[bool]:
         """Native streaming: every frame goes through send_stream_frame(); lazy re-seed after
-        a boundary.  None when native was disabled (seed/frame failure) → caller falls through."""
+        a boundary.  None when native was disabled (seed/frame failure) → caller falls through.
+
+        ``wire_full`` — whether ``text`` is the FULL cumulative buffer (sliced at ``_native_split_offset``
+        before the wire so a post-rotation bubble carries only its own text) or a pre-composed frame (sent
+        verbatim).  ``has_tool_overlay`` — this frame carries a transient tool overlay (is_overlay_frame).
+        On a StreamSendOutcome with ``rotated=True`` the split offset advances to the previous committed
+        length (the seal point) so the fresh bubble renders only incremental text."""
         if not self._native_stream_opened and text:
             if not await self._try_seed_frame("Re-seed failed, disabling native streaming: %s"):
                 self._use_native_streaming = False
                 return None
             self._native_stream_opened = True
             self._awaiting_reopen_after_boundary = False
+            # A first delta after a boundary opened a fresh bubble — honour any thinking latch now.
+            self._consume_pending_thinking()
             # Paired with the boundary-finalize INFO: typing-reappear latency.
             logger.info("[latency] Re-opened native stream after boundary "
                         "(turn=%s, waited for first delta)", self._turn_id)
@@ -372,19 +388,56 @@ class StreamTransportMixin:
         if not finalize and text == self._last_sent_text:
             return True  # unchanged — skip
 
+        # Native wire text: after a Layer 2 rotation the fresh bubble must carry only the post-split
+        # segment. Slice the FULL buffer by the current offset; pre-composed frames (wire_full=False) are
+        # already sliced and go verbatim. ``text`` itself stays full for _record_turn_final_payload /
+        # _last_sent_text (reconciliation and dedup operate on the complete buffer). getattr defaults keep
+        # __new__-constructed test consumers (which skip __init__) working.
+        split_offset = getattr(self, "_native_split_offset", 0)
+        wire_text = text
+        if wire_full and split_offset:
+            wire_text = text[split_offset:]
+        # Authoritative pure body for THIS bubble (post-rotation slice, no overlay / completed-tool
+        # history) so the adapter's sealed body-of-record never lags behind while tool history persists.
+        # Only supplied for pre-composed (wire_full=False) frames; wire_text is already pure sliced body on
+        # the full-frame path, so the adapter falls back to it there.
+        body_text = getattr(self, "_accumulated", "")[split_offset:] if wire_full is False else None
+
         # Mark a finalize frame delivered OPTIMISTICALLY, before the ack wait: WeCom
         # renders the bytes before the ack, so a gateway join-cancel mid-wait must not
         # strand final_content_delivered=False and duplicate the send (docs/rca-wecom-
         # stream-final-ack-timeout-duplicate.md).  A definitive failure rolls it back.
         if finalize:
             self._mark_final_delivered(record=text)  # recorded: stale frame can't suppress
-        if await self._try_frame(self._send_frame(text, finalize=finalize),
-                                 "send_stream_frame raised, disabling native streaming: %s"):
+        ok = await self._try_native_frame(wire_text, finalize=finalize, is_overlay_frame=has_tool_overlay,
+                                          body_text=body_text)
+        # Tri-state: StreamFrameResult/StreamSendOutcome (WeCom) or bare bool (other adapters). __bool__
+        # makes DELIVERED/INDETERMINATE truthy and FAILED falsy; distinguish INDETERMINATE by .value.
+        is_indeterminate = getattr(ok, "value", None) == "indeterminate"
+        # Layer 2 rotation observed: the seal point is _accumulated as of the PREVIOUS pushed frame
+        # (_native_committed_len), NOT len(_accumulated) — the current buffer already includes this frame's
+        # own increment, which the adapter DEFERRED to the fresh bubble (carried by the next frame's slice).
+        if ok and getattr(ok, "rotated", False):
+            self._native_split_offset = getattr(self, "_native_committed_len", 0)
+            logger.info("[stream] native rotation observed — split offset -> %d (seal point = previous "
+                        "committed length; turn=%s); fresh bubble carries incremental text only.",
+                        self._native_split_offset, self._turn_id)
+        if ok:
             self._already_sent = True
             self._last_sent_text = text
             self._native_last_pushed_len = len(text)
+            # Record the clean committed length AFTER using the previous value as the seal point above.
+            self._native_committed_len = len(getattr(self, "_accumulated", ""))
             if finalize:
-                self._mark_final_delivered()
+                if is_indeterminate:
+                    # Frame was sent (don't retry) but delivery unconfirmed — roll back the optimistic
+                    # _final_content_delivered so the gateway knows.
+                    self._final_response_sent = True
+                    self._final_content_delivered = False
+                    logger.info("[stream] indeterminate settlement on finalize (turn=%s) — "
+                                "_final_response_sent=True, _final_content_delivered=False", self._turn_id)
+                else:
+                    self._mark_final_delivered()
             return True
 
         # Definitive failure: roll back the optimistic mark so the edit/send
@@ -406,6 +459,18 @@ class StreamTransportMixin:
             except Exception as e:
                 logger.debug("Native fallback: failed to finalize stream: %s", e)
         return None
+
+    async def _try_native_frame(self, wire_text: str, *, finalize: bool, is_overlay_frame: bool,
+                                body_text: Optional[str]):
+        """send_stream_frame with the overlay/body_text/rotation kwargs; the tri-state result (or bool)
+        is returned as-is so ``_native_push`` can read ``.rotated``/``.value``. A raise disables native."""
+        try:
+            return await self.adapter.send_stream_frame(
+                wire_text, finalize=finalize, chat_id=self.chat_id, reply_to=self._initial_reply_to_id,
+                turn_id=self._turn_id, is_overlay_frame=is_overlay_frame, body_text=body_text)
+        except Exception as e:
+            logger.debug("send_stream_frame raised, disabling native streaming: %s", e)
+            return False
 
     async def _draft_push(self, text: str, pre_fence_text: str, *, finalize: bool,
                           is_turn_final: bool) -> Optional[bool]:

@@ -37,9 +37,17 @@ from plugins.platforms.wecom.send_queue import ChatSendQueueMixin
 from plugins.platforms.wecom.media import WeComMediaMixin, APP_CMD_SEND
 from plugins.platforms.wecom.streaming import (
     WeComStreamMixin, ReplyQueue, StreamTurn, APP_CMD_RESPONSE,
-    STREAM_NOT_SUBSCRIBED_ERRCODE, MAX_STREAM_CONTENT_LENGTH,
+    StreamFrameResult, StreamSendOutcome, WeComStreamExpiredError,
+    STREAM_NOT_SUBSCRIBED_ERRCODE, STREAM_EXPIRED_ERRCODE, MAX_STREAM_CONTENT_LENGTH,
     STREAM_SAFE_DURATION_SECONDS, STREAM_KEEPALIVE_INTERVAL_SECONDS, STREAM_KEEPALIVE_ENABLED_DEFAULT,
+    ROTATION_CHECK_INTERVAL_SECONDS, ROTATION_LEAD_SECONDS, ROTATION_CONTINUATION_SUFFIX,
 )
+
+# Re-exported for backward compat: tests / plugins import these stream types from the adapter module.
+__all__ = [
+    "WeComAdapter", "StreamFrameResult", "StreamSendOutcome", "StreamTurn",
+    "WeComStreamExpiredError", "ReplyQueue", "STREAM_EXPIRED_ERRCODE", "ROTATION_CONTINUATION_SUFFIX",
+]
 
 
 logger = logging.getLogger(__name__)
@@ -115,6 +123,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     SUPPORTS_MESSAGE_EDITING = False
     SUPPORTS_NATIVE_STREAMING = True  # msgtype "stream" via aibot_respond_msg, not edit-based
+    SUPPORTS_TOOL_TIMER = False  # opt-in via extra.tool_timer_enabled: true (animated spinner in the bubble)
     MAX_STREAM_CONTENT_LENGTH = MAX_STREAM_CONTENT_LENGTH
     _SPLIT_THRESHOLD = 3900  # chunks near the 4000-char client split are almost certainly continued
 
@@ -151,10 +160,20 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
         self._attachment_text_merge_delay_seconds = _extra_float("attachment_text_merge_delay_seconds", 0.8)
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
-        # Stream keep-alive config (see streaming.py STREAM_* constants).
+        # Stream keep-alive (Layer 1) + rotation (Layer 2) config (see streaming.py STREAM_*/ROTATION_*).
         self._stream_safe_duration_seconds = _extra_float("stream_safe_duration_seconds", STREAM_SAFE_DURATION_SECONDS)
+        self._rotation_lead_seconds = _extra_float("rotation_lead_seconds", ROTATION_LEAD_SECONDS)
+        self._rotation_check_interval_seconds = _extra_float("rotation_check_interval_seconds", ROTATION_CHECK_INTERVAL_SECONDS)
         self._stream_keepalive_enabled = bool(extra.get("stream_keepalive_enabled", STREAM_KEEPALIVE_ENABLED_DEFAULT))
         self._stream_keepalive_interval_seconds = _extra_float("stream_keepalive_interval_seconds", STREAM_KEEPALIVE_INTERVAL_SECONDS)
+        # Tool-timer animation (opt-in, default off). Fail-closed allowlist parse: only canonical truthy
+        # tokens enable it, so typos ("flase", "disabled") don't silently enable progress metadata over the
+        # WeCom transport.
+        _tool_timer_raw = extra.get("tool_timer_enabled", False)
+        self.SUPPORTS_TOOL_TIMER = (
+            _tool_timer_raw.strip().lower() in ("true", "1", "yes", "on")
+            if isinstance(_tool_timer_raw, str) else bool(_tool_timer_raw)
+        )
         self._device_id = uuid.uuid4().hex
         self._last_chat_req_ids: Dict[str, str] = {}
         # Turns keyed f"{chat_id}:{req_id|turn_id}"; expired chats clear on the next inbound req_id.

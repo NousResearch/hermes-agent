@@ -111,6 +111,20 @@ class TurnRunner:
             ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
         if not ctx.progress_queue or not ctx._run_still_current():
             return
+        # Tool-timer lifecycle, independent of display.tool_progress. When tool_progress is OFF the detailed
+        # progress line is never built (the callback returns before reaching it), so drive the timer
+        # directly here — using only the bare tool name (no args). Scoped to the off case; when
+        # tool_progress is ON the ordinary progress path below already arms/closes the timer (#96942).
+        if (ctx.tool_timer_enabled and not ctx.tool_progress_enabled
+                and event_type in {"tool.started", "tool.completed"}):
+            sc = self._stream_consumer()
+            if sc is not None and getattr(sc, "supports_tool_timer", False):
+                tool_call_id = kwargs.get("tool_call_id")
+                if event_type == "tool.completed":
+                    sc.on_tool_completed(tool_name or "unknown", kwargs.get("duration", 0.0), tool_call_id=tool_call_id)
+                elif tool_name != "clarify":
+                    sc.on_tool_started(tool_name or "tool", tool_call_id=tool_call_id)
+            return
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
             self._progress_onboarding_hint(kwargs)
             return
@@ -121,9 +135,24 @@ class TurnRunner:
             if thinking_text:
                 ctx.progress_queue.put(f"💬 {thinking_text}")
             return
+        # LLM thinking animation: a subsequent LLM API call started (after tools ran) — show a "Thinking"
+        # timer in the native bubble. Timer-animation only, gated on supports_tool_timer (not
+        # accepts_tool_progress, which every native user has).
+        if event_type == "llm.request_started":
+            sc = self._stream_consumer()
+            if sc is not None and getattr(sc, "supports_tool_timer", False):
+                sc.on_llm_thinking(preview or None)
+            return
         # Native task cards consume the ID-bearing tool_start/tool_complete callbacks instead;
         # name-correlated text events would duplicate cards and mispair concurrent same-tool calls.
         if ctx._native_slack_task_cards and event_type in {"tool.started", "tool.completed"}:
+            return
+        # tool_progress ON: close out the native timer history on completion (gated on supports_tool_timer;
+        # with the timer off no start was recorded, so there is nothing to close).
+        if event_type == "tool.completed":
+            sc = self._stream_consumer()
+            if sc is not None and getattr(sc, "supports_tool_timer", False):
+                sc.on_tool_completed(tool_name or "unknown", kwargs.get("duration", 0.0), tool_call_id=kwargs.get("tool_call_id"))
             return
         # tool_progress off → only _thinking passes (above). Only tool.started renders. clarify:
         # send_clarify IS the user-facing rendering (a bubble would duplicate it, and verbose mode
@@ -147,7 +176,7 @@ class TurnRunner:
         ctx.last_tool[0] = tool_name
         msg = self._progress_build_message(tool_name, preview, args)
         if msg is not None:
-            self._progress_emit(msg)
+            self._progress_emit(msg, tool_call_id=kwargs.get("tool_call_id"))
 
     def _progress_subagent_notice(self, preview, kwargs: dict) -> None:
         """Only terminal failure statuses render (same notice rail as credit warnings)."""
@@ -269,22 +298,23 @@ class TurnRunner:
             return f"{emoji} {tool_name}: \"{preview}\""
         return f"{emoji} {verb}" if verb_drops_preview(tool_name) else f"{emoji} {verb}{tool_verb_connector(tool_name)}{preview}"
 
-    def _progress_emit(self, msg: str) -> None:
+    def _progress_emit(self, msg: str, *, tool_call_id: str = None) -> None:
         """Dedup consecutive identical lines (execute_code boilerplate), then route to the native
-        stream bubble when the consumer accepts tool progress, else the progress queue."""
+        stream bubble when the consumer accepts tool progress, else the progress queue.  ``tool_call_id``
+        keys concurrent same-tool timers independently."""
         ctx = self._ctx
         sc = self._stream_consumer()
         native = sc is not None and getattr(sc, "accepts_tool_progress", False)
         if msg == ctx.last_progress_msg[0]:
             ctx.repeat_count[0] += 1
             if native:
-                sc.on_tool_progress(f"{msg} (×{ctx.repeat_count[0] + 1})")
+                sc.on_tool_progress(f"{msg} (×{ctx.repeat_count[0] + 1})", tool_call_id=tool_call_id)
             else:
                 ctx.progress_queue.put(("__dedup__", msg, ctx.repeat_count[0]))
             return
         ctx.last_progress_msg[0], ctx.repeat_count[0] = msg, 0
         if native:
-            sc.on_tool_progress(msg)
+            sc.on_tool_progress(msg, tool_call_id=tool_call_id)
         else:
             ctx.progress_queue.put(msg)
 

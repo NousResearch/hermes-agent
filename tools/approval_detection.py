@@ -1119,11 +1119,25 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     operand = argv[2]
     temp_dir = os.path.realpath(tempfile.gettempdir())
     basename = os.path.basename(operand)
-    return (
-        operand == os.path.join(temp_dir, basename)
-        and os.path.dirname(os.path.realpath(operand)) == temp_dir
-        and re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
-    )
+    # Literal equality (operand == os.path.join(temp_dir, basename)) breaks on
+    # Windows: a POSIX-style operand (/tmp/hermes-verify-*.py) is a different
+    # string than the host-native join (C:\tmp\...) even though both spell the
+    # SAME path, so the exemption never fired and every nonrecursive cleanup
+    # was flagged as a dangerous root-path delete. Compare os.path.abspath of
+    # both sides instead: abspath is pure string normalization (it maps a
+    # drive-relative "/tmp/..." to "C:\tmp\..." on Windows) and, crucially,
+    # does NOT resolve symlinks — so an operand routed through a symlinked
+    # ALIAS of the temp dir still compares unequal and stays dangerous (only
+    # the canonical spelling is exempt). Path traversal ("..", "nested/../")
+    # is rejected outright below; the operand must be a direct child of the
+    # temp dir, never a traversal that happens to resolve there.
+    if ".." in operand:
+        return False
+    operand_abs = os.path.abspath(operand)
+    expected_abs = os.path.abspath(os.path.join(temp_dir, basename))
+    if operand_abs != expected_abs:
+        return False
+    return re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
 
 
 def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:

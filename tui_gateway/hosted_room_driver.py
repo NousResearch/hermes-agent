@@ -461,7 +461,7 @@ class HostedRoomRuntime:
         """Open (once) the persistent connection that keeps the WAL sidecars alive.
 
         Failure is non-fatal (old behaviour: no sidecar protection) and the
-        acquire is retried on the next ``start()`` — a transient failure must
+        acquire is retried on the next worker cycle — a transient failure must
         not silently defeat the keeper for the process's remaining lifetime.
         """
         if self._wal_keeper is not None:
@@ -476,14 +476,14 @@ class HostedRoomRuntime:
             # their own close.
             conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
             self._wal_keeper = conn
-        except sqlite3.Error as exc:
+        except Exception as exc:  # best-effort: no failure may kill the loop
             if conn is not None:  # do not leak the half-opened connection
                 with suppress(Exception):
                     conn.close()
-            # Inlined (not _record_error) — callers hold _status_lock, which
-            # _record_error also takes (non-reentrant) — a deadlock there.
-            # Leave _wal_keeper None so a later start() retries the acquire.
-            self._last_error = f"wal keeper unavailable: {exc}"
+            # The worker loop calls this with no _status_lock held, so the
+            # serialized _record_error path is safe. Leave _wal_keeper None
+            # so the next worker cycle retries the acquire.
+            self._record_error(f"wal keeper unavailable: {exc}")
 
     def _release_wal_keeper(self) -> None:
         conn, self._wal_keeper = self._wal_keeper, None

@@ -402,6 +402,49 @@ class TestBusySessionAck:
         assert "terminal" in content  # current tool
         assert "10 min" in content  # elapsed
 
+    @pytest.mark.asyncio
+    async def test_status_detail_omits_denominator_for_unbounded_max_iterations(
+        self, monkeypatch,
+    ):
+        """#102806: a top-level session's real max_iterations is sys.maxsize
+        (unlimited — see AIAgent's default). The busy-ack must not print that
+        literal sentinel as an iteration ceiling."""
+        import sys
+
+        import gateway.run as _gr
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {"display": {"platforms": {"telegram": {"busy_ack_detail": True}}}},
+        )
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="yo")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 3,
+            "max_iterations": sys.maxsize,
+            "current_tool": "terminal",
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "terminal",
+            "seconds_since_activity": 0.5,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 600
+        runner.adapters[event.source.platform] = adapter
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        call_kwargs = adapter._send_with_retry.call_args
+        content = call_kwargs.kwargs.get("content", "")
+        assert "iteration 3" in content
+        assert str(sys.maxsize) not in content
+
 
 class TestBusySessionOnboardingHint:
     """First-touch hint appended to the busy-ack the first time it fires."""

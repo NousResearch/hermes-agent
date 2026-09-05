@@ -185,8 +185,10 @@ class _CuaDriverSession:
     # See #74799.
     _timeout_suspect = False
 
-    def __init__(self, bridge: _AsyncBridge, embedded_daemon: Optional[Any] = None) -> None:
+    def __init__(self, bridge: _AsyncBridge, embedded_daemon: Optional[Any] = None,
+                 remote_config: Optional[Any] = None) -> None:
         self._bridge, self._embedded_daemon, self._session = bridge, embedded_daemon, None
+        self._remote_config = remote_config
         self._lock, self._started = threading.Lock(), False
         # Per-tool capability-token sets from `tools/list` (read via supports_capability). Raw input schemas are
         # the source of truth for action properties: 0.9-era drivers advertise delivery_mode in inputSchema
@@ -222,6 +224,42 @@ class _CuaDriverSession:
         # reports HOW FAR it got instead of an opaque "never reached ready".
         self._startup_phase = "binary-check"
         try:
+            # Remote CUA transport: connect to a remote cua-driver host bridge over
+            # MCP streamable HTTP instead of spawning a local stdio process. The remote
+            # host runs host_bridge.py (an authenticated MCP server wrapping a local
+            # cua-driver session). Config is validated fail-closed in remote.py.
+            remote_config = getattr(self, "_remote_config", None)
+            if remote_config is not None:
+                import httpx
+                from mcp.client.streamable_http import streamable_http_client
+
+                async def _reject_redirect(response: Any) -> None:
+                    if response.is_redirect:
+                        raise RuntimeError("remote computer use refused an HTTP redirect")
+
+                self._startup_phase = "remote-connect"
+                async with httpx.AsyncClient(
+                    headers={"Authorization": f"Bearer {remote_config.token}"},
+                    follow_redirects=False,
+                    event_hooks={"response": [_reject_redirect]},
+                ) as http_client:
+                    async with streamable_http_client(
+                        remote_config.url,
+                        http_client=http_client,
+                        terminate_on_close=True,
+                    ) as (read, write, _get_session_id):
+                        self._startup_phase = "mcp-initialize"
+                        async with ClientSession(read, write) as session:
+                            await session.initialize()
+                            _t_init = _time.monotonic()
+                            self._startup_phase = "capability-discovery"
+                            await self._populate_capabilities(session)
+                            self._session, self._startup_phase = session, "ready"
+                            self._ready_event.set()
+                            logger.info("remote cua-driver session ready in %.1fs", _t_init - _t0)
+                            await self._shutdown_event.wait()
+                return
+
             driver_cmd = _driver.resolve_cua_driver_cmd()
             if not driver_cmd:
                 raise RuntimeError(_driver.cua_driver_install_hint())
@@ -287,7 +325,14 @@ class _CuaDriverSession:
         with self._lock:
             if not self._started:
                 self._bridge.start()
-                self._start_lifecycle_locked()
+                try:
+                    self._start_lifecycle_locked()
+                except Exception:
+                    try:
+                        self._stop_lifecycle_locked()
+                    finally:
+                        self._bridge.stop()
+                    raise
                 self._started = True
 
     def _start_lifecycle_locked(self) -> None:

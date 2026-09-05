@@ -1349,6 +1349,9 @@ export interface LocalRuntimeJob {
   done_bytes: number
   percent?: number
   error: string | null
+  // Epoch seconds, from the backend job registry (drives its ordering);
+  // optional so older gateways that omit it keep rendering.
+  started_at?: number
 }
 
 export interface ActionResponse {

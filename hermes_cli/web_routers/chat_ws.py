@@ -18,7 +18,8 @@ from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisco
 from hermes_cli.pty_session import RegistryFull
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_chat import (
-    _build_sidecar_url, _get_console_executor, _legacy_pump, _ws_auth_ok, _ws_request_is_allowed,
+    _build_sidecar_url, _close_stalled_pty_input, _get_console_executor, _legacy_pump, _ws_auth_ok,
+    _ws_request_is_allowed,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -492,7 +493,10 @@ async def pty_ws(ws: WebSocket) -> None:
 
     # A fresh xterm can't rebuild the TUI from an arbitrary tail of alternate-
     # screen differential output; reused PTYs emit a full frame after replay.
-    await session.attach(ws, force_redraw=not _created)
+    if not await session.attach(ws, force_redraw=not _created):
+        await _close_stalled_pty_input(ws, path="keepalive-redraw")
+        PTY_REGISTRY.detach(attach_token, ws)
+        return
 
     # Writer loop only: the session's drain task (one per PTY, inside the
     # registry) forwards output to whichever socket is attached and ring-buffers
@@ -517,7 +521,9 @@ async def pty_ws(ws: WebSocket) -> None:
             if match and match.end() == len(raw):
                 session.bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
                 continue
-            session.bridge.write(raw)
+            if not await session.write(ws, raw):
+                await _close_stalled_pty_input(ws, path="keepalive")
+                break
     except WebSocketDisconnect:
         pass
     finally:

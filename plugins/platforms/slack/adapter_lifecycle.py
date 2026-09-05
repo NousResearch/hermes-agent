@@ -503,6 +503,10 @@ class SlackLifecycleMixin:
         # Block Kit requires unique IDs within an actions block.
         self._app.action(_adapter.re.compile(r"^hermes_clarify_choice_\d+$"))(self._handle_clarify_action)
         self._app.action("hermes_clarify_other")(self._handle_clarify_action)
+        # Register Block Kit action handlers for the model picker
+        # (provider/model static_select + Back/Cancel buttons).
+        for _action_id in _adapter._MODEL_PICKER_ACTION_IDS:
+            self._app.action(_action_id)(self._handle_model_picker_action)
         self._register_plugin_action_handlers()
         # ctx.register_platform_handler("slack", ...) factories get the full
         # AsyncApp surface (event/action/command), wired before Socket Mode starts.

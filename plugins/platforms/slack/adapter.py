@@ -59,6 +59,23 @@ _HERMES_SLACK_USER_AGENT_PREFIX = f"HermesAgent/{_HERMES_VERSION}"
 _SLACK_ERROR_BODY_LIMIT_BYTES = 8 * 1024
 _BOOL_WORDS = frozenset({"1", "0", "true", "false", "yes", "no", "on", "off"})
 
+# Model picker Block Kit action IDs. The picker is a two-step drill-down:
+# provider static_select → model static_select, plus Back/Cancel buttons.
+_MODEL_PICKER_PROVIDER_ACTION = "hermes_model_provider"
+_MODEL_PICKER_MODEL_ACTION = "hermes_model_model"
+_MODEL_PICKER_BACK_ACTION = "hermes_model_back"
+_MODEL_PICKER_CANCEL_ACTION = "hermes_model_cancel"
+# Rendered when a live-looking picker message can no longer resolve (gateway
+# restart, aged-out state entry, or a value the stored state no longer
+# covers): the message is rewritten to this so the control visibly dies.
+_MODEL_PICKER_EXPIRED_NOTICE = "⏳ This model picker expired — please run /model again."
+_MODEL_PICKER_ACTION_IDS = (
+    _MODEL_PICKER_PROVIDER_ACTION,
+    _MODEL_PICKER_MODEL_ACTION,
+    _MODEL_PICKER_BACK_ACTION,
+    _MODEL_PICKER_CANCEL_ACTION,
+)
+
 
 def _slack_unfurl_kwargs(extra: Optional[Dict[str, Any]]) -> Dict[str, bool]:
     """Explicitly configured link-preview controls (omitted key = Slack default). String bools are
@@ -866,6 +883,9 @@ class SlackAdapter(
     _REACTING_MESSAGE_IDS_MAX = _TITLED_ASSISTANT_THREADS_MAX = 5000
     _CHANNEL_TEAM_MAX = 10000
     _APPROVAL_RESOLVED_MAX = _CLARIFY_RESOLVED_MAX = _ACTIVE_STATUS_THREADS_MAX = 1000
+    # Tighter cap than the approval/clarify dicts: each entry holds the
+    # full provider list, and a picker is only live for minutes.
+    _MODEL_PICKER_STATE_MAX = 100
     _STATUS_MESSAGE_IDS_MAX = 2000
     _THREAD_CACHE_MAX = 2500
     _THREAD_CACHE_TTL = 60.0
@@ -927,6 +947,10 @@ class SlackAdapter(
         # Bounded: never-clicked prompts would otherwise leak forever.
         self._approval_resolved: Dict[Any, bool] = {}
         self._clarify_resolved: Dict[Any, bool] = {}
+        # Model picker state keyed by workspace message marker (team_id, ts) →
+        # picker context (providers, session_key, on_model_selected, stage).
+        # The workspace marker prevents cross-tenant session resolution.
+        self._model_picker_state: Dict[Any, dict] = {}
         # Bot-sent message ts / @mentioned threads: replies there get answered without a mention.
         self._bot_message_ts: set[str] = set()
         self._mentioned_threads: set[str] = set()

@@ -9,6 +9,7 @@ Sibling ``browser_tool_*`` modules hold extracted clusters.
 """
 
 import atexit
+import functools
 import json
 import logging
 import os
@@ -123,7 +124,16 @@ _EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})  # legitimately e
 NPX_AGENT_BROWSER_SENTINEL = "npx agent-browser"
 # Pinned to match scripts/install.sh / install.ps1's managed install so a bare-npx
 # resolution gets the same version instead of floating latest. Update together.
-AGENT_BROWSER_NPX_SPEC = "agent-browser@^0.26.0"
+AGENT_BROWSER_NPX_SPEC = "agent-browser@0.26.0"
+
+# ``--pin-tab`` first shipped in agent-browser 0.34.0 and requires Node 24.
+# Keep this capability separate from the generic Node-22-compatible browser
+# path: only user-supplied shared-CDP sessions need the stricter runtime.
+AGENT_BROWSER_PIN_TAB_NPX_SPEC = "agent-browser@0.34.0"
+AGENT_BROWSER_PIN_TAB_MIN_VERSION = (0, 34, 0)
+AGENT_BROWSER_PIN_TAB_MIN_NODE_MAJOR = 24
+AGENT_BROWSER_NPX_MIN_RELEASE_AGE_DAYS = 14
+AGENT_BROWSER_PIN_TAB_FAILURE_TTL_SECONDS = 5.0
 
 # Process caches (``_cached_X`` + ``_X_resolved`` pairs) for config-derived lookups;
 # reset by ``cleanup_all_browsers``. Written/read by the sibling modules via ``browser_tool_origin``.
@@ -142,6 +152,9 @@ _allow_private_urls_resolved = False
 _cached_allow_private_urls: Optional[bool] = None
 _cached_agent_browser: Optional[str] = None
 _agent_browser_resolved = False
+_cached_pin_tab_agent_browser: Optional[str] = None
+_pin_tab_agent_browser_resolved = False
+_pin_tab_failure_cache: Optional[tuple[float, str]] = None
 _cached_browser_engine: Optional[str] = None  # agent-browser v0.25.3+ ``--engine lightpanda``
 _browser_engine_resolved = False
 _auto_local_for_private_urls_resolved = False
@@ -418,6 +431,19 @@ _cleanup_thread = None
 _cleanup_running = False
 _cleanup_lock = threading.Lock()  # protects _session_last_activity AND _active_sessions
 
+# Bare-task lifecycle/generation fencing. Algorithms and enum definitions live
+# in ``browser_tool_lifecycle``; the facade owns the process-global tables so a
+# reload/test namespace still presents one coherent browser state surface.
+_retired_browser_tasks: set[str] = set()
+_browser_task_states: Dict[str, Any] = {}
+_browser_task_generations: Dict[str, int] = {}
+_browser_task_cleanup_reasons: Dict[str, Any] = {}
+_browser_task_cleanup_locks: Dict[str, Any] = {}
+
+# Provider account ownership survives page/daemon cleanup failures. Values are
+# ``browser_tool_lifecycle._PendingProviderCleanup`` records.
+_pending_provider_cleanups: Dict[tuple[str, int, str], Any] = {}
+
 from tools import browser_tool_lifecycle as _lifecycle
 
 # atexit only — NO SIGINT/SIGTERM handlers calling sys.exit(): a SystemExit raised
@@ -689,17 +715,35 @@ def _merge_fallback_warning(response: Dict[str, Any], result: Dict[str, Any]) ->
         _lp._copy_fallback_warning(response, result)
 
 
-def _attach_auto_snapshot(response: Dict[str, Any], nav_session_key: str) -> None:
-    """Add a compact snapshot to a navigate response so the model can act without browser_snapshot."""
+def _attach_auto_snapshot(
+    response: Dict[str, Any], nav_session_key: str
+) -> Optional[Dict[str, Any]]:
+    """Add a compact snapshot; return a structured terminal failure if any."""
     try:
         snap_result = _session._run_browser_command(nav_session_key, "snapshot", ["-c"])
+        if snap_result.get("code") == "tab_gone":
+            return snap_result
         if snap_result.get("success"):
             response.update(_snapshot_fields(snap_result))
             _merge_fallback_warning(response, snap_result)
     except Exception as e:
         logger.debug("Auto-snapshot after navigate failed: %s", e)
+    return None
 
 
+def _serialize_browser_navigation(func):
+    """Keep navigation, target binding, publication, and snapshot atomic."""
+
+    @functools.wraps(func)
+    def _wrapped(url: str, task_id: Optional[str] = None) -> str:
+        bare_task_id = _bare_task_id_for_session_key(task_id or "default")
+        with _lifecycle._task_cleanup_operation_lock(bare_task_id):
+            return func(url, task_id)
+
+    return _wrapped
+
+
+@_serialize_browser_navigation
 def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     """Navigate to ``url``; JSON with title, compact snapshot and, on first nav, stealth features.
     Hybrid routing decides BEFORE the safety checks whether this URL goes to a local sidecar
@@ -716,6 +760,13 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     if safety_error is not None:
         return json.dumps(safety_error)
 
+    try:
+        restarting_retired_task = (
+            _lifecycle._clear_retired_browser_task_for_navigation(effective_task_id)
+        )
+    except _lifecycle._BrowserSessionRetiredError:
+        return _dumps(_lifecycle._browser_session_retired_result(effective_task_id))
+
     if _is_camofox_mode():
         return _camofox("camofox_navigate", url, task_id)
 
@@ -724,7 +775,14 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                     "cloud for public URLs; set browser.auto_local_for_private_urls: false to disable)",
                     url, type(_cloud._get_cloud_provider()).__name__ if _cloud._get_cloud_provider() else "none")
 
-    session_info = _session._get_session_info(nav_session_key)
+    try:
+        session_info = _session._get_session_info(nav_session_key)
+    except Exception:
+        if restarting_retired_task:
+            _lifecycle._restore_retired_browser_task_after_failed_navigation(
+                effective_task_id, nav_session_key
+            )
+        raise
     is_first_nav = session_info.get("_first_nav", True)
     if is_first_nav:
         session_info["_first_nav"] = False
@@ -733,13 +791,39 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     result = _session._run_browser_command(nav_session_key, "open", [url],
                                   timeout=_get_open_command_timeout(first_open=is_first_nav))
     if not result.get("success"):
-        return _dumps(_err(result.get("error", "Navigation failed")))
+        if restarting_retired_task:
+            _lifecycle._restore_retired_browser_task_after_failed_navigation(
+                effective_task_id, nav_session_key
+            )
+        return _dumps(
+            _lp._copy_fallback_warning(
+                _err(result.get("error", "Navigation failed")), result
+            )
+        )
 
     data = result.get("data", {})
     title = data.get("title", "")
     final_url = data.get("url", url)
+
+    if _lifecycle._is_task_owned_shared_cdp_session(session_info):
+        pinned_target_id = _cdp._pinned_cdp_target_id(nav_session_key)
+        if pinned_target_id:
+            with _cleanup_lock:
+                current_session = _active_sessions.get(nav_session_key)
+                if current_session is session_info:
+                    current_session["target_id"] = pinned_target_id
+            _cdp._ensure_cdp_supervisor(
+                nav_session_key,
+                target_id=pinned_target_id,
+                expected_generation=session_info.get("_lifecycle_generation"),
+            )
+
     blocked = _post_redirect_block(nav_session_key, url, final_url, auto_local_this_nav)
     if blocked is not None:
+        if restarting_retired_task:
+            _lifecycle._restore_retired_browser_task_after_failed_navigation(
+                effective_task_id, nav_session_key
+            )
         return blocked
 
     response = {"success": True, "url": final_url, "title": title}
@@ -751,7 +835,25 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     _last_active_session_key[effective_task_id] = nav_session_key
     _lp._copy_fallback_warning(response, result)
     _add_navigate_warnings(response, title, session_info if is_first_nav else None)
-    _attach_auto_snapshot(response, nav_session_key)
+    snapshot_failure = _attach_auto_snapshot(response, nav_session_key)
+    if snapshot_failure is not None:
+        if restarting_retired_task:
+            _lifecycle._restore_retired_browser_task_after_failed_navigation(
+                effective_task_id, nav_session_key
+            )
+        return _dumps(
+            _lp._copy_fallback_warning(
+                {
+                    "success": False,
+                    "error": snapshot_failure.get(
+                        "error", "Pinned browser tab disappeared after navigation"
+                    ),
+                    "url": final_url,
+                    "title": title,
+                },
+                snapshot_failure,
+            )
+        )
     return _dumps(response)
 
 
@@ -954,7 +1056,11 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
 
     clear_args = ["--clear"] if clear else []
     console_result = _session._run_browser_command(effective_task_id, "console", clear_args)
+    if console_result.get("code") == "tab_gone":
+        return _dumps(console_result)
     errors_result = _session._run_browser_command(effective_task_id, "errors", clear_args)
+    if errors_result.get("code") == "tab_gone":
+        return _dumps(errors_result)
 
     messages = [
         {"type": msg.get("type", "log"), "text": _snapshot._redact_browser_output(msg.get("text", "")), "source": "console"}
@@ -1007,21 +1113,78 @@ def _eval_supervisor_fast_path(effective_task_id: str, expression: str) -> Optio
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
         supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
-        if supervisor is None:
-            return None
-        sup_result = supervisor.evaluate_runtime(expression)
-        if sup_result.get("ok"):
-            return _eval_result_or_blocked(
-                effective_task_id, _parse_eval_value(sup_result.get("result")), {}, method="cdp_supervisor")
-        err = sup_result.get("error") or "evaluate_runtime failed"
-        if "supervisor" not in err.lower():
-            return _dumps(_err(err))
-        logger.debug("browser_eval: supervisor path unavailable (%s), falling back to subprocess", err)
     except ImportError:
-        pass
-    except Exception as exc:  # pragma: no cover — defensive
-        logger.debug("browser_eval: supervisor path errored (%s), falling back", exc)
-    return None
+        return None
+    except Exception as exc:
+        # Lookup failed before any JavaScript dispatch, so fallback is safe.
+        logger.debug("browser_eval: supervisor lookup failed (%s), falling back", exc)
+        return None
+    if supervisor is None:
+        return None
+
+    bare_task_id = _bare_task_id_for_session_key(effective_task_id)
+    with _lifecycle._task_cleanup_operation_lock(bare_task_id):
+        if _lifecycle._is_browser_task_unavailable(effective_task_id):
+            return _dumps(
+                _lifecycle._browser_session_retired_result(effective_task_id)
+            )
+        try:
+            sup_result = supervisor.evaluate_runtime(expression)
+        except Exception as exc:
+            # A live supervisor may have dispatched before raising. Never turn
+            # an ambiguous failure into a second execution through the CLI.
+            return _dumps(
+                {
+                    "success": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "code": "cdp_evaluate_failed",
+                    "data": {"exception_type": type(exc).__name__},
+                }
+            )
+
+    if sup_result.get("ok"):
+        return _eval_result_or_blocked(
+            effective_task_id,
+            _parse_eval_value(sup_result.get("result")),
+            {},
+            method="cdp_supervisor",
+        )
+
+    err = sup_result.get("error") or "evaluate_runtime failed"
+    failure_kind = sup_result.get("kind")
+    failure_data = sup_result.get("data")
+    if failure_kind == "js_exception":
+        return _dumps(
+            {
+                "success": False,
+                "error": err,
+                "code": "javascript_exception",
+                "data": failure_data or {},
+            }
+        )
+    if (
+        failure_kind == "cdp_protocol"
+        and isinstance(failure_data, dict)
+        and failure_data.get("session_lost") is True
+    ):
+        # The stale WS binding did not have a live page session. Let the
+        # named pin owner report structured tab_gone without adopting a tab.
+        _cdp._stop_cdp_supervisor(effective_task_id)
+        return None
+    if failure_kind == "supervisor_unavailable":
+        logger.debug(
+            "browser_eval: supervisor path unavailable (%s), falling back", err
+        )
+        return None
+    # Transport/protocol/serialization failures can happen after JS ran.
+    return _dumps(
+        {
+            "success": False,
+            "error": err,
+            "code": failure_kind or "cdp_evaluate_failed",
+            "data": failure_data or {},
+        }
+    )
 
 
 def _eval_failure_response(result: Dict[str, Any]) -> str:
@@ -1046,6 +1209,11 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     pre-scan closes direct fetches (they never update ``location.href``); the post-eval
     page-URL recheck closes navigate-then-read."""
     effective_task_id = _last_session_key(task_id or "default")
+
+    if _lifecycle._is_browser_task_unavailable(effective_task_id):
+        return _dumps(
+            _lifecycle._browser_session_retired_result(effective_task_id)
+        )
 
     if _eval_policy._eval_ssrf_guard_active(effective_task_id):
         blocked_literal = _eval_policy._expression_targets_private_url(expression)

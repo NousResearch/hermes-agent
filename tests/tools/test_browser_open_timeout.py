@@ -112,6 +112,9 @@ class TestCommandTimeoutRecovery:
 
         monkeypatch.setattr(bt_install, "_find_agent_browser", lambda: "agent-browser")
         monkeypatch.setattr("tools.browser_tool_install._requires_real_termux_browser_install", lambda _cmd: False)
+        # This fixture drives timeout recovery with a fake subprocess; avoid
+        # the local-Chromium availability gate in the decomposed install owner.
+        monkeypatch.setattr(bt_cloud, "_is_local_mode", lambda: False)
         monkeypatch.setattr("tools.browser_tool_lifecycle._start_browser_cleanup_thread", lambda: None)
         monkeypatch.setattr("tools.browser_tool_cdp._ensure_cdp_supervisor", lambda _: supervisor_events.append("ensure"))
         monkeypatch.setattr("tools.browser_tool_cdp._stop_cdp_supervisor", lambda _: supervisor_events.append("stop"))

@@ -108,6 +108,12 @@ def _annotate_lightpanda_fallback(result: Dict[str, Any], reason: str) -> Dict[s
 
 def _copy_fallback_warning(target: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
     """Copy browser fallback metadata from an internal result into a tool response."""
+    # Preserve exact terminal ownership failures through high-level response
+    # shaping; never replace them by opening/adopting another tab.
+    if result.get("code") in {"tab_gone", "browser_session_retired"}:
+        target["code"] = result["code"]
+        if "data" in result:
+            target["data"] = result["data"]
     if result.get("fallback_warning"):
         target["fallback_warning"] = result["fallback_warning"]
         target["browser_engine"] = result.get("browser_engine")

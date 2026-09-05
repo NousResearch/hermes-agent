@@ -7,13 +7,46 @@ MRO unchanged.
 """
 import logging
 import uuid
-from contextlib import suppress
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from typing import Any, Dict, List, Optional
 
 from agent.lazy_forward import forward as _forward
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
+
+
+_browser_turn_cleanup_completed: ContextVar[bool] = ContextVar(
+    "browser_turn_cleanup_completed", default=False
+)
+
+
+def _mark_browser_turn_cleanup_complete() -> None:
+    """Record that this synchronous turn already ran its browser boundary."""
+    _browser_turn_cleanup_completed.set(True)
+
+
+@contextmanager
+def _browser_turn_cleanup_boundary(task_id: str):
+    """Guarantee browser finalization for every conversation-loop exit."""
+    token = _browser_turn_cleanup_completed.set(False)
+    try:
+        yield
+    finally:
+        try:
+            if not _browser_turn_cleanup_completed.get():
+                # Resolve through the public facade at call time so embedders
+                # and tests that replace the cleanup binding remain supported.
+                import run_agent
+
+                run_agent.cleanup_browser_for_turn(task_id)
+        except Exception as exc:
+            # Cleanup must not replace the response/original exception. The
+            # RETIRING state remains the fail-closed boundary for later retry.
+            logger.warning("Browser turn cleanup failed for task %s: %s", task_id, exc)
+        finally:
+            _browser_turn_cleanup_completed.reset(token)
 
 
 class TurnFacadeMixin:
@@ -70,6 +103,8 @@ class TurnFacadeMixin:
         token = affinity_token = acct_token = None
         task_started = task_finished = False
         relay_outcome = "failed"
+        browser_cleanup_scope = _browser_turn_cleanup_boundary(effective_task_id)
+        browser_cleanup_scope.__enter__()
 
         try:
             # First statement of the try so the finally's note_turn_finished balances every exit.
@@ -167,6 +202,7 @@ class TurnFacadeMixin:
                     if relay_lease is not None:
                         relay_runtime.SESSION_COORDINATOR.release_conversation(relay_lease)
                 finally:
+                    browser_cleanup_scope.__exit__(None, None, None)
                     if lease is not None:
                         lease.stop_refresher()
                         lease.join_threads()

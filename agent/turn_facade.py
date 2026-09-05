@@ -28,13 +28,26 @@ class TurnFacadeMixin:
         persist_user_platform_id: Optional[str]=None, moa_config: Optional[dict[str, Any]]=None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
+        def _runtime_trace(event_name: str, **fields: Any) -> None:
+            callback = getattr(self, "runtime_trace_callback", None)
+            if not callable(callback):
+                return
+            try:
+                callback(event_name, **fields)
+            except Exception:
+                logger.debug("runtime trace callback failed", exc_info=True)
+
+        self._runtime_trace_first_activity_emitted = False
+        _runtime_trace("RUN_CONVERSATION_ENTER")
         # A review shares this session_id for cache parity: fence review startup or interrupt
         # an admitted request and await its exit before opening live-turn instrumentation.
         # Foreground priority is retained if the review does not acknowledge within the bounded deadline
         # (#84423).
         from agent.background_review import cancel_background_review_for_live_turn
 
+        _runtime_trace("BACKGROUND_REVIEW_CANCEL_ENTER")
         cancel_background_review_for_live_turn(self)
+        _runtime_trace("BACKGROUND_REVIEW_CANCEL_EXIT", success=True)
 
         from agent import relay_runtime
         from agent.aux_accounting import reset_accounting_context, set_accounting_context
@@ -74,18 +87,23 @@ class TurnFacadeMixin:
         try:
             # First statement of the try so the finally's note_turn_finished balances every exit.
             _review_queue.note_turn_started()
+            _runtime_trace("DURABLE_TURN_LEASE_ENTER")
             admission = admit_durable_turn_lease(
                 self, session_id=session_id, relay_turn_id=relay_turn_id, task_context=task_context,
                 conversation_history=conversation_history,
             )
             if admission.early_result is not None:
+                _runtime_trace("DURABLE_TURN_LEASE_EXIT", success=False,
+                               error_class="SessionTurnLeaseUnavailable")
                 relay_outcome = (
                     "cancelled" if admission.early_result.get("interrupted") else "timed_out"
                 )
                 return admission.early_result
             lease = admission.lease
+            _runtime_trace("DURABLE_TURN_LEASE_EXIT", success=True)
             conversation_history = admission.conversation_history
 
+            _runtime_trace("RELAY_CONVERSATION_ENTER")
             relay_lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
                 profile_key=relay_runtime.current_profile_key(),
                 session_id=task_context["session_id"], platform=task_context["platform"],
@@ -119,6 +137,7 @@ class TurnFacadeMixin:
                 try:
                     if lease is not None:
                         lease.start()
+                    _runtime_trace("CONVERSATION_LOOP_ENTER")
                     result = run_conversation(
                         self, user_message, system_message, conversation_history, effective_task_id,
                         stream_callback, persist_user_message,
@@ -127,6 +146,7 @@ class TurnFacadeMixin:
                         persist_user_display_metadata=persist_user_display_metadata,
                         persist_user_platform_id=persist_user_platform_id, moa_config=moa_config,
                     )
+                    _runtime_trace("CONVERSATION_LOOP_EXIT", success=True)
                 finally:
                     # Post-loop relay/task finalization must not receive a late refresh interrupt;
                     # the interrupt clear itself waits for the thread join in the outer finally.
@@ -142,8 +162,10 @@ class TurnFacadeMixin:
             if task_started:
                 task_finished = True
                 finish_task_run(**task_context, result=result)
+            _runtime_trace("RUN_CONVERSATION_EXIT", success=True)
             return result
         except BaseException as exc:
+            _runtime_trace("RUN_CONVERSATION_EXIT", success=False, error_class=type(exc).__name__)
             if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or (
                 type(exc).__name__ == "CancelledError"
             ):
@@ -159,6 +181,7 @@ class TurnFacadeMixin:
                 finish_task_run(**task_context, error=exc)
             raise
         finally:
+            _runtime_trace("RELAY_CONVERSATION_EXIT", success=True)
             try:
                 if relay_turn is not None:
                     relay_runtime.SESSION_COORDINATOR.end_turn(relay_turn, outcome=relay_outcome)

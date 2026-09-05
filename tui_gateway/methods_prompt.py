@@ -535,6 +535,9 @@ def _lock_in_submit_turn(
 def _(rid, params: dict) -> dict:
     from hermes_cli.input_sanitize import sanitize_user_prompt_text
     sid = params.get("session_id", "")
+    trace_session = _sessions.get(sid)
+    _runtime_trace(trace_session, sid, "GOAL_DISPATCH_ENTER")
+    _runtime_trace(trace_session, sid, "SESSION_RESOLUTION_ENTER")
     raw_text = params.get("text", "")
     text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
     # Off-screen sends (widget intents) type the row so no client renders a bubble;
@@ -548,7 +551,12 @@ def _(rid, params: dict) -> dict:
         mark_speech_interrupted()
     session, err = _sess_nowait(params, rid)
     if err:
+        _runtime_trace(trace_session, sid, "SESSION_RESOLUTION_EXIT", success=False,
+                       error_class="SessionResolutionError")
+        _runtime_trace(trace_session, sid, "GOAL_DISPATCH_EXIT", success=False,
+                       error_class="SessionResolutionError")
         return err
+    _runtime_trace(session, sid, "SESSION_RESOLUTION_EXIT", success=True)
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
     internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
@@ -630,6 +638,7 @@ def _(rid, params: dict) -> dict:
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
     run_thread.start()
+    _runtime_trace(session, sid, "GOAL_DISPATCH_EXIT", success=True)
     return _ok(rid, {"status": "streaming", **survivor_fields})
 
 

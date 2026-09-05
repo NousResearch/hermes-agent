@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+import logging
 import sys
 
 import pytest
@@ -882,3 +883,59 @@ class TestNonConversationalTrackerOffload:
         assert sorted(writes[-1]) == ["1", "2"]
 
 
+
+@pytest.mark.asyncio
+async def test_discord_require_mention_drop_is_logged(adapter, monkeypatch, caplog):
+    """An unmentioned guild message must leave a DEBUG trace when it is dropped.
+
+    The sibling ``allowed_channels`` / ``ignored_channels`` rejections above this
+    gate both log before returning; this one used to return silently, so a
+    dropped message and an event the gateway never received looked identical in
+    the logs.
+    """
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=4242),
+        content="no mention here",
+    )
+
+    with caplog.at_level(logging.DEBUG, logger=discord_platform.logger.name):
+        await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+    drops = [
+        record.getMessage()
+        for record in caplog.records
+        if "Ignoring unmentioned message" in record.getMessage()
+    ]
+    assert drops, "require_mention drop emitted no log line"
+    assert "4242" in drops[0]
+    assert "require_mention is on" in drops[0]
+
+
+@pytest.mark.asyncio
+async def test_discord_mentioned_message_logs_no_drop(adapter, monkeypatch, caplog):
+    """The drop log must not fire for a message that is actually processed."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=4242),
+        content=f"<@{bot_user.id}> hello",
+        mentions=[bot_user],
+    )
+
+    with caplog.at_level(logging.DEBUG, logger=discord_platform.logger.name):
+        await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    assert not [
+        record for record in caplog.records
+        if "Ignoring unmentioned message" in record.getMessage()
+    ]

@@ -5992,6 +5992,15 @@ class DiscordAdapter(BasePlatformAdapter):
             in_bot_thread = self._in_bot_thread(message)
             if require_mention and not is_free_channel and not in_bot_thread:
                 if not self._self_is_explicitly_mentioned(message) and not mention_prefix:
+                    # Without this the drop is invisible: an unmentioned guild
+                    # message and one the gateway never received produce
+                    # identical logs (none), which sends operators hunting
+                    # through intents, permissions and the websocket.
+                    logger.debug(
+                        "[%s] Ignoring unmentioned message in channel: %s (require_mention is on)",
+                        self.name,
+                        channel_keys,
+                    )
                     return False
         # Auto-thread: isolate each @mention in a text channel into its own thread (Slack-style).
         auto_threaded_channel = None

@@ -741,6 +741,91 @@ class TestPollingDedupe:
 
 
 class TestInboundAttachments:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("suffix", ["", ".png", ".thumb.jpg"])
+    async def test_protected_relay_attachment_uses_blob_scoped_auth(self, monkeypatch, suffix):
+        import httpx
+
+        payload = b"protected Buzz attachment"
+        digest = hashlib.sha256(payload).hexdigest()
+        real_async_client = httpx.AsyncClient
+        adapter = _make_adapter()
+        adapter._private_key = "00" * 31 + "03"
+        adapter._auth_tag = json.dumps(["auth", "b" * 64, "", "c" * 128])
+
+        def handler(request):
+            authorization = request.headers.get("Authorization", "")
+            if not authorization.startswith("Nostr "):
+                return httpx.Response(401)
+            encoded = authorization.removeprefix("Nostr ")
+            event = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+            assert event["kind"] == 24242
+            assert ["t", "get"] in event["tags"]
+            assert ["x", digest] in event["tags"]
+            assert not any(tag[0] == "server" for tag in event["tags"])
+            expiry = next(int(tag[1]) for tag in event["tags"] if tag[0] == "expiration")
+            assert event["created_at"] < expiry <= event["created_at"] + 600
+            canonical = [0, event["pubkey"], event["created_at"], event["kind"], event["tags"], event["content"]]
+            assert event["id"] == hashlib.sha256(json.dumps(canonical, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+            assert request.headers["x-auth-tag"] == adapter._auth_tag
+            assert request.headers["User-Agent"] == "OpenAI File Downloader, XaiImageApiFetch/1.0"
+            return httpx.Response(200, content=payload)
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: real_async_client(transport=httpx.MockTransport(handler), **kwargs))
+        cached = await adapter._download_attachment({
+            "url": f"https://test.relay/media/{digest}{suffix}", "sha256": digest,
+            "size": len(payload), "filename": "attachment.txt", "mime_type": "text/plain",
+        })
+        assert cached is not None
+        assert Path(cached.path).read_bytes() == payload
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("url", ["https://cdn.example/media/", "https://test.relay/public/"])
+    async def test_public_attachment_never_receives_relay_credentials(self, monkeypatch, url):
+        import httpx
+
+        payload = b"public attachment"
+        digest = hashlib.sha256(payload).hexdigest()
+        real_async_client = httpx.AsyncClient
+        adapter = _make_adapter({"attachment_hosts": ["cdn.example"]})
+        adapter._private_key = "00" * 31 + "03"
+        adapter._auth_tag = json.dumps(["auth", "b" * 64, "", "c" * 128])
+
+        def handler(request):
+            assert "Authorization" not in request.headers
+            assert "x-auth-tag" not in request.headers
+            return httpx.Response(200, content=payload)
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: real_async_client(transport=httpx.MockTransport(handler), **kwargs))
+        cached = await adapter._download_attachment({
+            "url": url + digest, "sha256": digest, "size": len(payload),
+            "filename": "attachment.txt", "mime_type": "text/plain",
+        })
+        assert cached is not None
+
+    @pytest.mark.asyncio
+    async def test_protected_attachment_does_not_follow_redirect(self, monkeypatch):
+        import httpx
+
+        digest = "a" * 64
+        real_async_client = httpx.AsyncClient
+        requests = []
+
+        def handler(request):
+            requests.append(request)
+            return httpx.Response(302, headers={"Location": "https://untrusted.example/leak"})
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: real_async_client(transport=httpx.MockTransport(handler), **kwargs))
+        adapter = _make_adapter()
+        adapter._private_key = "00" * 31 + "03"
+        cached = await adapter._download_attachment({
+            "url": f"https://test.relay/media/{digest}", "sha256": digest,
+            "size": 1, "filename": "attachment.txt", "mime_type": "text/plain",
+        })
+        assert cached is None
+        assert len(requests) == 1
+        assert requests[0].url.host == "test.relay"
+
 
     def test_imeta_total_declared_bytes_are_bounded(self):
         event = _event("bounded", content="@Chip files")

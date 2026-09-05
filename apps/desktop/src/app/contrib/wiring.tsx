@@ -36,6 +36,7 @@ import { TipHost } from '@/components/tips'
 import { emitGatewayEvent } from '@/contrib/events'
 import { getLatestSessionMessages } from '@/hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import { scheduleIdleWarmup } from '@/lib/idle-warmup'
 import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
 import { activateWakeIndicator } from '@/lib/wake-indicator'
@@ -152,6 +153,7 @@ import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
+import { COMMON_ROUTE_WARMUP_LOADERS, loadCronView, loadSettingsView, shouldWarmCommonRoutes } from './route-loaders'
 import { createSessionRpcDispatcher } from './session-rpc-dispatcher'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
@@ -161,10 +163,10 @@ import type { WiringActions, WiringApi } from './types'
 // ChatRoutesSurface's and live in ./surfaces.
 const AgentsView = lazy(async () => ({ default: (await import('../agents')).AgentsView }))
 const CommandCenterView = lazy(async () => ({ default: (await import('../command-center')).CommandCenterView }))
-const CronView = lazy(async () => ({ default: (await import('../cron')).CronView }))
+const CronView = lazy(async () => ({ default: (await loadCronView()).CronView }))
 const WebhooksView = lazy(async () => ({ default: (await import('../webhooks')).WebhooksView }))
 const ProfilesView = lazy(async () => ({ default: (await import('../profiles')).ProfilesView }))
-const SettingsView = lazy(async () => ({ default: (await import('../settings')).SettingsView }))
+const SettingsView = lazy(async () => ({ default: (await loadSettingsView()).SettingsView }))
 const StarmapView = lazy(async () => ({ default: (await import('../starmap')).StarmapView }))
 
 // Surfaces (the four wired panes), the render context + WiredPane, and the
@@ -195,6 +197,22 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const billingSettingsRequest = useStore($billingSettingsRequest)
   const cronReviewRequest = useStore($cronReviewRequest)
   const currentCwd = useStore($currentCwd)
+
+  useEffect(() => {
+    // Secondary/HUD/browser windows do not own normal navigation. Preloading
+    // the full primary route set there wastes CPU and memory without making a
+    // user interaction faster.
+    if (!shouldWarmCommonRoutes(gatewayState === 'open', isAuxiliaryWindow())) {
+      return
+    }
+
+    // Warm only common route code, never route data. One shared queue keeps
+    // parsing serialized so background preparation cannot compete with chat.
+    return scheduleIdleWarmup(COMMON_ROUTE_WARMUP_LOADERS, {
+      gapMs: 350,
+      initialDelayMs: 1_500
+    })
+  }, [gatewayState])
 
   // eslint-disable-next-line no-restricted-syntax -- one-shot request-seen sentinel, not an atom mirror
   useEffect(() => {

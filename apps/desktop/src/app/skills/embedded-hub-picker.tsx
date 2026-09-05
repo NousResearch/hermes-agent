@@ -67,7 +67,7 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
   installedNames,
   profile
 }: EmbeddedHubPickerProps) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const h = t.skills.hub
   // Subscribe to the ONE flag this header renders, not the whole action map —
   // $hubActions churns on every tailed log line during an install.
@@ -226,7 +226,7 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
           >
             <iframe
               sandbox="allow-scripts allow-same-origin"
-              src={HUB_PICKER_URL}
+              src={`${HUB_PICKER_URL}&lang=${encodeURIComponent(locale)}`}
               style={{
                 background: 'transparent',
                 border: 'none',

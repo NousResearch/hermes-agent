@@ -231,7 +231,7 @@ export function SkillsView({
   setStatusbarItemGroup: _setStatusbarItemGroup,
   ...props
 }: SkillsViewProps) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   // Both hooks run unconditionally (rules of hooks); embedded picks the local
   // one so tab clicks inside a dialog don't rewrite the page URL.
   const routeTab = useRouteEnumParam('tab', SKILLS_MODES, 'skills')
@@ -324,8 +324,8 @@ export function SkillsView({
     isError: skillsFailed,
     error: skillsError
   } = useQuery({
-    queryKey: [...SKILLS_QUERY_KEY, scopeKey],
-    queryFn: () => getSkills(scopeProfile),
+    queryKey: [...SKILLS_QUERY_KEY, scopeKey, locale],
+    queryFn: () => getSkills(scopeProfile, locale),
     staleTime: 0
   })
 

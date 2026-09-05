@@ -5,6 +5,7 @@ import {
   getMcpCatalog,
   getMemoryStatus,
   getOfficialSkills,
+  getSkills,
   getSkillHubSources,
   getToolsetModels,
   installSkillFromHub,
@@ -43,6 +44,12 @@ describe('Hermes REST parity helpers (hub / mcp / maintenance)', () => {
     await getOfficialSkills()
 
     expect(api).toHaveBeenCalledWith(expect.objectContaining({ path: '/api/skills/hub/official' }))
+  })
+
+  it('requests skill summaries in the active locale', async () => {
+    await getSkills(undefined, 'zh-hant')
+
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ path: '/api/skills?locale=zh-hant' }))
   })
 
   it('encodes hub search params', async () => {

@@ -66,6 +66,25 @@ def _load_cfg(home):
 
 class TestProfileScopedSkills:
 
+    def test_skill_descriptions_are_localized_without_poisoning_english_cache(
+        self, client, isolated_profiles
+    ):
+        home = isolated_profiles["default"]
+        _write_skill(home / "skills", "apple-notes", "English notes description.")
+        (home / "skills" / ".bundled_manifest").write_text(
+            "apple-notes:sha256-placeholder\n", encoding="utf-8"
+        )
+
+        localized = client.get("/api/skills", params={"locale": "zh-hant"})
+        english = client.get("/api/skills", params={"locale": "en"})
+
+        assert localized.status_code == 200
+        assert english.status_code == 200
+        localized_by_name = {skill["name"]: skill for skill in localized.json()}
+        english_by_name = {skill["name"]: skill for skill in english.json()}
+        assert localized_by_name["apple-notes"]["description"] != "English notes description."
+        assert english_by_name["apple-notes"]["description"] == "English notes description."
+
 
     def test_toggle_writes_into_target_profile_only(self, client, isolated_profiles):
         resp = client.put(

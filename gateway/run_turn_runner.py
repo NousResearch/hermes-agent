@@ -1232,6 +1232,7 @@ class TurnRunner:
     def _approval_notify_sync(self, approval_data: dict) -> None:
         """Send the approval request from the agent thread: the adapter's interactive button
         approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps."""
+        from gateway.approval_bridge import _build_exec_approval_metadata
         from gateway.run import _approval_send_outcome, _format_exec_approval_fallback, _interim_metadata, _redact_approval_command
         ctx = self._ctx
         adapter = ctx._status_adapter
@@ -1251,7 +1252,10 @@ class TurnRunner:
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
+                        description=desc, metadata=_build_exec_approval_metadata(
+                            {**(ctx._status_thread_metadata or {}), "requester_user_id": ctx.source.user_id},
+                            approval_data,
+                        ), **flags,
                     ),
                     "send_exec_approval scheduling error",
                 )
@@ -1275,17 +1279,29 @@ class TurnRunner:
                 logger.warning("Button-based approval failed, falling back to text: %s", e)
         # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
         # in Slack threads and reserved by Matrix clients.
-        msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
+        msg = _format_exec_approval_fallback(
+            cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags,
+            full_command=bool(getattr(adapter, "approval_fallback_single_event", False)),
+        )
         try:
             # Mark as approval prompt so WeCom routes through the control lane.
             metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
+            if getattr(adapter, "approval_fallback_single_event", False):
+                metadata["matrix_formatted_body"] = ""
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )
-            if fut is not None:
-                fut.result(timeout=15)
+            if fut is None:
+                raise RuntimeError("approval fallback send: loop unavailable")
+            result = fut.result(timeout=15)
+            if result is not None and getattr(result, "success", True) is False:
+                raise RuntimeError(str(getattr(result, "error", "") or "approval fallback send failed"))
+        except TimeoutError:
+            # A late acknowledgement does not prove the text was undelivered.
+            logger.warning("Approval text send timed out; keeping the waiter armed for a late response")
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)
+            raise
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

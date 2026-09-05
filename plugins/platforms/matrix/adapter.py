@@ -219,6 +219,7 @@ class _MatrixHtmlSanitizer(HTMLParser):
     _ALLOWED_TAGS = {
         "a", "b", "blockquote", "br", "code", "del", "em", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "li", "ol",
         "p", "pre", "s", "strike", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul"}
+    _ALLOWED_TAGS |= {"details", "summary"}
     _VOID_TAGS = {"br", "hr"}
 
     def __init__(self) -> None:
@@ -299,14 +300,47 @@ class MatrixRoomIdentity:
 
 @dataclass
 class _MatrixApprovalPrompt:
-    """Pending reaction-based exec approval prompt."""
-    session_key: str
-    chat_id: str
-    message_id: str
-    resolved: bool = False
-    requester_user_id: str | None = None
-    expires_at: float | None = None
-    bot_reaction_events: dict[str, str] = field(default_factory=dict, init=False)  # emoji -> event_id
+    """Tracks a pending Matrix reaction-based exec approval prompt."""
+
+    def __init__(
+        self,
+        session_key: str,
+        chat_id: str,
+        message_id: str,
+        resolved: bool = False,
+        requester_user_id: str | None = None,
+        expires_at: float | None = None,
+        approval_id: str | None = None,
+        command: str = "",
+        description: str = "",
+        allow_permanent: bool = True,
+        allow_session: bool = True,
+        smart_denied: bool = False,
+        metadata: dict | None = None,
+    ):
+        self.session_key = session_key
+        self.chat_id = chat_id
+        self.message_id = message_id
+        self.approval_id = approval_id
+        self.resolved = resolved
+        self.requester_user_id = requester_user_id
+        self.expires_at = expires_at
+        self.bot_reaction_events: dict[str, str] = {}  # emoji -> event_id
+        # Presentation state for compact / summary edits (Matrix-only).
+        self.command = command or ""
+        self.description = description or ""
+        self.allow_permanent = allow_permanent
+        self.allow_session = allow_session
+        self.smart_denied = smart_denied
+        self.metadata = dict(metadata or {})
+        self.generation: int = 0  # bumps on each presentation edit
+        self.state: str = "pending_expanded"  # pending_expanded|pending_summarized|terminal
+        self.summary: str = ""
+        self.summary_task: object | None = None
+        self.presentation_lock = asyncio.Lock()
+        self.terminal_visible = False
+        self.terminal_choice: str | None = None
+        self.terminal_actor = ""
 
 
 @dataclass
@@ -739,6 +773,7 @@ class MatrixAdapter(BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
+    approval_fallback_single_event = True
     splits_long_messages = True  # send() chunks via truncate_message(max_message_length)
     typed_command_prefix = "!"  # clients reserve typed "/" for local commands; "!command" always reaches Hermes
     # Class-level defaults keep object.__new__-built test instances working.
@@ -819,7 +854,7 @@ class MatrixAdapter(BasePlatformAdapter):
             "✅": "once", "🌀": "session", "♾️": "always", "♾": "always", "\u267e\ufe0f": "always",
             "\u267e": "always", "❌": "deny", "❎": "deny"}
         self._approval_prompts_by_event: Dict[str, _MatrixApprovalPrompt] = {}
-        self._approval_prompt_by_session: Dict[str, str] = {}
+        self._approval_prompt_by_session: Dict[str, Set[str]] = {}
         self._approval_require_sender: bool = _env_truthy("MATRIX_APPROVAL_REQUIRE_SENDER", "true")
         self._approval_timeout_seconds = _env_number("MATRIX_APPROVAL_TIMEOUT_SECONDS", 300, int)
         self._model_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
@@ -1313,9 +1348,16 @@ class MatrixAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=True)
         last_event_id = None
-        for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
+        formatted = self.format_message(content)
+        pre_rendered = metadata is not None and "matrix_formatted_body" in metadata
+        chunks = [formatted] if pre_rendered else self.truncate_message(formatted, self.max_message_length)
+        for chunk in chunks:
             msg_content = self._build_text_message_content(chunk)
             self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
+            if pre_rendered:
+                error = self._apply_pre_rendered_html(msg_content, metadata)
+                if error:
+                    return SendResult(success=False, error=error)
             try:
                 last_event_id = await self._send_room_message(chat_id, msg_content)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
@@ -1379,9 +1421,23 @@ class MatrixAdapter(BasePlatformAdapter):
     async def stop_typing(self, chat_id: str) -> None:
         await self._set_typing(chat_id, 0)
 
-    async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
+    def _apply_pre_rendered_html(self, content: dict, metadata: dict) -> str | None:
+        """One authoritative card or a definite failure; NEVER truncate its audit fallback."""
+        safe_html = _sanitize_matrix_html(str(metadata.get("matrix_formatted_body") or ""))
+        if safe_html.strip():
+            content.update(format="org.matrix.custom.html", formatted_body=safe_html)
+        if max(len(str(content.get(key) or "")) for key in ("body", "formatted_body")) > self.max_message_length:
+            return f"Matrix pre-rendered message exceeds the configured {self.max_message_length}-character transport limit"
+        return None
+
+    async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False,
+                           metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         formatted = self.format_message(content)
         new_content = self._build_text_message_content(formatted)
+        if metadata is not None and "matrix_formatted_body" in metadata:
+            error = self._apply_pre_rendered_html(new_content, metadata)
+            if error:
+                return SendResult(success=False, error=error)
         msg_content: Dict[str, Any] = {"msgtype": "m.text", "body": f"* {formatted}", "m.new_content": new_content}
         if "m.mentions" in new_content:
             msg_content["m.mentions"] = new_content["m.mentions"]
@@ -1537,7 +1593,7 @@ class MatrixAdapter(BasePlatformAdapter):
             return result
         prompt = make_prompt(
             result.message_id, str((metadata or {}).get("requester_user_id") or "") or None,
-            time.monotonic() + max(self._approval_timeout_seconds, 0))
+            (metadata or {}).get("expires_at", time.monotonic() + max(self._approval_timeout_seconds, 0)))
         registry[result.message_id] = prompt
         for emoji in emojis:
             try:
@@ -1554,37 +1610,39 @@ class MatrixAdapter(BasePlatformAdapter):
         smart_denied: bool = False) -> SendResult:
         if not self._client:
             return SendResult(success=False, error="Not connected")
-        if smart_denied:
-            scope_choices = "Smart DENY: owner override applies to this one operation only.\n"
-        else:
-            scope_choices = (
-                ("Reply `!approve session` to approve this pattern for the session, " if allow_session else "")
-                + ("`!approve always` to approve permanently, " if allow_permanent else ""))
-        legend = ["✅ = approve once"]
-        reactions = ["✅"]
-        if allow_session:
-            legend.append("🌀 = approve for this session")
-            reactions.append("🌀")
-            if allow_permanent:
-                legend.append("♾️ = approve always")
-                reactions.append("♾️")
-        legend.append("❎ = deny")
-        reactions.append("❌")
-        text = (
-            f"{self._format_exec_approval(command, description)}\n\n"
-            f"{scope_choices}Reply `!approve` to execute once, or `!deny` to cancel.\n\n"
-            "You can also click the reaction to approve:\n" + "\n".join(legend))
-
+        from plugins.platforms.matrix.approval_cards import (
+            force_redact_command, format_pending_expanded, load_matrix_approval_summary_config,
+        )
+        redacted_command = force_redact_command(command)
+        text, html_body = format_pending_expanded(
+            command=redacted_command, description=description, allow_permanent=allow_permanent,
+            allow_session=allow_session, smart_denied=smart_denied,
+        )
+        send_meta = {**(metadata or {}), "matrix_formatted_body": html_body}
         def _make(message_id, requester, expires_at):
-            old_event = self._approval_prompt_by_session.get(session_key)
-            if old_event:
-                self._approval_prompts_by_event.pop(old_event, None)
-            self._approval_prompt_by_session[session_key] = message_id
+            self._approval_prompt_by_session.setdefault(session_key, set()).add(message_id)
             return _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
-                expires_at=expires_at)
-        return await self._send_reaction_prompt(
-            chat_id, text, metadata, _make, self._approval_prompts_by_event, tuple(reactions), "approval")
+                expires_at=expires_at, approval_id=str(send_meta.get("approval_id") or "") or None,
+                command=redacted_command, description=description or "dangerous command",
+                allow_permanent=allow_permanent, allow_session=allow_session,
+                smart_denied=smart_denied, metadata=send_meta,
+            )
+        reactions = ["✅"]
+        if allow_session and not smart_denied:
+            reactions.append("🌀")
+            if allow_permanent:
+                reactions.append("♾️")
+        reactions.append("❌")
+        result = await self._send_reaction_prompt(
+            chat_id, text, send_meta, _make, self._approval_prompts_by_event, tuple(reactions), "approval")
+        if result.success and result.message_id:
+            prompt = self._approval_prompts_by_event[result.message_id]
+            summary_cfg = load_matrix_approval_summary_config()
+            if summary_cfg.enabled:
+                self._schedule_approval_summary(prompt, summary_cfg)
+            self._schedule_approval_resolution_watch(prompt)
+        return result
 
     async def send_model_picker(
         self, chat_id: str, providers: list, current_model: str, current_provider: str, session_key: str,
@@ -2291,16 +2349,21 @@ class MatrixAdapter(BasePlatformAdapter):
         if choice is None:
             return handled
         try:
-            from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(prompt.session_key, choice)
+            from tools.approval import consume_gateway_approval_outcome, resolve_gateway_approval
+            count = resolve_gateway_approval(
+                prompt.session_key, choice,
+                **({"approval_id": prompt.approval_id} if prompt.approval_id else {}),
+            )
             if count:
                 prompt.resolved = True
-                self._approval_prompts_by_event.pop(reacts_to, None)
-                self._approval_prompt_by_session.pop(prompt.session_key, None)
+                prompt.state = "resolved_core_delivered"
+                prompt.terminal_choice, prompt.terminal_actor = choice, sender
+                consume_gateway_approval_outcome(prompt.session_key, prompt.approval_id)
                 logger.info(
                     "Matrix reaction resolved %d approval(s) for session %s (choice=%s, user=%s)",
                     count, prompt.session_key, choice, sender)
                 await self._redact_bot_approval_reactions(room_id, prompt)
+                await self._finalize_matrix_approval_prompt(room_id, reacts_to, prompt, choice=choice, actor=sender)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Matrix reaction: %s", exc)
         return True
@@ -2369,20 +2432,313 @@ class MatrixAdapter(BasePlatformAdapter):
             return False
         return True
 
-    async def _send_invalid_reaction_feedback(self, room_id: str, target_event_id: str, text: str) -> None:
+    async def _send_invalid_reaction_feedback(self, room_id: str, target_event_id: str, text: str) -> bool:
         try:
-            await self.send(room_id, text, reply_to=target_event_id)
+            result = await self.send(room_id, text, reply_to=target_event_id)
+            return bool(result and result.success and result.message_id)
         except Exception as exc:
             logger.debug("Matrix: failed to send invalid reaction feedback: %s", exc)
+            return False
 
-    async def _expire_matrix_approval_prompt(self, room_id: str, target_event_id: str, prompt: Any) -> None:
-        prompt.resolved = True
+    def _forget_matrix_approval_prompt(
+        self,
+        target_event_id: str,
+        prompt: "_MatrixApprovalPrompt",
+    ) -> None:
+        """Remove one approval card without disturbing concurrent cards."""
         self._approval_prompts_by_event.pop(target_event_id, None)
-        self._approval_prompt_by_session.pop(prompt.session_key, None)
+        events = self._approval_prompt_by_session.get(prompt.session_key)
+        if events is None:
+            return
+        if isinstance(events, set):
+            events.discard(target_event_id)
+            empty = not events
+        else:
+            # Legacy in-memory representation stored one event id directly.
+            empty = events == target_event_id
+        if empty:
+            self._approval_prompt_by_session.pop(prompt.session_key, None)
+
+
+    def _cancel_approval_summary_task(self, prompt: "_MatrixApprovalPrompt") -> None:
+        task = getattr(prompt, "summary_task", None)
+        if task is None:
+            return
+        try:
+            if hasattr(task, "done") and not task.done():
+                task.cancel()
+        except Exception:
+            pass
+        prompt.summary_task = None
+
+
+    def _schedule_approval_summary(self, prompt: "_MatrixApprovalPrompt", summary_cfg) -> None:
+        """Fire-and-forget summary generation for a pending approval card."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def _runner() -> None:
+            from plugins.platforms.matrix.approval_cards import (
+                format_pending_summarized,
+                generate_command_summary,
+            )
+
+            expected_gen = prompt.generation
+            summary = await asyncio.to_thread(
+                generate_command_summary,
+                command=prompt.command,
+                description=prompt.description,
+                provider_policy=summary_cfg.provider_policy,
+                timeout_seconds=summary_cfg.effective_timeout_seconds,
+                max_chars=summary_cfg.max_chars,
+            )
+            if not summary or prompt.resolved or prompt.generation != expected_gen:
+                return
+            if prompt.state != "pending_expanded":
+                return
+            body, html_body = format_pending_summarized(
+                command=prompt.command,
+                description=prompt.description,
+                summary=summary,
+                allow_permanent=prompt.allow_permanent,
+                allow_session=prompt.allow_session,
+                smart_denied=prompt.smart_denied,
+            )
+            edit_meta = {"matrix_formatted_body": html_body} if html_body else None
+            async with prompt.presentation_lock:
+                if (
+                    prompt.resolved
+                    or prompt.generation != expected_gen
+                    or prompt.state != "pending_expanded"
+                ):
+                    return
+                try:
+                    result = await self.edit_message(
+                        prompt.chat_id,
+                        prompt.message_id,
+                        body,
+                        metadata=edit_meta,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning("Matrix: approval summary edit failed: %s", exc)
+                    return
+                if not getattr(result, "success", False):
+                    logger.warning(
+                        "Matrix: approval summary edit failed: %s",
+                        getattr(result, "error", None) or "unknown edit failure",
+                    )
+                    return
+                # Resolution may have started while the homeserver edit was in flight.
+                # The finalizer waits on this lock and will reassert terminal content.
+                if prompt.resolved or prompt.generation != expected_gen:
+                    return
+                prompt.summary = summary
+                prompt.state = "pending_summarized"
+                prompt.generation += 1
+
+        prompt.summary_task = loop.create_task(_runner())
+
+
+    async def _finalize_matrix_approval_prompt(
+        self,
+        room_id: str,
+        target_event_id: str,
+        prompt: "_MatrixApprovalPrompt",
+        *,
+        choice: str,
+        actor: str = "",
+        max_attempts: int = 3,
+    ) -> None:
+        """Terminal card compaction after resolve/expire.
+
+        Core resolution and UI terminalization are separate. The registry entry
+        is retained until a terminal m.replace or visible failure notice succeeds.
+        Each attempt is bounded; failed delivery remains retryable.
+        """
+        task = getattr(prompt, "summary_task", None)
+        self._cancel_approval_summary_task(prompt)
+        # Await cancellation explicitly so CancelledError cannot skip terminal
+        # compaction and no summary replacement can land after the terminal one.
+        if task is not None and task is not asyncio.current_task():
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.debug("Matrix: approval summary task failed during finalize: %s", exc)
+        from plugins.platforms.matrix.approval_cards import format_terminal_compact
+
+        async with prompt.presentation_lock:
+            if prompt.terminal_visible:
+                # Already compacted (e.g. watcher + reaction both fired).
+                self._forget_matrix_approval_prompt(target_event_id, prompt)
+                return
+            if prompt.terminal_choice is None:
+                prompt.terminal_choice, prompt.terminal_actor = choice, actor
+            choice, actor = prompt.terminal_choice, prompt.terminal_actor
+            prompt.state = "terminal_edit_pending"
+            body, html_body = format_terminal_compact(
+                choice=choice,
+                command=prompt.command,
+                description=prompt.description,
+                actor=actor or "",
+                summary=getattr(prompt, "summary", "") or "",
+            )
+            edit_meta = {"matrix_formatted_body": html_body} if html_body else None
+            last_error = None
+            for attempt in range(1, max(1, int(max_attempts)) + 1):
+                try:
+                    result = await self.edit_message(
+                        room_id,
+                        target_event_id,
+                        body,
+                        metadata=edit_meta,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    last_error = exc
+                    logger.warning(
+                        "Matrix: terminal approval edit failed (attempt %d/%d): %s",
+                        attempt,
+                        max_attempts,
+                        exc,
+                    )
+                    result = None
+                if result is not None and getattr(result, "success", False):
+                    prompt.terminal_visible = True
+                    prompt.state = f"terminal_{choice}"
+                    prompt.generation += 1
+                    self._forget_matrix_approval_prompt(target_event_id, prompt)
+                    return
+                if result is not None:
+                    last_error = getattr(result, "error", None) or "unknown edit failure"
+                    logger.warning(
+                        "Matrix: terminal approval edit failed (attempt %d/%d): %s",
+                        attempt,
+                        max_attempts,
+                        last_error,
+                    )
+                if attempt < max_attempts:
+                    await asyncio.sleep(min(0.5 * attempt, 2.0))
+            # Forget only after the user can see the terminal delivery failure.
+            logger.error(
+                "Matrix: terminal approval edit exhausted retries for %s: %s",
+                target_event_id,
+                last_error,
+            )
+            try:
+                visible = await self._send_invalid_reaction_feedback(
+                    room_id,
+                    target_event_id,
+                    f"Approval outcome: {choice}. Updating the Matrix card failed. "
+                    "This prompt is no longer actionable.",
+                )
+            except Exception:
+                visible = False
+            if visible:
+                prompt.terminal_visible = True
+                prompt.state = "terminal_notice_delivered"
+                self._forget_matrix_approval_prompt(target_event_id, prompt)
+
+
+    def _schedule_approval_resolution_watch(self, prompt: "_MatrixApprovalPrompt") -> None:
+        """Compact the card when the core queue resolves without a reaction."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def _watch() -> None:
+            from tools.approval import (
+                consume_gateway_approval_outcome,
+                has_blocking_approval,
+            )
+
+            # Single authoritative deadline was stored on the prompt at
+            # registration (prompt.expires_at). Watch until that deadline plus
+            # a small grace — do not recompute/extend from config each loop.
+            grace_seconds = 5.0
+            poll = 0.5
+            while True:
+                if prompt.terminal_visible:
+                    return
+                now = time.monotonic()
+                expires_at = getattr(prompt, "expires_at", None)
+                past_deadline = expires_at is not None and now > float(expires_at) + grace_seconds
+                try:
+                    pending = has_blocking_approval(
+                        prompt.session_key,
+                        approval_id=prompt.approval_id,
+                    )
+                except Exception:
+                    pending = True
+                if not pending or past_deadline:
+                    if prompt.terminal_visible:
+                        return
+                    choice = prompt.terminal_choice or consume_gateway_approval_outcome(
+                        prompt.session_key,
+                        prompt.approval_id,
+                    )
+                    if choice is None:
+                        # Reaction/typed path already consumed the outcome and
+                        # owns terminalization. Do not stamp Expired over it.
+                        if getattr(prompt, "resolved", False):
+                            await asyncio.sleep(poll)
+                            continue
+                        if pending and not past_deadline:
+                            await asyncio.sleep(poll)
+                            continue
+                        choice = "expired"
+                    if prompt.terminal_choice is None:
+                        prompt.terminal_choice = choice
+                    if not prompt.resolved:
+                        prompt.resolved = True
+                        prompt.state = "resolved_core_delivered"
+                    try:
+                        await self._redact_bot_approval_reactions(prompt.chat_id, prompt)
+                    except Exception:
+                        pass
+                    await self._finalize_matrix_approval_prompt(
+                        prompt.chat_id,
+                        prompt.message_id,
+                        prompt,
+                        choice=choice,
+                        actor=prompt.terminal_actor,
+                    )
+                    if prompt.terminal_visible:
+                        return
+                    # Retry delivery without forgetting the already-recorded decision.
+                    await asyncio.sleep(5.0)
+                    continue
+                await asyncio.sleep(poll)
+
+        loop.create_task(_watch())
+
+
+    async def _expire_matrix_approval_prompt(
+        self,
+        room_id: str,
+        target_event_id: str,
+        prompt: "_MatrixApprovalPrompt",
+    ) -> None:
+        prompt.resolved = True
+        if prompt.terminal_choice is None:
+            prompt.terminal_choice = "expired"
+        self._cancel_approval_summary_task(prompt)
         await self._redact_bot_approval_reactions(room_id, prompt)
+        await self._finalize_matrix_approval_prompt(
+            room_id, target_event_id, prompt, choice="expired", actor="",
+        )
         await self._send_invalid_reaction_feedback(
-            room_id, target_event_id,
-            "This approval prompt has expired. Run the command again if you still want to approve it.")
+            room_id,
+            target_event_id,
+            "This approval prompt has expired. Run the command again if you still want to approve it.",
+        )
 
     async def _expire_matrix_model_picker_prompt(self, room_id: str, target_event_id: str, prompt: Any) -> None:
         prompt.resolved = True
@@ -2867,8 +3223,10 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         with suppress(ImportError):
             import markdown as _md
             html = _md.markdown(message, extensions=["fenced_code", "tables"])
-            payload["format"] = "org.matrix.custom.html"
-            payload["formatted_body"] = re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html)
+            safe_html = _sanitize_matrix_html(re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html))
+            if safe_html.strip():
+                payload["format"] = "org.matrix.custom.html"
+                payload["formatted_body"] = safe_html
         # asyncio.wait_for, not aiohttp.ClientTimeout: cron invokes this via
         # run_coroutine_threadsafe ("Timeout context manager should be used inside a task").
         async with aiohttp.ClientSession() as session:

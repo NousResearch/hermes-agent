@@ -214,6 +214,8 @@ def test_live_session_payload_replays_pending_approval(server, monkeypatch):
     # request_id is injected by _ApprovalEntry so reconnecting clients can
     # correlate their approval.respond with the exact queued request.
     assert replayed.pop("request_id")
+    assert replayed.pop("approval_id")
+    assert isinstance(replayed.pop("expires_at"), float)
     assert replayed == first
 
 

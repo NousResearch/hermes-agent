@@ -255,11 +255,11 @@ export function useMessageStream({
     // ADAPTIVE: the floor scales with what the last flush actually cost.
     // With several sessions streaming at once (split tiles), one flush carries
     // every stream's commit + markdown re-parse; when that work approaches or
-    // exceeds the fixed 33ms budget, back-to-back flushes leave the main
+    // exceeds the fixed flush budget, back-to-back flushes leave the main
     // thread no idle frames and every interaction (typing, resize, hover)
     // stutters even though no render is wasted. Yielding 3x the measured cost
     // keeps the thread ~75% idle for input at any load: cheap flushes stay at
-    // 30fps of text growth, expensive multi-stream flushes degrade text fps
+    // ~20fps of text growth, expensive multi-stream flushes degrade text fps
     // instead of interactivity — capped so text never updates slower than 4/s.
     // The cost has to include the deferred view-sync frame where the commit
     // actually happens; see runFlush below.
@@ -280,7 +280,7 @@ export function useMessageStream({
       // (and with it the React commit + Streamdown re-parse the floor is meant
       // to account for) to its own rAF inside updateSessionState, which runs
       // after this timer task. Stopping the clock here pins lastFlushCostRef
-      // near zero and collapses the adaptive floor to 33ms no matter the load.
+      // near zero and collapses the adaptive floor to 48ms no matter the load.
       // Our rAF is registered after the view-sync one, so it runs in the same
       // frame right after that commit; its timestamp marks frame start, so
       // (now - frameStart) counts only work done inside the frame, not the

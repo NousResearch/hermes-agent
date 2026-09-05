@@ -490,15 +490,21 @@ class GatewayBusySessionMixin:
             logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)
             return False
 
-    async def _interrupt_running_agent_for_busy_event(self, event: MessageEvent, adapter, running_agent) -> None:
+    async def _interrupt_running_agent_for_busy_event(
+        self,
+        event: MessageEvent,
+        adapter,
+        running_agent,
+        interrupt_text: str | None = None,
+    ) -> None:
         """Interrupt mode: abort in-flight tool calls; the agent loop exits at its next check point."""
         from gateway.run import _build_media_placeholder
         try:
-            _interrupt_text = event.text
+            _interrupt_text = interrupt_text if interrupt_text is not None else event.text
             _media_urls = getattr(event, "media_urls", None) or []
             if self._pending_event_audio_paths(event):
                 _interrupt_text, _ = await self._transcribe_and_echo_pending_voice(
-                    event, adapter, event.source, event.text or "", log_context="Voice-busy-interrupt",
+                    event, adapter, event.source, _interrupt_text or "", log_context="Voice-busy-interrupt",
                 )
             elif not _interrupt_text and _media_urls:
                 _interrupt_text = _build_media_placeholder(event)
@@ -601,10 +607,56 @@ class GatewayBusySessionMixin:
             logger.debug("Failed to send busy-ack: %s", e)
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
+        # Plugin hooks normally run on the idle path inside _handle_message.
+        # The busy path bypasses that, so handover / listen-only / ambient-buffer
+        # plugins never get a chance to silence an inbound that arrives while
+        # an agent is mid-run (the user types during a customer handover,
+        # owner sends an aside, etc.).  Consult pre_gateway_dispatch BEFORE
+        # the authorization gate — same contract as the idle path — so plugins
+        # can skip unauthorized senders without falling into pairing/drop.
+        # Other return shapes (rewrite/allow) are intentionally NOT honored on
+        # the busy path: rewriting an event we're about to interrupt with is
+        # racy, and the only consumer that emits skip today is gateway-policy
+        # (handover / listen-only).  allow / no-action fall through to auth.
+        is_internal = bool(getattr(event, "internal", False))
+        if not is_internal:
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _hook_results = _invoke_hook(
+                    "pre_gateway_dispatch",
+                    event=event,
+                    gateway=self,
+                    session_store=self.session_store,
+                )
+            except Exception as _hook_exc:
+                logger.warning("pre_gateway_dispatch (busy path) invocation failed: %s", _hook_exc)
+                _hook_results = []
+
+            for _result in _hook_results or []:
+                if not isinstance(_result, dict):
+                    continue
+                if _result.get("action") == "skip":
+                    try:
+                        _platform_str = (
+                            event.source.platform.value
+                            if event.source.platform
+                            else "unknown"
+                        )
+                    except Exception:
+                        _platform_str = "unknown"
+                    logger.info(
+                        "pre_gateway_dispatch skip (busy path): reason=%s platform=%s chat=%s",
+                        _result.get("reason"),
+                        _platform_str,
+                        getattr(event.source, "chat_id", None) or "unknown",
+                    )
+                    return True
+
         # Same authorization gate as the cold path, else unauthorized users in shared threads
         # inject messages into a session they don't own.
         from gateway.run import _AGENT_PENDING_SENTINEL
-        # See #17775.
+        # See #17775. Runs after pre_gateway_dispatch so a plugin `skip` can still handle
+        # unauthorized senders (e.g. customer handover ingest) without auth drop.
         if not self._is_user_authorized(event.source):
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
@@ -643,6 +695,8 @@ class GatewayBusySessionMixin:
         effective_mode, redirected = _steer.effective_mode, _steer.redirected
         # Queue as the next turn — skipped after a successful steer/redirect (the text is already in
         # the run and must NOT replay). FIFO gives each text its own turn (raw merge would join them).
+        # Snapshot inbound text before queueing: pending merge may alias the same MessageEvent object.
+        interrupt_text = event.text
         if not _steer.steered and not redirected:
             self._queue_or_replace_pending_event(session_key, event)
         # Store the message so it's processed as the next turn after the current run finishes (or is
@@ -661,7 +715,9 @@ class GatewayBusySessionMixin:
             effective_mode == "interrupt" and not redirected
             and running_agent and running_agent is not _AGENT_PENDING_SENTINEL
         ):
-            await self._interrupt_running_agent_for_busy_event(event, adapter, running_agent)
+            await self._interrupt_running_agent_for_busy_event(
+                event, adapter, running_agent, interrupt_text=interrupt_text,
+            )
 
         # Disabled ack: still process input. Checked before debounce so an undelivered ack never
         # stamps the "last ack" timestamp.

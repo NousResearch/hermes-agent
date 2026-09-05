@@ -515,9 +515,9 @@ class TestCheckForSkillUpdates:
         )
         skill_dir = tmp_path / "demo-skill"
         skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text("same content")
+        (skill_dir / "SKILL.md").write_bytes(b"same content")
         (skill_dir / "references").mkdir()
-        (skill_dir / "references" / "checklist.md").write_text("- [ ] security\n")
+        (skill_dir / "references" / "checklist.md").write_bytes(b"- [ ] security\n")
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
@@ -1009,6 +1009,38 @@ class TestOptionalSkillSourceLiveRepoFallback:
 
 
 class TestQuarantineBundleBinaryAssets:
+    def test_quarantine_bundle_preserves_text_bytes_when_text_mode_translates_newlines(
+        self, tmp_path, monkeypatch,
+    ):
+        """Bundle bytes and quarantined bytes must stay hash-symmetric on Windows."""
+        from pathlib import Path
+
+        import tools.skills_hub as hub
+        from tools.skills_guard import content_hash
+
+        def windows_text_write(path, data, encoding=None, errors=None, newline=None):
+            encoded = data.replace("\n", "\r\n").encode(encoding or "utf-8", errors or "strict")
+            return path.write_bytes(encoded)
+
+        monkeypatch.setattr(Path, "write_text", windows_text_write)
+        hub_dir = tmp_path / "skills" / ".hub"
+        source = "---\nname: demo-skill\n---\nUnicode: café\n"
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = SkillBundle(
+                name="demo-skill", files={"SKILL.md": source}, source="github",
+                identifier="owner/repo/demo-skill", trust_level="community",
+            )
+            q_path = quarantine_bundle(bundle)
+
+        assert (q_path / "SKILL.md").read_bytes() == source.encode("utf-8")
+        assert content_hash(q_path) == bundle_content_hash(bundle)
+
     def test_quarantine_bundle_writes_binary_files(self, tmp_path):
         import tools.skills_hub as hub
 

@@ -28,7 +28,6 @@ from hermes_cli.local_runtime.catalog import (
     PLEASANT_FLOOR_TOK_S,
     predicted_decode_tok_s,
     recommended_entry,
-    recommended_id,
     select_variant,
 )
 from hermes_cli.local_runtime.estimator import HardwareBudget
@@ -143,7 +142,7 @@ def test_unified_never_recommends_a_below_floor_dense_model():
     predicted decode is below the pleasant floor while a resident
     alternative clears it."""
     budget = _unified(128)
-    pick = recommended_id(budget)
+    pick = recommended_entry(budget)[0].id
     assert pick is not None
     entry = next(e for e in CATALOG if e.id == pick)
     choice = select_variant(entry, budget)
@@ -162,7 +161,7 @@ def test_quality_decides_where_speed_permits():
     the pick must be the highest-quality fitting entry — the axis that
     justifies carrying an editorial field at all."""
     budget = _discrete(512)
-    pick = recommended_id(budget)
+    pick = recommended_entry(budget)[0].id
     resident = [
         e for e in CATALOG
         if (c := select_variant(e, budget)) is not None and c.zero_spill

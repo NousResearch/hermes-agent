@@ -110,7 +110,7 @@ class TestAgentCloseMethod:
             with patch("tools.process_registry.process_registry") as mock_registry, \
                  patch("run_agent.cleanup_vm") as mock_cleanup_vm, \
                  patch("run_agent.cleanup_browser") as mock_cleanup_browser, \
-                 patch("tools.computer_use.release_computer_use_session") as mock_cleanup_cua:
+                 patch("tools.computer_use.tool.release_computer_use_session") as mock_cleanup_cua:
                 agent.close()
 
                 mock_registry.kill_all.assert_called_once_with(
@@ -152,7 +152,7 @@ class TestAgentCloseMethod:
                 "tools.process_registry.process_registry.kill_all",
                 side_effect=RuntimeError("process cleanup failed"),
             ), patch(
-                "tools.computer_use.release_computer_use_session",
+                "tools.computer_use.tool.release_computer_use_session",
             ) as mock_cleanup_cua:
                 agent.close()
 
@@ -173,7 +173,7 @@ class TestAgentCloseMethod:
             agent.client = None
 
             with patch(
-                "tools.computer_use.release_computer_use_session",
+                "tools.computer_use.tool.release_computer_use_session",
             ) as mock_cleanup_cua:
                 agent.release_clients()
 
@@ -331,7 +331,7 @@ class TestGatewayCleanupWiring:
             with patch("gateway.status.remove_pid_file"), \
                  patch("gateway.status.write_runtime_status"), \
                  patch("tools.terminal_tool.cleanup_all_environments"), \
-                 patch("tools.browser_tool.cleanup_all_browsers"):
+                 patch("tools.browser_tool_lifecycle.cleanup_all_browsers"):
                 loop.run_until_complete(GatewayRunner.stop(runner))
         finally:
             loop.close()
@@ -370,7 +370,7 @@ class TestDelegationCleanup:
             reset_hermes_home_override,
             set_hermes_home_override,
         )
-        from hermes_cli.observability import relay_runtime
+        from agent import relay_runtime
         from tools.delegate_tool import _run_single_child
 
         parent = MagicMock()
@@ -415,7 +415,7 @@ class TestDelegationCleanup:
     def test_active_child_turn_owns_relay_scope_cleanup(self, monkeypatch):
         from unittest.mock import MagicMock
 
-        from hermes_cli.observability import relay_runtime
+        from agent import relay_runtime
         from tools.delegate_tool import _run_single_child
 
         parent = MagicMock()

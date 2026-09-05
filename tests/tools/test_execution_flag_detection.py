@@ -284,7 +284,7 @@ def test_benign_segment_scaling_benchmark():
 
 
 def test_max_accepted_separator_free_input_is_fast():
-    from tools.approval import _MAX_SEPARATOR_FREE_COMMAND_CHARS
+    from tools.approval_detection import _MAX_SEPARATOR_FREE_COMMAND_CHARS
 
     command = "x" * _MAX_SEPARATOR_FREE_COMMAND_CHARS
     started = time.perf_counter()

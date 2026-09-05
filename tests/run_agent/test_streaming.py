@@ -368,7 +368,7 @@ class TestStreamingAccumulator:
         captured = {}
         fake_stream = MagicMock()
         fake_stream.final_response = None
-        fake_stream.__iter__.return_value = iter([
+        chunks = [
             _make_stream_chunk(tool_calls=[
                 _make_tool_call_delta(
                     index=0,
@@ -381,10 +381,12 @@ class TestStreamingAccumulator:
                 _make_tool_call_delta(index=0, arguments='"hello"}')
             ]),
             _make_stream_chunk(finish_reason="tool_calls"),
-        ])
+        ]
+        fake_stream.__iter__.return_value = iter(chunks)
 
         def relay_stream_impl(*args, **kwargs):
             captured["finalizer"] = kwargs["finalizer"]
+            captured["on_chunk"] = kwargs["on_chunk"]
             return fake_stream
 
         mock_relay_stream.side_effect = relay_stream_impl
@@ -404,6 +406,10 @@ class TestStreamingAccumulator:
 
         agent._interruptible_streaming_api_call({})
 
+        # Relay's contract: the collector sees every chunk as JSON, then the finalizer runs.
+        from agent.relay_llm import _jsonable
+        for chunk in chunks:
+            captured["on_chunk"](_jsonable(chunk))
         payload = captured["finalizer"]()
         tool_calls = payload["choices"][0]["message"]["tool_calls"]
         assert len(tool_calls) == 1
@@ -962,7 +968,7 @@ class TestCodexStreamCallbacks:
         mock_client = MagicMock()
         mock_client.responses.create.return_value = mock_stream
 
-        agent._run_codex_create_stream_fallback(
+        agent._run_codex_stream(
             {"model": "test/model", "instructions": "hi", "input": []},
             client=mock_client,
         )
@@ -1594,8 +1600,8 @@ class TestCopilotACPStreamingDecision:
     must detect ACP runtimes and route to _interruptible_api_call instead.
     """
 
-    @patch("run_agent.get_tool_definitions", return_value=[])
-    @patch("run_agent.check_toolset_requirements", return_value={})
+    @patch("model_tools.get_tool_definitions", return_value=[])
+    @patch("model_tools.check_toolset_requirements", return_value={})
     @patch("agent.copilot_acp_client.CopilotACPClient")
     def test_provider_name_triggers_non_streaming(
         self, mock_acp_cls, _mock_check, _mock_tools
@@ -1625,8 +1631,8 @@ class TestCopilotACPStreamingDecision:
             response = mock_non_stream({})
             mock_stream.assert_not_called()
 
-    @patch("run_agent.get_tool_definitions", return_value=[])
-    @patch("run_agent.check_toolset_requirements", return_value={})
+    @patch("model_tools.get_tool_definitions", return_value=[])
+    @patch("model_tools.check_toolset_requirements", return_value={})
     @patch("agent.copilot_acp_client.CopilotACPClient")
     def test_acp_base_url_triggers_non_streaming(
         self, mock_acp_cls, _mock_check, _mock_tools

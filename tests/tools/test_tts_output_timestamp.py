@@ -17,7 +17,7 @@ class TestDefaultOutputTimestampResolution:
 
         from tools import tts_tool
 
-        src = inspect.getsource(tts_tool.text_to_speech_tool)
+        src = inspect.getsource(tts_tool._resolve_output_base)
         assert "%Y%m%d_%H%M%S_%f" in src, (
             "default TTS output timestamp lost its microsecond component — "
             "concurrent calls in the same second would collide again (#43911)"

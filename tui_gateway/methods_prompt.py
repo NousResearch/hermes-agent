@@ -503,9 +503,11 @@ _TRUNCATION_PARAMS = (
 
 
 def _lock_in_submit_turn(
-    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task):
+    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, *, origin: str = ""):
     """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
-    cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
+    cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``.
+    ``origin`` is the submitting connection's opaque id, captured where prompt.submit
+    attaches and stamped here, WITH the claim, so mirrored peers can attribute the turn."""
     fields = {}
     with session["history_lock"]:
         # A watch session's run lives in the PARENT turn (own running flag False); typing
@@ -523,6 +525,12 @@ def _lock_in_submit_turn(
             if err is not None:
                 return err, {}
         session["running"] = True
+        # This client owns the turn it just claimed: every session event the turn produces is stamped
+        # with this connection's origin, so mirrored peers can render "someone else is driving" instead
+        # of mistaking the stream for their own. Stamped WITH the claim, under the same lock, the way the
+        # queued drain and the auto-continue kickoff stamp theirs. "" (stdio, internal callers) means
+        # unknown and is omitted from the frames entirely.
+        session["turn_origin"] = origin
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
         if hosted_task is not None:
@@ -572,10 +580,18 @@ def _(rid, params: dict) -> dict:
     turn_isolation = _session_uses_compute_host(session, _load_dashboard_process_isolation_config())
     if internal_hosted_submit and turn_isolation:
         return _err(rid, 4121, "hosted room turns do not support isolated compute workers yet")
-    # Re-bind to the current transport: streaming must stay on the active websocket even
-    # if a disconnect/fallback moved the session to stdio.
+    # Attach the current transport: streaming must stay on the active websocket even if a
+    # disconnect/fallback moved the session to stdio — and, since it attaches rather than rebinds,
+    # a second client submitting a prompt no longer cuts the first client out of the session it is
+    # watching.
+    submit_origin = ""
     if (t := current_transport()) is not None:
-        session["transport"] = t
+        _attach_session_transport(session, t)
+        # CAPTURED here, STAMPED at the claim below (_lock_in_submit_turn). Attaching is not claiming:
+        # a submit that lands mid-turn redirects, queues, or is refused without ever starting a turn,
+        # and must not repaint the frames of the turn that IS running with the origin of the client
+        # that merely typed over it.
+        submit_origin = _transport_origin(t)
     # Claim the turn against a possibly-running session (busy/queued reply, else fall
     # through once ``running`` is observed False).  The provider interrupt happens after
     # history_lock is released (a non-interruptible tool may hold it); if the old turn
@@ -597,7 +613,8 @@ def _(rid, params: dict) -> dict:
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
     err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task)
+        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task,
+        origin=submit_origin)
     if err is not None:
         return err
     if turn_isolation:

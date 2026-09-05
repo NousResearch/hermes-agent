@@ -34,6 +34,11 @@ def test_session_store_default_db_uses_runtime_hermes_home(tmp_path, monkeypatch
     config = GatewayConfig(default_reset_policy=SessionResetPolicy(mode="none"))
     fake_home = tmp_path / "alt_hermes_home"
     fake_home.mkdir()
+    import hermes_state
+
+    monkeypatch.setattr(
+        hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH
+    )
     monkeypatch.setenv("HERMES_HOME", str(fake_home))
 
     with patch("gateway.session.SessionStore._ensure_loaded"):

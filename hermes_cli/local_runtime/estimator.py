@@ -123,7 +123,7 @@ def ctx_bytes(profile: ModelProfile, window: int, *, flash_attention: bool = Tru
 
 @dataclass
 class PhysicsRefusal:
-    """The only true refusal: weights + floor-KV + state exceed VRAM + RAM. The remedy is a
+    """The only true refusal: weights + floor-KV + overhead exceed VRAM + RAM. The remedy is a
     smaller quant, never a smaller window."""
 
     needed_bytes: int
@@ -132,10 +132,12 @@ class PhysicsRefusal:
 
 
 def physics_check(profile: ModelProfile, budget: HardwareBudget,
-                  floor: int, *, flash_attention: bool = True) -> PhysicsRefusal | None:
+                  floor: int, *, flash_attention: bool = True,
+                  overhead_bytes: int = 0) -> PhysicsRefusal | None:
     needed = (profile.weights_bytes
               + ctx_bytes(profile, min(floor, profile.n_ctx_train or floor),
-                          flash_attention=flash_attention))
+                          flash_attention=flash_attention)
+              + max(0, int(overhead_bytes)))
     available = budget.usable_vram_bytes + budget.ram_available_bytes
     if needed <= available:
         return None

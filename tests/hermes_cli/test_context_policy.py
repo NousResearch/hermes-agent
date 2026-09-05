@@ -177,6 +177,16 @@ def test_physics_check_prices_at_floor_not_native():
     assert physics_check(p, card(24, ram_gib=8), FLOOR) is None
 
 
+def test_physics_check_includes_overhead_bytes():
+    """Preset/catalog callers price mmproj + runtime; refusal must too."""
+    p = dense(weights_gib=20)
+    budget = card(8, ram_gib=8)  # 16 GiB total
+    assert physics_check(p, budget, FLOOR) is None
+    refused = physics_check(p, budget, FLOOR, overhead_bytes=int(4 * GIB))
+    assert isinstance(refused, PhysicsRefusal)
+    assert refused.needed_bytes > refused.available_bytes
+
+
 # ── ladder + initial window ──────────────────────────────────
 
 

@@ -141,22 +141,45 @@ def test_budget_unified_no_smi_still_classifies(monkeypatch):
     assert live.usable_vram_bytes == int(32 * GIB * (1 - hw._UMA_HEADROOM_FRACTION))
 
 
+def _expected_discrete_planning_ram(ram_total: int) -> int:
+    headroom = max(
+        hw._DISCRETE_RAM_HEADROOM_FLOOR,
+        int(ram_total * hw._DISCRETE_RAM_HEADROOM_FRACTION),
+    )
+    return max(0, ram_total - headroom)
+
+
 def test_budget_discrete_unchanged_when_probe_says_discrete(monkeypatch):
-    """integrated=False keeps the existing discrete path bit-for-bit."""
+    """integrated=False keeps the discrete VRAM path; host RAM reserves desktop headroom."""
     _uma_machine(monkeypatch, view=(UMA_POOL, False))
     b = hw.probe_budget(planning=True)
     assert b.uma is False
     assert b.total_device_bytes == UMA_SMI_TOTAL
     margin = max(hw._MARGIN_FLOOR, int(UMA_SMI_TOTAL * hw._MARGIN_FRACTION))
     assert b.usable_vram_bytes == UMA_SMI_TOTAL - margin
-    assert b.ram_available_bytes == UMA_RAM
+    assert b.ram_available_bytes == _expected_discrete_planning_ram(UMA_RAM)
 
 
 def test_budget_discrete_unchanged_when_probe_unavailable(monkeypatch):
     _uma_machine(monkeypatch, view=None)
     b = hw.probe_budget(planning=True)
     assert b.uma is False
-    assert b.ram_available_bytes == UMA_RAM
+    assert b.ram_available_bytes == _expected_discrete_planning_ram(UMA_RAM)
+
+
+def test_discrete_planning_reserves_host_headroom(monkeypatch):
+    """Planning must not budget the entire host for spill (#102865)."""
+    _no_cache(monkeypatch)
+    ram_total = 30 * GIB
+    monkeypatch.setattr(hw, "_nvidia_vram", lambda: (8 * GIB, 7 * GIB))
+    monkeypatch.setattr(hw, "_ram_bytes", lambda: (ram_total, 20 * GIB))
+    monkeypatch.setattr(hw, "_device_pool_view", lambda: (8 * GIB, False))
+    planning = hw.probe_budget(planning=True)
+    assert planning.uma is False
+    assert planning.ram_available_bytes == _expected_discrete_planning_ram(ram_total)
+    assert planning.ram_available_bytes < ram_total
+    live = hw.probe_budget(planning=False)
+    assert live.ram_available_bytes == 20 * GIB
 
 
 def test_engine_fallback_without_smi_stays_conservative(monkeypatch):

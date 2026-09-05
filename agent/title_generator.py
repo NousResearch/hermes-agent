@@ -181,7 +181,9 @@ def _extract_title_text(content: str) -> str:
     if not content:
         return ""
     raw = content.strip()
-    fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", raw, re.DOTALL)
+    fenced = re.match(
+        r"^```(?:json)?\s*(.*?)\s*```$", raw, re.DOTALL | re.IGNORECASE
+    )
     if fenced:
         raw = fenced.group(1).strip()
     try:
@@ -195,6 +197,10 @@ def _extract_title_text(content: str) -> str:
         with suppress(ValueError):
             return json.loads(f'"{match.group(1)}"').strip()
         return match.group(1).strip()
+    # A low output-token cap can cut structured output before the closing
+    # quote, brace, or fence. Do not persist that fragment as a title.
+    if _is_truncated_structured_output(raw):
+        return ""
     # Prose fallback: scrub <think> blocks so reasoning can't leak into a title.
     try:
         from agent.agent_runtime_helpers import strip_think_blocks
@@ -202,6 +208,23 @@ def _extract_title_text(content: str) -> str:
     except Exception:
         logger.debug("strip_think_blocks unavailable for title output", exc_info=True)
     return _strip_title_prefix(_first_line(raw)).strip("\"'").strip()
+
+
+def _is_truncated_structured_output(raw: str) -> bool:
+    """Return whether *raw* is truncated structured output rather than prose.
+
+    This is called only after strict JSON parsing and the loose ``"title"``
+    scan fail. Structural signatures avoid rejecting legitimate Markdown
+    emphasis or quoted prose titles.
+    """
+    if not raw:
+        return False
+    # An odd fence count means a Markdown code block was never closed.
+    if raw.count("```") % 2:
+        return True
+    # A leading object or array after failed parsing is incomplete structured
+    # output, including unquoted-key variants the loose scan cannot extract.
+    return raw.lstrip().startswith(("{", "["))
 
 
 def _clean_title(text: str) -> Optional[str]:

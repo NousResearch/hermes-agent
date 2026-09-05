@@ -322,7 +322,7 @@ def _expire_persisted_result_on_access(remote_path: str, env) -> bool | None:
         f"[ ! -L {quoted_dir} ] && [ -d {quoted_dir} ] && "
         f"expired=$(find {quoted_path} -prune \\( -type f -o -type l \\) "
         f"-mtime +{RESULT_TTL_DAYS - 1} -print -quit 2>/dev/null) && "
-        "if [ -n \\\"$expired\\\" ]; then "
+        "if [ -n \"$expired\" ]; then "
         f"rm -f {quoted_path} && printf '%s' expired; "
         "fi"
     )
@@ -342,7 +342,7 @@ def _expire_remote_spillover_on_access(remote_path: str, env) -> bool | None:
         f"[ ! -L {quoted_dir} ] && [ -d {quoted_dir} ] && "
         f"expired=$(find {quoted_path} -prune \\( -type f -o -type l \\) "
         f"-mmin +{max_age_minutes - 1} -print -quit 2>/dev/null) && "
-        "if [ -n \\\"$expired\\\" ]; then "
+        "if [ -n \"$expired\" ]; then "
         f"rm -f {quoted_path} && printf '%s' expired; "
         "fi"
     )

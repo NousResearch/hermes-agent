@@ -77,13 +77,16 @@ an `auth_flows` array:
 
 | `auth_flows` value | Meaning |
 |--------------------|---------|
-| `["cookie", "native_pkce"]` | Gateway supports native sign-in → the app uses it |
+| `["cookie", "native_pkce"]` | Gateway supports native sign-in → the app uses it when provider selection is unambiguous |
 | `["cookie"]` | Gateway supports only the legacy flow → the app uses the embedded webview |
 | *(field absent)* | Older gateway → the app uses the embedded webview |
 
 If native sign-in is advertised but fails for a local reason — e.g. a security
 tool blocks the loopback listener, or you close the browser tab — the app
-**falls back to the embedded flow automatically** so you can still sign in.
+reports the failure so you can retry; it does not silently switch to a
+cookie-only session.
+When several providers require the user to choose one, the app opens that
+embedded provider chooser directly.
 
 ## Token lifecycle
 

@@ -266,6 +266,7 @@ import {
   type NativeTokenSet,
   parseTokenResponse,
   resolveLoginStrategy,
+  resolveNativeLoginProvider,
   tokenNeedsRefresh
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
@@ -6372,11 +6373,10 @@ function watchDirectory(rawDir) {
   return { id, path: watchDir }
 }
 
-// Best-effort read of a gateway's advertised auth providers, cached per base
-// URL for the life of the process. Used by the oauth pre-flight guard to tell
-// a password-provider gateway (which cannot satisfy the bearer/cookie checks
-// by design) from a real OAuth one. Any failure returns [] so callers keep the
-// strict guard — backends predating /api/auth/providers are unaffected.
+// Best-effort read of a gateway's interactive auth providers, cached per base
+// URL for the life of the process. Startup uses it to calibrate the pre-flight
+// guard; login uses it to avoid a native request when provider selection is
+// ambiguous. Any failure returns [] so older gateways keep their fallback.
 const gatewayAuthProvidersCache = new Map<string, any[]>()
 
 async function gatewayAuthProviders(baseUrl, headers = {}) {
@@ -15859,16 +15859,12 @@ async function fetchJsonForBackend(
 ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
 ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) => {
   // Capability-gated login (RFC 8252). Probe the gateway's public /api/status
-  // for supported auth_flows and /api/auth/providers for provider capabilities:
-  //   - all providers support password → always use the embedded login window
-  //     (password providers require the dashboard login form; native PKCE
-  //     can never complete for that provider shape)
-  //   - advertises "native_pkce" AND at least one non-password provider →
-  //     run the system-browser + loopback + PKCE flow
-  //   - older gateway with no provider metadata → fall back to the auth_flows
-  //     check (existing compatibility)
-  //   - a failed native login reports the error rather than auto-falling back
-  //     to the embedded flow — one sign-in action opens at most one window.
+  // and /api/auth/providers:
+  //   - "native_pkce" + one unambiguous provider → system browser + PKCE
+  //   - multiple eligible providers → embedded login with its provider chooser
+  //   - older gateway without native_pkce → embedded login
+  //   - a failed native login reports the error rather than silently switching
+  //     to a cookie-only session
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
 
   let statusBody: any = null
@@ -15887,11 +15883,15 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
 
   if (strategy === 'native') {
     try {
-      const tokens = await runNativeLogin(baseUrl, {
-        openExternal: url => shell.openExternal(url),
-        postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
-        rememberLog
-      })
+      const tokens = await runNativeLogin(
+        baseUrl,
+        {
+          openExternal: url => shell.openExternal(url),
+          postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
+          rememberLog
+        },
+        { provider: resolveNativeLoginProvider(providers) }
+      )
 
       _storeNativeTokens(baseUrl, tokens)
       // Confirmed sign-in — release the reauth latch so the next

@@ -51,6 +51,7 @@ const {
 interface DesktopStub {
   getConnection: ReturnType<typeof vi.fn>
   getConnectionFor: ReturnType<typeof vi.fn>
+  revalidateConnectionFor?: ReturnType<typeof vi.fn>
 }
 
 function installDesktop(stub: DesktopStub): void {
@@ -103,6 +104,23 @@ describe('registry-agent scope eviction (activeGateway must never silently hit t
     expect(activeGateway()).not.toBe(primary)
     expect($gateway.get()).not.toBe(primary)
     expect(gatewayMocks.connect).toHaveBeenCalledWith(agentConn.wsUrl)
+  })
+
+  it('drops and redials an apparently-open registry profile when its scoped backend is stale', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    const desktop = installAgentDesktop()
+
+    await ensureGatewayForAgent('forge', 'default')
+    expect(gatewayMocks.connect).toHaveBeenCalledTimes(1)
+
+    desktop.revalidateConnectionFor = vi.fn(async () => ({ ok: false, rebuilt: true }))
+
+    await ensureGatewayForAgent('forge', 'default')
+
+    expect(desktop.revalidateConnectionFor).toHaveBeenCalledWith({ connectionId: 'forge', profile: 'default' })
+    expect(desktop.getConnectionFor).toHaveBeenCalledTimes(2)
+    expect(gatewayMocks.connect).toHaveBeenCalledTimes(2)
   })
 
   it('keeps the primary active when a fresh registry activation cannot resolve', async () => {

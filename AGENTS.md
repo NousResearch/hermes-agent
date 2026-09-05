@@ -1782,3 +1782,74 @@ test('windowsHide defaults to true on Windows, is left alone elsewhere', () => {
 If the logic lives inline in a god-file (`main.ts`, `cli.py`,
 `gateway/run.py`) and extracting it feels disruptive: that's the actual
 signal to do the extraction, not to regex around it.
+
+## Coding-discipline skills (Claude Code / Codex / Antigravity)
+
+Loaded from committed `.claude/skills/` on this repo — for Claude Code, Codex,
+and Antigravity sessions editing hermes-agent. Distinct from the Hermes-runtime
+skill machinery documented in "## Skills" above.
+
+
+## Coding discipline
+
+Three coding-discipline rulesets apply on dev surfaces. These are separate from
+the LGT-BRAND block above, which governs client/advice output, not code.
+
+- **Karpathy** — `.claude/skills/karpathy-guidelines/SKILL.md` (committed). Think before coding, simplicity first, surgical changes, goal-driven (write the failing test first).
+- **Ponytail** — `.claude/skills/ponytail/SKILL.md` (committed). Lazy-senior-dev code-minimalism: the best code is the code never written. Intensity default full (never ultra on Morpheus LAGIC).
+- **Matt Pocock skills** — the table below; installed on JJ's machines, referenced here.
+- **Prompt caching** — `.claude/skills/prompt-caching/SKILL.md` (committed). Read before adding or moving a `cache_control` marker on any Anthropic call: a marker that is never read costs a write premium instead of saving, so decide from cadence and always verify `cache_read_input_tokens > 0`.
+
+Skill-capable surfaces (Claude Code, Codex) load these directly.
+Chat / Cowork carry them via the Mia config's `coding_discipline` + `ponytail_rules`.
+
+<!-- BEGIN PONYTAIL -->
+### Ponytail ruleset (inline)
+
+Canonical source: `.claude/skills/ponytail/SKILL.md`. Inlined here so agents that
+read `AGENTS.md` but don't load skills (e.g. Jules / cloud) inherit the same rules.
+Complements Karpathy; does not replace it.
+
+**Principle.** Be a lazy senior developer — lazy means efficient, not careless.
+The best code is the code never written.
+
+**The ladder** — before writing code, stop at the first rung that holds:
+1. Does this need to exist at all? (YAGNI)
+2. Does the standard library do it? Use it.
+3. Native platform feature? Use it.
+4. Already-installed dependency? Use it.
+5. Can it be one line? Make it one line.
+6. Only then: the minimum code that works.
+
+**Rules.** No unrequested abstractions, dependencies, or boilerplate. Deletion over
+addition; boring over clever; fewest files. Question complex requests ("do you need
+X, or does Y cover it?"). Mark intentional simplifications with a `ponytail:` comment
+naming the ceiling + upgrade path.
+
+**Never lazy about.** Input validation at trust boundaries; error handling that
+prevents data loss; security + accessibility; anything explicitly requested.
+Non-trivial logic leaves one runnable check behind (assert/self-check or one small test).
+
+**Intensity.** Default full.
+<!-- END PONYTAIL -->
+
+## Matt Pocock skills
+
+This repo is set up to work with [Matt Pocock's engineering skills](https://github.com/mattpocock/skills) (installed at `~/.claude/skills/` on JJ's machines).
+
+| Skill | When to use |
+|---|---|
+| `caveman` | Aggressively simplify a piece of code |
+| `diagnose` | Methodical bug investigation before patching |
+| `git-guardrails-claude-code` | Pre-commit guardrails for Claude Code git operations |
+| `grill-me` / `grill-with-docs` | Critique a plan / design |
+| `improve-codebase-architecture` | Architecture-level refactor proposals |
+| `prototype` | Throw-away scaffolding to test an idea |
+| `tdd` | Test-driven implementation |
+| `to-issues` | Convert a planning session into issue files in `docs/agents/issues/` (uses the labels above) |
+| `to-prd` | Convert a session into a PRD in `docs/agents/prds/` |
+| `triage` | Sort a backlog by priority / next action |
+| `write-a-skill` | Author a new skill |
+| `zoom-out` | Explicit-invoke; widen scope before narrowing into a task |
+
+`setup-matt-pocock-skills` scaffolds this file. `handoff` is excluded in JJ's setup — the JJ AI Brain in Airtable is the canonical continuity layer.

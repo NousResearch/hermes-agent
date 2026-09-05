@@ -97,7 +97,7 @@ def _cmd_repair(args):
         return
     print(f"✗ {db_path} does not open cleanly: {reason}")
     if getattr(args, "check_only", False):
-        return
+        return 1
     print("Repairing (a backup copy is made first)…")
     report = repair_state_db_schema(db_path, backup=not getattr(args, "no_backup", False))
     if report.get("repaired"):

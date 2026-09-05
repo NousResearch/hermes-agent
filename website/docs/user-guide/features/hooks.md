@@ -678,7 +678,7 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 
 **Fires:** In `agent/turn_context.py` (turn preparation for `run_conversation()` in `agent/conversation_loop.py`), after context compression but before the main `while` loop. Fires once per `run_conversation()` call (i.e. once per user turn), not once per API call within the tool loop.
 
-**Return value:** If the callback returns a dict with a `"context"` key, or a plain non-empty string, the text is appended to the current turn's user message. Return `None` for no injection.
+**Return value:** If the callback returns a dict with a `"context"` key, or a plain non-empty string, the text is appended to the current turn's user message. Return `None` for no injection. The same dict may also carry a `"runtime_override"` key to override the turn's model (see below).
 
 ```python
 # Inject context
@@ -698,6 +698,24 @@ The clean user-message `content` remains unchanged. For replay and prompt-cache 
 When **multiple plugins** return context, their outputs are joined with double newlines in plugin discovery order (alphabetical by directory name).
 
 **Use cases:** Memory recall, RAG context injection, guardrails, per-turn analytics.
+
+**Runtime model override (`runtime_override`):**
+
+A callback may also return a `runtime_override` dict to override the **model** used for the current turn. This is separate from the `context` injection above; a callback may return either or both.
+
+```python
+return {
+    "context": "Recalled context...",
+    "runtime_override": {"model": "deepseek/deepseek-v4-pro"},
+}
+```
+
+- **Model-only** — `model` is the only supported key. `provider`, `api_mode`, `api_key`, and `base_url` are intentionally unsupported: credentials never flow through the hook return, and the endpoint/wire resolve only from the provider's existing settings, so a plugin cannot redirect the session to another network destination or wire.
+- **Ephemeral and turn-scoped** — the override is re-resolved every turn and restored when the turn ends. It never mutates the session's persistent model identity and is never persisted to the session database.
+- **Applied before the first LLM call** — the override is authoritative through request construction, middleware, and wire dispatch, re-projecting the model-derived state (prompt-cache policy, context length, reasoning config) exactly like a normal model switch.
+- **`system_prompt` is never overridable** — it is runtime-owned and its cache prefix stays byte-stable; a model switch stays inside the existing provider route.
+
+Unsupported keys are logged with a one-line warning and ignored (never an error). A model switch stays inside the existing provider route and never touches credentials or the endpoint — installing a plugin grants it this power, so install only plugins you trust.
 
 **Example — memory recall:**
 

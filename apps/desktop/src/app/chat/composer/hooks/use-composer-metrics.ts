@@ -6,7 +6,8 @@ import {
   clearSurfaceVar,
   COMPOSER_HEIGHT_VAR,
   COMPOSER_SURFACE_HEIGHT_VAR,
-  setSurfaceVar
+  setSurfaceVar,
+  THREAD_SETTLED_CLEARANCE_VAR
 } from '@/app/chat/surface-vars'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 
@@ -24,6 +25,8 @@ interface UseComposerMetricsArgs {
   composerSurfaceRef: RefObject<HTMLDivElement | null>
   editorRef: RefObject<HTMLDivElement | null>
   poppedOut: boolean
+  running: boolean
+  surfaceKey?: string | null
 }
 
 /** Every width-driven collapse stage, resolved from the composer's own width. */
@@ -62,7 +65,9 @@ export function useComposerMetrics({
   composerRef,
   composerSurfaceRef,
   editorRef,
-  poppedOut
+  poppedOut,
+  running,
+  surfaceKey
 }: UseComposerMetricsArgs): UseComposerMetricsResult {
   const [expanded, setExpanded] = useState(false)
   const [fit, setFit] = useState<ComposerFit>(ROOMY)
@@ -108,12 +113,20 @@ export function useComposerMetrics({
   // until a wrap or row change actually happens.
   const lastBucketedHeightRef = useRef(0)
   const lastBucketedSurfaceHeightRef = useRef(0)
+  const lastRunningDockHeightRef = useRef(0)
+  const lastSettledClearanceRef = useRef(0)
+  const lastSyncedRunningRef = useRef(running)
+  const lastSyncedSurfaceKeyRef = useRef(surfaceKey)
   const lastFitRef = useRef(ROOMY)
   // Mirrored into a ref so `syncComposerMetrics` stays referentially stable —
   // it's the shared ResizeObserver's handler, and a new identity every render
   // would re-register the observation.
   const poppedOutRef = useRef(poppedOut)
   poppedOutRef.current = poppedOut
+  const runningRef = useRef(running)
+  runningRef.current = running
+  const surfaceKeyRef = useRef(surfaceKey)
+  surfaceKeyRef.current = surfaceKey
 
   const syncComposerMetrics = useCallback(() => {
     const composer = composerRef.current
@@ -125,6 +138,20 @@ export function useComposerMetrics({
       return
     }
 
+    const startedRun = runningRef.current && !lastSyncedRunningRef.current
+    const changedSurface = surfaceKeyRef.current !== lastSyncedSurfaceKeyRef.current
+    lastSyncedRunningRef.current = runningRef.current
+    lastSyncedSurfaceKeyRef.current = surfaceKeyRef.current
+
+    if (startedRun || changedSurface) {
+      lastRunningDockHeightRef.current = 0
+    }
+
+    if (changedSurface && lastSettledClearanceRef.current !== 0) {
+      lastSettledClearanceRef.current = 0
+      setSurfaceVar(composer, THREAD_SETTLED_CLEARANCE_VAR, '0px')
+    }
+
     // Floating composer is out of the thread's flow — it must not reserve any
     // bottom clearance. Zero the measured vars so the thread reclaims the space.
     // Read through a ref so the callback stays stable, and read THIS surface's
@@ -133,8 +160,11 @@ export function useComposerMetrics({
     if (poppedOutRef.current) {
       lastBucketedHeightRef.current = 0
       lastBucketedSurfaceHeightRef.current = 0
+      lastRunningDockHeightRef.current = 0
+      lastSettledClearanceRef.current = 0
       setSurfaceVar(composer, COMPOSER_HEIGHT_VAR, '0px')
       setSurfaceVar(composer, COMPOSER_SURFACE_HEIGHT_VAR, '0px')
+      setSurfaceVar(composer, THREAD_SETTLED_CLEARANCE_VAR, '0px')
 
       return
     }
@@ -171,6 +201,28 @@ export function useComposerMetrics({
         lastBucketedHeightRef.current = bucket
         setSurfaceVar(composer, COMPOSER_HEIGHT_VAR, `${bucket}px`)
       }
+
+      // The in-flow status stack can be almost half a viewport tall. Keep the
+      // largest dock reached by this run. If transient status UI disappears
+      // before the terminal running=false render, publish that maximum
+      // immediately: otherwise the active layout contracts first and settlement
+      // reintroduces the old maximum as an inverse scroll jump.
+      const previousRunningDockHeight = lastRunningDockHeightRef.current
+
+      if (runningRef.current) {
+        lastRunningDockHeightRef.current = Math.max(previousRunningDockHeight, bucket)
+      }
+
+      const clearanceFloor = runningRef.current
+        ? !startedRun && bucket < previousRunningDockHeight
+          ? previousRunningDockHeight
+          : 0
+        : lastRunningDockHeightRef.current
+
+      if (clearanceFloor !== lastSettledClearanceRef.current) {
+        lastSettledClearanceRef.current = clearanceFloor
+        setSurfaceVar(composer, THREAD_SETTLED_CLEARANCE_VAR, `${clearanceFloor}px`)
+      }
     }
 
     if (surfaceHeight && surfaceHeight > 0) {
@@ -186,12 +238,34 @@ export function useComposerMetrics({
   useResizeObserver(syncComposerMetrics, composerDockRef, composerRef, composerSurfaceRef, editorRef)
 
   // Toggling pop-out changes whether the composer reserves thread clearance.
-  // The ResizeObserver may not fire (the box can keep the same box size), so
-  // re-sync explicitly: docked republishes the measured height, floating zeroes
-  // it so the thread reclaims the bottom space.
+  // Starting a new run releases the previous turn's clearance floor; the
+  // thread's run-start handler owns the deliberate re-anchor to the new bottom.
+  // Neither transition necessarily resizes the dock, so re-sync explicitly.
   useEffect(() => {
     syncComposerMetrics()
-  }, [poppedOut, syncComposerMetrics])
+  }, [poppedOut, running, surfaceKey, syncComposerMetrics])
+
+  // A hard newline expands through React before layout settles, and emptying the
+  // draft collapses through the same path. Neither transition depends on a
+  // ResizeObserver delivery, so measure the committed layout explicitly. Once
+  // an idle user deliberately reshapes the composer, the previous run's floor
+  // no longer owns the geometry; release it instead of preserving stale space.
+  const syncExpandedComposerMetrics = useCallback(() => {
+    if (!runningRef.current) {
+      lastRunningDockHeightRef.current = 0
+
+      if (lastSettledClearanceRef.current !== 0) {
+        lastSettledClearanceRef.current = 0
+        setSurfaceVar(composerRef.current, THREAD_SETTLED_CLEARANCE_VAR, '0px')
+      }
+    }
+
+    syncComposerMetrics()
+  }, [composerRef, syncComposerMetrics])
+
+  useEffect(() => {
+    syncExpandedComposerMetrics()
+  }, [expanded, syncExpandedComposerMetrics])
 
   useEffect(() => {
     // Resolve the owning surface while the composer is still attached; the
@@ -202,6 +276,7 @@ export function useComposerMetrics({
     return () => {
       clearSurfaceVar(root, COMPOSER_HEIGHT_VAR)
       clearSurfaceVar(root, COMPOSER_SURFACE_HEIGHT_VAR)
+      clearSurfaceVar(root, THREAD_SETTLED_CLEARANCE_VAR)
     }
   }, [composerRef])
 

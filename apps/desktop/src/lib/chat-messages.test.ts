@@ -731,6 +731,7 @@ describe('preserveLocalAssistantErrors', () => {
       },
       {
         error: 'connection lost after completion',
+        errorSurface: { code: 'transport_lost', layer: 'streaming', retryable: true },
         id: 'assistant-live-before-hydration',
         parts: hydratedAssistant.parts,
         role: 'assistant',
@@ -744,6 +745,7 @@ describe('preserveLocalAssistantErrors', () => {
     expect(assistants).toHaveLength(1)
     expect(assistants[0]).toMatchObject({
       error: 'connection lost after completion',
+      errorSurface: { code: 'transport_lost', layer: 'streaming', retryable: true },
       id: hydratedAssistant.id,
       pending: false
     })
@@ -773,6 +775,31 @@ describe('preserveLocalAssistantErrors', () => {
       'older-assistant',
       'new-assistant-error'
     ])
+  })
+
+  it('does not transfer an older error to a later assistant produced by a hidden turn', () => {
+    // Hidden user directives are absent from the display projection, so their
+    // assistant can follow an earlier assistant under the same visible user.
+    const nextMessages: ChatMessage[] = [
+      { id: 'user-1', parts: [{ text: 'question', type: 'text' }], role: 'user' },
+      { id: 'widget-hydrated', parts: [{ text: 'Done.', type: 'text' }], role: 'assistant' }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      { id: 'user-1', parts: [{ text: 'question', type: 'text' }], role: 'user' },
+      {
+        error: 'old provider failure',
+        id: 'failed-before-widget',
+        parts: [{ text: 'Done.', type: 'text' }],
+        role: 'assistant'
+      },
+      { id: 'widget-live', parts: [{ text: 'Done.', type: 'text' }], role: 'assistant' }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+
+    expect(merged.find(message => message.id === 'widget-hydrated')?.error).toBeUndefined()
+    expect(merged.find(message => message.id === 'failed-before-widget')?.error).toBe('old provider failure')
   })
 
   it('does not match a later failed turn to a reused tool-call id from an older turn', () => {

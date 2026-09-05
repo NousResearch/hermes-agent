@@ -601,6 +601,7 @@ describe('reconcileActiveTranscript', () => {
       },
       {
         error: 'connection lost after completion',
+        errorSurface: { code: 'transport_lost', layer: 'streaming', retryable: true },
         id: 'assistant-live-before-refresh',
         parts: [{ text: 'answer', type: 'text' }],
         role: 'assistant'
@@ -614,7 +615,11 @@ describe('reconcileActiveTranscript', () => {
     const assistants = messages.filter(message => message.role === 'assistant')
 
     expect(assistants).toHaveLength(1)
-    expect(assistants[0]).toMatchObject({ error: 'connection lost after completion', pending: false })
+    expect(assistants[0]).toMatchObject({
+      error: 'connection lost after completion',
+      errorSurface: { code: 'transport_lost', layer: 'streaming', retryable: true },
+      pending: false
+    })
   })
 
   it('resolves and hydrates a messaging session from the messaging sessions store', async () => {

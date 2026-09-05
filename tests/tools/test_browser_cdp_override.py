@@ -195,6 +195,51 @@ class TestCreateCdpSession:
         assert "localhost:9222" in logged_args
 
 
+def test_cdp_commands_keep_the_agent_browser_session_that_owns_snapshot_refs(monkeypatch):
+    """CDP commands must share the named agent-browser session that caches refs."""
+    captured = []
+    cdp_url = "ws://localhost:9222/devtools/browser/abc123"
+    session = {
+        "session_name": "cdp_fixture",
+        "cdp_url": cdp_url,
+        "features": {"cdp_override": True},
+    }
+
+    monkeypatch.setattr(
+        bt_session, "_browser_command_preflight", lambda: {"browser_cmd": "agent-browser"}
+    )
+    monkeypatch.setattr(bt_session, "_get_session_info", lambda _task_id: session)
+    monkeypatch.setattr(bt_cdp, "_ensure_cdp_supervisor", lambda _task_id: None)
+    monkeypatch.setattr(bt_cloud, "_get_browser_engine", lambda: "auto")
+    monkeypatch.setattr(
+        bt_session,
+        "_spawn_and_collect",
+        lambda _task_id, _session, argv, _command, _engine, _timeout: (
+            captured.append(argv) or {"success": True, "data": {}}
+        ),
+    )
+
+    snapshot = bt_session._run_browser_command("task-1", "snapshot", ["-c"])
+    click = bt_session._run_browser_command("task-1", "click", ["@e4"])
+
+    assert snapshot["success"] is True
+    assert click["success"] is True
+    assert captured == [
+        [
+            "agent-browser",
+            "--session", "cdp_fixture",
+            "--cdp", cdp_url,
+            "--json", "snapshot", "-c",
+        ],
+        [
+            "agent-browser",
+            "--session", "cdp_fixture",
+            "--cdp", cdp_url,
+            "--json", "click", "@e4",
+        ],
+    ]
+
+
 class TestCDPSupervisorTimeoutRedaction:
     """CDPSupervisor.start() TimeoutError must not expose raw CDP credentials.
 

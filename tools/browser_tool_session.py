@@ -578,13 +578,13 @@ def _run_browser_command(
     if command != "close" and session_info.get("cdp_url"):
         _cdp._ensure_cdp_supervisor(task_id)
 
-    # Cloud/CDP: ``--cdp <ws_url>`` (NEVER with --session: agent-browser >=0.13
-    # would create a local browser and silently ignore --cdp). Local: ``--session <name>``.
+    # Keep a named daemon in CDP mode too: its snapshot ref map lives in the
+    # agent-browser session and must survive into the following click/fill.
     # Engine injection keys off the resolved session backend, not global provider
     # state: hybrid routing can create a local sidecar while a cloud provider stays configured.
     engine = _engine_override or _cloud._get_browser_engine()
     if session_info.get("cdp_url"):
-        backend_args = ["--cdp", session_info["cdp_url"]]
+        backend_args = ["--session", session_info["session_name"], "--cdp", session_info["cdp_url"]]
     else:
         backend_args = ["--session", session_info["session_name"]]
         if _cloud._is_headed_mode():

@@ -4,6 +4,8 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.version import Version
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -54,6 +56,64 @@ def test_faster_whisper_is_not_a_base_dependency():
 
     voice_extra = data["project"]["optional-dependencies"]["voice"]
     assert any(dep.startswith("faster-whisper") for dep in voice_extra)
+
+
+@pytest.mark.parametrize(
+    ("package", "last_vulnerable", "first_fixed", "next_major"),
+    [
+        ("pydantic-settings", "2.14.1", "2.14.2", "3"),
+        ("pygments", "2.19.2", "2.20.0", "3"),
+    ],
+)
+def test_transitive_security_floors_are_bounded_core_requirements(
+    package: str,
+    last_vulnerable: str,
+    first_fixed: str,
+    next_major: str,
+):
+    """Known-vulnerable transitives must be bounded core requirements.
+
+    Membership checks alone cannot distinguish `>2.14.1` from `>=2.14.2` or
+    `<3` from `<3.0.1`, so beyond the vulnerable/fixed/next-major probes the
+    requirement must also structurally encode an explicit lower bound at or
+    above the first fixed release and an explicit upper bound below the next
+    major release.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    requirements = {
+        Requirement(spec).name.lower(): Requirement(spec)
+        for spec in data["project"]["dependencies"]
+    }
+
+    assert package in requirements, (
+        f"{package} must be constrained directly in core dependencies so all "
+        "install paths enforce its reviewed security floor"
+    )
+    specifier = requirements[package].specifier
+    assert Version(last_vulnerable) not in specifier
+    assert Version(first_fixed) in specifier
+    assert Version(next_major) not in specifier
+
+    # Bound shape: an explicit lower bound at or above the first fixed
+    # release, and an explicit upper bound below the next major release.
+    lower_bounds = [
+        Version(spec.version)
+        for spec in specifier
+        if spec.operator in (">=", "~=", "==")
+    ]
+    assert any(bound >= Version(first_fixed) for bound in lower_bounds), (
+        f"{package} requirement must encode a lower bound at or above the "
+        f"first fixed release {first_fixed} (got {requirements[package]!s})"
+    )
+    upper_bounds = [
+        Version(spec.version)
+        for spec in specifier
+        if spec.operator in ("<", "<=")
+    ]
+    assert any(bound <= Version(next_major) for bound in upper_bounds), (
+        f"{package} requirement must encode an upper bound below the next "
+        f"major release {next_major} (got {requirements[package]!s})"
+    )
 
 
 # Minimum non-vulnerable Starlette: CVE-2026-48710 ("BadHost") was fixed in

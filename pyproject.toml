@@ -108,6 +108,11 @@ dependencies = [
   # cryptography<49, so [tool.uv] also holds an override. Read that comment
   # before you move this version.
   "cryptography==50.0.0",  # CVE-2026-69247, GHSA-m2h6-j472-rp4c, GHSA-jwv3-5hgf-82ww, CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf
+  # Security floors for transitives reached through MCP/Teams and Rich. Keep
+  # them direct so every install path rejects the vulnerable line instead of
+  # relying on the resolver to happen to select the latest release.
+  "pydantic-settings>=2.14.2,<3",  # GHSA-4xgf-cpjx-pc3j
+  "Pygments>=2.20.0,<3",  # GHSA-5239-wwwm-4pmq
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package

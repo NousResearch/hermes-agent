@@ -383,11 +383,11 @@ def _make_tool_defs(*names: str) -> list:
 def agent():
     with (
         patch(
-            "run_agent.get_tool_definitions",
+            "model_tools.get_tool_definitions",
             return_value=_make_tool_defs("web_search", "terminal"),
         ),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
@@ -427,7 +427,7 @@ class TestSegmentedDispatchIntegration:
                 events.append(("end", name, kwargs["tool_call_id"]))
             return json.dumps({"ok": name})
 
-        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+        with patch("model_tools.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls(msg, messages, "task-1")
 
         # One result per call, in emission order.
@@ -460,7 +460,7 @@ class TestSegmentedDispatchIntegration:
                 executed.append(kwargs["tool_call_id"])
             return json.dumps({"ok": True})
 
-        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+        with patch("model_tools.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls(msg, messages, "task-1")
 
         assert [m["tool_call_id"] for m in messages] == ["s1", "s2", "t1", "s3", "s4"]
@@ -507,7 +507,7 @@ class TestSegmentedDispatchIntegration:
                 agent._interrupt_requested = True
             return json.dumps({"ok": True})
 
-        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+        with patch("model_tools.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls(msg, messages, "task-1")
 
         # Every call still gets exactly one result, in order.
@@ -532,7 +532,7 @@ class TestSegmentedDispatchIntegration:
             return json.dumps({"ok": True})
 
         agent.steer("focus on the tests")
-        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+        with patch("model_tools.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls(msg, messages, "task-1")
 
         contents = [m["content"] for m in messages]
@@ -602,7 +602,7 @@ class TestSegmentedDispatchIntegration:
             return "small"
 
         with (
-            patch("run_agent.handle_function_call", side_effect=fake_handle),
+            patch("model_tools.handle_function_call", side_effect=fake_handle),
             patch("agent.tool_executor._budget_for_agent", return_value=budget),
         ):
             agent._execute_tool_calls(msg, messages, "task-1")

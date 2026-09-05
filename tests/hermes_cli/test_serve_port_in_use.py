@@ -39,7 +39,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def test_probe_detects_held_socket():
-    from hermes_cli.web_server import _port_bind_conflict
+    from hermes_cli.web_server_lifecycle import _port_bind_conflict
 
     holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     holder.bind(("127.0.0.1", 0))
@@ -52,7 +52,7 @@ def test_probe_detects_held_socket():
 
 
 def test_probe_free_port_is_clean():
-    from hermes_cli.web_server import _port_bind_conflict
+    from hermes_cli.web_server_lifecycle import _port_bind_conflict
 
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     probe.bind(("127.0.0.1", 0))
@@ -62,7 +62,7 @@ def test_probe_free_port_is_clean():
 
 
 def test_probe_skips_ephemeral_port_zero():
-    from hermes_cli.web_server import _port_bind_conflict
+    from hermes_cli.web_server_lifecycle import _port_bind_conflict
 
     # port 0 can never conflict — must short-circuit False, never bind.
     assert _port_bind_conflict("127.0.0.1", 0) is False
@@ -71,7 +71,7 @@ def test_probe_skips_ephemeral_port_zero():
 def test_addr_in_use_error_classification():
     import errno
 
-    from hermes_cli.web_server import _is_addr_in_use_error
+    from hermes_cli.web_server_lifecycle import _is_addr_in_use_error
 
     assert _is_addr_in_use_error(OSError(errno.EADDRINUSE, "in use")) is True
     assert _is_addr_in_use_error(OSError(98, "linux")) is True
@@ -80,7 +80,7 @@ def test_addr_in_use_error_classification():
 
 
 def test_exit_code_is_distinct_tempfail():
-    from hermes_cli.web_server import PORT_IN_USE_EXIT_CODE
+    from hermes_cli.web_server_lifecycle import PORT_IN_USE_EXIT_CODE
 
     assert PORT_IN_USE_EXIT_CODE == 75  # EX_TEMPFAIL — repo convention
     assert PORT_IN_USE_EXIT_CODE != 1

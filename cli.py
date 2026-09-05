@@ -793,12 +793,23 @@ def _shutdown_cached_aux_clients() -> None:
     shutdown_cached_clients()
 
 
+def _shutdown_lsp_service() -> None:
+    """Tear down the LSP service so its asyncio subprocess transports are cleaned up
+    before the event loop closes.  Prevents ``RuntimeError: Event loop is closed`` from
+    ``BaseSubprocessTransport.__del__`` during interpreter shutdown when an LSP server
+    (e.g. pyright) was spawned during the session.
+    """
+    from agent.lsp import shutdown_service
+    shutdown_service()
+
+
 # Ordered teardown steps (attribute names, resolved at call time so tests can patch them)
 # and the exception class each swallows.
 _CLEANUP_STEPS = (
     ("_stop_cli_wake_word", Exception), ("_cleanup_all_terminals", Exception),
     ("_interrupt_async_delegations", Exception), ("_cleanup_all_browsers", Exception),
     ("_shutdown_mcp_servers", BaseException), ("_shutdown_cached_aux_clients", Exception),
+    ("_shutdown_lsp_service", Exception),
 )
 
 

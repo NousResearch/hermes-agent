@@ -13,6 +13,7 @@ import time
 import threading as _threading
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
+from hermes_cli.models_catalog_static import _PROVIDER_CATALOG_DELEGATES
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug, get_label
 from utils import base_url_host_matches
 
@@ -373,10 +374,15 @@ def _live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str, merge_mo
 
 
 def _first_curated(curated: dict, keys) -> list:
-    """First non-empty curated list under *keys*; the last key's (possibly empty) value otherwise."""
+    """First non-empty curated list under *keys*; the last key's (possibly empty) value otherwise.
+    Each key also tries its ``_PROVIDER_CATALOG_DELEGATES`` target: a subscription runtime with no
+    curated list of its own (claude-agent-sdk) serves its delegate's catalog, matching
+    ``_provider_catalog_names`` and the inventory fallback row — otherwise an authenticated runtime
+    renders a 1-model row (just the saved model) while the same provider unauthenticated shows the
+    full delegate catalog."""
     model_ids: list = []
     for key in keys:
-        model_ids = curated.get(key, [])
+        model_ids = curated.get(key, []) or curated.get(_PROVIDER_CATALOG_DELEGATES.get(key, key), [])
         if model_ids:
             break
     return model_ids

@@ -164,6 +164,44 @@ class TestDetectProviderForModel:
 
 
 
+    def test_claude_agent_sdk_pin_not_overridden_by_static_catalog(self):
+        """F1 (PR #65982): claude-opus-4-8 is in the anthropic static catalog;
+        with current=claude-agent-sdk (keyless, catalog served by the CLI)
+        detection must return None — switching would silently move billing
+        from the subscription to the metered API lane. Same protection class
+        as the #48305 custom-endpoint exemption."""
+        assert detect_provider_for_model("claude-opus-4-8", "claude-agent-sdk") is None
+
+    def test_claude_agent_sdk_alias_spelling_also_protected(self):
+        """Accepted provider spellings normalize before the catalog check."""
+        assert detect_provider_for_model("claude-sonnet-5", "claude-sdk") is None
+
+    def test_claude_agent_sdk_pin_not_hijacked_by_openrouter_fallback(self):
+        """The OpenRouter static list carries anthropic/claude-* slugs; the
+        delegate must stop Step 2 as well, not just the Step-1 static walk —
+        otherwise the pin is merely re-hijacked to ('openrouter', ...)."""
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            assert detect_provider_for_model("claude-sonnet-5", "claude-agent-sdk") is None
+
+    def test_non_anthropic_model_still_switches_off_claude_agent_sdk(self):
+        """gpt-5.4 is NOT served by the subscription runtime — normal
+        detection still applies while pinned."""
+        result = detect_provider_for_model("gpt-5.4", "claude-agent-sdk")
+        assert result is not None and result[0] == "openai"
+
+    def test_short_alias_resolves_within_pinned_claude_agent_sdk(self):
+        """`-m sonnet` while pinned resolves the alias INSIDE the pinned
+        provider (alias resolved, pin kept) instead of walking to anthropic.
+        OpenRouter must not even be consulted."""
+        with patch(
+            "hermes_cli.models.fetch_openrouter_models",
+            side_effect=AssertionError("openrouter must not be consulted"),
+        ):
+            result = detect_provider_for_model("sonnet", "claude-agent-sdk")
+        assert result is not None
+        assert result[0] == "claude-agent-sdk"
+        assert result[1].startswith("claude-sonnet")
+
 
 class TestPartitionNousModelsByTier:
     """Tests for partition_nous_models_by_tier — free vs paid tier model split."""

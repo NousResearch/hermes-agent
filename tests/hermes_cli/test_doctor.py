@@ -1564,6 +1564,45 @@ class TestDoctorDeprecatedConfigAndEnv:
         assert "⚠" in out or "Deprecated" in out
 
 
+def test_run_doctor_recognises_plugin_model_providers(monkeypatch, tmp_path):
+    # F2 (#65982 independent verification): `claude-agent-sdk` ships as a
+    # plugins/model-providers/ profile, not a PROVIDER_REGISTRY entry —
+    # doctor flagged a working config as unknown and steered users off it.
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n  provider: claude-agent-sdk\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "model.provider 'claude-agent-sdk' is not a recognised provider" not in out
+    assert "model.provider 'claude-agent-sdk' is unknown" not in out
+
+
 class TestMacOSTCCGrants:
     """macOS TCC grant persistence check (issue #86385)."""
 

@@ -199,8 +199,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "minimax-oauth": ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
     "minimax-cn": list(_MINIMAX_MODELS),
     "anthropic": [
-        "claude-fable-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
-        "claude-sonnet-4-6", "claude-opus-4-5-20251101", "claude-sonnet-4-5-20250929",
+        "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7",
+        "claude-opus-4-6", "claude-sonnet-4-6", "claude-opus-4-5-20251101", "claude-sonnet-4-5-20250929",
         "claude-opus-4-20250514", "claude-sonnet-4-20250514", "claude-haiku-4-5-20251001",
     ],
     "deepseek": ["deepseek-v4-pro", "deepseek-v4-flash"],
@@ -314,6 +314,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
     ("novita", "NovitaAI", "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
     ("lmstudio", "LM Studio", "LM Studio (Local desktop app with built-in model server)"),
     ("anthropic", "Anthropic", "Anthropic (Claude models via API key or Claude Code)"),
+    ("claude-agent-sdk", "Claude Agent SDK", "Claude Agent SDK (Claude Code agent loop, billed to the Claude subscription)"),
     ("openai-codex", "ChatGPT or Codex Subscription", "ChatGPT or Codex Subscription (Sign in with your ChatGPT account, uses Codex models)"),
     ("openai-api", "OpenAI API", "OpenAI API (api.openai.com, API key)"),
     ("alibaba", "Qwen Cloud", "Qwen Cloud / DashScope (Qwen + multi-provider)"),
@@ -453,7 +454,11 @@ _PROVIDER_ALIASES = dict((
     ("token-factory", "nebius-token-factory"), ("tokenfactory", "nebius-token-factory"),
     ("minimax-china", "minimax-cn"), ("minimax_cn", "minimax-cn"), ("minimax-portal", "minimax-oauth"),
     ("minimax-global", "minimax-oauth"), ("minimax_oauth", "minimax-oauth"), ("claude", "anthropic"),
-    ("claude-code", "anthropic"), ("deep-seek", "deepseek"), ("opencode", "opencode-zen"), ("zen", "opencode-zen"),
+    ("claude-code", "anthropic"),
+    # claude-agent-sdk: the runtime_provider short-circuit's accepted spellings, so provider:model parsing
+    # agrees with resolution.
+    ("claude-sdk", "claude-agent-sdk"), ("claude-code-sdk", "claude-agent-sdk"), ("claude_agent_sdk", "claude-agent-sdk"),
+    ("deep-seek", "deepseek"), ("opencode", "opencode-zen"), ("zen", "opencode-zen"),
     ("go", "opencode-go"), ("opencode-go-sub", "opencode-go"), ("free", "opencode-free"),
     ("opencode_free", "opencode-free"), ("aigateway", "ai-gateway"), ("vercel", "ai-gateway"),
     ("vercel-ai-gateway", "ai-gateway"), ("kilo", "kilocode"), ("kilo-code", "kilocode"),
@@ -497,6 +502,19 @@ _SILENT_DEFAULT_PROVIDERS: frozenset[str] = frozenset({"nous", "openrouter"})
 # off; model_normalize remaps them on the wire.
 _PROVIDER_RETIRED_ALIASES: dict[str, tuple[str, ...]] = {
     "deepseek": ("deepseek-chat", "deepseek-reasoner"),
+}
+
+
+# Subscription providers with no _PROVIDER_MODELS entry of their own that serve another vendor's
+# catalog verbatim (the runtime owns the endpoint and model list). Catalog-membership checks treat
+# the delegate's catalog as theirs, so an explicit model.provider pin survives `-m <claude-id>` /
+# `/model <claude-id>` instead of being rewritten to the API-key provider — which would silently
+# switch billing lanes (PR #65982 F1; mirrors the #48305 custom-endpoint exemption). Membership, not
+# identity: these providers never appear as walk targets in _PROVIDER_MODELS itself, and the delegate
+# also stops detect_provider_for_model's OpenRouter fallback from hijacking the pin (OPENROUTER_MODELS
+# carries anthropic/claude-* slugs).
+_PROVIDER_CATALOG_DELEGATES: dict[str, str] = {
+    "claude-agent-sdk": "anthropic",
 }
 
 

@@ -118,14 +118,18 @@ def build_models_payload(
 
     if explicit_only:
         rows = _filter_explicit_provider_rows(rows, ctx)
-        # If the current provider lost its credential, list_authenticated_providers() omits it; keep
-        # that one row so the UI shows the saved selection + a re-auth affordance instead of appearing
-        # to jump providers. Exception: a "custom" current on the managed local server is already
-        # represented by the Local row — the skeleton would resurrect the duplicate removed above.
-        _local_owns_current = bool(local_row and local_row.get("is_current")
-                                   and (ctx.current_provider or "").lower() == "custom")
-        if not _local_owns_current:
-            rows = list(rows) + _append_unconfigured_rows(rows, ctx, current_only=True)
+    # If the configured current provider is missing from the rows, keep one row so pickers show the
+    # saved selection (+ a re-auth affordance where re-authenticatable) instead of appearing to jump
+    # providers. Every payload, not just the explicit-only desktop subset: self-authenticating runtimes
+    # (auth_type "oauth_external", e.g. claude-agent-sdk on a Keychain-only login) hold no
+    # Hermes-inspectable credential by design, so list_authenticated_providers() omits them and the
+    # interactive TUI picker would otherwise hide the very provider serving turns. Exception: a
+    # "custom" current on the managed local server is already represented by the Local row — the
+    # skeleton would resurrect the duplicate removed above.
+    _local_owns_current = bool(local_row and local_row.get("is_current")
+                               and (ctx.current_provider or "").lower() == "custom")
+    if not _local_owns_current:
+        rows = list(rows) + _append_unconfigured_rows(rows, ctx, current_only=True)
 
     # A local proxy serving a model also in an aggregator's catalog would show under both, and picking
     # the aggregator row silently breaks the call — aggregators only list models no specific provider has.
@@ -382,11 +386,21 @@ def _apply_custom_aliases(rows: list[dict]) -> None:
 
 
 def _provider_auth_hint(slug: str) -> tuple[str, str]:
-    """``(auth_type, key_env)`` for a canonical provider (``("api_key", "")`` when unregistered)."""
+    """``(auth_type, key_env)`` for a canonical provider (``("api_key", "")`` when unknown). PROVIDER_REGISTRY
+    only covers providers with a Hermes-managed credential; plugin-registered self-authenticating runtimes
+    (claude-agent-sdk) declare auth_type in their provider PROFILE instead, and a bare "api_key" fallback
+    would make the picker hunt for a key they are designed never to have (#25267)."""
     from hermes_cli.auth import PROVIDER_REGISTRY
 
     cfg = PROVIDER_REGISTRY.get(slug)
-    auth_type = cfg.auth_type if cfg else "api_key"
+    auth_type = cfg.auth_type if cfg else ""
+    if not auth_type:
+        try:
+            from providers import get_provider_profile
+
+            auth_type = getattr(get_provider_profile(slug), "auth_type", "") or "api_key"
+        except Exception:
+            auth_type = "api_key"
     key_env = cfg.api_key_env_vars[0] if (cfg and cfg.api_key_env_vars) else ""
     return auth_type, key_env
 
@@ -399,6 +413,35 @@ def _canonical_row(entry, cur: str, **extra: Any) -> dict:
     from hermes_cli.models import _PROVIDER_LABELS
 
     return _row(entry.slug, _PROVIDER_LABELS.get(entry.slug, entry.label), entry.slug.lower() == cur, **extra)
+
+
+def _configured_current_row(entry, cur: str, cur_model: str) -> dict:
+    """Row for the configured current provider when discovery omitted it. A self-authenticating runtime
+    (``oauth_external``: the spawned subprocess holds the credential) is authenticated and warning-free —
+    treating it as unauthenticated hid it from the picker entirely. The catalog goes through
+    ``_provider_catalog_names`` (so the claude-agent-sdk -> anthropic delegate applies here, not only in
+    detection) with the saved model first so the picker preselects it: it may be a new/preview id absent
+    from the bundled catalog, and dropping it would make the current config impossible to re-select."""
+    from hermes_cli.models import _provider_catalog_names
+
+    auth_type, key_env = _provider_auth_hint(entry.slug)
+    self_auth = auth_type == "oauth_external"
+    catalog = list(_provider_catalog_names(entry.slug))
+    if not catalog:
+        catalog = [cur_model] if cur_model else []
+    elif cur_model:
+        catalog = [cur_model] + [m for m in catalog if m != cur_model]
+    warning = (
+        "" if self_auth
+        else f"Configured provider missing usable credentials; paste {key_env} to reactivate. "
+             "Showing the saved model only." if auth_type == "api_key" and key_env
+        else "Configured provider is not authenticated; run `hermes model` to reactivate. "
+             "Showing the saved model only."
+    )
+    return _canonical_row(
+        entry, cur, models=catalog, total_models=len(catalog), source="configured-current",
+        authenticated=self_auth, auth_type=auth_type, key_env=key_env, warning=warning,
+    )
 
 
 def _append_unconfigured_rows(
@@ -419,19 +462,7 @@ def _append_unconfigured_rows(
         if current_only and entry.slug.lower() != cur:
             continue
         if entry.slug.lower() == cur:
-            auth_type, key_env = _provider_auth_hint(entry.slug)
-            warning = (
-                f"Configured provider missing usable credentials; paste {key_env} to reactivate. "
-                "Showing the saved model only."
-                if auth_type == "api_key" and key_env
-                else "Configured provider is not authenticated; run `hermes model` to reactivate. "
-                "Showing the saved model only."
-            )
-            extras.append(_canonical_row(
-                entry, cur, models=[cur_model] if cur_model else [], total_models=1 if cur_model else 0,
-                source="configured-current", authenticated=False, auth_type=auth_type, key_env=key_env,
-                warning=warning,
-            ))
+            extras.append(_configured_current_row(entry, cur, cur_model))
             continue
         extras.append(_canonical_row(entry, cur, models=[], total_models=0, source="canonical"))
     return extras

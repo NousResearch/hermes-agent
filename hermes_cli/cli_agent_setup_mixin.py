@@ -10,6 +10,12 @@ from rich.markup import escape as _escape
 
 from utils import base_url_host_matches
 
+# api modes whose runtime is an external agent loop that owns its own
+# credentials and transport — there is no HTTP base URL on these paths by
+# design (the resolver returns base_url "" rather than a routable sentinel),
+# so the generic HTTP base-URL validation below must not reject them.
+EXTERNAL_AGENT_LOOP_API_MODES = frozenset({"claude_agent_sdk"})
+
 
 def _single_query_clarify_callback(question: str, choices=None, multi_select=False) -> str:
     """Headless clarify answer for ``hermes chat -q``.
@@ -196,8 +202,9 @@ class CLIAgentSetupMixin:
         api_key = runtime.get("api_key")
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
+        resolved_api_mode = runtime.get("api_mode", self.api_mode)
         resolved_routing = (
-            resolved_provider, runtime.get("api_mode", self.api_mode), runtime.get("command"),
+            resolved_provider, resolved_api_mode, runtime.get("command"),
             list(runtime.get("args") or []))
         # A callable api_key is a bearer-token provider (Azure Entra ID): the OpenAI SDK
         # invokes it per request, so skip string validation / placeholder substitution.
@@ -218,7 +225,9 @@ class CLIAgentSetupMixin:
                 print("   Run 'hermes model' to choose a provider, or "
                       "'hermes setup' for first-time setup.")
                 return False
-        if not isinstance(base_url, str) or not base_url:
+        if resolved_api_mode not in EXTERNAL_AGENT_LOOP_API_MODES and (
+            not isinstance(base_url, str) or not base_url
+        ):
             print("\n⚠️  Provider resolver returned an empty base URL. "
                   "Check your provider config or run: hermes setup")
             return False
@@ -314,6 +323,14 @@ class CLIAgentSetupMixin:
             return False
         if not isinstance(runtime, dict):
             return False
+        # External agent loops own their credential discovery and transport.
+        # Their resolved runtime intentionally has no HTTP base URL, and some
+        # valid credentials (for example a macOS Keychain-only Claude login)
+        # cannot be inspected structurally from Hermes.  Reaching this mode
+        # through the resolver is therefore the readiness boundary, matching
+        # _ensure_runtime_credentials() below.
+        if runtime.get("api_mode") in EXTERNAL_AGENT_LOOP_API_MODES:
+            return True
         api_key = runtime.get("api_key")
         base_url = runtime.get("base_url")
         if callable(api_key) or (isinstance(api_key, str) and api_key):

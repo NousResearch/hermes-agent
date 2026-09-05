@@ -1499,6 +1499,34 @@ class TestMigrationWriteInvariant:
 class TestSaveConfigPartialWritePreservation:
     """Regression for #62723: partial migration writes must not drop unrelated sections."""
 
+    def test_migration_preserves_explicit_null_in_unknown_user_section(self, tmp_path):
+        """A YAML null is a user value, not the writer's internal prune sentinel.
+
+        Migrations round-trip the raw config through ``save_config``.  An extension
+        field that is intentionally set to ``null`` must survive that write just as
+        a non-null unknown field does; otherwise a migration silently changes an
+        unrelated user-owned section.
+        """
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({
+                "_config_version": 30,
+                "model": {"default": "fixture/model", "provider": "fixture"},
+                "user_extension": {
+                    "opaque": {"keep": "me"},
+                    "explicitly_cleared": None,
+                },
+            }, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["user_extension"]["opaque"]["keep"] == "me"
+        assert raw["user_extension"]["explicitly_cleared"] is None
+
     def test_merge_existing_preserves_platforms_on_partial_write(self, tmp_path):
         body = """_config_version: 30
 model:
@@ -1534,6 +1562,32 @@ feishu:
         # strip_defaults removes it from disk; deep-merge supplies it at read.
         assert "verify_on_stop" not in raw.get("agent", {})
         assert merged["agent"]["verify_on_stop"] is False
+
+    def test_partial_save_preserves_explicit_null_in_unknown_user_section(self, tmp_path):
+        """A partial save must not drop an unrelated extension field set to ``null``."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({
+                "_config_version": DEFAULT_CONFIG["_config_version"],
+                "model": {"default": "fixture/old", "provider": "fixture"},
+                "user_extension": {
+                    "opaque": {"keep": "me"},
+                    "explicitly_cleared": None,
+                },
+            }, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_config(
+                {"model": {"default": "fixture/new", "provider": "fixture"}},
+                merge_existing=True,
+            )
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["model"]["default"] == "fixture/new"
+        assert raw["user_extension"]["opaque"]["keep"] == "me"
+        assert raw["user_extension"]["explicitly_cleared"] is None
 
 
     def test_persist_migration_writes_full_read_raw_config(self, tmp_path):

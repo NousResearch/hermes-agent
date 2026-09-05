@@ -38,6 +38,8 @@ export const ROSTER_KEY = [ID, 'roster']
 // flap) leaves the Bots sidebar on a spinner with no error card. The 5s
 // refetchInterval and the gateway-open effect already recover drops.
 const ROSTER_QUERY_RETRY = 2
+const BOT_MODE_OWNERSHIP_RECHECK_MS = 60_000
+const botModeOwnershipCheckedAt = new Map<string, number>()
 
 export const BOT_META_V1_KEY = 'bot-meta'
 const BOT_META_V2_KEY = 'bot-meta-v2'
@@ -631,6 +633,82 @@ interface UnionRoster {
   sources?: GatewaySource[]
 }
 
+/**
+ * Keep the gateway-level Bot Mode ownership marker present on every roster
+ * source.  The backend intentionally exposes `message_agent` only to a
+ * canonical Bot Chat on an install that carries this marker.  Old installs,
+ * profile restores and partial fleet updates can otherwise leave a gateway
+ * visible in the roster but unable to answer another bot.
+ *
+ * Reconciliation is routed through profiles.configure (the gateway's locked,
+ * atomic writer), then read back.  Successful sources are checked at most once
+ * per minute; failures remain immediately retryable on the next roster pass.
+ */
+export async function reconcileBotModeOwnership(rows: RosterRow[], now = Date.now()) {
+  const sources = new Map<string, RosterRow[]>()
+
+  for (const row of rows || []) {
+    const key = String(row?.connectionId || botConnectionRoute(row)?.connectionId || 'active')
+    sources.set(key, [...(sources.get(key) || []), row])
+  }
+
+  await Promise.all(
+    [...sources].map(async ([key, candidates]) => {
+      const checkedAt = botModeOwnershipCheckedAt.get(key) || 0
+
+      if (checkedAt > 0 && now - checkedAt < BOT_MODE_OWNERSHIP_RECHECK_MS) {
+        return
+      }
+
+      const owner = candidates.find(row => row.name === 'default') || candidates[0]
+
+      if (!owner) {
+        return
+      }
+
+      try {
+        const before = await requestForBot<RosterSnapshot>(owner, 'profiles.list', {})
+        const profiles = before?.profiles || []
+
+        if (profiles.some(row => row?.ui_meta?.['hermes-bots'] && typeof row.ui_meta['hermes-bots'] === 'object')) {
+          botModeOwnershipCheckedAt.set(key, now)
+
+          return
+        }
+
+        const target = profiles.find(row => row.name === 'default')?.name || profiles[0]?.name || owner.name
+
+        const result = await requestForBot<ProfilesConfigureResult>(owner, 'profiles.configure', {
+          name: target,
+          ui_meta: {
+            'hermes-bots': {}
+          }
+        })
+
+        if (result?.applied?.ui_meta !== true) {
+          return
+        }
+
+        const after = await requestForBot<RosterSnapshot>(owner, 'profiles.list', {})
+
+        const persisted = (after?.profiles || []).some(
+          row => row?.ui_meta?.['hermes-bots'] && typeof row.ui_meta['hermes-bots'] === 'object'
+        )
+
+        if (persisted) {
+          botModeOwnershipCheckedAt.set(key, now)
+        }
+      } catch {
+        /* disconnected/legacy source: leave uncached so the next pass retries */
+      }
+    })
+  )
+}
+
+export function resetBotModeOwnershipReconciliationForTests() {
+  botModeOwnershipCheckedAt.clear()
+}
+
 export function useRoster() {
   const activeConnectionId = useValue(host.state.connectionId)
 
@@ -686,6 +764,8 @@ export function useRoster() {
           const merged = mergeMultiSourceRoster(local, union, activeConnectionId, previous)
           const sources = Array.isArray(union?.sources) ? union.sources : []
 
+          await reconcileBotModeOwnership(merged?.profiles || [])
+
           return {
             ...merged,
             profiles: (merged?.profiles || []).map(row => annotateBotSource(row, sources)),
@@ -696,6 +776,13 @@ export function useRoster() {
           /* older build or roster failure — single-source list stands */
         }
       }
+
+      // Single-source/legacy Desktop builds do not expose host.agents, and a
+      // transient union-roster failure must not suppress the install-level
+      // ownership repair. Reconcile the active gateway before returning the
+      // local snapshot; successful multi-source reads return above after
+      // reconciling every merged source.
+      await reconcileBotModeOwnership(local?.profiles || [])
 
       return {
         ...(local && typeof local === 'object' ? local : {}),

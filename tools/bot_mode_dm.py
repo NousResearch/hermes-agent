@@ -101,6 +101,16 @@ def message_agent_tool_schema() -> dict:
                             "'Message from …' prefix — it is added automatically."
                         ),
                     },
+                    "message_type": {"type": "string", "enum": ["REQUEST", "RESPONSE", "HANDOFF", "BLOCKER", "REVIEW", "DECISION", "FYI"]},
+                    "subject": {"type": "string", "description": "Short bounded subject."},
+                    "mission_id": {"type": "string", "description": "Canonical mission or Kanban identity for durable work."},
+                    "work_item_id": {"type": "string", "description": "Canonical Fleet work-item identity for durable work."},
+                    "idempotency_key": {"type": "string", "description": "Stable key for a retry of the same logical message."},
+                    "mutation_scope": {"type": "string", "description": "Allowed mutation scope; defaults to none."},
+                    "production_scope": {"type": "string", "description": "Allowed production scope; defaults to none."},
+                    "required_output": {"type": "array", "items": {"type": "string"}},
+                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                    "ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
                 },
                 "required": ["target", "message"],
             },
@@ -158,7 +168,22 @@ def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | No
     return json.dumps(payload)
 
 
-def message_agent_tool(target: str = "", message: str = "", task_id: Optional[str] = None, agent: Any = None) -> str:
+def message_agent_tool(
+    target: str = "",
+    message: str = "",
+    task_id: Optional[str] = None,
+    agent: Any = None,
+    message_type: str = "REQUEST",
+    subject: str = "",
+    mission_id: str = "",
+    work_item_id: str = "",
+    idempotency_key: str = "",
+    mutation_scope: str = "none",
+    production_scope: str = "none",
+    required_output: Optional[list] = None,
+    evidence_refs: Optional[list] = None,
+    ttl_seconds: int = 900,
+) -> str:
     """Deliver ``message`` to ``target``'s Bot Chat. Returns a JSON ack/error.
     ``agent`` is the calling AIAgent — used for the Bot Chat gate and sender identity."""
     home = _agent_home(agent)
@@ -198,6 +223,18 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _roster_err("target is required.")
     content = f"Message from 🤖 {_handle(me)} (@{_handle(me)}): " + body
     delivery = dict(task_id=task_id, agent=agent)
+    relay_metadata = {
+        "type": message_type,
+        "subject": subject,
+        "mission_id": mission_id,
+        "work_item_id": work_item_id or str(task_id or ""),
+        "idempotency_key": idempotency_key,
+        "mutation_scope": mutation_scope,
+        "production_scope": production_scope,
+        "required_output": required_output or [],
+        "evidence_refs": evidence_refs or [],
+        "ttl_seconds": ttl_seconds,
+    }
 
     # Peer target: '<peer>/<agent>' or a bare registered peer name.
     peer_match = _PEER_TARGET_RE.match(raw_target)
@@ -221,7 +258,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         # Unknown locally, or same-name target on ANOTHER connection (this gateway's 'default'
         # messaging the cloud 'default'): every Desktop-connected gateway is reachable via the
         # relay roster, so try that before reporting a resolution failure / self-message.
-        relayed = _try_relay_delivery(root, raw_target, content, me, **delivery)
+        relayed = _try_relay_delivery(root, raw_target, content, me, **delivery, metadata=relay_metadata)
         if relayed is not None:
             return relayed
         if resolved == me:
@@ -234,7 +271,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
 
 
 def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
-                        task_id: Optional[str], agent: Any) -> Optional[str]:
+                        task_id: Optional[str], agent: Any, metadata: Optional[dict] = None) -> Optional[str]:
     """Cross-connection delivery via the Desktop relay; None when the target doesn't
     resolve against the relay roster. The envelope is queued on disk for the Desktop
     to drain; a background waiter is spawned immediately so the relayed reply wakes
@@ -254,14 +291,27 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
             forms = ", ".join(f"{r['handle']}@{r['connection_id']}" for r in roster if r["handle"].lower() == want)
             return _err(f"'{raw_target}' exists on several connected machines — disambiguate with one of: {forms}.")
         try:
-            envelope = enqueue_envelope(root, target=match, message=content, sender_profile=me, sender_handle=_handle(me))
+            envelope = enqueue_envelope(
+                root,
+                target=match,
+                message=content,
+                sender_profile=me,
+                sender_handle=_handle(me),
+                metadata=metadata,
+            )
         except EnvelopeRefusedError as exc:
             # Fail fast: target definitively offline — nothing was queued.
             # Structured refusal so the agent can distinguish it from a resolution error ('runtime_offline'
             # per the #93091 reason enum).
             return json.dumps({"error": str(exc), "reason": exc.reason})
         label = f"@{match['handle']} on {match['connection_label'] or match['connection_id']}"
-        return _spawn_delivery(waiter_command(root, envelope), label, task_id=task_id, agent=agent)
+        return _spawn_delivery(
+            waiter_command(root, envelope),
+            label,
+            task_id=task_id,
+            agent=agent,
+            delivery_committed=True,
+        )
     except Exception:
         logger.debug("relay delivery attempt failed", exc_info=True)
         return None
@@ -422,7 +472,7 @@ def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bo
 
 
 def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None,
-                    task_id: Optional[str], agent: Any) -> str:
+                    task_id: Optional[str], agent: Any, delivery_committed: bool = False) -> str:
     """Launch the cleanup-owning runner and transfer file ownership on ack. ``dm_file``
     is None for relay deliveries (the waiter watches a reply file; envelope artifacts
     are owned/swept by ``tools/bot_relay.py``)."""
@@ -437,10 +487,23 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None,
         except (ValueError, TypeError):
             parsed = {}
         proc_id = parsed.get("session_id") or ""
-        if parsed.get("error"):
-            return _err(f"Delivery to {label} failed to start: {parsed['error']}")
-        if not proc_id:
-            return _err(f"Delivery to {label} failed to start: no process id returned")
+        observer_error = str(parsed.get("error") or "").strip()
+        if parsed.get("approval_pending") or parsed.get("status") == "pending_approval":
+            observer_error = "reply watcher needs approval"
+        elif not observer_error and not proc_id:
+            observer_error = "reply watcher returned no process id"
+        if observer_error:
+            if delivery_committed:
+                return json.dumps({
+                    "status": "sent_unwatched",
+                    "to": label,
+                    "detail": (
+                        f"Message was queued to {label}, but automatic reply monitoring is unavailable "
+                        f"({observer_error}). Do not resend blindly; the recipient may already have received it."
+                    ),
+                    "sent_at": int(time.time()),
+                })
+            return _err(f"Delivery to {label} failed to start: {observer_error}")
         # From here the background runner owns the file (removed after the consumer finishes).
         transferred = True
         return json.dumps({
@@ -454,6 +517,16 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None,
         })
     except Exception as exc:
         logger.error("message_agent delivery spawn failed: %s", exc, exc_info=True)
+        if delivery_committed:
+            return json.dumps({
+                "status": "sent_unwatched",
+                "to": label,
+                "detail": (
+                    f"Message was queued to {label}, but automatic reply monitoring could not start ({exc}). "
+                    "Do not resend blindly; the recipient may already have received it."
+                ),
+                "sent_at": int(time.time()),
+            })
         return _err(f"Delivery to {label} could not be started: {exc}")
     finally:
         if dm_file and not transferred:

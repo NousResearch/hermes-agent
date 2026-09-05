@@ -23,16 +23,21 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 
 import type { ProfileRoute } from './types'
 
 const { clearBotAttentionMock, hostMock, noteBotAttentionMock, UnboundedCache } = vi.hoisted(() => ({
   clearBotAttentionMock: vi.fn(),
   hostMock: {
+    agents: vi.fn(),
+    connections: vi.fn(),
     onEvent: vi.fn(),
     profileRoutes: vi.fn(),
     requestProfile: vi.fn(),
-    retainProfileSocket: vi.fn()
+    retainProfile: vi.fn(),
+    retainProfileSocket: vi.fn(),
+    warmAgent: vi.fn()
   } as Record<string, unknown>,
   noteBotAttentionMock: vi.fn(),
   // Stand-in for the SDK's LruCache. Its ceiling has its own unit test and no
@@ -54,6 +59,7 @@ vi.mock('./data', () => ({
 
 const RELAY_PUSH_DEBOUNCE_MS = 250
 const RELAY_DRAIN_INTERVAL_MS = 30_000
+const RELAY_ROUTE_RECONNECT_GRACE_MS = 30_000
 
 const route = (id: string): ProfileRoute => ({
   connectionId: id,
@@ -128,10 +134,25 @@ async function pushAndSettle(times = 1) {
 beforeEach(() => {
   vi.useFakeTimers()
   vi.clearAllMocks()
+  vi.stubGlobal('crypto', {
+    subtle: {
+      digest: async (_algorithm: string, input: BufferSource) => {
+        const bytes = input instanceof ArrayBuffer
+          ? new Uint8Array(input)
+          : new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
+        const digest = createHash('sha256').update(bytes).digest()
+        return digest.buffer.slice(digest.byteOffset, digest.byteOffset + digest.byteLength)
+      }
+    }
+  } as unknown as Crypto)
   hostMock.onEvent = vi.fn(() => vi.fn())
+  hostMock.agents = vi.fn(async () => ({ agents: [], sources: [] }))
+  hostMock.connections = vi.fn(async () => [])
   hostMock.profileRoutes = vi.fn(async () => [route('a'), route('b')])
   hostMock.requestProfile = vi.fn(async () => ({}))
+  hostMock.retainProfile = vi.fn(async () => vi.fn())
   hostMock.retainProfileSocket = vi.fn(() => vi.fn())
+  hostMock.warmAgent = vi.fn()
 })
 
 afterEach(() => {
@@ -139,6 +160,24 @@ afterEach(() => {
 })
 
 describe('push-notified drain (#93091)', () => {
+  it('warms every registered gateway after a cold renderer launch', async () => {
+    hostMock.connections = vi.fn(async () => [{ id: 'a' }, { id: 'b' }, { id: 'c' }])
+    hostMock.profileRoutes = vi.fn(async () => [route('a'), route('b'), route('c')])
+    respondWith(() => ({ envelopes: [] }))
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(hostMock.warmAgent).toHaveBeenCalledTimes(3)
+    expect(hostMock.warmAgent).toHaveBeenCalledWith('a', 'default')
+    expect(hostMock.warmAgent).toHaveBeenCalledWith('b', 'default')
+    expect(hostMock.warmAgent).toHaveBeenCalledWith('c', 'default')
+
+    stopBotRelay()
+  })
+
   it('collapses a burst of pending signals into ONE drain', async () => {
     const calls = respondWith(() => ({ envelopes: [] }))
     const { startBotRelay, stopBotRelay } = await loadRelay()
@@ -371,6 +410,47 @@ describe('relay-route socket retention (#93594)', () => {
 })
 
 describe('the roster loop pushes the OTHER connections’ agents', () => {
+  it('includes a registered gateway whose renderer route has not materialized yet', async () => {
+    hostMock.connections = vi.fn(async () => [
+      { id: 'a', kind: 'local' },
+      { id: 'b', kind: 'ssh' },
+      { id: 'm5', kind: 'ssh' }
+    ])
+    hostMock.profileRoutes = vi.fn(async () => [route('a'), route('b')])
+    hostMock.agents = vi.fn(async () => ({ agents: [], sources: [] }))
+
+    const calls = respondWith(call => {
+      if (call.method === 'profiles.list' && call.connectionId === 'm5') {
+        throw new Error('lazy profile route not materialized')
+      }
+
+      return call.method === 'profiles.list' ? { profiles: [{ name: 'default' }] } : {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(hostMock.retainProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: 'm5', profile: 'default' })
+    )
+    expect(hostMock.warmAgent).toHaveBeenCalledWith('m5', 'default')
+    expect(calls).not.toContainEqual(
+      expect.objectContaining({ connectionId: 'm5', method: 'profiles.list' })
+    )
+    expect(calls).not.toContainEqual(
+      expect.objectContaining({ connectionId: 'm5', method: 'bot_relay.roster.sync' })
+    )
+    const pushedToA = calls.find(call => call.method === 'bot_relay.roster.sync' && call.connectionId === 'a')
+
+    expect(pushedToA?.params.agents).toEqual(
+      expect.arrayContaining([expect.objectContaining({ connection_id: 'm5', profile: 'default' })])
+    )
+
+    stopBotRelay()
+  })
+
   it('gives each gateway a union roster that excludes its own agents', async () => {
     const calls = respondWith(call => {
       if (call.method === 'profiles.list') {
@@ -479,6 +559,174 @@ describe('the drain loop wires drain → deliver → reply', () => {
     target_profile: 'ops'
   }
 
+  const typedEnvelope = (id: string, targetConnection: string, targetProfile: string, targetHandle: string) => ({
+    schema: 'asm-hermes-a2a-envelope/v2',
+    id,
+    message_id: id,
+    idempotency_key: `mission:relay:${id}`,
+    type: 'REQUEST',
+    from_agent: 'hermes',
+    to_agent: targetHandle,
+    target_connection: targetConnection,
+    target_profile: targetProfile,
+    target_handle: targetHandle,
+    message: `status for ${targetHandle}`,
+    scope: { mutation: 'none', production: 'none' },
+    expires_at: Date.now() / 1000 + 60,
+    authority_effect: 'none'
+  })
+
+  const targetReceipt = (
+    messageId: string,
+    targetConnection: string,
+    targetProfile: string,
+    targetHandle: string,
+    reply = `reply from ${targetHandle}`
+  ) => ({
+    schema: 'asm-hermes-a2a-target-receipt/v1',
+    status: 'completed',
+    idempotency_sha256: '1'.repeat(64),
+    message_id: messageId,
+    delivery_sha256: '2'.repeat(64),
+    target_sha256: '3'.repeat(64),
+    target_connection: targetConnection,
+    target_profile: targetProfile,
+    target_handle: targetHandle,
+    started_at: '2026-09-04T20:00:00+00:00',
+    completed_at: '2026-09-04T20:00:01+00:00',
+    reply_sha256: createHash('sha256').update(reply, 'utf8').digest('hex')
+  })
+
+  it.each([
+    ['a', 'b', 'ops', 'ops', 'a-to-b'],
+    ['b', 'a', 'default', 'hermes', 'b-to-a']
+  ])('requires a readback receipt in the %s direction', async (senderId, targetId, targetProfile, targetHandle, id) => {
+    const currentEnvelope = typedEnvelope(`${'a'.repeat(31)}${id.slice(-1)}`, targetId, targetProfile, targetHandle)
+    const receipt = targetReceipt(currentEnvelope.message_id, targetId, targetProfile, targetHandle)
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: call.connectionId === senderId ? [currentEnvelope] : [] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return { reply: `reply from ${targetHandle}`, target_receipt: receipt }
+      }
+
+      if (call.method === 'bot_relay.receipt.read') {
+        return { receipt }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle()
+
+    expect(calls.find(call => call.method === 'bot_relay.deliver')).toMatchObject({
+      connectionId: targetId,
+      params: {
+        message: currentEnvelope.message,
+        profile: targetProfile,
+        envelope: currentEnvelope
+      }
+    })
+    expect(calls.find(call => call.method === 'bot_relay.receipt.read')).toMatchObject({
+      connectionId: targetId,
+      params: {
+        message_id: currentEnvelope.message_id,
+        idempotency_key: currentEnvelope.idempotency_key,
+        envelope: currentEnvelope
+      }
+    })
+    expect(calls.find(call => call.method === 'bot_relay.reply')).toMatchObject({
+      connectionId: senderId,
+      params: {
+        id: currentEnvelope.id,
+        reply: `reply from ${targetHandle}`,
+        target_receipt: receipt
+      }
+    })
+
+    stopBotRelay()
+  })
+
+  it('does not post structured success when target readback is missing or changed', async () => {
+    const currentEnvelope = typedEnvelope(`${'b'.repeat(32)}`, 'b', 'ops', 'ops')
+    const receipt = targetReceipt(currentEnvelope.message_id, 'b', 'ops', 'ops', 'unverified reply')
+    let readback: unknown = {}
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: call.connectionId === 'a' ? [currentEnvelope] : [] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return { reply: 'unverified reply', target_receipt: receipt }
+      }
+
+      if (call.method === 'bot_relay.receipt.read') {
+        return { receipt: readback }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle()
+
+    expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toMatchObject({
+      id: currentEnvelope.id,
+      reason: 'target_receipt_unverified'
+    })
+    expect(clearBotAttentionMock).not.toHaveBeenCalledWith('b::ops')
+
+    calls.length = 0
+    readback = { ...receipt, target_connection: 'other' }
+    await pushAndSettle()
+
+    expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toMatchObject({
+      id: currentEnvelope.id,
+      reason: 'target_receipt_mismatch'
+    })
+
+    stopBotRelay()
+  })
+
+  it('rejects a structured receipt whose reply digest does not match the returned reply', async () => {
+    const currentEnvelope = typedEnvelope(`${'c'.repeat(32)}`, 'b', 'ops', 'ops')
+    const receipt = targetReceipt(currentEnvelope.message_id, 'b', 'ops', 'ops')
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: call.connectionId === 'a' ? [currentEnvelope] : [] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return {
+          reply: 'tampered reply',
+          target_receipt: { ...receipt, reply_sha256: '0'.repeat(64) }
+        }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle()
+
+    expect(calls.some(call => call.method === 'bot_relay.receipt.read')).toBe(false)
+    expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toMatchObject({
+      id: currentEnvelope.id,
+      reason: 'target_receipt_mismatch'
+    })
+
+    stopBotRelay()
+  })
+
   it('delivers on the target’s own socket and posts the reply to the sender', async () => {
     const calls = respondWith(call => {
       if (call.method === 'bot_relay.outbox.drain') {
@@ -522,11 +770,211 @@ describe('the drain loop wires drain → deliver → reply', () => {
 
     startBotRelay()
     await pushAndSettle()
+    await vi.advanceTimersByTimeAsync(RELAY_ROUTE_RECONNECT_GRACE_MS + 1000)
 
     expect(calls.some(call => call.method === 'bot_relay.deliver')).toBe(false)
     expect(calls.find(call => call.method === 'bot_relay.reply')?.params.error).toMatch(
       /'ghost' is not connected to this Desktop right now/
     )
+
+    stopBotRelay()
+  })
+
+  it('re-acquires a target route that reconnects after the envelope was claimed', async () => {
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: call.connectionId === 'a' ? [envelope] : [] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return { reply: 'reconnected' }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    calls.length = 0
+
+    // The drain sees only the sender. The first bounded re-read sees the
+    // target return and must deliver the already-claimed envelope exactly once.
+    hostMock.profileRoutes = vi
+      .fn()
+      .mockResolvedValueOnce([route('a'), route('c')])
+      .mockResolvedValue([route('a'), route('b'), route('c')])
+
+    await pushAndSettle()
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(hostMock.warmAgent).toHaveBeenCalledWith('b', 'ops')
+    expect(calls.filter(call => call.method === 'bot_relay.deliver')).toEqual([
+      expect.objectContaining({
+        connectionId: 'b',
+        params: expect.objectContaining({ message: 'status?', profile: 'ops' })
+      })
+    ])
+    expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toMatchObject({
+      id: 'env-1',
+      reply: 'reconnected'
+    })
+
+    stopBotRelay()
+  })
+
+  it('synthesizes a credential-free route for a registered SSH target whose seed is absent', async () => {
+    hostMock.connections = vi.fn(async () => [{ id: 'a', kind: 'local' }, { id: 'b', kind: 'ssh' }])
+    hostMock.profileRoutes = vi.fn(async () => [route('a'), route('c')])
+
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: call.connectionId === 'a' ? [envelope] : [] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return { reply: 'lazy dial complete' }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    calls.length = 0
+    await pushAndSettle()
+
+    expect(hostMock.warmAgent).toHaveBeenCalledWith('b', 'default')
+    expect(calls.find(call => call.method === 'bot_relay.deliver')).toMatchObject({
+      connectionId: 'b',
+      params: { message: 'status?', profile: 'ops' }
+    })
+    expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toMatchObject({
+      id: 'env-1',
+      reply: 'lazy dial complete'
+    })
+
+    stopBotRelay()
+  })
+
+  it('attempts the registered route after bounded retention recovery fails', async () => {
+    hostMock.connections = vi.fn(async () => [{ id: 'a', kind: 'local' }, { id: 'b', kind: 'ssh' }])
+    hostMock.profileRoutes = vi.fn(async () => [route('a'), route('c')])
+    hostMock.retainProfile = vi.fn(async () => {
+      throw new Error('renderer route is still reconciling')
+    })
+
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: call.connectionId === 'a' ? [envelope] : [] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return { reply: 'direct lazy dial complete' }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    calls.length = 0
+    const drain = pushAndSettle()
+    await vi.advanceTimersByTimeAsync(RELAY_ROUTE_RECONNECT_GRACE_MS + 1000)
+    await drain
+
+    expect(calls.find(call => call.method === 'bot_relay.deliver')).toMatchObject({
+      connectionId: 'b',
+      params: { message: 'status?', profile: 'ops' }
+    })
+    expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toMatchObject({
+      id: 'env-1',
+      reply: 'direct lazy dial complete'
+    })
+
+    stopBotRelay()
+  })
+
+  it('recovers a target from union source identity while registry reconciliation lags', async () => {
+    hostMock.connections = vi.fn(async () => [{ id: 'a', kind: 'local' }])
+    hostMock.agents = vi.fn(async () => ({
+      agents: [],
+      sources: [{ connectionId: 'b', kind: 'ssh', label: 'M5', reachable: true }]
+    }))
+    hostMock.profileRoutes = vi.fn(async () => [route('a'), route('c')])
+
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: call.connectionId === 'a' ? [envelope] : [] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return { reply: 'union identity dial complete' }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    calls.length = 0
+    await pushAndSettle()
+
+    expect(calls.find(call => call.method === 'bot_relay.deliver')).toMatchObject({
+      connectionId: 'b',
+      params: { message: 'status?', profile: 'ops' }
+    })
+
+    stopBotRelay()
+  })
+
+  it('waits for the registered target warm dial before using its synthesized route', async () => {
+    let finishWarm!: () => void
+
+    const warmPending = new Promise<void>(resolve => {
+      finishWarm = resolve
+    })
+
+    hostMock.connections = vi.fn(async () => [{ id: 'a', kind: 'local' }, { id: 'b', kind: 'ssh' }])
+    hostMock.profileRoutes = vi.fn(async () => [route('a'), route('c')])
+    hostMock.warmAgent = vi.fn(() => warmPending)
+
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: call.connectionId === 'a' ? [envelope] : [] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return { reply: 'dial was ready' }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    calls.length = 0
+    const drain = pushAndSettle()
+    await vi.advanceTimersByTimeAsync(100)
+
+    expect(calls.some(call => call.method === 'bot_relay.deliver')).toBe(false)
+
+    finishWarm()
+    await drain
+
+    expect(calls.find(call => call.method === 'bot_relay.deliver')).toMatchObject({
+      connectionId: 'b',
+      params: { message: 'status?', profile: 'ops' }
+    })
 
     stopBotRelay()
   })

@@ -856,6 +856,50 @@ class TestProfileIsolation:
         assert alpha_dir / "config.yaml" != beta_dir / "config.yaml"
         assert str(alpha_dir) not in str(beta_dir)
 
+    def test_profile_migration_writes_only_target_profile(self, profile_env):
+        """A profile-scoped migration must not rewrite the root or a sibling profile."""
+        root = profile_env / ".hermes"
+        alpha = root / "profiles" / "alpha"
+        beta = root / "profiles" / "beta"
+        alpha.mkdir(parents=True)
+        beta.mkdir(parents=True)
+        for profile_dir, name in ((alpha, "alpha"), (beta, "beta")):
+            (profile_dir / "config.yaml").write_text(
+                yaml.safe_dump({
+                    "_config_version": 12,
+                    "model": {"default": f"fixture/{name}", "provider": "fixture"},
+                    "profile_settings": {
+                        "owner": name,
+                        "explicitly_cleared": None,
+                    },
+                }, sort_keys=False),
+                encoding="utf-8",
+            )
+            (profile_dir / ".env").write_text(
+                f"LLM_MODEL={name}-legacy\nPROFILE_{name.upper()}_ONLY={name}\n",
+                encoding="utf-8",
+            )
+
+        root_config_before = (root / "config.yaml").read_bytes() if (root / "config.yaml").exists() else None
+        beta_config_before = (beta / "config.yaml").read_bytes()
+        beta_env_before = (beta / ".env").read_bytes()
+
+        profiles._migrate_profile_config_if_outdated(alpha)
+
+        alpha_config = yaml.safe_load((alpha / "config.yaml").read_text(encoding="utf-8"))
+        alpha_env = (alpha / ".env").read_text(encoding="utf-8")
+        assert alpha_config["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert alpha_config["profile_settings"]["owner"] == "alpha"
+        assert alpha_config["profile_settings"]["explicitly_cleared"] is None
+        assert "LLM_MODEL=" in alpha_env
+        assert "alpha-legacy" not in alpha_env
+        if root_config_before is None:
+            assert not (root / "config.yaml").exists()
+        else:
+            assert (root / "config.yaml").read_bytes() == root_config_before
+        assert (beta / "config.yaml").read_bytes() == beta_config_before
+        assert (beta / ".env").read_bytes() == beta_env_before
+
 
 # ===================================================================
 # TestGetProfilesRoot / TestGetDefaultHermesHome (internal helpers)
@@ -1170,5 +1214,4 @@ class TestResolveProfileEnvSpelling:
         # No HERMES_HOME: the platform default root applies (existing contract).
         monkeypatch.delenv("HERMES_HOME", raising=False)
         assert Path(resolve_profile_env("default")) == _get_default_hermes_home()
-
 

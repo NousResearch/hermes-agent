@@ -27,6 +27,11 @@ vi.mock('@/i18n', () => ({
 }))
 
 const mockVirtualListPropsHistory: VirtualSessionListProps[] = []
+const mockSessionRowPropsHistory: Array<{
+  onArchive: () => void
+  onDelete: () => void
+  session: SessionInfo
+}> = []
 
 vi.mock('./virtual-session-list', () => ({
   VirtualSessionList: (props: VirtualSessionListProps) => {
@@ -37,9 +42,11 @@ vi.mock('./virtual-session-list', () => ({
 }))
 
 vi.mock('./session-row', () => ({
-  SidebarSessionRow: ({ session }: { session: SessionInfo }) => (
-    <div data-testid={`session-row-${session.id}`}>{session.id}</div>
-  )
+  SidebarSessionRow: (props: { onArchive: () => void; onDelete: () => void; session: SessionInfo }) => {
+    mockSessionRowPropsHistory.push(props)
+
+    return <div data-testid={`session-row-${props.session.id}`}>{props.session.id}</div>
+  }
 }))
 
 function makeSession(id: string, startedAt = 1000): SessionInfo {
@@ -180,5 +187,39 @@ describe('SidebarSessionsSection memoization & virtualizer stability', () => {
 
     const thirdRowsRef = mockVirtualListPropsHistory[2].rows
     expect(thirdRowsRef).not.toBe(secondRowsRef)
+  })
+
+  it('passes the exact clicked row to archive and delete callbacks', () => {
+    mockSessionRowPropsHistory.length = 0
+    const gatewayA = makeSession('same', 1000)
+    const gatewayB = { ...makeSession('same', 900), connection_id: 'gateway-b' }
+    const onArchiveSession = vi.fn()
+    const onDeleteSession = vi.fn()
+
+    render(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={<div>Empty</div>}
+        label="Sessions"
+        onArchiveSession={onArchiveSession}
+        onDeleteSession={onDeleteSession}
+        onResumeSession={noop}
+        onToggle={noop}
+        onTogglePin={noop}
+        onToggleUnread={noop}
+        open={true}
+        pinned={false}
+        sessions={[gatewayA, gatewayB]}
+      />
+    )
+
+    const rowProps = mockSessionRowPropsHistory.find(props => props.session.connection_id === 'gateway-b')
+    expect(rowProps).toBeDefined()
+
+    rowProps?.onArchive()
+    rowProps?.onDelete()
+
+    expect(onArchiveSession).toHaveBeenCalledWith('same', gatewayB)
+    expect(onDeleteSession).toHaveBeenCalledWith('same', gatewayB)
   })
 })

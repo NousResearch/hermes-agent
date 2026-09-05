@@ -2,15 +2,10 @@ r"""Windows-path viability and venv CLI resolution for bot relay (#93590).
 
 Two failures on a Windows desktop install talking to a remote gateway:
 
-1. ``waiter_command`` embeds the reply path into generated ``python -c``
-   source with ``!r``. repr escapes each backslash, but the Windows
-   execution layer the waiter runs under folds ``\\`` back to ``\`` —
-   ``\\U`` in ``C:\\Users\\...`` then parses as a unicode escape and
-   SyntaxErrors the whole script. The raw-string prefix keeps the folded
-   single backslash a literal; POSIX paths contain no backslashes, so it
-   is a no-op there, and ``\\'`` inside a raw literal still cannot
-   terminate the string, so the injection defense from #93091's
-   python -c hardening is unchanged.
+1. ``waiter_command`` passes the reply path and label as argv data to a
+   fixed ``python -m tools.bot_relay wait`` entrypoint. This preserves
+   Windows backslashes without generating Python source and keeps hostile
+   roster labels out of the executable command structure.
 
 2. ``local_delivery_command`` hardcoded ``"hermes"``, relying on PATH —
    which service contexts (systemd units, desktop launchers, non-login
@@ -22,7 +17,6 @@ Two failures on a Windows desktop install talking to a remote gateway:
    the per-profile lock.
 """
 
-import ast
 import shlex
 from pathlib import Path
 
@@ -33,59 +27,39 @@ import tools.bot_relay as bot_relay
 ENV = {"id": "d" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
 
 
-def _waiter_code(root, env=None) -> str:
+def _waiter_parts(root, env=None) -> list[str]:
     cmd = bot_relay.waiter_command(root, env or ENV)
-    parts = shlex.split(cmd)
-    return parts[parts.index("-c") + 1]
+    return shlex.split(cmd)
 
 
-def test_waiter_windows_path_compiles_after_backslash_folding():
-    """A Windows reply path must survive the execution layer folding the
-    repr-escaped double backslash back to a single one — the exact shape
-    that SyntaxErrored with ``\\U`` on #93590's reporter setup."""
-    code = _waiter_code("C:\\Users\\joshu\\.hermes")
-    assert "C:" in code  # sanity: the Windows path made it into the payload
-    folded = code.replace("\\\\", "\\")
-    # Raw literals: `p = r'C:\Users\joshu\...'` — no unicode-escape crash.
-    compile(folded, "<waiter>", "exec")
+def test_waiter_windows_path_roundtrips_as_argv_data():
+    root = "C:\\Users\\joshu\\.hermes"
+    parts = _waiter_parts(root)
+    expected = str(Path(root) / "bot_relay" / "replies" / f"{ENV['id']}.json")
+    assert parts[1:4] == ["-m", "tools.bot_relay", "wait"]
+    assert parts[4] == expected
+    assert "\\Users\\joshu\\.hermes" in parts[4]
 
 
 def test_waiter_posix_path_and_label_values_roundtrip():
-    """On POSIX (backslash-free paths) the raw prefix changes nothing."""
     root = Path("/tmp/hermes-home")
-    code = _waiter_code(root)
-    assigns = {
-        t.targets[0].id: t.value
-        for t in ast.parse(code).body
-        if isinstance(t, ast.Assign) and isinstance(t.targets[0], ast.Name)
-    }
+    parts = _waiter_parts(root)
     expected = str(root / "bot_relay" / "replies" / f"{ENV['id']}.json")
-    assert assigns["p"].value == expected
-    assert assigns["label"].value == "@researcher on ssh-vps"
-    # The literals are raw-prefixed in the generated source.
-    assert "\np = r'" in code
-    assert "\nlabel = r'" in code
+    assert parts[4] == expected
+    assert parts[5] == "@researcher on ssh-vps"
 
 
-def test_waiter_raw_prefix_keeps_injection_defense():
-    """Hostile roster fields must stay data under the raw prefix too."""
+def test_waiter_argv_keeps_injection_defense():
+    """Hostile roster fields remain one inert argv value."""
     inj = {
         "id": "e" * 32,
         "target_handle": "researcher",
         "target_connection": "x'); __import__('sys').exit(2); print('x",
     }
-    code = _waiter_code(Path("/tmp/hermes-home"), inj)
-    compile(code, "<waiter>", "exec")
-    calls = [
-        n.func.id
-        for n in ast.walk(ast.parse(code))
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-    ]
-    # The generated waiter only calls str/print/compile-free builtins by
-    # name; the payload's __import__ must remain a string literal, not a
-    # live call — parse it back and confirm it stayed data.
-    assert "__import__" not in calls
-    assert "x'); __import__('sys').exit(2); print('x" in code
+    parts = _waiter_parts(Path("/tmp/hermes-home"), inj)
+    assert parts[1:4] == ["-m", "tools.bot_relay", "wait"]
+    assert len(parts) == 7
+    assert parts[5] == "@researcher on " + inj["target_connection"]
 
 
 def test_local_delivery_resolves_sibling_hermes(tmp_path, monkeypatch):

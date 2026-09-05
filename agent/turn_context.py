@@ -739,6 +739,37 @@ def _persist_turn_start(
         agent, _ensure_and_persist,
         "Early turn-start session persistence failed for session=%s", pending_cli_message,
     )
+    # A live cross-gateway relay may have timed out while this queued turn was
+    # still waiting for its exact user row. Reconcile the durable receipt now
+    # that the normal turn-start writer has run; no provider call or new worker
+    # is involved, and ordinary platform ids simply find no relay receipt.
+    platform_message_id = getattr(agent, "_persist_user_message_platform_id", None)
+    session_db = getattr(agent, "_session_db", None)
+    has_platform_message_id = getattr(session_db, "has_platform_message_id", None)
+    durable = False
+    if platform_message_id and callable(has_platform_message_id):
+        try:
+            durable = bool(has_platform_message_id(agent.session_id, platform_message_id))
+        except Exception:
+            logger.debug(
+                "delayed relay receipt durability probe failed for session=%s",
+                agent.session_id or "none", exc_info=True,
+            )
+    if durable:
+        try:
+            from hermes_constants import get_hermes_home
+            from tools.bot_relay import (
+                complete_pending_deliveries_for_message, relay_install_root,
+            )
+
+            complete_pending_deliveries_for_message(
+                relay_install_root(get_hermes_home()), platform_message_id
+            )
+        except Exception:
+            logger.debug(
+                "delayed relay receipt reconciliation failed for session=%s",
+                agent.session_id or "none", exc_info=True,
+            )
 
 
 def build_turn_context(

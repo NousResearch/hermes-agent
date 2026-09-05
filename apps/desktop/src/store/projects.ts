@@ -14,7 +14,7 @@ import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
 import { persistentAtom } from '@/lib/persisted'
-import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
+import { $gateway, activeGateway, activeGatewayConnectionId, ensureActiveGatewayOpen } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import {
@@ -31,7 +31,7 @@ import {
   setSessions,
   workspaceCwdForNewSession
 } from '@/store/session'
-import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-removal'
+import { $removedSessionIds, pruneSessionRemovalState } from '@/store/session-removal'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
@@ -311,6 +311,7 @@ function isRetryableProjectTreeReadError(error: unknown): boolean {
 }
 
 interface ActiveProjectsContext {
+  connectionId: null | string
   gateway: HermesGateway
   profile: string
 }
@@ -336,7 +337,7 @@ async function activeProjectsContext(): Promise<ActiveProjectsContext> {
     throw new Error('Active Hermes profile changed while connecting')
   }
 
-  return { gateway, profile }
+  return { connectionId: activeGatewayConnectionId(), gateway, profile }
 }
 
 function applyPayload(payload: ProjectsPayload): void {
@@ -389,18 +390,23 @@ const PROJECT_TREE_REQUEST_TIMEOUT_MS = 60_000
 
 let projectTreeRefreshGeneration = 0
 
-function applyProjectTreePayload(res: ProjectTreePayload): void {
-  const scoped = new Set(res.scoped_session_ids ?? [])
+function applyProjectTreePayload(
+  res: ProjectTreePayload,
+  context?: Pick<ActiveProjectsContext, 'connectionId' | 'profile'>
+): void {
   $projectTree.set(res.projects ?? [])
   $activeProjectId.set(res.active_id ?? null)
   const tombstones = $removedSessionIds.get()
 
   if (tombstones.size) {
-    // Keep a tombstone while the backend still lists the id (delete pending on
-    // its side) OR while its mutation is still in flight locally — dropping it
-    // early flashes the row back until the RPC lands.
-    const inFlight = $sessionMutationsInFlight.get()
-    const pending = new Set([...tombstones].filter(id => scoped.has(id) || inFlight.has(id)))
+    // Reconcile only against the source that produced this tree. A tree read
+    // from gateway A cannot prove that gateway B's same-id delete has landed.
+    // The no-context all-profile reader may reconcile legacy bare ids globally,
+    // but keeps exact owner keys conservative until their owner is read.
+    const pending = pruneSessionRemovalState(
+      new Set(res.scoped_session_ids ?? []),
+      context ? { connectionId: context.connectionId, profile: context.profile } : undefined
+    )
 
     if (pending.size !== tombstones.size) {
       $removedSessionIds.set(pending)
@@ -445,7 +451,7 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
       return
     }
 
-    applyProjectTreePayload(res)
+    applyProjectTreePayload(res, context)
     markProjectsRpcSuccess()
   } catch (err) {
     if (generation === projectTreeRefreshGeneration && stillOnProjectsContext(context)) {

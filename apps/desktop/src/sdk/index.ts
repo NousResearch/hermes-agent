@@ -792,12 +792,12 @@ export const host = {
   },
 
   /** Pre-dial an agent's socket on ITS source — the (connection, profile)
-   *  analogue of warmProfile. Fire-and-forget, same semantics.
+   *  analogue of warmProfile. Callers may ignore the returned promise for
+   *  hover-style warming, or await it when a subsequent RPC needs the socket.
    *  `undefined` is accepted alongside `null` because a roster row's
    *  `connectionId` is optional; both mean "no explicit source". */
-  warmAgent: (connectionId: null | string | undefined, profile: string): void => {
-    void openGatewayForAgent(connectionId ?? null, (profile ?? '').trim() || 'default').catch(() => undefined)
-  },
+  warmAgent: (connectionId: null | string | undefined, profile: string): Promise<void> =>
+    openGatewayForAgent(connectionId ?? null, (profile ?? '').trim() || 'default'),
 
   /** Activate an agent's gateway (dialing it if needed) so subsequent
    *  host.request calls hit that agent's backend. Goes through the store's

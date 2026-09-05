@@ -33,6 +33,7 @@ import { $sessionListDensity } from '@/store/session-list-density'
 import { $openStoredSessionIds } from '@/store/session-states'
 import { sessionCostUsd } from '@/store/sidebar-archive'
 import { $todoProgressBySession } from '@/store/todos'
+import { sessionOwnerRouteFromRow } from '@/store/session-request-router'
 
 import { SessionStatusDot } from '../session-status-dot'
 
@@ -314,6 +315,7 @@ function SidebarSessionRowImpl({
         onPin={onPin}
         onToggleUnread={onToggleUnread}
         pinned={isPinned}
+        owner={sessionOwnerRouteFromRow(session)}
         profile={session.profile}
         sessionId={session.id}
         title={title}
@@ -343,6 +345,7 @@ function SidebarSessionRowImpl({
       onPin={onPin}
       onToggleUnread={onToggleUnread}
       pinned={isPinned}
+      owner={sessionOwnerRouteFromRow(session)}
       profile={session.profile}
       sessionId={session.id}
       title={title}

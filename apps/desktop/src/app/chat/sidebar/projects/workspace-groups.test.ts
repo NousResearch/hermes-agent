@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import type { HermesGitWorktree } from '@/global'
 import { makeCwdSession } from '@/test/session-info'
 import type { ProjectInfo, SessionInfo } from '@/types/hermes'
+import { $removedSessionIds, tombstoneSessions } from '@/store/session-removal'
 
 import {
   baseName,
@@ -23,6 +24,10 @@ import {
 // The grouping itself now lives on the backend (tui_gateway/project_tree.py,
 // covered by tests/tui_gateway/test_project_tree.py). This file only covers the
 // thin render helpers the desktop still owns + the VISUAL worktree enhancer.
+
+afterEach(() => {
+  $removedSessionIds.set(new Set())
+})
 
 const lane = (over: Partial<SidebarSessionGroup> & Pick<SidebarSessionGroup, 'id' | 'label'>): SidebarSessionGroup => ({
   path: null,
@@ -667,6 +672,23 @@ describe('overlayLiveLanes', () => {
     expect(reconciled).toEqual([live])
   })
 
+  it('keeps same-id rows from different gateways distinct in the entered project', () => {
+    const gatewayA = makeCwdSession('/www/app', {
+      connection_id: 'gateway-a',
+      id: 'same-id',
+      profile: 'default'
+    })
+    const gatewayB = makeCwdSession('/www/app', {
+      connection_id: 'gateway-b',
+      id: 'same-id',
+      profile: 'default'
+    })
+
+    const reconciled = reconcileEnteredProjectSessions([gatewayA], [gatewayB])
+
+    expect(reconciled.map(session => session.connection_id)).toEqual(['gateway-a', 'gateway-b'])
+  })
+
   it('injects a live session into the matching main lane instantly', () => {
     const project = projectNode({
       id: '/www/app',
@@ -1109,6 +1131,30 @@ describe('overlayLivePreviews', () => {
     const previews = overlayLivePreviews([project], [], [], 3, { removed: new Set(['gone']) })
 
     expect(previews['/www/app'].map(s => s.id)).toEqual(['old'])
+  })
+
+  it('evicts only the removed gateway twin from a project preview', () => {
+    const gatewayA = makeCwdSession('/www/app', {
+      connection_id: 'gateway-a',
+      id: 'same-id',
+      profile: 'default',
+      title: 'A'
+    })
+    const gatewayB = makeCwdSession('/www/app', {
+      connection_id: 'gateway-b',
+      id: 'same-id',
+      profile: 'default',
+      title: 'B'
+    })
+    const project = projectNode({ id: '/www/app', previewSessions: [gatewayA, gatewayB] })
+
+    tombstoneSessions([gatewayB])
+
+    const previews = overlayLivePreviews([project], [gatewayA, gatewayB], [], 3, {
+      removed: $removedSessionIds.get()
+    })
+
+    expect(previews['/www/app'].map(session => [session.connection_id, session.title])).toEqual([['gateway-a', 'A']])
   })
 
   it('ranks by the active sort key before trimming, so the preview is its top rows', () => {

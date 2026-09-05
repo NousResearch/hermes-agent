@@ -89,6 +89,15 @@ describe('renameSessionPreferringRpc', () => {
     expect(renameSession).toHaveBeenCalledWith(STORED_ID, 'My branch', 'work')
   })
 
+  it('keeps an explicit gateway owner on a same-id background rename', async () => {
+    const owner = { connectionId: 'gateway-b', profile: 'default' }
+
+    await renameSessionPreferringRpc(STORED_ID, 'Gateway B', owner)
+
+    expect(request).not.toHaveBeenCalled()
+    expect(renameSession).toHaveBeenCalledWith(STORED_ID, 'Gateway B', owner)
+  })
+
   it('uses REST when clearing the title (RPC rejects empty titles)', async () => {
     $selectedStoredSessionId.set(STORED_ID)
     $activeSessionId.set(RUNTIME_ID)

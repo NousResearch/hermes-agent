@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
+import { sessionIdentityKey } from '@/store/session'
 
 import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 
@@ -48,6 +49,16 @@ describe('buildSessionByAnyId', () => {
 
     expect(index.get('root')?.id).toBe('root')
   })
+
+  it('keeps same-id gateway twins exact and refuses an ambiguous bare alias', () => {
+    const gatewayA = row('same', { connection_id: 'gateway-a', title: 'Gateway A' })
+    const gatewayB = row('same', { connection_id: 'gateway-b', pinned: true, title: 'Gateway B' })
+    const index = buildSessionByAnyId([gatewayA, gatewayB], [], [])
+
+    expect(index.get('same')).toBeUndefined()
+    expect(index.get(sessionIdentityKey(gatewayA))).toBe(gatewayA)
+    expect(index.get(sessionIdentityKey(gatewayB))).toBe(gatewayB)
+  })
 })
 
 describe('resolvePinnedSessions', () => {
@@ -74,6 +85,16 @@ describe('resolvePinnedSessions', () => {
     const index = buildSessionByAnyId(sessions, [], [])
 
     expect(resolvePinnedSessions(['a'], index, sessions, settled).map(s => s.id)).toEqual(['a'])
+  })
+
+  it('keeps server-pinned same-id gateway twins as separate rows', () => {
+    const sessions = [
+      row('same', { connection_id: 'gateway-a', pinned: true, title: 'Gateway A' }),
+      row('same', { connection_id: 'gateway-b', pinned: true, title: 'Gateway B' })
+    ]
+    const index = buildSessionByAnyId(sessions, [], [])
+
+    expect(resolvePinnedSessions([], index, sessions, settled)).toEqual(sessions)
   })
 
   it('does not duplicate a server-pinned row whose pin is stored on the lineage root', () => {

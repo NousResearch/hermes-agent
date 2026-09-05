@@ -14,6 +14,8 @@ relay adds to message_agent:
 
 import json
 import re
+import shlex
+import threading
 from pathlib import Path
 
 import pytest
@@ -120,7 +122,285 @@ def test_enqueue_claim_is_atomic_and_single_shot(root):
     assert [e["id"] for e in claimed] == [env["id"]]
     assert claimed[0]["target_connection"] == "ssh-vps"
     assert claimed[0]["message"] == "hi"
+    assert claimed[0]["schema"] == "asm-hermes-a2a-envelope/v2"
+    assert claimed[0]["message_id"] == env["id"]
+    assert claimed[0]["scope"] == {"mutation": "none", "production": "none"}
     # second drain: nothing (no double delivery)
+    assert bot_relay.claim_pending_envelopes(root) == []
+
+
+def test_consequential_envelope_requires_work_binding(root):
+    target = _rows()[0]
+    with pytest.raises(ValueError, match="mission_id and work_item_id"):
+        bot_relay.enqueue_envelope(
+            root, target=target, message="deploy", sender_profile="default",
+            sender_handle="hermes", metadata={"production_scope": "release"},
+        )
+
+
+def test_idempotent_delivery_replays_completed_result_and_holds_ambiguous(root):
+    first = bot_relay.begin_idempotent_delivery(root, "work:1", "a" * 32, "ops\0same")
+    assert first["disposition"] == "admitted"
+    duplicate = bot_relay.begin_idempotent_delivery(root, "work:1", "a" * 32, "ops\0same")
+    assert duplicate["disposition"] == "ambiguous"
+    bot_relay.complete_idempotent_delivery(root, "work:1", "done")
+    replay = bot_relay.begin_idempotent_delivery(root, "work:1", "a" * 32, "ops\0same")
+    assert replay["disposition"] == "replay"
+    assert "already delivered" in replay["reply"]
+    conflict = bot_relay.begin_idempotent_delivery(root, "work:1", "b" * 32, "other\0different")
+    assert conflict["disposition"] == "conflict"
+
+
+def test_target_receipt_is_durable_and_bound_to_claimed_envelope(root):
+    target = _target(conn="ssh-vps", profile="researcher", handle="researcher")
+    envelope = bot_relay.enqueue_envelope(
+        root,
+        target=target,
+        message="receipt proof",
+        sender_profile="default",
+        sender_handle="hermes",
+        metadata={"idempotency_key": "mission:receipt:1", "subject": "Receipt proof"},
+    )
+    claimed = bot_relay.claim_pending_envelopes(root)
+    assert [item["id"] for item in claimed] == [envelope["id"]]
+    fingerprint = bot_relay.delivery_fingerprint(
+        claimed[0], target_profile="researcher", message="receipt proof", structured=True
+    )
+    admitted = bot_relay.begin_idempotent_delivery(
+        root,
+        envelope["idempotency_key"],
+        envelope["message_id"],
+        fingerprint,
+        target_connection="ssh-vps",
+        target_profile="researcher",
+        target_handle="researcher",
+    )
+    assert admitted["disposition"] == "admitted"
+    pending = bot_relay.read_idempotent_delivery(
+        root,
+        envelope["idempotency_key"],
+        message_id=envelope["message_id"],
+        delivery_fingerprint=fingerprint,
+        target_connection="ssh-vps",
+        target_profile="researcher",
+        target_handle="researcher",
+    )
+    assert pending["disposition"] == "pending"
+
+    receipt = bot_relay.complete_idempotent_delivery(
+        root,
+        envelope["idempotency_key"],
+        "target reply",
+        target_connection="ssh-vps",
+        target_profile="researcher",
+        target_handle="researcher",
+    )
+    assert receipt["schema"] == "asm-hermes-a2a-target-receipt/v1"
+    readback = bot_relay.read_idempotent_delivery(
+        root,
+        envelope["idempotency_key"],
+        message_id=envelope["message_id"],
+        delivery_fingerprint=fingerprint,
+        target_connection="ssh-vps",
+        target_profile="researcher",
+        target_handle="researcher",
+    )
+    assert readback == {"disposition": "completed", "receipt": receipt}
+
+    reply_path = bot_relay.write_reply(root, envelope["id"], reply="target reply", target_receipt=receipt)
+    reply = json.loads(reply_path.read_text(encoding="utf-8"))
+    assert reply["target_receipt"] == receipt
+
+    with pytest.raises(ValueError, match="delivery does not match envelope"):
+        bot_relay.write_reply(
+            root,
+            envelope["id"],
+            reply="target reply",
+            target_receipt={**receipt, "delivery_sha256": "f" * 64},
+        )
+
+
+def test_delayed_live_receipt_is_completed_by_persist_reconciliation(root):
+    """A timed-out live queue can finish when the exact platform row lands later."""
+    message_id = "d" * 32
+    key = "mission:receipt:delayed-live"
+    fingerprint = "delayed-live-fingerprint"
+    reply = "Delivered into @researcher's open Bot Chat; the reply will appear there."
+    admitted = bot_relay.begin_idempotent_delivery(
+        root,
+        key,
+        message_id,
+        fingerprint,
+        target_connection="ssh-vps",
+        target_profile="researcher",
+        target_handle="researcher",
+        completion_reply=reply,
+    )
+    assert admitted["disposition"] == "admitted"
+    assert bot_relay.read_idempotent_delivery(
+        root,
+        key,
+        message_id=message_id,
+        delivery_fingerprint=fingerprint,
+        target_connection="ssh-vps",
+        target_profile="researcher",
+        target_handle="researcher",
+    )["disposition"] == "pending"
+
+    completed = bot_relay.complete_pending_deliveries_for_message(root, message_id)
+    assert len(completed) == 1
+    assert completed[0]["status"] == "completed"
+    assert bot_relay.read_idempotent_delivery(
+        root,
+        key,
+        message_id=message_id,
+        delivery_fingerprint=fingerprint,
+        target_connection="ssh-vps",
+        target_profile="researcher",
+        target_handle="researcher",
+    ) == {"disposition": "completed", "receipt": completed[0]}
+
+
+def test_delayed_and_normal_receipt_completion_are_serialized(root, monkeypatch):
+    """Concurrent completion paths return the one durable receipt, not two timestamps."""
+    message_id = "l" * 32
+    key = "mission:receipt:completion-race"
+    reply = "Delivered into @researcher's open Bot Chat; the reply will appear there."
+    bot_relay.begin_idempotent_delivery(
+        root,
+        key,
+        message_id,
+        "completion-race-fingerprint",
+        target_connection="ssh-vps",
+        target_profile="researcher",
+        target_handle="researcher",
+        completion_reply=reply,
+    )
+
+    first_write = threading.Event()
+    release_first = threading.Event()
+    second_done = threading.Event()
+    write_count = 0
+    count_lock = threading.Lock()
+    original_write = bot_relay._atomic_write_json
+
+    def controlled_write(*args, **kwargs):
+        nonlocal write_count
+        with count_lock:
+            write_count += 1
+            is_first = write_count == 1
+        if is_first:
+            first_write.set()
+            assert release_first.wait(2)
+        return original_write(*args, **kwargs)
+
+    monkeypatch.setattr(bot_relay, "_atomic_write_json", controlled_write)
+    results = {}
+
+    normal = threading.Thread(
+        target=lambda: results.setdefault(
+            "normal",
+            bot_relay.complete_idempotent_delivery(
+                root, key, reply,
+                target_connection="ssh-vps",
+                target_profile="researcher",
+                target_handle="researcher",
+            ),
+        )
+    )
+    delayed = threading.Thread(
+        target=lambda: (
+            results.setdefault(
+                "delayed",
+                bot_relay.complete_pending_deliveries_for_message(root, message_id),
+            ),
+            second_done.set(),
+        )
+    )
+    normal.start()
+    assert first_write.wait(1)
+    delayed.start()
+    assert not second_done.wait(0.1)
+    release_first.set()
+    normal.join(2)
+    delayed.join(2)
+    assert not normal.is_alive() and not delayed.is_alive()
+    assert results["normal"] == results["delayed"][0]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("target_connection", "other-connection"), ("target_profile", "other-profile"), ("target_handle", "other-handle")],
+)
+def test_target_receipt_readback_rejects_adversarial_identity(root, field, value):
+    target = _target(conn="ssh-vps", profile="researcher", handle="researcher")
+    envelope = bot_relay.enqueue_envelope(
+        root,
+        target=target,
+        message="identity check",
+        sender_profile="default",
+        sender_handle="hermes",
+        metadata={"idempotency_key": f"mission:receipt:{field}"},
+    )
+    claimed = bot_relay.claim_pending_envelopes(root)[0]
+    fingerprint = bot_relay.delivery_fingerprint(
+        claimed, target_profile="researcher", message="identity check", structured=True
+    )
+    bot_relay.begin_idempotent_delivery(
+        root,
+        envelope["idempotency_key"],
+        envelope["message_id"],
+        fingerprint,
+        target_connection="ssh-vps",
+        target_profile="researcher",
+        target_handle="researcher",
+    )
+    bot_relay.complete_idempotent_delivery(
+        root,
+        envelope["idempotency_key"],
+        "reply",
+        target_connection="ssh-vps",
+        target_profile="researcher",
+        target_handle="researcher",
+    )
+    identity = {"target_connection": "ssh-vps", "target_profile": "researcher", "target_handle": "researcher"}
+    identity[field] = value
+    outcome = bot_relay.read_idempotent_delivery(
+        root,
+        envelope["idempotency_key"],
+        message_id=envelope["message_id"],
+        delivery_fingerprint=fingerprint,
+        **identity,
+    )
+    assert outcome["disposition"] == "mismatch"
+    assert outcome["reason"] == "target_receipt_mismatch"
+
+
+def test_per_envelope_expiry_overrides_global_ttl(root, monkeypatch):
+    target = _rows()[0]
+    monkeypatch.setattr(bot_relay, "_envelope_ttl_seconds", lambda: 900)
+    env = bot_relay.enqueue_envelope(
+        root, target=target, message="stale", sender_profile="default",
+        sender_handle="hermes", metadata={"ttl_seconds": 1},
+    )
+    path = bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR / f"{env['id']}.json"
+    payload = json.loads(path.read_text())
+    payload["expires_at"] = payload["created_at"] - 1
+    path.write_text(json.dumps(payload))
+    assert bot_relay.claim_pending_envelopes(root) == []
+
+
+def test_per_envelope_expiry_applies_when_global_ttl_disabled(root, monkeypatch):
+    monkeypatch.setattr(bot_relay, "_envelope_ttl_seconds", lambda: 0)
+    target = _rows()[0]
+    env = bot_relay.enqueue_envelope(
+        root, target=target, message="stale", sender_profile="default",
+        sender_handle="hermes", metadata={"ttl_seconds": 1},
+    )
+    path = bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR / f"{env['id']}.json"
+    payload = json.loads(path.read_text())
+    payload["expires_at"] = payload["created_at"] - 1
+    path.write_text(json.dumps(payload))
     assert bot_relay.claim_pending_envelopes(root) == []
 
 
@@ -150,8 +430,18 @@ def test_write_reply_reason_passthrough_and_classification(root):
 def test_waiter_command_quotes_and_targets_reply_file(root):
     env = {"id": "b" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
     cmd = bot_relay.waiter_command(root, env)
-    assert ("b" * 32) in cmd and "-c" in cmd
-    assert "rm -rf" not in cmd  # sanity: single quoted -c payload
+    parts = shlex.split(cmd)
+    assert ("b" * 32) in cmd
+    assert parts[1:4] == ["-m", "tools.bot_relay", "wait"]
+    assert "-c" not in parts
+    assert "rm -rf" not in cmd
+
+
+def test_waiter_command_passes_unattended_dangerous_command_gate(root):
+    from tools.approval import detect_dangerous_command
+
+    env = {"id": "b" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
+    assert detect_dangerous_command(bot_relay.waiter_command(root, env))[0] is False
 
 
 def test_waiter_picks_up_reply_within_a_sub_second_cadence(root):
@@ -195,10 +485,7 @@ def test_roster_rejects_connection_id_outside_handle_charset(root):
     assert bot_relay.write_remote_roster(root, [good]) == 1
 
 
-def test_waiter_command_repr_encodes_hostile_connection_id(root):
-    import ast
-    import shlex
-
+def test_waiter_command_treats_hostile_connection_id_as_argv_data(root):
     inj = "x'); open(r'/tmp/pwned','w').write('pwned'); print('x"
     env = {
         "id": "c" * 32,
@@ -207,26 +494,8 @@ def test_waiter_command_repr_encodes_hostile_connection_id(root):
     }
     cmd = bot_relay.waiter_command(root, env)
     parts = shlex.split(cmd)
-    code = parts[parts.index("-c") + 1]
-    compile(code, "<waiter>", "exec")
-    tree = ast.parse(code)
-    opens = [
-        n
-        for n in ast.walk(tree)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Name)
-        and n.func.id == "open"
-    ]
-    # Only json.load(open(p, ...)) is a real open(); the payload must stay data.
-    assert len(opens) == 1
-
-    # A quote in the id used to SyntaxError the waiter. It must compile.
-    quoted = bot_relay.waiter_command(
-        root,
-        {"id": "a" * 32, "target_handle": "h", "target_connection": "foo'bar"},
-    )
-    qcode = shlex.split(quoted)[shlex.split(quoted).index("-c") + 1]
-    compile(qcode, "<waiter-quote>", "exec")
+    assert parts[1:4] == ["-m", "tools.bot_relay", "wait"]
+    assert parts[5] == "@researcher on " + inj
 
 
 # ── message_agent integration: relay route + legacy-SOUL gate fix ───────────
@@ -313,9 +582,10 @@ def test_relay_route_queues_envelope_and_spawns_waiter(tmp_path, monkeypatch):
 
     spawned = {}
 
-    def _fake_spawn(command, label, *, task_id, agent):
+    def _fake_spawn(command, label, *, task_id, agent, delivery_committed=False):
         spawned["command"] = command
         spawned["label"] = label
+        spawned["delivery_committed"] = delivery_committed
         return json.dumps({"status": "sent", "to": label})
 
     monkeypatch.setattr("tools.bot_mode_dm._spawn_delivery", _fake_spawn)
@@ -323,6 +593,7 @@ def test_relay_route_queues_envelope_and_spawns_waiter(tmp_path, monkeypatch):
     out = json.loads(message_agent_tool(target="hermes", message="ping", agent=agent))
     assert out.get("status") == "sent"
     assert "Hermes Cloud" in spawned["label"]
+    assert spawned["delivery_committed"] is True
     # envelope landed in the outbox with attribution prefixed
     pending = bot_relay.claim_pending_envelopes(home)
     assert len(pending) == 1

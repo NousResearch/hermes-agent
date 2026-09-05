@@ -14,6 +14,8 @@ when the target is definitively offline (fail fast instead of queueing a DM nobo
 from __future__ import annotations
 
 import contextlib
+import datetime as dt
+import hashlib
 import json
 import logging
 import os
@@ -37,10 +39,16 @@ OUTBOX_DIR = "outbox"
 CLAIMED_DIR = "claimed"
 REPLIES_DIR = "replies"
 LOCKS_DIR = "locks"
+DELIVERED_DIR = "delivered"
+
+ENVELOPE_SCHEMA = "asm-hermes-a2a-envelope/v2"
+TARGET_RECEIPT_SCHEMA = "asm-hermes-a2a-target-receipt/v1"
+MESSAGE_TYPES = frozenset({"REQUEST", "RESPONSE", "HANDOFF", "BLOCKER", "REVIEW", "DECISION", "FYI"})
 
 # Config fallbacks (real knobs: ``bot_mode.turn_wait_seconds`` / ``bot_mode.envelope_ttl_seconds``).
 TURN_WAIT_SECONDS_FALLBACK = 120
 DEFAULT_ENVELOPE_TTL_SECONDS = 900  # older envelopes are refused at drain with 'queued_expired'
+DELIVERY_RECEIPT_RETENTION_SECONDS = 7 * 24 * 3600
 # Waiter give-up budget: cross-connection turns can be slow — generous, but bounded.
 REPLY_WAIT_SECONDS = 900
 # Envelopes/replies older than this are stale artifacts (Desktop closed) and are swept.
@@ -75,9 +83,15 @@ def relay_root(root: Path | str) -> Path:
     return Path(root) / RELAY_DIR_NAME
 
 
+def relay_install_root(home: Path | str) -> Path:
+    """Normalize a profile home to the install-wide relay state owner."""
+    path = Path(home)
+    return path.parent.parent if path.parent.name == "profiles" else path
+
+
 def _ensure_dirs(root: Path | str) -> Path:
     base = relay_root(root)
-    for sub in (OUTBOX_DIR, CLAIMED_DIR, REPLIES_DIR):
+    for sub in (OUTBOX_DIR, CLAIMED_DIR, REPLIES_DIR, DELIVERED_DIR):
         (base / sub).mkdir(parents=True, exist_ok=True)
     return base
 
@@ -88,6 +102,8 @@ def _atomic_write_json(target: Path, payload: Any, *, prefix: str, sort_keys: bo
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, sort_keys=sort_keys)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, target)
     except Exception:
         with contextlib.suppress(OSError):
@@ -205,7 +221,15 @@ def _target_liveness(root: Path | str, target: dict) -> Optional[bool]:
         return None
 
 
-def enqueue_envelope(root: Path | str, *, target: dict, message: str, sender_profile: str, sender_handle: str) -> dict:
+def enqueue_envelope(
+    root: Path | str,
+    *,
+    target: dict,
+    message: str,
+    sender_profile: str,
+    sender_handle: str,
+    metadata: Optional[dict] = None,
+) -> dict:
     """Queue a cross-connection DM for the Desktop relay; returns the envelope. Raises
     ``EnvelopeRefusedError`` ('runtime_offline') without writing when the target is
     definitively offline; unknown liveness enqueues (fail-open)."""
@@ -215,14 +239,420 @@ def enqueue_envelope(root: Path | str, *, target: dict, message: str, sender_pro
         raise EnvelopeRefusedError("runtime_offline", f"{label} is offline right now — the message was NOT queued. "
                                    "Try again once that machine reconnects to the Desktop.")
     base = _ensure_dirs(root)
+    now = int(time.time())
+    envelope_id = uuid.uuid4().hex
+    meta = metadata if isinstance(metadata, dict) else {}
+    message_type = str(meta.get("type") or "REQUEST").upper()
+    if message_type not in MESSAGE_TYPES:
+        raise ValueError(f"invalid message type: {message_type}")
+    mutation_scope = str(meta.get("mutation_scope") or "none").strip()[:120]
+    production_scope = str(meta.get("production_scope") or "none").strip()[:120]
+    mission_id = str(meta.get("mission_id") or "").strip()[:160]
+    work_item_id = str(meta.get("work_item_id") or "").strip()[:160]
+    if (mutation_scope != "none" or production_scope != "none") and not (mission_id and work_item_id):
+        raise ValueError("mutation/production messages require mission_id and work_item_id")
+    ttl = max(1, min(int(meta.get("ttl_seconds") or _envelope_ttl_seconds()), 86400))
+    evidence_refs = meta.get("evidence_refs") if isinstance(meta.get("evidence_refs"), list) else []
     envelope = {
-        "id": uuid.uuid4().hex, "created_at": int(time.time()),
-        "from_profile": sender_profile, "from_handle": sender_handle,
-        "target_connection": target["connection_id"], "target_profile": target["profile"],
-        "target_handle": target["handle"], "message": message,
+        "schema": ENVELOPE_SCHEMA,
+        "id": envelope_id,
+        "message_id": envelope_id,
+        "idempotency_key": str(meta.get("idempotency_key") or f"dm:{envelope_id}")[:240],
+        "type": message_type,
+        "created_at": now,
+        "expires_at": now + ttl,
+        "response_due": now + ttl,
+        "from_profile": sender_profile,
+        "from_handle": sender_handle,
+        "from_agent": sender_handle,
+        "target_connection": target["connection_id"],
+        "target_profile": target["profile"],
+        "target_handle": target["handle"],
+        "to_agent": target["handle"],
+        "mission_id": mission_id,
+        "work_item_id": work_item_id,
+        "subject": str(meta.get("subject") or str(message).splitlines()[0])[:160],
+        "request": {
+            "question": str(message),
+            "required_output": [
+                str(value)[:80]
+                for value in (meta.get("required_output") or ["response", "evidence", "unknowns"])
+            ][:12],
+        },
+        "scope": {"mutation": mutation_scope, "production": production_scope},
+        "evidence_refs": [str(value)[:500] for value in evidence_refs][:20],
+        "authority_effect": "none",
+        "message": message,
     }
     _atomic_write_json(base / OUTBOX_DIR / f"{envelope['id']}.json", envelope, prefix=".env-")
     return envelope
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+
+
+def delivery_fingerprint(
+    envelope: Optional[dict], *, target_profile: str, message: str, structured: bool
+) -> str:
+    """Canonical semantic delivery input shared by admission and readback."""
+    env = envelope if isinstance(envelope, dict) else {}
+    semantic = {
+        "target_profile": str(target_profile),
+        "message": str(message),
+        "type": env.get("type") if structured else "legacy",
+        "from_agent": env.get("from_agent") if structured else "",
+        "to_agent": env.get("to_agent") if structured else str(target_profile),
+        "mission_id": env.get("mission_id") if structured else "",
+        "work_item_id": env.get("work_item_id") if structured else "",
+        "request": env.get("request") if structured else {},
+        "scope": env.get("scope") if structured else {},
+        "authority_effect": env.get("authority_effect") if structured else "none",
+    }
+    return _canonical_json(semantic)
+
+
+def _target_identity(connection: str, profile: str, handle: str = "") -> dict[str, str]:
+    return {
+        "target_connection": str(connection or "").strip(),
+        "target_profile": str(profile or "").strip(),
+        "target_handle": str(handle or "").strip(),
+    }
+
+
+def _target_identity_sha256(identity: dict[str, str]) -> str:
+    return _sha256_text(_canonical_json(identity))
+
+
+def _public_target_receipt(payload: dict) -> dict:
+    fields = (
+        "schema", "status", "idempotency_sha256", "message_id", "delivery_sha256",
+        "target_sha256", "target_connection", "target_profile", "target_handle",
+        "started_at", "completed_at", "reply_sha256",
+    )
+    return {field: payload[field] for field in fields if field in payload}
+
+
+def _receipt_shape_error(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return "receipt is not an object"
+    required = (
+        "schema", "status", "idempotency_sha256", "message_id", "delivery_sha256",
+        "target_sha256", "target_connection", "target_profile", "target_handle", "started_at",
+    )
+    missing = [field for field in required if field not in payload]
+    if missing:
+        return f"receipt missing: {', '.join(missing)}"
+    if payload.get("schema") != TARGET_RECEIPT_SCHEMA:
+        return "receipt schema is unsupported"
+    if payload.get("status") not in {"started", "completed"}:
+        return "receipt status is invalid"
+    if not all(isinstance(payload.get(field), str) for field in required):
+        return "receipt identity fields are invalid"
+    if any(not payload[field].strip() for field in required):
+        return "receipt fields are incomplete"
+    if not re.fullmatch(r"[0-9a-f]{64}", payload["idempotency_sha256"]):
+        return "receipt idempotency hash is invalid"
+    if not re.fullmatch(r"[0-9a-f]{64}", payload["delivery_sha256"]):
+        return "receipt delivery hash is invalid"
+    if not re.fullmatch(r"[0-9a-f]{64}", payload["target_sha256"]):
+        return "receipt target hash is invalid"
+    if not payload["target_connection"] or not payload["target_profile"]:
+        return "receipt target identity is incomplete"
+    identity = _target_identity(
+        payload["target_connection"], payload["target_profile"], payload["target_handle"]
+    )
+    if payload["target_sha256"] != _target_identity_sha256(identity):
+        return "receipt target hash does not match identity"
+    if payload["status"] == "completed":
+        for field in ("completed_at", "reply_sha256"):
+            if not isinstance(payload.get(field), str) or not payload[field]:
+                return f"completed receipt missing {field}"
+        if not re.fullmatch(r"[0-9a-f]{64}", payload["reply_sha256"]):
+            return "receipt reply hash is invalid"
+    return ""
+
+
+def delivery_receipt_path(root: Path | str, idempotency_key: str) -> Path:
+    """Stable, non-secret filename for one target-side delivery decision."""
+    digest = _sha256_text(str(idempotency_key).strip())
+    return _ensure_dirs(root) / DELIVERED_DIR / f"{digest}.json"
+
+
+def begin_idempotent_delivery(
+    root: Path | str,
+    idempotency_key: str,
+    message_id: str,
+    delivery_fingerprint: str = "",
+    *,
+    target_connection: str = "",
+    target_profile: str = "",
+    target_handle: str = "",
+    completion_reply: str = "",
+) -> dict:
+    """Atomically admit one delivery or return its durable disposition."""
+    key = str(idempotency_key or "").strip()
+    if not key:
+        return {"disposition": "untracked"}
+    path = delivery_receipt_path(root, key)
+    identity = _target_identity(target_connection, target_profile, target_handle)
+    payload = {
+        "schema": TARGET_RECEIPT_SCHEMA,
+        "idempotency_sha256": path.stem,
+        "message_id": str(message_id or "")[:160],
+        "delivery_sha256": _sha256_text(delivery_fingerprint),
+        **identity,
+        "target_sha256": _target_identity_sha256(identity),
+        "status": "started",
+        "started_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        **({"_completion_reply": str(completion_reply)} if completion_reply else {}),
+    }
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        try:
+            prior = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {"disposition": "ambiguous", "status": "unreadable"}
+        if prior.get("idempotency_sha256") not in (None, path.stem):
+            return {"disposition": "ambiguous", "status": "invalid"}
+        if prior.get("delivery_sha256") != payload["delivery_sha256"] or prior.get("message_id") != payload["message_id"]:
+            return {"disposition": "conflict"}
+        if any(identity.values()):
+            if _receipt_shape_error(prior) or any(prior.get(k) != v for k, v in identity.items()):
+                return {"disposition": "conflict"}
+        if prior.get("status") == "completed":
+            return {
+                "disposition": "replay",
+                "reply": "Duplicate suppressed: this message was already delivered.",
+                "receipt": _public_target_receipt(prior),
+            }
+        return {"disposition": "ambiguous", "status": str(prior.get("status") or "unknown")}
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        with contextlib.suppress(OSError):
+            path.unlink()
+        raise
+    return {"disposition": "admitted", "path": str(path), "receipt": _public_target_receipt(payload)}
+
+
+def complete_idempotent_delivery(
+    root: Path | str,
+    idempotency_key: str,
+    reply: str,
+    *,
+    target_connection: str = "",
+    target_profile: str = "",
+    target_handle: str = "",
+) -> dict:
+    """Atomically mark an admitted delivery complete and return its receipt."""
+    key = str(idempotency_key or "").strip()
+    if not key:
+        return {}
+    path = delivery_receipt_path(root, key)
+
+    return _complete_idempotent_delivery_path(
+        path,
+        reply,
+        target_connection=target_connection,
+        target_profile=target_profile,
+        target_handle=target_handle,
+    )
+
+
+@contextlib.contextmanager
+def _receipt_completion_lock(path: Path) -> Iterator[None]:
+    """Serialize receipt read-modify-write cycles across relay workers."""
+    lock_path = path.parent.parent / LOCKS_DIR / f"{path.stem}.receipt.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    msvcrt = None
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - Windows
+        fcntl = None
+        with contextlib.suppress(ImportError):
+            import msvcrt
+    else:
+        msvcrt = None
+    if fcntl is not None:
+        with open(lock_path, "a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                with contextlib.suppress(OSError):
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        return
+    if msvcrt is not None:  # pragma: no cover - Windows
+        with open(lock_path, "a+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b" ")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                with contextlib.suppress(OSError, IOError):
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    yield
+
+
+def _complete_idempotent_delivery_path(
+    path: Path,
+    reply: str,
+    *,
+    target_connection: str = "",
+    target_profile: str = "",
+    target_handle: str = "",
+) -> dict:
+    with _receipt_completion_lock(path):
+        return _complete_idempotent_delivery_path_unlocked(
+            path,
+            reply,
+            target_connection=target_connection,
+            target_profile=target_profile,
+            target_handle=target_handle,
+        )
+
+
+def _complete_idempotent_delivery_path_unlocked(
+    path: Path,
+    reply: str,
+    *,
+    target_connection: str = "",
+    target_profile: str = "",
+    target_handle: str = "",
+) -> dict:
+    """Complete one receipt when its hashed idempotency path is already known."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    identity = _target_identity(target_connection, target_profile, target_handle)
+    if _receipt_shape_error(payload) and any(identity.values()):
+        raise ValueError("cannot complete an unverified target receipt")
+    if any(identity.values()) and any(payload.get(k) != v for k, v in identity.items()):
+        raise ValueError("target receipt identity changed before completion")
+    if payload.get("status") == "completed":
+        return _public_target_receipt(payload)
+    if any(identity.values()) and payload.get("status") != "started":
+        raise ValueError("cannot complete a target receipt in its current state")
+    payload.update({
+        "schema": TARGET_RECEIPT_SCHEMA,
+        **({k: v for k, v in identity.items()} if any(identity.values()) else {}),
+        "status": "completed",
+        "completed_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "reply_sha256": _sha256_text(str(reply or "")),
+    })
+    _atomic_write_json(path, payload, prefix=".delivery-", sort_keys=True)
+    return _public_target_receipt(payload)
+
+
+def complete_pending_deliveries_for_message(root: Path | str, message_id: str) -> list[dict]:
+    """Complete delayed live receipts after their exact user row is durable.
+
+    A live ``prompt.submit`` can acknowledge before its queued turn reaches the
+    SessionDB. The turn-start persistence path calls this helper with the
+    platform message id, so a timeout does not strand the receipt in ``started``
+    forever. The durable row is the proof; only receipts explicitly admitted
+    with a completion reply are eligible.
+    """
+    wanted = str(message_id or "").strip()
+    if not wanted:
+        return []
+    directory = relay_root(root) / DELIVERED_DIR
+    if not directory.is_dir():
+        return []
+    completed: list[dict] = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, dict) or payload.get("status") != "started":
+            continue
+        if str(payload.get("message_id") or "") != wanted:
+            continue
+        key = str(payload.get("idempotency_sha256") or "")
+        reply = payload.get("_completion_reply")
+        if key != path.stem or not isinstance(reply, str) or not reply:
+            continue
+        try:
+            completed.append(
+                _complete_idempotent_delivery_path(
+                    path,
+                    reply,
+                    target_connection=str(payload.get("target_connection") or ""),
+                    target_profile=str(payload.get("target_profile") or ""),
+                    target_handle=str(payload.get("target_handle") or ""),
+                )
+            )
+        except (OSError, ValueError, json.JSONDecodeError):
+            # A concurrent normal completion, malformed receipt, or teardown
+            # race is safe to leave for the normal readback disposition.
+            continue
+    return completed
+
+
+def cancel_idempotent_delivery(root: Path | str, idempotency_key: str) -> None:
+    """Remove a started receipt only when the target turn definitely did not run."""
+    key = str(idempotency_key or "").strip()
+    if not key:
+        return
+    path = delivery_receipt_path(root, key)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("status") == "started":
+            path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def read_idempotent_delivery(
+    root: Path | str,
+    idempotency_key: str,
+    *,
+    message_id: str = "",
+    delivery_fingerprint: str = "",
+    target_connection: str = "",
+    target_profile: str = "",
+    target_handle: str = "",
+) -> dict:
+    """Read and independently verify a completed target receipt."""
+    key = str(idempotency_key or "").strip()
+    if not key:
+        return {"disposition": "invalid", "reason": "idempotency_key_missing"}
+    path = delivery_receipt_path(root, key)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"disposition": "missing", "reason": "target_receipt_missing"}
+    except Exception:
+        return {"disposition": "invalid", "reason": "target_receipt_unreadable"}
+    shape_error = _receipt_shape_error(payload)
+    if shape_error:
+        return {"disposition": "invalid", "reason": "target_receipt_invalid", "detail": shape_error}
+    if payload.get("idempotency_sha256") != path.stem:
+        return {"disposition": "mismatch", "reason": "target_receipt_mismatch"}
+    if payload.get("status") != "completed":
+        return {"disposition": "pending", "reason": "target_receipt_pending"}
+    if message_id and payload.get("message_id") != str(message_id):
+        return {"disposition": "mismatch", "reason": "target_receipt_mismatch"}
+    if delivery_fingerprint and payload.get("delivery_sha256") != _sha256_text(delivery_fingerprint):
+        return {"disposition": "mismatch", "reason": "target_receipt_mismatch"}
+    identity = _target_identity(target_connection, target_profile, target_handle)
+    if any(identity.values()) and any(payload.get(k) != v for k, v in identity.items()):
+        return {"disposition": "mismatch", "reason": "target_receipt_mismatch"}
+    return {"disposition": "completed", "receipt": _public_target_receipt(payload)}
 
 
 def _expire_if_stale(root: Path | str, path: Path, ttl: float, now: float) -> bool:
@@ -231,9 +661,11 @@ def _expire_if_stale(root: Path | str, path: Path, ttl: float, now: float) -> bo
     try:
         env = json.loads(path.read_text(encoding="utf-8"))
         created = float(env.get("created_at") or path.stat().st_mtime)
+        explicit_expiry = float(env.get("expires_at") or 0)
     except (OSError, ValueError):
         return False
-    if now - created <= ttl:
+    expired = (explicit_expiry > 0 and now >= explicit_expiry) or (ttl > 0 and now - created > ttl)
+    if not expired:
         return False
     with contextlib.suppress(OSError, ValueError):
         write_reply(root, str(env.get("id") or ""), reason="queued_expired", error=(
@@ -257,7 +689,7 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
     now = time.time()
     out: list[dict] = []
     for path in sorted((base / OUTBOX_DIR).glob("*.json")):
-        if ttl > 0 and _expire_if_stale(root, path, ttl, now):
+        if _expire_if_stale(root, path, ttl, now):
             with contextlib.suppress(OSError):
                 path.unlink()
             continue
@@ -268,7 +700,15 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
     return out
 
 
-def write_reply(root: Path | str, envelope_id: str, *, reply: str = "", error: str = "", reason: str = "") -> Path:
+def write_reply(
+    root: Path | str,
+    envelope_id: str,
+    *,
+    reply: str = "",
+    error: str = "",
+    reason: str = "",
+    target_receipt: Optional[dict] = None,
+) -> Path:
     """Persist the relayed reply (or delivery error) for the waiter. ``reason`` (typed
     code, ``tools.bot_failure_reasons``) is classified from ``error`` when omitted."""
     base = _ensure_dirs(root)
@@ -280,9 +720,37 @@ def write_reply(root: Path | str, envelope_id: str, *, reply: str = "", error: s
         from tools.bot_failure_reasons import classify_agent_error
 
         code = classify_agent_error(err)
+    payload = {"id": safe, "at": int(time.time()), "reply": str(reply or ""), "error": err, "reason": code}
+    if target_receipt is not None:
+        shape_error = _receipt_shape_error(target_receipt)
+        if shape_error or target_receipt.get("status") != "completed":
+            raise ValueError(f"invalid target receipt: {shape_error or 'not completed'}")
+        claimed = base / CLAIMED_DIR / f"{safe}.json"
+        try:
+            envelope = json.loads(claimed.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            envelope = None
+        if not isinstance(envelope, dict) or envelope.get("schema") != ENVELOPE_SCHEMA:
+            raise ValueError("target receipt requires its claimed structured envelope")
+        expected_key = _sha256_text(str(envelope.get("idempotency_key") or "").strip())
+        if target_receipt.get("idempotency_sha256") != expected_key:
+            raise ValueError("target receipt idempotency does not match envelope")
+        for field in ("message_id", "target_connection", "target_profile", "target_handle"):
+            if str(target_receipt.get(field) or "") != str(envelope.get(field) or ""):
+                raise ValueError(f"target receipt {field} does not match envelope")
+        expected_delivery = _sha256_text(
+            delivery_fingerprint(
+                envelope,
+                target_profile=str(envelope.get("target_profile") or ""),
+                message=str(envelope.get("message") or ""),
+                structured=True,
+            )
+        )
+        if target_receipt.get("delivery_sha256") != expected_delivery:
+            raise ValueError("target receipt delivery does not match envelope")
+        payload["target_receipt"] = _public_target_receipt(target_receipt)
     path = base / REPLIES_DIR / f"{safe}.json"
-    _atomic_write_json(path, {"id": safe, "at": int(time.time()), "reply": str(reply or ""), "error": err, "reason": code},
-                       prefix=".rep-")
+    _atomic_write_json(path, payload, prefix=".rep-", sort_keys=True)
     return path
 
 
@@ -300,7 +768,9 @@ def unlink_files_older_than(directory: Path, pattern: str, cutoff: float) -> int
 
 def _sweep_stale(base: Path, *, now: float | None = None) -> int:
     cutoff = (time.time() if now is None else now) - STALE_AFTER_SECONDS
-    return sum(unlink_files_older_than(base / sub, "*.json", cutoff) for sub in (CLAIMED_DIR, REPLIES_DIR, OUTBOX_DIR))
+    removed = sum(unlink_files_older_than(base / sub, "*.json", cutoff) for sub in (CLAIMED_DIR, REPLIES_DIR, OUTBOX_DIR))
+    receipt_cutoff = (time.time() if now is None else now) - DELIVERY_RECEIPT_RETENTION_SECONDS
+    return removed + unlink_files_older_than(base / DELIVERED_DIR, "*.json", receipt_cutoff)
 
 
 def cleanup_bot_relay_artifacts(max_age_hours: float | None = None) -> int:
@@ -316,44 +786,47 @@ def cleanup_bot_relay_artifacts(max_age_hours: float | None = None) -> int:
 
 
 def waiter_command(root: Path | str, envelope: dict) -> str:
-    """Shell command that blocks until the reply file appears, then prints it; spawned
-    via ``terminal_tool(background=True, notify_on_complete=True)`` so its stdout arrives
-    as the same completion notification local DMs use. Stdlib-only."""
+    """Shell command that blocks until the reply file appears, then prints it."""
     reply_path = str(relay_root(root) / REPLIES_DIR / f"{envelope['id']}.json")
     label = f"@{envelope.get('target_handle', '')} on {envelope.get('target_connection', '')}"
-    # !r keeps roster fields from breaking out of the generated python -c source.
-    # The r-prefix keeps Windows paths viable: the Windows execution layer folds
-    # repr's "\\" back to "\", turning "\U" into an invalid unicode escape; a
-    # raw literal parses the folded backslash literally. No-op on POSIX, and \'
-    # still cannot terminate a raw literal, so the injection defense holds.
-    code = (
-        # Encode label with !r so roster fields cannot break out of the generated python -c source (quotes,
-        # parens, or extra statements in connection_id). See #93590.
-        "import json,os,sys,time\n"
-        f"p = r{reply_path!r}\n"
-        f"label = r{label!r}\n"
-        f"deadline = time.time() + {REPLY_WAIT_SECONDS}\n"
-        "while time.time() < deadline:\n"
-        "    if os.path.exists(p):\n"
-        "        d = json.load(open(p, encoding='utf-8'))\n"
-        "        if d.get('error'):\n"
-        # Typed reason code rides ahead of the free text so the sender can
-        # branch on it without parsing provider prose.
-        # See #93091.
-        "            code = str(d.get('reason') or '').strip()\n"
-        "            tag = ' [reason: ' + code + ']' if code else ''\n"
-        "            print('Delivery to ' + label + ' failed' + tag + ': ' + d['error'])\n"
-        "            sys.exit(1)\n"
-        "        print('Reply from ' + label + ':')\n"
-        "        print(d.get('reply') or '(empty reply)')\n"
-        "        sys.exit(0)\n"
-        # 250ms cadence: stat is cheap and a longer sleep is pure dead air.
-        "    time.sleep(0.25)\n"
-        f"print('No reply from ' + label + ' within {REPLY_WAIT_SECONDS}s. The message may "
-        "still be delivered when the Desktop reconnects; do not resend blindly.')\n"
-        "sys.exit(1)\n"
+    return shlex.join([
+        sys.executable or "python3", "-m", "tools.bot_relay", "wait", reply_path,
+        label, str(REPLY_WAIT_SECONDS),
+    ])
+
+
+def wait_for_reply(reply_path: Path | str, label: str, timeout_seconds: float) -> int:
+    """Print one relay reply for the process-completion notification path."""
+    path = Path(reply_path)
+    timeout = max(0.0, float(timeout_seconds))
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if data.get("error"):
+                reason = str(data.get("reason") or "").strip()
+                tag = f" [reason: {reason}]" if reason else ""
+                print(f"Delivery to {label} failed{tag}: {data['error']}")
+                return 1
+            print(f"Reply from {label}:")
+            print(data.get("reply") or "(empty reply)")
+            return 0
+        time.sleep(0.25)
+    print(
+        f"No reply from {label} within {timeout:g}s. The message may still be delivered when the Desktop reconnects; "
+        "do not resend blindly."
     )
-    return f"{shlex.quote(sys.executable or 'python3')} -c {shlex.quote(code)}"
+    return 1
+
+
+def _main(argv: list[str]) -> int:
+    if len(argv) != 5 or argv[1] != "wait":
+        return 2
+    try:
+        timeout = float(argv[4])
+    except ValueError:
+        return 2
+    return wait_for_reply(argv[2], argv[3], timeout)
 
 
 def _hermes_cli() -> str:
@@ -455,3 +928,7 @@ def acquire_turn_lock(root: Path | str, profile: str, timeout_seconds: float | N
                 fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
         os.close(fd)
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised by waiter process
+    raise SystemExit(_main(sys.argv))

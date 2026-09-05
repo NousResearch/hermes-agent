@@ -11,8 +11,14 @@ vi.mock('./client', () => ({
 
 const client = await import('./client')
 
-const { deleteSession, setSessionArchived, setSessionPinnedRemote, setSessionUnreadRemote, listSidebarSessions } =
-  await import('./sessions')
+const {
+  deleteSession,
+  listSidebarSessions,
+  searchSessions,
+  setSessionArchived,
+  setSessionPinnedRemote,
+  setSessionUnreadRemote
+} = await import('./sessions')
 
 const hermesApi = vi.mocked(client.hermesApi)
 
@@ -111,6 +117,43 @@ describe('setSessionArchived profile scoping', () => {
     const req = hermesApi.mock.calls[0][0] as { body: Record<string, unknown> }
     expect(req).toMatchObject({ method: 'PATCH', body: { archived: false } })
     expect(req.body).not.toHaveProperty('profile')
+  })
+})
+
+describe('searchSessions owner stamping', () => {
+  it('stamps the active gateway owner without overwriting an explicit result owner', async () => {
+    vi.mocked(client.capabilityScoped).mockReturnValue({ connectionId: 'gateway-a', profile: 'default' })
+    hermesApi.mockResolvedValue({
+      results: [
+        {
+          lineage_root: null,
+          model: null,
+          role: 'user',
+          session_id: 'same-a',
+          session_started: 1,
+          snippet: 'a',
+          source: 'desktop'
+        },
+        {
+          connection_id: 'gateway-b',
+          lineage_root: null,
+          model: null,
+          profile: 'default',
+          role: 'user',
+          session_id: 'same-b',
+          session_started: 1,
+          snippet: 'b',
+          source: 'desktop'
+        }
+      ]
+    } as never)
+
+    await expect(searchSessions('same')).resolves.toMatchObject({
+      results: [
+        { connection_id: 'gateway-a', profile: 'default', session_id: 'same-a' },
+        { connection_id: 'gateway-b', profile: 'default', session_id: 'same-b' }
+      ]
+    })
   })
 })
 

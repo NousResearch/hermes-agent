@@ -28,6 +28,7 @@ from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough
 )
 from agent.redact import redact_sensitive_text
+from agent.tool_occurrences import tool_result_metadata_by_index
 from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
 
@@ -1021,18 +1022,6 @@ def _extract_tool_call_name_and_args(tool_call: Any) -> tuple[str, str]:
     """Return a best-effort ``(name, arguments)`` pair for dict/object tool calls."""
     fn = _tc_get(tool_call, "function") or {}
     return str(_tc_get(fn, "name") or "unknown"), str(_tc_get(fn, "arguments") or "")
-
-
-def _tool_calls_by_id(messages: List[Dict[str, Any]]) -> Dict[str, tuple]:
-    """Map ``tool_call_id -> (tool_name, raw_arguments)`` over every assistant tool call."""
-    out: Dict[str, tuple] = {}
-    for msg in messages:
-        if msg.get("role") != "assistant":
-            continue
-        for tc in msg.get("tool_calls") or []:
-            fn = _tc_get(tc, "function", {})
-            out[_tc_get(tc, "id") or ""] = (_tc_get(fn, "name", "unknown"), _tc_get(fn, "arguments"))
-    return out
 
 
 def _collect_path_mentions(text: str, relevant_files: list[str], *, limit: int = 12) -> None:
@@ -2627,7 +2616,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
 
     @staticmethod
     def _demote_tool_result_at(
-        result: List[Dict[str, Any]], idx: int, call_id_to_tool: Dict[str, tuple[str, str]],
+        result: List[Dict[str, Any]], idx: int, tool_metadata_by_result_idx: Dict[int, tuple[str, str]],
         min_prune_chars: int, protected_skills: Optional[set[str]] = None,
     ) -> bool:
         """Replace the tool result at ``idx`` with a 1-line summary; True if modified.
@@ -2648,7 +2637,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
             or _is_summary_stub(content) or len(content) <= min_prune_chars
         ):
             return False
-        tool_name, tool_args = call_id_to_tool.get(msg.get("tool_call_id", ""), ("unknown", ""))
+        tool_name, tool_args = tool_metadata_by_result_idx.get(idx, ("unknown", ""))
         if protected_skills and tool_name == "skill_view":
             _skill = _json_dict(tool_args).get("name", "")
             if isinstance(_skill, str) and _skill.lower() in protected_skills:
@@ -2658,7 +2647,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
 
     def _pressure_demote_tail(
         self, result: List[Dict[str, Any]], prune_boundary: int, protect_tail_tokens: int,
-        call_id_to_tool: Dict[str, tuple[str, str]], min_prune_chars: int,
+        tool_metadata_by_result_idx: Dict[int, tuple[str, str]], min_prune_chars: int,
     ) -> int:
         """Pass 4: demote inside the protected tail when it alone exceeds the soft budget (#61932).
         Keeps a short recent floor verbatim; overrides the skill guard (else the dead-end recurs).
@@ -2675,7 +2664,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         def _shrink_at(i: int) -> None:
             # Each helper no-ops on the other role, so both may run unconditionally.
             nonlocal demoted, pressure_hits
-            if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
+            if self._demote_tool_result_at(result, i, tool_metadata_by_result_idx, min_prune_chars):
                 demoted += 1
                 pressure_hits += 1
             if self._truncate_tool_call_args_at(result, i):
@@ -2695,7 +2684,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
             # Last resort: the newest body alone may exceed the soft budget; summarize it.
             if (
                 last_tool_idx is not None and last_tool_idx >= prune_boundary and _protected_region_tokens() > soft_ceiling
-            ) and self._demote_tool_result_at(result, last_tool_idx, call_id_to_tool, min_prune_chars):
+            ) and self._demote_tool_result_at(result, last_tool_idx, tool_metadata_by_result_idx, min_prune_chars):
                 demoted += 1
                 pressure_hits += 1
         if pressure_hits and not self.quiet_mode:
@@ -2715,7 +2704,9 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         if not messages:
             return messages, 0
         result = [m.copy() for m in messages]
-        call_id_to_tool = _tool_calls_by_id(result)
+        # Raw provider IDs may be reused by later logical calls. Resolve tool
+        # metadata against each result position before any pruning rewrites.
+        tool_metadata_by_result_idx = tool_result_metadata_by_index(result)
         prune_boundary = self._prune_boundary(result, protect_tail_count, protect_tail_tokens)
         pruned = self._dedupe_tool_results(result)
         # Just-loaded / tail-referenced skills keep full skill_view bodies through the ordinary passes.
@@ -2725,7 +2716,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         # Pass 2: summarize old tool results. Pass 3: shrink large tool_call arguments INSIDE the parsed JSON so
         # the result stays valid; otherwise providers 400 on every turn until the call leaves the window.
         pruned += sum(
-            self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars, protected_skills)
+            self._demote_tool_result_at(result, i, tool_metadata_by_result_idx, min_prune_chars, protected_skills)
             for i in range(max(0, prune_boundary))
         )
         for i in range(max(0, prune_boundary)):
@@ -2736,7 +2727,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         pruned += _retire_stale_tool_result_images(result)
         if protect_tail_tokens is not None and protect_tail_tokens > 0 and result:
             pruned += self._pressure_demote_tail(
-                result, prune_boundary, protect_tail_tokens, call_id_to_tool, min_prune_chars,
+                result, prune_boundary, protect_tail_tokens, tool_metadata_by_result_idx, min_prune_chars,
             )
         return result, pruned
 
@@ -2940,23 +2931,23 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         relevant_files: list[str] = []
         blockers: list[str] = []
         last_dropped_turns: list[str] = []
-        call_id_to_tool: dict[str, tuple[str, str]] = {}
+        tool_metadata_by_result_idx = {
+            idx: (name, _redact_compaction_text(args))
+            for idx, (name, args) in tool_result_metadata_by_index(turns_to_summarize).items()
+        }
         for msg in turns_to_summarize:
             if msg.get("role") != "assistant":
                 continue
             for tc in msg.get("tool_calls") or []:
-                name, raw_args = _extract_tool_call_name_and_args(tc)
+                _name, raw_args = _extract_tool_call_name_and_args(tc)
                 args = _redact_compaction_text(raw_args)
-                call_id = str(_tc_get(tc, "id") or "")
-                if call_id:
-                    call_id_to_tool[call_id] = (name, args)
                 if args:
                     try:
                         parsed = json.loads(args)
                     except Exception:
                         parsed = args
                     _collect_paths_from_jsonish(parsed, relevant_files)
-        for msg in turns_to_summarize:
+        for msg_idx, msg in enumerate(turns_to_summarize):
             role = msg.get("role", "unknown")
             text = _compact_fallback_turn(msg.get("content"))
             _collect_path_mentions(text, relevant_files)
@@ -2980,7 +2971,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
                 elif text:
                     assistant_actions.append(text)
             elif role == "tool":
-                tool_name, tool_args = call_id_to_tool.get(str(msg.get("tool_call_id") or ""), ("unknown", ""))
+                tool_name, tool_args = tool_metadata_by_result_idx.get(msg_idx, ("unknown", ""))
                 tool_actions.append(_summarize_tool_result(tool_name, tool_args, text or ""))
                 if re.search(r"\b(error|failed|exception|traceback|timeout|timed out|fatal)\b", text, re.I):
                     blockers.append(text[:500])

@@ -883,6 +883,10 @@ export interface CronJob {
   name?: null | string
   next_run_at?: null | string
   no_agent?: boolean
+  /** Owning profile name, stamped by the cross-profile list aggregator so
+   *  mutations (trigger/pause/resume/delete/update) can target the right
+   *  per-profile store. Absent on legacy single-profile responses. */
+  profile?: string
   prompt?: null | string
   provider?: null | string
   schedule?: CronJobSchedule

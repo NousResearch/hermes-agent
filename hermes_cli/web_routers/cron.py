@@ -83,7 +83,10 @@ def _found(job):
 def _list_cron_jobs_sync(profile: str = "all"):
     requested = (profile or "all").strip()
     if requested.lower() != "all":
-        return _call_cron_for_profile(requested, "list_jobs", True)
+        jobs = _call_cron_for_profile(requested, "list_jobs", True)
+        for j in jobs:
+            j["profile"] = requested
+        return jobs
 
     jobs: List[Dict[str, Any]] = []
     for item in _cron_profile_dicts():
@@ -91,7 +94,16 @@ def _list_cron_jobs_sync(profile: str = "all"):
         if not name:
             continue
         try:
-            jobs.extend(_call_cron_for_profile(name, "list_jobs", True))
+            owned = _call_cron_for_profile(name, "list_jobs", True)
+            # Stamp the owning profile so mutation endpoints (trigger/pause/
+            # resume/delete/update) can target the right per-profile store. In
+            # the aggregated 'all' view the caller has no other way to know
+            # which profile a row belongs to, and the trigger endpoint's
+            # profile=None scan resolves to the WRONG store the moment two
+            # profiles share a job name.
+            for j in owned:
+                j["profile"] = name
+            jobs.extend(owned)
         except Exception:
             _log.exception("Failed to list cron jobs for profile %s", name)
     return jobs

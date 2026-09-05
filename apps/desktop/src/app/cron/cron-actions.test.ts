@@ -31,9 +31,22 @@ describe('triggerAndRefreshCronJobs', () => {
 
     const result = await triggerAndRefreshCronJobs('deleted-one-shot', 'work')
 
-    expect(triggerCronJob).toHaveBeenCalledWith('deleted-one-shot')
+    expect(triggerCronJob).toHaveBeenCalledWith('deleted-one-shot', undefined)
     expect(getCronJobs).toHaveBeenCalledWith('work')
     expect(result).toEqual({ jobs: authoritative, refreshError: null, stale: false })
+  })
+
+  it('targets the job-owning profile so an aggregated view hits the right store', async () => {
+    // Regression: the cross-profile ("all") view refreshes with 'all', but the
+    // trigger itself must go to the job's OWN profile. Without the third arg the
+    // backend fell back to the ambient profile and 404'd with "Job not found".
+    triggerCronJob.mockResolvedValue({ id: 'j', state: 'scheduled' })
+    getCronJobs.mockResolvedValue([])
+
+    await triggerAndRefreshCronJobs('j', 'all', 'tommy')
+
+    expect(triggerCronJob).toHaveBeenCalledWith('j', 'tommy')
+    expect(getCronJobs).toHaveBeenCalledWith('all')
   })
 
   it('reports refresh failure separately after a successful trigger', async () => {

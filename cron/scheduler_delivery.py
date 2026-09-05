@@ -668,8 +668,15 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
     env = os.environ.copy()
     if profile:
         argv += ["-p", profile]
-        # -p owns profile resolution; this scheduler's HERMES_HOME must not shadow it.
-        env.pop("HERMES_HOME", None)
+        # -p resolves the target profile, but only against the deployment root
+        # (HERMES_HOME/profiles/ in Docker/custom layouts, ~/.hermes/profiles/
+        # in standard ones). Popping HERMES_HOME entirely makes the child fall
+        # back to ~/.hermes, so in a Docker deployment (HERMES_HOME=/opt/data)
+        # `-p tommy` looks under ~/.hermes/profiles and fails with "profile does
+        # not exist". Point HERMES_HOME at the resolved root instead of dropping
+        # it, so -p finds the profile in every layout.
+        from hermes_constants import get_default_hermes_root
+        env["HERMES_HOME"] = str(get_default_hermes_root())
 
     # Prefix marks this as scheduled output, not the human (Bot Mode sender-attribution).
     message = (

@@ -823,6 +823,38 @@ async def test_cron_profile_scan_runs_off_event_loop(isolated_profiles, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_list_cron_jobs_stamps_owning_profile(isolated_profiles):
+    """Each listed job carries its owning profile so mutation endpoints can
+    target the right per-profile store. Without this, the desktop's trigger/
+    pause/delete fall back to the ambient profile and 404 ("Job not found") or
+    hit the wrong store in the aggregated view."""
+    _web_server_cron._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="owned by worker",
+        schedule="every 1h",
+        name="owned-job",
+    )
+    _web_server_cron._call_cron_for_profile(
+        "default",
+        "create_job",
+        prompt="owned by default",
+        schedule="every 1h",
+        name="default-job",
+    )
+
+    aggregated = await _rt_cron.list_cron_jobs(profile="all")
+    by_name = {j.get("name"): j for j in aggregated}
+    assert by_name["owned-job"]["profile"] == "worker_alpha"
+    assert by_name["default-job"]["profile"] == "default"
+
+    # The single-profile view stamps it too, so the row is self-describing
+    # regardless of how it was fetched.
+    scoped = await _rt_cron.list_cron_jobs(profile="worker_alpha")
+    assert all(j["profile"] == "worker_alpha" for j in scoped)
+
+
+@pytest.mark.asyncio
 async def test_cron_dashboard_io_rejects_async_callables():
     from hermes_cli import web_server
 

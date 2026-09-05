@@ -149,7 +149,8 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
 
 
 # Platforms whose native voice-bubble delivery requires Ogg/Opus (MP3 renders broken there).
-OPUS_VOICE_PLATFORMS = frozenset({"telegram", "matrix", "feishu", "whatsapp", "signal"})
+# Discord is included: its native voice-message send (flags=8192) requires Ogg/Opus bytes.
+OPUS_VOICE_PLATFORMS = frozenset({"telegram", "matrix", "feishu", "whatsapp", "signal", "discord"})
 
 # MEDIA:<path> is a line-level gateway protocol. A filename containing an anchored media
 # directive forges a second attachment whenever the path is echoed into the tool result

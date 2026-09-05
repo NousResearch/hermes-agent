@@ -267,3 +267,49 @@ def self_repo_block(
         return None
     logger.warning("Blocked self-repo git mutation (command: %s)", _safe_command_preview(command))
     return _blocked_json(msg, "blocked")
+
+
+_WINDOWS_NUL_REDIRECTION_RE = re.compile(
+    r"(?:^|[\s;&|])(?:>>|>&|&>|[0-9]*>(?:&)?)\s*nul\b(?!/)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def detect_windows_nul_redirection(command: str) -> tuple[bool, Optional[str]]:
+    """Detect Windows-style NUL device redirection in a shell command.
+
+    In Git Bash on native Windows, 'NUL' is not recognized as the Windows null
+    device; Bash treats it as a normal relative filename, creating a literal
+    'NUL' / 'nul' file in the workspace directory.
+    Quotes, backticks, and inert heredocs are stripped so keyword mentions inside
+    echo strings or script bodies do not trigger false positives.
+    """
+    unquoted = _strip_quotes(command)
+    if _WINDOWS_NUL_REDIRECTION_RE.search(unquoted):
+        return (
+            True,
+            "Blocked: Windows-style null device redirection ('>NUL', '2>NUL') detected. "
+            "On native Windows, Hermes executes commands through Git Bash, which treats 'NUL' "
+            "as a literal file and pollutes the workspace. Use POSIX '/dev/null' (e.g. '2>/dev/null' "
+            "or '>/dev/null 2>&1') instead.",
+        )
+    return False, None
+
+
+def windows_nul_redirection_block(command: str) -> Optional[str]:
+    """Pre-execution block for Windows-style NUL redirection under Git Bash.
+
+    Returns a structured JSON error string when blocked on Windows, else None.
+    """
+    import sys
+
+    if sys.platform != "win32":
+        return None
+    hit, msg = detect_windows_nul_redirection(command)
+    if hit and msg:
+        logger.warning(
+            "Blocked Windows NUL redirection under Git Bash (command: %s)",
+            _safe_command_preview(command),
+        )
+        return _blocked_json(msg, "blocked")
+    return None

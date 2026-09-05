@@ -271,6 +271,111 @@ def test_waiting_turn_seals_persists_provider_valid_hidden_tail(monkeypatch, tmp
     assert _group("work-1")["state"] == "sealed"
 
 
+@pytest.mark.parametrize("source", ["verification", "summary", "recovery", "explainer", "failed", "interrupted", "empty"])
+@pytest.mark.parametrize("obstacle", ["none", "cas", "persist"])
+def test_all_bound_terminal_exits_require_persistence_and_close_cas(monkeypatch, source, obstacle):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_k: [])
+    assert ad.register_work_group_member(
+        work_id="terminal-work", owner_turn_id="owner", delegation_id="terminal-child",
+        feature_config={"delegation": {"task_scoped_closeout": True}},
+    )
+    ad.persist_group_member_completion("terminal-child", {"status": "completed"}, {})
+    assert ad.seal_work_group("terminal-work", "owner")
+    claim = ad.claim_ready_work_group("terminal-work", "test")
+    assert claim is not None
+    delivery = claim["envelope"]["delivery_id"]
+    assert ad.bind_work_group_closeout_turn("terminal-work", delivery, claim["claim_id"], "turn-1")
+    agent = _finalizer_agent()
+    identity = ("terminal-work", 0, delivery, claim["claim_id"])
+    def bind():
+        (agent._current_work_id, agent._current_work_generation,
+         agent._current_work_delivery_id, agent._current_work_claim_id) = identity
+    bind()
+    kwargs = {"exit_reason": "recovery"}
+    if source in ("verification", "summary"):
+        kwargs.update(api_call_count=agent.max_iterations, exit_reason="budget_exhausted")
+        if source == "verification":
+            kwargs["_pending_verification_response"] = "Pending verification answer."
+        else:
+            agent._emit_status = lambda *_a: None
+            agent._handle_max_iterations = lambda *_a: "Budget summary."
+    elif source == "recovery":
+        kwargs["final_response"] = "Recovered answer."
+    elif source in ("failed", "interrupted"):
+        kwargs.update(final_response="Partial answer.", **{source: True})
+    if source == "explainer":
+        agent._turn_completion_explainer_enabled = lambda: True
+        agent._format_turn_completion_explanation = lambda *_a: "Could not complete."
+    snapshots, order = [], []
+    real_close = ad.close_work_group
+    def persist(messages, _history):
+        snapshots.append([dict(m) for m in messages])
+        order.append("persist")
+        if obstacle == "persist":
+            raise OSError("disk full")
+    def close(*args, **kw):
+        assert order and order[-1] == "persist"
+        assert snapshots[-1][-1]["display_kind"] == "delegation_closeout_provisional"
+        assert snapshots[-1][-1]["display_metadata"]["hidden"] is True
+        order.append("cas")
+        return False if obstacle == "cas" else real_close(*args, **kw)
+    agent._persist_session = persist
+    monkeypatch.setattr(ad, "close_work_group", close)
+    messages = [{"role": "user", "content": "reconcile"}]
+    result = _finalize(agent, messages, **kwargs)
+    may_publish = source not in ("failed", "interrupted", "empty") and obstacle == "none"
+    if may_publish:
+        assert result["final_response"]
+        assert _group("terminal-work")["state"] == "closed"
+        assert agent._admitted == ["admitted"]
+        # A stale/replayed bound continuation may not publish a second final.
+        bind()
+        agent._admitted.clear()
+        replay = _finalize(agent, [{"role": "user", "content": "replay"}], **kwargs)
+        assert replay["final_response"] is None
+        assert agent._admitted == []
+    else:
+        assert result["final_response"] is None
+        assert _group("terminal-work")["state"] == "closing"
+        assert agent._admitted == []
+        if snapshots[-1][-1].get("role") == "assistant":
+            assert snapshots[-1][-1]["display_metadata"]["hidden"] is True
+            if source in ("failed", "interrupted"):
+                assert snapshots[-1][-1]["display_kind"] != "delegation_closeout_provisional"
+
+
+@pytest.mark.parametrize("close_allowed", [False, True])
+def test_streaming_budget_fallback_is_buffered_until_closeout_commit(monkeypatch, close_allowed):
+    agent = _finalizer_agent()
+    agent._current_work_id = "stream-work"
+    agent._current_work_delivery_id = "delivery"
+    agent._current_work_claim_id = "claim"
+    agent._discard_conversational_response = run_agent.AIAgent._discard_conversational_response.__get__(agent)
+    agent._admit_conversational_response = run_agent.AIAgent._admit_conversational_response.__get__(agent)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_k: [])
+    closed, visible = [], []
+    def deliver(text):
+        visible.append((text, bool(closed)))
+    agent.stream_delta_callback = deliver
+    agent._reset_stream_delivery_tracking()
+    agent._fire_stream_delta("superseded candidate")
+    def summary(*_a):
+        # Codex's iteration summary uses its ordinary streaming callbacks.
+        agent._fire_stream_delta("Budget summary.")
+        return "Budget summary."
+    agent._handle_max_iterations = summary
+    agent._emit_status = lambda *_a: None
+    def close(*_a):
+        if close_allowed:
+            closed.append(True)
+        return close_allowed
+    monkeypatch.setattr(ad, "close_work_group", close)
+    result = _finalize(agent, [{"role": "user", "content": "close"}],
+                       api_call_count=agent.max_iterations, exit_reason="budget_exhausted")
+    assert visible == ([("Budget summary.", True)] if close_allowed else [])
+    assert result["final_response"] == ("Budget summary." if close_allowed else None)
+
+
 def test_closeout_persists_then_exact_identity_cas_then_admits(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_k: [])

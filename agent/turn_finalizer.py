@@ -444,6 +444,15 @@ def finalize_turn(
     work_id = str(getattr(agent, "_current_work_id", "") or "")
     delivery_id = str(getattr(agent, "_current_work_delivery_id", "") or "")
     claim_id = str(getattr(agent, "_current_work_claim_id", "") or "")
+    bound_closeout = bool(work_id and delivery_id and claim_id)
+    if bound_closeout and not closeout_terminal_candidate:
+        # A fallback is not the response held behind the normal stop gate. Do
+        # not replay that superseded response when admitting the fallback.
+        agent._discard_conversational_response()
+        agent._begin_conversational_response()
+    # Admission is an identity invariant, not a property of the loop's exit
+    # branch: budget, verification and recovery answers need the same CAS.
+    closeout_terminal_candidate = closeout_terminal_candidate or bound_closeout
     delegation_diagnostic = None
     waiting_marker = None
     if work_id and not (delivery_id and claim_id):
@@ -551,10 +560,16 @@ def finalize_turn(
         final_response, _recovered_from_stream = _recover_final_from_stream(
             agent, final_response, interrupted, failed
         )
+        if bound_closeout and not interrupted and not failed:
+            # This helper can synthesize a terminal answer; do so before hiding
+            # and persisting the candidate, never after the admission decision.
+            final_response = _explain_abnormal_exit(
+                agent, final_response, _turn_exit_reason, preserved_verification_fallback, logger,
+            )
         _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
         if not interrupted and not failed:
             _micro_compact_after_turn(agent, messages, final_response, logger)
-        if closeout_terminal_candidate and final_response:
+        if closeout_terminal_candidate:
             if not (work_id and delivery_id and claim_id):
                 raise RuntimeError("closeout_terminal_candidate_missing_identity")
             candidate = messages[-1] if messages else None
@@ -563,7 +578,12 @@ def finalize_turn(
                 and candidate.get("role") == "assistant"
                 and not candidate.get("tool_calls")
             ):
-                candidate["display_kind"] = "delegation_closeout_provisional"
+                # Failed/interrupted text is withheld, not a recoverable terminal
+                # candidate for a later claim to adopt and publish as success.
+                candidate["display_kind"] = (
+                    "delegation_waiting" if interrupted or failed or not final_response
+                    else "delegation_closeout_provisional"
+                )
                 candidate["display_metadata"] = {
                     "hidden": True,
                     "work_id": work_id,
@@ -581,7 +601,10 @@ def finalize_turn(
                 agent._db_flush_scan_prefix = None
                 from tools.async_delegation import find_closeout_provisional
 
-                canonical = find_closeout_provisional(work_id, delivery_id)
+                canonical = (
+                    find_closeout_provisional(work_id, delivery_id)
+                    if final_response and not interrupted and not failed else None
+                )
                 if canonical is not None:
                     candidate["content"] = canonical["content"]
                     candidate["_row_id"] = canonical["row_id"]
@@ -593,7 +616,10 @@ def finalize_turn(
 
     if closeout_terminal_candidate:
         closed = False
-        if not _cleanup_errors and work_id and delivery_id and claim_id:
+        if (
+            not _cleanup_errors and work_id and delivery_id and claim_id
+            and final_response and not interrupted and not failed
+        ):
             try:
                 from tools.async_delegation import close_work_group
 
@@ -659,6 +685,7 @@ def finalize_turn(
     if (
         not interrupted
         and not delegation_waiting
+        and not bound_closeout
         and not (closeout_terminal_candidate and failed)
     ):
         final_response = _explain_abnormal_exit(

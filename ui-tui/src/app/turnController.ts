@@ -96,6 +96,48 @@ const finalTail = (finalText: string, segments: Msg[]) => {
   return tail
 }
 
+const lastAssistantNarrationIndex = (segments: Msg[]): number => {
+  for (let index = segments.length - 1; index >= 0; index--) {
+    const msg = segments[index]!
+
+    if (msg.role === 'assistant' && msg.kind !== 'diff' && msg.text.trim()) {
+      return index
+    }
+  }
+
+  return -1
+}
+
+const textsContinue = (existing: string, incoming: string): boolean => {
+  const left = existing.trim()
+  const right = incoming.trim()
+
+  return Boolean(left && right && (left === right || right.startsWith(left) || left.startsWith(right)))
+}
+
+const foldContinuingInterim = (
+  segments: Msg[],
+  finalText: string
+): { foldedIndex: number; segments: Msg[] } => {
+  const index = lastAssistantNarrationIndex(segments)
+
+  if (index < 0 || !textsContinue(segments[index]!.text, finalText)) {
+    return { foldedIndex: -1, segments }
+  }
+
+  const existing = segments[index]!.text
+  const nextText = finalText.trim().length >= existing.trim().length ? finalText : existing
+
+  if (existing === nextText) {
+    return { foldedIndex: index, segments }
+  }
+
+  const next = segments.slice()
+  next[index] = { ...next[index]!, text: nextText }
+
+  return { foldedIndex: index, segments: next }
+}
+
 export interface InterruptDeps {
   appendMessage: (msg: Msg) => void
   gw: { request: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T> }
@@ -584,15 +626,30 @@ class TurnController {
     // only when the gateway elected not to send any (#16391).
     const rawText = (payload.text ?? payload.rendered ?? this.bufRef).trimStart()
     const split = splitReasoning(rawText)
+    // Seal leftover deltas before fold so the last narration is the post-tool
+    // (or post-interim) tail, not a stale pre-tool prefix of the concatenated
+    // complete payload. Skip when the buffer is empty so a tool-only complete
+    // does not mint a blank trail row.
+    if (this.bufRef.trimStart()) {
+      this.flushStreamingSegment()
+    }
+    // Fold the last sealed interim onto the terminal reply when they are the
+    // same message (exact or prefix-either-way). Desktop does this without
+    // waiting for response_previewed; TUI used to keep two identical bubbles
+    // unless that flag was set (Grok / xAI tool-heavy turns). Distinct
+    // commentary that does not continue the final still stays as its own
+    // segment.
+    const folded = foldContinuingInterim(this.segmentMessages, split.text)
+    this.segmentMessages = folded.segments
     // Only dedupe segments AFTER the interim boundary — interim-sealed
-    // segments are preserved even if the final text includes them.
-    // Exception: when response_previewed is true, the final text is the
-    // same model response that was published provisionally as an interim
-    // message. Dedupe against ALL segments (including sealed interims) so
-    // the identical text doesn't render as a duplicate message. (#65919
-    // review: duplicate-message blocker)
+    // segments are preserved even if the final text includes them, except
+    // when response_previewed (verify-on-stop) or the last interim was folded
+    // as the terminal reply.
     const dedupeStart = payload.response_previewed ? 0 : (this.interimBoundaryIndex ?? 0)
-    const finalText = finalTail(split.text, this.segmentMessages.slice(dedupeStart))
+    // A folded last interim already holds the terminal reply (the longer of
+    // the sealed text and the complete payload). Do not append it again.
+    const finalText =
+      folded.foldedIndex >= 0 ? '' : finalTail(split.text, this.segmentMessages.slice(dedupeStart))
     const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
     const savedReasoning = [existingReasoning, existingReasoning ? '' : split.reasoning].filter(Boolean).join('\n\n')
     const savedToolTokens = this.toolTokenAcc
@@ -699,7 +756,7 @@ class TurnController {
     }
   }
 
-  recordInterimMessage(text: string) {
+  recordInterimMessage(text: string, alreadyStreamed = false) {
     if (this.interrupted) {
       return
     }
@@ -710,10 +767,15 @@ class TurnController {
       return
     }
 
-    // If the streaming buffer hasn't caught up to the authoritative interim
-    // text (e.g. the backend didn't stream every token), sync it so the
-    // sealed segment matches what the user should see.
-    if (this.bufRef.trimStart() !== authoritativeText) {
+    const streamed = this.bufRef.trimStart()
+
+    // already_streamed means message.delta already painted this text. Keep the
+    // longer of the two when they continue each other so a truncated interim
+    // payload cannot erase tokens the user already saw. Unrelated text still
+    // takes the authoritative copy (the backend's sealed segment).
+    if (alreadyStreamed && streamed && textsContinue(streamed, authoritativeText)) {
+      this.bufRef = streamed.length >= authoritativeText.length ? streamed : authoritativeText
+    } else if (streamed !== authoritativeText) {
       this.bufRef = authoritativeText
     }
 

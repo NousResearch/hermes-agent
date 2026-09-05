@@ -16,6 +16,16 @@ vi.mock('../lib/openExternalUrl.js', () => ({
   openExternalUrl: (url: string) => openExternalUrlMock(url)
 }))
 
+vi.mock('@hermes/ink', async importOriginal => {
+  const mod = await importOriginal<Record<string, unknown>>()
+
+  return {
+    ...mod,
+    onTerminalBackground: vi.fn(),
+    onTerminalForeground: vi.fn()
+  }
+})
+
 const ref = <T>(current: T) => ({ current })
 
 const buildCtx = (appended: Msg[]) =>
@@ -2118,7 +2128,7 @@ describe('createGatewayEventHandler', () => {
       expect(appended).toHaveLength(0)
     })
 
-    it('keeps identical interim and terminal replies as separate messages without response_previewed', () => {
+    it('settles identical terminal reply onto interim without response_previewed', () => {
       const appended: Msg[] = []
       const onEvent = createGatewayEventHandler(buildCtx(appended))
 
@@ -2127,7 +2137,35 @@ describe('createGatewayEventHandler', () => {
       onEvent({ payload: { text: 'same reply' }, type: 'message.complete' } as any)
 
       const assistantMsgs = appended.filter(m => m.role === 'assistant' && m.text)
-      expect(assistantMsgs).toHaveLength(2)
+      expect(assistantMsgs).toHaveLength(1)
+      expect(assistantMsgs[0]?.text).toBe('same reply')
+    })
+
+    it('settles a prefix-matched final onto the last interim without response_previewed', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { already_streamed: true, text: 'Hello' }, type: 'message.interim' } as any)
+      onEvent({ payload: { text: 'Hello world' }, type: 'message.complete' } as any)
+
+      const assistantMsgs = appended.filter(m => m.role === 'assistant' && m.text)
+      expect(assistantMsgs).toHaveLength(1)
+      expect(assistantMsgs[0]?.text).toBe('Hello world')
+    })
+
+    it('keeps already_streamed tokens when the interim payload is a truncated prefix', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { text: 'Hello world' }, type: 'message.delta' } as any)
+      onEvent({ payload: { already_streamed: true, text: 'Hello' }, type: 'message.interim' } as any)
+      onEvent({ payload: { text: 'Hello world' }, type: 'message.complete' } as any)
+
+      const assistantMsgs = appended.filter(m => m.role === 'assistant' && m.text)
+      expect(assistantMsgs).toHaveLength(1)
+      expect(assistantMsgs[0]?.text).toBe('Hello world')
     })
 
     it('settles identical terminal reply onto interim when response_previewed', () => {

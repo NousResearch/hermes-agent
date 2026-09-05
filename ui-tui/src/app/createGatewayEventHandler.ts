@@ -1442,7 +1442,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const text = ev.payload?.text
 
         if (typeof text === 'string' && text.trim()) {
-          turnController.recordInterimMessage(text)
+          turnController.recordInterimMessage(text, Boolean(ev.payload?.already_streamed))
         }
 
         return

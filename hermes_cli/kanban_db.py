@@ -20,6 +20,7 @@ import sqlite3
 import subprocess
 import sys
 import logging
+import math
 import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
@@ -1507,6 +1508,7 @@ def list_tasks(
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
     """Assign/reassign; raises RuntimeError while the task is running under a claim."""
     profile = _canonical_assignee(profile)
+    trip_cleared = False
     with write_txn(conn):
         row = conn.execute(
             "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
@@ -1524,11 +1526,32 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
                 "UPDATE tasks SET assignee = ?, consecutive_failures = 0, "
                 "last_failure_error = NULL WHERE id = ?", (profile, task_id),
             )
+            if (
+                row["status"] == "blocked"
+                and _has_unrecovered_gave_up(conn, task_id)
+                and not _has_sticky_block(conn, task_id)
+            ):
+                # A human reassignment IS the recovery action (same
+                # semantics as ``kanban_unblock``): a breaker-parked task
+                # must not sit out the stale cooldown after the human has
+                # already taken over.  Clear the trip with the full unblock
+                # semantics.  Sticky worker/operator blocks (#28712) are
+                # deliberate handoffs, never cleared by reassignment;
+                # blocked rows with no ``gave_up`` event need nothing (the
+                # numeric guard passes after the reset above).
+                _unblock_task_txn(
+                    conn, task_id, actor="reassign", now=int(time.time())
+                )
+                trip_cleared = True
         else:
             conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
         _append_event(conn, task_id, "assigned", {"assignee": profile})
-    # Observer fires AFTER commit so subscribers see durable state.
-    notify_task_updated(conn, task_id, ("assignee",))
+    # Observer fires AFTER commit so subscribers see durable state.  The
+    # trip-clearing path above also flips ``status`` — include it so
+    # observers doing incremental refresh don't miss the transition.
+    notify_task_updated(
+        conn, task_id, ("assignee", "status") if trip_cleared else ("assignee",)
+    )
     return True
 
 
@@ -1962,6 +1985,182 @@ def _synthesize_ended_run(
 
 # --- Dependency resolution (todo -> ready) ---
 
+# Default delay (hours) before a ``gave_up`` circuit-breaker block is
+# auto-unblocked (quiet-failure recovery).  Override via config key
+# ``kanban.gave_up_stale_hours``.
+DEFAULT_GAVE_UP_STALE_HOURS = 1.0
+
+# Process-local override for :func:`configured_gave_up_stale_hours`
+# (test hook; ``None`` = fall through to the config file).
+_gave_up_stale_override: Optional[float] = None
+
+def configure_gave_up_stale_recovery(
+    stale_hours: Optional[float] = None,
+) -> None:
+    """Process-local override for the gave_up stale-recovery delay.
+
+    ``None`` clears it (falls through to the config file).  Test hook so
+    suites can shorten the 1-hour default without touching the real
+    ``config.yaml``.
+    """
+    global _gave_up_stale_override
+    _gave_up_stale_override = stale_hours
+
+def configured_gave_up_stale_hours() -> Optional[float]:
+    """Read ``kanban.gave_up_stale_hours`` from config, or None when unset/invalid.
+
+    A circuit-breaker block (``gave_up``) whose underlying condition is a
+    stale/transient failure (the typical timeout case on a healthy
+    dispatcher) parks the task in ``blocked`` waiting for a human — a quiet
+    failure observed in production as a ~16h silent gap.  After this many
+    hours in ``blocked``, :func:`recompute_ready` auto-unblocks the task
+    (counter reset, ``unblocked`` event with ``auto: true``) so the next
+    tick re-spawns it instead of the system silently waiting for manual
+    intervention.
+
+    Returns the configured value (``None`` when unset or invalid).
+    :func:`recompute_ready` applies the default when this returns ``None``.
+    """
+    if _gave_up_stale_override is not None:
+        # Same validity contract as the config-file path.
+        if not math.isfinite(_gave_up_stale_override):
+            return None
+        return _gave_up_stale_override
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("kanban", {}).get(
+            "gave_up_stale_hours"
+        )
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    try:
+        fval = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(fval):
+        return None
+    return fval
+
+def _gave_up_stale_hours() -> Optional[float]:
+    """Effective gave_up stale-recovery delay (hours) for this tick.
+
+    ``None`` means auto-recovery is disabled (negative configured
+    value): gave_up blocks then park until a human unblocks them — the
+    pre-fix behaviour, kept as an explicit opt-out.
+    """
+    value = configured_gave_up_stale_hours()
+    if value is None:
+        value = DEFAULT_GAVE_UP_STALE_HOURS
+    if value < 0:
+        return None
+    return float(value)
+
+def _stuck_since(
+    conn: sqlite3.Connection, task_id: str, now: int,
+) -> Optional[int]:
+    """Epoch seconds when ``task_id`` currently moved into ``blocked``.
+
+    Returns the ``created_at`` of the most recent ``'blocked'`` or
+    ``'gave_up'`` event (the two ways a task enters ``blocked`` without a
+    subsequent unblock), or None when neither exists.  Events are
+    monotonically ordered in the append-only log, so last-one-wins: a
+    worker ``kanban_block`` (``'blocked'``) after a ``gave_up`` is a
+    sticky, human-gated block and must not age out on its own; a
+    ``'gave_up'`` after a ``block_loop_detected`` is a fresh breaker trip.
+    """
+    row = conn.execute(
+        "SELECT created_at FROM task_events "
+        "WHERE task_id = ? AND kind IN ('blocked', 'gave_up') "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None or not row["created_at"]:
+        return None
+    ts = int(row["created_at"])
+    # Future timestamps (clock skew, a restored backup, a hand-edited DB)
+    # clamp to ``now``: treated as a fresh trip that parks for one full
+    # delay and then recovers, rather than parking forever with no
+    # diagnostic.
+    return min(ts, now)
+
+def _auto_unblock_stalled(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    actor: str,
+    now: int,
+    resume_status: str,
+    stale_hours: float,
+) -> bool:
+    """Flip a stale ``blocked`` circuit-breaker task back to its resume
+    phase.  Called by :func:`recompute_ready` — the caller owns the
+    transaction.
+
+    Resets the dispatcher's retry budget (a fresh start, matching
+    :func:`unblock_task`) and emits the audit payload — including the
+    ready->ready shape, where legacy unblock events carried no payload —
+    so a post-hoc review can tell an auto-recovered task from a manual
+    unblock (``auto: true``) and see who/what flipped it.
+
+    Parent re-gating mirrors :func:`unblock_task` via
+    :func:`_landing_status_after_parents`: parents not done means the
+    task waits in ``todo``, and :func:`recompute_ready` re-promotes it
+    the moment they finish instead of sleeping another ``stale_hours``.
+
+    Returns True when the row was flipped.
+    """
+    landing = _landing_status_after_parents(conn, task_id)
+    new_status = "review" if resume_status == "review" and landing == "ready" else landing
+    cur = conn.execute(
+        "UPDATE tasks SET status = ?, current_run_id = NULL, "
+        "consecutive_failures = 0, last_failure_error = NULL "
+        "WHERE id = ? AND status = 'blocked'",
+        (new_status, task_id),
+    )
+    if cur.rowcount != 1:
+        return False
+    _append_event(
+        conn, task_id, "unblocked",
+        {
+            "status": new_status,
+            "resume_status": resume_status,
+            "by": actor,
+            "auto": True,
+            "stale_hours": stale_hours,
+        },
+    )
+    return True
+
+def _has_unrecovered_gave_up(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return True when the task's latest breaker trip stands unrecovered.
+
+    The durable fact that matters for the park/cooldown decision is that
+    the breaker TRIPPED — recorded as a ``gave_up`` event — not any
+    numeric comparison of ``consecutive_failures`` against *today's*
+    limits.  Breaker classes track budgets differently: the unified
+    counter (timeouts/crashes), the protocol-violation streak (which
+    deliberately never feeds the unified counter), per-task
+    ``max_retries`` overrides.  Recomputing the limit from live config
+    at recovery time can erase a stricter trip decision — a trip at
+    ``effective_limit=1`` would re-promote the same tick because
+    ``max_retries`` is now 3, and a protocol trip at budget 3 would
+    re-promote because the unified counter never climbed.  Binding to
+    the event log instead is class-agnostic: the trip is durable, and a
+    newer ``unblocked`` event (manual or auto recovery) is the only
+    thing that clears it.
+
+    Newest-one-wins, mirroring :func:`_has_sticky_block`.
+    """
+    row = conn.execute(
+        "SELECT kind FROM task_events "
+        "WHERE task_id = ? AND kind IN ('gave_up', 'unblocked') "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return bool(row) and row["kind"] == "gave_up"
+
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """True when the newest ``blocked``/``unblocked`` event is ``blocked`` — an
     explicit ``kanban_block`` that must wait for an operator. A breaker trip
@@ -2015,10 +2214,14 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
     """Promote ``todo``/``blocked`` tasks whose parents are all done/archived;
     returns the count. Opens its own IMMEDIATE txn — call OUTSIDE any write txn.
 
-    ``blocked`` is skipped when sticky (explicit ``kanban_block``) or when
-    ``consecutive_failures`` reached the limit (else the breaker could never
-    trip). Limit order matches ``_record_task_failure``: ``max_retries`` >
-    ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``.
+    ``blocked`` is skipped when sticky (explicit ``kanban_block``) or while a
+    breaker trip still stands — an unrecovered ``gave_up`` event
+    (:func:`_has_unrecovered_gave_up`), or the legacy numeric shape
+    (``consecutive_failures`` at the effective limit for event-less rows).
+    Limit order matches ``_record_task_failure``: ``max_retries`` >
+    ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``.  A stale gave_up block
+    (parked longer than ``kanban.gave_up_stale_hours``, default 1h) is
+    auto-unblocked instead of waiting for a human forever.
 
     1. The most recent block event was a worker-initiated ``kanban_block`` — those stay blocked until an
     explicit ``kanban_unblock`` (#28712).
@@ -2045,16 +2248,58 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
             if all(p["status"] in ("done", "archived") for p in parents):
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":
-                    # At the breaker limit, no auto-recovery (else block ->
-                    # recover -> respawn -> exhaust -> block forever). The
-                    # counter is preserved so it accumulates across cycles.
+                    # Loop protection (#35072): a task whose breaker trip
+                    # still stands does not re-promote in the same tick.
+                    # The park decision binds to the DURABLE trip — an
+                    # unrecovered ``gave_up`` event, for any breaker class
+                    # (unified counter / protocol streak / per-task
+                    # override) — with the numeric
+                    # ``failures >= effective_limit`` comparison kept only
+                    # as the legacy fallback for rows with no event.
+                    #
+                    # Exception: a *stale* gave_up block — one parked
+                    # longer than ``kanban.gave_up_stale_hours`` (default
+                    # 1h) — is auto-unblocked here instead of waiting for
+                    # a human forever (a ~16h silent-gap incident seen in
+                    # production): counter reset, audited ``unblocked``
+                    # event (``auto: true``), then the normal ``promoted``
+                    # event.  A freshly-tripped breaker still waits the
+                    # full delay, so the retry-storm protection is intact.
                     failures = int(row["consecutive_failures"] or 0)
                     task_limit = row["max_retries"]
                     effective_limit = (
                         int(task_limit) if task_limit is not None
                         else int(failure_limit)
                     )
-                    if failures >= effective_limit:
+                    if _has_unrecovered_gave_up(
+                        conn, task_id
+                    ) or failures >= effective_limit:
+                        now = int(time.time())
+                        stuck_since = _stuck_since(conn, task_id, now)
+                        stale_hours = _gave_up_stale_hours()
+                        if stuck_since is not None and stale_hours is not None:
+                            stale_seconds = int(stale_hours * 3600)
+                            if now - stuck_since >= stale_seconds:
+                                # ``resume_status`` was resolved above,
+                                # BEFORE this branch writes any recovery
+                                # events (post-emission it would see this
+                                # recovery's own rows instead of the
+                                # breaker's).
+                                if _auto_unblock_stalled(
+                                    conn,
+                                    task_id,
+                                    actor="dispatcher:auto-gave-up-recovery",
+                                    now=now,
+                                    resume_status=resume_status,
+                                    stale_hours=stale_hours,
+                                ):
+                                    _append_event(
+                                        conn, task_id, "promoted",
+                                        {"status": resume_status}
+                                        if resume_status != "ready"
+                                        else None,
+                                    )
+                                    promoted += 1
                         continue
                     conn.execute(
                         "UPDATE tasks SET status = ? "
@@ -3254,48 +3499,67 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
     return "ready" if _parents_satisfied(conn, task_id) else "todo"
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def _unblock_task_txn(
+    conn: sqlite3.Connection, task_id: str, *, actor: Optional[str], now: int,
+) -> bool:
+    """Txn-scoped core of :func:`unblock_task` — the caller owns the
+    transaction.  See :func:`unblock_task` for the full contract."""
+    resume_status = (
+        _resume_status_from_events(conn, task_id)
+        if _task_status(conn, task_id) == "blocked"
+        else "ready"
+    )
+    _reclaim_dangling_run(
+        conn, task_id, statuses=("blocked", "scheduled"), now=now,
+        note="invariant recovery on unblock",
+    )
+    # Re-gate on parent completion before restoring the source phase.
+    landing_status = _landing_status_after_parents(conn, task_id)
+    new_status = (
+        "review"
+        if landing_status == "ready" and resume_status == "review"
+        else landing_status
+    )
+    # ``block_kind``/``block_recurrences`` deliberately survive the unblock:
+    # resetting them is the amnesia that let cron-unblock <-> re-block loop
+    # unbounded; only complete_task clears them. ``consecutive_failures``
+    # (the dispatcher's spawn/crash counter) IS reset — a deliberate unblock
+    # is a fresh start for the retry budget.
+    cur = conn.execute(
+        "UPDATE tasks SET status = ?, current_run_id = NULL, "
+        "consecutive_failures = 0, last_failure_error = NULL "
+        "WHERE id = ? AND status IN ('blocked', 'scheduled')", (new_status, task_id),
+    )
+    if cur.rowcount != 1:
+        return False
+    # Audit: the ``unblocked`` event ALWAYS carries a payload so a post-hoc
+    # review can attribute every unblock — who (``by``), the resulting
+    # status, and the resume phase.  Dropping the payload for the
+    # ready->ready shape (the common case) leaves zero audit trail.
+    _append_event(
+        conn, task_id, "unblocked",
+        {
+            "status": new_status,
+            "resume_status": resume_status,
+            "by": (actor or "unknown").strip() or "unknown",
+        },
+    )
+    return True
+
+
+def unblock_task(
+    conn: sqlite3.Connection, task_id: str, *, actor: Optional[str] = None,
+) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
-    when that is where it left off), closing any leaked run first."""
+    when that is where it left off), closing any leaked run first.
+
+    ``actor`` is best-effort attribution for the ``unblocked`` event payload
+    — e.g. ``cli:<profile>``, ``tool:<profile>:<session>``, ``dashboard``,
+    ``reassign`` — written as ``by``.  ``None`` (legacy callers) writes
+    ``by: unknown``."""
     now = int(time.time())
     with write_txn(conn):
-        resume_status = (
-            _resume_status_from_events(conn, task_id)
-            if _task_status(conn, task_id) == "blocked"
-            else "ready"
-        )
-        _reclaim_dangling_run(
-            conn, task_id, statuses=("blocked", "scheduled"), now=now,
-            note="invariant recovery on unblock",
-        )
-        # Re-gate on parent completion before restoring the source phase.
-        landing_status = _landing_status_after_parents(conn, task_id)
-        new_status = (
-            "review"
-            if landing_status == "ready" and resume_status == "review"
-            else landing_status
-        )
-        # ``block_kind``/``block_recurrences`` deliberately survive the unblock:
-        # resetting them is the amnesia that let cron-unblock <-> re-block loop
-        # unbounded; only complete_task clears them. ``consecutive_failures``
-        # (the dispatcher's spawn/crash counter) IS reset — a deliberate unblock
-        # is a fresh start for the retry budget.
-        cur = conn.execute(
-            "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')", (new_status, task_id),
-        )
-        if cur.rowcount != 1:
-            return False
-        _append_event(
-            conn, task_id, "unblocked",
-            (
-                {"status": new_status, "resume_status": resume_status}
-                if new_status != "ready" or resume_status != "ready"
-                else None
-            ),
-        )
-        return True
+        return _unblock_task_txn(conn, task_id, actor=actor, now=now)
 
 
 def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:

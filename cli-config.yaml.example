@@ -343,6 +343,11 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Hours a circuit-breaker (gave_up) block sits before the dispatcher
+  # auto-recovers it (default 1.0). Set to -1 to disable auto-recovery
+  # entirely (gave_up tasks park until a human unblocks them).
+  # Explicit worker/operator blocks (kanban_block) never age out.
+  # gave_up_stale_hours: 1.0
 
 # =============================================================================
 # Terminal Tool Configuration

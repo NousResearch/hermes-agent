@@ -1190,3 +1190,65 @@ async def test_create_cron_job_without_profile_defaults_when_unscoped(
 
     assert job["profile"] == "default"
     assert (isolated_profiles["default"] / "cron" / "jobs.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_create_cron_job_accepts_advanced_execution_fields(
+    isolated_profiles, tmp_path
+):
+    """Desktop parity (#103341): the dashboard create route forwards the advanced
+    execution settings to create_job, which validates them with its own
+    normalizers/invariants."""
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+
+    job = await _rt_cron.create_cron_job(
+        _web_models.CronJobCreate(
+            schedule="every 1h",
+            name="advanced-fields",
+            prompt="run it",
+            repeat=3,
+            skills=["reporter"],
+            workdir=str(workdir),
+            attach_to_session=True,
+            monitor_url="https://example.invalid/status.json",
+            reasoning_effort="high",
+            failure_deliver="local",
+        ),
+        profile="worker_alpha",
+    )
+
+    assert job["repeat"] == {"times": 3, "completed": 0}
+    assert job["skills"] == ["reporter"]
+    assert job["workdir"] == str(workdir)
+    assert job["attach_to_session"] is True
+    assert job["monitor_url"] == "https://example.invalid/status.json"
+    assert job["reasoning_effort"] == "high"
+    assert job["failure_deliver"] == "local"
+
+
+@pytest.mark.asyncio
+async def test_create_cron_job_rejects_conflicting_monitor_fields(
+    isolated_profiles,
+):
+    """Mode invariants hold through the dashboard door: monitor + no_agent fails
+    before anything is stored."""
+    scripts_dir = isolated_profiles["worker_alpha"] / "scripts"
+    scripts_dir.mkdir(exist_ok=True)
+    (scripts_dir / "collect.py").write_text("print('ok')\n", encoding="utf-8")
+
+    with pytest.raises(HTTPException) as exc:
+        await _rt_cron.create_cron_job(
+            _web_models.CronJobCreate(
+                schedule="every 1h",
+                name="bad-monitor",
+                prompt="run it",
+                monitor_url="https://example.invalid/status.json",
+                no_agent=True,
+                script="collect.py",
+            ),
+            profile="worker_alpha",
+        )
+
+    assert exc.value.status_code == 400
+    assert "monitor" in exc.value.detail

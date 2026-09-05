@@ -2297,6 +2297,50 @@ export const ru = defineLocale({
       failedLoad: 'Не удалось загрузить шаблоны',
       emptyTitle: 'Шаблоны недоступны',
       emptyDesc: 'На этом бэкенде нет шаблонов автоматизации.'
+    },
+    advanced: {
+      toggle: 'Расширенные настройки выполнения',
+      repeatLabel: 'Повторы',
+      repeatPlaceholder: 'Пусто = бесконечно',
+      repeatInvalid: 'Число повторов — целое положительное число (пусто = бесконечно).',
+      skillsLabel: 'Навыки',
+      skillsPlaceholder: 'reporter, researcher',
+      workdirLabel: 'Рабочий каталог',
+      workdirPlaceholder: '/home/user/project',
+      toolsetsLabel: 'Наборы инструментов',
+      toolsetsPlaceholder: 'web, file',
+      contextFromLabel: 'Контекст из задач',
+      contextFromPlaceholder: 'a1b2c3d4e5f6',
+      reasoningLabel: 'Усилие рассуждений',
+      reasoningNone: 'Нет (глобальное значение)',
+      monitorScriptLabel: 'Скрипт монитора',
+      monitorScriptPlaceholder: '/home/user/bin/check.sh',
+      monitorUrlLabel: 'URL монитора',
+      monitorUrlPlaceholder: 'https://example.com/status.json',
+      monitorHint: 'Монитор запускается перед каждым тиком; запуск агента пропускается, пока вывод не изменился. Скрипт и URL взаимоисключающие.',
+      monitorExclusive: 'Выберите либо скрипт монитора, либо URL монитора.',
+      failureDeliverLabel: 'Доставка при сбое',
+      failureDeliverPlaceholder: 'Пусто = как в «Доставить в»',
+      attachLabel: 'Привязать запуск к его сессии',
+      restartHint: 'Расширенные настройки действуют со следующего запуска. Редактирование не стирает значения, которых нет в форме.',
+      onValue: 'Вкл',
+      modes: {
+        agent: 'Запуск агентом',
+        monitor: 'Запуск с монитором',
+        script: 'Только скрипт'
+      },
+      summary: {
+        attachToSession: 'Привязка к сессии',
+        contextFrom: 'Контекст из',
+        enabledToolsets: 'Инструменты',
+        executionMode: 'Выполнение',
+        failureDeliver: 'Доставка при сбое',
+        monitor: 'Монитор',
+        reasoningEffort: 'Рассуждения',
+        repeat: 'Повторы',
+        skills: 'Навыки',
+        workdir: 'Каталог'
+      }
     }
   },
   artifacts: {

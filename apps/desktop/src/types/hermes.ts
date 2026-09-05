@@ -889,6 +889,18 @@ export interface CronJob {
   schedule_display?: null | string
   script?: null | string
   state?: null | string
+  // Advanced execution settings (backend create_job/update_job contract).
+  attach_to_session?: boolean | null
+  base_url?: null | string
+  context_from?: null | string | string[]
+  enabled_toolsets?: null | string[]
+  failure_deliver?: null | string
+  monitor_script?: null | string
+  monitor_url?: null | string
+  reasoning_effort?: null | string
+  repeat?: null | number | { completed?: number; times?: null | number }
+  skills?: null | string[]
+  workdir?: null | string
 }
 
 export interface CronJobCreatePayload {
@@ -898,6 +910,22 @@ export interface CronJobCreatePayload {
   prompt: string
   provider?: string
   schedule: string
+  // Advanced execution settings (backend CronJobCreate contract; null behaves
+  // like unset — the backend normalizes it — so the change-aware updates
+  // builder can spread straight into creates).
+  attach_to_session?: boolean | null
+  base_url?: string
+  context_from?: string[]
+  enabled_toolsets?: string[]
+  failure_deliver?: null | string
+  monitor_script?: null | string
+  monitor_url?: null | string
+  no_agent?: boolean
+  reasoning_effort?: null | string
+  repeat?: null | number
+  script?: string
+  skills?: string[]
+  workdir?: null | string
 }
 
 export interface CronJobSchedule {
@@ -914,6 +942,20 @@ export interface CronJobUpdates {
   prompt?: string
   provider?: null | string
   schedule?: string
+  // Advanced execution settings (backend update_job contract).
+  attach_to_session?: boolean | null
+  base_url?: null | string
+  context_from?: string[]
+  enabled_toolsets?: string[]
+  failure_deliver?: null | string
+  monitor_script?: null | string
+  monitor_url?: null | string
+  no_agent?: boolean
+  reasoning_effort?: null | string
+  repeat?: null | number
+  script?: null | string
+  skills?: string[]
+  workdir?: null | string
 }
 
 // A cron delivery target from GET /api/cron/delivery-targets — the single

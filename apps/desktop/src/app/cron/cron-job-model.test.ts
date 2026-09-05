@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  cronAdvancedSummaryRows,
+  cronAdvancedUpdates,
   cronEditorUpdates,
+  emptyCronAdvancedValues,
+  formatRepeatTimes,
   jobIsScriptOnly,
+  parseCommaList,
   parseCronDeliveryTargets,
+  parseRepeatTimes,
+  seedCronAdvancedValues,
   toggleCronDeliveryTarget,
   validateCronEditor
 } from './cron-job-model'
@@ -34,6 +41,36 @@ describe('validateCronEditor', () => {
 
   it('still requires schedule for script-only jobs', () => {
     expect(validateCronEditor({ prompt: '', schedule: '', scriptOnlyJob: true })).toBe('schedule')
+  })
+
+  it('rejects setting both monitor script and monitor URL', () => {
+    expect(
+      validateCronEditor({
+        advanced: { ...emptyCronAdvancedValues(), monitorScript: 'check.sh', monitorUrl: 'https://x/y' },
+        prompt: 'go',
+        schedule: '0 9 * * *',
+        scriptOnlyJob: false
+      })
+    ).toBe('monitor')
+  })
+
+  it('rejects a non-numeric repeat', () => {
+    expect(
+      validateCronEditor({
+        advanced: { ...emptyCronAdvancedValues(), repeat: 'many' },
+        prompt: 'go',
+        schedule: '0 9 * * *',
+        scriptOnlyJob: false
+      })
+    ).toBe('repeat')
+    expect(
+      validateCronEditor({
+        advanced: { ...emptyCronAdvancedValues(), repeat: '3' },
+        prompt: 'go',
+        schedule: '0 9 * * *',
+        scriptOnlyJob: false
+      })
+    ).toBe(null)
   })
 })
 
@@ -117,5 +154,108 @@ describe('cronEditorUpdates', () => {
 
     expect('model' in updates).toBe(false)
     expect('provider' in updates).toBe(false)
+  })
+})
+
+describe('cron advanced helpers', () => {
+  it('parses comma lists with dedupe', () => {
+    expect(parseCommaList('web, file,web ,, ')).toEqual(['web', 'file'])
+    expect(parseCommaList('')).toEqual([])
+  })
+
+  it('round-trips stored repeat shapes', () => {
+    expect(formatRepeatTimes(null)).toBe('')
+    expect(formatRepeatTimes(undefined)).toBe('')
+    expect(formatRepeatTimes(5)).toBe('5')
+    expect(formatRepeatTimes({ completed: 2, times: 5 })).toBe('5')
+    expect(formatRepeatTimes({ completed: 0, times: null })).toBe('')
+    expect(parseRepeatTimes('')).toBe(null)
+    expect(parseRepeatTimes('3')).toBe(3)
+    expect(Number.isNaN(parseRepeatTimes('often'))).toBe(true)
+  })
+
+  it('seeds the form from a stored job', () => {
+    const seed = seedCronAdvancedValues({
+      attach_to_session: true,
+      context_from: ['abc123'],
+      enabled: true,
+      enabled_toolsets: ['web'],
+      id: 'j1',
+      monitor_url: 'https://x/y',
+      reasoning_effort: 'high',
+      repeat: { completed: 1, times: 4 },
+      skills: ['reporter'],
+      workdir: '/tmp/p'
+    })
+
+    expect(seed).toMatchObject({
+      attachToSession: true,
+      contextFrom: 'abc123',
+      enabledToolsets: 'web',
+      monitorScript: '',
+      monitorUrl: 'https://x/y',
+      reasoningEffort: 'high',
+      repeat: '4',
+      skills: 'reporter',
+      workdir: '/tmp/p'
+    })
+  })
+
+  it('sends every non-empty field on create', () => {
+    const updates = cronAdvancedUpdates(
+      { ...emptyCronAdvancedValues(), skills: 'reporter, researcher', repeat: '3', workdir: '/tmp/p' },
+      null
+    )
+
+    expect(updates).toMatchObject({
+      repeat: 3,
+      skills: ['reporter', 'researcher'],
+      workdir: '/tmp/p'
+    })
+    expect('enabled_toolsets' in updates).toBe(false)
+    expect('monitor_script' in updates).toBe(false)
+    expect('attach_to_session' in updates).toBe(false)
+  })
+
+  it('omits untouched fields on edit so stored values survive', () => {
+    const job = {
+      attach_to_session: true,
+      enabled: true,
+      id: 'j1',
+      skills: ['reporter'],
+      workdir: '/tmp/p'
+    }
+
+    const updates = cronAdvancedUpdates(seedCronAdvancedValues(job), job)
+
+    expect(updates).toEqual({})
+  })
+
+  it('sends only the changed field on edit, including clears', () => {
+    const job = { enabled: true, id: 'j1', skills: ['reporter'], workdir: '/tmp/p' }
+    const seed = seedCronAdvancedValues(job)
+
+    expect(cronAdvancedUpdates({ ...seed, workdir: '/tmp/q' }, job)).toEqual({ workdir: '/tmp/q' })
+    expect(cronAdvancedUpdates({ ...seed, workdir: '' }, job)).toEqual({ workdir: null })
+  })
+
+  it('summarizes only the effective settings', () => {
+    expect(cronAdvancedSummaryRows({ enabled: true, id: 'j1' })).toEqual([
+      { key: 'executionMode', value: 'agent' }
+    ])
+    expect(
+      cronAdvancedSummaryRows({
+        enabled: true,
+        id: 'j1',
+        no_agent: true,
+        repeat: { completed: 0, times: 2 },
+        script: 'echo hi',
+        skills: ['reporter']
+      })
+    ).toEqual([
+      { key: 'executionMode', value: 'script' },
+      { key: 'repeat', value: '2' },
+      { key: 'skills', value: 'reporter' }
+    ])
   })
 })

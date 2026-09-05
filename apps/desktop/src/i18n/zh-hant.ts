@@ -1859,6 +1859,50 @@ export const zhHant = defineLocale({
       failedLoad: '載入藍圖失敗',
       emptyTitle: '沒有可用的藍圖',
       emptyDesc: '此後端上沒有可用的自動化藍圖。'
+    },
+    advanced: {
+      toggle: '進階執行設定',
+      repeatLabel: '重複次數',
+      repeatPlaceholder: '留空 = 無限',
+      repeatInvalid: '重複次數必須為正整數（留空 = 無限）。',
+      skillsLabel: '技能',
+      skillsPlaceholder: 'reporter, researcher',
+      workdirLabel: '工作目錄',
+      workdirPlaceholder: '/home/user/project',
+      toolsetsLabel: '啟用的工具集',
+      toolsetsPlaceholder: 'web, file',
+      contextFromLabel: '上下文來源工作',
+      contextFromPlaceholder: 'a1b2c3d4e5f6',
+      reasoningLabel: '推理強度',
+      reasoningNone: '無（跟隨全域預設）',
+      monitorScriptLabel: '監視指令碼',
+      monitorScriptPlaceholder: '/home/user/bin/check.sh',
+      monitorUrlLabel: '監視 URL',
+      monitorUrlPlaceholder: 'https://example.com/status.json',
+      monitorHint: '監視器在每次觸發前執行；輸出未變化時略過智慧體執行。指令碼與 URL 互斥。',
+      monitorExclusive: '監視指令碼與監視 URL 只能二選一。',
+      failureDeliverLabel: '失敗投遞',
+      failureDeliverPlaceholder: '留空 = 與「投遞到」相同',
+      attachLabel: '將執行附加到其工作階段',
+      restartHint: '進階設定在下次執行生效。編輯不會清除表單未顯示的值。',
+      onValue: '開',
+      modes: {
+        agent: '智慧體執行',
+        monitor: '監視門控執行',
+        script: '僅指令碼執行'
+      },
+      summary: {
+        attachToSession: '工作階段附加',
+        contextFrom: '上下文來源',
+        enabledToolsets: '工具集',
+        executionMode: '執行方式',
+        failureDeliver: '失敗投遞',
+        monitor: '監視器',
+        reasoningEffort: '推理強度',
+        repeat: '重複次數',
+        skills: '技能',
+        workdir: '工作目錄'
+      }
     }
   },
 

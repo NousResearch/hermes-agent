@@ -17,6 +17,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Field, FieldHint } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import {
@@ -76,9 +77,15 @@ import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 import { BlueprintSlotControl, blueprintSlotHelp, cleanBlueprintFieldError, initialBlueprintValues } from './blueprints'
 import { mutateAndRefreshCronJobs, refreshCronJobs, triggerAndRefreshCronJobs } from './cron-actions'
 import {
+  type CronAdvancedSummaryKey,
+  cronAdvancedSummaryRows,
+  cronAdvancedUpdates,
+  type CronAdvancedValues,
   cronEditorUpdates,
+  emptyCronAdvancedValues,
   jobIsScriptOnly,
   parseCronDeliveryTargets,
+  seedCronAdvancedValues,
   toggleCronDeliveryTarget,
   validateCronEditor
 } from './cron-job-model'
@@ -146,6 +153,25 @@ function jobModel(job: CronJob): string {
 
 function jobProvider(job: CronJob): string {
   return asText(job.provider).trim()
+}
+
+/** Detail-view row for one effective-settings summary entry. Mode/attach
+ *  values render through copy so all locales stay consistent. */
+function cronAdvancedSummaryRow(
+  row: { key: CronAdvancedSummaryKey; value: string },
+  c: Translations['cron']
+): { label: string; value: string } {
+  if (row.key === 'executionMode') {
+    const modes = c.advanced.modes as Record<string, string>
+
+    return { label: c.advanced.summary.executionMode, value: modes[row.value] ?? row.value }
+  }
+
+  if (row.key === 'attachToSession') {
+    return { label: c.advanced.summary.attachToSession, value: c.advanced.onValue }
+  }
+
+  return { label: c.advanced.summary[row.key] ?? row.key, value: row.value }
 }
 
 function cronParts(expr: string): null | string[] {
@@ -564,7 +590,8 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
           schedule: values.schedule,
           name: values.name || undefined,
           deliver: values.deliver || DEFAULT_DELIVER,
-          ...(values.model.trim() ? { model: values.model.trim(), provider: values.provider.trim() || undefined } : {})
+          ...(values.model.trim() ? { model: values.model.trim(), provider: values.provider.trim() || undefined } : {}),
+          ...cronAdvancedUpdates(values.advanced ?? emptyCronAdvancedValues(), null)
         })
       )
 
@@ -585,7 +612,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
         refreshError,
         stale
       } = await mutateAndRefreshCronJobs(profile, () =>
-        updateCronJob(editor.job.id, cronEditorUpdates(values, { scriptOnlyJob }))
+        updateCronJob(editor.job.id, cronEditorUpdates(values, { initial: editor.job, scriptOnlyJob }))
       )
 
       if (stale || !updated) {
@@ -797,6 +824,9 @@ function CronJobDetail({
   const deliver = jobDeliver(job)
   const prompt = jobPrompt(job)
   const modelOverride = jobModel(job)
+  // Effective execution settings the backend actually has stored — including
+  // jobs created via CLI/chat that the editor never touched (issue point 5).
+  const advancedSummary = cronAdvancedSummaryRows(job)
 
   return (
     <PanelDetail>
@@ -822,7 +852,8 @@ function CronJobDetail({
             { label: c.last.replace(/:$/, ''), value: formatTime(job.last_run_at) },
             { label: c.next.replace(/:$/, ''), value: formatTime(job.next_run_at) },
             { label: c.deliverLabel, value: c.deliveryLabels[deliver] ?? deliver },
-            ...(modelOverride ? [{ label: c.modelLabel, value: modelOverride }] : [])
+            ...(modelOverride ? [{ label: c.modelLabel, value: modelOverride }] : []),
+            ...advancedSummary.map(row => cronAdvancedSummaryRow(row, c))
           ]}
         />
 
@@ -1049,6 +1080,16 @@ function CronEditorDialog({
   const [templateChoice, setTemplateChoice] = useState(CUSTOM_TEMPLATE)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
+  // Advanced execution settings (collapsed by default). Auto-opens when
+  // editing a job that already carries advanced settings, so CLI/chat-made
+  // jobs show their full effective config instead of hiding it.
+  const [advanced, setAdvanced] = useState<CronAdvancedValues>(() => emptyCronAdvancedValues())
+  const [showAdvanced, setShowAdvanced] = useState(false)
+
+  const setAdvancedField = (key: keyof CronAdvancedValues, value: boolean | string) => {
+    setAdvanced(prev => ({ ...prev, [key]: value }))
+    setError(null)
+  }
 
   // The blueprint catalog powers the create dialog's "Start from" dropdown; it's
   // meaningless when editing an existing job, so skip the fetch there.
@@ -1094,6 +1135,8 @@ function CronEditorDialog({
     setSchedulePreset(initial ? scheduleOptionForExpr(jobScheduleExpr(initial)).value : 'daily')
     setDeliver(initial ? jobDeliver(initial) : DEFAULT_DELIVER)
     setModelChoice(initial && jobModel(initial) ? `${jobProvider(initial)}:${jobModel(initial)}` : MODEL_DEFAULT_VALUE)
+    setAdvanced(initial ? seedCronAdvancedValues(initial) : emptyCronAdvancedValues())
+    setShowAdvanced(initial ? cronAdvancedSummaryRows(initial).length > 1 : false)
     setSlotValues({})
     setTemplateChoice(editor.mode === 'create' ? (editor.blueprintKey ?? CUSTOM_TEMPLATE) : CUSTOM_TEMPLATE)
     setError(null)
@@ -1142,6 +1185,7 @@ function CronEditorDialog({
     event.preventDefault()
 
     const validationError = validateCronEditor({
+      advanced,
       prompt,
       schedule,
       scriptOnlyJob
@@ -1153,7 +1197,11 @@ function CronEditorDialog({
           ? c.scheduleRequired
           : validationError === 'prompt'
             ? c.promptRequired
-            : c.promptScheduleRequired
+            : validationError === 'monitor'
+              ? c.advanced.monitorExclusive
+              : validationError === 'repeat'
+                ? c.advanced.repeatInvalid
+                : c.promptScheduleRequired
       )
 
       return
@@ -1170,6 +1218,7 @@ function CronEditorDialog({
 
     try {
       await onSave({
+        advanced,
         deliver,
         model: overrideModel,
         name: name.trim(),
@@ -1386,6 +1435,145 @@ function CronEditorDialog({
               </div>
             )}
 
+            <div className="rounded-md border border-input">
+              <button
+                aria-expanded={showAdvanced}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-foreground"
+                onClick={() => setShowAdvanced(prev => !prev)}
+                type="button"
+              >
+                <DisclosureCaret open={showAdvanced} />
+                {c.advanced.toggle}
+              </button>
+
+              {showAdvanced && (
+                <div className="grid gap-4 border-t border-input px-3 py-3">
+                  <div className="grid items-start gap-4 sm:grid-cols-2">
+                    <Field htmlFor="cron-repeat" label={c.advanced.repeatLabel} optional optionalLabel={c.optional}>
+                      <Input
+                        className="font-mono"
+                        id="cron-repeat"
+                        inputMode="numeric"
+                        onChange={event => setAdvancedField('repeat', event.target.value)}
+                        placeholder={c.advanced.repeatPlaceholder}
+                        value={advanced.repeat}
+                      />
+                    </Field>
+
+                    <Field htmlFor="cron-skills" label={c.advanced.skillsLabel} optional optionalLabel={c.optional}>
+                      <Input
+                        className="font-mono"
+                        id="cron-skills"
+                        onChange={event => setAdvancedField('skills', event.target.value)}
+                        placeholder={c.advanced.skillsPlaceholder}
+                        value={advanced.skills}
+                      />
+                    </Field>
+                  </div>
+
+                  <div className="grid items-start gap-4 sm:grid-cols-2">
+                    <Field htmlFor="cron-workdir" label={c.advanced.workdirLabel} optional optionalLabel={c.optional}>
+                      <Input
+                        className="font-mono"
+                        id="cron-workdir"
+                        onChange={event => setAdvancedField('workdir', event.target.value)}
+                        placeholder={c.advanced.workdirPlaceholder}
+                        value={advanced.workdir}
+                      />
+                    </Field>
+
+                    <Field htmlFor="cron-toolsets" label={c.advanced.toolsetsLabel} optional optionalLabel={c.optional}>
+                      <Input
+                        className="font-mono"
+                        id="cron-toolsets"
+                        onChange={event => setAdvancedField('enabledToolsets', event.target.value)}
+                        placeholder={c.advanced.toolsetsPlaceholder}
+                        value={advanced.enabledToolsets}
+                      />
+                    </Field>
+                  </div>
+
+                  <div className="grid items-start gap-4 sm:grid-cols-2">
+                    <Field htmlFor="cron-context-from" label={c.advanced.contextFromLabel} optional optionalLabel={c.optional}>
+                      <Input
+                        className="font-mono"
+                        id="cron-context-from"
+                        onChange={event => setAdvancedField('contextFrom', event.target.value)}
+                        placeholder={c.advanced.contextFromPlaceholder}
+                        value={advanced.contextFrom}
+                      />
+                    </Field>
+
+                    <Field htmlFor="cron-reasoning" label={c.advanced.reasoningLabel} optional optionalLabel={c.optional}>
+                      <Select
+                        onValueChange={next => setAdvancedField('reasoningEffort', next === '__none__' ? '' : next)}
+                        value={advanced.reasoningEffort || '__none__'}
+                      >
+                        <SelectTrigger className="h-9 rounded-md" id="cron-reasoning">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__none__">{c.advanced.reasoningNone}</SelectItem>
+                          {['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map(level => (
+                            <SelectItem className="font-mono" key={level} value={level}>
+                              {level}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                  </div>
+
+                  <div className="grid items-start gap-4 sm:grid-cols-2">
+                    <Field htmlFor="cron-monitor-script" label={c.advanced.monitorScriptLabel} optional optionalLabel={c.optional}>
+                      <Input
+                        className="font-mono"
+                        id="cron-monitor-script"
+                        onChange={event => setAdvancedField('monitorScript', event.target.value)}
+                        placeholder={c.advanced.monitorScriptPlaceholder}
+                        value={advanced.monitorScript}
+                      />
+                    </Field>
+
+                    <Field htmlFor="cron-monitor-url" label={c.advanced.monitorUrlLabel} optional optionalLabel={c.optional}>
+                      <Input
+                        className="font-mono"
+                        id="cron-monitor-url"
+                        onChange={event => setAdvancedField('monitorUrl', event.target.value)}
+                        placeholder={c.advanced.monitorUrlPlaceholder}
+                        value={advanced.monitorUrl}
+                      />
+                    </Field>
+                  </div>
+                  <FieldHint>{c.advanced.monitorHint}</FieldHint>
+
+                  <div className="grid items-start gap-4 sm:grid-cols-2">
+                    <Field htmlFor="cron-failure-deliver" label={c.advanced.failureDeliverLabel} optional optionalLabel={c.optional}>
+                      <Input
+                        className="font-mono"
+                        id="cron-failure-deliver"
+                        onChange={event => setAdvancedField('failureDeliver', event.target.value)}
+                        placeholder={c.advanced.failureDeliverPlaceholder}
+                        value={advanced.failureDeliver}
+                      />
+                    </Field>
+
+                    <div className="flex items-center gap-2 pt-6">
+                      <Checkbox
+                        checked={advanced.attachToSession}
+                        id="cron-attach"
+                        onCheckedChange={next => setAdvancedField('attachToSession', next === true)}
+                      />
+                      <label className="text-sm" htmlFor="cron-attach">
+                        {c.advanced.attachLabel}
+                      </label>
+                    </div>
+                  </div>
+                  <FieldHint>{c.advanced.restartHint}</FieldHint>
+                </div>
+              )}
+            </div>
+
             {error && (
               <div className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
                 <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
@@ -1416,6 +1604,7 @@ type EditorState =
   | { blueprintKey?: string; mode: 'create' }
 
 interface EditorValues {
+  advanced?: CronAdvancedValues
   deliver: string
   /** Per-job model override ('' = follow the global default). */
   model: string

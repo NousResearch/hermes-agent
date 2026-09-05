@@ -16,6 +16,9 @@ hermes agent session (HERMES_AGENT), and the target is the canonical
 """
 from __future__ import annotations
 
+import os
+import sys
+
 import pytest
 
 from hermes_cli.main import _enforce_self_dm_guard
@@ -65,10 +68,24 @@ def test_refusal_message_names_the_profile_and_escape_hatch(
 # Legitimate shapes must pass through
 # ---------------------------------------------------------------------------
 
-def test_cross_profile_relay_is_allowed(monkeypatch):
-    """The intended send (`-p elon` from forge's session): caller=forge,
-    resolved=elon → allowed."""
+def test_stale_label_contrary_to_home_resolves_to_home(monkeypatch):
+    """Precedence contract: the post-override HOME is the actual selected
+    profile (config loads from it); a contrary HERMES_PROFILE label is stale
+    inheritance and must not mask it. A forge-home process opening forge's
+    Bot Chat is the self-DM shape even if the label says otherwise."""
     monkeypatch.setenv("HERMES_CALLER_PROFILE", "forge")
+    monkeypatch.setenv("HERMES_PROFILE", "elon")  # stale label only
+    with pytest.raises(SystemExit) as exc:
+        _enforce_self_dm_guard(_Args())
+    assert exc.value.code == 1
+
+
+def test_label_fallback_when_home_is_not_profile_shaped(monkeypatch):
+    """Root/custom HERMES_HOME yields no profile name → the label remains a
+    meaningful fallback for non-`-p` sessions: caller=forge, label=elon →
+    relay allowed."""
+    monkeypatch.setenv("HERMES_CALLER_PROFILE", "forge")
+    monkeypatch.setenv("HERMES_HOME", "/tmp/hermes-root")
     monkeypatch.setenv("HERMES_PROFILE", "elon")
     _enforce_self_dm_guard(_Args())  # no SystemExit
 
@@ -123,3 +140,48 @@ def test_snapshot_takes_first_value(monkeypatch):
     monkeypatch.setenv("HERMES_CALLER_PROFILE", "forge")
     # Guard equivalence: caller read from env; here we just pin the contract.
     assert __import__("os").environ["HERMES_CALLER_PROFILE"] == "forge"
+
+
+# ---------------------------------------------------------------------------
+# Blocker-2 regression: the REAL launcher path (-p through preparse)
+# ---------------------------------------------------------------------------
+
+def _run_preparse(tmp_path, monkeypatch, *, target: str):
+    """Apply -p <target> through the ACTUAL _apply_profile_override preparse,
+    starting from the real launcher env of a forge agent session (inherited
+    HERMES_PROFILE=forge, HERMES_HOME=.../profiles/forge) — exactly the shape
+    a `hermes -p <target> chat …` fallback send runs under."""
+    root = tmp_path / "hermes-root"
+    for name in ("forge", "elon"):
+        (root / "profiles" / name).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("HERMES_PROFILE", "forge")
+    monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "forge"))
+    monkeypatch.setenv("HERMES_CALLER_PROFILE", "forge")
+    monkeypatch.setattr(sys, "argv",
+                        ["hermes", "-p", target, "chat",
+                         "-c", "Bot Chat", "--create-if-missing"])
+    from hermes_cli.main import _apply_profile_override
+    _apply_profile_override()
+    # Pin the preparse contract this regression stands on: the override moved
+    # the home and did NOT touch the inherited label.
+    assert os.environ["HERMES_HOME"] == str(root / "profiles" / target)
+
+
+def test_preparse_cross_profile_relay_is_allowed(tmp_path, monkeypatch):
+    """forge agent, `hermes -p elon chat -c "Bot Chat" --create-if-missing`:
+    the preparse moved HERMES_HOME to profiles/elon; the guard must resolve
+    the TARGET (derived from the post-override home), not the stale
+    HERMES_PROFILE label — relay allowed, no SystemExit."""
+    _run_preparse(tmp_path, monkeypatch, target="elon")
+    _enforce_self_dm_guard(_Args())  # must NOT raise
+
+
+def test_preparse_self_profile_still_refused(tmp_path, monkeypatch):
+    """forge agent, `hermes -p forge chat -c "Bot Chat" --create-if-missing`:
+    post-override home names forge == caller → the self-DM fork shape, still
+    refused with the escape-hatch message."""
+    _run_preparse(tmp_path, monkeypatch, target="forge")
+    with pytest.raises(SystemExit) as exc:
+        _enforce_self_dm_guard(_Args())
+    assert exc.value.code == 1

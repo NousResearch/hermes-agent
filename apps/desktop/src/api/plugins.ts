@@ -38,6 +38,97 @@ export async function activeConnection(): Promise<HermesConnection> {
   )
 }
 
+// Keep these segment rules in sync with the defense-in-depth URL parsing check
+// in apps/desktop/electron/media-protocol.ts::assertSafePluginMediaSegment.
+function assertSafePluginMediaSegment(segment: string, path: string, message: string): void {
+  let inspected = segment
+
+  while (true) {
+    if (!inspected || inspected === '.' || inspected === '..' || inspected.includes('/') || inspected.includes('\\')) {
+      throw new Error(`${message} in "${path}"`)
+    }
+
+    // `%252e` decodes once to `%2e`. Inspect nested escapes for path syntax
+    // before minting a URL, while preserving literal percent filenames whose
+    // follow-up decode is malformed.
+    if (!/%[0-9a-f]{2}/i.test(inspected)) {
+      return
+    }
+
+    try {
+      inspected = decodeURIComponent(inspected)
+    } catch {
+      return
+    }
+  }
+}
+
+function pluginMediaPathSuffix(path: string): string {
+  if (path.includes('?') || path.includes('#')) {
+    throw new Error(`pluginMediaUrl: query and fragment are not allowed in "${path}"`)
+  }
+
+  const rawPath = path.replace(/^\/+/, '')
+
+  if (!rawPath) {
+    throw new Error('pluginMediaUrl: media path is required')
+  }
+
+  const segments = rawPath.split('/').map(segment => {
+    let decoded: string
+
+    try {
+      decoded = decodeURIComponent(segment)
+    } catch {
+      throw new Error(`pluginMediaUrl: malformed path encoding in "${path}"`)
+    }
+
+    assertSafePluginMediaSegment(decoded, path, 'pluginMediaUrl: illegal path traversal')
+
+    return encodeURIComponent(decoded)
+  })
+
+  return `/${segments.join('/')}`
+}
+
+function pluginMediaId(pluginId: string): string {
+  let decoded: string
+
+  try {
+    decoded = decodeURIComponent(pluginId)
+  } catch {
+    throw new Error(`pluginMediaUrl: invalid plugin id "${pluginId}"`)
+  }
+
+  assertSafePluginMediaSegment(decoded, pluginId, 'pluginMediaUrl: invalid plugin id')
+
+  return encodeURIComponent(pluginId)
+}
+
+/** Build a seekable, authenticated media URL for a plugin-owned backend route.
+ *  The custom protocol keeps gateway credentials out of the renderer and maps
+ *  the URL back to `/api/plugins/<pluginId>` in Electron's main process. */
+export function pluginMediaUrl(pluginId: string, path: string): null | string {
+  if (!window.hermesDesktop) {
+    return null
+  }
+
+  const suffix = pluginMediaPathSuffix(path)
+  const url = new URL(`hermes-media://plugin/${pluginMediaId(pluginId)}${suffix}`)
+  const profile = getApiRequestProfile()
+  const connectionId = getApiRequestConnection()
+
+  if (profile) {
+    url.searchParams.set('profile', profile)
+  }
+
+  if (connectionId) {
+    url.searchParams.set('connectionId', connectionId)
+  }
+
+  return url.toString()
+}
+
 /** Options for a plugin REST call — mirrors the app's own `hermesDesktop.api`
  *  shape, minus the path (which is namespace-derived). */
 export interface PluginRestOptions {

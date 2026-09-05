@@ -1,3 +1,5 @@
+import { pathWithProfileScope, translateSelfProfileQuery } from './connection-config'
+
 const STREAMABLE_MEDIA_EXTENSIONS = [
   '.avi',
   '.flac',
@@ -16,12 +18,13 @@ const FORWARDED_MEDIA_REQUEST_HEADERS = ['accept', 'if-modified-since', 'if-none
 
 export const MEDIA_PROTOCOL = 'hermes-media'
 
-type MediaProtocolMode = 'remote' | 'stream'
+type MediaProtocolMode = 'plugin' | 'remote' | 'stream'
 
 interface MediaProtocolTarget {
   connectionId?: string
   filePath: string
   mode: MediaProtocolMode
+  pluginId?: string
   profile?: string
 }
 
@@ -34,8 +37,10 @@ export interface MediaRemoteConnection {
   authMode?: 'oauth' | 'token'
   baseUrl: string
   mode?: 'local' | 'remote'
-  token?: null | string
+  remoteProfile?: null | string
+  sharedPrimary?: boolean
   sharedRemote?: boolean
+  token?: null | string
 }
 
 type MediaRequestMethod = 'GET' | 'HEAD'
@@ -49,12 +54,95 @@ export interface MediaProtocolDependencies {
   resolveRemoteConnection: (scope: MediaRemoteScope) => Promise<MediaRemoteConnection>
 }
 
+const PLUGIN_MEDIA_QUERY_PARAMS = new Set(['connectionId', 'profile'])
+
+// Keep these segment rules in sync with the defense-in-depth URL minting check
+// in apps/desktop/src/api/plugins.ts::assertSafePluginMediaSegment.
+function assertSafePluginMediaSegment(segment: string, rawUrl: string): void {
+  let inspected = segment
+
+  while (true) {
+    if (!inspected || inspected === '.' || inspected === '..' || inspected.includes('/') || inspected.includes('\\')) {
+      throw new Error(`Unsafe plugin media URL: ${rawUrl}`)
+    }
+
+    // A raw `%252e` becomes `%2e` after the first decode. Inspect nested
+    // escapes solely for path syntax so a later URL/server decode cannot turn
+    // an accepted segment into traversal. A literal malformed percent is safe
+    // once the original URL segment itself decoded successfully.
+    if (!/%[0-9a-f]{2}/i.test(inspected)) {
+      return
+    }
+
+    try {
+      inspected = decodeURIComponent(inspected)
+    } catch {
+      return
+    }
+  }
+}
+
+function decodePluginMediaSegment(rawSegment: string, rawUrl: string): string {
+  let segment: string
+
+  try {
+    segment = decodeURIComponent(rawSegment)
+  } catch {
+    throw new Error(`Malformed plugin media URL: ${rawUrl}`)
+  }
+
+  assertSafePluginMediaSegment(segment, rawUrl)
+
+  return segment
+}
+
+function parsePluginMediaTarget(rawUrl: string, url: URL): MediaProtocolTarget {
+  const prefix = `${MEDIA_PROTOCOL}://plugin/`
+
+  if (!rawUrl.startsWith(prefix) || url.hash) {
+    throw new Error(`Malformed plugin media URL: ${rawUrl}`)
+  }
+
+  const rawPath = rawUrl.slice(prefix.length).split(/[?#]/, 1)[0]
+  const [rawPluginId, ...rawPluginPath] = rawPath.split('/')
+
+  if (!rawPluginId || rawPluginPath.length === 0) {
+    throw new Error(`Missing plugin media path: ${rawUrl}`)
+  }
+
+  const pluginId = decodePluginMediaSegment(rawPluginId, rawUrl)
+  const pluginPath = rawPluginPath.map(segment => decodePluginMediaSegment(segment, rawUrl))
+  const scope = new Map<string, string>()
+
+  for (const [key, rawValue] of url.searchParams) {
+    const value = rawValue.trim()
+
+    if (!PLUGIN_MEDIA_QUERY_PARAMS.has(key) || !value || value !== rawValue || scope.has(key)) {
+      throw new Error(`Unsafe plugin media URL: ${rawUrl}`)
+    }
+
+    scope.set(key, value)
+  }
+
+  return {
+    connectionId: scope.get('connectionId'),
+    filePath: pluginPath.join('/'),
+    mode: 'plugin',
+    pluginId,
+    profile: scope.get('profile')
+  }
+}
+
 function parseMediaProtocolTarget(rawUrl: string): MediaProtocolTarget {
   const url = new URL(rawUrl)
   const mode = url.hostname as MediaProtocolMode
 
-  if (mode !== 'remote' && mode !== 'stream') {
+  if (url.protocol !== `${MEDIA_PROTOCOL}:` || (mode !== 'plugin' && mode !== 'remote' && mode !== 'stream')) {
     throw new Error('Unsupported media protocol target')
+  }
+
+  if (mode === 'plugin') {
+    return parsePluginMediaTarget(rawUrl, url)
   }
 
   const filePath = decodeURIComponent(url.pathname.replace(/^\/+/, ''))
@@ -106,6 +194,59 @@ export function remoteMediaEndpoint(baseUrl: string, filePath: string, profile?:
   return url.toString()
 }
 
+export function pluginMediaEndpoint(baseUrl: string, pluginId: string, filePath: string, profile?: string): string {
+  const normalizedBase = baseUrl.replace(/\/+$/, '')
+  const pluginPath = filePath.split('/').map(encodeURIComponent).join('/')
+  const url = new URL(`${normalizedBase}/api/plugins/${encodeURIComponent(pluginId)}/${pluginPath}`)
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`Unsupported Hermes backend URL protocol: ${url.protocol}`)
+  }
+
+  if (profile) {
+    url.searchParams.set('profile', profile)
+  }
+
+  return url.toString()
+}
+
+function profileScopedMediaEndpoint(endpoint: string, connection: MediaRemoteConnection, profile?: string): string {
+  const url = new URL(endpoint)
+  const requestPath = `${url.pathname}${url.search}`
+
+  const scopedPath =
+    connection.sharedPrimary || connection.sharedRemote
+      ? pathWithProfileScope(requestPath, profile)
+      : translateSelfProfileQuery(requestPath, profile, connection.remoteProfile)
+
+  if (scopedPath === requestPath) {
+    return endpoint
+  }
+
+  const scoped = new URL(scopedPath, url.origin)
+
+  url.pathname = scoped.pathname
+  url.search = scoped.search
+
+  return url.toString()
+}
+
+function validatePluginMediaResponse(target: MediaProtocolTarget, response: Response): Response {
+  if (target.mode !== 'plugin' || !response.ok) {
+    return response
+  }
+
+  const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
+
+  if (contentType?.startsWith('audio/') || contentType?.startsWith('video/')) {
+    return response
+  }
+
+  void response.body?.cancel().catch(() => undefined)
+
+  return new Response('Unsupported media type', { status: 415 })
+}
+
 export function createMediaProtocolHandler(dependencies: MediaProtocolDependencies) {
   return async (request: Pick<Request, 'headers' | 'method' | 'url'>): Promise<Response> => {
     if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -124,7 +265,7 @@ export function createMediaProtocolHandler(dependencies: MediaProtocolDependenci
       return new Response('Media not found', { status: 404 })
     }
 
-    if (!isStreamableMediaPath(target.filePath)) {
+    if (target.mode !== 'plugin' && !isStreamableMediaPath(target.filePath)) {
       return new Response('Unsupported media type', { status: 415 })
     }
 
@@ -150,14 +291,16 @@ export function createMediaProtocolHandler(dependencies: MediaProtocolDependenci
         profile: target.profile
       })
 
-      if (connection.mode !== 'remote') {
+      if (target.mode === 'remote' && connection.mode !== 'remote') {
         return new Response('Remote media backend unavailable', { status: 404 })
       }
 
-      const endpoint = remoteMediaEndpoint(
-        connection.baseUrl,
-        target.filePath,
-        connection.sharedRemote ? target.profile : undefined
+      const endpoint = profileScopedMediaEndpoint(
+        target.mode === 'plugin'
+          ? pluginMediaEndpoint(connection.baseUrl, target.pluginId!, target.filePath)
+          : remoteMediaEndpoint(connection.baseUrl, target.filePath),
+        connection,
+        target.profile
       )
 
       if (connection.authMode === 'oauth') {
@@ -166,10 +309,10 @@ export function createMediaProtocolHandler(dependencies: MediaProtocolDependenci
         if (bearer) {
           headers.set('authorization', `Bearer ${bearer}`)
 
-          return await dependencies.fetchRemote(endpoint, headers, method)
+          return validatePluginMediaResponse(target, await dependencies.fetchRemote(endpoint, headers, method))
         }
 
-        return await dependencies.fetchRemoteWithCookies(endpoint, headers, method)
+        return validatePluginMediaResponse(target, await dependencies.fetchRemoteWithCookies(endpoint, headers, method))
       }
 
       if (!connection.token) {
@@ -178,7 +321,7 @@ export function createMediaProtocolHandler(dependencies: MediaProtocolDependenci
 
       headers.set('x-hermes-session-token', connection.token)
 
-      return await dependencies.fetchRemote(endpoint, headers, method)
+      return validatePluginMediaResponse(target, await dependencies.fetchRemote(endpoint, headers, method))
     } catch {
       return new Response('Remote media unavailable', { status: 502 })
     }

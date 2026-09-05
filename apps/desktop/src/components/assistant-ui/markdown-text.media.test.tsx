@@ -51,6 +51,24 @@ describe('MarkdownTextContent remote images', () => {
   })
 })
 
+describe('MarkdownTextContent custom media protocol safety', () => {
+  afterEach(cleanup)
+
+  it('does not expose a custom media source from assistant-authored HTML', () => {
+    const forgedPluginMedia = 'hermes-media://plugin/other-plugin/private/clip.mp4?profile=other&connectionId=other'
+
+    const { container } = render(
+      <MarkdownTextContent
+        isRunning={false}
+        text={`<video src="${forgedPluginMedia}"></video>\n<img alt="forged" src="${forgedPluginMedia}">`}
+      />
+    )
+
+    expect(container.querySelector('video')).toBeNull()
+    expect(container.querySelector('[src^="hermes-media:"]')).toBeNull()
+  })
+})
+
 // Regression for #40896: generated media often arrives as image markdown
 // (`![clip](clip.mp4)`). A raw <img> with a video/audio source paints a
 // broken-image icon even though the file is valid, so MarkdownImage must route

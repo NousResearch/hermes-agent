@@ -12,7 +12,7 @@
  * through the plugin host loader (next phase); this is that seam.
  */
 
-import { pluginRest, type PluginRestOptions, pluginSocket } from '@/hermes'
+import { pluginMediaUrl, pluginRest, type PluginRestOptions, pluginSocket } from '@/hermes'
 import { createPluginI18n, type PluginI18n } from '@/i18n'
 import { readKey, writeKey } from '@/lib/storage'
 import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } from '@/store/native-notifications'
@@ -93,6 +93,10 @@ export interface PluginContext {
    *  returned. Resolves to a no-op on OAuth remotes — treat it as an
    *  accelerator over your polling, never a replacement. */
   socket: (path: string, onMessage: (data: unknown) => void) => () => void
+  /** Seekable URL for audio/video served by this plugin's own backend route.
+   *  The Desktop main process authenticates and Range-proxies it; resolves
+   *  null when this renderer has no Desktop media bridge. */
+  mediaUrl: (path: string) => null | string
   /** The curated OS door: native notification, open-external, reveal-in-file-
    *  manager, clipboard — attributed to this plugin, result-shaped (never
    *  throws for a missing capability). */
@@ -213,6 +217,7 @@ export function createPluginContext(pluginId: string, onDispose?: (dispose: () =
     onDispose: fn => void track(fn),
     rest: <T>(path: string, opts?: PluginRestOptions) => pluginRest<T>(pluginId, path, opts),
     socket: (path, onMessage) => track(pluginSocket(pluginId, path, onMessage)),
+    mediaUrl: path => pluginMediaUrl(pluginId, path),
     os: createPluginOs(pluginId),
     storage: createPluginStorage(pluginId),
     i18n: createPluginI18n(pluginId, track)

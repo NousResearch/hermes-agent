@@ -1,4 +1,4 @@
-"""Live-subagent registry + model-facing control plane (list/steer/stop) for delegate_task."""
+"""Live-subagent registry + model-facing control plane for delegate_task."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 from agent.interrupt_compat import request_hard_interrupt
+from tools import delegate_inspect
 from tools.registry import tool_error
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
@@ -18,6 +19,9 @@ _active_subagents_lock = threading.Lock()
 # subagent_id -> mutable record tracking the live child agent.  Stays only
 # for the lifetime of the run; _run_single_child is the owner.
 _active_subagents: Dict[str, Dict[str, Any]] = {}
+# Inspect telemetry records into this same canonical registry. The inspect
+# module owns only sanitization/serialization, never a second live-state store.
+delegate_inspect.bind_registry(_active_subagents_lock, _active_subagents)
 # subagent_id -> {goal, delegation_id, owner_agent_session_id} retained AFTER the child finishes (bounded FIFO).
 # Child-started background processes routinely outlive the child (its npm ci with notify_on_complete=true finishes
 # after the summary was delivered); their completion notifications reach the parent via the shared completion_queue
@@ -151,7 +155,10 @@ def _capture_gateway_steer_authority(owner_session_id: Optional[str]) -> tuple[A
         return None, None
 
 # Registry record fields never exposed to the TUI/RPC snapshot.
-_PRIVATE_RECORD_KEYS = frozenset({"agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer"})
+_PRIVATE_RECORD_KEYS = frozenset({
+    "agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer",
+    "_inspect_events", "_inspect_capture_errors",
+})
 
 def list_active_subagents() -> List[Dict[str, Any]]:
     """Copy of the running subagent tree ({subagent_id, parent_id, depth, goal, model,
@@ -161,8 +168,8 @@ def list_active_subagents() -> List[Dict[str, Any]]:
 
 def _is_descendant_of(child_agent: Any, parent_agent: Any, max_hops: int = 8) -> bool:
     """True when *child_agent* sits below *parent_agent* in the spawn tree (walks the ``_delegate_parent_ref`` weakref
-    chain stamped at build time). Identity only — a parent may steer/stop its own children and grandchildren, never
-    a sibling tree owned by another conversation."""
+    chain stamped at build time). Identity only — a parent may inspect/steer/stop its own children and grandchildren,
+    never a sibling tree owned by another conversation."""
     if child_agent is None or parent_agent is None:
         return False
     cur = child_agent
@@ -178,7 +185,7 @@ def _is_descendant_of(child_agent: Any, parent_agent: Any, max_hops: int = 8) ->
 
 # Model-facing control actions accepted by delegate_task(action=...).
 # "spawn" (or omitted) keeps the historical spawn semantics.
-_CONTROL_ACTIONS = frozenset({"list", "steer", "stop"})
+_CONTROL_ACTIONS = frozenset({"list", "inspect", "steer", "stop"})
 
 def _resolve_session_lineage(session_id: Optional[str], parent_agent: Any) -> str:
     """Tip of a session id's compression lineage via the parent's live SessionDB (best-effort; input unchanged when
@@ -240,17 +247,16 @@ def _list_payload(parent_agent: Any) -> Dict[str, Any]:
         payload["note"] = (
             "No live subagents right now. Children that already finished "
             "have delivered (or will deliver) their results as normal "
-            "completion messages — there is nothing to steer or stop."
+            "completion messages — there is nothing to inspect, steer, or stop."
         )
     return payload
 
 def _handle_control_action(action: str, subagent_id: Optional[str], message: Optional[str], parent_agent: Any) -> str:
-    """Synchronous control plane for delegate_task: list/steer/stop. Runs in-turn (never backgrounded) over the same
-    registry the TUI overlay drives, scoped so a conversation can only control its own spawn tree."""
+    """Synchronous list/inspect/steer/stop control over the caller's live spawn tree."""
     if action == "list":
         return json.dumps(_list_payload(parent_agent), ensure_ascii=False)
 
-    # steer / stop need a resolvable, owned target.
+    # inspect / steer / stop need a resolvable, owned live target.
     sid = (subagent_id or "").strip()
     if not sid:
         return tool_error(f"action='{action}' requires subagent_id (from the spawn dispatch response or action='list').")
@@ -262,11 +268,71 @@ def _handle_control_action(action: str, subagent_id: Optional[str], message: Opt
             "may have already finished (its result arrives as a normal "
             "completion message). Use action='list' to see live children."
         )
+
+    if action == "inspect":
+        # Copy only bounded registry metadata while locked, then sample the
+        # child outside the lock. A slow telemetry read must never serialize
+        # registry control operations.
+        with _active_subagents_lock:
+            live_record = _active_subagents.get(sid)
+            if live_record is not record:
+                return tool_error(
+                    f"No live subagent '{sid}' in this conversation's spawn tree. It may have already finished."
+                )
+            agent = live_record.get("agent")
+            base_snapshot = {
+                "subagent_id": sid,
+                "goal": live_record.get("goal"),
+                "model": live_record.get("model"),
+                "status": live_record.get("status"),
+                "started_at": live_record.get("started_at"),
+                "accepting_steer": bool(live_record.get("accepting_steer", False)),
+                "last_tool": live_record.get("last_tool"),
+                "tool_count": live_record.get("tool_count", 0),
+                "capture_errors": live_record.get("_inspect_capture_errors", 0),
+                "recent_events": (
+                    list(live_record.get("_inspect_events", []))
+                    if isinstance(live_record.get("_inspect_events", []), list)
+                    else []
+                ),
+            }
+
+        activity_reader = getattr(agent, "get_activity_summary", None)
+        if not callable(activity_reader):
+            return tool_error(
+                f"Could not inspect '{sid}': live activity telemetry is unavailable. "
+                "Retry while the child is still live or use action='list'."
+            )
+        try:
+            activity_raw = activity_reader()
+        except Exception:
+            logger.debug("delegate_task inspect: activity read failed for %s", sid)
+            return tool_error(
+                f"Could not inspect '{sid}': live activity telemetry is unavailable. "
+                "Retry while the child is still live or use action='list'."
+            )
+        if not isinstance(activity_raw, dict):
+            return tool_error(
+                f"Could not inspect '{sid}': live activity telemetry is unavailable. "
+                "Retry while the child is still live or use action='list'."
+            )
+
+        # Revalidate both authority and exact record identity after sampling.
+        # A child that finished/recycled during the read fails closed instead
+        # of returning stale state under a reused public id.
+        if not _owns_subagent_record(record, parent_agent):
+            return tool_error(f"No live subagent '{sid}' in this conversation's spawn tree. It may have already finished.")
+        with _active_subagents_lock:
+            if _active_subagents.get(sid) is not record:
+                return tool_error(f"No live subagent '{sid}' in this conversation's spawn tree. It may have already finished.")
+
+        return delegate_inspect.serialize_inspect_response(base_snapshot, agent, activity_raw, now=time.time())
+
     if action == "steer" and not (message or "").strip():
         return tool_error("action='steer' requires a non-empty 'message' describing the course correction.")
     outcome = _CONTROL_OUTCOMES.get(action)
     if outcome is None:
-        return tool_error(f"Unknown action '{action}'. Use spawn, list, steer, or stop.")
+        return tool_error(f"Unknown action '{action}'. Use spawn, list, inspect, steer, or stop.")
     status, note, failure = outcome
     ok = interrupt_subagent(sid) if action == "stop" else steer_subagent(sid, message.strip())
     if ok:

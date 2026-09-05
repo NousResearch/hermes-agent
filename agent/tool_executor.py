@@ -1452,7 +1452,7 @@ def _finish_quiet_tool_spinner(agent, spinner, function_name: str, function_args
 def _delegate_spinner_label(function_args: dict) -> str:
     action = str(function_args.get("action") or "").strip().lower()
     tasks = function_args.get("tasks")
-    if action in ("list", "steer", "stop"):
+    if action in ("list", "inspect", "steer", "stop"):
         return f"🔀 subagent {action}"
     if tasks and isinstance(tasks, list):
         return f"🔀 delegating {len(tasks)} tasks · (/agents to monitor)"

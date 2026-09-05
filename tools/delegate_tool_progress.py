@@ -8,7 +8,6 @@ import os
 import threading
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
-from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -340,13 +339,10 @@ class _ChildProgressRelay:
                 self.parent_cb("subagent_progress", f"{self._prefix()}{summary_text}")
 
     def _on_tool_started(self, tool_name, preview, args, kwargs):
+        # UI relay keeps its own display counter. Canonical registry tool
+        # activity is updated by the always-installed inspect telemetry tee so
+        # headless children are observable too and the count has one owner.
         self.tool_count += 1
-        if self.subagent_id is not None:
-            with _active_subagents_lock:
-                rec = _active_subagents.get(self.subagent_id)
-                if rec is not None:
-                    rec["tool_count"] = self.tool_count
-                    rec["last_tool"] = tool_name or ""
         if self.spinner:
             from agent.display import get_tool_emoji
             line = f"{get_tool_emoji(tool_name or '')} {tool_name}"

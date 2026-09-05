@@ -34,6 +34,10 @@ from tools.delegate_tool_config import (  # noqa: F401
     _resolve_child_runtime, _resolve_delegation_credentials, _subagent_auto_approve, _subagent_auto_deny,
 )
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
+from tools.delegate_inspect import (  # noqa: F401
+    SUBAGENT_INSPECT_EVENT_LIMIT as _SUBAGENT_INSPECT_EVENT_LIMIT,
+    wrap_inspect_callback as _wrap_subagent_inspect_callback,
+)
 from tools.delegate_tool_progress import (  # noqa: F401
     DelegateEvent, SUBAGENT_FAILURE_STATUSES, _batch_prefix, _build_child_progress_callback,
     _build_child_system_prompt, _clean_error_text, _emit_parent_console, _quiet, _resolve_workspace_hint,
@@ -203,7 +207,7 @@ def _build_child_agent(
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
-    # Ownership chain for action=list/steer/stop; weakref so a finished parent
+    # Ownership chain for action=list/inspect/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.
     try:
         child._delegate_parent_ref = weakref.ref(parent_agent)
@@ -260,6 +264,11 @@ def _run_single_child(
         child, parent_agent, goal, owner_session_id=owner_session_id, owner_transport=owner_transport,
         owner_session_record=owner_session_record,
     )
+    if _subagent_id:
+        # Install after registration so the tee has a canonical record to
+        # update. It wraps None too, making headless children observable.
+        child_progress_cb = _wrap_subagent_inspect_callback(child_progress_cb, _subagent_id)
+        child.tool_progress_callback = child_progress_cb
     run = _ChildRun(child, parent_agent, task_index, goal, _subagent_id, child_progress_cb)
     # Set when a timed-out Future still owns the child: closing it from this
     # thread before the worker settles races the conversation's finally path.
@@ -352,9 +361,9 @@ def delegate_task(
     message: Optional[str] = None, parent_agent=None, credentials_cfg: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
-    list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
-    (per-task beats top-level; capability is depth-derived). Returns JSON with one results entry per task, or a
-    dispatch handle when running in the background."""
+    list/inspect/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is
+    legacy (per-task beats top-level; capability is depth-derived). Returns JSON with one results entry per task, or
+    a dispatch handle when running in the background."""
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
 
@@ -362,7 +371,7 @@ def delegate_task(
     if normalized_action in _CONTROL_ACTIONS:
         return _handle_control_action(normalized_action, subagent_id, message, parent_agent)
     if normalized_action and normalized_action != "spawn":
-        return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, or stop.")
+        return tool_error(f"Unknown action '{action}'. Use spawn (default), list, inspect, steer, or stop.")
 
     # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
     if is_spawn_paused():
@@ -459,8 +468,8 @@ _DESCRIPTION_HEAD = (
     "(limit in the tasks description).\n\n"
     "Runs in the background: dispatch returns immediately with live transcript paths, and the completed result (one "
     "consolidated message, results in task order) re-enters the conversation on its own. Do NOT wait or poll; continue "
-    "other work. While children run, `action` (list/steer/stop) controls them live — steer when a transcript shows a "
-    "child drifting.\n\n"
+    "other work. While children run, use `action` (list/inspect/steer/stop); inspect for bounded evidence before "
+    "steering.\n\n"
     "USE FOR: reasoning-heavy subtasks, work that would flood your context with intermediate data, or independent "
     "parallel workstreams.\n"
     "DO NOT USE FOR (use these instead):\n"
@@ -555,15 +564,16 @@ DELEGATE_TASK_SCHEMA = {
             # delegations always run in the background. Unadvertised; do not re-add.
             "action": _p(
                 "string",
-                "Default 'spawn'. Live control of running children: "
-                "'list' = ids/goals/status/transcripts; 'steer' = queue "
-                "course-correction text into one child (subagent_id + "
-                "message) without stopping it; 'stop' = end one child "
-                "early (subagent_id; partial result still returns). "
-                "Control actions return immediately; goal/tasks are ignored unless spawning.",
-                enum=["spawn", "list", "steer", "stop"],
+                "Default 'spawn'. Live control of running children: 'list' = ids/goals/status/transcripts; "
+                "'inspect' = bounded liveness/usage/sanitized recent tool metadata for one live child (subagent_id; "
+                "no reasoning/raw transcript); 'steer' = queue course-correction text into one child (subagent_id + "
+                "message) without stopping it; 'stop' = end one child early (subagent_id; partial result still "
+                "returns). Control actions return immediately; goal/tasks are ignored unless spawning.",
+                enum=["spawn", "list", "inspect", "steer", "stop"],
             ),
-            "subagent_id": _p("string", "Target for action='steer'/'stop' (ids from the spawn response or action='list')."),
+            "subagent_id": _p(
+                "string", "Target for action='inspect'/'steer'/'stop' (ids from the spawn response or action='list')."
+            ),
             "message": _p(
                 "string",
                 "For action='steer': the course correction, appended to "

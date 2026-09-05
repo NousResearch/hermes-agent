@@ -167,3 +167,23 @@ def test_localized_description_falls_back_to_english_definition(monkeypatch):
     monkeypatch.setenv("HERMES_LANGUAGE", "en")
     i18n.reset_language_cache()
     assert localized_description(by_name["new"]) == by_name["new"].description
+
+
+# Slash-access replies (gateway.slash.*): the admin-only denial and /whoami.
+
+
+def test_slash_denial_renders_the_english_sentence(monkeypatch):
+    monkeypatch.setenv("HERMES_LANGUAGE", "en")
+    i18n.reset_language_cache()
+    suffix = i18n.t("gateway.slash.denied_allowed", commands="/new, /status")
+    assert i18n.t("gateway.slash.denied", command="model", suffix=suffix) == (
+        "⛔ /model is admin-only here. You can run: /new, /status. Use /whoami for the full list."
+    )
+
+
+def test_slash_whoami_is_localized(monkeypatch):
+    monkeypatch.setenv("HERMES_LANGUAGE", "ru")
+    i18n.reset_language_cache()
+    header = i18n.t("gateway.slash.whoami_header", platform="telegram", scope=i18n.t("gateway.slash.scope_dm"), user_id="1")
+    assert header == "**Вы** — telegram (личка)\nID пользователя: `1`"
+    assert i18n.t("gateway.slash.denied", command="model", suffix="").startswith("⛔ /model здесь только для админа")

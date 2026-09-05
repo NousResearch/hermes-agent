@@ -45,6 +45,18 @@ gateway:
     running: "running: {tool}"
     working: "⏳ Working — {minutes} min{detail}"
   # Messenger replies to slash commands and implicit state changes.
+  # Slash-command access replies: the admin-only denial and /whoami.
+  slash:
+    denied: "⛔ /{command} is admin-only here. {suffix}"
+    denied_allowed: "You can run: {commands}. Use /whoami for the full list."
+    denied_none: "No slash commands are enabled for non-admins on this platform. Ask an admin to add you to allow_admin_from or to set user_allowed_commands."
+    whoami_header: "**You** — {platform} ({scope})\nUser ID: `{user_id}`"
+    whoami_unrestricted: "Tier: unrestricted (no admin list configured for this scope)\nSlash commands: all available"
+    whoami_admin: "Tier: **admin**\nSlash commands: all available"
+    whoami_user: "Tier: user\nSlash commands you can run: {commands}"
+    scope_dm: "DM"
+    scope_group: "group/channel"
+    none: "(none)"
   approval_expired: "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
   draining:         "⏳ Draining {count} active agent(s) before restart..."
   goal_cleared:     "✓ Goal cleared."

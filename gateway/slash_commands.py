@@ -419,24 +419,19 @@ class GatewaySlashCommandsMixin:
         policy = _policy_for_source(self.config, source)
         platform = source.platform.value if source and source.platform else "?"
         chat_type = (source.chat_type if source else "") or "dm"
-        scope = "DM" if chat_type.lower() in {"dm", "direct", "private", ""} else "group/channel"
+        scope = (
+            t("gateway.slash.scope_dm")
+            if chat_type.lower() in {"dm", "direct", "private", ""}
+            else t("gateway.slash.scope_group")
+        )
         user_id = (source.user_id if source else None) or "?"
+        header = t("gateway.slash.whoami_header", platform=platform, scope=scope, user_id=user_id)
 
         if not policy.enabled:
-            return (
-                f"**You** — {platform} ({scope})\n"
-                f"User ID: `{user_id}`\n"
-                f"Tier: unrestricted (no admin list configured for this scope)\n"
-                f"Slash commands: all available"
-            )
+            return header + "\n" + t("gateway.slash.whoami_unrestricted")
 
         if policy.is_admin(user_id):
-            return (
-                f"**You** — {platform} ({scope})\n"
-                f"User ID: `{user_id}`\n"
-                f"Tier: **admin**\n"
-                f"Slash commands: all available"
-            )
+            return header + "\n" + t("gateway.slash.whoami_admin")
 
         # Non-admin user. Show what's actually reachable.
         floor = ["help", "whoami"]  # mirrors slash_access._ALWAYS_ALLOWED_FOR_USERS
@@ -448,13 +443,8 @@ class GatewaySlashCommandsMixin:
             if c not in seen:
                 seen.add(c)
                 runnable.append(c)
-        runnable_str = ", ".join(f"/{c}" for c in runnable) if runnable else "(none)"
-        return (
-            f"**You** — {platform} ({scope})\n"
-            f"User ID: `{user_id}`\n"
-            f"Tier: user\n"
-            f"Slash commands you can run: {runnable_str}"
-        )
+        runnable_str = ", ".join(f"/{c}" for c in runnable) if runnable else t("gateway.slash.none")
+        return header + "\n" + t("gateway.slash.whoami_user", commands=runnable_str)
 
     async def _handle_kanban_command(self, event: MessageEvent) -> str:
         """Handle /kanban — delegate to the shared kanban CLI.

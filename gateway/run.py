@@ -22995,19 +22995,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         allowed_preview = sorted(policy.user_allowed_commands)
         if allowed_preview:
-            suffix = (
-                "You can run: "
-                + ", ".join(f"/{c}" for c in allowed_preview[:12])
-                + ("…" if len(allowed_preview) > 12 else "")
-                + ". Use /whoami for the full list."
+            commands = ", ".join(f"/{c}" for c in allowed_preview[:12]) + (
+                "…" if len(allowed_preview) > 12 else ""
             )
+            suffix = t("gateway.slash.denied_allowed", commands=commands)
         else:
-            suffix = (
-                "No slash commands are enabled for non-admins on this "
-                "platform. Ask an admin to add you to allow_admin_from "
-                "or to set user_allowed_commands."
-            )
-        return f"⛔ /{canonical_cmd} is admin-only here. {suffix}"
+            suffix = t("gateway.slash.denied_none")
+        return t("gateway.slash.denied", command=canonical_cmd, suffix=suffix)
 
 
 

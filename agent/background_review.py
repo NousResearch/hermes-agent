@@ -842,6 +842,13 @@ def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iteratio
     return kwargs
 
 
+# Sentinel generation above any live registry generation. Mid-review compaction
+# boundaries re-run refresh_agent_mcp_tools(content_aware=True); freezing the
+# snapshot generation prevents compaction from rebuilding agent.tools and dropping
+# inherited provider tools (#103579).
+_FROZEN_TOOL_SNAPSHOT_GENERATION: int = 2_147_483_647
+
+
 def _inherit_parent_tool_surface(review_agent: Any, agent: Any) -> None:
     """Copy the parent's advertised tools for a same-model cache-parity fork.
 
@@ -851,6 +858,10 @@ def _inherit_parent_tool_surface(review_agent: Any, agent: Any) -> None:
     restricted by the thread whitelist. Copying the whole surface covers every
     dynamically injected tool (memory-provider, late MCP, and plugin-registered),
     not just memory tools.
+
+    Freezes ``_tool_snapshot_generation`` so mid-review compaction boundaries
+    (which invoke ``refresh_agent_mcp_tools(content_aware=True)``) refuse the
+    rebuild and do not clobber the inherited tools (#103579).
     """
     parent_tools = getattr(agent, "tools", None)
     if not isinstance(parent_tools, (list, tuple)) or not parent_tools:
@@ -863,6 +874,7 @@ def _inherit_parent_tool_surface(review_agent: Any, agent: Any) -> None:
         and isinstance(entry.get("function"), dict)
         and isinstance(entry["function"].get("name"), str)
     }
+    review_agent._tool_snapshot_generation = _FROZEN_TOOL_SNAPSHOT_GENERATION
 
 
 def build_cache_parity_fork(

@@ -735,14 +735,26 @@ def _cmd_comment(args: argparse.Namespace) -> int:
 
 def _cmd_attach(args: argparse.Namespace) -> int:
     """Attach a local file via the shared ``store_attachment_bytes`` path (same 25 MB cap and name
-    sanitisation as the dashboard upload and agent tool)."""
+    sanitisation as the dashboard upload and agent tool).
+
+    Runs the fail-closed secret-path pre-ingress policy on *name*
+    BEFORE reading the source bytes off disk — so ``hermes kanban attach
+    t_xxx .env`` refuses with only the policy ``kind`` in the error
+    and never copies the credential file into the attachments dir.
+    ``store_attachment_bytes`` re-runs the same check as a belt-and-braces
+    final gate.
+    """
     import mimetypes
 
     src = Path(args.path).expanduser()
+    name = args.name or src.name
+    from hermes_cli.secret_path_policy import check_attachment_filename
+    policy = check_attachment_filename(str(name or ""), source="cli_attach")
+    if policy is not None:
+        return _err(f"kanban: {policy}")
     if not src.is_file():
         return _err(f"kanban: no such file: {src}")
     data = src.read_bytes()
-    name = args.name or src.name
     content_type = args.content_type or mimetypes.guess_type(name)[0]
     uploaded_by = args.author or _profile_author()
     try:
@@ -751,6 +763,14 @@ def _cmd_attach(args: argparse.Namespace) -> int:
                                                uploaded_by=uploaded_by)
     except kb.AttachmentTooLarge as exc:
         return _err(f"kanban: {exc}")
+    except ValueError as exc:
+        # Belt-and-braces: ``store_attachment_bytes`` will also reject
+        # the same shape with a policy error; surface that here so the
+        # CLI operator sees a single clean error.
+        msg = str(exc)
+        if "refused to admit" in msg:
+            return _err(f"kanban: {msg}")
+        raise
     print(f"Attached {name} to {args.task_id} (attachment {att_id}, {len(data)} bytes)")
     return 0
 

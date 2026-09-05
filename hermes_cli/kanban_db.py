@@ -1761,12 +1761,37 @@ def store_attachment_bytes(
     """Single attachment write path (dashboard, tools, CLI): size cap, safe
     basename, collision-free blob under :func:`task_attachments_dir`, then the
     metadata row. Raises :class:`AttachmentTooLarge` / ``ValueError``; a blob
-    whose row insert fails is removed before re-raising. Returns the new id."""
+    whose row insert fails is removed before re-raising. Returns the new id.
+
+    Also runs the fail-closed secret-path pre-ingress policy on the
+    *raw* and *sanitised* filenames BEFORE any blob is written.  The
+    raw check is necessary because some surfaces (e.g. the dashboard
+    multipart upload) only see the client-supplied name and never pass
+    through :func:`_safe_attachment_name`; the sanitised check is the
+    belt-and-braces final gate after directory components have been
+    stripped.  Either check raises :class:`SecretPathError` and never
+    reaches the disk.
+    """
+    # Local import to avoid an import-time cycle between kanban_db and
+    # secret_path_policy at module load.  Both modules are stable on
+    # Python 3.11+, and the import cost is paid only on the attach path.
+    from hermes_cli.secret_path_policy import check_attachment_filename
+    raw_policy = check_attachment_filename(
+        str(filename or ""), source="store_attachment_bytes")
+    if raw_policy is not None:
+        raise ValueError(raw_policy)
     if max_bytes is None:
         max_bytes = KANBAN_ATTACHMENT_MAX_BYTES
     if len(data) > max_bytes:
         raise AttachmentTooLarge(f"attachment exceeds {max_bytes // (1024 * 1024)} MB limit")
     safe_name = _safe_attachment_name(filename)
+    # Second check on the sanitised leaf so a `../../auth.json` that
+    # _safe_attachment_name already collapsed to `auth.json` is also
+    # caught — this is the canonical case the policy targets.
+    sanitised_policy = check_attachment_filename(
+        safe_name, source="store_attachment_bytes")
+    if sanitised_policy is not None:
+        raise ValueError(sanitised_policy)
     dest_dir = task_attachments_dir(task_id, board=board)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = _collision_free_path(dest_dir, safe_name)
@@ -2739,7 +2764,27 @@ def _merge_completion_prose_artifacts(
 def _persist_scratch_completion_artifacts(
     conn: sqlite3.Connection, task_id: str, metadata: dict,
 ) -> None:
-    """Copy scratch-workspace completion artifacts before cleanup removes them."""
+    """Copy scratch-workspace completion artifacts before cleanup removes them.
+
+    Runs the fail-closed secret-path pre-ingress policy on every
+    declared artifact's *resolved* path BEFORE any ``open()`` /
+    ``read()`` / ``stat()`` / ``copy()`` so a scratch workspace
+    containing ``auth.json`` / ``.env`` / a ``*.kdbx`` keychain database
+    can never be promoted to the durable attachment store.  Symlinks
+    are resolved (via :func:`Path.resolve`) before the basename check
+    so a worker can't rename ``auth.json`` to ``notes.txt`` via a
+    symlink and slip past the denylist.
+
+    A prohibited artifact raises :class:`ArtifactPreservationError` with
+    only the policy ``kind`` token in the message — never the filename
+    or any credential bytes.  Earlier copies in the same batch are
+    discarded before the exception propagates so the attachments dir is
+    not left in a half-populated state.
+    """
+    from hermes_cli.secret_path_policy import (
+        SecretPathError,
+        check_scratch_artifact_path,
+    )
     raw_artifacts = metadata.get("artifacts")
     if not isinstance(raw_artifacts, (list, tuple)):
         return
@@ -2783,6 +2828,24 @@ def _persist_scratch_completion_artifacts(
             persisted.append(artifact)
             continue
 
+        # Fail-closed pre-ingress policy: check the *resolved* basename
+        # BEFORE stat/open/copy so the file's contents (and its very
+        # existence as a stat-readable target) are not revealed to the
+        # pipeline.  ``Path.resolve`` already followed any symlink, so a
+        # worker can't smuggle ``auth.json`` past the policy by aliasing
+        # it from a benign leaf.
+        policy_err = check_scratch_artifact_path(
+            resolved_src, source="kanban_scratch_artifact",
+        )
+        if policy_err is not None:
+            _discard_copies()
+            raise ArtifactPreservationError(
+                SecretPathError(
+                    kind=_policy_kind_from_message(policy_err),
+                    reason=policy_err,
+                )
+            )
+
         problem = None
         if not src.is_file():
             problem = f"declared scratch artifact is unavailable or not a regular file: {artifact}"
@@ -2819,6 +2882,22 @@ def _persist_scratch_completion_artifacts(
         metadata["_staged_artifacts"] = [
             path for path in persisted if path.startswith(str(attachment_dir.resolve()))
         ]
+
+
+def _policy_kind_from_message(err: str) -> str:
+    """Recover the policy ``kind`` token from a formatted error string.
+
+    The error starts with ``"<source>: refused to admit '<kind>' ..."``.
+    We extract ``<kind>`` so :class:`ArtifactPreservationError` carries
+    a stable structured tag alongside the human-readable reason.  Falls
+    back to ``"credential"`` if the format ever changes upstream.
+    """
+    try:
+        start = err.index("'") + 1
+        end = err.index("'", start)
+        return err[start:end]
+    except ValueError:
+        return "credential"
 
 
 def _copy_capped(src: Path, dest: Path, artifact: str) -> None:

@@ -734,29 +734,67 @@ def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
 
 
 def _split_key_path(key: str) -> list[str]:
-    """Split a dotted config-key path, honoring backslash-escaped dots (``a\\.b`` -> ``a.b``).
-    Backslashes before any other character are preserved verbatim.
+    """Split a dotted config-key path, honoring backslash-escaped dots (``a\\.b`` -> ``a.b``) and
+    bracket-style list indices. Backslashes before any other character are preserved verbatim.
 
     ``hermes config set`` uses ``.`` as the nesting separator, so a key that itself contains a literal dot
     (e.g. provider names like ``qwen3.5-397b-wafer``) was silently split into bogus nested segments
     (#84064).
+
+    A trailing ``[N]`` list index on a segment becomes its own numeric segment, so it navigates the real
+    list instead of writing an inert literal ``name[N]`` key (#87689)::
+
+        _split_key_path("hooks.pre_llm_call[1].command") -> ["hooks", "pre_llm_call", "1", "command"]
+
+    Because the normalization lives at this single seam every navigation (``_set_nested`` / ``_get_nested`` /
+    ``_unset_nested``) already routes through, ``[N]`` and dotted ``.N`` become exactly equivalent and the
+    ``\\.`` escape handling composes with it for free. Only ``[<digits>]`` is recognized; any other bracket
+    content is left verbatim.
     """
     parts: list[str] = []
     current: list[str] = []
     i = 0
+    # True immediately after a ``[N]`` index was emitted, so a bracket index at the very end of the key
+    # (``foo[0]``, ``a[0][1]``) does not tack on a trailing empty segment via the final flush below. A real
+    # trailing dot (``agent.``) still yields the empty segment the caller validates against.
+    after_bracket = False
     while i < len(key):
         ch = key[i]
         if ch == "\\" and key[i + 1:i + 2] == ".":
             current.append(".")
+            after_bracket = False
             i += 2
             continue
         if ch == ".":
             parts.append("".join(current))
             current = []
-        else:
-            current.append(ch)
+            after_bracket = False
+            i += 1
+            continue
+        if ch == "[":
+            j = i + 1
+            while j < len(key) and key[j].isdigit():
+                j += 1
+            if j > i + 1 and j < len(key) and key[j] == "]":
+                # ``name[N]`` -> segment ``name`` followed by segment ``N``. Consecutive indices
+                # (``a[0][1]``) chain without emitting an empty segment for the already-flushed ``current``.
+                if current:
+                    parts.append("".join(current))
+                    current = []
+                parts.append(key[i + 1:j])
+                i = j + 1
+                after_bracket = True
+                # ``[N]`` already acts as a separator, so a dot immediately after ``]``
+                # (``name[0].command``) must not emit an empty segment between the index and the key.
+                if i < len(key) and key[i] == ".":
+                    i += 1
+                    after_bracket = False
+                continue
+        current.append(ch)
+        after_bracket = False
         i += 1
-    parts.append("".join(current))
+    if current or not after_bracket:
+        parts.append("".join(current))
     return parts
 
 
@@ -3516,6 +3554,14 @@ def set_config_value(key: str, value: str, force: bool = False):
         _set_nested(user_config, key, value)
     except ValueError as e:
         _exit_invalid(f"✗ {e}")
+    except (TypeError, IndexError) as e:
+        # A list index past the end (``IndexError``) or a non-numeric segment into a list
+        # (``TypeError``) used to fall through to a silently-inert literal key like
+        # ``pre_llm_call[1]`` (#87689). Surface a clear error instead — this CLI navigates
+        # existing structure and does not grow lists.
+        _exit_invalid(
+            f"✗ Cannot set {key!r}: {e}. This CLI navigates existing structure and does not "
+            f"grow lists — check that the list index is within range and the path is correct.")
     # api_base -> base_url alias at set-time too (mirrors _normalize_root_model_keys).
     if key.strip().lower() in ("model.api_base", "api_base"):
         # Normalize the api_base → base_url alias at set-time too (issue #8919), so a fresh `hermes config

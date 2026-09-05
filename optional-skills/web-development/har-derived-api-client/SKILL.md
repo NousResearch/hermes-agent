@@ -15,11 +15,12 @@ metadata:
 
 Drive a website once with a real browser while recording its network traffic
 to a HAR file, then distill that HAR into the site's private JSON API so you
-can call it directly with plain HTTP — far cheaper and faster than
+can call it directly with plain HTTP — often cheaper and faster than
 browser-controlling the page on every request. Credit: trick by Jared Longster,
 popularized by Dax (thdxr). This captures and replays; it does NOT bypass
 auth, solve CAPTCHAs, or defeat bot-detection — if the site needs a logged-in
-session, you carry its headers/cookies forward, you don't forge them.
+session, provide equivalent credentials at runtime from an approved secret
+source; never paste secrets from a HAR into generated code or command history.
 
 The scripts are stdlib-plus-Playwright: capture needs Playwright, derivation
 is pure stdlib, replay needs only `requests`/`httpx` (or `curl`).
@@ -44,7 +45,11 @@ HAR recording works differently in each case (see How to Run).
   - `pip install playwright` then `playwright install chromium`
   - (If a system Playwright already has browsers under `~/.cache/ms-playwright`, reuse it.)
 - `requests` or `httpx` for the replay step (stdlib `urllib` also works).
-- No API keys. Any keys/tokens the client needs are the ones the HAR captured.
+- No API keys are needed by the skill itself. Treat captured keys, tokens, and
+  cookies as secrets; `har_to_client.py` reports their presence and redacts
+  credential headers plus common query/JSON/form credential fields. Capture
+  scripts restrict newly written HAR files to the current OS user where POSIX
+  permissions are available.
 - For the CDP path (`har_capture_cdp.py`): a reachable CDP endpoint. On Hermes,
   run `/browser connect` to print the active endpoint, or read `BROWSER_CDP_URL`
   / `browser.cdp_url` in config. Cloud backends expose it as `cdpUrl`/`connectUrl`.
@@ -105,7 +110,7 @@ har_capture_cdp.py <cdp_url> <out.har> [--goto URL] [--wait S] [--action SPEC ..
 
 har_to_client.py <in.har> [--host SUBSTR] [--include-static] [--max-body N]
   default: keeps only XHR/fetch/JSON; --host narrows to one domain
-  prints per endpoint: query params, non-boring req headers, req body sample,
+  prints per endpoint: redacted query params, non-boring req headers, req body sample,
                        response status/content-type + body sample
   prints "### Replay hints": the browser User-Agent, cookie/auth presence
 ```
@@ -116,7 +121,7 @@ har_to_client.py <in.har> [--host SUBSTR] [--include-static] [--max-body N]
 1. **Find the interaction.** Open the site with `browser_navigate` (or `--headed` capture) to see which selector to type into / click, and confirm a JSON XHR fires in devtools/network.
 2. **Capture the HAR** via the `terminal` tool. Order `--action` to reach the request: `fill` the box, then `sleep` long enough for the debounced XHR, and always leave `--wait` at the end so late responses flush. Both capturers embed response bodies, so the derived client sees real payload shapes.
 3. **Derive** with `har_to_client.py --host <domain>`. Read off: the method, the URL/path template (numeric/UUID segments collapse to `{id}`), query params, request-body JSON, and the `### Replay hints` block.
-4. **Write the client.** Recreate the request exactly — same method, path, query params, body. Send the headers the site actually needs: at minimum copy the **User-Agent** from the replay hints. If hints report cookies or an auth/token header, resend those too.
+4. **Write the client.** Recreate the request exactly — same scheme, method, path, query params, and body. Send the non-secret headers the site actually needs, including the **User-Agent** from the replay hints. If hints report cookies or an auth/token header, obtain an equivalent current value from an approved runtime secret source; never paste the HAR value into source code or a shell command.
 5. **Test browserless.** Run the client with the `terminal` tool and confirm it returns the same data the browser saw. This is the payoff: no browser in the loop.
 6. **(Optional) Wrap as a CLI** — a small `argparse` script over the derived call, e.g. `search.py "frank herbert"`.
 
@@ -141,7 +146,7 @@ for p in r.json()["pages"]:
 - **A failed `--action` aborts before the HAR flushes** — you get no file. If capture errors on a selector, the run produced nothing; fix the selector (use `--headed` to watch) and rerun. Don't debug a missing HAR.
 - **Server-rendered pages have no XHR** to derive — `har_to_client.py` prints "No API-looking entries". The data came in the HTML; scrape it or find the interaction that does fetch JSON.
 - **Debounced/typeahead XHRs need a real pause.** Add `--action "sleep:3"` after `fill`; typing alone won't have fired the request when the HAR closes.
-- **Auth/session endpoints** need the captured `Cookie`/`Authorization` header, and those expire. The derived client is only as durable as the credential; re-capture when it 401s. HARs contain live secrets — treat `out.har` as sensitive and delete it after deriving.
+- **Auth/session endpoints** need equivalent current `Cookie`/`Authorization` values, and those expire. The derivation output redacts credential headers and common structured credential fields, but arbitrary unstructured bodies can still contain sensitive data. Load approved values at runtime from a secret manager, protected environment, or other project-approved source. HARs contain live secrets — restrict access and delete `out.har` after deriving.
 - **`record_har_content="embed"` makes big HARs.** Use `--max-body` to cap what's printed; the file itself can be large for media-heavy pages.
 - **Endpoints shift.** Sites change private APIs without notice. Re-run the capture→derive loop when a client breaks rather than patching URLs by hand.
 - **Wrong capturer = empty/no HAR.** `har_capture.py` on a cloud/CDP backend records nothing (it launches its own local browser instead of the one you meant). `har_capture_cdp.py` needs the endpoint; on Hermes get it from `/browser connect` or `BROWSER_CDP_URL`. Match the capturer to the pathway (How to Run table).

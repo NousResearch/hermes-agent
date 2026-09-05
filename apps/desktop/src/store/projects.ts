@@ -19,6 +19,7 @@ import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import {
   $activeGatewayProfile,
+  $profiles,
   $profileScope,
   ALL_PROFILES,
   normalizeProfileKey,
@@ -282,7 +283,24 @@ async function gatewayRequest<T>(method: string, params: Record<string, unknown>
 export function projectProfile(): null | string {
   const profile = normalizeProfileKey($activeGatewayProfile.get())
 
-  return $profileScope.get() === ALL_PROFILES || profile === ALL_PROFILES ? null : profile
+  if (profile === ALL_PROFILES) {
+    return null
+  }
+
+  if ($profileScope.get() !== ALL_PROFILES) {
+    return profile
+  }
+
+  // The "All profiles" toggle persists regardless of profile count, and the
+  // sidebar deliberately never renders the grouped view for a lone-profile
+  // user (`multiProfile && profileScope === ALL_PROFILES`, sidebar/index.tsx)
+  // so the UI looks unchanged in this state. Mirror that gate here: with only
+  // one profile there's nothing to disambiguate, so resolve to it instead of
+  // hard-failing project creation with an inscrutable error. An empty roster
+  // means the profile list hasn't loaded (or failed to), not that there's
+  // genuinely one profile, so it must keep refusing rather than resolve to a
+  // possibly-stale `$activeGatewayProfile`.
+  return $profiles.get().length === 1 ? profile : null
 }
 
 function projectParams(

@@ -3,8 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
-import { $activeGatewayProfile, setShowAllProfiles } from '@/store/profile'
+import { $activeGatewayProfile, $profiles, setShowAllProfiles } from '@/store/profile'
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
+import type { ProfileInfo } from '@/types/hermes'
 
 import {
   $activeProjectId,
@@ -88,6 +89,16 @@ const getHermesConfig = vi.mocked(hermes.getHermesConfig)
 const notifications = await import('@/store/notifications')
 const notify = vi.mocked(notifications.notify)
 
+const profile = (name: string, isDefault = false): ProfileInfo => ({
+  has_env: false,
+  is_default: isDefault,
+  model: null,
+  name,
+  path: `/tmp/hermes/${name}`,
+  provider: null,
+  skill_count: 0
+})
+
 function deferred<T>() {
   let resolve!: (value: T) => void
 
@@ -139,6 +150,7 @@ describe('projects RPC profile forwarding', () => {
     $activeProjectId.set(null)
     $projectTree.set([])
     setShowAllProfiles(false)
+    $profiles.set([])
   })
 
   it('forwards the normalized active profile to project read RPCs', async () => {
@@ -165,6 +177,9 @@ describe('projects RPC profile forwarding', () => {
     const gateway = { connectionState: 'open', request }
     activeGateway.mockReturnValue(gateway as never)
     gatewayAtom.set(gateway as never)
+    // Multiple profiles: All-profiles view genuinely has no single profile to
+    // disambiguate to, unlike the lone-profile case (#94430).
+    $profiles.set([profile('default', true), profile('coder')])
     setShowAllProfiles(true)
 
     await refreshProjects()
@@ -404,6 +419,64 @@ describe('createProject', () => {
     setSidebarAgentsGrouped(false)
     $activeProjectId.set(null)
     $projectsRpcAvailable.set(null)
+    setShowAllProfiles(false)
+    $profiles.set([])
+  })
+
+  afterEach(() => {
+    setShowAllProfiles(false)
+    $profiles.set([])
+  })
+
+  it('creates the project for a lone profile even while All-profiles view is enabled (#94430)', async () => {
+    $activeGatewayProfile.set('default')
+    $profiles.set([profile('default', true)])
+    setShowAllProfiles(true)
+
+    const created = { folders: [], id: 'p_new', name: 'Demo', primary_path: '/srv/demo' }
+
+    const request = vi.fn(async (method: string) => {
+      if (method === 'projects.create') {
+        return { project: created }
+      }
+
+      return { active_id: 'p_new', projects: [created], scoped_session_ids: [] }
+    })
+
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    const result = await createProject({ folders: ['/srv/demo'], name: 'Demo' })
+
+    expect(result).toEqual(created)
+    expect(request).toHaveBeenCalledWith('projects.create', expect.objectContaining({ profile: 'default' }))
+  })
+
+  it('still refuses project creation in All-profiles view when the profile roster has not loaded yet', async () => {
+    $activeGatewayProfile.set('default')
+    $profiles.set([])
+    setShowAllProfiles(true)
+
+    const request = vi.fn()
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await expect(createProject({ folders: ['/srv/demo'], name: 'Demo' })).rejects.toThrow(
+      'Projects are unavailable while viewing all profiles'
+    )
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('still refuses project creation in All-profiles view when more than one profile exists', async () => {
+    $activeGatewayProfile.set('default')
+    $profiles.set([profile('default', true), profile('work')])
+    setShowAllProfiles(true)
+
+    const request = vi.fn()
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await expect(createProject({ folders: ['/srv/demo'], name: 'Demo' })).rejects.toThrow(
+      'Projects are unavailable while viewing all profiles'
+    )
+    expect(request).not.toHaveBeenCalled()
   })
 
   it('creates the project and flips into the grouped view so a blank slate shows it', async () => {

@@ -1,5 +1,6 @@
 import { type MutableRefObject, useCallback } from 'react'
 
+import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
@@ -12,18 +13,22 @@ import {
   stopVoicePlayback,
   takeVoicePlaybackInterrupted
 } from '@/lib/voice-playback'
+import { $codingWorkspaceDrafts, codingWorkspaceDraftKey, codingWorkspaceKey } from '@/store/coding-workspaces'
 import {
   $composerAttachments,
   type ComposerAttachment,
   mainComposerScope,
   terminalContextBlocksFromDraft
 } from '@/store/composer'
+import { requestGatewayForAgent } from '@/store/gateway'
 import { $hudMode } from '@/store/hud'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/store/onboarding'
+import { resolveNewChatBackendOwner } from '@/store/profile'
 import { isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
   $sessions,
+  getSessionOwnerHint,
   resolveComposerSessionKey,
   setActiveSessionId,
   setAwaitingResponse,
@@ -57,7 +62,7 @@ interface SubmitPromptDeps {
   activeSessionIdRef: MutableRefObject<string | null>
   busyRef: MutableRefObject<boolean>
   copy: Translations['desktop']
-  createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
+  createBackendSessionForSend: (preview?: string | null, draftKey?: string | null) => Promise<string | null>
   getRoutedStoredSessionId: () => null | string
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   getRouteToken: () => string
@@ -121,6 +126,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
   return useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {
       const visibleText = sanitizeComposerInput(rawText).trim()
+      // Snapshot before any provisioning/binding can change the live CWD.
+      // Missing scoped CWD must resolve on the draft owner, never the main view.
+      let referenceCwd = options?.referenceCwd
+      let referenceText = visibleText
       const usingComposerAttachments = !options?.attachments
 
       // Drop undefined/null holes a session switch or draft restore can leave in
@@ -153,7 +162,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           .join('\n')
 
         return (
-          [contextRefs, terminalContextBlocks, visibleText].filter(Boolean).join('\n\n') ||
+          [contextRefs, terminalContextBlocks, referenceText].filter(Boolean).join('\n\n') ||
           (present.some(a => a.kind === 'image') ? 'What do you see in this image?' : '')
         )
       }
@@ -657,8 +666,36 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       }
 
       if (!sessionId) {
+        const owner = { ...resolveNewChatBackendOwner(), draftKey: codingWorkspaceDraftKey(options?.composerScope) }
+        const key = codingWorkspaceKey(owner)
+        const draft = $codingWorkspaceDrafts.get()[key]
+
         try {
-          sessionId = await createBackendSessionForSend(bubbleText)
+          if (draft?.intent && !draft.referenceCwd) {
+            if (!referenceCwd) {
+              // Ask the completion endpoint itself: project inspection has a
+              // different profile scope and can change its default-CWD fallback.
+              const inspection = await requestGatewayForAgent<{ sourceCwd?: string }>(
+                owner.connectionId, owner.profile, 'complete.path',
+                { profile: owner.profile, word: '' }
+              )
+
+              if (
+                sessionDriftReason() ||
+                codingWorkspaceKey({ ...resolveNewChatBackendOwner(), draftKey: owner.draftKey }) !== key ||
+                $codingWorkspaceDrafts.get()[key]?.requestId !== draft.requestId
+              ) {return abortForSessionSwitch(null)}
+
+              if (!inspection.sourceCwd) {throw new Error('Original reference CWD is required')}
+              referenceCwd = inspection.sourceCwd
+            }
+
+            $codingWorkspaceDrafts.set({
+              ...$codingWorkspaceDrafts.get(), [key]: { ...$codingWorkspaceDrafts.get()[key], referenceCwd }
+            })
+          }
+
+          sessionId = await createBackendSessionForSend(bubbleText, options?.composerScope)
         } catch (err) {
           dropOptimistic(null)
           releaseBusy()
@@ -723,15 +760,132 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       }
 
       try {
+        const owner = targetStoredSessionId ? getSessionOwnerHint(targetStoredSessionId) : null
+
+        const workspace = Object.values($codingWorkspaceDrafts.get()).find(
+          draft =>
+            draft.sessionId === targetStoredSessionId &&
+            (owner
+              ? draft.owner.connectionId === owner.connectionId && draft.owner.profile === owner.profile
+              // Legacy creation publishes no registry hint. Only its verified,
+              // bound receipt may authorize the exact captured legacy owner.
+              : draft.owner.connectionId === null && draft.status === 'bound' &&
+                draft.createdSession?.stored_session_id === targetStoredSessionId &&
+                draft.createdSession?.session_id === sessionId)
+        )
+
+        const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
+
+        const onSessionRecovered = (recoveredId: string) => {
+          sessionId = recoveredId
+
+          if (onRuntimeRecovered) {
+            onRuntimeRecovered(recoveredId)
+          } else {
+            // Publish ownership before retrying any session-scoped request.
+            if (recoverStoredSessionId) {
+              updateSessionState(recoveredId, state => state, recoverStoredSessionId)
+            }
+
+            if (targetIsCurrentView()) {
+              activeSessionIdRef.current = recoveredId
+              setActiveSessionId(recoveredId)
+            }
+          }
+
+          // Legacy owners have no registry hint: keep their bound receipt
+          // pinned to the recovered runtime even if the pending send fails.
+          if (workspace) {
+            const key = codingWorkspaceKey(workspace.owner)
+            const draft = $codingWorkspaceDrafts.get()[key]
+
+            if (draft?.requestId === workspace.requestId && draft.createdSession) {
+              $codingWorkspaceDrafts.set({
+                ...$codingWorkspaceDrafts.get(),
+                [key]: { ...draft, createdSession: { ...draft.createdSession, session_id: recoveredId } }
+              })
+            }
+          }
+        }
+
+        let workspaceAttachments = attachments
+        const references = attachments.filter(a => (a.kind === 'file' || a.kind === 'folder') && a.path)
+
+        if (workspace?.prepared && (references.length || visibleText)) {
+          const key = codingWorkspaceKey(workspace.owner)
+
+          if (workspace.referenceCwd === undefined) {
+            $codingWorkspaceDrafts.set({ ...$codingWorkspaceDrafts.get(), [key]: { ...workspace, referenceCwd } })
+          }
+
+          const { result } = await withSessionNotFoundResume(
+            sessionId,
+            recoverStoredSessionId,
+            liveId => requestGatewayForAgent<{ paths: Array<string | null>; text: string }>(
+              workspace.owner.connectionId,
+              workspace.owner.profile,
+              'session.workspace.references',
+              {
+                session_id: liveId,
+                profile: workspace.owner.profile,
+                paths: references.map(a => a.path),
+                text: visibleText,
+                reference_cwd: workspace.referenceCwd !== undefined ? workspace.referenceCwd : referenceCwd
+              }
+            ),
+            {
+              // The verified draft owner authorizes both the preflight and
+              // its stored-session resume, never the currently active profile.
+              requestGateway: (method, params, timeoutMs) => requestGatewayForAgent(
+                workspace.owner.connectionId, workspace.owner.profile, method, params, timeoutMs
+              ),
+              resolveProfile: async () => workspace.owner.profile,
+              driftReason: sessionDriftReason,
+              onRecovered: onSessionRecovered
+            }
+          )
+
+          if (
+            typeof result.text !== 'string' ||
+            !Array.isArray(result.paths) ||
+            result.paths.length !== references.length ||
+            result.paths.some(path => path !== null && (typeof path !== 'string' || !path))
+          ) {
+            throw new Error('Backend did not resolve the workspace references')
+          }
+
+          if (sessionDriftReason()) {return abortForSessionSwitch(sessionId)}
+          referenceText = result.text
+          const paths = new Map(references.map((attachment, index) => [attachment, result.paths[index]]))
+          const referenceSessionId = sessionId
+          workspaceAttachments = attachments.map(attachment => {
+            const path = paths.get(attachment)
+
+            return path
+              ? {
+                  ...attachment,
+                  path,
+                  refText: `@${attachment.kind}:${formatRefValue(path)}`,
+                  attachedSessionId: referenceSessionId
+                }
+              : attachment
+          })
+        }
+
         // Attach runs BEFORE prompt.submit, so a stale runtime id fails there
         // first and submit's own recovery never runs — that asymmetry is why
         // plain text survived sleep/wake but images reported "session not
         // found". The attach path recovers and reports the live id back here.
-        const attachResult = await syncAttachmentsForSubmit(sessionId, attachments, {
+        const attachResult = await syncAttachmentsForSubmit(sessionId, workspaceAttachments, {
           updateComposerAttachments: usingComposerAttachments
         })
 
-        const syncedAttachments = attachResult.attachments
+        // An eager upload may return an older source-root copy. The backend's
+        // checked workspace references remain authoritative after staging too.
+        const syncedAttachments = attachResult.attachments.map((attachment, index) =>
+          workspaceAttachments[index] !== attachments[index] ? workspaceAttachments[index] : attachment
+        )
+
         // Always a live string; pin it so TS narrows past the outer
         // `string | null` sessionId binding for prompt.submit.
         const liveSessionId = attachResult.sessionId
@@ -780,8 +934,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         let submitErr: unknown = null
 
         try {
-          const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
-
           await withSessionNotFoundResume(
             sessionId,
             recoverStoredSessionId,
@@ -792,24 +944,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             {
               requestGateway,
               driftReason: sessionDriftReason,
-              onRecovered: recoveredId => {
-                if (onRuntimeRecovered) {
-                  onRuntimeRecovered(recoveredId)
-                } else {
-                  // Publish stored-to-runtime ownership before retrying the
-                  // session-scoped request. The window router needs this
-                  // binding to keep a recovered remote runtime on the gateway
-                  // that owns its durable session.
-                  if (recoverStoredSessionId) {
-                    updateSessionState(recoveredId, state => state, recoverStoredSessionId)
-                  }
-
-                  if (targetIsCurrentView()) {
-                    activeSessionIdRef.current = recoveredId
-                    setActiveSessionId(recoveredId)
-                  }
-                }
-              }
+              onRecovered: onSessionRecovered
             },
             // A starved backend loop (#55578 symptom d) rejects the submit even
             // though the stored session is fine — recover it like a dead id
@@ -835,7 +970,25 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // gateway. Tokenized chips match across staging clones; legacy chips
           // match by exact object identity, so a newer same-id replacement is
           // preserved while the staged object for a submitted file is removed.
-          scope.removeAttachments(syncedAttachments)
+          scope.removeAttachments(
+            syncedAttachments.map((attachment, index) =>
+              workspaceAttachments[index] !== attachments[index] ? attachments[index] : attachment
+            )
+          )
+        }
+
+        if (workspace) {
+          const key = codingWorkspaceKey(workspace.owner)
+          const draft = $codingWorkspaceDrafts.get()[key]
+
+          if (draft?.requestId === workspace.requestId) {
+            // The prepared draft is a first-Send transfer receipt, not a
+            // session-lifetime reference resolver. Later refs already use the
+            // bound workspace and must not reuse a cleared original base.
+            const drafts = { ...$codingWorkspaceDrafts.get() }
+            delete drafts[key]
+            $codingWorkspaceDrafts.set(drafts)
+          }
         }
 
         // Submit landed — the turn now runs (busy stays true), but the submit
@@ -844,6 +997,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         return true
       } catch (err) {
+        if (err instanceof SessionRecoveryAborted) {
+          return abortForSessionSwitch(sessionId)
+        }
+
         releaseBusy()
 
         // A queued drain that raced a not-yet-settled turn gets a transient

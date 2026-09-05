@@ -2,6 +2,7 @@ import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { useTourMarker } from '@/app/chat/tour-marker'
 import { useHudComposerDrag } from '@/app/hud/composer-drag'
 import { composerFill, composerFloatingStrip, composerSurfaceGlass } from '@/components/chat/composer-dock'
@@ -30,6 +31,7 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
+import { CodingWorkspaceControls } from './coding-workspace-controls'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
@@ -85,6 +87,7 @@ import type { ChatBarProps } from './types'
 import { isRedoShortcut, isUndoShortcut } from './undo-history'
 import { UrlDialog } from './url-dialog'
 import { chipTypedUrlOnSpace, linkifyUrls } from './url-refs'
+import { useCodingWorkspace } from './use-coding-workspace'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 
 export function ChatBar({
@@ -174,6 +177,8 @@ export function ChatBar({
   // undelivered behind the blocked tool batch). Drives the button affordance.
   const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
   const activeQueueSessionKey = queueSessionKey || sessionId || null
+  const storedSessionId = useStore(useSessionView().$storedId)
+  const codingWorkspace = useCodingWorkspace(activeQueueSessionKey, !sessionId && !storedSessionId)
 
   // Status items (subagents, background processes) are keyed by the RUNTIME
   // session id — gateway events and process.list both speak that id. Only the
@@ -362,6 +367,7 @@ export function ChatBar({
   // The submit engine — the orchestration seam where draft + queue meet. Owns
   // the submit decision tree, the send-with-restore primitive, and steer.
   const { queueDraft, steerDraft, submitDraft } = useComposerSubmit({
+    cwd,
     activeQueueSessionKey,
     activeQueueSessionKeyRef,
     attachments,
@@ -1002,6 +1008,7 @@ export function ChatBar({
       onPickFiles={onPickFiles}
       onPickFolders={onPickFolders}
       onPickImages={onPickImages}
+      onWorkInProject={codingWorkspace.owner ? codingWorkspace.enable : undefined}
       state={state}
     />
   )
@@ -1346,6 +1353,7 @@ export function ChatBar({
                     additions beside the "+" menu and before the controls.
                     All four render nothing until something contributes. */}
                   <ContribSlot area={COMPOSER_AREAS.top} />
+                  {codingWorkspace.visible && codingWorkspace.owner && <CodingWorkspaceControls draft={codingWorkspace.draft} onSelectFolder={path => void codingWorkspace.selectFolder(path)} owner={codingWorkspace.owner} />}
                   <VoiceActivity state={voiceActivityState} />
                   <VoicePlaybackActivity />
                   {queueEdit && editingQueuedPrompt && (
@@ -1372,7 +1380,7 @@ export function ChatBar({
                       </div>
                     </div>
                   )}
-                  {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
+                  {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} onUseAsProject={codingWorkspace.owner ? path => void codingWorkspace.selectFolder(path) : undefined} />}
                   <div
                     className={cn(
                       'grid w-full',

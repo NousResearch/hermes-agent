@@ -60,8 +60,15 @@ one-off at the call site.
 - **One action, one home.** A command may have keyboard, palette, and visible
   affordances, but they invoke the same action and state. Do not fork behavior
   per entry point.
-- **Projects own workspace cwd.** Use Sidebar → Projects for local folders and
-  worktrees; do not reintroduce a per-session/right-sidebar folder-picker flow.
+- **Projects own workspace cwd.** Sidebar → Projects remains the browsing and
+  organization surface. Opted-in profiles may select a registered Project and
+  Work in above a **new chat** input; the one-chat “Work in project…” action is
+  also available without changing profile settings. Browsing registers a Project
+  without entering it or changing sidebar grouping, ordering, filtering, or scope.
+  These controls record owner-bound draft intent only: a worktree is prepared on
+  first nonblank Send, never on selection or cancellation. Existing chats keep
+  their original workspace; another target requires a new chat. Folder attachments
+  remain references unless explicitly promoted with “Use as project”.
 
 Navigation must preserve context. A background session finishing, a tool result
 arriving, or a project refresh may update badges and cached data; it must not

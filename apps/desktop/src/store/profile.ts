@@ -344,6 +344,29 @@ export function resolveNewChatOwnerRoute(forProfile?: string): AgentProfileRoute
   }
 }
 
+/** A null connection is an explicit legacy profile socket, NOT registry `local`.
+ * The legacy resolver honors per-profile remote overrides. Keep a captured
+ * profile intent on that door even if another source later becomes active. */
+export interface NewChatBackendOwner extends Omit<AgentProfileRoute, 'connectionId'> {
+  connectionId: null | string
+}
+
+export function resolveNewChatBackendOwner(): NewChatBackendOwner {
+  const explicit = $newChatRoute.get()
+
+  if (explicit) {return explicit}
+  const profile = $newChatProfile.get()
+
+  if (profile && $newChatConnectionId.get() === null) {
+    return { connectionId: null, profile: normalizeProfileKey(profile) }
+  }
+
+  return resolveNewChatOwnerRoute() ?? {
+    connectionId: null,
+    profile: normalizeProfileKey(profile || $activeGatewayProfile.get())
+  }
+}
+
 // Bumped whenever the open session should be dropped for a fresh new-session
 // draft: a profile switch/create (below), or deleting the project that owns the
 // currently-open session (store/projects). The chat controller subscribes and

@@ -690,6 +690,8 @@ export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targ
 
 export interface SubmitTextOptions {
   attachments?: ComposerAttachment[]
+  /** CWD used by this composer’s reference completions, before workspace binding. */
+  referenceCwd?: string | null
   /** The composer scope key that was actually loaded when this text was
    *  submitted (see use-composer-draft's activeQueueSessionKeyRef). Compared
    *  against the resolved submit target in sessionContextDrift — a mismatch

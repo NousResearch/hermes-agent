@@ -59,6 +59,8 @@ def _select(description: str, *options: str, **extra: Any) -> Dict[str, Any]:
 
 # Manual overrides for fields that need select options or custom types.
 _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    "desktop.coding.default_checkout": _select(
+        "Default checkout for new coding drafts", "worktree", "current"),
     "timezone": _select(
         "IANA timezone (e.g. America/New_York). Blank uses the system timezone.",
         *_timezone_options(), searchable=True, clearable=True,

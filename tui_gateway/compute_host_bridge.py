@@ -60,6 +60,8 @@ def _compute_host_turn_frame(
         **({"display_kind": display_kind} if display_kind else {}), "history": history,
         "history_version": history_version, "cols": int(session.get("cols", 80) or 80),
         "cwd": _session_cwd(session),
+        "explicit_cwd": bool(session.get("explicit_cwd")),
+        "coding_workspace": session.get("coding_workspace"),
         "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(session),
         "profile_home": session.get("profile_home") or "",
         "model_override": session.get("model_override"),

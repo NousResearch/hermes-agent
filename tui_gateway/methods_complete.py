@@ -186,7 +186,8 @@ def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is
 def _(rid, params: dict) -> dict:
     word = params.get("word", "")
     if not word:
-        return _ok(rid, {"items": []})
+        # Read-only base inspection for a fresh composer, without walking files.
+        return _ok(rid, {"items": [], "sourceCwd": _completion_cwd(params)})
     root = _completion_cwd(params)
     is_context = word.startswith("@")
     query = word[1:] if is_context else word

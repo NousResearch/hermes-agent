@@ -130,7 +130,7 @@ def _effective_terminal_backend() -> str:
 def _display_session_cwd(session: dict | None) -> str:
     """Session cwd for display/probe surfaces, healed past deleted worktrees (healed value persisted back; local only)."""
     cwd = _session_cwd(session)
-    if not _is_local_terminal_backend():
+    if (session and session.get("coding_workspace")) or not _is_local_terminal_backend():
         return cwd
     healed = _heal_dead_cwd(cwd)
     if healed and healed != cwd and session is not None:
@@ -235,6 +235,8 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
     for flag in ("room_plumbing", "follow_profile_config"):
         if session.get(flag):
             model_config[flag] = True
+    if session.get("coding_workspace"):
+        model_config["coding_workspace"] = session["coding_workspace"]
     return row_model, model_config
 
 

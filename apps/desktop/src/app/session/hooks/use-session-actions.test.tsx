@@ -21,10 +21,11 @@ import {
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
+import { $codingWorkspaceDrafts, codingWorkspaceKey, enableCodingWorkspaceControls, setCodingWorkspaceIntent } from '@/store/coding-workspaces'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
-import { requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
+import { requestGatewayForAgent, requestGatewayForProfile, retainGatewayForAgent } from '@/store/gateway'
 import { $pinnedSessionIds } from '@/store/layout'
-import { $activeGatewayProfile, $newChatProfile, $newChatRoute, $profiles, ensureGatewayProfile } from '@/store/profile'
+import {  $activeGatewayProfile, $newChatConnectionId, $newChatProfile, $newChatRoute, $profiles, ensureGatewayProfile } from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
   $activeSessionId,
@@ -4529,5 +4530,258 @@ describe('routed fresh chat keeps its exact owner across turns', () => {
     expect(vi.mocked(requestGatewayForAgent).mock.calls.filter(call => call[2] === 'session.close')).toEqual([])
     expect(ambientRequest).not.toHaveBeenCalledWith('session.close', expect.anything())
     expect(getSessionOwnerHint(STORED)).toEqual(route)
+  })
+})
+
+describe('coding workspace first send', () => {
+  it('creates and leases a legacy named-profile workspace on the same owner used by the controls', async () => {
+    const owner = { connectionId: null, profile: 'coder', draftKey: '__new__' }
+    $newChatRoute.set(null)
+    $newChatConnectionId.set(null)
+    $newChatProfile.set('coder')
+    enableCodingWorkspaceControls(owner)
+    let handle: HarnessHandle | null = null
+    const ambient = vi.fn()
+    render(<Harness onReady={h => (handle = h)} requestGateway={ambient} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+    act(() => handle!.startFreshSessionDraft())
+    expect($codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)].controlsEnabled).not.toBe(true)
+    setCodingWorkspaceIntent(owner, { path: '/repo', mode: 'worktree' })
+    const prepared = { cwd: '/repo/.worktrees/task', projectId: 'p', repoRoot: '/repo', branch: 'task' }
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (connection, profile, method) => {
+      expect(connection).toBeNull()
+      expect(profile).toBe('coder')
+
+      if (method === 'projects.workspace.prepare') {return prepared as never}
+
+      if (method === 'session.create') {return { session_id: RUNTIME_SESSION_ID, stored_session_id: 'legacy-workspace', info: { cwd: prepared.cwd } } as never}
+
+      if (method === 'session.workspace.verify') {return { cwd: prepared.cwd } as never}
+      throw new Error(`Unexpected RPC: ${method}`)
+    })
+    await act(async () => { expect(await handle!.createBackendSessionForSend('work')).toBe(RUNTIME_SESSION_ID) })
+    expect(ambient).not.toHaveBeenCalled()
+    expect(retainGatewayForAgent).toHaveBeenCalledWith(null, 'coder')
+    expect($sessions.get().find(session => session.id === 'legacy-workspace')).toMatchObject({ profile: 'coder' })
+    expect($codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)].status).toBe('bound')
+  })
+  beforeEach(() => {
+    vi.mocked(requestGatewayForAgent).mockClear()
+  })
+  it.each(['profile', 'new'] as const)('does not publish a delayed checkout into a newer %s draft', async change => {
+    const owner = { connectionId: 'local', profile: 'omar', draftKey: '__new__' }
+    $newChatRoute.set({ connectionId: 'local', profile: 'omar', mode: 'local' })
+    setCodingWorkspaceIntent(owner, { path: '/repo', mode: 'worktree' })
+    const pending = deferred<unknown>()
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (_c, _p, method) => {
+      if (method === 'projects.workspace.prepare') {return (await pending.promise) as never}
+      throw new Error('unexpected session creation')
+    })
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} requestGateway={vi.fn()} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+    let sending!: Promise<string | null>
+    act(() => {
+      sending = handle!.createBackendSessionForSend('retained text')
+    })
+    const outcome = sending.catch(() => null)
+
+    if (change === 'new') {act(() => handle!.startFreshSessionDraft())}
+    else {$newChatRoute.set({ connectionId: 'remote-other', profile: 'omar', mode: 'remote' })}
+
+    await act(async () => {
+      pending.resolve({ cwd: '/repo/.worktrees/old', projectId: 'p', repoRoot: '/repo', branch: 'old' })
+      await outcome
+    })
+    expect(await outcome).toBeNull()
+    expect(vi.mocked(requestGatewayForAgent).mock.calls.some(call => call[2] === 'session.create')).toBe(false)
+  })
+
+  afterEach(() => {
+    cleanup()
+    $codingWorkspaceDrafts.set({})
+    $newChatRoute.set(null)
+    $newChatProfile.set(null)
+  })
+  it.each(['reaped', 'profile', 'connection'] as const)(
+    'recovers the exact stored workspace after a %s runtime loss',
+    async loss => {
+      const owner = { connectionId: 'local', profile: 'omar', draftKey: '__new__' }
+      const route = { connectionId: 'local', profile: 'omar', mode: 'local' as const }
+      $newChatRoute.set(route)
+      setCodingWorkspaceIntent(owner, { path: '/repo', mode: 'worktree' })
+      const initial = $codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)]
+
+      const prepared = {
+        cwd: '/repo/.worktrees/task',
+        projectId: 'p',
+        repoRoot: '/repo',
+        branch: 'task',
+        requestId: initial.requestId
+      }
+
+      let runtime: string | null = RUNTIME_SESSION_ID
+      let firstVerify = true
+      const pending = deferred<void>()
+      vi.mocked(requestGatewayForAgent).mockImplementation(async (connection, profile, method, params) => {
+        expect([connection, profile]).toEqual([owner.connectionId, owner.profile])
+
+        if (method === 'projects.workspace.prepare') {return prepared as never}
+
+        if (method === 'session.create')
+          {return { session_id: runtime, stored_session_id: 'workspace-stored', info: { cwd: prepared.cwd } } as never}
+
+        if (method === 'session.close') {
+          runtime = null
+
+          return {} as never
+        }
+
+        if (method === 'session.resume') {
+          expect(params).toMatchObject({
+            session_id: 'workspace-stored',
+            profile: owner.profile,
+            source: 'desktop',
+            omit_messages: true
+          })
+          runtime = 'recovered-runtime'
+
+          return { session_id: runtime, session_key: 'workspace-stored', info: { cwd: prepared.cwd } } as never
+        }
+
+        if (method === 'session.workspace.verify') {
+          if (firstVerify) {
+            firstVerify = false
+            await pending.promise
+
+            if (loss === 'reaped') {throw new Error('verification timeout')}
+          }
+
+          if (params?.session_id !== runtime || !runtime) {throw new Error('Session not found')}
+
+          return { cwd: prepared.cwd, gatewayCwd: prepared.cwd } as never
+        }
+
+        throw new Error(`Unexpected RPC ${method}`)
+      })
+      let handle: HarnessHandle | null = null
+      const navigate = vi.fn()
+      const ambient = vi.fn()
+      render(<Harness navigate={navigate} onReady={h => (handle = h)} requestGateway={ambient} />)
+      await waitFor(() => expect(handle).not.toBeNull())
+      let sending!: Promise<string | null>
+      act(() => {
+        sending = handle!.createBackendSessionForSend('retained original request', owner.draftKey)
+      })
+      const outcome = sending.catch(() => null)
+      await waitFor(() => expect(firstVerify).toBe(false))
+
+      if (loss !== 'reaped')
+        {$newChatRoute.set({
+          ...route,
+          ...(loss === 'profile' ? { profile: 'other' } : { connectionId: 'other', mode: 'remote' as const })
+        })}
+
+      await act(async () => {
+        pending.resolve()
+        await outcome
+      })
+      expect(await outcome).toBeNull()
+      expect(navigate).not.toHaveBeenCalled()
+      runtime = null
+      $newChatRoute.set(route)
+      await act(async () => {
+        await expect(handle!.createBackendSessionForSend('retained original request', owner.draftKey)).resolves.toBe(
+          'recovered-runtime'
+        )
+      })
+      const draft = $codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)]
+      expect(draft).toMatchObject({
+        requestId: initial.requestId,
+        prepared,
+        sessionId: 'workspace-stored',
+        createdSession: { session_id: 'recovered-runtime' }
+      })
+      const calls = vi.mocked(requestGatewayForAgent).mock.calls
+      expect(calls.filter(call => call[2] === 'session.create')).toHaveLength(1)
+      expect(calls.filter(call => call[2] === 'projects.workspace.prepare')).toHaveLength(1)
+      expect(calls.filter(call => call[2] === 'session.resume')).toHaveLength(1)
+      expect(navigate).toHaveBeenCalledOnce()
+      expect(ambient).not.toHaveBeenCalled()
+    }
+  )
+
+  it('prepares on the captured owner, verifies before navigation, and keeps checkout for retry', async () => {
+    const owner = { connectionId: 'local', profile: 'omar', draftKey: '__new__' }
+
+    const prepared = {
+      cwd: '/repo/.worktrees/task',
+      projectId: 'p',
+      repoRoot: '/repo',
+      branch: 'hermes/task',
+      requestId: 'durable-draft-request'
+    }
+
+    $newChatRoute.set({ connectionId: 'local', profile: 'omar', mode: 'local' })
+    setCodingWorkspaceIntent(owner, { path: '/repo', mode: 'worktree' })
+    const calls: string[] = []
+    let fail = true
+    let failVerify = true
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (_connection, _profile, method, params) => {
+      calls.push(method)
+      expect([_connection, _profile]).toEqual(['local', 'omar'])
+
+      if (method === 'projects.workspace.prepare') {return prepared as never}
+
+      if (method === 'session.create') {
+        expect(params).toMatchObject({ cwd: prepared.cwd, coding_workspace: prepared })
+
+        if (fail) {throw new Error('backend unavailable')}
+
+        return {
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: 'workspace-stored',
+          info: { cwd: prepared.cwd }
+        } as never
+      }
+
+      if (method === 'session.workspace.verify') {
+        if (failVerify) {throw new Error('verification timeout')}
+
+        return { cwd: prepared.cwd, gatewayCwd: prepared.cwd } as never
+      }
+
+      return {} as never
+    })
+    let handle: HarnessHandle | null = null
+    const navigate = vi.fn()
+    render(<Harness navigate={navigate} onReady={h => (handle = h)} requestGateway={vi.fn()} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+    await act(async () => {
+      await expect(handle!.createBackendSessionForSend('keep draft', owner.draftKey)).rejects.toThrow(
+        'backend unavailable'
+      )
+    })
+    expect(navigate).not.toHaveBeenCalled()
+    expect($codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)].prepared).toEqual(prepared)
+    fail = false
+    await act(async () => {
+      await expect(handle!.createBackendSessionForSend('keep draft', owner.draftKey)).rejects.toThrow(
+        'verification timeout'
+      )
+    })
+    failVerify = false
+    await act(async () => {
+      await handle!.createBackendSessionForSend('keep draft', owner.draftKey)
+    })
+    expect(calls.filter(method => method === 'projects.workspace.prepare')).toHaveLength(1)
+    expect(calls.filter(method => method === 'session.create')).toHaveLength(2)
+    expect(calls.slice(-2)).toEqual(['session.workspace.verify', 'session.workspace.verify'])
+    expect($codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)].sessionId).toBe('workspace-stored')
+    const previousRequest = $codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)].requestId
+    act(() => handle!.startFreshSessionDraft())
+    setCodingWorkspaceIntent(owner, { path: '/different', mode: 'current' })
+    expect($codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)].requestId).not.toBe(previousRequest)
+    expect($codingWorkspaceDrafts.get()[codingWorkspaceKey(owner)].prepared).toBeUndefined()
   })
 })

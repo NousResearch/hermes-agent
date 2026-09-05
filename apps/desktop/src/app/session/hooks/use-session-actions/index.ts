@@ -26,6 +26,16 @@ import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests } from '@/store/clarify'
+import {
+  bindCodingWorkspace,
+  codingWorkspaceCreatedSession,
+  codingWorkspaceDraftKey,
+  codingWorkspaceDraftRequestId,
+  failCodingWorkspace,
+  prepareCodingWorkspace,
+  rememberCodingWorkspaceSession,
+  resetCodingWorkspaceDraft
+} from '@/store/coding-workspaces'
 import { migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
 import {
@@ -46,7 +56,9 @@ import {
   type AgentProfileRoute,
   ensureGatewayAgent,
   ensureGatewayProfile,
+  type NewChatBackendOwner,
   normalizeProfileKey,
+  resolveNewChatBackendOwner,
   resolveNewChatOwnerRoute
 } from '@/store/profile'
 import { $projectScope, resolveNewSessionCwd } from '@/store/projects'
@@ -289,7 +301,7 @@ function reconcileAuthoritativeMessages(
 // value is a mirror of Settings → Model and must not pin the new chat.
 async function desktopSessionCreateParams(
   cwd: string,
-  capturedRoute = resolveNewChatOwnerRoute()
+  capturedRoute: NewChatBackendOwner | null = resolveNewChatOwnerRoute()
 ): Promise<Record<string, unknown>> {
   // Treat Send as the linearization point for the visible selector state. The
   // profile handshake below can yield long enough for background config/model
@@ -457,6 +469,8 @@ export function useSessionActions({
         ? normalizeNewChatWorkspaceTarget(draftOptions.workspaceTarget)
         : undefined
 
+      const codingOwner = resolveNewChatBackendOwner()
+      resetCodingWorkspaceDraft({ ...codingOwner, draftKey: codingWorkspaceDraftKey() })
       resetViewSync()
       busyRef.current = false
       setBusy(false)
@@ -531,7 +545,7 @@ export function useSessionActions({
   )
 
   const createBackendSessionForSend = useCallback(
-    async (preview: string | null = null): Promise<string | null> => {
+    async (preview: string | null = null, draftKey?: string | null): Promise<string | null> => {
       const startingStoredSessionId = selectedStoredSessionIdRef.current
       const startingRouteToken = getRouteToken()
 
@@ -546,7 +560,7 @@ export function useSessionActions({
         const workspaceTarget = $newChatWorkspaceTarget.get()
         const homeScope = $projectScope.get() === NO_PROJECT_ID
 
-        const cwd =
+        let cwd =
           workspaceTarget === null || (workspaceTarget === undefined && homeScope)
             ? ''
             : typeof workspaceTarget === 'string'
@@ -561,7 +575,36 @@ export function useSessionActions({
         // reduce the owner to a bare profile name that later RPCs dial on a
         // different socket than the one that minted the runtime.
         const capturedRoute = resolveNewChatOwnerRoute()
-        const params = await desktopSessionCreateParams(cwd, capturedRoute)
+        const backendOwner = resolveNewChatBackendOwner()
+        const workspaceOwner = { ...backendOwner, draftKey: codingWorkspaceDraftKey(draftKey) }
+        const workspaceRequestId = workspaceOwner ? codingWorkspaceDraftRequestId(workspaceOwner) : undefined
+
+        const codingContextCurrent = () => {
+          const now = resolveNewChatBackendOwner()
+
+          return (
+            !workspaceOwner ||
+            (now?.connectionId === workspaceOwner.connectionId &&
+              now?.profile === workspaceOwner.profile &&
+              codingWorkspaceDraftRequestId(workspaceOwner) === workspaceRequestId)
+          )
+        }
+
+        const prepared = workspaceOwner ? await prepareCodingWorkspace(workspaceOwner) : null
+
+        if (prepared && !codingContextCurrent()) {return null}
+
+        if (prepared) {cwd = prepared.cwd}
+        const createOwner = prepared ? backendOwner : capturedRoute
+
+        const sessionOwner: SessionOwnerScope = createOwner?.connectionId
+          ? { ...createOwner, connectionId: createOwner.connectionId }
+          : createOwner?.profile
+
+        const params = {
+          ...(await desktopSessionCreateParams(cwd, createOwner)),
+          ...(prepared && { coding_workspace: prepared })
+        }
 
         // Lease the owner socket for the whole create → owner-publication
         // sequence (#93602 primitive). The per-request lease inside
@@ -569,24 +612,74 @@ export function useSessionActions({
         // foreground hold below takes over from that point until the created
         // chat is selected. Between the two, nothing may close the socket
         // that just minted the runtime.
-        const releaseCreateLease = capturedRoute
-          ? await retainGatewayForAgent(capturedRoute.connectionId, capturedRoute.profile)
+        const releaseCreateLease = createOwner
+          ? await retainGatewayForAgent(createOwner.connectionId, createOwner.profile)
           : () => undefined
 
         let created: SessionCreateResponse
         let stored: null | string
 
         try {
-          created = capturedRoute
-            ? await requestGatewayForAgent<SessionCreateResponse>(
-                capturedRoute.connectionId,
-                capturedRoute.profile,
-                'session.create',
-                params
-              )
-            : await requestGateway<SessionCreateResponse>('session.create', params)
+          if (prepared && !codingContextCurrent()) {return null}
+          const priorCreated = prepared && workspaceOwner ? codingWorkspaceCreatedSession(workspaceOwner) : undefined
+          created =
+            priorCreated ??
+            (createOwner
+              ? await requestGatewayForAgent<SessionCreateResponse>(
+                  createOwner.connectionId,
+                  createOwner.profile,
+                  'session.create',
+                  params
+                )
+              : await requestGateway<SessionCreateResponse>('session.create', params))
+
+          if (prepared && workspaceOwner) {rememberCodingWorkspaceSession(workspaceOwner, workspaceRequestId, created)}
 
           stored = created.stored_session_id ?? null
+
+          if (prepared && workspaceOwner) {
+            if (!stored || created.info?.cwd !== prepared.cwd)
+              {throw new Error('Backend did not bind the prepared workspace')}
+
+            const verify = () =>
+              requestGatewayForAgent<{ cwd: string }>(
+                workspaceOwner.connectionId,
+                workspaceOwner.profile,
+                'session.workspace.verify',
+                { session_id: created.session_id, cwd: prepared.cwd }
+              )
+
+            let verified: { cwd: string }
+
+            try {
+              verified = await verify()
+            } catch (error) {
+              if (!isSessionGoneError(error)) {throw error}
+
+              // The checkout and durable session survive runtime teardown. Never
+              // create a replacement conversation or retarget the retained draft.
+              const resumed = await requestGatewayForAgent<SessionResumeResponse>(
+                workspaceOwner.connectionId,
+                workspaceOwner.profile,
+                'session.resume',
+                { session_id: stored, profile: workspaceOwner.profile, source: 'desktop', omit_messages: true }
+              )
+
+              if (resumed.session_key !== stored || resumed.info?.cwd !== prepared.cwd) {
+                throw new Error('Backend did not recover the prepared workspace session')
+              }
+
+              created = { ...resumed, stored_session_id: stored }
+              rememberCodingWorkspaceSession(workspaceOwner, workspaceRequestId, created)
+              verified = await verify()
+            }
+
+            if (verified.cwd !== prepared.cwd) {
+              throw new Error('Backend did not verify the prepared workspace')
+            }
+
+            if (codingContextCurrent()) {bindCodingWorkspace(workspaceOwner, stored)}
+          }
 
           // Record the EXACT owner the moment a routed create returns a stored
           // id — before the drift check, the optimistic row, navigation, or any
@@ -597,13 +690,16 @@ export function useSessionActions({
           // row (stamped from ambient) was the only owner record, so the first
           // turn ran on omar and every later session-scoped RPC resolved the row
           // as `default` and 4001'd "session not found".
-          if (stored && capturedRoute) {
-            setSessionOwnerHint(stored, capturedRoute)
+          if (stored && sessionOwner) {
+            if (typeof sessionOwner !== 'string') {setSessionOwnerHint(stored, sessionOwner)}
             // Pin the owner socket until the foreground publication (route →
             // $selectedStoredSessionId) covers it, so a prune or lease release
             // in that gap cannot close the runtime before the first prompt.
-            holdSessionOwnerUntilForeground(stored, capturedRoute)
+            holdSessionOwnerUntilForeground(stored, sessionOwner)
           }
+        } catch (error) {
+          if (workspaceOwner) {failCodingWorkspace(workspaceOwner, error, workspaceRequestId)}
+          throw error
         } finally {
           releaseCreateLease()
         }
@@ -624,14 +720,14 @@ export function useSessionActions({
           submitTargetStoredId: stored
         })
 
-        if (drift) {
-          console.warn('[submit-drift-abort]', drift, { phase: 'mid-create' })
+        if (drift || (prepared && !codingContextCurrent())) {
+          console.warn('[submit-drift-abort]', drift || 'workspace draft changed', { phase: 'mid-create' })
 
           // Close on the backend that minted the session: the ambient socket
           // is a different machine/profile for a routed create and would
           // 4001 while the orphan lives on (and later ws-orphan-reaps) there.
-          const closeCreated = capturedRoute
-            ? requestGatewayForAgent(capturedRoute.connectionId, capturedRoute.profile, 'session.close', {
+          const closeCreated = createOwner
+            ? requestGatewayForAgent(createOwner.connectionId, createOwner.profile, 'session.close', {
                 session_id: created.session_id
               })
             : requestGateway('session.close', { session_id: created.session_id })
@@ -658,7 +754,7 @@ export function useSessionActions({
           // server later returns its own preview/title and supersedes this.
           // The row carries the create route's exact owner (backend profile +
           // connection), never the ambient profile — see upsertOptimisticSession.
-          upsertOptimisticSession(created, stored, null, preview?.trim() || null, null, undefined, capturedRoute)
+          upsertOptimisticSession(created, stored, null, preview?.trim() || null, null, undefined, createOwner)
           navigate(sessionRoute(stored), { replace: true })
           // Other windows (e.g. the main window when this is the pop-out) can't
           // see this session until they re-pull the shared list.

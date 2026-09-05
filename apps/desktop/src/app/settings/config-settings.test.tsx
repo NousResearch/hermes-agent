@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
-import { createRef } from 'react'
+import { createRef, StrictMode } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -16,10 +16,6 @@ vi.mock('@/hermes', () => ({
   saveHermesConfig: (config: unknown, profile?: string) => saveHermesConfig(config, profile),
   getElevenLabsVoices: () => getElevenLabsVoices(),
   setApiRequestProfile: () => {}
-}))
-
-vi.mock('../hooks/use-on-profile-switch', () => ({
-  useOnProfileSwitch: () => {}
 }))
 
 // The real stores pull in the gateway/profile stack, which needs a live
@@ -64,6 +60,20 @@ async function renderConfigSettings() {
 }
 
 describe('ConfigSettings autosave', () => {
+  it('renders cached config under StrictMode without mistaking effect replay for a profile switch', async () => {
+    const config = { checkpoints: { enabled: false } }
+    getHermesConfigRecord.mockResolvedValue(config)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    client.setQueryData(['hermes-config-record'], config)
+    client.setQueryData(['hermes-config-schema'], { fields: {} })
+    const { ConfigSettings } = await import('./config-settings')
+    render(<StrictMode><MemoryRouter><QueryClientProvider client={client}>
+      <ConfigSettings activeSectionId="safety" importInputRef={createRef<HTMLInputElement>()} />
+    </QueryClientProvider></MemoryRouter></StrictMode>)
+    expect(await screen.findByRole('switch')).toBeTruthy()
+    expect(saveHermesConfig).not.toHaveBeenCalled()
+  })
+
   it('sends a later revert instead of diffing it away against the stale page-load baseline', async () => {
     getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false }, other: 'untouched' })
 

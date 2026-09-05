@@ -99,6 +99,24 @@ def _(rid, params, pdb, conn) -> dict:
     return _ok(rid, {"project": proj.to_dict() if proj else None})
 
 
+@_projects_method("projects.workspace.inspect")
+def _(rid, params, pdb, conn) -> dict:
+    from tui_gateway.coding_workspaces import inspect_workspace
+    return _ok(rid, inspect_workspace(str(params.get("path") or "")))
+
+
+@_projects_method("projects.workspace.register")
+def _(rid, params, pdb, conn) -> dict:
+    from tui_gateway.coding_workspaces import register_folder
+    return _ok(rid, {"project": register_folder(pdb, conn, str(params.get("path") or "")).to_dict()})
+
+
+@_projects_method("projects.workspace.prepare")
+def _(rid, params, pdb, conn) -> dict:
+    from tui_gateway.coding_workspaces import prepare_workspace
+    return _ok(rid, prepare_workspace(pdb, conn, params))
+
+
 @_projects_method("projects.archive")
 def _(rid, params, pdb, conn) -> dict:
     proj = _require_project(pdb, conn, params)

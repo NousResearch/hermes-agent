@@ -159,6 +159,8 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # git subprocess probes on an arbitrary (maybe slow) mount.
 _LONG_HANDLERS = frozenset({
     "session.foreign.list", "session.foreign.preview", "session.foreign.import",
+    "projects.workspace.inspect", "projects.workspace.register", "projects.workspace.prepare",
+    "session.workspace.verify",
     "billing.state", "subscription.state", "subscription.preview", "subscription.change",
     "subscription.resume", "subscription.upgrade", "usage.bars", "session.usage", "billing.step_up",
     "browser.manage", "cli.exec", "complete.path", "complete.slash", "llm.oneshot", "model.options",
@@ -1470,6 +1472,8 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
             or model_config.get("follow_profile_config") or _row_title == "Bot Chat"):
         return {}
     overrides: dict = {}
+    if isinstance(model_config.get("coding_workspace"), dict):
+        overrides["coding_workspace"] = model_config["coding_workspace"]
     field = lambda k: str(model_config.get(k) or "").strip()
     model = str(row.get("model") or model_config.get("model") or "").strip()
     # ``billing_provider`` is only the billing bucket — for a custom endpoint the bare class "custom", which
@@ -2261,7 +2265,8 @@ def _make_agent(
     sid: str, key: str, session_id: str | None = None, session_db=None,
     model_override: dict | str | None = None, provider_override: str | None = None,
     reasoning_config_override: dict | None = None, service_tier_override: str | None = None,
-    platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None):
+    platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None,
+    coding_workspace: dict | None = None):
     # AC-4 test seam: dead unless armed by the isolated certify harness.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
@@ -2275,6 +2280,10 @@ def _make_agent(
             importlib.import_module(_mod).wait_for_mcp_discovery()
     cfg = _load_cfg()
     system_prompt = _startup_system_prompt(cfg, session_id or key)
+    from tui_gateway.coding_workspaces import workspace_instructions
+    binding = coding_workspace or (_sessions.get(sid) or {}).get("coding_workspace")
+    if binding:
+        system_prompt = "\n\n".join(part for part in (system_prompt, workspace_instructions(binding)) if part)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
@@ -2326,6 +2335,7 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
                 with _sessions_lock:
                     if sid in _sessions:
                         _sessions[sid]["cwd"] = row["cwd"]
+                        _sessions[sid]["coding_workspace"] = _parse_model_config(row.get("model_config"), quiet=True).get("coding_workspace")
             elif hasattr(db, "update_session_cwd"):
                 try:
                     _persist_session_cwd_and_schedule_git_meta(_sessions[sid], _sessions[sid]["cwd"], db=db)

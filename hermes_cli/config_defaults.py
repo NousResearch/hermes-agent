@@ -2244,6 +2244,7 @@ DEFAULT_CONFIG = {
     },
     "desktop": {  # Hermes Desktop (Electron) launch options; only affect `hermes desktop`.
         # Git repo discovery for the Projects sidebar; empty roots = bounded scan of $HOME.
+        "coding": {"show_controls": False, "default_checkout": "worktree"},
         "repo_scan_enabled": True,
         "repo_scan_roots": [],
         "repo_scan_exclude_paths": [],

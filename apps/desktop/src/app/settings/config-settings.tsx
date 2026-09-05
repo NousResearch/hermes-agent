@@ -31,6 +31,7 @@ import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-con
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
+import { ScopedCodingWorkspaceSetting } from './coding-workspace-setting-scope'
 import { ConfigField } from './config-field'
 import {
   clearsEnabledToolsets,
@@ -414,6 +415,7 @@ function ConfigSettingsInner({
           where image-attachment behavior already lives, so this sits above the
           schema fields for that section. */}
       {activeSectionId === 'chat' ? <AttachmentSizeSetting /> : null}
+      {activeSectionId === 'workspace' ? <ScopedCodingWorkspaceSetting /> : null}
       {visibleFields.length === 0 && activeSectionId !== 'chat' ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : visibleFields.length === 0 ? null : (

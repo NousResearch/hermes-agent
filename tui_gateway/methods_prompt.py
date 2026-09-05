@@ -549,6 +549,11 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    from tui_gateway.coding_workspaces import verify_session_workspace
+    try:
+        verify_session_workspace(session)
+    except Exception as exc:
+        return _err(rid, 4016, f"Coding workspace verification failed: {exc}")
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
     internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None

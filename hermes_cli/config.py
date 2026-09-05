@@ -2333,6 +2333,8 @@ def save_config(
     raw config before normalisation), so config.yaml is never contaminated with defaults that
     would hide future default changes. ``merge_existing`` deep-merges the on-disk raw config
     under *config* so partial callers cannot drop sections they omitted."""
+    from hermes_cli.config_coding import validate_coding_preferences
+    validate_coding_preferences(config)
     with _CONFIG_LOCK:
         if is_managed():
             managed_error("save configuration")

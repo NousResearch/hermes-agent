@@ -1676,14 +1676,17 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         independently of frame pushes.  This ensures rotation fires even during
         long tool executions where no text deltas produce frames.
 
-        Gating conditions (same as the passive check in _send_stream_reply_frame):
+        Gating conditions:
         - Stream must be seeded (has an active bubble on WeCom's side)
-        - Keep-alive must be disabled (keep-alive users opt out of rotation)
         - Turn must not be finalized or expired
         - Not already armed (idempotent)
+
+        Rotation runs regardless of keep-alive: keep-alive frames cannot
+        refresh WeCom's absolute 10-min stream wall, so rotation is the ONLY
+        mechanism that survives a >10-min turn.  The two coexist — keep-alive
+        refreshes the visible bubble within the window, rotation seals and
+        opens a fresh bubble before the wall.
         """
-        if self._stream_keepalive_enabled:
-            return  # keep-alive users opt out of Layer 2 rotation
         if turn.finalized or turn.expired:
             return
         if not turn.seeded:
@@ -1883,17 +1886,12 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
 
         CONCURRENCY CONTRACT: this runs as an independent coroutine (see
         _on_keepalive_fire's ensure_future) and mutates turn.last_sent_content /
-        turn._last_frame_sent_at WITHOUT holding turn.rotation_lock().  That is
-        safe ONLY because keep-alive and Layer 2 rotation are mutually
-        exclusive by config: _arm_rotation_check and the passive rotation gate
-        both early-return when self._stream_keepalive_enabled is True, so a
-        keep-alive frame can never interleave a rotation's seed/rotate on the
-        same turn.  Single str/float assignments here are atomic under the GIL
-        (no torn writes), but the check-act sequences in rotation are NOT — if
-        this mutual exclusion is ever relaxed (keep-alive + rotation both live),
-        this method MUST acquire turn.rotation_lock() to avoid a lost-update
-        race on last_sent_content (e.g. keep-alive writing back stale content
-        after rotate() cleared it, defeating the new bubble's dedup reset).
+        turn._last_frame_sent_at.  Keep-alive and Layer 2 rotation are now BOTH
+        LIVE at the same time (rotation no longer opts out when keep-alive is
+        on), so this method MUST hold turn.rotation_lock() across its
+        send-and-write so a keep-alive frame cannot interleave a rotation's
+        seed/rotate and write back stale content after rotate() cleared
+        last_sent_content (which would defeat the new bubble's dedup reset).
         """
         if turn.finalized or turn.expired:
             return
@@ -1901,33 +1899,53 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
             # No room left for intermediate frames; stop keeping alive and let
             # finalize (or Layer 2) run.  Do not re-arm.
             return
-        content = turn.accumulated_text or ""
-        if not content.strip():
-            # Nothing to refresh with yet — skip this tick, re-arm for later.
-            self._arm_keepalive(turn, turn_id=turn_id)
-            return
-        try:
-            await self._send_stream_reply(
-                turn.req_id,
-                turn.stream_id,
-                content,
-                finish=False,
-            )
-        except WeComStreamExpiredError:
-            turn.expired = True
-            self._retire_turn(turn, turn_id)
-            self._stream_expired_chats.add(turn.chat_id)
-            return
-        except Exception as exc:
-            logger.debug(
-                "[%s] keep-alive send failed (chat=%s, turn=%s): %s",
-                self.name, turn.chat_id, turn.stream_id, exc,
-            )
-            # Transient failure — re-arm and try again next interval.
-            self._arm_keepalive(turn, turn_id=turn_id)
-            return
-        turn._last_frame_sent_at = time.monotonic()
-        turn.last_sent_content = content
+        # Hold the per-turn rotation lock across the whole read-send-write
+        # sequence so a concurrent rotation (active timer or passive frame path)
+        # cannot interleave and get its rotate()'d state clobbered by a stale
+        # keep-alive write-back.
+        async with turn.rotation_lock():
+            if turn.finalized or turn.expired:
+                return
+            # A concurrent rotation may have just rotate()'d this turn to a
+            # fresh stream_id and cleared turn.seeded — the new bubble has NOT
+            # been seeded on WeCom's side yet (its <think></think> seed frame is
+            # sent by the next _send_stream_frame_inner, or by rotation's
+            # belt-and-suspenders re-seed).  Sending a keep-alive content frame
+            # now would push content onto an un-seeded stream (wrong first-frame
+            # semantics; can also race the pending re-seed into a double-seed →
+            # WeCom errcode 6000).  Skip this tick and re-arm; the next frame or
+            # re-seed will seed the new bubble, and the following keep-alive tick
+            # will refresh it normally.
+            if not turn.seeded:
+                self._arm_keepalive(turn, turn_id=turn_id)
+                return
+            content = turn.accumulated_text or ""
+            if not content.strip():
+                # Nothing to refresh with yet — skip this tick, re-arm for later.
+                self._arm_keepalive(turn, turn_id=turn_id)
+                return
+            try:
+                await self._send_stream_reply(
+                    turn.req_id,
+                    turn.stream_id,
+                    content,
+                    finish=False,
+                )
+            except WeComStreamExpiredError:
+                turn.expired = True
+                self._retire_turn(turn, turn_id)
+                self._stream_expired_chats.add(turn.chat_id)
+                return
+            except Exception as exc:
+                logger.debug(
+                    "[%s] keep-alive send failed (chat=%s, turn=%s): %s",
+                    self.name, turn.chat_id, turn.stream_id, exc,
+                )
+                # Transient failure — re-arm and try again next interval.
+                self._arm_keepalive(turn, turn_id=turn_id)
+                return
+            turn._last_frame_sent_at = time.monotonic()
+            turn.last_sent_content = content
         # Re-arm for the next interval (guarded internally against
         # finalized/expired).
         self._arm_keepalive(turn, turn_id=turn_id)
@@ -2009,11 +2027,17 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         self._cancel_keepalive(turn)
         self._cancel_rotation_check(turn)
 
-        # Seal the old bubble with whatever it last showed.  Use the accumulated
-        # text (falls back to last_sent_content) and disambiguate against the
-        # last intermediate frame the same way finalize does, so the server does
-        # not silently drop a duplicate-content finish frame.
-        close_text = turn.accumulated_text or turn.last_sent_content or ""
+        # Seal the old bubble with the canonical BODY text only.  Use
+        # accumulated_text (pure body — overlay frames never update it, see
+        # _send_stream_frame_core's is_overlay_frame gate) and NOT
+        # last_sent_content: the latter mirrors the exact last frame on the wire
+        # for dedup and may be a tool-progress overlay ("⠹ 💻 Running… (Ns)").
+        # Falling back to it would freeze that timer line permanently into the
+        # sealed bubble whenever rotation fires before any body text exists
+        # (long pure-tool turn nearing the 10-min wall).  If there is no body
+        # yet, seal an empty bubble + continuation marker; the body starts fresh
+        # in the new bubble.
+        close_text = turn.accumulated_text or ""
         # Append the continuation marker so the sealed bubble reads as "to be
         # continued" and the fresh bubble can carry only the incremental text.
         # This also guarantees close_text != last_sent_content, so the server
@@ -2999,20 +3023,29 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
             # No turn_id provided, and chat is expired → block new turn creation
             return StreamFrameResult.FAILED
 
+        # Whether this frame carries a tool-progress overlay (body + "---" +
+        # timer lines) rather than pure body text.  Overlay frames are a
+        # transient display layer (replaced by the next body frame); they must
+        # NOT update turn.accumulated_text, or a Layer 2 rotation seal would
+        # freeze the timer line into the old bubble (the gateway consumer knows
+        # body vs overlay via its `_wire_full` flag and passes it through here).
+        is_overlay_frame = bool(kwargs.get("is_overlay_frame", False))
+        body_text = kwargs.get("body_text", None)
+
         if finalize:
             # Finalize frame counts toward 30/min — go through the control queue
             # (high priority) to prevent blocking by normal messages or other streams.
             turn_id = kwargs.get("turn_id")
             return await self._enqueue_chat_send(
                 chat,
-                lambda: self._send_stream_frame_inner(text, chat=chat, reply_to=reply_to, finalize=True, turn_id=turn_id),
+                lambda: self._send_stream_frame_inner(text, chat=chat, reply_to=reply_to, finalize=True, turn_id=turn_id, is_overlay_frame=is_overlay_frame, body_text=body_text),
                 is_control=True,
             )
         else:
             # Intermediate frames: fire-and-forget, no queue, no rate limit.
             # WeCom does NOT count them toward the 30/min quota.
             turn_id = kwargs.get("turn_id")
-            return await self._send_stream_frame_inner(text, chat=chat, reply_to=reply_to, finalize=False, turn_id=turn_id)
+            return await self._send_stream_frame_inner(text, chat=chat, reply_to=reply_to, finalize=False, turn_id=turn_id, is_overlay_frame=is_overlay_frame, body_text=body_text)
 
     async def _send_stream_frame_inner(
         self,
@@ -3022,6 +3055,8 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         reply_to: Optional[str] = None,
         finalize: bool = False,
         turn_id: Optional[str] = None,
+        is_overlay_frame: bool = False,
+        body_text: Optional[str] = None,
     ) -> StreamSendOutcome:
         """Thin wrapper over ``_send_stream_frame_core`` that reports rotation.
 
@@ -3042,6 +3077,8 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         result = await self._send_stream_frame_core(
             text, chat=chat, reply_to=reply_to, finalize=finalize,
             turn_id=turn_id, _turn_holder=holder,
+            is_overlay_frame=is_overlay_frame,
+            body_text=body_text,
         )
         rotated = False
         turn = holder.get("turn")
@@ -3059,6 +3096,8 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         finalize: bool = False,
         turn_id: Optional[str] = None,
         _turn_holder: Optional[dict] = None,
+        is_overlay_frame: bool = False,
+        body_text: Optional[str] = None,
     ) -> StreamFrameResult:
         """Actual stream frame logic with per-turn state.
 
@@ -3224,16 +3263,14 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
             # frame (intermediate OR finalize) then sends on the fresh stream,
             # continuing the answer instead of freezing at the wall.
             #
-            # SKIP when Layer 1 keep-alive is enabled: with the heartbeat active
-            # the historical behaviour was to trust the stream past the clock;
-            # keep that contract (keep-alive users opt out of rotation).  If such
-            # a stream truly has expired, the _send_stream_reply below raises
-            # WeComStreamExpiredError and the except block handles it.
+            # Runs regardless of Layer 1 keep-alive: keep-alive frames cannot
+            # refresh the absolute 10-min wall, so rotation must fire even when
+            # keep-alive is on (the two coexist — keep-alive refreshes the
+            # visible bubble within the window, rotation crosses the wall).
             async with turn.rotation_lock():
                 if (
                     turn.seeded
                     and not turn.expired
-                    and not self._stream_keepalive_enabled
                 ):
                     stream_age = time.monotonic() - turn.start_time
                     if stream_age >= self._stream_safe_duration_seconds:
@@ -3390,7 +3427,34 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                 # _accumulated was reset (commentary, boundary) and the new
                 # cumulative text was shorter than the chunker's high-water
                 # mark — the root cause of the "Cla"/"ude" split-bubble bug.
-                turn.accumulated_text = text
+                #
+                # Overlay frames (body + "---" + tool-timer lines) are a
+                # transient display layer that the next pure-body frame
+                # overwrites.  They must NOT touch turn.accumulated_text — that
+                # field is the canonical body used to seal the old bubble on a
+                # Layer 2 rotation (and as the finalize fallback).  If an overlay
+                # frame updated it, a rotation firing while a timer line was
+                # showing would freeze "⠹ 💻 Running… (Ns)" permanently into the
+                # sealed bubble.  The frame still goes on the wire below for live
+                # display; we just don't adopt it as the body of record.
+                # Update the canonical body of record.  The gateway passes the
+                # pure body text (no tool-progress overlay, no completed-tool
+                # history) via body_text — that is the authoritative source for
+                # what the sealed bubble should show on a Layer 2 rotation and
+                # for the finalize fallback.  We use it directly rather than the
+                # wire `text` (which may carry a "⠹ 💻 Running… (Ns)" timer line
+                # OR persistent "✓ …" completed-tool history appended by
+                # _compose_tool_overlay); adopting the wire text would either
+                # freeze a timer line into the sealed bubble or, worse, freeze
+                # accumulated_text at a stale length while real body kept
+                # streaming — dropping that body from both the old (sealed) and
+                # new (offset-advanced) bubble.  When body_text is not supplied
+                # (older callers / non-overlay frames) fall back to the wire
+                # text only for genuinely pure-body frames.
+                if body_text is not None:
+                    turn.accumulated_text = body_text
+                elif not is_overlay_frame:
+                    turn.accumulated_text = text
 
                 # Pure dedup: skip if content is identical to last sent frame.
                 if text == turn.last_sent_content:

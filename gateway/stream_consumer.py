@@ -473,6 +473,10 @@ class GatewayStreamConsumer(ToolTimerMixin):
         # temporary overlay in the stream bubble until real text arrives.
         self._tool_progress_lines: list[str] = []
         self._tool_progress_active: bool = False
+        # Set by _compose_frame_content: True when the last composed frame
+        # carried a tool-progress overlay (timer lines), so the adapter can
+        # treat that frame as a transient display layer (is_overlay_frame).
+        self._last_composed_had_overlay: bool = False
 
         # Tool-timer animation state — initialised by mixin.
         self._init_tool_timer()
@@ -544,6 +548,14 @@ class GatewayStreamConsumer(ToolTimerMixin):
         tool_lines = self._compose_tool_overlay()
 
         body = self._accumulated[self._native_split_offset:]
+
+        # Record whether THIS composed frame actually carries a tool-progress
+        # overlay (timer lines).  The adapter uses this (via is_overlay_frame)
+        # to decide whether the frame is a transient display layer that must
+        # NOT become the sealed body of record on a Layer 2 rotation.  A frame
+        # with tool_lines is an overlay; a pure-body frame (tool_lines empty) is
+        # canonical body even though it flows through the same compose path.
+        self._last_composed_had_overlay = bool(tool_lines)
 
         if body and tool_lines:
             # Text + active tool status at the bottom
@@ -1850,12 +1862,19 @@ class GatewayStreamConsumer(ToolTimerMixin):
                         self._turn_split_delivery = True
 
                     display_text = self._accumulated
+                    _frame_has_tool_overlay = False
                     if not got_done and not got_segment_break and commentary_text is None:
                         # Native streaming with tool-progress: compose frame
                         # content that includes tool status overlay. The cursor
                         # is appended to the composed content for consistency.
                         if self._use_native_streaming:
                             display_text = self._compose_frame_content()
+                            # _compose_frame_content sets this precisely: True
+                            # only when timer lines were actually appended, so a
+                            # pure-body frame (no active tool) is NOT mislabeled
+                            # as overlay (which would wrongly skip the adapter's
+                            # accumulated_text update).
+                            _frame_has_tool_overlay = self._last_composed_had_overlay
                             if display_text and self.cfg.cursor:
                                 display_text += self.cfg.cursor
                         else:
@@ -1893,6 +1912,7 @@ class GatewayStreamConsumer(ToolTimerMixin):
                             or got_segment_break
                             or commentary_text is not None
                         ),
+                        has_tool_overlay=_frame_has_tool_overlay,
                     )
                     self._last_edit_time = time.monotonic()
                     # Reset tool_progress_active flag after frame delivery —
@@ -3252,7 +3272,7 @@ class GatewayStreamConsumer(ToolTimerMixin):
 
     async def _send_or_edit(
         self, text: str, *, finalize: bool = False, is_turn_final: bool = True,
-        _wire_full: bool = True,
+        _wire_full: bool = True, has_tool_overlay: bool = False,
     ) -> bool:
         """Send or edit the streaming message.
 
@@ -3460,6 +3480,19 @@ class GatewayStreamConsumer(ToolTimerMixin):
                     chat_id=self.chat_id,
                     reply_to=self._initial_reply_to_id,
                     turn_id=self._turn_id,
+                    is_overlay_frame=has_tool_overlay,
+                    # Authoritative pure body for THIS bubble (post-rotation
+                    # slice, no tool overlay / completed-tool history) so the
+                    # adapter's accumulated_text — used to seal the old bubble on
+                    # rotation — always equals the real body shown, never lagging
+                    # behind while tool history persists.  Matches the offset
+                    # slicing the adapter applies to pure-body wire frames.  None
+                    # on finalize/segment/commentary frames (wire_text is already
+                    # pure sliced body there); the adapter falls back to those.
+                    body_text=(
+                        self._accumulated[self._native_split_offset:]
+                        if _wire_full is False else None
+                    ),
                 )
             except Exception as e:
                 logger.debug(

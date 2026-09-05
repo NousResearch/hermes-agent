@@ -89,10 +89,14 @@ class TestKeepaliveSuppressesClockDecline:
     async def test_keepalive_on_old_stream_finalizes_natively(self):
         """FIX ENABLED: keep-alive on + stream_age >> safe_duration + finalize.
 
-        Post-fix contract: the finalize frame is sent on the wire (finish=True),
-        finalize returns True, the turn is finalized+cleaned, and the chat is
-        NOT marked expired — so the consumer suppresses its send() fallback and
-        no duplicate bubble is produced.
+        Post-fix contract (rotation×keep-alive now coexist): an over-age stream
+        can no longer be finalized in place because it may be past the 10-min
+        wall.  Layer 2 rotation seals the old bubble ("partial answer…⏬⏬⏬",
+        finish=True) and finalizes the real answer on a FRESH stream ("the
+        complete final answer", finish=True) — two finish frames, both on the
+        wire, crossing the wall.  finalize still returns True, the turn is
+        finalized+cleaned, and the chat is NOT marked expired, so the consumer
+        suppresses its send() fallback and no duplicate bubble is produced.
         """
         adapter = _make_adapter(keepalive_enabled=True)
         try:
@@ -115,10 +119,19 @@ class TestKeepaliveSuppressesClockDecline:
 
             # Native finalize succeeded — consumer will suppress fallback.
             assert ok
-            assert len(_finalize_calls(reply)) == 1, (
-                "keep-alive on: finalize frame must reach the wire, not be "
-                "declined by the Layer 2 clock fallback"
+            # Rotation×keep-alive: over-age stream is sealed on its old bubble,
+            # then the answer is finalized on a fresh stream — two finish frames.
+            fcalls = _finalize_calls(reply)
+            assert len(fcalls) == 2, (
+                "keep-alive on + over-age: rotation must seal the old bubble and "
+                "finalize on a fresh stream (2 finish frames), crossing the wall"
             )
+            # First finish frame: the sealed old bubble (partial + continuation).
+            assert fcalls[0].args[2].endswith(ROTATION_CONTINUATION_SUFFIX)
+            assert "partial answer" in fcalls[0].args[2]
+            # Second finish frame: the real answer on a DIFFERENT (fresh) stream.
+            assert fcalls[1].args[2] == "the complete final answer"
+            assert fcalls[0].args[1] != fcalls[1].args[1]  # distinct stream ids
             assert CHAT_ID not in adapter._stream_expired_chats
             assert f"{CHAT_ID}:{TURN_ID}" not in adapter._stream_turns
         finally:

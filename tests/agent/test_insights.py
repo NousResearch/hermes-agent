@@ -132,6 +132,10 @@ def populated_db(db):
     db.end_session("s_old", end_reason="user_exit")
     db._conn.execute("UPDATE sessions SET ended_at = ? WHERE id = 's_old'", (now - 45 * day + 600,))
     db.update_token_counts("s_old", input_tokens=5000, output_tokens=2000)
+    db._conn.execute(
+        "UPDATE session_model_usage_events SET recorded_at = ? WHERE session_id = 's_old'",
+        (now - 45 * day,),
+    )
     db.append_message("s_old", role="user", content="old message")
     db.append_message("s_old", role="assistant", content="old reply")
 
@@ -292,6 +296,122 @@ class TestInsightsPopulated:
         assert models["deepseek-v4-pro"]["total_tokens"] == 48000
         assert models["claude-opus-4.8"]["total_tokens"] == 54000
 
+    def test_usage_window_counts_only_recent_deltas_from_long_lived_session(self, db):
+        """A session older than the window can still consume tokens today.
+
+        Window analytics must use timestamped usage deltas rather than either
+        excluding the whole session by ``started_at`` or charging its full
+        lifetime total to the current window.
+        """
+        now = time.time()
+        old = now - (10 * 86400)
+        cutoff = now - (8 * 86400)
+        db.create_session(session_id="long-lived", source="telegram", model="gpt-5.6-sol")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = 'long-lived'",
+            (old,),
+        )
+        db.update_token_counts(
+            "long-lived",
+            input_tokens=100,
+            cache_read_tokens=1_000,
+            model="gpt-5.6-sol",
+            billing_provider="openai-codex",
+            api_call_count=1,
+        )
+        db._conn.execute(
+            "UPDATE session_model_usage_events SET recorded_at = ? "
+            "WHERE session_id = 'long-lived'",
+            (old,),
+        )
+        db.update_token_counts(
+            "long-lived",
+            input_tokens=20,
+            cache_read_tokens=200,
+            actual_cost_usd=1.0,
+            cost_status="estimated",
+            cost_source="provider",
+            model="gpt-5.6-sol",
+            billing_provider="openai-codex",
+            api_call_count=1,
+        )
+        db._conn.commit()
+
+        event_rows = db._conn.execute(
+            "SELECT input_tokens, cache_read_tokens FROM session_model_usage_events "
+            "WHERE recorded_at >= ? ORDER BY id",
+            (cutoff,),
+        ).fetchall()
+        assert [tuple(row) for row in event_rows] == [(20, 200)]
+
+        report = InsightsEngine(db).generate(days=8)
+        assert report["empty"] is False
+        assert report["overview"]["total_input_tokens"] == 20
+        assert report["overview"]["total_cache_read_tokens"] == 200
+        assert report["overview"]["actual_cost"] == pytest.approx(1.0)
+        assert report["overview"]["total_sessions"] == 1
+        assert report["overview"]["avg_tokens_per_session"] == pytest.approx(220.0)
+        platform = next(row for row in report["platforms"] if row["platform"] == "telegram")
+        assert platform["sessions"] == 1
+        assert platform["input_tokens"] == 20
+        assert platform["cache_read_tokens"] == 200
+        assert platform["total_tokens"] == 220
+        assert report["activity"]["busiest_day"] is None
+        assert report["activity"]["busiest_hour"] is None
+        assert report["usage_coverage"]["window_complete"] is False
+        assert report["usage_coverage"]["exact_events_available"] is True
+        model = next(row for row in report["models"] if row["model"] == "gpt-5.6-sol")
+        assert model["api_calls"] == 1
+        assert model["cache_read_tokens"] == 200
+
+    def test_overview_message_average_uses_started_session_population(self, db):
+        """Started-at message totals must not be divided by usage-session count.
+
+        One old session with recent usage plus one newly started session with
+        four messages must keep the started-session average at four. Token
+        averages still use the exact-usage population.
+        """
+        now = time.time()
+        db.create_session(session_id="old-usage", source="cli", model="test-model")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = 'old-usage'",
+            (now - (10 * 86400),),
+        )
+        db.update_token_counts(
+            "old-usage",
+            input_tokens=50,
+            model="test-model",
+            billing_provider="test",
+            api_call_count=1,
+        )
+
+        db.create_session(session_id="new-started", source="cli", model="test-model")
+        for index in range(4):
+            db.append_message(
+                "new-started",
+                "user" if index % 2 == 0 else "assistant",
+                f"started-window message {index}",
+            )
+        db.update_token_counts(
+            "new-started",
+            input_tokens=10,
+            model="test-model",
+            billing_provider="test",
+            api_call_count=1,
+        )
+        db._conn.commit()
+
+        started_messages = db._conn.execute(
+            "SELECT message_count FROM sessions WHERE id = 'new-started'"
+        ).fetchone()[0]
+        assert started_messages == 4
+
+        overview = InsightsEngine(db).generate(days=8)["overview"]
+        assert overview["total_messages"] == 4
+        assert overview["avg_messages_per_session"] == pytest.approx(4.0)
+        assert overview["total_sessions"] == 2
+        assert overview["total_input_tokens"] == 60
+        assert overview["avg_tokens_per_session"] == pytest.approx(30.0)
 
     def test_overview_cost_matches_per_model_stored_cost(self, db):
         db.create_session(session_id="cost", source="cli", model="model-a")

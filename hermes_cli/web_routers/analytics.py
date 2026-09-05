@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Query
 from hermes_cli.config import get_config_path, read_raw_config
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_profiles import (
-    _approval_mode_of, _aux_task_summary, _aux_usage_rows, _broadcast_gateway_session_info, _is_other_profile, _merge_aux_into_by_model,
+    _approval_mode_of, _aux_task_summary, _aux_usage_rows, _broadcast_gateway_session_info, _is_other_profile,
 )
 from hermes_cli.web_models import RawConfigUpdate
 
@@ -76,63 +76,36 @@ def _rows(db, sql: str, cutoff: float) -> List[Dict[str, Any]]:
 
 def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
     from agent.insights import InsightsEngine
+    from agent.usage_window import (
+        aggregate_window_usage,
+        get_usage_window_coverage,
+        get_window_usage_rows,
+    )
 
     db = _open_session_db_for_profile(profile, read_only=True)
     try:
         cutoff = time.time() - (days * 86400)
-        daily = _rows(db, """
-            SELECT date(started_at, 'unixepoch') as day,
-                   SUM(input_tokens) as input_tokens,
-                   SUM(output_tokens) as output_tokens,
-                   SUM(cache_read_tokens) as cache_read_tokens,
-                   SUM(reasoning_tokens) as reasoning_tokens,
-                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
-                   COUNT(*) as sessions,
-                   SUM(COALESCE(api_call_count, 0)) as api_calls
-            FROM sessions WHERE started_at > ?
-            GROUP BY day ORDER BY day
-        """, cutoff)
-
-        by_model = _rows(db, """
-            SELECT model,
-                   SUM(input_tokens) as input_tokens,
-                   SUM(output_tokens) as output_tokens,
-                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
-                   COUNT(*) as sessions,
-                   SUM(COALESCE(api_call_count, 0)) as api_calls
-            FROM sessions WHERE started_at > ? AND model IS NOT NULL
-            GROUP BY model ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
-        """, cutoff)
-
-        # Fold in auxiliary usage (vision, compression, ...) from session_model_usage.
-        # Aux calls never touch the sessions counters, so this is add-only — no double count.
-        # Without it the models list shows only the main agent model even when aux models are actively
-        # burning tokens (issue #23270).
-        aux_rows = _aux_usage_rows(db, cutoff)
-        by_model = _merge_aux_into_by_model(by_model, aux_rows)
-
-        totals = _rows(db, """
-            SELECT SUM(input_tokens) as total_input,
-                   SUM(output_tokens) as total_output,
-                   SUM(cache_read_tokens) as total_cache_read,
-                   SUM(reasoning_tokens) as total_reasoning,
-                   COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
-                   COUNT(*) as total_sessions,
-                   SUM(COALESCE(api_call_count, 0)) as total_api_calls
-            FROM sessions WHERE started_at > ?
-        """, cutoff)[0]
+        usage_rows = get_window_usage_rows(db._conn, cutoff)
+        usage_coverage = get_usage_window_coverage(
+            db._conn, cutoff, usage_rows=usage_rows
+        )
+        daily, by_model, totals = aggregate_window_usage(usage_rows)
+        aux_rows = _aux_usage_rows(db, cutoff, usage_rows)
         usage = InsightsEngine(db).get_usage_breakdown(days=days)
 
         return {
             "daily": daily,
             "by_model": by_model,
-            "by_task": _aux_task_summary(aux_rows),  # "what is compression costing me"
+            # Aux-task summary across models (vision, compression, ...). Lets
+            # the dashboard answer "what is compression costing me" directly.
+            "by_task": _aux_task_summary(aux_rows),
             "totals": totals,
             "period_days": days,
+            "usage_coverage": usage_coverage,
             "skills": usage["skills"],
-            "tools": usage["tools"],  # per-tool-name counts; desktop aggregates per toolset
+            # Per-tool-name call counts (already computed by InsightsEngine);
+            # the desktop Capabilities page aggregates these per toolset.
+            "tools": usage["tools"],
         }
     finally:
         db.close()
@@ -161,20 +134,21 @@ def _has_usage(row: Dict[str, Any]) -> bool:
 
 
 def _fold_session_only_rows(raw_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Fold model rows that carry no billing_provider and no usage into the single
-    accounted provider row for that model.
+    """Fold model/task rows that carry no billing_provider and no usage into the single
+    accounted provider row for that model/task.
 
     Session rows can be created before the first billable call finishes; if that early row
-    records only the model name while a later row has real accounting, the Models page used
-    to show a duplicate "0 tokens / — API calls" card. Only folds when ownership is
+    records only the model and task while a later row has real accounting, the Models page
+    used to show a duplicate "0 tokens / — API calls" card. Only folds when ownership is
     unambiguous (exactly one provider row).
     """
-    rows_by_model: Dict[str, List[Dict[str, Any]]] = {}
+    rows_by_model_task: Dict[tuple, List[Dict[str, Any]]] = {}
     for row in raw_rows:
-        rows_by_model.setdefault(row.get("model") or "", []).append(row)
+        key = (row.get("model") or "", row.get("task") or "")
+        rows_by_model_task.setdefault(key, []).append(row)
 
     rows: List[Dict[str, Any]] = []
-    for model_rows in rows_by_model.values():
+    for model_rows in rows_by_model_task.values():
         provider_rows = [r for r in model_rows if r.get("billing_provider")]
         if len(provider_rows) != 1:
             rows.extend(model_rows)
@@ -231,39 +205,14 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
     try:
         cutoff = time.time() - (days * 86400)
 
-        raw_rows = _rows(db, """
-            SELECT model,
-                   billing_provider,
-                   SUM(input_tokens) as input_tokens,
-                   SUM(output_tokens) as output_tokens,
-                   SUM(cache_read_tokens) as cache_read_tokens,
-                   SUM(reasoning_tokens) as reasoning_tokens,
-                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
-                   COUNT(*) as sessions,
-                   SUM(COALESCE(api_call_count, 0)) as api_calls,
-                   SUM(tool_call_count) as tool_calls,
-                   MAX(started_at) as last_used_at,
-                   AVG(input_tokens + output_tokens) as avg_tokens_per_session
-            FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
-            GROUP BY model, billing_provider
-            ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
-        """, cutoff)
-
-        # Aux-only models (dedicated vision/compression) as (model, provider) rows,
-        # keyed like the GROUP BY above, so they appear on the Models page.
-        # See #23270.
-        for aux in _aux_usage_rows(db, cutoff):
-            raw_rows.append({
-                "model": aux.get("model") or "unknown",
-                "billing_provider": aux.get("billing_provider") or "",
-                **{key: aux.get(key) or 0 for key in _AUX_SUMMED_KEYS},
-                "actual_cost": 0,
-                "tool_calls": 0,
-                "last_used_at": aux.get("last_used_at"),
-                "avg_tokens_per_session": 0,
-                "aux_task": aux.get("task") or "",
-            })
+        from agent.usage_window import aggregate_model_usage, aggregate_window_usage, get_usage_window_coverage, get_window_usage_rows
+        usage_rows = get_window_usage_rows(db._conn, cutoff)
+        usage_coverage = get_usage_window_coverage(db._conn, cutoff, usage_rows=usage_rows)
+        tool_rows = _rows(db, """SELECT COALESCE(model, 'unknown') AS model,
+            COALESCE(billing_provider, '') AS billing_provider, SUM(COALESCE(tool_call_count, 0)) AS tool_calls
+            FROM sessions WHERE started_at > ? GROUP BY model, billing_provider""", cutoff)
+        raw_rows = aggregate_model_usage(usage_rows, tool_rows)
+        _, _, totals = aggregate_window_usage(usage_rows)
 
         rows = _fold_session_only_rows(raw_rows)
         rows.sort(
@@ -271,30 +220,23 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
             reverse=True,
         )
 
-        models = [
-            {
+        models = []
+        for row in rows:
+            model = {
                 "model": row["model"],
                 "provider": row.get("billing_provider") or "",
                 **{key: row[key] for key in _MODEL_CARD_KEYS},
                 "capabilities": _model_capabilities(row.get("billing_provider") or "", row["model"]),
             }
-            for row in rows
-        ]
+            # Keep the auxiliary task dimension visible when a task shares the
+            # same model/provider as the main conversation route.
+            if row.get("task"):
+                model["aux_task"] = row["task"]
+            models.append(model)
 
-        totals = _rows(db, """
-            SELECT COUNT(DISTINCT model) as distinct_models,
-                   SUM(input_tokens) as total_input,
-                   SUM(output_tokens) as total_output,
-                   SUM(cache_read_tokens) as total_cache_read,
-                   SUM(reasoning_tokens) as total_reasoning,
-                   COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
-                   COUNT(*) as total_sessions,
-                   SUM(COALESCE(api_call_count, 0)) as total_api_calls
-            FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
-        """, cutoff)[0]
+        totals["distinct_models"] = len({m["model"] for m in models})
 
-        return {"models": models, "totals": totals, "period_days": days}
+        return {"models": models, "totals": totals, "period_days": days, "usage_coverage": usage_coverage}
     finally:
         db.close()
 

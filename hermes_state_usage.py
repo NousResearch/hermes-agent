@@ -109,6 +109,7 @@ class SessionUsageMixin:
         """Enqueue a token/cost delta for the background writer (same kwargs as
         :meth:`update_token_counts`). After close() stopped the writer, falls back to the
         synchronous path and may raise."""
+        kwargs.setdefault("_usage_recorded_at", time.time())
         with self._token_queue_cond:
             thread = self._token_writer_thread
             writer_alive = thread is not None and thread.is_alive()
@@ -211,23 +212,50 @@ class SessionUsageMixin:
                 # Accounting loss is logged, never raised into a turn.
                 logger.warning("async token accounting: apply failed (session=%s): %s", session_id, exc)
 
-    def _coalesce_token_deltas(self, batch: List[Tuple[str, Dict[str, Any]]]) -> List[Tuple[str, Dict[str, Any]]]:
-        """Merge adjacent incremental deltas with an identical route, so ordering across
-        sessions and /model switches is preserved exactly. absolute=True never merges."""
+    def _coalesce_token_deltas(
+        self, batch: List[Tuple[str, Dict[str, Any]]]
+    ) -> List[Tuple[str, Dict[str, Any]]]:
+        """Merge consecutive incremental deltas with an identical route.
+
+        Only adjacent deltas merge, so ordering across sessions and across
+        a mid-session /model switch is preserved exactly.  absolute=True
+        deltas (cumulative overwrites) never merge. Exact event components are
+        retained so the optimization cannot collapse per-call timestamps.
+        """
+
+        def _event_parts(delta: Dict[str, Any]) -> List[Dict[str, Any]]:
+            parts = delta.get("_usage_event_deltas")
+            if parts is not None:
+                return [dict(part) for part in parts]
+            return [dict(delta)]
+
         groups: List[Tuple[Optional[tuple], str, Dict[str, Any]]] = []
         for session_id, kwargs in batch:
             key = None
             if not kwargs.get("absolute"):
-                key = (session_id, *(kwargs.get(f) for f in self._TOKEN_DELTA_ROUTE_FIELDS))
+                key = (session_id,) + tuple(
+                    kwargs.get(f) for f in self._TOKEN_DELTA_ROUTE_FIELDS
+                )
             if groups and key is not None and groups[-1][0] == key:
                 merged = groups[-1][2]
+                if "_usage_event_deltas" not in merged:
+                    merged["_usage_event_deltas"] = _event_parts(merged)
+                merged["_usage_event_deltas"].extend(_event_parts(kwargs))
                 for f in self._TOKEN_DELTA_SUM_FIELDS:
                     merged[f] = merged.get(f, 0) + kwargs.get(f, 0)
                 for f in self._TOKEN_DELTA_COST_FIELDS:
                     value = kwargs.get(f)
                     if value is not None:
-                        # All-None runs stay None so COALESCE keeps the stored value.
+                        # None-preserving sum: an all-None run must stay
+                        # None so COALESCE keeps the stored value untouched.
                         merged[f] = (merged.get(f) or 0.0) + value
+                event_times = [
+                    part.get("_usage_recorded_at")
+                    for part in merged["_usage_event_deltas"]
+                    if part.get("_usage_recorded_at") is not None
+                ]
+                if event_times:
+                    merged["_usage_recorded_at"] = max(event_times)
             else:
                 groups.append((key, session_id, dict(kwargs)))
         return [(sid, kw) for _, sid, kw in groups]
@@ -278,6 +306,7 @@ class SessionUsageMixin:
         actual_cost_usd: Optional[float]=None, cost_status: Optional[str]=None, cost_source: Optional[str]=None,
         pricing_version: Optional[str]=None, billing_provider: Optional[str]=None, billing_base_url: Optional[str]=None,
         billing_mode: Optional[str]=None, api_call_count: int=0, absolute: bool=False,
+        _usage_recorded_at: Optional[float]=None, _usage_event_deltas: Optional[List[Dict[str, Any]]]=None,
     ) -> None:
         """Update token counters and backfill model if unset. *absolute*=False increments
         (per-API-call deltas, CLI path); *absolute*=True sets directly (gateway path,
@@ -297,20 +326,12 @@ class SessionUsageMixin:
             billing_base_url if has_accounted_usage else None,
             billing_mode if has_accounted_usage else None, model if has_accounted_usage else None,
             api_call_count, session_id)
-        # Per-model attribution: the sessions row keeps one (model, provider) pair, so a
-        # mid-session /model switch would attribute every token to the initial model. Only
-        # the incremental path records here — absolute cumulative updates cannot be split
-        # back into routes; Insights reconciles the residual instead.
-        # ``update_token_counts`` is the single chokepoint every per-API-call delta flows through (CLI,
-        # gateway, cron, delegated runs — see conversation_loop / codex_runtime), and each call carries the
-        # model/provider *active at the time of that call*. Recording the per-call delta into
-        # session_model_usage keyed by the live model preserves an accurate per-model breakdown regardless
-        # of how many times the user switches. See #51607.
-        record_model_usage = (not absolute) and has_usage
+        # Preserve per-call event time while keeping upstream counter/route SQL.
 
         def _do(conn):
             row = conn.execute(
-                "SELECT model, billing_provider, api_call_count FROM sessions WHERE id = ?", (session_id,),
+                "SELECT model, billing_provider, api_call_count, input_tokens, output_tokens, cache_read_tokens, "
+                "cache_write_tokens, reasoning_tokens, estimated_cost_usd, actual_cost_usd FROM sessions WHERE id = ?", (session_id,),
             ).fetchone()
             existing = dict(row) if row is not None else {}
             # create_session records the requested route before any API call. If that fails
@@ -326,40 +347,166 @@ class SessionUsageMixin:
                        SET model = ?, billing_provider = ?,
                        billing_base_url = ?, billing_mode = ?
                        WHERE id = ?""", (model, billing_provider, billing_base_url, billing_mode, session_id))
+            event_usage = dict(usage)
+            if absolute:
+                for key in (*_TOKEN_COUNTERS, "api_call_count", "estimated_cost_usd", "actual_cost_usd"):
+                    value = event_usage.get(key)
+                    event_usage[key] = None if value is None else max(0, value - (existing.get(key) or 0))
             conn.execute(sql, params)
-            if record_model_usage:
-                self._record_model_usage(conn, session_id, **usage)
+            if any(event_usage.get(k) for k in (*_TOKEN_COUNTERS, "api_call_count", "estimated_cost_usd", "actual_cost_usd")):
+                self._record_model_usage(conn, session_id, **event_usage,
+                                         recorded_at=_usage_recorded_at, event_deltas=_usage_event_deltas)
         self._execute_write(_do)
 
     def _record_model_usage(
-        self, conn, session_id: str, *, model: Optional[str]=None, billing_provider: Optional[str]=None,
-        billing_base_url: Optional[str]=None, billing_mode: Optional[str]=None, input_tokens: int=0,
-        output_tokens: int=0, cache_read_tokens: int=0, cache_write_tokens: int=0, reasoning_tokens: int=0,
-        estimated_cost_usd: Optional[float]=None, actual_cost_usd: Optional[float]=None,
-        cost_status: Optional[str]=None, cost_source: Optional[str]=None, api_call_count: int=0, task: str="",
+        self,
+        conn,
+        session_id: str,
+        *,
+        model: Optional[str],
+        billing_provider: Optional[str],
+        billing_base_url: Optional[str],
+        billing_mode: Optional[str] = None,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_write_tokens: int,
+        reasoning_tokens: int,
+        estimated_cost_usd: Optional[float],
+        actual_cost_usd: Optional[float] = None,
+        cost_status: Optional[str] = None,
+        cost_source: Optional[str] = None,
+        api_call_count: int,
+        task: str = "",
+        recorded_at: Optional[float] = None,
+        event_deltas: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
-        """Accumulate a per-API-call usage delta into session_model_usage, inside the caller's
-        write txn after the ``sessions`` UPDATE. A missing model/provider falls back to
-        the session row — except for aux rows (``task`` set), which must NOT inherit the
-        main-loop route (vision on gemini while the main loop runs anthropic): missing
-        info stays 'unknown'/empty.
+        """Persist a usage delta into the exact ledger and lifetime aggregate.
 
-        ``task`` distinguishes what kind of work consumed the tokens: ``''`` (empty) is the main agent loop;
-        auxiliary calls record their task name (``vision``, ``compression``, ``title_generation``, ...) via
-        :meth:`record_auxiliary_usage` (issue #23270).
+        Runs inside the caller's write transaction (after the ``sessions``
+        UPDATE) so the per-model rows stay consistent with the summary row.
+        When the caller omits the model/provider (some paths only pass token
+        deltas), fall back to the values already recorded on the session row —
+        the same COALESCE-from-session behaviour the summary update uses.
+
+        ``task`` distinguishes what kind of work consumed the tokens:
+        ``''`` (empty) is the main agent loop; auxiliary calls record their
+        task name (``vision``, ``compression``, ``title_generation``, ...)
+        via :meth:`record_auxiliary_usage` (issue #23270).
         """
         row = conn.execute(
-            "SELECT model, billing_provider, billing_base_url, billing_mode FROM sessions WHERE id = ?", (session_id,),
+            "SELECT model, billing_provider, billing_base_url, billing_mode "
+            "FROM sessions WHERE id = ?",
+            (session_id,),
         ).fetchone()
-        sess = dict(row) if (row is not None and not task) else {}
-        counts = [v or 0 for v in (input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens)]
-        now = time.time()
-        conn.execute(_MODEL_USAGE_UPSERT_SQL, (
-            session_id, model or sess.get("model") or "unknown",
-            billing_provider or sess.get("billing_provider") or "",
-            billing_base_url or sess.get("billing_base_url") or "",
-            billing_mode or sess.get("billing_mode") or "", task or "", api_call_count or 0, *counts,
-            float(estimated_cost_usd or 0.0), float(actual_cost_usd or 0.0), cost_status, cost_source, now, now))
+        sess_model = row["model"] if row is not None else None
+        sess_provider = row["billing_provider"] if row is not None else None
+        sess_base_url = row["billing_base_url"] if row is not None else None
+        sess_billing_mode = row["billing_mode"] if row is not None else None
+
+        # Aux-task rows (task != '') must NOT inherit the session's main-loop
+        # route: an aux call may use a completely different provider/model
+        # (vision on gemini while the main loop runs anthropic). Missing info
+        # stays 'unknown'/empty rather than borrowing a misleading route.
+        if task:
+            eff_model = model or "unknown"
+            eff_provider = billing_provider or ""
+            eff_base_url = billing_base_url or ""
+            eff_billing_mode = billing_mode or ""
+        else:
+            eff_model = model or sess_model or "unknown"
+            eff_provider = billing_provider or sess_provider or ""
+            eff_base_url = billing_base_url or sess_base_url or ""
+            eff_billing_mode = billing_mode or sess_billing_mode or ""
+        now = time.time() if recorded_at is None else float(recorded_at)
+        if event_deltas is None:
+            event_deltas = [{
+                "_usage_recorded_at": now,
+                "api_call_count": api_call_count,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_read_tokens": cache_read_tokens,
+                "cache_write_tokens": cache_write_tokens,
+                "reasoning_tokens": reasoning_tokens,
+                "estimated_cost_usd": estimated_cost_usd,
+                "actual_cost_usd": actual_cost_usd,
+                "cost_status": cost_status,
+                "cost_source": cost_source,
+            }]
+
+        event_values = []
+        event_times = []
+        for delta in event_deltas:
+            if not any(
+                delta.get(field)
+                for field in (
+                    "api_call_count",
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_read_tokens",
+                    "cache_write_tokens",
+                    "reasoning_tokens",
+                    "estimated_cost_usd",
+                    "actual_cost_usd",
+                )
+            ):
+                continue
+            event_time = float(delta.get("_usage_recorded_at", now))
+            event_times.append(event_time)
+            event_values.append((
+                session_id,
+                event_time,
+                eff_model,
+                eff_provider,
+                eff_base_url,
+                eff_billing_mode,
+                task or "",
+                delta.get("api_call_count") or 0,
+                delta.get("input_tokens") or 0,
+                delta.get("output_tokens") or 0,
+                delta.get("cache_read_tokens") or 0,
+                delta.get("cache_write_tokens") or 0,
+                delta.get("reasoning_tokens") or 0,
+                float(delta.get("estimated_cost_usd") or 0.0),
+                float(delta.get("actual_cost_usd") or 0.0),
+                delta.get("cost_status", cost_status),
+                delta.get("cost_source", cost_source),
+            ))
+        conn.executemany(
+            """INSERT INTO session_model_usage_events (
+                   session_id, recorded_at, model, billing_provider,
+                   billing_base_url, billing_mode, task, api_call_count,
+                   input_tokens, output_tokens, cache_read_tokens,
+                   cache_write_tokens, reasoning_tokens, estimated_cost_usd,
+                   actual_cost_usd, cost_status, cost_source
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            event_values,
+        )
+        first_seen = min(event_times) if event_times else now
+        last_seen = max(event_times) if event_times else now
+        conn.execute(
+            _MODEL_USAGE_UPSERT_SQL,
+            (
+                session_id,
+                eff_model,
+                eff_provider,
+                eff_base_url,
+                eff_billing_mode,
+                task or "",
+                api_call_count or 0,
+                input_tokens or 0,
+                output_tokens or 0,
+                cache_read_tokens or 0,
+                cache_write_tokens or 0,
+                reasoning_tokens or 0,
+                float(estimated_cost_usd or 0.0),
+                float(actual_cost_usd or 0.0),
+                cost_status,
+                cost_source,
+                first_seen,
+                last_seen,
+            ),
+        )
 
     def record_auxiliary_usage(
         self, session_id: str, task: str, *, model: Optional[str]=None, billing_provider: Optional[str]=None,

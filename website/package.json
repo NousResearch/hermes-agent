@@ -39,12 +39,14 @@
     "serialize-javascript": "7.0.7",
     "uuid": "14.0.1",
     "minimatch": "10.2.6",
-    "nanoid": "3.3.17",
+    "nanoid": "3.3.18",
+    "qs": "6.16.0",
     "js-yaml": "4.3.1",
     "dompurify": "3.4.13",
     "mermaid": "11.16.1",
     "image-size": "npm:@nous-research/image-size@2.0.3",
-    "tar": "7.5.22"
+    "tar": "7.5.22",
+    "browserslist": "4.28.8"
   },
   "browserslist": {
     "production": [

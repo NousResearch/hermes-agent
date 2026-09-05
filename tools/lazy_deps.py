@@ -83,7 +83,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     ),
     "wake.openwakeword": (
         "openwakeword==0.6.0",
-        "onnxruntime==1.27.0",
+        "onnxruntime==1.29.0",
         "sounddevice==0.5.5",
         "numpy==2.4.3",
     ),

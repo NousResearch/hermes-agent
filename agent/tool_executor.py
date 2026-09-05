@@ -29,6 +29,7 @@ from agent.display import (
     redact_tool_args_for_display as _redact_tool_args_for_display,
     _detect_tool_failure,
 )
+from agent.interrupt_compat import request_hard_interrupt
 from agent.message_sanitization import coalesce_tool_call_id
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
@@ -545,6 +546,26 @@ def _interrupt_worker_tids(agent, tids, *, reason=_NO_REASON) -> None:
             _ra()._set_interrupt(True, tid, **kwargs)
 
 
+def _interrupt_active_children(agent) -> None:
+    """Stop delegated children of a timed-out tool call. The worker-tid signal raised
+    by ``_interrupt_worker_tids`` never reaches them: each delegate child runs on its
+    own daemon worker and only observes its own interrupt state, so mirror
+    ``agent.interrupt()``'s child propagation (see interrupt_control) here."""
+    lock = getattr(agent, "_active_children_lock", None)
+    try:
+        if lock is not None:
+            with lock:
+                children = list(agent._active_children)
+        else:
+            children = list(getattr(agent, "_active_children", None) or ())
+    except Exception:
+        return
+    for child in children:
+        with contextlib.suppress(Exception):
+            if not request_hard_interrupt(child) and hasattr(child, "_interrupt_requested"):
+                child._interrupt_requested = True
+
+
 def _set_worker_activity_callback(agent) -> None:
     """The activity callback is thread-local: bind it on THIS thread so tool-layer heartbeats fire."""
     with contextlib.suppress(Exception):
@@ -870,6 +891,7 @@ def _run_sequential_tool_execution_middleware(
         future.cancel()
         if state == "timeout":
             _interrupt_worker_tids(agent, worker_tid)
+            _interrupt_active_children(agent)
         return _abandoned_sequential_result(agent, ref, message, result_cls, **outcome)
     finally:
         # Never join a wedged worker (daemon pool also keeps it out of the atexit join).
@@ -1295,6 +1317,7 @@ class _ConcurrentBatch:
                 with agent._tool_worker_threads_lock:
                     worker_tids = list(agent._tool_worker_threads)
                 _interrupt_worker_tids(agent, worker_tids)
+                _interrupt_active_children(agent)
             else:
                 # Give running tools a moment to notice the per-thread interrupt and exit gracefully.
                 concurrent.futures.wait(not_done, timeout=3.0)

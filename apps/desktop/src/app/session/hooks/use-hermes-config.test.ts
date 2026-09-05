@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { $terminalFontFamily, setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/terminal-font'
 import { getHermesConfig } from '@/hermes'
 import { persistString } from '@/lib/storage'
+import { $showReasoning, setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
 import {
   $currentCwd,
   $currentFastMode,
@@ -41,7 +42,26 @@ describe('useHermesConfig refreshHermesConfig', () => {
     setCurrentReasoningEffort('')
     setDefaultReasoningEffort('')
     setTerminalFontFamilyFromConfig('')
+    setShowReasoningFromConfig(false)
     persistString(WORKSPACE_CWD_KEY, null)
+  })
+
+  it('publishes display.show_reasoning so the renderer can hide thinking and tools', async () => {
+    mockConfig({ display: { show_reasoning: true } })
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+
+    expect($showReasoning.get()).toBe(true)
+
+    mockConfig({ display: { show_reasoning: 'false' } })
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+
+    expect($showReasoning.get()).toBe(false)
   })
 
   // Regression: the composer keeps a manual model pick sticky, which skips the

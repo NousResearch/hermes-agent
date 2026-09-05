@@ -1,0 +1,155 @@
+---
+slug: /
+sidebar_position: 0
+title: "Dokumentasi Hermes Agent"
+description: "Agen AI dengan penyempurnaan diri yang dibangun oleh Nous Research. Loop pembelajaran bawaan yang membuat skill dari pengalaman, memperbaikinya selama digunakan, dan mengingat lintas sesi."
+hide_table_of_contents: true
+displayed_sidebar: docs
+---
+
+import Link from "@docusaurus/Link";
+
+# Hermes Agent
+
+Agen AI dengan penyempurnaan diri yang dibangun oleh [Nous Research](https://nousresearch.com). Satu-satunya agen dengan loop pembelajaran bawaan — ia membuat skill dari pengalaman, memperbaikinya selama digunakan, mendorong dirinya untuk menyimpan pengetahuan, dan membangun model yang semakin mendalam tentang siapa Anda dari satu sesi ke sesi berikutnya.
+
+<div
+  style={{
+    display: "flex",
+    gap: "1rem",
+    marginBottom: "2rem",
+    flexWrap: "wrap",
+  }}
+>
+  <Link
+    to="/getting-started/installation"
+    style={{
+      display: "inline-block",
+      padding: "0.6rem 1.2rem",
+      backgroundColor: "#FFD700",
+      color: "#07070d",
+      borderRadius: "8px",
+      fontWeight: 600,
+      textDecoration: "none",
+    }}
+  >
+    Mulai →
+  </Link>
+  <Link
+    to="/user-guide/bot-mode"
+    style={{
+      display: "inline-block",
+      padding: "0.6rem 1.2rem",
+      border: "1px solid rgba(255,215,0,0.2)",
+      borderRadius: "8px",
+      textDecoration: "none",
+    }}
+  >
+    Jelajahi Bot Mode
+  </Link>
+  <a
+    href="https://hermes-agent.nousresearch.com/"
+    style={{
+      display: "inline-block",
+      padding: "0.6rem 1.2rem",
+      border: "1px solid rgba(255,215,0,0.2)",
+      borderRadius: "8px",
+      textDecoration: "none",
+    }}
+  >
+    Unduh Desktop
+  </a>
+  <a
+    href="https://github.com/NousResearch/hermes-agent"
+    style={{
+      display: "inline-block",
+      padding: "0.6rem 1.2rem",
+      border: "1px solid rgba(255,215,0,0.2)",
+      borderRadius: "8px",
+      textDecoration: "none",
+    }}
+  >
+    Lihat di GitHub
+  </a>
+</div>
+
+## Instalasi
+
+### Windows atau macOS
+
+Untuk memasang aplikasi command-line dan desktop dengan mudah, [unduh installer Hermes Desktop](https://hermes-agent.nousresearch.com/) dari website kami lalu jalankan.
+
+### Tanpa Hermes Desktop:
+
+Untuk instalasi command-line saja tanpa Hermes Desktop, jalankan:
+
+#### Linux / macOS / WSL2 / Android (Termux)
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+```
+
+#### Windows (native)
+
+Jalankan di PowerShell:
+
+```powershell
+iex (irm https://hermes-agent.nousresearch.com/install.ps1)
+```
+
+Lihat **[Panduan Instalasi](/getting-started/installation)** lengkap untuk mengetahui apa yang dilakukan installer, layout per-user vs root, dan catatan khusus Windows. Untuk matriks dukungan platform lengkap, lihat **[Dukungan Platform](/getting-started/platform-support)**.
+
+:::tip Jalur tercepat menuju agen yang siap digunakan
+Setelah instalasi, jalankan `hermes setup --portal` — satu OAuth mencakup model sekaligus keempat tool Tool Gateway (web search, image generation, TTS, browser). Lihat [Nous Portal](/integrations/nous-portal).
+:::
+
+## Apa itu Hermes Agent?
+
+Hermes bukan coding copilot yang terikat pada IDE atau sekadar chatbot wrapper untuk satu API. Hermes adalah **agen otonom** yang semakin mampu semakin lama digunakan. Ia berjalan di mana pun Anda menempatkannya — VPS $5, cluster GPU, atau infrastruktur serverless (Daytona, Modal) yang nyaris tanpa biaya saat idle. Berbicaralah dengannya melalui Telegram saat ia bekerja pada VM cloud yang bahkan tidak perlu Anda akses sendiri melalui SSH. Hermes tidak terikat pada laptop Anda.
+
+## Tautan Cepat
+
+|                                                                         |                                                                       |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| 🚀 **[Instalasi](/getting-started/installation)**                       | Instal dalam 60 detik di Linux, macOS, WSL2, Windows native, Nix & NixOS, atau Android |
+| 📖 **[Tutorial Quickstart](/getting-started/quickstart)**               | Percakapan pertama dan fitur utama yang dapat Anda coba                |
+| 🗺️ **[Jalur Pembelajaran](/getting-started/learning-path)**             | Temukan dokumentasi yang sesuai dengan tingkat pengalaman Anda        |
+| ⚙️ **[Konfigurasi](/user-guide/configuration)**                         | File konfigurasi, provider, model, dan berbagai opsi                   |
+| 💬 **[Messaging Gateway](/user-guide/messaging)**                       | Siapkan Telegram, Discord, Slack, WhatsApp, Teams, atau platform lain |
+| 🤖 **[Bot Mode](/user-guide/bot-mode)**                                 | Bot bernama dengan model, memori, skill, rutinitas, dan chat sendiri  |
+| 🔧 **[Tools & Toolsets](/user-guide/features/tools)**                   | 60+ tool bawaan dan cara mengonfigurasinya                             |
+| 🧠 **[Sistem Memori](/user-guide/features/memory)**                     | Memori persisten yang terus berkembang lintas sesi                     |
+| 📚 **[Sistem Skill](/user-guide/features/skills)**                      | Memori prosedural yang dibuat dan digunakan kembali oleh agen          |
+| 🔌 **[Integrasi MCP](/user-guide/features/mcp)**                        | Hubungkan server MCP, filter tool-nya, dan perluas Hermes dengan aman |
+| 🧭 **[Gunakan MCP dengan Hermes](/guides/use-mcp-with-hermes)**         | Pola setup MCP, contoh, dan tutorial praktis                           |
+| 🎙️ **[Voice Mode](/user-guide/features/voice-mode)**                    | Interaksi suara real-time di CLI, Telegram, Discord, dan Discord VC   |
+| 🗣️ **[Gunakan Voice Mode dengan Hermes](/guides/use-voice-mode-with-hermes)** | Setup langsung dan pola penggunaan workflow suara Hermes          |
+| 🎭 **[Personality & SOUL.md](/user-guide/features/personality)**        | Tentukan gaya bicara default Hermes dengan SOUL.md global              |
+| 📄 **[File Konteks](/user-guide/features/context-files)**              | File konteks proyek yang membentuk setiap percakapan                   |
+| 🔒 **[Keamanan](/user-guide/security)**                                 | Persetujuan perintah, otorisasi, dan isolasi container                 |
+| 💡 **[Tips & Praktik Terbaik](/guides/tips)**                           | Langkah cepat untuk memaksimalkan Hermes                               |
+| 🏗️ **[Arsitektur](/developer-guide/architecture)**                      | Cara kerja Hermes di balik layar                                       |
+| ❓ **[FAQ & Pemecahan Masalah](/reference/faq)**                        | Pertanyaan umum dan solusinya                                          |
+
+## Fitur Utama
+
+- **Loop pembelajaran tertutup** — Memori yang dikurasi agen dengan dorongan berkala, pembuatan skill otomatis, peningkatan skill selama digunakan, recall lintas sesi dengan FTS5 dan peringkasan LLM, serta pemodelan pengguna dialektik [Honcho](https://github.com/plastic-labs/honcho)
+- **Berjalan di mana saja, bukan hanya di laptop Anda** — 6 backend terminal: local, Docker, SSH, Daytona, Singularity, Modal. Daytona dan Modal menawarkan persistensi serverless — environment Anda berhibernasi saat idle sehingga nyaris tanpa biaya
+- **Hadir di tempat Anda berada** — CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Mattermost, Email, SMS, DingTalk, Feishu, WeCom, Weixin, QQ Bot, Yuanbao, BlueBubbles, Home Assistant, Microsoft Teams, Google Chat, dan lainnya — 20+ platform dari satu gateway
+- **Dibangun oleh pelatih model** — Dibuat oleh [Nous Research](https://nousresearch.com), lab di balik Hermes, Nomos, dan Psyche. Bekerja dengan [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai), OpenAI, atau endpoint apa pun
+- **Otomatisasi terjadwal** — Cron bawaan dengan pengiriman ke platform mana pun
+- **[Bot Mode](/user-guide/bot-mode)** — Bangun tim Bot spesialis yang persisten untuk bekerja bersama dalam group chat dan melalui `@mentions`
+- **Mendelegasikan dan menjalankan secara paralel** — Jalankan subagen terisolasi untuk workstream paralel. Programmatic Tool Calling melalui `execute_code` meringkas pipeline multi-langkah menjadi satu inference call
+- **Skill berstandar terbuka** — Kompatibel dengan [agentskills.io](https://agentskills.io). Skill portabel, dapat dibagikan, dan dapat dikontribusikan komunitas melalui Skills Hub
+- **Kontrol web lengkap** — Search, extract, browse, vision, image generation, TTS — satu subscription melalui [Nous Portal](/integrations/nous-portal) mencakup semuanya
+- **Dukungan MCP** — Hubungkan server MCP apa pun untuk memperluas kapabilitas tool
+- **Siap untuk riset** — Batch processing, trajectory export, dan RL training dengan Atropos. Dibangun oleh [Nous Research](https://nousresearch.com) — lab di balik model Hermes, Nomos, dan Psyche
+
+## Untuk LLM dan agen coding
+
+Entry point yang dapat dibaca mesin untuk dokumentasi ini:
+
+- **[`/llms.txt`](/llms.txt)** — indeks terkurasi dari setiap halaman dokumentasi dengan deskripsi singkat. Sekitar 17 KB, aman dimuat ke context LLM.
+- **[`/llms-full.txt`](/llms-full.txt)** — seluruh halaman dokumentasi yang digabungkan menjadi satu file Markdown untuk one-shot ingestion. Sekitar 1,8 MB.
+
+Kedua file juga tersedia melalui `/docs/llms.txt` dan `/docs/llms-full.txt`. Keduanya dibuat ulang pada setiap deployment.

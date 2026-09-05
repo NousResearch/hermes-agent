@@ -193,6 +193,87 @@ describe('round lifecycle', () => {
     expect(log(room, 'Flaky')).toHaveLength(1)
   })
 
+  it('resumes unread members after a reconnect interrupts a serial room drive', async () => {
+    const room = await loadRoom({ turn: ({ profile }) => `${profile} recovered` })
+
+    const members: GroupMember[] = [
+      { name: 'builder', title: '' },
+      { name: 'tester', title: '' }
+    ]
+
+    room.chat.$groupChats.set({
+      Core: {
+        epoch: 0,
+        log: [
+          {
+            at: 1,
+            from: { kind: 'user', name: 'You' },
+            id: 'u1',
+            text: '@builder @tester continue',
+            thread: 't1'
+          }
+        ],
+        members,
+        pendingThread: 't1',
+        running: false,
+        sessions: {},
+        watermarks: { 't1::builder': 1 }
+      }
+    } as Record<string, GroupChat>)
+
+    room.rounds.recoverPendingGroupChatRounds()
+    await settle(room, 'Core')
+
+    expect(room.gateway.calls[0]?.profile).toBe('tester')
+    expect(room.gateway.calls[0]?.prompt).toContain('@builder @tester continue')
+    expect(log(room, 'Core').some(entry => entry.from.kind === 'member' && entry.from.name === 'tester')).toBe(true)
+  })
+
+  it('resumes an unread member handoff after the prior member reply was committed', async () => {
+    const room = await loadRoom({ turn: ({ profile }) => `${profile} follow-up` })
+
+    const members: GroupMember[] = [
+      { name: 'builder', title: '' },
+      { name: 'tester', title: '' }
+    ]
+
+    room.chat.$groupChats.set({
+      Core: {
+        epoch: 0,
+        log: [
+          {
+            at: 1,
+            from: { kind: 'user', name: 'You' },
+            id: 'u1',
+            text: '@builder @tester review this',
+            thread: 't1'
+          },
+          {
+            at: 2,
+            from: { kind: 'member', name: 'tester' },
+            id: 'm1',
+            text: '@builder found a regression',
+            thread: 't1'
+          }
+        ],
+        members,
+        pendingThread: 't1',
+        running: false,
+        sessions: {},
+        watermarks: {
+          't1::builder': 1,
+          't1::tester': 2
+        }
+      }
+    } as Record<string, GroupChat>)
+
+    room.rounds.recoverPendingGroupChatRounds()
+    await settle(room, 'Core')
+
+    expect(room.gateway.calls[0]?.profile).toBe('builder')
+    expect(room.gateway.calls[0]?.prompt).toContain('@builder found a regression')
+  })
+
   it('badges needs-you when a member addresses @user, and clears it on the next user send', async () => {
     const room = await loadRoom({
       turn: ({ profile }) => (profile === 'research' ? 'Blocked on billing access — @user which account?' : '(pass)')
@@ -826,6 +907,29 @@ describe('stopGroupThread (#91868/#94569)', () => {
     // The poll loop exited promptly after the stop, not at the deadline.
     expect(room.gateway.rpcFor('session.resume').length).toBeLessThanOrEqual(6)
     expect(room.chat.$groupChats.get().Room.running).toBe(false)
+  })
+
+  it('persists an active turn as harvestable until it completes normally', async () => {
+    let live: Room | null = null
+    let markerSeen = false
+
+    const room = await loadRoom({
+      onResumePoll: polls => {
+        if (polls === 1) {
+          markerSeen = Boolean(live?.chat.$groupChats.get().Room?.stranded?.helper)
+        }
+      },
+      pollsBusy: 2,
+      turn: () => 'finished normally'
+    })
+
+    live = room
+
+    expect(await room.turns.runGroupChatMemberTurn('Room', { name: 'helper', title: '' }, 'work', 't1', [])).toBe(
+      'finished normally'
+    )
+    expect(markerSeen).toBe(true)
+    expect(room.chat.$groupChats.get().Room?.stranded?.helper).toBeUndefined()
   })
 
   it('keeps polling through an ordinary newer-send epoch bump so late work still lands', async () => {

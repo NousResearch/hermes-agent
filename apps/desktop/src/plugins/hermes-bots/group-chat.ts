@@ -741,6 +741,7 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       watermarks: room.watermarks || {},
       sessions: room.sessions || {},
       stranded: room.stranded || {},
+      ...(room.pendingThread ? { pendingThread: room.pendingThread } : {}),
       members: Array.isArray(room.members) ? room.members : [],
       // Immutable room identity: without this, a room merged in via the
       // remote-sync path (the only caller of this function) loses its
@@ -1185,9 +1186,14 @@ export function handleSessionsGatewayTransition() {
   $groupChats.set(rooms)
   // Pull before re-publishing so a reconnect or source swap never lets this
   // client's stale cache hide a room written by another Desktop/mobile client.
-  void pullGroupChatServerState()
+  // The returned promise is also the recovery barrier: callers may only
+  // re-drive unread room turns after the reconnect merge has settled.
+
+  return pullGroupChatServerState()
     .catch(() => false)
-    .then(() => scheduleGroupChatServerSync($groupChats.get()))
+    .then(() => {
+      scheduleGroupChatServerSync($groupChats.get())
+    })
 }
 
 /** Re-arm the mirror after a dispose. `register()` owns this door: an
@@ -1337,6 +1343,7 @@ export function updateGroupChat(
         // with the pre-turn message baseline. Survives reloads so finished
         // work is still harvested after a window restart.
         stranded: room.stranded || {},
+        ...(room.pendingThread ? { pendingThread: room.pendingThread } : {}),
         // #93129: sticky per-member stop holds. Watermarks persist, so holds
         // must too — otherwise a window restart silently releases a bot the
         // user explicitly stopped.

@@ -46,7 +46,6 @@ import {
   $groupChats,
   $groupChatWorkspace,
   assignLegacyThreads,
-  handleSessionsGatewayTransition,
   pullGroupChatServerState,
   scheduleGroupChatServerSync,
   setGroupChatSyncDisposed,
@@ -55,6 +54,7 @@ import {
   updateGroupChat
 } from './group-chat'
 import { groupWorkspaceOwnerKey } from './group-membership'
+import { recoverPendingGroupChatRounds } from './group-rounds'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
 import { BOTS_LOCALES } from './i18n'
 import { displayName } from './labels'
@@ -238,6 +238,7 @@ export default {
                   sessions: room.sessions && typeof room.sessions === 'object' ? room.sessions : {},
                   sessionOwners: room.sessionOwners && typeof room.sessionOwners === 'object' ? room.sessionOwners : {},
                   stranded: room.stranded && typeof room.stranded === 'object' ? room.stranded : {},
+                  pendingThread: typeof room.pendingThread === 'string' ? room.pendingThread : undefined,
                   // #93129: rehydrate sticky stop holds with the same shape
                   // guard as the other maps — a held bot stays held across
                   // window restarts until explicitly released.
@@ -296,6 +297,7 @@ export default {
           // empty overwrite and then rendering an empty conversation.
           await pullGroupChatServerState().catch(() => false)
           scheduleGroupChatServerSync($groupChats.get())
+          recoverPendingGroupChatRounds()
         })
         .catch(() => undefined)
     } catch {
@@ -311,7 +313,11 @@ export default {
     // duplicate listener per cycle (same survives-disable class as the face
     // clock before its onDispose hook — these kept firing until app restart).
     const unbindProfileListener = bindProfileSync($focusedBotOwner)
-    const unbindGatewayListener = host.state.gateway.listen(handleSessionsGatewayTransition)
+    // Group members carry their own durable connection owner. Foreground socket
+    // and connection changes are unrelated presentation state; treating either
+    // as a room re-home cancels the serial drive after whichever member happened
+    // to be running. Full window reload recovery is handled by the durable
+    // pending-thread marker during hydration above.
 
     // #93492 root fix: the registry pushes a lifecycle event when a
     // connection is removed. The gateway store already disposes the dead
@@ -342,10 +348,6 @@ export default {
 
         if (typeof unbindProfileListener === 'function') {
           unbindProfileListener()
-        }
-
-        if (typeof unbindGatewayListener === 'function') {
-          unbindGatewayListener()
         }
 
         if (typeof unbindConnectionsChanged === 'function') {

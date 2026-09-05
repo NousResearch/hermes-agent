@@ -171,6 +171,12 @@ def test_background_command_prefers_recorded_session_cwd_over_init_time_cwd(monk
         "session_key": task_id,
         "env_vars": {},
         "use_pty": False,
+        "coding_backend": "",
+        "coding_backend_version": "",
+        "coding_session_id": "",
+        "coding_model": "",
+        "coding_capabilities": None,
+        "coding_resume_command": "",
     }]
 
 

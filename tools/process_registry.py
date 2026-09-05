@@ -336,6 +336,17 @@ class ProcessSession:
     # Session-db id of the spawning conversation; lets the gateway drop completions whose
     # session was closed at a user boundary (/new) instead of injecting into the NEW one.
     parent_session_id: str = ""
+    # Typed coding-agent descriptor (#103194 slice 1): identifies a background
+    # Codex/OpenCode worker WITHOUT parsing the shell command. All default
+    # empty = ordinary processes behave exactly as before. Only non-secret
+    # metadata is ever stored here (backend/version/session id/model name/
+    # resume template) — never env, tokens, or launch credentials.
+    coding_backend: str = ""              # "" | "codex" | "opencode"
+    coding_backend_version: str = ""      # backend release/pin when known
+    coding_session_id: str = ""           # external session/thread id
+    coding_model: str = ""                # effective model as recorded at launch
+    coding_capabilities: List[str] = field(default_factory=list)  # e.g. "hot_switch", "structured_api"
+    coding_resume_command: str = ""       # resume template (e.g. "codex resume <id>"), not the raw launch line
     notify_on_complete: bool = False            # Queue agent notification on exit
     watch_patterns: List[str] = field(default_factory=list)
     _watch_hits: int = field(default=0, repr=False)          # total matches delivered
@@ -370,15 +381,53 @@ class ProcessSession:
 
 # Watcher routing fields, in event-dict key order (``watcher_<key>`` on the session).
 _WATCHER_ROUTE_KEYS = ("platform", "chat_id", "user_id", "user_name", "thread_id", "message_id")
+# Backends the typed coding-agent descriptor accepts. Anything else normalizes
+# to "" (untyped process) rather than failing the launch.
+_CODING_BACKENDS = frozenset({"codex", "opencode"})
+
+
+def normalize_coding_descriptor(
+    backend: Any = "", version: Any = "", session_id: Any = "", model: Any = "",
+    capabilities: Any = None, resume_command: Any = "",
+) -> Dict[str, Any]:
+    """Sanitize launch-time coding-agent metadata into the ``coding_*`` descriptor
+    shape. Unknown backends degrade to untyped (""), non-string scalars coerce
+    via str(), capability lists drop blanks. Never raises — a bad descriptor
+    must not break the spawn it rides on."""
+    clean_backend = str(backend or "").strip().lower()
+    if clean_backend not in _CODING_BACKENDS:
+        if clean_backend:
+            logger.warning("unknown coding_backend %r ignored (expected codex|opencode)", backend)
+        return {"coding_backend": "", "coding_backend_version": "", "coding_session_id": "",
+                "coding_model": "", "coding_capabilities": [], "coding_resume_command": ""}
+    items = capabilities if isinstance(capabilities, (list, tuple)) else []
+    return {
+        "coding_backend": clean_backend,
+        "coding_backend_version": str(version or "").strip(),
+        "coding_session_id": str(session_id or "").strip(),
+        "coding_model": str(model or "").strip(),
+        "coding_capabilities": [str(c).strip() for c in items if str(c).strip()][:16],
+        "coding_resume_command": str(resume_command or "").strip(),
+    }
+
+
+def coding_session_effective_model(session: "ProcessSession") -> str:
+    """Effective model of a coding session as currently known. Slice-1 protocol
+    stub (#103194): returns the model recorded at launch. Slices 2-3 fill in
+    live backend readback (backend readback wins on conflict) without changing
+    the descriptor schema."""
+    return session.coding_model if session.coding_backend else ""
 # Session fields persisted verbatim in the crash-recovery checkpoint (plus
 # ``session_id``; ``command`` is redacted and ``owner_task_id`` defaulted on write).
 _CHECKPOINT_FIELDS = (
     "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "cwd",
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
-    "parent_session_id", "notify_on_complete", "watch_patterns")
+    "parent_session_id", "notify_on_complete", "watch_patterns",
+    "coding_backend", "coding_backend_version", "coding_session_id", "coding_model",
+    "coding_capabilities", "coding_resume_command")
 _CHECKPOINT_DEFAULTS = {
-    f.name: ([] if f.name == "watch_patterns" else f.default)
+    f.name: ([] if f.name in ("watch_patterns", "coding_capabilities") else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
     if f.name in _CHECKPOINT_FIELDS
 }
@@ -738,10 +787,17 @@ class ProcessRegistry:
 
     @staticmethod
     def _new_session(command, task_id, owner_task_id, session_key, cwd, **extra) -> ProcessSession:
+        descriptor = normalize_coding_descriptor(
+            backend=extra.pop("coding_backend", ""),
+            version=extra.pop("coding_backend_version", ""),
+            session_id=extra.pop("coding_session_id", ""),
+            model=extra.pop("coding_model", ""),
+            capabilities=extra.pop("coding_capabilities", None),
+            resume_command=extra.pop("coding_resume_command", ""))
         return ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}", command=command, task_id=task_id,
             owner_task_id=owner_task_id or task_id, session_key=session_key, cwd=cwd,
-            started_at=time.time(), **extra)
+            started_at=time.time(), **descriptor, **extra)
 
     @staticmethod
     def _env_temp_dir(env: Any) -> str:
@@ -816,10 +872,14 @@ class ProcessRegistry:
 
     def spawn_local(
         self, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "") -> ProcessSession:
+        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "",
+        coding_backend: str = "", coding_backend_version: str = "", coding_session_id: str = "",
+        coding_model: str = "", coding_capabilities=None, coding_resume_command: str = "") -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
-        for interactive CLIs, falling back to a plain pipe when unavailable or failing."""
+        for interactive CLIs, falling back to a plain pipe when unavailable or failing.
+        The ``coding_*`` params optionally tag a Codex/OpenCode worker with its typed
+        descriptor (#103194); all default empty = ordinary process, unchanged behavior."""
         # Bash parses ``A && B &`` as ``(A && B) &`` — a subshell that holds our stdout
         # pipe open forever when B is a long-running server. The rewriter turns it into
         # ``A && { B & }``. Lazy import: terminal_tool imports this module.
@@ -827,7 +887,11 @@ class ProcessRegistry:
         from tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
 
         safe_command = _rewrite_bg(command)
-        session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()))
+        session = self._new_session(
+            command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
+            coding_backend=coding_backend, coding_backend_version=coding_backend_version,
+            coding_session_id=coding_session_id, coding_model=coding_model,
+            coding_capabilities=coding_capabilities, coding_resume_command=coding_resume_command)
         pty_scope_attempted = False
         if use_pty:
             try:
@@ -892,12 +956,19 @@ class ProcessRegistry:
 
     def spawn_via_env(
         self, env: Any, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        timeout: int = 10, owner_task_id: str = "") -> ProcessSession:
+        timeout: int = 10, owner_task_id: str = "",
+        coding_backend: str = "", coding_backend_version: str = "", coding_session_id: str = "",
+        coding_model: str = "", coding_capabilities=None, coding_resume_command: str = "") -> ProcessSession:
         """Spawn a background process inside a non-local backend's sandbox.
         The command is wrapped to capture its in-sandbox PID and redirect output to a
         log file that later execute() calls poll. No live pipe or stdin, but it runs in
-        the correct sandbox context."""
-        session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox")
+        the correct sandbox context. The ``coding_*`` params tag a Codex/OpenCode
+        worker exactly like :meth:`spawn_local`."""
+        session = self._new_session(
+            command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox",
+            coding_backend=coding_backend, coding_backend_version=coding_backend_version,
+            coding_session_id=coding_session_id, coding_model=coding_model,
+            coding_capabilities=coding_capabilities, coding_resume_command=coding_resume_command)
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote

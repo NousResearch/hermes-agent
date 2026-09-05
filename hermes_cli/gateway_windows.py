@@ -528,6 +528,44 @@ def _install_startup_entry(script_path: Path) -> Path:
     return entry
 
 
+def _remove_startup_fallback() -> tuple[list[Path], list[tuple[Path, Exception]]]:
+    """Remove obsolete Startup-folder entries after Scheduled Task recovery.
+
+    A Startup entry is a fallback for machines where Task Scheduler could not
+    create the per-profile task.  If a later install succeeds, leaving that
+    fallback behind gives Windows two independent logon launches for the same
+    gateway.  The runtime lock prevents a second gateway from surviving, but
+    the loser still creates noisy ``already running`` diagnostics.
+
+    Keep failure isolated: a locked Startup file must not make a valid
+    Scheduled Task installation fail.
+    """
+    removed: list[Path] = []
+    failures: list[tuple[Path, Exception]] = []
+    for label, resolver in (
+        ("current Startup fallback", get_startup_entry_path),
+        ("legacy Startup fallback", _legacy_startup_entry_path),
+    ):
+        # Path resolution itself depends on the user environment.  The task is
+        # already authoritative at this point, so an unusual shell that lacks
+        # an AppData/Home variable must not make a successful Task install look
+        # like a failure or skip its start/next-step handling.
+        try:
+            entry = resolver()
+        except Exception as exc:
+            failures.append((Path(f"<{label}>"), exc))
+            continue
+        try:
+            entry.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            failures.append((entry, exc))
+        else:
+            removed.append(entry)
+    return removed, failures
+
+
 def _resolve_detached_python(python_exe: str) -> tuple[str, Path, list[str]]:
     """Return (hidden_console_python, venv_dir, extra_pythonpath) for detached runs. ``extra_pythonpath``
     is always empty now; the tuple shape is kept so every call site stays unchanged.
@@ -804,6 +842,15 @@ def install(
         print(f"✓ {detail}")
         print(f"  Task script: {script_path}")
         print("ℹ Gateway auto-start installed for Windows login.")
+        # A previous install may have fallen back to the Startup folder before
+        # this account was permitted to create the Scheduled Task.  The task is
+        # now the authoritative single logon owner; remove the stale fallback
+        # so one login cannot launch two competing gateway processes.
+        removed_entries, removal_failures = _remove_startup_fallback()
+        for entry in removed_entries:
+            print(f"✓ Removed obsolete Windows login fallback: {entry}")
+        for entry, exc in removal_failures:
+            print(f"⚠ Could not remove obsolete Windows login fallback {entry}: {exc}")
         if start_now:
             _start_or_report_running()
         else:

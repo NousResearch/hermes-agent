@@ -314,6 +314,74 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "cmd.exe" not in xml_seen["text"]
 
 
+@pytest.mark.windows_only
+def test_install_task_success_removes_stale_startup_fallback(monkeypatch, tmp_path, capsys):
+    """A recovered Scheduled Task must replace, not duplicate, the fallback."""
+    script_path = tmp_path / "Hermes_Gateway_alice.cmd"
+    startup_entry = tmp_path / "Startup" / "Hermes_Gateway_alice.vbs"
+    legacy_entry = tmp_path / "Startup" / "Hermes_Gateway_alice.cmd"
+    startup_entry.parent.mkdir()
+    startup_entry.write_text("stale fallback", encoding="utf-8")
+    legacy_entry.write_text("stale legacy fallback", encoding="utf-8")
+
+    monkeypatch.setattr(gateway_windows, "_prompt_install_choices", lambda *args, **kwargs: (False, True))
+    monkeypatch.setattr(gateway_windows, "_is_running_as_admin", lambda: True)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script_path)
+    monkeypatch.setattr(
+        gateway_windows,
+        "_install_scheduled_task",
+        lambda task_name, path: (True, "Created Scheduled Task 'Hermes_Gateway_alice'"),
+    )
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: startup_entry)
+    monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: legacy_entry)
+    monkeypatch.setattr(gateway_windows, "_print_next_steps", lambda: None)
+
+    gateway_windows.install(start_now=False, start_on_login=True)
+
+    assert not startup_entry.exists()
+    assert not legacy_entry.exists()
+    output = capsys.readouterr().out
+    assert output.count("Removed obsolete Windows login fallback") == 2
+
+
+@pytest.mark.windows_only
+def test_install_task_success_tolerates_startup_fallback_resolution_failure(
+    monkeypatch, tmp_path, capsys
+):
+    """A broken Startup resolver cannot undo a successful Scheduled Task."""
+    script_path = tmp_path / "Hermes_Gateway_alice.cmd"
+    next_steps = []
+
+    monkeypatch.setattr(gateway_windows, "_prompt_install_choices", lambda *args, **kwargs: (False, True))
+    monkeypatch.setattr(gateway_windows, "_is_running_as_admin", lambda: True)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script_path)
+    monkeypatch.setattr(
+        gateway_windows,
+        "_install_scheduled_task",
+        lambda task_name, path: (True, "Created Scheduled Task 'Hermes_Gateway_alice'"),
+    )
+
+    def raise_current_startup_path():
+        raise OSError("APPDATA is unavailable")
+
+    def raise_legacy_startup_path():
+        raise RuntimeError("HOME is unavailable")
+
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", raise_current_startup_path)
+    monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", raise_legacy_startup_path)
+    monkeypatch.setattr(gateway_windows, "_print_next_steps", lambda: next_steps.append(True))
+
+    gateway_windows.install(start_now=False, start_on_login=True)
+
+    output = capsys.readouterr().out
+    assert output.count("Could not remove obsolete Windows login fallback") == 2
+    assert "APPDATA is unavailable" in output
+    assert "HOME is unavailable" in output
+    assert next_steps == [True]
+
+
 def test_gateway_vbs_script_is_console_less(monkeypatch):
     """The .vbs launcher must avoid cmd.exe entirely and Run pythonw hidden
     (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A)."""
@@ -362,9 +430,6 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
 # the gateway's marker-watcher thread to drain + exit cleanly, then escalates
 # to taskkill if drain times out.
 # ---------------------------------------------------------------------------
-
-
-
 
 
 

@@ -210,6 +210,13 @@ def test_pending_needed_when_unfinished_receipt_runtime_sha_skews(monkeypatch):
     assert update_cmd._pending_fleet_restart_needed() is True
 
 
+def test_legacy_receipt_with_only_stop_reason_is_unfinished():
+    """Preserve the fallback for receipts written before terminal fields existed."""
+    assert update_cmd_fleet._receipt_looks_unfinished(
+        {"stop_reason": "KeyboardInterrupt: "}
+    ) is True
+
+
 def test_successful_receipt_with_pre_update_plan_shas_does_not_retrigger(
     monkeypatch,
 ):
@@ -246,6 +253,31 @@ def test_successful_receipt_with_pre_update_plan_shas_does_not_retrigger(
                     }
                 ],
                 "gateway_restart": {"incomplete": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert update_cmd._pending_fleet_restart_needed() is False
+
+
+def test_successful_boundary_receipt_without_fleet_does_not_retrigger(monkeypatch):
+    """A normal command-boundary reason does not make a successful receipt unfinished."""
+    disk_sha = "n" * 40
+    old_sha = "o" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
+
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "exit_code": 0,
+                "outcome": "success",
+                "stop_reason": "completed at command boundary",
+                "fleet": [],
+                "plan": {"runtimes": [{"kind": "gateway", "code_sha": old_sha}]},
             }
         ),
         encoding="utf-8",

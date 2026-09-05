@@ -47,6 +47,7 @@ import {
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
+  ownerLookupSessionRows,
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
@@ -489,16 +490,23 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
 // Tile -> pane contribution sync (call once from the app root).
 // ---------------------------------------------------------------------------
 
-/** Resolve a tile's stored row: the recents list first, then the project
- *  tree. A session opened as a tab from a project group is often older than
- *  the paginated recents page, so it has no `$sessions` row at all until new
- *  activity lands it there — resolving through the tree keeps its tab titled
- *  and tinted instead of a grey "Session" placeholder. */
+/** Resolve a tile's stored row: every loaded sidebar slice first, then the
+ *  project tree. A session opened as a tab from a project group is often older
+ *  than the paginated recents page, so it has no `$sessions` row at all until
+ *  new activity lands it there — resolving through the tree keeps its tab
+ *  titled and tinted instead of a grey "Session" placeholder.
+ *
+ *  The slice scan is `ownerLookupSessionRows`, not `$sessions`: the sidebar
+ *  fetch splits its rows three ways, and a telegram/discord/cron conversation
+ *  is listed ONLY in `$messagingSessions` / `$cronSessions` — recents excludes
+ *  those sources outright. Searching recents alone made every such tab read
+ *  "New session" forever, since the row it needed was one atom over and no
+ *  amount of activity would ever move it into recents. */
 export function tileStoredRow(storedSessionId: string): SessionInfo | undefined {
   const match = (s: SessionInfo) => sessionMatchesStoredId(s, storedSessionId)
 
   return (
-    $sessions.get().find(match) ??
+    ownerLookupSessionRows().find(match) ??
     $projectTree
       .get()
       .flatMap(p => [...p.repos.flatMap(r => r.groups.flatMap(g => g.sessions)), ...(p.previewSessions ?? [])])
@@ -749,9 +757,14 @@ export function WorkspaceTabMenu({ children }: { children: React.ReactElement })
 export const watchSessionTiles = paneMirror<SessionTile>({
   source: $sessionTiles,
   // $projectTree: a tile whose session is older than the recents page resolves
-  // its title through the tree, which loads after the tiles register. (The tab's
-  // status dot subscribes to color/state itself, so it needs no `also` entry.)
-  also: [$sessions, $projectTree, $workspaceOwnerLabels],
+  // its title through the tree, which loads after the tiles register.
+  // $cronSessions/$messagingSessions: `tileStoredRow` reads every sidebar
+  // slice, so the strip must re-sync when the slice that owns a gateway
+  // conversation lands — it arrives on its own fetch, after the tiles register,
+  // and without it the tab stays stuck on its "New session" placeholder.
+  // (The tab's status dot subscribes to color/state itself, so it needs no
+  // `also` entry.)
+  also: [$sessions, $cronSessions, $messagingSessions, $projectTree, $workspaceOwnerLabels],
   key: t => t.storedSessionId,
   prefix: 'session-tile',
   dir: t => t.dir,

@@ -1296,6 +1296,9 @@ class TurnRunner:
             result = fut.result(timeout=15)
             if result is not None and getattr(result, "success", True) is False:
                 raise RuntimeError(str(getattr(result, "error", "") or "approval fallback send failed"))
+        except TimeoutError:
+            # A late acknowledgement does not prove the text was undelivered.
+            logger.warning("Approval text send timed out; keeping the waiter armed for a late response")
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)
             raise

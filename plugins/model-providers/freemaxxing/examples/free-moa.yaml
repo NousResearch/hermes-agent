@@ -1,0 +1,21 @@
+# Merge this named preset into config.yaml; it does not activate itself.
+# Enable deliberately, then select the freemaxxing preset through Hermes MoA.
+# Nous requires FREEMAXXING_FREE_TIER_PROVIDERS=nous-portal and a free-only account.
+moa:
+  presets:
+    freemaxxing:
+      enabled: false
+      fanout: user_turn
+      reference_timeout: 45
+      reference_max_tokens: 1024
+      degraded_reference_policy: loud
+      reference_models:
+        - provider: freemaxxing
+          model: "opencode-free::freemaxxing"
+        - provider: freemaxxing
+          model: "openrouter::freemaxxing"
+        - provider: freemaxxing
+          model: "nous-portal::freemaxxing"
+      aggregator:
+        provider: freemaxxing
+        model: freemaxxing

@@ -17,6 +17,7 @@ per-skill source links and a cleaned-up category sidebar:
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -132,3 +133,91 @@ def test_guess_category_empty_tags(mod):
 def test_guess_category_skips_first_junk_tag_for_later_known_tag(mod):
     # First tag is junk, second is curated — we should still find the curated one.
     assert mod._guess_category(["Some Brand", "security"]) == "security"
+
+
+def test_localized_descriptions_cover_bundled_skills_and_not_third_party(mod):
+    translations = mod.load_localized_descriptions("zh-hant")
+    bundled = {
+        path.parent.name
+        for path in (REPO_ROOT / "skills").glob("**/SKILL.md")
+    }
+    assert set(translations) == bundled
+    assert mod.localize_skill_row(
+        {"name": "apple-notes", "source": "built-in", "description": "English"},
+        "zh-hant",
+    )["description"] == translations["apple-notes"]
+    assert mod.localize_skill_row(
+        {"name": "apple-notes", "source": "GitHub", "description": "Third party"},
+        "zh-hant",
+    )["description"] == "Third party"
+
+
+def test_main_writes_small_zh_hant_description_sidecar_without_changing_english_rows(
+    mod, monkeypatch, tmp_path
+):
+    english_rows = [
+        {
+            "name": "apple-notes",
+            "source": "built-in",
+            "category": "apple",
+            "description": "English",
+        },
+        {
+            "name": "community-skill",
+            "source": "GitHub",
+            "category": "other",
+            "description": "Third party",
+        },
+    ]
+    translations = {"apple-notes": "繁體中文摘要"}
+    output = tmp_path / "skills.json"
+    locale_output = tmp_path / "skills.zh-hant.json"
+    meta_output = tmp_path / "skills-meta.json"
+
+    monkeypatch.setattr(mod, "OUTPUT", str(output))
+    monkeypatch.setattr(mod, "ZH_HANT_OUTPUT", str(locale_output))
+    monkeypatch.setattr(mod, "META_OUTPUT", str(meta_output))
+    monkeypatch.setattr(mod, "extract_local_skills", lambda: english_rows)
+    monkeypatch.setattr(mod, "extract_unified_index_skills", lambda: ([], None))
+    monkeypatch.setattr(mod, "load_localized_descriptions", lambda locale: translations)
+    monkeypatch.setattr(mod, "_consolidate_small_categories", lambda rows: rows)
+
+    mod.main()
+
+    assert json.loads(output.read_text()) == english_rows
+    assert json.loads(locale_output.read_text()) == translations
+    assert "community-skill" not in json.loads(locale_output.read_text())
+
+
+def test_skills_page_has_zh_hant_chrome_and_official_only_description_fallback():
+    page = (REPO_ROOT / "website" / "src" / "pages" / "skills" / "index.tsx").read_text()
+
+    assert 'get("lang") === "zh-hant"' in page
+    assert 'const ZH_HANT_DESCRIPTIONS_URL = "/docs/api/skills.zh-hant.json"' in page
+    assert 'skill.source === "built-in"' in page
+    assert "ZH_HANT_DESCRIPTIONS[skill.name] || skill.description" in page
+
+    expected_chrome = {
+        "Docs": "文件",
+        "Skills": "技能",
+        "Download": "下載",
+        "English": "繁體中文",
+        "Home": "首頁",
+        "GitHub": "GitHub",
+        "Discord": "Discord",
+        "Search": "搜尋",
+        "HERMES AGENT": "HERMES AGENT",
+        "Discover, search, and install from": "探索、搜尋並安裝來自",
+        "Catalog refreshed": "目錄更新於",
+        "Built-in": "內建",
+        "Optional": "選用",
+        "Community": "社群",
+        "Categories": "分類",
+        "Copy install command": "複製安裝指令",
+        "View full documentation": "查看完整文件",
+        "View source": "查看來源",
+        "+ Add to this Agent": "+ 加入此 Agent",
+    }
+    for english, zh_hant in expected_chrome.items():
+        assert json.dumps(english) in page
+        assert json.dumps(zh_hant, ensure_ascii=False) in page

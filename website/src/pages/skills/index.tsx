@@ -41,22 +41,67 @@ interface IndexMeta {
 }
 const indexMeta: IndexMeta = {};
 
-function formatRelativeTime(iso?: string): string | null {
+const ZH_HANT_CHROME: Record<string, string> = {
+  "Docs": "文件",
+  "Skills": "技能",
+  "Download": "下載",
+  "English": "繁體中文",
+  "Home": "首頁",
+  "GitHub": "GitHub",
+  "Discord": "Discord",
+  "Search": "搜尋",
+  "HERMES AGENT": "HERMES AGENT",
+  "Hermes Agent": "HERMES AGENT",
+  "Skills Hub": "技能中心",
+  "Discover, search, and install from": "探索、搜尋並安裝來自",
+  "Catalog refreshed": "目錄更新於",
+  "Built-in": "內建",
+  "Optional": "選用",
+  "Community": "社群",
+  "Categories": "分類",
+  "Copy install command": "複製安裝指令",
+  "Copied": "已複製",
+  "Copy": "複製",
+  "Overview": "概覽",
+  "Prerequisites": "必要條件",
+  "Author": "作者",
+  "Version": "版本",
+  "License": "授權",
+  "View full documentation": "查看完整文件",
+  "View source": "查看來源",
+  "+ Add to this Agent": "+ 加入此 Agent",
+  "All": "全部",
+  "All Skills": "所有技能",
+  "Clear": "清除",
+  "Clear all": "全部清除",
+  "Loading the catalog…": "正在載入目錄…",
+  "No skills found": "找不到技能",
+  "Reset all filters": "重設所有篩選條件",
+  "Search skills... (press \"/\" to focus)": "搜尋技能…（按「/」聚焦）",
+  "Fetching 88k+ skills across every registry. One moment.": "正在從各個登錄來源取得 88,000 多項技能，請稍候。",
+  "Try a different search term or clear your filters.": "請改用其他關鍵字，或清除篩選條件。",
+};
+
+function uiText(text: string, isZhHant: boolean): string {
+  return isZhHant ? ZH_HANT_CHROME[text] || text : text;
+}
+
+function formatRelativeTime(iso?: string, isZhHant = false): string | null {
   if (!iso) return null;
   const then = new Date(iso).getTime();
   if (!Number.isFinite(then)) return null;
   const now = Date.now();
   const diffMs = now - then;
-  if (diffMs < 0) return "just now";
+  if (diffMs < 0) return isZhHant ? "剛剛" : "just now";
   const mins = Math.floor(diffMs / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ago`;
+  if (mins < 1) return isZhHant ? "剛剛" : "just now";
+  if (mins < 60) return isZhHant ? `${mins} 分鐘前` : `${mins} minute${mins === 1 ? "" : "s"} ago`;
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  if (hours < 24) return isZhHant ? `${hours} 小時前` : `${hours} hour${hours === 1 ? "" : "s"} ago`;
   const days = Math.floor(hours / 24);
-  if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
+  if (days < 30) return isZhHant ? `${days} 天前` : `${days} day${days === 1 ? "" : "s"} ago`;
   const months = Math.floor(days / 30);
-  return `${months} month${months === 1 ? "" : "s"} ago`;
+  return isZhHant ? `${months} 個月前` : `${months} month${months === 1 ? "" : "s"} ago`;
 }
 
 const CATEGORY_ICONS: Record<string, string> = {
@@ -236,7 +281,7 @@ function highlightMatch(text: string, query: string): React.ReactNode {
   );
 }
 
-function CopyButton({ text }: { text: string }) {
+function CopyButton({ text, isZhHant }: { text: string; isZhHant: boolean }) {
   const [copied, setCopied] = useState(false);
   const onCopy = useCallback(
     (e: React.MouseEvent) => {
@@ -255,8 +300,8 @@ function CopyButton({ text }: { text: string }) {
     <button
       className={styles.copyBtn}
       onClick={onCopy}
-      title="Copy install command"
-      aria-label="Copy install command"
+      title={uiText("Copy install command", isZhHant)}
+      aria-label={uiText("Copy install command", isZhHant)}
     >
       {copied ? (
         <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
@@ -272,7 +317,9 @@ function CopyButton({ text }: { text: string }) {
           <path d="M4.5 6A1.5 1.5 0 003 7.5v9A1.5 1.5 0 004.5 18h7a1.5 1.5 0 001.5-1.5v-5.879a1.5 1.5 0 00-.44-1.06L9.44 6.439A1.5 1.5 0 008.378 6H4.5z" />
         </svg>
       )}
-      <span className={styles.copyBtnLabel}>{copied ? "Copied" : "Copy"}</span>
+      <span className={styles.copyBtnLabel}>
+        {uiText(copied ? "Copied" : "Copy", isZhHant)}
+      </span>
     </button>
   );
 }
@@ -286,6 +333,7 @@ function SkillCard({
   onTagClick,
   style,
   onPick,
+  isZhHant,
 }: {
   skill: Skill;
   query: string;
@@ -296,6 +344,7 @@ function SkillCard({
   style?: React.CSSProperties;
   /** Picker embed mode: render "+ Add to this Agent" and call this. */
   onPick?: (skill: Skill) => void;
+  isZhHant: boolean;
 }) {
   const src = SOURCE_CONFIG[skill.source] || SOURCE_CONFIG["optional"];
   const icon = CATEGORY_ICONS[skill.category] || "\u{1F4E6}";
@@ -323,7 +372,7 @@ function SkillCard({
                 borderColor: src.border,
               }}
             >
-              {src.icon} {src.label}
+              {src.icon} {uiText(src.label, isZhHant)}
             </span>
           </div>
         </div>
@@ -354,13 +403,13 @@ function SkillCard({
           <div className={styles.cardDetail}>
             {skill.overview && (
               <div className={styles.overviewBlock}>
-                <span className={styles.detailLabel}>Overview</span>
+                <span className={styles.detailLabel}>{uiText("Overview", isZhHant)}</span>
                 <p className={styles.overviewText}>{skill.overview}</p>
               </div>
             )}
             {(skill.envVars?.length || skill.commands?.length) ? (
               <div className={styles.prereqBlock}>
-                <span className={styles.detailLabel}>Prerequisites</span>
+                <span className={styles.detailLabel}>{uiText("Prerequisites", isZhHant)}</span>
                 {skill.envVars?.length ? (
                   <div className={styles.prereqRow}>
                     <span className={styles.prereqKind}>env</span>
@@ -401,19 +450,19 @@ function SkillCard({
             )}
             {skill.author && (
               <div className={styles.authorRow}>
-                <span className={styles.authorLabel}>Author</span>
+                <span className={styles.authorLabel}>{uiText("Author", isZhHant)}</span>
                 <span className={styles.authorValue}>{skill.author}</span>
               </div>
             )}
             {skill.version && (
               <div className={styles.authorRow}>
-                <span className={styles.authorLabel}>Version</span>
+                <span className={styles.authorLabel}>{uiText("Version", isZhHant)}</span>
                 <span className={styles.authorValue}>{skill.version}</span>
               </div>
             )}
             {skill.license && (
               <div className={styles.authorRow}>
-                <span className={styles.authorLabel}>License</span>
+                <span className={styles.authorLabel}>{uiText("License", isZhHant)}</span>
                 <span className={styles.authorValue}>{skill.license}</span>
               </div>
             )}
@@ -421,6 +470,7 @@ function SkillCard({
               <code>{skill.installCmd || `hermes skills install ${skill.name}`}</code>
               <CopyButton
                 text={skill.installCmd || `hermes skills install ${skill.name}`}
+                isZhHant={isZhHant}
               />
             </div>
             {onPick ? (
@@ -431,7 +481,7 @@ function SkillCard({
                   onPick(skill);
                 }}
               >
-                + Add to this Agent
+                {uiText("+ Add to this Agent", isZhHant)}
               </button>
             ) : null}
             <div className={styles.cardLinks}>
@@ -441,7 +491,7 @@ function SkillCard({
                   href={`/docs/user-guide/skills/${skill.docsPath}`}
                   onClick={(e) => e.stopPropagation()}
                 >
-                  View full documentation →
+                  {uiText("View full documentation", isZhHant)} →
                 </a>
               ) : skill.sourceUrl ? (
                 <a
@@ -451,7 +501,7 @@ function SkillCard({
                   rel="noopener noreferrer"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  View source ↗
+                  {uiText("View source", isZhHant)} ↗
                 </a>
               ) : null}
             </div>
@@ -481,6 +531,36 @@ const PAGE_SIZE = 60;
 // place that needs to follow.
 const SKILLS_URL = "/docs/api/skills.json";
 const META_URL = "/docs/api/skills-meta.json";
+const ZH_HANT_DESCRIPTIONS_URL = "/docs/api/skills.zh-hant.json";
+
+function localizeSiteChrome() {
+  const navbar = document.querySelector(".navbar");
+  if (!navbar) return;
+
+  const walker = document.createTreeWalker(navbar, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  while (node) {
+    const original = node.textContent || "";
+    const trimmed = original.trim();
+    const translated = ZH_HANT_CHROME[trimmed];
+    if (translated && translated !== trimmed) {
+      node.textContent = original.replace(trimmed, translated);
+    }
+    node = walker.nextNode();
+  }
+
+  navbar.querySelectorAll<HTMLElement>("[aria-label], [title], [placeholder]").forEach((el) => {
+    for (const attr of ["aria-label", "title", "placeholder"]) {
+      const value = el.getAttribute(attr);
+      if (!value) continue;
+      if (ZH_HANT_CHROME[value]) {
+        el.setAttribute(attr, ZH_HANT_CHROME[value]);
+      } else if (value.startsWith("Search")) {
+        el.setAttribute(attr, value.replace("Search", ZH_HANT_CHROME["Search"]));
+      }
+    }
+  });
+}
 
 function buildSearchHaystack(s: Skill): string {
   // Pre-compute the lowercase blob the search filter scans. Done once at
@@ -512,6 +592,18 @@ export default function SkillsDashboard() {
   const pickerMode =
     typeof window !== "undefined" &&
     new URLSearchParams(window.location.search).get("embed") === "picker";
+  const isZhHant =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("lang") === "zh-hant";
+
+  useEffect(() => {
+    if (!isZhHant) return;
+    document.documentElement.lang = "zh-Hant";
+    localizeSiteChrome();
+    const observer = new MutationObserver(localizeSiteChrome);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [isZhHant]);
 
   const pickSkill = useCallback(
     (skill: Skill) => {
@@ -554,17 +646,29 @@ export default function SkillsDashboard() {
     let cancelled = false;
     (async () => {
       try {
-        const [sk, mt] = await Promise.all([
+        const zhHantDescriptionsPromise: Promise<Record<string, string>> = isZhHant
+          ? fetch(ZH_HANT_DESCRIPTIONS_URL)
+              .then((r) => (r.ok ? r.json() : {}))
+              .catch(() => ({}))
+          : Promise.resolve({});
+        const [sk, mt, ZH_HANT_DESCRIPTIONS] = await Promise.all([
           fetch(SKILLS_URL).then((r) => {
             if (!r.ok) throw new Error(`skills.json HTTP ${r.status}`);
             return r.json();
           }),
           fetch(META_URL).then((r) => (r.ok ? r.json() : {})).catch(() => ({})),
+          zhHantDescriptionsPromise,
         ]);
         if (cancelled) return;
         const skillsArr = Array.isArray(sk) ? (sk as Skill[]) : [];
-        // Stamp the precomputed search haystack onto each row.
-        for (const s of skillsArr) s._search = buildSearchHaystack(s);
+        // Localize only official built-ins. Every absent translation and every
+        // third-party row keeps the description from the English catalog.
+        for (const skill of skillsArr) {
+          if (isZhHant && skill.source === "built-in") {
+            skill.description = ZH_HANT_DESCRIPTIONS[skill.name] || skill.description;
+          }
+          skill._search = buildSearchHaystack(skill);
+        }
         setData({ skills: skillsArr, meta: mt || {} });
       } catch (err) {
         if (cancelled) return;
@@ -574,7 +678,7 @@ export default function SkillsDashboard() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isZhHant]);
 
   // Debounce the search input — 150ms feels instant while preventing the
   // filter from running on every individual keystroke.
@@ -677,48 +781,55 @@ export default function SkillsDashboard() {
 
   return (
     <Layout
-      title="Skills Hub"
-      description="Browse all skills and plugins available for Hermes Agent"
+      title={uiText("Skills Hub", isZhHant)}
+      description={
+        isZhHant
+          ? "瀏覽 Hermes Agent 可用的所有技能與外掛"
+          : "Browse all skills and plugins available for Hermes Agent"
+      }
     >
       <div className={`${styles.page} ${pickerMode ? styles.pickerMode : ""}`}>
         <header className={styles.hero}>
           <div className={styles.heroGlow} />
           <div className={styles.heroContent}>
-            <p className={styles.heroEyebrow}>Hermes Agent</p>
-            <h1 className={styles.heroTitle}>Skills Hub</h1>
+            <p className={styles.heroEyebrow}>{uiText("Hermes Agent", isZhHant)}</p>
+            <h1 className={styles.heroTitle}>{uiText("Skills Hub", isZhHant)}</h1>
             <p className={styles.heroSub}>
-              Discover, search, and install from{" "}
+              {uiText("Discover, search, and install from", isZhHant)}{" "}
               <strong className={styles.heroAccent}>
                 {data ? allSkillsLocal.length.toLocaleString() : "…"}
               </strong>{" "}
-              skills across {sources.length - 1} registries
+              {isZhHant
+                ? `項技能，涵蓋 ${sources.length - 1} 個登錄來源`
+                : `skills across ${sources.length - 1} registries`}
               {loadError && (
                 <span style={{ color: "#f87171", marginLeft: 8 }}>
-                  · failed to load catalog ({loadError})
+                  · {isZhHant ? "目錄載入失敗" : "failed to load catalog"} ({loadError})
                 </span>
               )}
             </p>
             {(indexMetaLocal?.indexGeneratedAt || indexMetaLocal?.extractedAt) && (
               <p className={styles.heroSub} style={{ fontSize: "0.85rem", opacity: 0.75 }}>
-                Catalog refreshed{" "}
+                {uiText("Catalog refreshed", isZhHant)}{" "}
                 <span title={indexMetaLocal.indexGeneratedAt || indexMetaLocal.extractedAt}>
                   {formatRelativeTime(
                     indexMetaLocal.indexGeneratedAt || indexMetaLocal.extractedAt,
-                  ) || "recently"}
+                    isZhHant,
+                  ) || (isZhHant ? "最近" : "recently")}
                 </span>
-                {" "}· auto-rebuilt twice daily
+                {" "}· {isZhHant ? "每日自動重建兩次" : "auto-rebuilt twice daily"}
               </p>
             )}
 
             <div className={styles.statsRow}>
               <StatCard
                 value={allSkillsLocal.filter((s) => s.source === "built-in").length}
-                label="Built-in"
+                label={uiText("Built-in", isZhHant)}
                 color="#4ade80"
               />
               <StatCard
                 value={allSkillsLocal.filter((s) => s.source === "optional").length}
-                label="Optional"
+                label={uiText("Optional", isZhHant)}
                 color="#fbbf24"
               />
               <StatCard
@@ -727,12 +838,12 @@ export default function SkillsDashboard() {
                     (s) => s.source !== "built-in" && s.source !== "optional"
                   ).length
                 }
-                label="Community"
+                label={uiText("Community", isZhHant)}
                 color="#60a5fa"
               />
               <StatCard
                 value={new Set(allSkillsLocal.map((s) => s.category)).size}
-                label="Categories"
+                label={uiText("Categories", isZhHant)}
                 color="#a78bfa"
               />
             </div>
@@ -751,7 +862,7 @@ export default function SkillsDashboard() {
             <input
               ref={searchRef}
               type="text"
-              placeholder='Search skills... (press "/" to focus)'
+              placeholder={uiText('Search skills... (press "/" to focus)', isZhHant)}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className={styles.searchInput}
@@ -792,7 +903,9 @@ export default function SkillsDashboard() {
                       : undefined
                   }
                 >
-                  {src === "all" ? "All" : conf?.label || src}
+                  {src === "all"
+                    ? uiText("All", isZhHant)
+                    : uiText(conf?.label || src, isZhHant)}
                   <span className={styles.srcCount}>{count}</span>
                 </button>
               );
@@ -812,7 +925,7 @@ export default function SkillsDashboard() {
                 clipRule="evenodd"
               />
             </svg>
-            Categories
+            {uiText("Categories", isZhHant)}
             {categoryFilter !== "all" && (
               <span className={styles.activeCatBadge}>
                 {categoryEntries.find((c) => c.key === categoryFilter)?.label}
@@ -822,10 +935,10 @@ export default function SkillsDashboard() {
 
           <aside className={`${styles.sidebar} ${sidebarOpen ? styles.sidebarOpen : ""}`}>
             <div className={styles.sidebarHeader}>
-              <h2 className={styles.sidebarTitle}>Categories</h2>
+              <h2 className={styles.sidebarTitle}>{uiText("Categories", isZhHant)}</h2>
               {categoryFilter !== "all" && (
                 <button className={styles.sidebarClear} onClick={() => setCategoryFilter("all")}>
-                  Clear
+                  {uiText("Clear", isZhHant)}
                 </button>
               )}
             </div>
@@ -838,7 +951,7 @@ export default function SkillsDashboard() {
                 }}
               >
                 <span className={styles.catItemIcon}>{"\u{1F4CB}"}</span>
-                <span className={styles.catItemLabel}>All Skills</span>
+                <span className={styles.catItemLabel}>{uiText("All Skills", isZhHant)}</span>
                 <span className={styles.catItemCount}>{filtered.length}</span>
               </button>
               {categoryEntries.map((cat) => (
@@ -861,7 +974,9 @@ export default function SkillsDashboard() {
             {(search || sourceFilter !== "all" || categoryFilter !== "all") && (
               <div className={styles.filterSummary}>
                 <span className={styles.filterCount}>
-                  {filtered.length} result{filtered.length !== 1 ? "s" : ""}
+                  {isZhHant
+                    ? `${filtered.length} 項結果`
+                    : `${filtered.length} result${filtered.length !== 1 ? "s" : ""}`}
                 </span>
                 {search && (
                   <span className={styles.filterChip}>
@@ -871,7 +986,7 @@ export default function SkillsDashboard() {
                 )}
                 {sourceFilter !== "all" && (
                   <span className={styles.filterChip}>
-                    {SOURCE_CONFIG[sourceFilter]?.label || sourceFilter}
+                    {uiText(SOURCE_CONFIG[sourceFilter]?.label || sourceFilter, isZhHant)}
                     <button onClick={() => setSourceFilter("all")}>&times;</button>
                   </span>
                 )}
@@ -883,7 +998,7 @@ export default function SkillsDashboard() {
                   </span>
                 )}
                 <button className={styles.clearAllBtn} onClick={clearAll}>
-                  Clear all
+                  {uiText("Clear all", isZhHant)}
                 </button>
               </div>
             )}
@@ -891,9 +1006,9 @@ export default function SkillsDashboard() {
             {!data && !loadError ? (
               <div className={styles.empty}>
                 <div className={styles.loadingSpinner} />
-                <h3 className={styles.emptyTitle}>Loading the catalog…</h3>
+                <h3 className={styles.emptyTitle}>{uiText("Loading the catalog…", isZhHant)}</h3>
                 <p className={styles.emptyDesc}>
-                  Fetching 88k+ skills across every registry. One moment.
+                  {uiText("Fetching 88k+ skills across every registry. One moment.", isZhHant)}
                 </p>
               </div>
             ) : visible.length > 0 ? (
@@ -914,6 +1029,7 @@ export default function SkillsDashboard() {
                         onTagClick={handleTagClick}
                         style={{ animationDelay: `${Math.min(i, 20) * 25}ms` }}
                         onPick={pickerMode ? pickSkill : undefined}
+                        isZhHant={isZhHant}
                       />
                     );
                   })}
@@ -924,7 +1040,9 @@ export default function SkillsDashboard() {
                       className={styles.loadMoreBtn}
                       onClick={() => setVisibleCount((v) => v + PAGE_SIZE)}
                     >
-                      Show more ({filtered.length - visibleCount} remaining)
+                      {isZhHant
+                        ? `顯示更多（剩餘 ${filtered.length - visibleCount} 項）`
+                        : `Show more (${filtered.length - visibleCount} remaining)`}
                     </button>
                   </div>
                 )}
@@ -932,12 +1050,12 @@ export default function SkillsDashboard() {
             ) : (
               <div className={styles.empty}>
                 <div className={styles.emptyIcon}>{"\u{1F50D}"}</div>
-                <h3 className={styles.emptyTitle}>No skills found</h3>
+                <h3 className={styles.emptyTitle}>{uiText("No skills found", isZhHant)}</h3>
                 <p className={styles.emptyDesc}>
-                  Try a different search term or clear your filters.
+                  {uiText("Try a different search term or clear your filters.", isZhHant)}
                 </p>
                 <button className={styles.emptyReset} onClick={clearAll}>
-                  Reset all filters
+                  {uiText("Reset all filters", isZhHant)}
                 </button>
               </div>
             )}

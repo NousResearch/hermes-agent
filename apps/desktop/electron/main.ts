@@ -13301,6 +13301,14 @@ function focusWindow(win) {
 
   if (!win.isVisible()) {
     win.show()
+
+    // When the HUD is re-shown (after being hidden), Hyprland retiles it on
+    // the next map event. Re-run the float+pin promotion to correct that.
+    // The first map is handled by wireWindowReveal onRevealed; subsequent
+    // toggle-driven maps need explicit promotion.
+    if (win === hudWindow) {
+      void promoteHudOverlay({ title: HUD_WINDOW_TITLE })
+    }
   }
 
   win.focus()

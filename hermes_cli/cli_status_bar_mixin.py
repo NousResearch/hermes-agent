@@ -267,6 +267,12 @@ class CLIStatusBarMixin:
 
         for key in _AGENT_COUNTERS:
             snapshot[key] = getattr(agent, key, 0) or 0
+        # Server-reported generation speed for the last completed response. Only providers whose profile
+        # opts into surfaces_server_timings ever set it; None hides the segment.
+        snapshot["server_tps"] = getattr(agent, "last_server_tps", None)
+        # Which models the endpoint's swap proxy reports resident. None = no residency concept (bare
+        # llama-server, non-llamacpp providers); the segment is hidden.
+        snapshot["server_residency"] = getattr(agent, "last_server_residency", None)
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -1029,6 +1035,15 @@ class CLIStatusBarMixin:
                     label = snapshot.get(key) or ""
                     if label:
                         add(name, _DIM, f"{glyph} {label}")
+                server_tps = snapshot.get("server_tps")
+                if server_tps:
+                    add("server_tps", _DIM, f"⚡ {server_tps:.1f} tok/s")
+                residency = snapshot.get("server_residency")
+                if residency:
+                    res_label = "+".join(residency)
+                    if len(res_label) > 26:
+                        res_label = f"{res_label[:23]}..."
+                    add("server_residency", _DIM, f"⌂ {res_label}")
             add_count("compressions", "compressions", "🗜️", self._compression_count_style)
             add_count("bg_tasks", "active_background_tasks", "▶")
             add_count("bg_processes", "active_background_processes", "⚙")

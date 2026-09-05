@@ -5873,9 +5873,13 @@ def _project_provider_profile(
     top_level: Dict[str, Any] = {}
     handles_reasoning = False
     try:
-        from providers import get_provider_profile
+        from providers import resolve_provider_profile
         from providers.base import ProviderProfile
-        profile = get_provider_profile(provider_norm)
+
+        # Aux routes carry the raw route/entry name (never a canonicalized
+        # "custom" plus a separate requested name), so the provider string
+        # doubles as the requested identity.
+        profile = resolve_provider_profile(provider, requested=provider)
         if profile is not None:
             body = profile.build_extra_body(model=model, base_url=effective_base, reasoning_config=reasoning_config) or {}
             reasoning_extra, top_level = profile.build_api_kwargs_extras(

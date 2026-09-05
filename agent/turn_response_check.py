@@ -120,6 +120,13 @@ def check_api_response(
         resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'
         logging.debug(f"API Response received - Model: {resp_model}, Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
 
+    # Server-side observability, re-assigned on every completed call and only ever set when the resolved
+    # provider profile opts in: generation speed from the response timings block (surfaces_server_timings)
+    # and swap-proxy residency from /running (resident_models). The status bar reads agent.last_server_tps
+    # and agent.last_server_residency.
+    agent._capture_server_timings(response)
+    agent._capture_server_residency()
+
     response_invalid, error_details = validate_response_shape(agent, response)
     if response_invalid:
         _iv = retry_invalid_response(

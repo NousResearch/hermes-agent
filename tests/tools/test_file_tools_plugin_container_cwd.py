@@ -21,8 +21,8 @@ def _capture_create(monkeypatch):
     return seen
 
 
-def test_plugin_container_backend_gets_the_same_host_cwd_guard_as_docker(monkeypatch, tmp_path):
-    host_cwd = str(tmp_path / "Users" / "me" / "workspace")
+def test_plugin_container_backend_gets_the_same_host_cwd_guard_as_docker(monkeypatch):
+    host_cwd = "/Users/me/workspace"  # a host-shaped path (_HOST_CWD_PREFIXES), never valid in-sandbox
     monkeypatch.setattr(terminal_tool, "_get_env_config",
                         lambda: {"env_type": "mycloud", "cwd": "/workspace", "timeout": 60})
     monkeypatch.setattr(terminal_tool, "resolve_task_overrides", lambda _tid: {"cwd": host_cwd})

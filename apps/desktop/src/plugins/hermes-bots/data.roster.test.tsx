@@ -25,7 +25,7 @@ import { renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $lastRoster, useRoster } from './data'
+import { $lastRoster, serverInjectsProtocol, useRoster } from './data'
 import type { RosterRow } from './types'
 
 const { hostMock } = vi.hoisted(() => ({
@@ -81,7 +81,7 @@ async function mergedRoster(
   liveConnectionId: null | string = 'local'
 ): Promise<RowFixture[]> {
   hostMock.state.connectionId.get.mockReturnValue(liveConnectionId as string)
-  hostMock.request.mockResolvedValue(local)
+  hostMock.requestProfile.mockResolvedValue(local)
 
   if (union) {
     hostMock.agents.mockResolvedValue(union)
@@ -103,6 +103,16 @@ async function mergedRoster(
 }
 
 const identities = (rows: RowFixture[]) => rows.map(row => `${row.connectionId}:${row.name}`)
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+
+  const promise = new Promise<T>(settle => {
+    resolve = settle
+  })
+
+  return { promise, resolve }
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -581,7 +591,7 @@ describe('a stalled profiles.list cannot pin the spinner forever', () => {
     // Bots sidebar on a spinner with no error card. The 5s refetchInterval and
     // the gateway-open effect already recover drops.
     hostMock.state.connectionId.get.mockReturnValue('local')
-    hostMock.request.mockRejectedValue(new Error('state.db is locked'))
+    hostMock.requestProfile.mockRejectedValue(new Error('state.db is locked'))
 
     const client = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } })
 
@@ -594,6 +604,107 @@ describe('a stalled profiles.list cannot pin the spinner forever', () => {
     await waitFor(() => expect(result.current.isError).toBe(true), { timeout: 5000 })
 
     expect(result.current.isLoading).toBe(false)
-    expect(hostMock.request.mock.calls.length).toBeGreaterThan(1)
+    expect(hostMock.requestProfile.mock.calls.length).toBeGreaterThan(1)
+  })
+})
+
+describe('roster request ownership', () => {
+  it('uses the older host request door while its captured owner is current', async () => {
+    const requestProfile = hostMock.requestProfile
+
+    try {
+      Object.assign(hostMock, { requestProfile: undefined })
+      hostMock.state.connectionId.get.mockReturnValue('local')
+      hostMock.request.mockResolvedValue({ profiles: [{ name: 'default' }] })
+      hostMock.agents.mockRejectedValue(new Error('older host'))
+
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+      const roster = renderHook(() => useRoster(), {
+        wrapper: ({ children }: { children: ReactNode }) => (
+          <QueryClientProvider client={client}>{children}</QueryClientProvider>
+        )
+      })
+
+      await waitFor(() => expect(roster.result.current.data?.profiles).toHaveLength(1))
+      expect(hostMock.request).toHaveBeenCalledWith('profiles.list', {})
+      roster.unmount()
+      client.clear()
+    } finally {
+      Object.assign(hostMock, { requestProfile })
+    }
+  })
+
+  it('fails closed when an older host switches owner during route discovery', async () => {
+    const requestProfile = hostMock.requestProfile
+    const profileRoutes = hostMock.profileRoutes
+
+    hostMock.state.connectionId.get.mockReturnValue('local')
+    Object.assign(hostMock, {
+      requestProfile: undefined,
+      profileRoutes: vi.fn(async () => {
+        hostMock.state.connectionId.get.mockReturnValue('other')
+        setTimeout(() => hostMock.state.connectionId.get.mockReturnValue('local'), 0)
+
+        return []
+      })
+    })
+
+    try {
+      const switchedClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+      const switched = renderHook(() => useRoster(), {
+        wrapper: ({ children }: { children: ReactNode }) => (
+          <QueryClientProvider client={switchedClient}>{children}</QueryClientProvider>
+        )
+      })
+
+      await waitFor(() => expect(switched.result.current.isError).toBe(true), { timeout: 5000 })
+      expect(hostMock.request).not.toHaveBeenCalled()
+      switched.unmount()
+      switchedClient.clear()
+    } finally {
+      Object.assign(hostMock, { profileRoutes, requestProfile })
+    }
+  })
+
+  it('publishes protocol support only from the latest current foreground request', async () => {
+    const a = deferred<{ bot_mode_protocol: boolean; profiles: RowFixture[] }>()
+    const b = deferred<{ bot_mode_protocol: boolean; profiles: RowFixture[] }>()
+
+    hostMock.state.connectionId.get.mockReturnValue('a')
+    hostMock.requestProfile.mockImplementation(route => (route.connectionId === 'a' ? a.promise : b.promise))
+    hostMock.agents.mockResolvedValue({ agents: [], sources: [] })
+
+    const firstClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    const first = renderHook(() => useRoster(), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={firstClient}>{children}</QueryClientProvider>
+      )
+    })
+
+    await waitFor(() => expect(hostMock.requestProfile).toHaveBeenCalledTimes(1))
+    hostMock.state.connectionId.get.mockReturnValue('b')
+
+    const secondClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    const second = renderHook(() => useRoster(), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={secondClient}>{children}</QueryClientProvider>
+      )
+    })
+
+    await waitFor(() => expect(hostMock.requestProfile).toHaveBeenCalledTimes(2))
+    b.resolve({ bot_mode_protocol: true, profiles: [{ name: 'from-b' }] })
+    await waitFor(() => expect(second.result.current.data).toBeTruthy())
+    expect(serverInjectsProtocol).toBe(true)
+
+    a.resolve({ bot_mode_protocol: false, profiles: [{ name: 'from-a' }] })
+    await waitFor(() => expect(first.result.current.data).toBeTruthy())
+    expect(serverInjectsProtocol).toBe(true)
+
+    first.unmount()
+    second.unmount()
   })
 })

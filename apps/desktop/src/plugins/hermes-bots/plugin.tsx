@@ -40,7 +40,8 @@ import {
   cachedUnionRoster,
   isActiveRosterBot,
   migrateBotMeta,
-  resolveRosterMentions
+  resolveRosterMentions,
+  warmUnionRoster
 } from './data'
 import {
   $groupChats,
@@ -129,6 +130,10 @@ export default {
           const profiles = Array.isArray(roster?.profiles) ? roster.profiles : []
 
           if (!profiles.length) {
+            if (!roster) {
+              warmUnionRoster()
+            }
+
             return []
           }
 

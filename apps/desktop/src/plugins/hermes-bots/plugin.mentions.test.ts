@@ -19,7 +19,7 @@
  * composes no CLI handoff and delivers nothing itself.
  */
 
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 interface MentionCompletionItem {
   display: string
@@ -58,16 +58,30 @@ const ROSTER = {
 }
 
 const { cache, hostMock, live } = vi.hoisted(() => {
-  const live = { focused: 'default', profile: 'default' }
+  const live = { connection: 'local', focused: 'default', profile: 'default' }
 
   return {
     cache: new Map<string, { key: unknown[]; value: unknown }>(),
     hostMock: {
+      agents: vi.fn(
+        async (): Promise<{
+          agents: Array<Record<string, unknown>>
+          primaryConnectionId?: string
+          sources: unknown[]
+        }> => ({ agents: [], sources: [] })
+      ),
       notify: vi.fn(),
+      profileRoutes: vi.fn(
+        async (): Promise<
+          Array<{ connectionId: string; mode: 'local' | 'remote'; profile: string; targetProfile: string }>
+        > => []
+      ),
       request: vi.fn(async () => ({})),
-      requestProfile: vi.fn(async () => ({})),
+      requestProfile: vi.fn(
+        async (_route: { connectionId: string; targetProfile?: string }): Promise<Record<string, unknown>> => ({})
+      ),
       state: {
-        connectionId: { get: () => 'local', listen: () => () => undefined },
+        connectionId: { get: () => live.connection, listen: () => () => undefined },
         focusedSessionProfile: { get: () => live.focused, listen: () => () => undefined },
         focusedStoredSessionId: { get: () => null, listen: () => () => undefined },
         gateway: { get: () => null, listen: () => () => undefined },
@@ -124,6 +138,16 @@ interface Fixture {
   profiles?: Array<Record<string, unknown>>
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+
+  const promise = new Promise<T>(settle => {
+    resolve = settle
+  })
+
+  return { promise, resolve }
+}
+
 /** Register the plugin and hand back its composer contributions. */
 async function contributions({
   cacheKeyConnection = 'local',
@@ -171,9 +195,15 @@ beforeAll(async () => {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  hostMock.agents.mockResolvedValue({ agents: [], sources: [] })
+  hostMock.profileRoutes.mockResolvedValue([])
+  hostMock.requestProfile.mockResolvedValue({})
+  live.connection = 'local'
   live.focused = 'default'
   live.profile = 'default'
 })
+
+afterEach(() => vi.useRealTimers())
 
 describe('@-mention completions', () => {
   it('offers the remote @name-device handle from the suffixed cache entry', async () => {
@@ -218,10 +248,151 @@ describe('@-mention completions', () => {
     expect(inserts).not.toContain('@renametest')
   })
 
-  it('yields nothing, and never throws, on a cold roster cache', async () => {
+  it('does not warm an authoritative empty roster', async () => {
     const { provide } = await contributions({ profiles: [] })
 
     expect(provide('')).toEqual([])
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(hostMock.requestProfile).not.toHaveBeenCalled()
+  })
+
+  it('warms a cold union roster for the next keystroke', async () => {
+    const { provide } = await contributions({ profiles: [] })
+    cache.clear()
+    hostMock.requestProfile.mockResolvedValue({ profiles: [{ name: 'default' }] })
+    hostMock.agents.mockResolvedValue({
+      agents: [
+        {
+          connectionId: 'local',
+          connectionKind: 'local',
+          connectionLabel: 'This device',
+          handle: 'default',
+          profile: 'default'
+        },
+        {
+          connectionId: 'cloud',
+          connectionKind: 'cloud',
+          connectionLabel: 'Cloud',
+          handle: 'writer',
+          profile: 'writer'
+        }
+      ],
+      primaryConnectionId: 'local',
+      sources: []
+    })
+
+    expect(provide('')).toEqual([])
+    await vi.waitFor(() => expect(provide('').map(item => item.insert)).toContain('@writer'))
+  })
+
+  it('keeps switched source warms on their captured routes', async () => {
+    const { provide } = await contributions({ profiles: [] })
+    const a = deferred<{ bot_mode_protocol: boolean; profiles: Array<{ name: string }> }>()
+    const b = deferred<{ bot_mode_protocol: boolean; profiles: Array<{ name: string }> }>()
+
+    cache.clear()
+    hostMock.profileRoutes.mockResolvedValue([
+      { connectionId: 'a', mode: 'remote', profile: 'default', targetProfile: 'root-a' },
+      { connectionId: 'b', mode: 'remote', profile: 'default', targetProfile: 'root-b' }
+    ])
+    hostMock.requestProfile.mockImplementation(route => (route.connectionId === 'a' ? a.promise : b.promise))
+
+    live.connection = 'a'
+    expect(provide('')).toEqual([])
+    live.connection = 'b'
+    expect(provide('')).toEqual([])
+    await vi.waitFor(() => expect(hostMock.requestProfile).toHaveBeenCalledTimes(2))
+
+    const data = await import('./data')
+    const protocolBefore = data.serverInjectsProtocol
+
+    b.resolve({ bot_mode_protocol: true, profiles: [{ name: 'from-b' }] })
+    await vi.waitFor(() => expect(cache.get(JSON.stringify(['hermes-bots', 'roster', 'b']))).toBeTruthy())
+    expect(data.serverInjectsProtocol).toBe(protocolBefore)
+    live.connection = 'a'
+    a.resolve({ bot_mode_protocol: false, profiles: [{ name: 'from-a' }] })
+    await vi.waitFor(() => expect(cache.get(JSON.stringify(['hermes-bots', 'roster', 'a']))).toBeTruthy())
+
+    expect(data.serverInjectsProtocol).toBe(protocolBefore)
+
+    expect(hostMock.requestProfile.mock.calls.map(([route]) => [route.connectionId, route.targetProfile])).toEqual([
+      ['a', 'root-a'],
+      ['b', 'root-b']
+    ])
+    expect((cache.get(JSON.stringify(['hermes-bots', 'roster', 'a']))?.value as { profiles: unknown[] }).profiles[0]).toMatchObject({
+      name: 'from-a'
+    })
+    expect((cache.get(JSON.stringify(['hermes-bots', 'roster', 'b']))?.value as { profiles: unknown[] }).profiles[0]).toMatchObject({
+      name: 'from-b'
+    })
+  })
+
+  it('lets a timed-out warm retry without stale publish or owner deletion', async () => {
+    const { provide } = await contributions({ profiles: [] })
+    const old = deferred<{ profiles: Array<{ name: string }> }>()
+    const current = deferred<{ profiles: Array<{ name: string }> }>()
+
+    cache.clear()
+    hostMock.requestProfile.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise)
+    vi.useFakeTimers()
+
+    expect(provide('')).toEqual([])
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(provide('')).toEqual([])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(hostMock.requestProfile).toHaveBeenCalledTimes(2)
+
+    old.resolve({ profiles: [{ name: 'stale' }] })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(cache.get(JSON.stringify(['hermes-bots', 'roster', 'local']))).toBeUndefined()
+
+    expect(provide('')).toEqual([])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(hostMock.requestProfile).toHaveBeenCalledTimes(2)
+
+    current.resolve({ profiles: [{ name: 'current' }] })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(
+      (cache.get(JSON.stringify(['hermes-bots', 'roster', 'local']))?.value as { profiles: unknown[] }).profiles[0]
+    ).toMatchObject({ name: 'current' })
+  })
+
+  it('does not let a delayed warm replace foreground cache or rebuild alias identity', async () => {
+    const { provide } = await contributions({ profiles: [] })
+    const warm = deferred<{ profiles: Array<{ name: string }> }>()
+    const routing = await import('./routing')
+    const cacheKey = JSON.stringify(['hermes-bots', 'roster', 'local'])
+
+    cache.clear()
+    routing.indexAliasRoutes([
+      { connectionId: 'seed', mode: 'remote', profile: 'keep', targetProfile: 'root' }
+    ])
+    hostMock.profileRoutes.mockResolvedValue([
+      { connectionId: 'local', mode: 'local', profile: 'default', targetProfile: 'root' }
+    ])
+    hostMock.requestProfile.mockReturnValue(warm.promise)
+
+    try {
+      expect(provide('')).toEqual([])
+      await vi.waitFor(() => expect(hostMock.requestProfile).toHaveBeenCalledTimes(1))
+
+      const authoritative = { fetchedAt: 999, profiles: [{ name: 'foreground' }] }
+      cache.set(cacheKey, {
+        key: ['hermes-bots', 'roster', 'local'],
+        value: authoritative
+      })
+      warm.resolve({ profiles: [{ name: 'background' }] })
+
+      await vi.waitFor(() => expect(hostMock.agents).toHaveBeenCalled())
+      await vi.waitFor(() => expect(cache.get(cacheKey)?.value).toBe(authoritative))
+      expect(routing.aliasIdentityFor({ connectionId: 'local', name: 'root', sourceScoped: true })).toBeNull()
+      expect(routing.aliasIdentityFor({ connectionId: 'seed', name: 'root', sourceScoped: true })).toMatchObject({
+        name: 'keep'
+      })
+    } finally {
+      routing.indexAliasRoutes([])
+    }
   })
 
   it('never offers the bot whose chat you are already in', async () => {

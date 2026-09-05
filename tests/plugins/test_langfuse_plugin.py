@@ -321,6 +321,9 @@ class TestTurnTraceIsolation:
         """A turn that never finalizes must not absorb the following turn."""
         mod = self._fresh_plugin()
         started: list = []
+        monkeypatch.setenv(
+            "HERMES_LANGFUSE_PSEUDONYM_KEY", "unit-test-turn-isolation-key"
+        )
         monkeypatch.setattr(mod, "_get_langfuse", lambda: self._fake_client(started))
         monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
         mod._TRACE_STATE.clear()
@@ -333,6 +336,8 @@ class TestTurnTraceIsolation:
         # Each turn opened its OWN root trace.  On the pre-fix code the second
         # turn reused turn 1's lingering state and only one trace was opened.
         assert len(started) == 2
+        assert started[0] != started[1]
+        assert all("sess-iso" not in trace_id for trace_id in started)
 
         # Turn 2 finalized and was popped by _finish_trace; only turn 1's
         # (non-finalizing) state lingers.  Assert the surviving key is turn 1's
@@ -1334,6 +1339,38 @@ class TestApiRequestErrorHook:
             error={"type": "X", "message": "y"}, retryable=False,
         )
 
+    def test_unsampled_failure_keeps_metadata_without_error_content(
+        self, monkeypatch
+    ):
+        mod = self._fresh_plugin()
+        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "sanitized")
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        mod._TRACE_STATE.clear()
+        turn_id = "s:t:turn-unsampled"
+        task_key = mod._trace_key("t", "s", turn_id=turn_id)
+        gen, _root = self._seed_state(mod, task_key)
+        mod._TRACE_STATE[task_key].content_sampled = False
+
+        mod.on_api_request_error(
+            task_id="t",
+            session_id="s",
+            api_call_count=1,
+            turn_id=turn_id,
+            status_code=429,
+            retry_count=1,
+            retryable=True,
+            error={"type": "RateLimitError", "message": "private prompt echo"},
+        )
+
+        metadata = [u["metadata"] for u in gen.updates if "metadata" in u][0]
+        assert metadata["status_code"] == 429
+        assert metadata["retry_count"] == 1
+        assert metadata["error_message"] == {
+            "omitted": True,
+            "type": "text",
+            "chars": len("private prompt echo"),
+        }
+
     def test_error_message_respects_capture_mode(self, monkeypatch):
         mod = self._fresh_plugin()
         monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "metadata")
@@ -1508,6 +1545,7 @@ class TestSubagentTracing:
 
     def test_start_attaches_span_despite_task_scoped_key(self, monkeypatch):
         mod = self._fresh_plugin()
+        monkeypatch.setenv("HERMES_LANGFUSE_PSEUDONYM_KEY", "p" * 32)
         spans = []
         # Key minted by the LLM hooks with a task id — a naive rebuild from
         # session_id alone would not match this.
@@ -1524,8 +1562,31 @@ class TestSubagentTracing:
 
         assert len(spans) == 1
         assert spans[0].kw["name"] == "Subagent: researcher"
-        assert spans[0].kw["metadata"]["child_subagent_id"] == "sub-1"
+        metadata = spans[0].kw["metadata"]
+        assert metadata["child_subagent_id"].startswith("hmac-sha256:")
+        assert metadata["child_session_id"].startswith("hmac-sha256:")
+        assert "sub-1" not in repr(metadata)
+        assert "child-sess-1" not in repr(metadata)
         assert "child-sess-1" in state.subagents
+
+    def test_start_omits_exported_child_ids_without_pseudonym_key(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.delenv("HERMES_LANGFUSE_PSEUDONYM_KEY", raising=False)
+        spans = []
+        self._state(mod, monkeypatch, "task:task-9:turn:turn-7", spans)
+
+        mod.on_subagent_start(
+            parent_turn_id="turn-7",
+            parent_subagent_id="parent-1",
+            child_session_id="child-sess-1",
+            child_subagent_id="sub-1",
+            child_role="researcher",
+        )
+
+        metadata = spans[0].kw["metadata"]
+        assert "child_session_id" not in metadata
+        assert "child_subagent_id" not in metadata
+        assert "parent_subagent_id" not in metadata
 
     def test_stop_ends_span_and_records_outcome(self, monkeypatch):
         mod = self._fresh_plugin()
@@ -2387,3 +2448,547 @@ class TestCanonicalCostExport:
         # explicit zeros are treated as authoritative by Langfuse and block
         # its own model-based estimation (#43129).
         assert response_cost == {}
+
+
+class TestTelemetryV1Contract:
+    def _fresh_plugin(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def test_root_metadata_is_versioned_fingerprinted_and_pseudonymous(
+        self, monkeypatch
+    ):
+        mod = self._fresh_plugin()
+        monkeypatch.setenv("HERMES_LANGFUSE_RELEASE", "test-release")
+        monkeypatch.setenv(
+            "HERMES_LANGFUSE_PSEUDONYM_KEY",
+            "unit-test-non-credential-hmac-material",
+        )
+        monkeypatch.setenv("HERMES_LANGFUSE_PSEUDONYM_KEY_VERSION", "test-v2")
+        started = []
+
+        class Span:
+            id = "root-observation"
+
+            def update_trace(self, **kwargs):
+                started.append(("trace", kwargs))
+
+        class Context:
+            def __enter__(self):
+                return Span()
+
+        class Client:
+            def create_trace_id(self, seed):
+                return f"trace::{seed}"
+
+            def start_as_current_observation(self, **kwargs):
+                started.append(("root", kwargs))
+                return Context()
+
+        raw_session = "discord:raw-chat-123456789"
+        raw_task = "raw-task-123456789"
+        request = {
+            "body": {
+                "messages": [{"role": "user", "content": "hello"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {"name": "read_file", "parameters": {}},
+                    }
+                ],
+            }
+        }
+        mod._start_root_trace(
+            "turn:one",
+            task_id=raw_task,
+            session_id=raw_session,
+            platform="discord",
+            provider="unit-provider",
+            model="unit-model",
+            api_mode="chat_completions",
+            messages=request["body"]["messages"],
+            request=request,
+            system_prompt="system contract",
+            client=Client(),
+            turn_id="turn-one",
+            enabled_tool_count=7,
+            tool_schema_bytes=1234,
+            tool_policy_fingerprint="sha256:" + "a" * 64,
+        )
+
+        root_kwargs = next(value for kind, value in started if kind == "root")
+        metadata = root_kwargs["metadata"]
+        rendered = repr(started)
+        assert metadata["telemetry_schema_version"] == "hermes.telemetry.v1"
+        assert metadata["hermes_release"] == "test-release"
+        assert metadata["pseudonym_key_version"] == "test-v2"
+        assert metadata["session_id"].startswith("hmac-sha256:")
+        assert metadata["task_id"].startswith("hmac-sha256:")
+        assert metadata["config_fingerprint"].startswith("sha256:")
+        assert metadata["prompt_fingerprint"].startswith("sha256:")
+        assert metadata["tool_policy_fingerprint"] == "sha256:" + "a" * 64
+        assert metadata["enabled_tool_count"] == 7
+        assert metadata["tool_schema_bytes"] == 1234
+        assert metadata["context_source_chars"] == {
+            "system_prompt": len("system contract"),
+            "conversation": len("hello"),
+        }
+        assert raw_session not in rendered
+        assert raw_task not in rendered
+
+    def test_raw_session_and_task_ids_are_omitted_without_hmac_key(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.delenv("HERMES_LANGFUSE_PSEUDONYM_KEY", raising=False)
+        metadata = mod._telemetry_metadata(
+            task_id="raw-task-id",
+            session_id="discord:raw-session-id",
+            provider="provider",
+            model="model",
+            api_mode="chat_completions",
+            messages=[],
+            system_prompt=None,
+            request=None,
+        )
+        assert "task_id" not in metadata
+        assert "session_id" not in metadata
+        assert "raw-task-id" not in repr(metadata)
+        assert "raw-session-id" not in repr(metadata)
+
+    def test_short_pseudonym_key_omits_identifiers(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.setenv("HERMES_LANGFUSE_PSEUDONYM_KEY", "too-short")
+        metadata = mod._telemetry_metadata(
+            task_id="raw-task-id",
+            session_id="discord:raw-session-id",
+            provider="provider",
+            model="model",
+            api_mode="chat_completions",
+            messages=[],
+            system_prompt=None,
+            request=None,
+        )
+        assert "task_id" not in metadata
+        assert "session_id" not in metadata
+        assert "pseudonym_key_version" not in metadata
+
+    def test_sdk_sampling_is_content_only_and_export_mask_is_installed(
+        self, monkeypatch
+    ):
+        mod = self._fresh_plugin()
+        captured = {}
+        monkeypatch.setenv(
+            "HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-unit-test-not-a-credential"
+        )
+        monkeypatch.setenv(
+            "HERMES_LANGFUSE_SECRET_KEY", "sk-lf-unit-test-not-a-credential"
+        )
+        monkeypatch.setenv("HERMES_LANGFUSE_SAMPLE_RATE", "0.25")
+
+        class Client:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr(mod, "Langfuse", Client)
+        monkeypatch.setattr(mod, "MaskOtelSpansResult", object)
+        monkeypatch.setattr(mod, "OtelSpanPatch", object)
+        monkeypatch.setattr(mod, "_LANGFUSE_CLIENT", None)
+        monkeypatch.setattr(mod, "_INIT_FAILED", False)
+        assert mod._get_langfuse() is not None
+        assert "sample_rate" not in captured
+        assert callable(captured["mask_otel_spans"])
+        assert mod._content_sample_rate() == 0.25
+
+    def test_sdk_without_span_mask_uses_fail_closed_mask_callback(
+        self, monkeypatch
+    ):
+        mod = self._fresh_plugin()
+        captured = {}
+        monkeypatch.setenv(
+            "HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-unit-public"
+        )
+        monkeypatch.setenv(
+            "HERMES_LANGFUSE_SECRET_KEY", "sk-lf-unit-secret"
+        )
+
+        class Client:
+            def __init__(
+                self,
+                *,
+                public_key=None,
+                secret_key=None,
+                base_url=None,
+                mask=None,
+                environment=None,
+                release=None,
+            ):
+                captured.update(
+                    public_key=public_key,
+                    secret_key=secret_key,
+                    base_url=base_url,
+                    mask=mask,
+                    environment=environment,
+                    release=release,
+                )
+
+        monkeypatch.setattr(mod, "Langfuse", Client)
+        monkeypatch.setattr(mod, "_LANGFUSE_CLIENT", None)
+        monkeypatch.setattr(mod, "_INIT_FAILED", False)
+        assert mod._get_langfuse() is not None
+        assert callable(captured["mask"])
+
+    def test_legacy_sdk_mask_failure_returns_redacted_sentinel(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.setattr(
+            mod,
+            "_mask_text",
+            lambda _value: (_ for _ in ()).throw(RuntimeError("mask failed")),
+        )
+        assert mod._legacy_mask(data="do not export") == "<redacted:mask-failed>"
+
+    def test_export_mask_failure_drops_batch_instead_of_returning_original(
+        self, monkeypatch
+    ):
+        mod = self._fresh_plugin()
+        params = SimpleNamespace(
+            spans={
+                "span": SimpleNamespace(
+                    attributes={"langfuse.observation.input": "private"}
+                )
+            }
+        )
+
+        class Result:
+            def __init__(self, *, span_patches=None, drop=False):
+                self.span_patches = span_patches
+                self.drop = drop
+
+        monkeypatch.setattr(mod, "MaskOtelSpansResult", Result)
+        monkeypatch.setattr(
+            mod,
+            "_mask_export_value",
+            lambda _value: (_ for _ in ()).throw(RuntimeError("mask failed")),
+        )
+        masked = mod._mask_otel_spans(params=params)
+        assert masked.drop is True
+        assert not masked.span_patches
+
+    def test_unsampled_content_becomes_metadata_stub(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "sanitized")
+        assert mod._capture_content("private body", content_sampled=False) == {
+            "omitted": True,
+            "type": "text",
+            "chars": len("private body"),
+        }
+
+    def test_invalid_content_sample_rate_disables_content(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.setenv("HERMES_LANGFUSE_SAMPLE_RATE", "not-a-rate")
+        assert mod._content_sample_rate() == 0.0
+
+    def test_unvalidated_fingerprint_is_omitted(self):
+        mod = self._fresh_plugin()
+        metadata = mod._telemetry_metadata(
+            provider="unit",
+            model="model",
+            api_mode="chat",
+            task_id="",
+            session_id="",
+            messages=[],
+            system_prompt=None,
+            request={},
+            tool_policy_fingerprint="raw-private-value",
+        )
+
+        assert "tool_policy_fingerprint" not in metadata
+
+    def test_outcome_fields_are_bounded_structured_values(self):
+        mod = self._fresh_plugin()
+        assert mod._structured_outcome_metadata(
+            route_reason_code="quota_fallback",
+            fallback_count=1,
+            retry_count=2,
+            quota_result_code="exhausted",
+        ) == {
+            "route_reason_code": "quota_fallback",
+            "fallback_count": 1,
+            "retry_count": 2,
+            "quota_result_code": "exhausted",
+        }
+        assert mod._structured_outcome_metadata(
+            route_reason_code="private free-form reason!",
+            fallback_count=-1,
+            retry_count="two",
+            quota_result_code="token=private",
+        ) == {}
+
+    def test_route_reason_uses_existing_middleware_reason_without_payload_leakage(self):
+        mod = self._fresh_plugin()
+        trace = [{"source": "router", "reason": "Quota Fallback", "private": "do-not-export"}]
+        assert mod._middleware_route_reason(trace) == "middleware_rewrite"
+
+    def test_usage_source_buckets_only_include_provider_reported_values(self):
+        mod = self._fresh_plugin()
+        usage = {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_input_tokens": 30,
+            "reasoning_tokens": None,
+        }
+        assert mod._token_source_buckets(usage) == {
+            "input": 100,
+            "output": 20,
+            "cache_read": 30,
+        }
+
+    def test_tool_outcome_metadata_does_not_capture_result_content(self, monkeypatch):
+        mod = self._fresh_plugin()
+        updates = []
+        observation = SimpleNamespace(update=lambda **kwargs: updates.append(kwargs))
+        state = mod.TraceState(
+            trace_id="trace",
+            root_ctx=None,
+            root_span=SimpleNamespace(),
+            tools={"call": observation},
+        )
+        mod._TRACE_STATE[mod._trace_key("turn:call", "")] = state
+        monkeypatch.setattr(
+            mod,
+            "_end_observation",
+            lambda _observation, **kwargs: updates.append(kwargs),
+        )
+        mod.on_post_tool_call(
+            tool_name="terminal",
+            tool_call_id="call",
+            result="private command output",
+            status="error",
+            error_type="TimeoutError",
+            duration_ms=12,
+            middleware_trace=[{"policy": "deny", "private": "not-exported"}],
+            task_id="turn:call",
+        )
+        metadata = updates[-1]["metadata"]
+        assert metadata == {
+            "tool_name": "terminal",
+            "tool_call_id": "call",
+            "outcome_code": "error",
+            "error_type": "TimeoutError",
+            "duration_ms": 12,
+            "tool_policy_decision": "denied",
+        }
+        assert "private command output" not in repr(metadata)
+        assert "not-exported" not in repr(metadata)
+
+
+class TestUnsampledContentBoundary:
+    """sample_rate=0 is an absolute content boundary, not pattern redaction."""
+
+    @staticmethod
+    def _fresh_plugin(monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        monkeypatch.setenv("HERMES_LANGFUSE_SAMPLE_RATE", "0")
+        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "sanitized")
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        return mod
+
+    def test_trace_output_never_reintroduces_arbitrary_tool_content(self, monkeypatch):
+        mod = self._fresh_plugin(monkeypatch)
+        canary = "ordinary-tool-canary-7f7c6f"
+        state = mod.TraceState(
+            trace_id="trace-unsampled",
+            root_ctx=None,
+            root_span=None,
+            content_sampled=mod._content_is_sampled("trace-unsampled"),
+        )
+        state.turn_tool_calls.append(
+            {
+                "id": "call-1",
+                "name": "terminal",
+                "arguments": {"command": canary},
+                "output": {"stdout": canary},
+            }
+        )
+
+        merged = mod._merge_trace_output(
+            {"content": {"omitted": True, "type": "text", "chars": 4}}, state
+        )
+
+        assert state.content_sampled is False
+        assert canary not in repr(merged)
+        assert "tool_calls" not in merged
+        assert canary not in repr(
+            mod._capture_content({canary: True}, content_sampled=False)
+        )
+        assert mod._capture_content(True, content_sampled=False) == {
+            "omitted": True,
+            "type": "boolean",
+        }
+
+    def test_unsampled_post_llm_does_not_retain_raw_tool_arguments(
+        self, monkeypatch
+    ):
+        mod = self._fresh_plugin(monkeypatch)
+
+        class Observation:
+            def __init__(self):
+                self.updates = []
+
+            def update(self, **kwargs):
+                self.updates.append(kwargs)
+
+            def end(self):
+                pass
+
+        generation = Observation()
+        state = mod.TraceState(
+            trace_id="trace-unsampled",
+            root_ctx=None,
+            root_span=SimpleNamespace(),
+            content_sampled=mod._content_is_sampled("trace-unsampled"),
+            generations={"0": generation},
+        )
+        task_key = mod._trace_key("task-unsampled", "")
+        mod._TRACE_STATE[task_key] = state
+        canary = "ordinary-tool-argument-canary-2b76"
+        assistant_message = SimpleNamespace(
+            content="tool call pending",
+            tool_calls=[
+                SimpleNamespace(
+                    id="call-1",
+                    type="function",
+                    function=SimpleNamespace(name="terminal", arguments=canary),
+                )
+            ],
+        )
+
+        mod.on_post_llm_call(
+            task_id="task-unsampled",
+            assistant_message=assistant_message,
+            api_call_count=0,
+        )
+
+        assert state.turn_tool_calls == []
+        assert canary not in repr(generation.updates)
+        assert generation.updates[-1]["metadata"]["tool_call_count"] == 1
+
+    def test_unsampled_moa_output_is_omitted_but_usage_and_cost_remain(
+        self, monkeypatch
+    ):
+        mod = self._fresh_plugin(monkeypatch)
+        generations = []
+
+        class Observation:
+            def __init__(self, kwargs):
+                self.kwargs = kwargs
+                self.updates = {}
+
+            def update(self, **kwargs):
+                self.updates.update(kwargs)
+
+            def end(self):
+                pass
+
+        class Root:
+            def start_observation(self, **kwargs):
+                observation = Observation(kwargs)
+                generations.append(observation)
+                return observation
+
+        state = mod.TraceState(
+            trace_id="trace-unsampled",
+            root_ctx=None,
+            root_span=Root(),
+            content_sampled=mod._content_is_sampled("trace-unsampled"),
+        )
+        canary = "ordinary-moa-output-canary-c375"
+
+        mod._emit_moa_reference_generations(
+            state,
+            client=object(),
+            references=[
+                {
+                    "label": "advisor",
+                    "model": "model",
+                    "provider": "provider",
+                    "output": canary,
+                    "usage": {"input_tokens": 100, "output_tokens": 50},
+                    "cost_usd": 0.001,
+                }
+            ],
+        )
+
+        assert state.content_sampled is False
+        assert canary not in repr([generation.updates for generation in generations])
+        assert generations[0].updates["usage_details"] == {
+            "input": 100,
+            "output": 50,
+        }
+        assert generations[0].updates["cost_details"]["total"] == pytest.approx(
+            0.001
+        )
+
+    def test_unsampled_subagent_content_is_omitted_but_metadata_remains(
+        self, monkeypatch
+    ):
+        mod = self._fresh_plugin(monkeypatch)
+        spans = []
+
+        class Observation:
+            def __init__(self, kwargs):
+                self.kwargs = kwargs
+                self.updates = {}
+
+            def update(self, **kwargs):
+                self.updates.update(kwargs)
+
+            def end(self):
+                pass
+
+        class Root:
+            def start_observation(self, **kwargs):
+                observation = Observation(kwargs)
+                spans.append(observation)
+                return observation
+
+        state = mod.TraceState(
+            trace_id="trace-unsampled",
+            root_ctx=None,
+            root_span=Root(),
+            content_sampled=mod._content_is_sampled("trace-unsampled"),
+        )
+        mod._TRACE_STATE["task:t:turn:turn-unsampled"] = state
+        goal_canary = "ordinary-goal-canary-28d6"
+        summary_canary = "ordinary-summary-canary-56ad"
+        history_canary = "ordinary-history-canary-92bc"
+
+        mod.on_subagent_start(
+            parent_session_id="sess-1",
+            parent_turn_id="turn-unsampled",
+            child_session_id="child-sess-1",
+            child_role="researcher",
+            child_goal=goal_canary,
+        )
+        mod.on_subagent_stop(
+            parent_session_id="sess-1",
+            parent_turn_id="turn-unsampled",
+            child_session_id="child-sess-1",
+            child_role="researcher",
+            child_summary=summary_canary,
+            child_status="ok",
+            tool_call_history=[
+                {"name": "read_file", "side_effect_target": history_canary}
+            ],
+            duration_ms=42,
+        )
+
+        exported = repr([span.kwargs for span in spans]) + repr(
+            [span.updates for span in spans]
+        )
+        assert state.content_sampled is False
+        assert goal_canary not in exported
+        assert summary_canary not in exported
+        assert history_canary not in exported
+        assert spans[0].updates["metadata"]["status"] == "ok"
+        assert spans[0].updates["metadata"]["tool_call_count"] == 1
+        assert spans[0].updates["metadata"]["duration_ms"] == 42

@@ -1,18 +1,16 @@
-"""Discord ``gateway_platform_event`` fire-sites (#64176 remaining scope).
+"""Discord platform-event normalization and feedback security boundaries.
 
-Covers the Discord half of the normalized-envelope pipeline:
-* ``message_edited`` / ``message_deleted`` / ``thread_created`` /
-  ``thread_renamed`` normalize to stable plain-dict envelopes (no raw SDK
-  objects) and dispatch through the gateway-owned post-auth boundary
-* bot-authored events are dropped at the fire-site (streaming edits are noise)
-* malformed events (missing ids / identities) drop, fail closed
-* no installed gateway callback means no fire (no trusted auth boundary)
-* the has_hook no-subscriber fast-path skips all normalization work
+Legacy edit/delete/thread normalizers are exercised directly as inert helpers,
+but Discord does not register their SDK listeners and the runner rejects their
+events. Only reaction add/remove is active for feedback. Reaction tests cover
+bot-target verification, malformed-event fail-closed behavior, central gateway
+authorization, content-free envelopes, and listener-surface restriction.
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -364,7 +362,7 @@ class TestRunnerBoundaryIntegration:
 
         invoked.assert_not_called()
 
-    def test_authorized_discord_event_reaches_hooks(self):
+    def test_authorized_non_reaction_event_still_never_reaches_hooks(self):
         from gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
@@ -381,8 +379,133 @@ class TestRunnerBoundaryIntegration:
         finally:
             lifecycle.invoke_hook = orig_invoke
 
-        invoked.assert_called_once()
-        args, kwargs = invoked.call_args
-        assert args == ("gateway_platform_event",)
-        assert kwargs["platform"] == "discord"
-        assert kwargs["event_type"] == "message_edited"
+        invoked.assert_not_called()
+
+
+class TestReactionFeedbackEvents:
+    def test_connect_registers_only_reaction_feedback_listeners(self):
+        source = inspect.getsource(DiscordAdapter.connect)
+        assert "async def on_raw_reaction_add" in source
+        assert "async def on_raw_reaction_remove" in source
+        for unrelated_listener in (
+            "async def on_message_edit",
+            "async def on_message_delete",
+            "async def on_thread_create",
+            "async def on_thread_update",
+        ):
+            assert unrelated_listener not in source
+
+    @staticmethod
+    def _configured_adapter(*, target_bot=True, actor_bot=False):
+        a = _adapter()
+        actor = SimpleNamespace(id=777, bot=actor_bot, display_name="private-name")
+        target = _message(author_id=999, bot=target_bot, content="private-target-text")
+        channel = _channel()
+        channel.fetch_message = AsyncMock(return_value=target)
+        target.channel = channel
+        a._client = SimpleNamespace(
+            user=SimpleNamespace(id=999, bot=True),
+            get_channel=lambda _channel_id: channel,
+            fetch_channel=AsyncMock(return_value=channel),
+            get_user=lambda _user_id: actor,
+            fetch_user=AsyncMock(return_value=actor),
+        )
+        return a, actor, target
+
+    @staticmethod
+    def _payload(**overrides):
+        values = {
+            "user_id": 777,
+            "channel_id": 555,
+            "message_id": 456,
+            "guild_id": 999,
+            "emoji": "👍",
+            "member": None,
+        }
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
+    def test_add_and_remove_normalize_without_content_or_names(self):
+        a, actor, _target = self._configured_adapter()
+        seen = _capture(a)
+        payload = self._payload(member=actor)
+
+        asyncio.run(a._on_platform_reaction(payload, action="add"))
+        asyncio.run(a._on_platform_reaction(payload, action="remove"))
+
+        assert len(seen) == 2
+        for index, action in enumerate(("add", "remove")):
+            event, source = seen[index]
+            assert event["platform"] == "discord"
+            assert event["event_type"] == "reaction"
+            assert event["payload"] == {
+                "target_chat_id": "555",
+                "target_thread_id": None,
+                "target_message_id": "456",
+                "actor_id": "777",
+                "emoji": "👍",
+                "action": action,
+                "timestamp": event["payload"]["timestamp"],
+                "bot_authored_target": True,
+            }
+            assert source.user_id == "777"
+            serialized = json.dumps(event)
+            assert "private-name" not in serialized
+            assert "private-target-text" not in serialized
+            assert "content" not in event["payload"]
+
+    def test_bot_actor_non_bot_target_and_malformed_events_drop(self):
+        a, actor, _target = self._configured_adapter()
+        seen = _capture(a)
+        asyncio.run(a._on_platform_reaction(self._payload(user_id=999), action="add"))
+        assert seen == []
+
+        a, actor, _target = self._configured_adapter(target_bot=False)
+        seen = _capture(a)
+        asyncio.run(
+            a._on_platform_reaction(self._payload(member=actor), action="add")
+        )
+        assert seen == []
+
+        a, actor, _target = self._configured_adapter()
+        seen = _capture(a)
+        for malformed in (
+            self._payload(member=actor, message_id=None),
+            self._payload(member=actor, user_id=""),
+            self._payload(member=actor, emoji=""),
+        ):
+            asyncio.run(a._on_platform_reaction(malformed, action="add"))
+        assert seen == []
+
+    def test_runner_authorization_fails_closed_and_duplicates_are_notifications(
+        self, monkeypatch
+    ):
+        from gateway.run import GatewayRunner
+
+        a, actor, _target = self._configured_adapter()
+        payload = self._payload(member=actor)
+        invoked = MagicMock()
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", invoked)
+        runner = object.__new__(GatewayRunner)
+        runner._is_user_authorized = (
+            lambda source, *, allow_adapter_delegation=True: False
+        )
+        a.set_platform_event_handler(runner._handle_gateway_platform_event)
+        asyncio.run(a._on_platform_reaction(payload, action="add"))
+        invoked.assert_not_called()
+
+        runner._is_user_authorized = (
+            lambda source, *, allow_adapter_delegation=True: source.user_id == "777"
+        )
+        asyncio.run(a._on_platform_reaction(payload, action="add"))
+        asyncio.run(a._on_platform_reaction(payload, action="add"))
+        assert invoked.call_count == 2
+        first = dict(invoked.call_args_list[0].kwargs)
+        second = dict(invoked.call_args_list[1].kwargs)
+        first_payload = dict(first["payload"])
+        second_payload = dict(second["payload"])
+        assert isinstance(first_payload.pop("timestamp"), str)
+        assert isinstance(second_payload.pop("timestamp"), str)
+        first["payload"] = first_payload
+        second["payload"] = second_payload
+        assert first == second

@@ -1529,6 +1529,7 @@ class MessageEvent:
     # May this event resolve gateway commands / control prompts? Proactive plugin events set False
     # so untrusted payload text stays conversational. Kept last for positional compat.
     allow_gateway_control: bool = True
+    _hermes_turn_correlation: Optional[Dict[str, str]] = None
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
@@ -1620,6 +1621,22 @@ class SendResult:
     # SEND_ERROR_KINDS member (failures only) via :func:`classify_send_error`, so consumers
     # branch without substring-matching ``error``.
     error_kind: Optional[str] = None
+
+
+def _delivery_message_ids(result: Any) -> List[str]:
+    """Return every successfully delivered message ID, in send order."""
+    if result is None or not getattr(result, "success", False):
+        return []
+    candidates: List[Any] = [getattr(result, "message_id", None)]
+    continuation_ids = getattr(result, "continuation_message_ids", None)
+    if isinstance(continuation_ids, (list, tuple)):
+        candidates.extend(continuation_ids)
+    raw_response = getattr(result, "raw_response", None)
+    if isinstance(raw_response, dict):
+        split_ids = raw_response.get("message_ids")
+        if isinstance(split_ids, (list, tuple)):
+            candidates.extend(split_ids)
+    return list(dict.fromkeys(str(item) for item in candidates if item))
 
 
 # Platform-neutral send-failure kinds for ``SendResult.error_kind``: too_long (size cap),
@@ -1863,6 +1880,7 @@ class BasePlatformAdapter(ABC):
         self._reaction_handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
         # Runner-owned boundary for normalized events: auth/profile state never lives in an adapter.
         self._platform_event_handler: Optional[Callable[[Dict[str, Any], Any], Awaitable[None]]] = None
+        self._outbound_response_handler: Optional[Callable[[Dict[str, Any], Any], Any]] = None
         # Rewrites ``event.source.thread_id`` before session keying (Telegram DM topics).
         self._topic_recovery_fn: Optional[Callable[[Any], Optional[str]]] = None
         self._running, self._fatal_error_retryable = False, True
@@ -2212,6 +2230,40 @@ class BasePlatformAdapter(ABC):
         ``SessionSource``); the runner owns authorization and plugin dispatch: no callback = fail
         closed."""
         self._platform_event_handler = handler
+
+    def set_outbound_response_handler(
+        self, handler: Optional[Callable[[Dict[str, Any], Any], Any]],
+    ) -> None:
+        """Install the post-success, content-free outbound observer boundary."""
+        self._outbound_response_handler = handler
+
+    async def _fire_outbound_response(self, event: MessageEvent, message_ids: List[str]) -> None:
+        handler = getattr(self, "_outbound_response_handler", None)
+        correlation = event._hermes_turn_correlation
+        if not callable(handler) or not isinstance(correlation, dict):
+            return
+        trace_id = str(correlation.get("trace_id") or "")
+        turn_id = str(correlation.get("turn_id") or "")
+        if not trace_id or not turn_id:
+            return
+        for message_id in dict.fromkeys(str(item) for item in message_ids if item):
+            envelope = {
+                "platform": str(getattr(event.source.platform, "value", event.source.platform)),
+                "target_chat_id": str(event.source.chat_id),
+                "target_thread_id": str(event.source.thread_id) if event.source.thread_id else None,
+                "target_message_id": message_id,
+                "turn_id": turn_id,
+                "trace_id": trace_id,
+                "timestamp": datetime.now().astimezone().isoformat(),
+            }
+            if correlation.get("observation_id"):
+                envelope["observation_id"] = str(correlation["observation_id"])
+            try:
+                result = handler(envelope, event.source)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logger.debug("outbound response hook failed", exc_info=True)
 
     def set_topic_recovery_fn(self, fn: Optional[Callable[[Any], Optional[str]]]) -> None:
         """Install a thread_id-recovery hook (Telegram DM topic mode): called with ``event.source``
@@ -3875,12 +3927,14 @@ class BasePlatformAdapter(ABC):
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
+        delivered_message_ids: List[str] = []
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
             if result is not None:
                 delivery_attempted = True
                 delivery_succeeded = delivery_succeeded or bool(getattr(result, "success", False))
+                delivered_message_ids.extend(_delivery_message_ids(result))
         # Reuse the interrupt event handle_message() installed; new Event only if removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
@@ -3889,6 +3943,15 @@ class BasePlatformAdapter(ABC):
         try:
             await self._run_processing_hook("on_processing_start", event)
             response = await self._message_handler(event)
+            streamed_ids = getattr(event, "_hermes_streamed_message_ids", None)
+            if isinstance(streamed_ids, (list, tuple)):
+                normalized_streamed_ids = [
+                    str(message_id) for message_id in streamed_ids
+                    if message_id and str(message_id) != "__no_edit__"
+                ]
+                if normalized_streamed_ids:
+                    delivery_attempted = delivery_succeeded = True
+                    delivered_message_ids.extend(normalized_streamed_ids)
             is_ephemeral_response = isinstance(response, EphemeralReply)
             # Unwrap EphemeralReply for downstream text processing; TTL applies after send.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)
@@ -3937,6 +4000,8 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook(
                 "on_processing_complete", event,
                 ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
+            if delivery_succeeded:
+                await self._fire_outbound_response(event, delivered_message_ids)
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)

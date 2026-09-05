@@ -649,6 +649,12 @@ def ensure_hermes_home():
     Memoized per home path: this runs on EVERY ``load_config()`` and the ~14 mkdir/chmod syscalls
     made repeated loads the dominant cost of hot read paths."""
     home = get_hermes_home()
+    # Resolve symlinks so we always operate on the actual directory, not the
+    # link.  This lets ``~/.hermes`` be a symlink to a Git-tracked directory
+    # without ``ensure_hermes_home`` silently skipping subdirectory creation
+    # (because ``Path.is_dir()`` follows the symlink and returns True even
+    # when the link itself has not been processed yet).
+    home = home.resolve()
     key = str(home)
 
     # Named profiles must be created explicitly. Check tombstones BEFORE the memo so a stale

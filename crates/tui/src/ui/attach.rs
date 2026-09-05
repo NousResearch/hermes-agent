@@ -14,12 +14,20 @@ use crate::state::{AppState, HitRange, HoverKind, PendingImage};
 
 pub struct AttachPreview;
 
+const SINGLE_IMAGE_ROWS: u16 = 12;
+const MULTI_IMAGE_ROWS: u16 = 7;
+
 impl AttachPreview {
     pub fn height(images: &[PendingImage], pastes: usize) -> u16 {
         let img = if images.is_empty() {
             0
         } else {
-            (1 + images.len().min(2) * 5).min(12) as u16
+            let rows = if images.len() == 1 {
+                SINGLE_IMAGE_ROWS
+            } else {
+                MULTI_IMAGE_ROWS.saturating_mul(2)
+            };
+            1 + rows + images.len().min(2) as u16
         };
         let pst = if pastes == 0 {
             0
@@ -71,7 +79,11 @@ impl AttachPreview {
             row = row.saturating_add(1);
         }
         for img in images.iter().take(2) {
-            let thumb_h = area.height.saturating_sub(1).min(6);
+            let thumb_h = if images.len() == 1 {
+                SINGLE_IMAGE_ROWS
+            } else {
+                MULTI_IMAGE_ROWS
+            };
             let thumb = image_thumb_lines(&img.path, area.width.saturating_sub(4), thumb_h);
             if thumb.is_empty() {
                 lines.extend(image_card(

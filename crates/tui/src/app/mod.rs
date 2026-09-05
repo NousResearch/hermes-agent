@@ -10,10 +10,10 @@ use ratatui::{
     widgets::{Block, Borders},
     Terminal,
 };
+use ratatui_textarea::TextArea;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::{interval, Duration, Interval, MissedTickBehavior};
-use tui_textarea::TextArea;
 
 use crate::optimistic;
 use crate::rpc::GatewayClient;
@@ -602,15 +602,15 @@ pub(crate) async fn draw(
         constraints.extend([
             Constraint::Min(5),
             Constraint::Length(q_h),
-            Constraint::Length(turn_h),
-            Constraint::Length(jump_h),
             Constraint::Length(attach_h),
+            Constraint::Length(jump_h),
+            Constraint::Length(turn_h),
+            Constraint::Length(dock_h),
             Constraint::Length(composer_h),
         ]);
         if !footer_top {
             constraints.push(Constraint::Length(footer_h));
         }
-        constraints.push(Constraint::Length(dock_h));
         constraints.push(Constraint::Length(scan_h));
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -703,31 +703,27 @@ pub(crate) async fn draw(
             }
         }
         QueuePane::render(f, chunks[i + 1], &mut s);
-        TurnBar::render(f, chunks[i + 2], &s, frame_count);
-        if s.metrics.is_compacting && chunks[i + 2].height > 0 {
+        AttachPreview::render(f, chunks[i + 2], &mut s);
+        JumpChip::render(f, chunks[i + 3], &mut s);
+        TurnBar::render(f, chunks[i + 4], &s, frame_count);
+        if s.metrics.is_compacting && chunks[i + 4].height > 0 {
             s.metrics.compaction_painted = true;
         }
-        JumpChip::render(f, chunks[i + 3], &mut s);
-        AttachPreview::render(f, chunks[i + 4], &mut s);
         s.queue_area = Some(chunks[i + 1]);
-        s.composer_area = Some(chunks[i + 5]);
-        f.render_widget(&*textarea, chunks[i + 5]);
-        let footer_area = if footer_top { chunks[0] } else { chunks[i + 6] };
-        let dock_area = if footer_top {
-            chunks[i + 6]
-        } else {
-            chunks[i + 7]
-        };
-        Footer::render(f, footer_area, &mut s, frame_count);
+        let dock_area = chunks[i + 5];
+        s.composer_area = Some(chunks[i + 6]);
         AgentDock::render(f, dock_area, &mut s, frame_count);
+        f.render_widget(&*textarea, chunks[i + 6]);
+        let footer_area = if footer_top { chunks[0] } else { chunks[i + 7] };
+        Footer::render(f, footer_area, &mut s, frame_count);
         TurnBar::render_scan(f, chunks[chunks.len() - 1], &s, frame_count);
 
         if s.slash_open {
             let ranked = s.slash_ranked();
-            SlashPopup::render(f, chunks[i + 5], s.slash_selected, &ranked);
+            SlashPopup::render(f, chunks[i + 6], s.slash_selected, &ranked);
         }
         if s.complete_open && !s.slash_open {
-            CompletePopup::render(f, chunks[i + 5], &s.complete_items, s.complete_selected);
+            CompletePopup::render(f, chunks[i + 6], &s.complete_items, s.complete_selected);
         }
         ViewsOverlay::render(f, f.area(), &mut s, frame_count);
     })?;

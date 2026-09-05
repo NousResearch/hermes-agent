@@ -2,7 +2,9 @@
 //! marks, lists, rules, quotes, fenced code, and image cards.
 
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -456,7 +458,7 @@ pub fn image_card(alt: &str, url: &str, col_width: usize) -> Vec<Line<'static>> 
         Span::styled(RAIL, border),
         Span::styled(meta, code_style()),
     ]));
-    for row in image_thumb_lines(Path::new(url), inner as u16, 6) {
+    for row in image_thumb_lines(Path::new(url), inner as u16, 10) {
         let mut spans = vec![Span::styled(RAIL, border)];
         spans.extend(row.spans);
         out.push(Line::from(spans));
@@ -465,7 +467,7 @@ pub fn image_card(alt: &str, url: &str, col_width: usize) -> Vec<Line<'static>> 
     out
 }
 
-/// Half-block thumbnail. Empty when the path is not a local image.
+/// Half-block thumbnail sized for the terminal cell aspect ratio.
 pub fn image_thumb_lines(path: &Path, cols: u16, rows: u16) -> Vec<Line<'static>> {
     if cols < 4 || rows == 0 {
         return Vec::new();
@@ -476,12 +478,41 @@ pub fn image_thumb_lines(path: &Path, cols: u16, rows: u16) -> Vec<Line<'static>
     if meta.len() > 4 * 1024 * 1024 {
         return Vec::new();
     }
+    let key = ImageCacheKey {
+        path: path.to_path_buf(),
+        len: meta.len(),
+        modified: meta.modified().ok(),
+        cols,
+        rows,
+    };
+    let cache = IMAGE_CACHE.get_or_init(|| Mutex::new(Vec::new()));
+    if let Ok(cache) = cache.lock() {
+        if let Some((_, lines)) = cache.iter().find(|(candidate, _)| candidate == &key) {
+            return lines.clone();
+        }
+    }
     let Ok(img) = image::open(path) else {
         return Vec::new();
     };
-    let w = cols as u32;
-    let h = (rows as u32).saturating_mul(2).max(2);
-    let thumb = img.thumbnail(w, h).into_rgb8();
+    let max_cols = cols as u32;
+    let max_rows = rows as u32;
+    let source_w = img.width().max(1);
+    let source_h = img.height().max(1);
+    // Terminal cells are roughly twice as tall as they are wide. Each `▀`
+    // represents two vertical pixels, so preserve the source aspect ratio in
+    // rendered cell space rather than fitting it to a square pixel box.
+    let aspect = source_w as f32 / source_h as f32;
+    let thumb_rows = max_rows
+        .min(((max_cols as f32 * 0.5) / aspect).floor().max(1.0) as u32)
+        .max(1);
+    let thumb_cols = ((thumb_rows as f32 * aspect * 2.0).round() as u32).clamp(1, max_cols.max(1));
+    let thumb = img
+        .resize_exact(
+            thumb_cols,
+            thumb_rows.saturating_mul(2),
+            image::imageops::FilterType::CatmullRom,
+        )
+        .into_rgb8();
     let tw = thumb.width();
     let th = thumb.height();
     let mut lines = Vec::new();
@@ -505,8 +536,28 @@ pub fn image_thumb_lines(path: &Path, cols: u16, rows: u16) -> Vec<Line<'static>
         lines.push(Line::from(spans));
         y += 2;
     }
+    if let Ok(mut cache) = cache.lock() {
+        const MAX_CACHED_THUMBNAILS: usize = 16;
+        if cache.len() >= MAX_CACHED_THUMBNAILS {
+            cache.remove(0);
+        }
+        cache.push((key, lines.clone()));
+    }
     lines
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ImageCacheKey {
+    path: PathBuf,
+    len: u64,
+    modified: Option<SystemTime>,
+    cols: u16,
+    rows: u16,
+}
+
+type ImageCache = Vec<(ImageCacheKey, Vec<Line<'static>>)>;
+
+static IMAGE_CACHE: OnceLock<Mutex<ImageCache>> = OnceLock::new();
 
 pub fn image_dims(path: &Path) -> Option<(u32, u32)> {
     let mut f = std::fs::File::open(path).ok()?;
@@ -832,11 +883,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ht-thumb-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.png");
-        image::RgbImage::from_pixel(8, 8, image::Rgb([200, 80, 20]))
+        image::RgbImage::from_pixel(160, 80, image::Rgb([200, 80, 20]))
             .save(&path)
             .unwrap();
-        let lines = image_thumb_lines(&path, 8, 4);
-        assert!(!lines.is_empty());
+        let lines = image_thumb_lines(&path, 40, 8);
+        assert_eq!(lines.len(), 8, "uses the available vertical resolution");
+        let first_width: usize = lines[0].spans.iter().map(|span| span.content.width()).sum();
+        assert_eq!(first_width, 32, "preserves aspect in terminal cells");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

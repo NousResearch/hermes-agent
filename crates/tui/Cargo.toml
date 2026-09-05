@@ -2,7 +2,7 @@
 name = "hermes-native-tui"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.88"
 authors = ["Nous Research"]
 description = "Native Rust TUI client for Hermes Agent (tui_gateway JSON-RPC)"
 license = "MIT"
@@ -16,10 +16,10 @@ name = "hermes-tui-native"
 path = "src/main.rs"
 
 [dependencies]
-ratatui = { version = "0.29", features = ["crossterm"] }
-crossterm = { version = "0.28", features = ["event-stream", "bracketed-paste"] }
-tui-textarea = "0.7"
-tokio = { version = "1.43", features = ["rt", "macros", "process", "io-util", "sync", "time", "signal"] }
+ratatui = { version = "0.30.2", features = ["crossterm"] }
+crossterm = { version = "0.29", features = ["event-stream", "bracketed-paste"] }
+ratatui-textarea = "0.9.2"
+tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time", "signal"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 futures-util = "0.3"
 serde = { version = "1.0", features = ["derive"] }
@@ -33,6 +33,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.12", features = ["v4"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+tempfile = "3.27"
 
 [lints.clippy]
 unwrap_used = "deny"

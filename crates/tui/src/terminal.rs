@@ -6,7 +6,7 @@ use crossterm::{
         disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, SetTitle,
     },
 };
-use std::io::{stdout, BufWriter, Stdout};
+use std::io::{stdout, BufWriter, Stdout, Write};
 
 /// Restores the terminal on drop, including panic unwind.
 pub struct TerminalGuard;
@@ -14,12 +14,15 @@ pub struct TerminalGuard;
 impl TerminalGuard {
     pub fn enter() -> Result<Self> {
         enable_raw_mode()?;
-        execute!(
+        if let Err(error) = execute!(
             stdout(),
             EnterAlternateScreen,
             EnableBracketedPaste,
             EnableMouseCapture
-        )?;
+        ) {
+            let _ = disable_raw_mode();
+            return Err(error.into());
+        }
         Ok(Self)
     }
 }
@@ -82,32 +85,39 @@ pub fn edit_in_external_editor(
         crossterm::cursor::Show
     )?;
 
-    let path = std::env::temp_dir().join(format!("hermes-edit-{}.md", std::process::id()));
-    let written = std::fs::write(&path, initial);
-    let argv = resolve_editor();
-    let status = written.ok().and_then(|_| {
+    let edit_result = (|| -> Result<Option<String>> {
+        let mut temp = tempfile::Builder::new()
+            .prefix("hermes-edit-")
+            .suffix(".md")
+            .tempfile()?;
+        temp.write_all(initial.as_bytes())?;
+        temp.flush()?;
+        let argv = resolve_editor();
         let mut cmd = std::process::Command::new(&argv[0]);
         if argv.len() > 1 {
             cmd.args(&argv[1..]);
         }
-        cmd.arg(&path).status().ok()
-    });
-    let text = if status.is_some_and(|s| s.success()) {
-        std::fs::read_to_string(&path).ok()
-    } else {
-        None
-    };
-    let _ = std::fs::remove_file(&path);
+        let status = cmd.arg(temp.path()).status()?;
+        if status.success() {
+            Ok(Some(std::fs::read_to_string(temp.path())?))
+        } else {
+            Ok(None)
+        }
+    })();
 
-    enable_raw_mode()?;
-    execute!(
-        stdout(),
-        EnterAlternateScreen,
-        EnableBracketedPaste,
-        EnableMouseCapture
-    )?;
-    let _ = terminal.clear();
-    Ok(text)
+    let restore_result = (|| -> Result<()> {
+        enable_raw_mode()?;
+        execute!(
+            stdout(),
+            EnterAlternateScreen,
+            EnableBracketedPaste,
+            EnableMouseCapture
+        )?;
+        terminal.clear()?;
+        Ok(())
+    })();
+    restore_result?;
+    edit_result
 }
 
 pub fn request_attention(summary: &str) {

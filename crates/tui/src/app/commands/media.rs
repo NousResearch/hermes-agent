@@ -1,7 +1,7 @@
 //! Attach, clipboard, and image command handlers.
+use ratatui_textarea::TextArea;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tui_textarea::TextArea;
 
 use crate::optimistic;
 use crate::rpc::GatewayClient;

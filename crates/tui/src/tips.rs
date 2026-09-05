@@ -95,6 +95,19 @@ pub fn ellipsize(s: &str, max: usize) -> String {
     out
 }
 
+/// Truncate to at most `max_bytes` without splitting a UTF-8 code point.
+pub fn truncate_utf8(value: &mut String, max_bytes: usize) {
+    if value.len() <= max_bytes {
+        return;
+    }
+    let mut boundary = max_bytes;
+    while boundary > 0 && !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    value.truncate(boundary);
+    value.push('…');
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,6 +129,13 @@ mod tests {
         let e = ellipsize("abcdefghijklmnopqrstuvwxyz", 8);
         assert!(e.ends_with('…'));
         assert!(unicode_width::UnicodeWidthStr::width(e.as_str()) <= 8);
+    }
+
+    #[test]
+    fn truncate_utf8_never_splits_a_character() {
+        let mut text = format!("{}é", "x".repeat(7));
+        truncate_utf8(&mut text, 8);
+        assert_eq!(text, "xxxxxxx…");
     }
 
     #[test]

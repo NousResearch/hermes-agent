@@ -1,9 +1,9 @@
 //! Fall-through slash.exec / command.dispatch, plus model/branch pickers.
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui_textarea::TextArea;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tui_textarea::TextArea;
 
 use crate::optimistic;
 use crate::rpc::GatewayClient;

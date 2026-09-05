@@ -584,16 +584,17 @@ impl GatewayClient {
         session_id: &str,
         request_id: &str,
         answer: &str,
+        question_id: Option<&str>,
     ) -> Result<Value> {
-        self.call(
-            "clarify.respond",
-            json!({
-                "session_id": session_id,
-                "request_id": request_id,
-                "answer": answer,
-            }),
-        )
-        .await
+        let mut params = json!({
+            "session_id": session_id,
+            "request_id": request_id,
+            "answer": answer,
+        });
+        if let Some(qid) = question_id {
+            params["question_id"] = json!(qid);
+        }
+        self.call("clarify.respond", params).await
     }
 
     pub async fn secret_respond(
@@ -1169,11 +1170,12 @@ mod tests {
 
     #[test]
     fn redact_masks_keys_and_caps() {
-        let github = format!("ghp_{}", "abcdefghijklmnopqrstuvwxyz0123");
-        let line = redact_gateway_line(&format!("auth Bearer {github} done"));
+        let gh = ["ghp", "_", "abcdefghijklmnopqrstuvwxyz0123"].concat();
+        let line = redact_gateway_line(&format!("auth Bearer {gh} done"));
         assert!(line.contains("Bearer ***"), "{line}");
         assert!(!line.contains("abcdefghijklmnopqrstuvwxyz"), "{line}");
-        let sk = redact_gateway_line(&format!("OPENAI_API_KEY=sk-ant-{}", "secretvalue999"));
+        let ant = ["sk-", "ant-", "secretvalue999"].concat();
+        let sk = redact_gateway_line(&format!("OPENAI_API_KEY={ant}"));
         assert!(sk.contains("sk-ant-***"), "{sk}");
         assert!(!sk.contains("secretvalue999"), "{sk}");
         let long = "x".repeat(400);

@@ -1,8 +1,8 @@
 //! Mouse hit-testing for queue, composer, and overlays.
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui_textarea::{CursorMove, DataCursor, TextArea};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tui_textarea::{CursorMove, TextArea};
 
 use crate::rpc::GatewayClient;
 use crate::state::{ActiveView, AppState, DockEntry, HoverKind, MessageRole, PickerStage};
@@ -485,7 +485,7 @@ pub(crate) async fn handle_mouse(
                     if let Some(area) = s.composer_area {
                         if click_composer(textarea, area, mouse.column, mouse.row) {
                             s.trace_focus = false;
-                            let (row, col) = textarea.cursor();
+                            let DataCursor(row, col) = textarea.cursor();
                             let lines: Vec<String> =
                                 textarea.lines().iter().map(|l| l.to_string()).collect();
                             let off = crate::paste::byte_offset(&lines, row, col);

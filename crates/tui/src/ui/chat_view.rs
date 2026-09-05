@@ -389,7 +389,9 @@ fn emit_span(
             let failed = status.starts_with("failed");
             let kind = tool_kind(name);
             if kind == ToolKind::Todo {
-                push_todo_card(lines, &messages[start], state, running, spin);
+                if state.tasks.is_empty() {
+                    push_todo_card(lines, &messages[start], state, running, spin);
+                }
                 return Some(messages[start].id.clone());
             }
             let mark = if failed {

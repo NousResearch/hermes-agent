@@ -385,6 +385,7 @@ fn zip_columns(
     left: Vec<Line<'static>>,
     right: Vec<Line<'static>>,
     left_w: usize,
+    right_w: usize,
 ) -> Vec<Line<'static>> {
     let rows = left.len().max(right.len());
     let mut out = Vec::with_capacity(rows);
@@ -392,7 +393,7 @@ fn zip_columns(
         let l = left.get(i).cloned().unwrap_or_else(|| Line::raw(""));
         let r = right.get(i).cloned().unwrap_or_else(|| Line::raw(""));
         let mut spans = pad_line(l, left_w).spans;
-        spans.extend(r.spans);
+        spans.extend(pad_line(r, right_w).spans);
         out.push(Line::from(spans));
     }
     out
@@ -412,10 +413,10 @@ pub fn render_intro(
     body.push(Line::raw(""));
 
     let cad_w = art_width(CADUCEUS_ART);
-    let gap = 4;
     let wide = width >= cad_w + 40;
+    let left_w = width / 2;
     let info_w = if wide {
-        width.saturating_sub(cad_w + gap).clamp(36, 64)
+        width.saturating_sub(left_w)
     } else {
         width.saturating_sub(2).max(20)
     };
@@ -436,7 +437,7 @@ pub fn render_intro(
             }
         }
         if wide {
-            zip_columns(cad, info, cad_w + gap)
+            zip_columns(center_block(cad, left_w), info, left_w, info_w)
         } else if !cad.is_empty() {
             let mut p = cad;
             p.push(Line::raw(""));
@@ -519,6 +520,26 @@ mod tests {
             .expect("logo line");
         let lead = logo.chars().take_while(|c| *c == ' ').count();
         assert!(lead >= 8, "logo should be centered, lead={lead}");
+    }
+
+    #[test]
+    fn wide_intro_splits_art_and_info_evenly() {
+        let mut s = AppState::new();
+        s.metrics.hermes_version = "0.20.5".into();
+        s.mark_session_ready();
+        s.reveal_started = Some(std::time::Instant::now() - std::time::Duration::from_secs(2));
+
+        let width = 140;
+        let mut lines: Vec<Line<'_>> = Vec::new();
+        render_intro(&mut lines, width, 40, &s, 0);
+        let title = lines
+            .iter()
+            .map(plain)
+            .find(|text| text.contains("Hermes Agent"))
+            .expect("info title");
+        let info_start = title.find("Hermes Agent").expect("title offset");
+
+        assert_eq!(title[..info_start].width(), width / 2);
     }
 
     #[test]

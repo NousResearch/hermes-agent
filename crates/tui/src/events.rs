@@ -2,7 +2,7 @@ use crate::platform::probe_git_repo_branch;
 use crate::rpc::types::JsonRpcEvent;
 use crate::state::{
     activity_from_thinking, count_mcp_connected, parse_grouped_names, parse_todos, tasks_blob,
-    AppState, ChatMessage, MessageRole, TaskItem,
+    AppState, ChatMessage, ClarifyQuestion, ClarifyRequest, MessageRole, TaskItem,
 };
 
 /// Apply a `tui_gateway` event onto `AppState`.
@@ -119,10 +119,7 @@ pub fn apply_event(state: &mut AppState, evt: &JsonRpcEvent) {
             } else {
                 500
             };
-            if args.len() > cap {
-                args.truncate(cap);
-                args.push('…');
-            }
+            crate::tips::truncate_utf8(&mut args, cap);
 
             state.messages.push(ChatMessage {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -154,9 +151,7 @@ pub fn apply_event(state: &mut AppState, evt: &JsonRpcEvent) {
                 .and_then(|p| p.get("args"))
                 .filter(|v| v.is_object())
             {
-                if let Some(last) = state.messages.iter_mut().rev().find(|m| {
-                    matches!(&m.role, MessageRole::Tool { status, .. } if status.contains("running"))
-                }) {
+                if let Some(last) = find_running_tool_mut(state, name, tool_id) {
                     if last.content.is_empty() || last.content.ends_with('…') {
                         last.content = args.to_string();
                     }
@@ -164,9 +159,7 @@ pub fn apply_event(state: &mut AppState, evt: &JsonRpcEvent) {
             }
             if let Some(diff) = payload.and_then(|p| p.get("inline_diff").and_then(|v| v.as_str()))
             {
-                if let Some(last) = state.messages.iter_mut().rev().find(|m| {
-                    matches!(&m.role, MessageRole::Tool { status, .. } if status.contains("running"))
-                }) {
+                if let Some(last) = find_running_tool_mut(state, name, tool_id) {
                     if !diff.trim().is_empty() {
                         last.output = diff.to_string();
                     }
@@ -177,9 +170,7 @@ pub fn apply_event(state: &mut AppState, evt: &JsonRpcEvent) {
                     .or_else(|| p.get("summary"))
                     .and_then(|v| v.as_str())
             }) {
-                if let Some(last) = state.messages.iter_mut().rev().find(|m| {
-                    matches!(&m.role, MessageRole::Tool { status, .. } if status.contains("running"))
-                }) {
+                if let Some(last) = find_running_tool_mut(state, name, tool_id) {
                     if last.output.is_empty() {
                         last.output = result.to_string();
                     }
@@ -240,44 +231,42 @@ pub fn apply_event(state: &mut AppState, evt: &JsonRpcEvent) {
                 .and_then(|v| v.get("request_id").and_then(|d| d.as_str()))
                 .unwrap_or("")
                 .to_string();
-            let question = p
-                .and_then(|v| v.get("question").and_then(|d| d.as_str()))
-                .or_else(|| {
-                    p.and_then(|v| v.get("questions").and_then(|q| q.as_array()))
-                        .and_then(|arr| arr.first())
-                        .and_then(|q| q.get("question").and_then(|s| s.as_str()))
-                })
-                .unwrap_or("clarify")
-                .to_string();
-            let mut choices: Vec<String> = p
-                .and_then(|v| v.get("choices").and_then(|c| c.as_array()))
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                        .collect()
+            let answered = p.and_then(|v| v.get("answers")).and_then(|v| v.as_object());
+            let mut questions = p
+                .and_then(|v| v.get("questions").and_then(|q| q.as_array()))
+                .map(|rows| {
+                    rows.iter()
+                        .filter_map(|row| {
+                            let qid = row.get("qid")?.as_str()?.trim();
+                            let question = row.get("question")?.as_str()?.trim();
+                            if qid.is_empty()
+                                || question.is_empty()
+                                || answered.is_some_and(|a| a.contains_key(qid))
+                            {
+                                return None;
+                            }
+                            Some(clarify_question(row, Some(qid.to_string()), question))
+                        })
+                        .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            if choices.is_empty() {
-                if let Some(first) = p
-                    .and_then(|v| v.get("questions").and_then(|q| q.as_array()))
-                    .and_then(|arr| arr.first())
-                {
-                    if let Some(ch) = first.get("choices").and_then(|c| c.as_array()) {
-                        choices = ch
-                            .iter()
-                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                            .collect();
-                    }
-                }
+            if questions.is_empty() && p.and_then(|v| v.get("questions")).is_none() {
+                let value = p.unwrap_or(&serde_json::Value::Null);
+                let question = value
+                    .get("question")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("clarify")
+                    .trim();
+                questions.push(clarify_question(value, None, question));
             }
-            state.pending_clarify = Some(crate::state::ClarifyRequest {
-                request_id,
-                question,
-                choices,
-                selected: 0,
-                typed: String::new(),
-            });
-            state.set_toast("Clarify");
+            if !questions.is_empty() {
+                state.pending_clarify = Some(ClarifyRequest {
+                    request_id,
+                    questions,
+                    active: 0,
+                });
+                state.set_toast("Clarify");
+            }
         }
         "sudo.request" => {
             let p = evt.params.payload.as_ref();
@@ -499,10 +488,9 @@ pub fn apply_event(state: &mut AppState, evt: &JsonRpcEvent) {
 }
 
 fn apply_todo_payload(state: &mut AppState, payload: Option<&serde_json::Value>) {
-    let parsed = collect_todos(payload);
-    if parsed.is_empty() {
+    let Some(parsed) = collect_todos(payload) else {
         return;
-    }
+    };
     let blob = tasks_blob(&parsed);
     state.tasks = parsed;
     if let Some(last) = state.messages.iter_mut().rev().find(|m| {
@@ -512,18 +500,15 @@ fn apply_todo_payload(state: &mut AppState, payload: Option<&serde_json::Value>)
     }
 }
 
-fn collect_todos(payload: Option<&serde_json::Value>) -> Vec<TaskItem> {
-    let Some(p) = payload else {
-        return Vec::new();
-    };
+fn collect_todos(payload: Option<&serde_json::Value>) -> Option<Vec<TaskItem>> {
+    let p = payload?;
     if p.get("todos").is_some() {
-        return parse_todos(p);
+        return Some(parse_todos(p));
     }
     for key in ["args", "result"] {
         if let Some(v) = p.get(key) {
-            let parsed = parse_todos(v);
-            if !parsed.is_empty() {
-                return parsed;
+            if let Some(parsed) = collect_todos(Some(v)) {
+                return Some(parsed);
             }
         }
     }
@@ -531,11 +516,64 @@ fn collect_todos(payload: Option<&serde_json::Value>) -> Vec<TaskItem> {
         if let Some(s) = p.get(key).and_then(|v| v.as_str()) {
             let parsed = crate::ui::stream::todos_from_content(s);
             if !parsed.is_empty() {
-                return parsed;
+                return Some(parsed);
             }
         }
     }
-    Vec::new()
+    None
+}
+
+fn clarify_question(
+    value: &serde_json::Value,
+    qid: Option<String>,
+    question: &str,
+) -> ClarifyQuestion {
+    let choices = value
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|choice| choice.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    ClarifyQuestion {
+        qid,
+        question: question.to_string(),
+        multi_select: !choices.is_empty()
+            && value.get("multi_select").and_then(|v| v.as_bool()) == Some(true),
+        choices,
+        selected: 0,
+        selected_indices: std::collections::HashSet::new(),
+        typed: String::new(),
+    }
+}
+
+fn find_running_tool_mut<'a>(
+    state: &'a mut AppState,
+    name: Option<&str>,
+    tool_id: Option<&str>,
+) -> Option<&'a mut ChatMessage> {
+    state
+        .messages
+        .iter_mut()
+        .rev()
+        .find(|message| match &message.role {
+            MessageRole::Tool {
+                name: candidate_name,
+                status,
+                tool_id: candidate_id,
+            } if status.contains("running") => {
+                let id_matches = match (tool_id, candidate_id.as_deref()) {
+                    (Some(expected), Some(actual)) => expected == actual,
+                    (Some(_), None) => false,
+                    (None, _) => true,
+                };
+                let name_matches = name.is_none_or(|expected| expected == candidate_name);
+                id_matches && name_matches
+            }
+            _ => false,
+        })
 }
 
 fn payload_str<'a>(payload: &'a Option<serde_json::Value>, key: &str) -> Option<&'a str> {
@@ -952,6 +990,54 @@ mod tests {
     }
 
     #[test]
+    fn explicit_empty_todo_payload_clears_plan() {
+        let mut s = AppState::new();
+        s.tasks.push(TaskItem {
+            id: "stale".into(),
+            title: "stale".into(),
+            status: crate::state::TaskStatus::Pending,
+        });
+        apply_event(
+            &mut s,
+            &evt(
+                "tool.complete",
+                json!({"name": "todo", "tool_id": "td", "todos": []}),
+            ),
+        );
+        assert!(s.tasks.is_empty());
+    }
+
+    #[test]
+    fn tool_completion_updates_the_matching_running_tool() {
+        let mut s = AppState::new();
+        for (name, id) in [("read_file", "one"), ("terminal", "two")] {
+            apply_event(
+                &mut s,
+                &evt("tool.start", json!({"name": name, "tool_id": id})),
+            );
+        }
+        apply_event(
+            &mut s,
+            &evt(
+                "tool.complete",
+                json!({"name": "read_file", "tool_id": "one", "result_text": "first result"}),
+            ),
+        );
+        let first = s
+            .messages
+            .iter()
+            .find(|m| matches!(&m.role, MessageRole::Tool { tool_id, .. } if tool_id.as_deref() == Some("one")))
+            .expect("first tool");
+        let second = s
+            .messages
+            .iter()
+            .find(|m| matches!(&m.role, MessageRole::Tool { tool_id, .. } if tool_id.as_deref() == Some("two")))
+            .expect("second tool");
+        assert_eq!(first.output, "first result");
+        assert!(second.output.is_empty());
+    }
+
+    #[test]
     fn approval_request_sets_pending() {
         let mut s = AppState::new();
         s.session_id = Some("abc".into());
@@ -1037,8 +1123,37 @@ mod tests {
             ),
         );
         let c = s.pending_clarify.expect("clarify");
-        assert_eq!(c.choices.len(), 2);
-        assert_eq!(c.question, "which file?");
+        let question = c.current().expect("current question");
+        assert_eq!(question.choices.len(), 2);
+        assert_eq!(question.question, "which file?");
+        assert!(!question.multi_select);
+    }
+
+    #[test]
+    fn batch_clarify_preserves_questions_and_multi_select() {
+        let mut s = AppState::new();
+        s.session_id = Some("abc".into());
+        apply_event(
+            &mut s,
+            &evt(
+                "clarify.request",
+                json!({
+                    "request_id": "r2",
+                    "answers": {"q0": "done"},
+                    "questions": [
+                        {"qid": "q0", "question": "answered?", "choices": ["yes"]},
+                        {"qid": "q1", "question": "targets?", "choices": ["a", "b"], "multi_select": true},
+                        {"qid": "q2", "question": "notes?", "choices": []}
+                    ]
+                }),
+            ),
+        );
+        let c = s.pending_clarify.expect("clarify batch");
+        assert!(c.is_batch());
+        assert_eq!(c.questions.len(), 2, "replayed answers are skipped");
+        assert_eq!(c.questions[0].qid.as_deref(), Some("q1"));
+        assert!(c.questions[0].multi_select);
+        assert_eq!(c.questions[1].qid.as_deref(), Some("q2"));
     }
 
     #[test]

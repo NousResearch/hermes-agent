@@ -3,7 +3,7 @@
 //! Pending keys: `dd`, `dw`, `gg`. `G` jumps to the bottom.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tui_textarea::{CursorMove, TextArea};
+use ratatui_textarea::{CursorMove, TextArea};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VimMode {

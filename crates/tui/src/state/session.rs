@@ -1493,21 +1493,6 @@ impl AppState {
                 }
             }
         }
-        let todo_tool = name.is_some_and(|n| n.to_ascii_lowercase().contains("todo"));
-        if !todo_tool {
-            if let Some(last_task) = self
-                .tasks
-                .iter_mut()
-                .rev()
-                .find(|t| t.status == TaskStatus::InProgress)
-            {
-                last_task.status = if error {
-                    TaskStatus::Failed
-                } else {
-                    TaskStatus::Completed
-                };
-            }
-        }
         self.metrics.active_tool = None;
         if self.split_diff {
             self.refresh_diff();

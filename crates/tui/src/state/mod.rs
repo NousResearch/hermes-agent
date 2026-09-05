@@ -239,12 +239,35 @@ pub struct ApprovalRequest {
 }
 
 #[derive(Debug, Clone)]
-pub struct ClarifyRequest {
-    pub request_id: String,
+pub struct ClarifyQuestion {
+    pub qid: Option<String>,
     pub question: String,
     pub choices: Vec<String>,
+    pub multi_select: bool,
     pub selected: usize,
+    pub selected_indices: HashSet<usize>,
     pub typed: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClarifyRequest {
+    pub request_id: String,
+    pub questions: Vec<ClarifyQuestion>,
+    pub active: usize,
+}
+
+impl ClarifyRequest {
+    pub fn current(&self) -> Option<&ClarifyQuestion> {
+        self.questions.get(self.active)
+    }
+
+    pub fn current_mut(&mut self) -> Option<&mut ClarifyQuestion> {
+        self.questions.get_mut(self.active)
+    }
+
+    pub fn is_batch(&self) -> bool {
+        self.questions.iter().any(|q| q.qid.is_some())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

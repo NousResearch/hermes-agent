@@ -1,9 +1,9 @@
 //! Keyboard dispatch: composer, overlays, and modal lists.
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui_textarea::{DataCursor, TextArea};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tui_textarea::TextArea;
 
 use crate::optimistic;
 use crate::rpc::GatewayClient;
@@ -21,74 +21,132 @@ pub(crate) async fn handle_clarify_key(
     state: &Mutex<AppState>,
     client: &Arc<GatewayClient>,
 ) -> Result<LoopControl> {
-    {
+    let submission = {
         let mut s = state.lock().await;
         let Some(c) = s.pending_clarify.as_mut() else {
             return Ok(LoopControl::Continue);
         };
-        match key.code {
-            KeyCode::Esc => {
-                s.pending_clarify = None;
-                s.set_toast("clarify dismissed");
-                return Ok(LoopControl::Continue);
-            }
-            KeyCode::Up => {
-                c.selected = c.selected.saturating_sub(1);
-                s.mark_dirty();
-                return Ok(LoopControl::Continue);
-            }
-            KeyCode::Down => {
-                let n = c.choices.len();
-                if n > 0 {
-                    c.selected = (c.selected + 1).min(n.saturating_sub(1));
-                }
-                s.mark_dirty();
-                return Ok(LoopControl::Continue);
-            }
-            KeyCode::Char(ch) if ch.is_ascii_digit() && !c.choices.is_empty() => {
-                let i = ch.to_digit(10).unwrap_or(0) as usize;
-                if i >= 1 && i <= c.choices.len() {
-                    c.selected = i - 1;
-                }
-            }
-            KeyCode::Char(ch)
-                if c.choices.is_empty() && !key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                c.typed.push(ch);
-                s.mark_dirty();
-                return Ok(LoopControl::Continue);
-            }
-            KeyCode::Backspace if c.choices.is_empty() => {
-                c.typed.pop();
-                s.mark_dirty();
-                return Ok(LoopControl::Continue);
-            }
-            KeyCode::Enter => {}
-            _ => return Ok(LoopControl::Continue),
-        }
-        let answer = if c.choices.is_empty() {
-            c.typed.clone()
-        } else {
-            c.choices.get(c.selected).cloned().unwrap_or_default()
-        };
-        if answer.is_empty() {
+        let request_id = c.request_id.clone();
+        let is_batch = c.is_batch();
+        let Some(question) = c.current_mut() else {
+            s.pending_clarify = None;
             return Ok(LoopControl::Continue);
-        }
-        let rid = c.request_id.clone();
-        let sid = s.session_id.clone();
-        drop(s);
-        if let Some(sid) = sid {
-            if let Err(e) = client.clarify_respond(&sid, &rid, &answer).await {
-                state
-                    .lock()
-                    .await
-                    .add_system(format!("clarify failed: {e}"));
+        };
+        if key.code == KeyCode::Esc {
+            (request_id, String::new(), None, true)
+        } else {
+            match key.code {
+                KeyCode::Up => {
+                    question.selected = question.selected.saturating_sub(1);
+                    s.mark_dirty();
+                    return Ok(LoopControl::Continue);
+                }
+                KeyCode::Down => {
+                    let n = question.choices.len();
+                    if n > 0 {
+                        question.selected = (question.selected + 1).min(n.saturating_sub(1));
+                    }
+                    s.mark_dirty();
+                    return Ok(LoopControl::Continue);
+                }
+                KeyCode::Char(' ') if question.multi_select => {
+                    if !question.selected_indices.remove(&question.selected) {
+                        question.selected_indices.insert(question.selected);
+                    }
+                    s.mark_dirty();
+                    return Ok(LoopControl::Continue);
+                }
+                KeyCode::Char(ch) if ch.is_ascii_digit() && !question.choices.is_empty() => {
+                    let i = ch.to_digit(10).unwrap_or(0) as usize;
+                    if i >= 1 && i <= question.choices.len() {
+                        question.selected = i - 1;
+                        if question.multi_select {
+                            if !question.selected_indices.remove(&question.selected) {
+                                question.selected_indices.insert(question.selected);
+                            }
+                            s.mark_dirty();
+                            return Ok(LoopControl::Continue);
+                        }
+                    }
+                }
+                KeyCode::Char(ch)
+                    if question.choices.is_empty()
+                        && !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    question.typed.push(ch);
+                    s.mark_dirty();
+                    return Ok(LoopControl::Continue);
+                }
+                KeyCode::Backspace if question.choices.is_empty() => {
+                    question.typed.pop();
+                    s.mark_dirty();
+                    return Ok(LoopControl::Continue);
+                }
+                KeyCode::Enter => {}
+                _ => return Ok(LoopControl::Continue),
+            }
+            let answer = if question.choices.is_empty() {
+                question.typed.clone()
+            } else if question.multi_select {
+                let selected = question
+                    .choices
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| question.selected_indices.contains(i))
+                    .map(|(_, choice)| choice.clone())
+                    .collect::<Vec<_>>();
+                serde_json::to_string(&selected).unwrap_or_default()
             } else {
-                let mut s = state.lock().await;
+                question
+                    .choices
+                    .get(question.selected)
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            if answer.is_empty() || (question.multi_select && answer == "[]") {
+                return Ok(LoopControl::Continue);
+            }
+            (
+                request_id,
+                answer,
+                if is_batch { question.qid.clone() } else { None },
+                false,
+            )
+        }
+    };
+    let sid = state.lock().await.session_id.clone();
+    let Some(sid) = sid else {
+        return Ok(LoopControl::Continue);
+    };
+    let (request_id, answer, question_id, cancelling) = submission;
+    match client
+        .clarify_respond(&sid, &request_id, &answer, question_id.as_deref())
+        .await
+    {
+        Ok(response) => {
+            let mut s = state.lock().await;
+            if cancelling {
                 s.pending_clarify = None;
-                s.set_toast("answered");
+                s.set_toast("clarify cancelled");
+            } else if let Some(c) = s.pending_clarify.as_mut() {
+                let server_done = response
+                    .get("remaining")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(Vec::is_empty);
+                if server_done || c.active + 1 >= c.questions.len() {
+                    s.pending_clarify = None;
+                    s.set_toast("answered");
+                } else {
+                    c.active += 1;
+                    s.set_toast("answer locked");
+                    s.mark_dirty();
+                }
             }
         }
+        Err(e) => state
+            .lock()
+            .await
+            .add_system(format!("clarify failed: {e}")),
     }
     Ok(LoopControl::Continue)
 }
@@ -107,25 +165,26 @@ pub(crate) async fn handle_secret_key(
         match key.code {
             KeyCode::Esc => {
                 sec.buffer.clear();
-                true
+                Some(true)
             }
-            KeyCode::Enter => true,
+            KeyCode::Enter if !sec.buffer.is_empty() => Some(false),
+            KeyCode::Enter => None,
             KeyCode::Backspace => {
                 sec.buffer.pop();
                 s.mark_dirty();
-                false
+                None
             }
             KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 sec.buffer.push(ch);
                 s.mark_dirty();
-                false
+                None
             }
-            _ => false,
+            _ => None,
         }
     };
-    if !submit {
+    let Some(cancelling) = submit else {
         return Ok(LoopControl::Continue);
-    }
+    };
     let (sid, kind, rid, value) = {
         let s = state.lock().await;
         let sec = s.pending_secret.as_ref();
@@ -143,14 +202,24 @@ pub(crate) async fn handle_secret_key(
         crate::state::SecretKind::Sudo => ("sudo.respond", "password"),
         crate::state::SecretKind::Secret => ("secret.respond", "value"),
     };
-    if let Some(sid) = sid {
-        let _ = client
-            .secret_respond(method, &sid, &rid, key_name, &value)
-            .await;
+    let Some(sid) = sid else {
+        return Ok(LoopControl::Continue);
+    };
+    match client
+        .secret_respond(method, &sid, &rid, key_name, &value)
+        .await
+    {
+        Ok(_) => {
+            let mut s = state.lock().await;
+            s.pending_secret = None;
+            s.set_toast(if cancelling { "cancelled" } else { "sent" });
+        }
+        Err(e) => {
+            let mut s = state.lock().await;
+            s.set_toast(format!("secret failed · {}", optimistic::brief_err(&e)));
+            s.mark_dirty();
+        }
     }
-    let mut s = state.lock().await;
-    s.pending_secret = None;
-    s.set_toast("sent");
     Ok(LoopControl::Continue)
 }
 
@@ -1629,7 +1698,7 @@ pub(crate) async fn handle_key(
                 return Ok(LoopControl::Continue);
             }
             (KeyModifiers::NONE, KeyCode::Up) => {
-                let (row, _) = textarea.cursor();
+                let DataCursor(row, _) = textarea.cursor();
                 if row == 0 {
                     if !s.prompt_queue.is_empty() {
                         if let Some(text) = s.cycle_queue(1) {
@@ -1650,7 +1719,7 @@ pub(crate) async fn handle_key(
                 return Ok(LoopControl::Continue);
             }
             (KeyModifiers::NONE, KeyCode::Down) => {
-                let (row, _) = textarea.cursor();
+                let DataCursor(row, _) = textarea.cursor();
                 let last_row = textarea.lines().len().saturating_sub(1);
                 if row >= last_row {
                     if !s.prompt_queue.is_empty() {

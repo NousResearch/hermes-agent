@@ -206,10 +206,7 @@ fn preview_body(body: &str) -> String {
         out.push_str(line);
         n += 1;
     }
-    if out.len() > MAX_PREVIEW_CHARS {
-        out.truncate(MAX_PREVIEW_CHARS);
-        out.push('…');
-    }
+    crate::tips::truncate_utf8(&mut out, MAX_PREVIEW_CHARS);
     out
 }
 

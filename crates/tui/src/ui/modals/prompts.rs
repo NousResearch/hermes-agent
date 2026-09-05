@@ -14,6 +14,9 @@ impl super::ViewsOverlay {
         let Some(c) = &state.pending_clarify else {
             return;
         };
+        let Some(question) = c.current() else {
+            return;
+        };
         let modal_area = Self::centered_rect(70, 50, area);
         frame.render_widget(Clear, modal_area);
         let mut body = vec![
@@ -25,14 +28,14 @@ impl super::ViewsOverlay {
             )]),
             Line::raw(""),
             Line::from(vec![Span::styled(
-                format!("  {}", c.question),
+                format!("  {}", question.question),
                 Style::default().fg(Theme::text_primary()),
             )]),
             Line::raw(""),
         ];
-        if c.choices.is_empty() {
+        if question.choices.is_empty() {
             body.push(Line::from(vec![Span::styled(
-                format!("  > {}_", c.typed),
+                format!("  > {}_", question.typed),
                 Style::default().fg(Theme::brand_gold()),
             )]));
             body.push(Line::from(vec![Span::styled(
@@ -40,9 +43,16 @@ impl super::ViewsOverlay {
                 Style::default().fg(Theme::text_dim()),
             )]));
         } else {
-            for (i, ch) in c.choices.iter().enumerate() {
-                let mark = if i == c.selected { "▸" } else { " " };
-                let style = if i == c.selected {
+            for (i, ch) in question.choices.iter().enumerate() {
+                let checked = question.multi_select && question.selected_indices.contains(&i);
+                let mark = if checked {
+                    "✓"
+                } else if i == question.selected {
+                    "▸"
+                } else {
+                    " "
+                };
+                let style = if i == question.selected || checked {
                     Style::default()
                         .fg(Theme::brand_gold())
                         .add_modifier(Modifier::BOLD)
@@ -56,9 +66,22 @@ impl super::ViewsOverlay {
             }
             body.push(Line::raw(""));
             body.push(Line::from(vec![Span::styled(
-                "  enter confirm   esc dismiss",
+                if question.multi_select {
+                    "  space toggle   enter confirm   esc dismiss"
+                } else {
+                    "  enter confirm   esc dismiss"
+                },
                 Style::default().fg(Theme::text_dim()),
             )]));
+        }
+        if c.is_batch() {
+            body.insert(
+                1,
+                Line::from(Span::styled(
+                    format!("  question {} of {}", c.active + 1, c.questions.len()),
+                    Style::default().fg(Theme::text_dim()),
+                )),
+            );
         }
         let p = Paragraph::new(body)
             .block(

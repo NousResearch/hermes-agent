@@ -28,7 +28,7 @@ use rpc::GatewayClient;
 use state::AppState;
 use terminal::{new_terminal, TerminalGuard};
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let cfg = LaunchConfig::from_cli(cli)?;

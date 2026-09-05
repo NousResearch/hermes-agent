@@ -1,8 +1,8 @@
 //! Slash dispatch: match on `/name`, then call handlers or the gateway.
 use anyhow::Result;
+use ratatui_textarea::TextArea;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tui_textarea::TextArea;
 
 use crate::optimistic;
 use crate::rpc::GatewayClient;

@@ -155,7 +155,7 @@ pub fn decode_base64(input: &str) -> Option<Vec<u8>> {
         table[c as usize] = i as u8;
     }
     let clean: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-    if clean.is_empty() || clean.len() % 4 != 0 {
+    if clean.is_empty() || !clean.len().is_multiple_of(4) {
         return None;
     }
     let mut out = Vec::with_capacity(clean.len() / 4 * 3);
@@ -192,7 +192,12 @@ pub fn read_clipboard_png() -> Option<Vec<u8>> {
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
     let timeout = std::time::Duration::from_secs(5);
     if cfg!(target_os = "macos") {
-        let dest = std::env::temp_dir().join(format!("hermes-clip-{}.png", std::process::id()));
+        let temp = tempfile::Builder::new()
+            .prefix("hermes-clip-")
+            .suffix(".png")
+            .tempfile()
+            .ok()?;
+        let dest = temp.path().to_path_buf();
         let path = dest.to_string_lossy().replace('\\', "/");
         if path.contains('"') {
             return None;
@@ -201,7 +206,6 @@ pub fn read_clipboard_png() -> Option<Vec<u8>> {
         let _ = capture_cmd("pngpaste", &[&dest_s], timeout);
         if let Ok(bytes) = std::fs::read(&dest) {
             if bytes.starts_with(PNG) {
-                let _ = std::fs::remove_file(&dest);
                 return Some(bytes);
             }
         }
@@ -210,12 +214,10 @@ pub fn read_clipboard_png() -> Option<Vec<u8>> {
         );
         let _ = capture_cmd("osascript", &["-e", &script], timeout);
         if let Ok(bytes) = std::fs::read(&dest) {
-            let _ = std::fs::remove_file(&dest);
             if bytes.starts_with(PNG) {
                 return Some(bytes);
             }
         }
-        let _ = std::fs::remove_file(&dest);
         return None;
     }
     #[cfg(target_os = "windows")]
@@ -427,12 +429,29 @@ pub fn confined_worktree_path(
             _ => return Err("bad path".into()),
         }
     }
-    let path = std::path::Path::new(cwd).join(rel_path);
-    if let Ok(meta) = std::fs::symlink_metadata(&path) {
-        if meta.file_type().is_symlink() {
-            return Err("bad path".into());
+    let root = std::path::Path::new(cwd)
+        .canonicalize()
+        .map_err(|e| format!("workspace path: {e}"))?;
+    let mut path = root.clone();
+    for component in rel_path.components() {
+        let std::path::Component::Normal(component) = component else {
+            continue;
+        };
+        path.push(component);
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => return Err("symlink path".into()),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(error.to_string()),
         }
     }
+    if path.exists() {
+        let canonical = path.canonicalize().map_err(|e| e.to_string())?;
+        if !canonical.starts_with(&root) {
+            return Err("path escapes workspace".into());
+        }
+    }
+    let path = root.join(rel_path);
     Ok(path)
 }
 
@@ -442,10 +461,11 @@ pub fn read_worktree_bytes(cwd: &str, rel: &str) -> std::result::Result<Vec<u8>,
 }
 
 pub fn write_worktree_bytes(cwd: &str, rel: &str, bytes: &[u8]) -> std::result::Result<(), String> {
-    let path = confined_worktree_path(cwd, rel)?;
+    let mut path = confined_worktree_path(cwd, rel)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
+    path = confined_worktree_path(cwd, rel)?;
     std::fs::write(&path, bytes).map_err(|e| e.to_string())
 }
 
@@ -866,12 +886,15 @@ mod tests {
 
     #[test]
     fn parse_branch_refs_marks_current_and_worktree() {
-        let text = "*|main|/var/tmp/hermes-src\n |feat/picker|\n |other|/tmp/other\n";
+        let text = "*|main|/var/tmp/hermes-tui-src\n |feat/picker|\n |other|/tmp/other\n";
         let rows = parse_branch_refs(text);
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].name, "main");
         assert!(rows[0].current);
-        assert_eq!(rows[0].worktree.as_deref(), Some("/var/tmp/hermes-src"));
+        assert_eq!(
+            rows[0].worktree.as_deref(),
+            Some("/var/tmp/hermes-tui-src")
+        );
         assert!(!rows[1].current);
         assert!(rows[1].worktree.is_none());
         assert_eq!(rows[2].worktree.as_deref(), Some("/tmp/other"));
@@ -892,6 +915,24 @@ mod tests {
         write_worktree_bytes(&cwd, "sub/a.txt", b"in").unwrap();
         assert_eq!(read_worktree_bytes(&cwd, "sub/a.txt").unwrap(), b"in");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worktree_bytes_reject_symlinked_parent() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!("hermes-tui-root-{}", uuid::Uuid::new_v4()));
+        let outside =
+            std::env::temp_dir().join(format!("hermes-tui-outside-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, root.join("linked")).unwrap();
+        let cwd = root.to_string_lossy();
+        assert!(write_worktree_bytes(&cwd, "linked/file", b"no").is_err());
+        assert!(!outside.join("file").exists());
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[test]

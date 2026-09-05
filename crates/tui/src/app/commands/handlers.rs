@@ -1,11 +1,11 @@
 //! Per-command implementations called from `dispatch_slash`.
 use anyhow::Result;
 use crossterm::event::KeyEvent;
+use ratatui_textarea::TextArea;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use tui_textarea::TextArea;
 
 use crate::optimistic;
 use crate::rpc::GatewayClient;

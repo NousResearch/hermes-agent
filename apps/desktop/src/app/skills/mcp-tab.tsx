@@ -6,10 +6,11 @@ import { type CodeEditorApi } from '@/components/chat/code-editor'
 import { JsonDocumentEditor } from '@/components/chat/json-document-editor'
 import { LogTail } from '@/components/chat/log-tail'
 import { PageLoader } from '@/components/page-loader'
-import { AvatarChip } from '@/components/ui/avatar-chip'
+import { AvatarChip, monogramFor } from '@/components/ui/avatar-chip'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ErrorBanner } from '@/components/ui/error-state'
+import { Favicon } from '@/components/ui/favicon'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Switch } from '@/components/ui/switch'
@@ -34,7 +35,7 @@ import {
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { compactNumber } from '@/lib/format'
-import { brandFor } from '@/lib/mcp-brands'
+import { brandFor, faviconSourceFor } from '@/lib/mcp-brands'
 import { estimateServerTokens, serverUsageCount } from '@/lib/mcp-cost'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import { type McpImportEntry, parseMcpImport } from '@/lib/mcp-import'
@@ -454,15 +455,19 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
     [catalog, servers]
   )
 
-  const descriptionFor = (serverName: string, server: Record<string, unknown>): null | string => {
+  const catalogEntryFor = (serverName: string, server: Record<string, unknown>) => {
     const lower = serverName.toLowerCase()
 
-    const match = catalog.find(
+    return catalog.find(
       entry =>
         entry.name.toLowerCase() === lower ||
         (entry.url && entry.url === server.url) ||
         (entry.command && entry.command === server.command)
     )
+  }
+
+  const descriptionFor = (serverName: string, server: Record<string, unknown>): null | string => {
+    const match = catalogEntryFor(serverName, server)
 
     return match?.description ?? null
   }
@@ -1091,6 +1096,7 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
                     const server = servers[serverName]
                     const status = statusOf(server, probes[serverName])
                     const cost = costFor(serverName, server)
+                    const source = faviconSourceFor(serverName, catalogEntryFor(serverName, server)?.source)
 
                     return (
                       <McpRow
@@ -1103,6 +1109,7 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
                         onRemove={() => void removeServer(serverName)}
                         onSelect={() => focusServer(serverName)}
                         onToggle={checked => void setServerEnabled(serverName, checked)}
+                        source={source}
                         status={status}
                         statusText={statusLine(m, status, probes[serverName], server, cost)}
                         unused={
@@ -1612,6 +1619,7 @@ function McpCatalog({
               <McpAvatar
                 className="mt-0.5"
                 name={entry.name}
+                source={faviconSourceFor(entry.name, entry.source)}
                 status={entry.installed ? (entry.enabled ? 'ok' : 'off') : 'unknown'}
               />
               <div className="min-w-0 flex-1">
@@ -1760,14 +1768,25 @@ function McpLogs({
 
 // The shared identity chip (`ui/avatar-chip`) plus a status dot. Identity
 // ladder: curated brand glyph (lib/mcp-brands, shared with the composer
-// suggestion pills and the inline setup card) → letter monogram. Nothing here
-// reaches the network for a mark: a configured MCP URL can be a private host,
-// and the connector card's favicon rung only ever reads a public site's own
-// markup, never a third-party icon service.
-function McpAvatar({ className, name, status }: { className?: string; name: string; status: ServerStatus }) {
+// suggestion pills and the inline setup card) → the catalog source's own
+// favicon → letter monogram. Favicon resolution stays in the main process and
+// never calls a third-party icon service.
+function McpAvatar({
+  className,
+  name,
+  source,
+  status
+}: {
+  className?: string
+  name: string
+  source?: null | string
+  status: ServerStatus
+}) {
+  const brand = brandFor(name)
+
   return (
     <AvatarChip
-      brand={brandFor(name)}
+      brand={brand}
       className={className}
       name={name}
       overlay={
@@ -1779,7 +1798,13 @@ function McpAvatar({ className, name, status }: { className?: string; name: stri
           )}
         />
       }
-    />
+    >
+      {!brand && source ? (
+        <span className="grid size-[76%] place-items-center">
+          <Favicon fallback={monogramFor(name)} url={source} />
+        </span>
+      ) : undefined}
+    </AvatarChip>
   )
 }
 
@@ -1792,6 +1817,7 @@ function McpRow({
   onRemove,
   onSelect,
   onToggle,
+  source,
   status,
   statusText,
   unused
@@ -1804,6 +1830,7 @@ function McpRow({
   onRemove: () => void
   onSelect: () => void
   onToggle: (checked: boolean) => void
+  source?: null | string
   status: ServerStatus
   statusText: string
   unused?: boolean
@@ -1824,7 +1851,7 @@ function McpRow({
         onClick={onSelect}
         type="button"
       >
-        <McpAvatar name={name} status={status} />
+        <McpAvatar name={name} source={source} status={status} />
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-center gap-1.5">
             <span

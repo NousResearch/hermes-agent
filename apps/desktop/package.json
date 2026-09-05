@@ -92,7 +92,7 @@
     "@dnd-kit/sortable": "10.0.0",
     "@dnd-kit/utilities": "3.2.2",
     "@hermes/shared": "file:../shared",
-    "@icons-pack/react-simple-icons": "13.11.1",
+    "@icons-pack/react-simple-icons": "13.15.1",
     "@lezer/highlight": "1.2.3",
     "@nanostores/react": "1.1.0",
     "@nous-research/ui": "0.18.2",

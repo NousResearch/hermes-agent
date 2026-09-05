@@ -20,6 +20,7 @@ from unittest.mock import patch
 import pytest
 
 from agent.lsp.manager import LSPService
+from agent.lsp.servers import SpawnSpec
 from agent.lsp.workspace import clear_cache
 
 
@@ -35,7 +36,9 @@ def _make_git_workspace(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".git").mkdir()
-    (repo / "pyproject.toml").write_text("[project]\nname='t'\n")
+    (repo / "pyproject.toml").write_text(
+        "[project]\nname='t'\n", encoding="utf-8"
+    )
     return repo
 
 
@@ -51,11 +54,13 @@ def test_unrelated_project_not_affected_by_broken(tmp_path, monkeypatch):
     repo_b = tmp_path / "repo-b"
     repo_b.mkdir()
     (repo_b / ".git").mkdir()
-    (repo_b / "pyproject.toml").write_text("[project]\nname='b'\n")
+    (repo_b / "pyproject.toml").write_text(
+        "[project]\nname='b'\n", encoding="utf-8"
+    )
     a_src = repo_a / "x.py"
-    a_src.write_text("")
+    a_src.write_text("", encoding="utf-8")
     b_src = repo_b / "x.py"
-    b_src.write_text("")
+    b_src.write_text("", encoding="utf-8")
 
     monkeypatch.chdir(str(repo_a))
     svc = LSPService(
@@ -72,15 +77,19 @@ def test_unrelated_project_not_affected_by_broken(tmp_path, monkeypatch):
         monkeypatch.chdir(str(repo_b))
         assert svc.enabled_for(str(b_src)) is True
     finally:
-        svc.shutdown()
+        assert svc.shutdown() is True
 
 
 
 
-def test_mark_broken_handles_no_workspace_silently(tmp_path):
+def test_mark_broken_handles_no_workspace_silently(tmp_path, monkeypatch):
     """File outside any git worktree → no workspace → no key to add."""
     src = tmp_path / "orphan.py"
-    src.write_text("")
+    src.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        "agent.lsp.manager.resolve_workspace_for_file",
+        lambda _path: (None, False),
+    )
     svc = LSPService(
         enabled=True,
         wait_mode="document",
@@ -91,7 +100,7 @@ def test_mark_broken_handles_no_workspace_silently(tmp_path):
         svc._mark_broken_for_file(str(src), RuntimeError("x"))
         assert len(svc._broken) == 0
     finally:
-        svc.shutdown()
+        assert svc.shutdown() is True
 
 
 def test_snapshot_failure_marks_broken_via_outer_timeout(tmp_path, monkeypatch):
@@ -101,7 +110,7 @@ def test_snapshot_failure_marks_broken_via_outer_timeout(tmp_path, monkeypatch):
     repo = _make_git_workspace(tmp_path)
     monkeypatch.chdir(str(repo))
     src = repo / "x.py"
-    src.write_text("")
+    src.write_text("", encoding="utf-8")
 
     svc = LSPService(
         enabled=True,
@@ -123,4 +132,78 @@ def test_snapshot_failure_marks_broken_via_outer_timeout(tmp_path, monkeypatch):
         assert ("pyright", str(repo)) in svc._broken
         assert svc.enabled_for(str(src)) is False
     finally:
-        svc.shutdown()
+        assert svc.shutdown() is True
+
+
+@pytest.mark.asyncio
+async def test_spawn_failure_stays_permanently_broken(monkeypatch, tmp_path):
+    """Lifecycle retirement must not reintroduce cooldown retries."""
+    from agent.lsp import manager as manager_module
+
+    repo = _make_git_workspace(tmp_path)
+    source = repo / "x.py"
+    source.write_text("", encoding="utf-8")
+    starts = {"count": 0}
+
+    class FakeServer:
+        server_id = "pyright"
+        seed_first_push = False
+
+        @staticmethod
+        def resolve_root(file_path, workspace_root):
+            return workspace_root
+
+        @staticmethod
+        def build_spawn(root, ctx):
+            return SpawnSpec(
+                command=["fake-lsp"],
+                workspace_root=root,
+                cwd=root,
+                env={},
+                initialization_options={},
+            )
+
+    class FailingClient:
+        def __init__(self, **kwargs):
+            self.state = "stopped"
+
+        @property
+        def is_running(self):
+            return False
+
+        async def start(self):
+            starts["count"] += 1
+            self.state = "error"
+            raise RuntimeError("wedged forever")
+
+        async def shutdown(self):
+            self.state = "stopped"
+
+    monkeypatch.setattr(manager_module, "find_server_for_file", lambda path: FakeServer())
+    monkeypatch.setattr(
+        manager_module,
+        "resolve_workspace_for_file",
+        lambda path: (str(repo), True),
+    )
+    monkeypatch.setattr(manager_module, "LSPClient", FailingClient)
+
+    svc = LSPService(
+        enabled=False,
+        wait_mode="document",
+        wait_timeout=2.0,
+        install_strategy="manual",
+        idle_timeout=0,
+    )
+    svc._enabled = True
+    svc._admitting = True
+    svc._shutdown_state = "running"
+    try:
+        assert await svc._acquire_client(str(source)) is None
+        assert ("pyright", str(repo)) in svc._broken
+
+        # No elapsed-time or reap transition can make this key retry.
+        await svc._reap_idle_once()
+        assert await svc._acquire_client(str(source)) is None
+        assert starts["count"] == 1
+    finally:
+        assert await svc._shutdown_async() is True

@@ -167,8 +167,10 @@ lsp:
   # How long an unused language-server client stays alive (seconds).
   # Idle servers are shut down automatically and respawned on the next
   # relevant file operation. Set to 0 to disable idle reaping and keep
-  # servers alive for the life of the process. Values below 30s are
-  # clamped to 30 so a sweep can never reap a client mid-operation.
+  # servers alive for the life of the process. Positive values below 30s are
+  # clamped to 30 to avoid index thrash. Active operations hold a
+  # generation lease: a sweep marks that generation retiring, then waits
+  # for all leases to release before shutting the process down.
   idle_timeout: 600
 
   # Per-server overrides (all optional).
@@ -233,7 +235,10 @@ Servers are kept alive while they're being used and shut down after
 `lsp.idle_timeout` seconds (default 600) with no file activity — a
 long-running gateway that touches many worktrees no longer accumulates
 one language-server process per workspace forever. A reaped server is
-respawned automatically on the next relevant file operation. Set
+respawned automatically on the next relevant file operation. Requests
+already using that generation keep a lease until their awaited diagnostic
+work finishes; retirement and any replacement generation wait for those
+leases and for process cleanup to complete. Set
 `idle_timeout: 0` to disable reaping and hold every server's index warm
 for the life of the process.
 

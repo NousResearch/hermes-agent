@@ -15,6 +15,7 @@ Covers:
 from __future__ import annotations
 
 import io
+import json
 from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
 
@@ -78,7 +79,7 @@ def test_install_pip_finds_windows_scripts_launcher(tmp_path, monkeypatch):
         scripts_dir = install_mod.hermes_lsp_bin_dir().parent / "python-packages" / "Scripts"
         scripts_dir.mkdir(parents=True, exist_ok=True)
         launcher = scripts_dir / "fake-language-server.exe"
-        launcher.write_text("launcher\n")
+        launcher.write_text("launcher\n", encoding="utf-8")
         launcher.chmod(0o755)
         return MagicMock(returncode=0, stderr="")
 
@@ -138,6 +139,59 @@ def test_status_output_includes_backend_warnings_section(tmp_path, monkeypatch):
     assert "shellcheck" in output
 
 
+def test_status_json_keeps_current_main_service_contract(monkeypatch):
+    from agent import lsp as lsp_module
+    from agent.lsp import cli as lsp_cli
+    from agent.lsp.manager import LSPService, _ClientEntry
+
+    svc = LSPService(
+        enabled=False,
+        wait_mode="document",
+        wait_timeout=5.0,
+        install_strategy="manual",
+        idle_timeout=0,
+    )
+    client = MagicMock()
+    client.state = "running"
+    client.is_running = True
+    client.workspace_folders = ["/owner-process"]
+    svc._clients[("pyright", "/owner-process")] = _ClientEntry(
+        client=client,
+        generation=7,
+        leases=3,
+        retiring=True,
+        retire_reason="idle timeout",
+        retirement_error="cleanup blocked",
+    )
+
+    monkeypatch.setattr(lsp_module, "get_service", lambda: svc)
+    monkeypatch.setattr("agent.lsp.install.detect_status", lambda _pkg: "missing")
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        assert lsp_cli._cmd_status(emit_json=True) == 0
+
+    service = json.loads(buf.getvalue())["service"]
+    assert set(service) == {
+        "enabled",
+        "wait_mode",
+        "wait_timeout",
+        "install_strategy",
+        "clients",
+        "broken",
+        "disabled_servers",
+    }
+    assert service["clients"] == [
+        {
+            "server_id": "pyright",
+            "workspace_root": "/owner-process",
+            "workspace_folders": ["/owner-process"],
+            "state": "running",
+            "running": True,
+        }
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Fix 3: tier-1 lint treats unusable linters as ``skipped``, not ``error``
 # ---------------------------------------------------------------------------
@@ -157,7 +211,7 @@ def test_check_lint_returns_error_for_real_ts_type_errors(tmp_path):
     from tools.file_operations import ShellFileOperations
 
     ts_file = tmp_path / "bad.ts"
-    ts_file.write_text("const x: string = 42;\n")
+    ts_file.write_text("const x: string = 42;\n", encoding="utf-8")
 
     env = LocalEnvironment()
     fops = ShellFileOperations(env)
@@ -176,7 +230,8 @@ def test_check_lint_returns_error_for_real_ts_type_errors(tmp_path):
         return result
 
     with patch.object(fops, "_exec", side_effect=fake_exec), \
-         patch.object(fops, "_has_command", return_value=True):
+         patch.object(fops, "_has_command", return_value=True), \
+         patch.object(fops, "_lsp_will_handle", return_value=False):
         lint = fops._check_lint(str(ts_file))
 
     assert lint.skipped is False

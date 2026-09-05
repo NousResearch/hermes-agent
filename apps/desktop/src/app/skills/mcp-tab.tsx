@@ -1254,13 +1254,13 @@ function ServerConfig({
     <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2 [scrollbar-gutter:stable]">
       {/* Geometry cloned from McpRow so nothing jumps when flipping list ⇄
           config: items-start with per-element top margins that reproduce the
-          row's h-11 centering exactly (h-5 controls → mt-3, size-6 avatar →
+          row's h-11 centering exactly (size-6 controls → mt-2.5, size-6 avatar →
           mt-2.5, h-4 switch → mt-3.5) no matter how tall the text column gets. */}
       <div className="flex items-start gap-2 pr-1.5">
         <Tip label={m.allServers}>
           <Button
             aria-label={m.allServers}
-            className={cn('mt-3', ICON_BUTTON)}
+            className={cn('mt-2.5', ICON_BUTTON)}
             onClick={onBack}
             size="icon"
             variant="ghost"
@@ -1281,7 +1281,7 @@ function ServerConfig({
           // row's own gap-2, byte-identical to McpRow.
           <>
             <ServerIconActions
-              className="mt-3"
+              className="mt-2.5"
               onProbe={onProbe}
               onRemove={onRemove}
               probing={probe === 'probing'}

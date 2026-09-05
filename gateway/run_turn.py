@@ -1470,23 +1470,9 @@ class GatewayTurnMixin:
                     getattr(_account_usage, "account_label", None)
                     or getattr(_account_usage, "plan", None)
                 )
-            _footer_cfg = _rfc(_user_config, _platform_key)
-            if (
-                _footer_cfg.get("enabled")
-                and "quota" in (_footer_cfg.get("fields") or ())
-                and _account_usage is None
-            ):
-                from gateway.runtime_footer_usage import get_cached as _get_cached_usage
-                _account_usage = _get_cached_usage(
-                    agent_result.get("provider"),
-                    base_url=agent_result.get("base_url"),
-                    api_key=agent_result.get("api_key"),
-                )
-                if _account_usage is not None:
-                    _account_label = (
-                        getattr(_account_usage, "account_label", None)
-                        or getattr(_account_usage, "plan", None)
-                    )
+            # Usage is resolved by the producer in run_turn_runner.py while the
+            # routed profile scope and live credential are still available.
+            _footer_cfg = agent_result.get("footer_config") or _rfc(_user_config, _platform_key)
             _reasoning_effort = agent_result.get("reasoning_effort")
             if _reasoning_effort is None:
                 _reasoning_cfg = getattr(self, "_reasoning_config", None)

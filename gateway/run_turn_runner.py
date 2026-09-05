@@ -35,6 +35,38 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def _resolve_runtime_footer_metadata(agent, user_config: dict | None, platform_key: str) -> dict:
+    """Resolve footer usage while the turn's routed profile scope is active.
+
+    The API credential is used only to key/schedule the background usage fetch;
+    it is deliberately not returned in the result consumed by ``run_turn.py``.
+    """
+    from gateway.runtime_footer import resolve_footer_config
+    from gateway.runtime_footer_usage import get_cached
+    from hermes_constants import get_hermes_home
+
+    footer_config = resolve_footer_config(user_config, platform_key)
+    fields = set(footer_config.get("fields") or ())
+    needs_usage = footer_config.get("enabled") and bool(fields & {"account", "quota"})
+    provider = getattr(agent, "provider", None) if agent is not None else None
+    base_url = getattr(agent, "base_url", None) if agent is not None else None
+    api_key = getattr(agent, "api_key", None) if agent is not None else None
+    account_usage = None
+    if needs_usage and provider:
+        account_usage = get_cached(
+            provider,
+            base_url=base_url,
+            api_key=api_key,
+            hermes_home=str(get_hermes_home()),
+        )
+    return {
+        "provider": provider,
+        "base_url": base_url,
+        "account_usage": account_usage,
+        "footer_config": footer_config,
+    }
+
+
 class TurnRunner:
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 
@@ -1661,6 +1693,14 @@ class TurnRunner:
             "model": getattr(agent, "model", None) if agent else None,
             "context_length": (getattr(comp, "context_length", 0) or 0) if has_comp else 0,
         }
+        footer_metadata = _resolve_runtime_footer_metadata(
+            agent,
+            ctx.user_config,
+            platform_key,
+        )
+        footer_metadata["reasoning_effort"] = (
+            getattr(runner, "_reasoning_config", {}) or {}
+        ).get("effort")
         compacted_in_place, effective_session_id, history_offset = self._sync_session_after_run(agent_history)
         # failure_reason must survive the empty-response path too (TUI billing, transient-failure
         # persistence). compression_deferred (soft lock-contention defer) is distinct from
@@ -1677,6 +1717,7 @@ class TurnRunner:
             "tools": ctx.tools_holder[0] or [],
             "history_offset": history_offset, "compacted_in_place": compacted_in_place, "session_id": effective_session_id,
             **usage,
+            **footer_metadata,
         }
         if not final_response:
             final_response = _normalize_empty_agent_response(result, final_response or "", history_len=len(agent_history))

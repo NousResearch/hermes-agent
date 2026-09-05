@@ -2074,6 +2074,7 @@ display:
   runtime_footer:
     enabled: true
     fields: ["model", "context_pct", "cwd"]   # order shown; drop any to hide
+    underline: false                           # add a separator before the footer
 ```
 
 Supported fields:
@@ -2084,8 +2085,13 @@ Supported fields:
 | `context_pct` | Last-call context occupancy as a percent | `5%` |
 | `latency` | Wall-clock duration of the turn | `22s`, `1m05s` |
 | `cwd` | Home-relative working directory | `~` |
+| `provider` | Provider serving the turn | `anthropic` |
+| `account` | Account or plan label from provider usage | `Pro` |
+| `context` | Last-call context tokens as used/total | `8.2K/128K` |
+| `quota` | Provider usage window and remaining percentage | `5h 72%` |
+| `reasoning` | Reasoning effort used for the turn | `high` |
 
-The default field set is `["model", "context_pct", "cwd"]`. `latency` is opt-in — add it to `fields` to use it. Fields whose data is unavailable are skipped silently rather than rendering an empty slot.
+The default field set is `["model", "context_pct", "cwd"]`. `latency`, `provider`, `account`, `context`, `quota`, and `reasoning` are opt-in — add them to `fields` to use them. Account and quota data is fetched with a non-blocking stale-while-revalidate cache; it may be absent on the first turn and appear after the background refresh completes. Fields whose data is unavailable are skipped silently rather than rendering an empty slot. Set `underline: true` to insert a separator before the footer.
 
 The `/footer` slash command toggles this at runtime in any session.
 

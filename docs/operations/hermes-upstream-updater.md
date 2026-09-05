@@ -11,6 +11,22 @@ The live release is immutable. A deploy must create a new release snapshot,
 retain the previous release and drop-in, switch the effective systemd paths,
 then verify both service health and the expected candidate SHA.
 
+## Daily Telegram review alert
+
+The Hermes cron job named "Hermes upstream update guard" runs every day at
+04:30 (Asia/Taipei) and delivers its stdout to the configured Telegram chat.
+It always performs review-only checks. When upstream has advanced, the message
+includes the candidate SHA, diff size, upstream commit subjects, changed file
+paths, newly added Python functions/classes, and the review/test results.
+
+The message ends with a candidate-specific approval request:
+
+    核准套用 upstream 更新 <run_id>
+
+That reply is the only trigger for a real update. A review alert never deploys,
+restarts, or pushes by itself. When there is no new upstream commit, the daily
+message reports that state and confirms that no deployment action occurred.
+
 ## Inspect and review
 
 Run the read-only gate first:

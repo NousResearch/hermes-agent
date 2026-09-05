@@ -246,6 +246,7 @@ def test_oneshot_resume_preloads_session_history(monkeypatch):
     from hermes_cli.oneshot import _run_agent
 
     captured = {}
+    resolve_calls = []
     resumed_history = [
         {"role": "user", "content": "remember the session-only fact: cobalt"},
         {"role": "assistant", "content": "I will remember cobalt."},
@@ -262,6 +263,9 @@ def test_oneshot_resume_preloads_session_history(monkeypatch):
         def run_conversation(self, prompt, **kwargs):
             captured["prompt"] = prompt
             captured["run_kwargs"] = kwargs
+            loader = kwargs.get("conversation_history_loader")
+            if loader is not None:
+                captured["loaded_history"] = loader()
             return {"final_response": "cobalt", "failed": False, "partial": False}
 
         def shutdown_memory_provider(self, *_args, **_kwargs):
@@ -279,6 +283,7 @@ def test_oneshot_resume_preloads_session_history(monkeypatch):
             return 2
 
         def resolve_resume_session_id(self, session_id):
+            resolve_calls.append(session_id)
             captured["resolve_resume_session_id"] = session_id
             return "resolved-session"
 
@@ -332,7 +337,7 @@ def test_oneshot_resume_preloads_session_history(monkeypatch):
 
     assert text == "cobalt"
     assert not result.get("failed")
-    assert captured["resolve_resume_session_id"] == "input-session"
+    assert resolve_calls == ["input-session", "resolved-session"]
     assert captured["get_session"] == "resolved-session"
     assert captured["assert_resume_safe"] == "resolved-session"
     assert captured["get_messages_as_conversation"] == (
@@ -341,7 +346,8 @@ def test_oneshot_resume_preloads_session_history(monkeypatch):
     )
     assert captured["reopen_session"] == "resolved-session"
     assert captured["session_id"] == "resolved-session"
-    assert captured["run_kwargs"]["conversation_history"] == resumed_history
+    assert "conversation_history" not in captured["run_kwargs"]
+    assert captured["loaded_history"] == resumed_history
 
 
 def test_oneshot_resume_refuses_oversized_session_before_loading_history(
@@ -380,11 +386,24 @@ def test_oneshot_resume_refuses_oversized_session_before_loading_history(
         def close(self):
             calls.append(("close", None))
 
-    monkeypatch.setitem(
-        sys.modules,
-        "run_agent",
-        _mod("run_agent", AIAgent=lambda **_kwargs: pytest.fail("must not build agent")),
-    )
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            self.session_id = kwargs.get("session_id")
+            self.suppress_status_output = False
+            self.stream_delta_callback = object()
+            self.tool_gen_callback = object()
+
+        def run_conversation(self, _prompt, **kwargs):
+            kwargs["conversation_history_loader"]()
+            raise AssertionError("loader must reject before the turn runs")
+
+        def shutdown_memory_provider(self, *_args, **_kwargs):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(sys.modules, "run_agent", _mod("run_agent", AIAgent=FakeAgent))
     monkeypatch.setitem(sys.modules, "hermes_state", __import__("hermes_state"))
     monkeypatch.setattr("hermes_cli.oneshot._create_session_db_for_oneshot", FakeSessionDB)
     monkeypatch.setitem(
@@ -418,6 +437,8 @@ def test_oneshot_resume_refuses_oversized_session_before_loading_history(
     assert calls == [
         ("resolve", "too-large"),
         ("get_session", "too-large"),
+        ("reopen", "too-large"),
+        ("resolve", "too-large"),
         ("reopen", "too-large"),
         ("assert_resume_safe", "too-large"),
         ("close", None),
@@ -455,6 +476,9 @@ def test_oneshot_resume_loads_history_from_session_db(monkeypatch, tmp_path):
         def run_conversation(self, prompt, **kwargs):
             captured["prompt"] = prompt
             captured["run_kwargs"] = kwargs
+            loader = kwargs.get("conversation_history_loader")
+            if loader is not None:
+                captured["loaded_history"] = loader()
             return {"final_response": "cobalt", "failed": False, "partial": False}
 
         def shutdown_memory_provider(self, *_args, **_kwargs):
@@ -506,7 +530,7 @@ def test_oneshot_resume_loads_history_from_session_db(monkeypatch, tmp_path):
     assert captured["prompt"] == "what was the fact?"
     assert [
         (msg["role"], msg["content"])
-        for msg in captured["run_kwargs"]["conversation_history"]
+        for msg in captured["loaded_history"]
     ] == [
         ("user", "remember the session-only fact: cobalt"),
         ("assistant", "I will remember cobalt."),
@@ -614,6 +638,212 @@ def test_oneshot_resume_real_agent_appends_to_resumed_session_and_preserves_iden
         ("user", "remember the session-only fact: cobalt"),
         ("assistant", "I will remember cobalt."),
         ("user", "what was the fact?"),
+        ("assistant", "resumed fact is cobalt"),
+    ]
+
+
+def test_oneshot_resume_loads_history_after_turn_lease(
+    monkeypatch,
+    tmp_path,
+):
+    import logging
+
+    import hermes_cli.config as config_mod
+    import hermes_cli.runtime_provider as runtime_provider_mod
+    import hermes_cli.tools_config as tools_config_mod
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    db_path = tmp_path / "state.db"
+    seed_db = SessionDB(db_path=db_path)
+    seed_db.create_session("shared-session", source="cli")
+    seed_db.append_message("shared-session", "user", "first continuation")
+    seed_db.append_message("shared-session", "assistant", "first ack")
+    seed_db.end_session("shared-session", "agent_close")
+    seed_db.close()
+
+    provider_calls = []
+    primary_db = SessionDB(db_path=db_path)
+    sibling_appended = False
+
+    class DeterministicClient:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=self._create)
+            )
+
+        def _create(self, **kwargs):
+            provider_calls.append(kwargs)
+            messages = kwargs["messages"]
+            saw_second = any(
+                isinstance(message.get("content"), str)
+                and "second continuation committed" in message["content"]
+                for message in messages
+            )
+            return _mock_response(
+                "fresh history included" if saw_second else "stale history"
+            )
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"model": {"default": "m"}})
+    monkeypatch.setattr(
+        runtime_provider_mod,
+        "resolve_runtime_provider",
+        lambda **_kwargs: {
+            "api_key": "k",
+            "base_url": "https://example.invalid/v1",
+            "provider": "openai",
+            "requested_provider": "openai",
+            "api_mode": "chat_completions",
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr(tools_config_mod, "_get_platform_tools", lambda *_args, **_kwargs: set())
+    monkeypatch.setattr(
+        "hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build",
+        lambda **_kwargs: None,
+    )
+    agent = AIAgent(
+        api_key="k",
+        base_url="https://example.invalid/v1",
+        provider="openai",
+        requested_provider="openai",
+        api_mode="chat_completions",
+        model="m",
+        quiet_mode=True,
+        platform="cli",
+        session_id="shared-session",
+        session_db=primary_db,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    def fresh_history_loader():
+        nonlocal sibling_appended
+        assert getattr(agent, "_active_session_turn_lease_holder", None)
+        if not sibling_appended:
+            sibling_appended = True
+            sibling_db = SessionDB(db_path=db_path)
+            try:
+                sibling_db.reopen_session("shared-session")
+                sibling_db.append_message(
+                    "shared-session",
+                    "user",
+                    "second continuation committed",
+                )
+                sibling_db.append_message("shared-session", "assistant", "second ack")
+                sibling_db.end_session("shared-session", "agent_close")
+            finally:
+                sibling_db.close()
+        return primary_db.get_messages_as_conversation(
+            "shared-session",
+            repair_alternation=True,
+        )
+
+    with (
+        patch("agent.process_bootstrap.OpenAI", DeterministicClient),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+    ):
+        try:
+            result = agent.run_conversation(
+                "third continuation",
+                conversation_history_loader=fresh_history_loader,
+            )
+        finally:
+            logging.disable(logging.NOTSET)
+            agent.close()
+            primary_db.close()
+
+    assert result["final_response"] == "fresh history included"
+    assert sibling_appended
+    assert provider_calls
+
+
+def test_oneshot_resume_retries_failed_transcript_flush_before_close(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    import logging
+
+    from hermes_cli.oneshot import run_oneshot
+    import hermes_cli.config as config_mod
+    import hermes_cli.runtime_provider as runtime_provider_mod
+    import hermes_cli.tools_config as tools_config_mod
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    seed_db = SessionDB(db_path=db_path)
+    seed_db.create_session("retry-session", source="cli")
+    seed_db.append_message("retry-session", "user", "remember cobalt")
+    seed_db.append_message("retry-session", "assistant", "stored cobalt")
+    seed_db.end_session("retry-session", "agent_close")
+    seed_db.close()
+
+    class FlakySessionDB(SessionDB):
+        failed_once = False
+
+        def append_messages_batch(self, session_id, messages, **kwargs):
+            if (
+                session_id == "retry-session"
+                and any(msg.get("content") == "what was stored?" for msg in messages)
+                and not type(self).failed_once
+            ):
+                type(self).failed_once = True
+                raise OSError("transient write failure")
+            return super().append_messages_batch(session_id, messages, **kwargs)
+
+    class DeterministicClient:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=self._create)
+            )
+
+        def _create(self, **kwargs):
+            return _mock_response("resumed fact is cobalt")
+
+    monkeypatch.setattr(
+        "hermes_cli.oneshot._create_session_db_for_oneshot",
+        lambda: FlakySessionDB(db_path=db_path),
+    )
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"model": {"default": "m"}})
+    monkeypatch.setattr(
+        runtime_provider_mod,
+        "resolve_runtime_provider",
+        lambda **_kwargs: {
+            "api_key": "k",
+            "base_url": "https://example.invalid/v1",
+            "provider": "openai",
+            "requested_provider": "openai",
+            "api_mode": "chat_completions",
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr(tools_config_mod, "_get_platform_tools", lambda *_args, **_kwargs: set())
+    monkeypatch.setattr(
+        "hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build",
+        lambda **_kwargs: None,
+    )
+
+    with (
+        patch("agent.process_bootstrap.OpenAI", DeterministicClient),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+    ):
+        try:
+            rc = run_oneshot("what was stored?", resume="retry-session")
+        finally:
+            logging.disable(logging.NOTSET)
+
+    assert rc == 0
+    assert capsys.readouterr().out == "resumed fact is cobalt\n"
+    verify_db = SessionDB(db_path=db_path)
+    try:
+        rows = verify_db.get_messages_as_conversation("retry-session")
+    finally:
+        verify_db.close()
+    assert [(row["role"], row["content"]) for row in rows][-2:] == [
+        ("user", "what was stored?"),
         ("assistant", "resumed fact is cobalt"),
     ]
 

@@ -11,7 +11,7 @@ import os
 import threading
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
@@ -232,6 +232,7 @@ def _durable_session_exists(db, session_id: str) -> bool:
 def admit_durable_turn_lease(
     agent, *, session_id: str, relay_turn_id: str, task_context: Dict[str, Any],
     conversation_history: Optional[List[Dict[str, Any]]],
+    conversation_history_loader: Optional[Callable[[], List[Dict[str, Any]]]] = None,
 ) -> TurnLeaseAdmission:
     """Acquire the session turn lease when the session is durable; build (not start) its threads.
 
@@ -284,14 +285,18 @@ def admit_durable_turn_lease(
         if waited:
             agent._emit_status("Session is free; loading the latest transcript...")
             # The holder may have compressed/rotated the session while we waited: reload only
-            # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss).
+            # AFTER admission.
             latest_session_id = db.resolve_resume_session_id(session_id)
             if latest_session_id:
                 agent.session_id = latest_session_id
                 task_context["session_id"] = latest_session_id
-            admission.conversation_history = db.get_messages_as_conversation(
-                agent.session_id, repair_alternation=True, include_row_ids=True
-            )
+        if waited or conversation_history_loader is not None:
+            if conversation_history_loader is not None:
+                admission.conversation_history = conversation_history_loader()
+            else:
+                admission.conversation_history = db.get_messages_as_conversation(
+                    agent.session_id, repair_alternation=True, include_row_ids=True
+                )
         lease.build_threads()
     except BaseException:
         # The façade never saw this lease; release here so an admitted row is not leaked.

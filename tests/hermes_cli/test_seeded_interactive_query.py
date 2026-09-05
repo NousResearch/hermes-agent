@@ -13,6 +13,8 @@ handling, like other coding agents.
 
 import sys
 import types
+from argparse import Namespace
+from contextlib import contextmanager
 
 import pytest
 
@@ -149,3 +151,127 @@ def test_top_level_oneshot_dispatch_preserves_resume(monkeypatch):
     assert excinfo.value.code == 0
     assert captured["args"] == ("what was the fact?",)
     assert captured["kwargs"]["resume"] == "session-123"
+
+
+def test_top_level_oneshot_resolves_resume_title_and_restores_session_state(
+    monkeypatch,
+    tmp_path,
+):
+    import hermes_cli.main as main_mod
+
+    captured = {}
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+
+    class FakeDB:
+        def get_session(self, session_id):
+            return {
+                "id": session_id,
+                "cwd": str(workspace),
+                "model": "stored/model",
+                "model_config": '{"provider":"stored-provider"}',
+            } if session_id == "resolved-session" else None
+
+        def resolve_session_by_title(self, title):
+            return "resolved-session" if title == "Project Chat" else None
+
+        def get_compression_tip(self, _session_id):
+            return None
+
+    @contextmanager
+    def fake_session_db():
+        yield FakeDB()
+
+    def fake_run_and_exit(*args, **kwargs):
+        captured.update({"args": args, "kwargs": kwargs, "cwd": str(tmp_path)})
+        raise SystemExit(0)
+
+    chdirs = []
+    monkeypatch.setattr(main_mod, "_session_db", fake_session_db)
+    monkeypatch.setattr(main_mod, "_confirm_startup_expensive_model_override", lambda _args: None)
+    monkeypatch.setattr(main_mod, "_run_and_exit_oneshot", fake_run_and_exit)
+    monkeypatch.setattr(main_mod.os, "getcwd", lambda: str(tmp_path))
+    monkeypatch.setattr(main_mod.os, "chdir", lambda path: chdirs.append(path))
+
+    args = Namespace(
+        oneshot="what changed?",
+        model=None,
+        provider=None,
+        toolsets=None,
+        skills=None,
+        usage_file=None,
+        resume="Project Chat",
+        continue_last=None,
+        create_if_missing=False,
+        in_dir=None,
+        no_restore_cwd=False,
+        worktree=False,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._run_oneshot_from_args(args)
+
+    assert chdirs == [str(workspace)]
+    assert captured["args"] == ("what changed?",)
+    assert captured["kwargs"]["resume"] == "resolved-session"
+    assert captured["kwargs"]["model"] == "stored/model"
+    assert captured["kwargs"]["provider"] == "stored-provider"
+
+
+def test_top_level_oneshot_latest_honors_in_dir_workspace_scope(monkeypatch, tmp_path):
+    import hermes_cli.main as main_mod
+
+    captured = {}
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    original = tmp_path / "original"
+    original.mkdir()
+
+    class FakeDB:
+        def search_sessions(self, **kwargs):
+            captured["search"] = kwargs
+            if kwargs.get("workspace_key") == str(workspace):
+                return [{"id": "workspace-latest"}]
+            return []
+
+        def get_session(self, session_id):
+            return {"id": session_id, "cwd": str(workspace)} if session_id == "workspace-latest" else None
+
+        def get_compression_tip(self, _session_id):
+            return None
+
+    @contextmanager
+    def fake_session_db():
+        yield FakeDB()
+
+    def fake_run_and_exit(*args, **kwargs):
+        captured.update({"args": args, "kwargs": kwargs})
+        raise SystemExit(0)
+
+    monkeypatch.setattr(main_mod, "_session_db", fake_session_db)
+    monkeypatch.setattr(main_mod, "_confirm_startup_expensive_model_override", lambda _args: None)
+    monkeypatch.setattr(main_mod, "_run_and_exit_oneshot", fake_run_and_exit)
+    monkeypatch.chdir(original)
+
+    args = Namespace(
+        oneshot="continue here",
+        model=None,
+        provider=None,
+        toolsets=None,
+        skills=None,
+        usage_file=None,
+        resume="latest",
+        continue_last=None,
+        create_if_missing=False,
+        in_dir=str(workspace),
+        no_restore_cwd=False,
+        worktree=False,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._run_oneshot_from_args(args)
+
+    assert captured["search"]["source"] == "cli"
+    assert captured["search"]["workspace_key"] == str(workspace)
+    assert captured["kwargs"]["resume"] == "workspace-latest"
+    assert args.no_restore_cwd is True

@@ -1007,6 +1007,9 @@ export const ja = defineLocale({
         '新しいセッションに適用されます。コンポーザーのモデルピッカーを使ってアクティブなチャットをホットスワップできます。',
       provider: 'プロバイダー',
       model: 'モデル',
+      searchProvider: 'プロバイダーを検索…',
+      searchModel: 'モデルを検索…',
+      noResults: '一致する結果がありません',
       applying: '適用中...',
       loadFailed: 'モデルを読み込めませんでした',
       restartRequired:

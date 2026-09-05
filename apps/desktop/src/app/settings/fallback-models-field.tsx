@@ -2,13 +2,12 @@ import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Plus, X } from '@/lib/icons'
-import { cn } from '@/lib/utils'
+import { modelSearchText } from '@/lib/model-search-text'
 
-import { CONTROL_TEXT } from './constants'
+import { SearchableSelect } from './searchable-select'
 
 interface FallbackEntry {
   provider: string
@@ -124,30 +123,29 @@ export function FallbackModelsField({
         return (
           <div className="flex flex-wrap items-center gap-2" key={index}>
             <span className="w-4 shrink-0 text-center font-mono text-[0.7rem] text-muted-foreground">{index + 1}</span>
-            <Select onValueChange={provider => updateRow(index, { provider, model: '' })} value={entry.provider}>
-              <SelectTrigger className={cn('min-w-36', CONTROL_TEXT)}>
-                <SelectValue placeholder={m.provider} />
-              </SelectTrigger>
-              <SelectContent>
-                {providers.map(provider => (
-                  <SelectItem key={provider.slug} value={provider.slug}>
-                    {provider.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select onValueChange={model => updateRow(index, { model })} value={entry.model}>
-              <SelectTrigger className={cn('min-w-52 flex-1', CONTROL_TEXT)}>
-                <SelectValue placeholder={m.model} />
-              </SelectTrigger>
-              <SelectContent>
-                {modelItems.map(model => (
-                  <SelectItem key={model} value={model}>
-                    {model}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <SearchableSelect
+              className="min-w-36"
+              emptyMessage={m.noResults}
+              onChange={provider => updateRow(index, { provider, model: '' })}
+              options={providers.map(provider => ({
+                value: provider.slug,
+                label: provider.name,
+                keywords: [provider.name, provider.slug]
+              }))}
+              placeholder={m.searchProvider}
+              value={entry.provider}
+            />
+            <SearchableSelect
+              className="min-w-52 flex-1"
+              emptyMessage={m.noResults}
+              onChange={model => updateRow(index, { model })}
+              options={modelItems.map(model => ({
+                value: model,
+                keywords: [modelSearchText(model)]
+              }))}
+              placeholder={m.searchModel}
+              value={entry.model}
+            />
             <Button
               aria-label={t.common.remove}
               onClick={() => commit(rows.filter((_, i) => i !== index))}

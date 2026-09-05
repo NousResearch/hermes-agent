@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
@@ -29,6 +29,36 @@ export function rankSearchOption(option: string, search: string): number {
 }
 
 /**
+ * cmdk filter for one item: the best score across the value and each keyword,
+ * scored independently.
+ *
+ * Joining them into one haystack — `${item} ${keywords.join(' ')}` — was wrong
+ * twice over. A search containing a space could match across the seam that the
+ * join itself introduced, so "4 open" hit the pair ("gpt-4", "openai") that
+ * neither member matches. And `rankSearchOption` locates the final path segment
+ * with `lastIndexOf('/')`, which on a joined string can land inside a *keyword*:
+ * ("anthropic/claude-opus-4", ["openai/gpt-4"]) measured "gpt-4" as the segment,
+ * so "opus" silently dropped from rank 2 to rank 1 and lost its ordering.
+ *
+ * Scoring each candidate on its own also stops a keyword that repeats the value
+ * from counting twice when cmdk breaks ties.
+ *
+ * Exported for tests.
+ */
+export function rankSearchCandidates(item: string, search: string, keywords?: string[]): number {
+  return Math.max(rankSearchOption(item, search), ...(keywords ?? []).map(k => rankSearchOption(k, search)))
+}
+
+/** A single selectable entry. `label` overrides the raw `value` for display;
+ *  `keywords` are extra search haystacks beyond the value (e.g. a model id's
+ *  aliases), each scored separately by rankSearchOption. */
+export interface SearchableSelectOption {
+  value: string
+  label?: string
+  keywords?: string[]
+}
+
+/**
  * Searchable select for large option lists (e.g. ~590 IANA timezones).
  * Built on Popover + cmdk Command — the same stack as Shadcn's Combobox.
  *
@@ -44,29 +74,47 @@ export function SearchableSelect({
   options,
   placeholder = 'Search…',
   emptyMessage = 'No results found.',
-  clearLabel
+  clearLabel,
+  className
 }: {
   value: string
   onChange: (value: string) => void
-  options: string[]
+  options: readonly (string | SearchableSelectOption)[]
   placeholder?: string
   emptyMessage?: string
   /** When set, prepends a "clear" item that sets the value to ''.
    *  Matches the existing <Select> pattern of EMPTY_SELECT_VALUE + "(none)". */
   clearLabel?: string
+  /** Extra classes merged onto the trigger (e.g. min-w-* sizing). */
+  className?: string
 }) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
 
   const handleSelect = useCallback(
     (selected: string) => {
-      onChange(selected)
+      // Radix's <Select> ignores re-picking the current value (no
+      // onValueChange), and the converted pickers rely on that: a MoA slot's
+      // provider re-selected unchanged must not schedule another autosave.
+      if (selected !== value) {
+        onChange(selected)
+      }
       setOpen(false)
     },
-    [onChange]
+    [onChange, value]
   )
 
-  const displayValue = value !== '' && value !== undefined ? value : placeholder
+  // Plain strings normalize to {value, label: value}. A selected value missing
+  // from the list (e.g. a saved model the provider no longer reports) falls
+  // back to the raw value so the trigger never renders as a blank box.
+  // Memoized: harmless to rebuild at ~600 options, but the model pickers feed
+  // this whole catalogs and every keystroke in the palette re-renders.
+  const normalizedOptions: SearchableSelectOption[] = useMemo(
+    () => options.map(option => (typeof option === 'string' ? { value: option, label: option } : option)),
+    [options]
+  )
+  const selectedOption = normalizedOptions.find(option => option.value === value)
+  const displayValue = !value ? placeholder : (selectedOption?.label ?? value)
 
   return (
     <Popover onOpenChange={setOpen} open={open}>
@@ -77,7 +125,8 @@ export function SearchableSelect({
           className={cn(
             controlVariants(),
             'flex items-center justify-between gap-2 whitespace-nowrap',
-            !value && 'text-muted-foreground'
+            !value && 'text-muted-foreground',
+            className
           )}
           data-slot="searchable-select-trigger"
           ref={triggerRef}
@@ -89,7 +138,7 @@ export function SearchableSelect({
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0">
-        <Command filter={rankSearchOption}>
+        <Command filter={rankSearchCandidates}>
           <CommandInput autoFocus placeholder={placeholder} />
           <CommandList>
             <CommandEmpty>{emptyMessage}</CommandEmpty>
@@ -100,10 +149,18 @@ export function SearchableSelect({
                   {clearLabel}
                 </CommandItem>
               )}
-              {options.map(option => (
-                <CommandItem key={option} onSelect={() => handleSelect(option)} value={option}>
-                  <Codicon className={cn('mr-2 size-4', option === value ? 'opacity-100' : 'opacity-0')} name="check" />
-                  {option}
+              {normalizedOptions.map(option => (
+                <CommandItem
+                  key={option.value}
+                  keywords={option.keywords}
+                  onSelect={() => handleSelect(option.value)}
+                  value={option.value}
+                >
+                  <Codicon
+                    className={cn('mr-2 size-4', option.value === value ? 'opacity-100' : 'opacity-0')}
+                    name="check"
+                  />
+                  {option.label ?? option.value}
                 </CommandItem>
               ))}
             </CommandGroup>

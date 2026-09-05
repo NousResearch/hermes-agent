@@ -26,6 +26,7 @@ import type {
 import { useI18n } from '@/i18n'
 import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
+import { modelSearchText } from '@/lib/model-search-text'
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@/lib/reasoning-effort'
 import { cn } from '@/lib/utils'
 import { setMainModelAssignment } from '@/store/cron-model-impact'
@@ -38,6 +39,7 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
 import { ListRow, Pill, SectionHeading } from './primitives'
+import { SearchableSelect, type SearchableSelectOption } from './searchable-select'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 // Skeleton mirror of the Model settings DOM so the page keeps its shape while
@@ -120,6 +122,20 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
 ]
 
 const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', models: [] }]
+
+/** A provider row as a SearchableSelect option: label by name, findable by
+ *  either name or slug. Built identically at every provider picker here. */
+const providerSelectOption = (provider: ModelOptionProvider): SearchableSelectOption => ({
+  value: provider.slug || 'none',
+  label: provider.name,
+  keywords: [provider.name, provider.slug]
+})
+
+/** A model id as a SearchableSelect option, findable by its alias haystack. */
+const modelSelectOption = (model: string): SearchableSelectOption => ({
+  value: model,
+  keywords: [modelSearchText(model)]
+})
 
 // Radix <Select> renders a blank trigger when `value` matches no <SelectItem>.
 // A custom model (e.g. one added via config that isn't in the provider's
@@ -328,6 +344,18 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
   // that would create a recursive MoA tree (the backend rejects it on save).
   // Hide it from the slot selectors so it isn't offered as a dead choice.
   const moaSlotProviderOptions = providerOptions.filter(provider => (provider.slug || '').toLowerCase() !== 'moa')
+
+  // Reference slots and the aggregator build the same list; only the value
+  // kept visible via withActive differs.
+  const moaSlotProviderSelectOptions = (selected: string): SearchableSelectOption[] =>
+    withActive(
+      moaSlotProviderOptions.map(provider => provider.slug || 'none'),
+      selected
+    ).map(slug => {
+      const provider = moaSlotProviderOptions.find(candidate => (candidate.slug || 'none') === slug)
+
+      return { value: slug, label: provider?.name || slug, keywords: [provider?.name || slug, slug] }
+    })
 
   const selectedProviderRow = useMemo(
     () => providers.find(provider => provider.slug === selectedProvider),
@@ -828,18 +856,14 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
       <section>
         <p className="mb-3 text-xs text-muted-foreground">{m.appliesDesc}</p>
         <div className="flex flex-wrap items-center gap-2">
-          <Select onValueChange={setSelectedProvider} value={selectedProvider}>
-            <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
-              <SelectValue placeholder={m.provider} />
-            </SelectTrigger>
-            <SelectContent>
-              {mainProviderOptions.map(provider => (
-                <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
-                  {provider.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <SearchableSelect
+            className="min-w-40"
+            emptyMessage={m.noResults}
+            onChange={setSelectedProvider}
+            options={mainProviderOptions.map(providerSelectOption)}
+            placeholder={m.searchProvider}
+            value={selectedProvider}
+          />
           {needsSetup ? (
             setupIsApiKey ? (
               <>
@@ -872,18 +896,14 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
             )
           ) : (
             <>
-              <Select onValueChange={setSelectedModel} value={selectedModel}>
-                <SelectTrigger className={cn('min-w-60', CONTROL_TEXT)}>
-                  <SelectValue placeholder={m.model} />
-                </SelectTrigger>
-                <SelectContent>
-                  {withActive(selectedProviderModels, selectedModel).map(model => (
-                    <SelectItem key={model} value={model}>
-                      {model}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableSelect
+                className="min-w-60"
+                emptyMessage={m.noResults}
+                onChange={setSelectedModel}
+                options={withActive(selectedProviderModels, selectedModel).map(modelSelectOption)}
+                placeholder={m.searchModel}
+                value={selectedModel}
+              />
               <Button
                 disabled={!selectedProvider || !selectedModel || applying}
                 onClick={() => void applyMainModel()}
@@ -1023,36 +1043,22 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                   below={
                     isEditing && (
                       <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
-                        <Select
-                          onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
+                        <SearchableSelect
+                          className="min-w-32"
+                          emptyMessage={m.noResults}
+                          onChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
+                          options={providerOptions.map(providerSelectOption)}
+                          placeholder={m.searchProvider}
                           value={auxDraft.provider}
-                        >
-                          <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
-                            <SelectValue placeholder={m.provider} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {providerOptions.map(provider => (
-                              <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
-                                {provider.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Select
-                          onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
+                        />
+                        <SearchableSelect
+                          className="min-w-48"
+                          emptyMessage={m.noResults}
+                          onChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
+                          options={withActive(auxDraftProviderModels, auxDraft.model).map(modelSelectOption)}
+                          placeholder={m.searchModel}
                           value={auxDraft.model}
-                        >
-                          <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
-                            <SelectValue placeholder={m.model} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {withActive(auxDraftProviderModels, auxDraft.model).map(model => (
-                              <SelectItem key={model} value={model}>
-                                {model}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        />
                         <Button
                           disabled={!auxDraft.provider || !auxDraft.model || applying}
                           onClick={() => void applyAuxiliaryDraft(meta.key)}
@@ -1205,8 +1211,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                 }
                 below={
                   <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
-                    <Select
-                      onValueChange={value =>
+                    <SearchableSelect
+                      className="min-w-32"
+                      emptyMessage={m.noResults}
+                      onChange={value =>
                         updateMoaPreset(prev => ({
                           ...prev,
                           reference_models: prev.reference_models.map((s, i) =>
@@ -1214,28 +1222,14 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                           )
                         }))
                       }
+                      options={moaSlotProviderSelectOptions(slot.provider)}
+                      placeholder={m.searchProvider}
                       value={slot.provider}
-                    >
-                      <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
-                        <SelectValue placeholder={m.provider} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {withActive(
-                          moaSlotProviderOptions.map(p => p.slug || 'none'),
-                          slot.provider
-                        ).map(slug => {
-                          const provider = moaSlotProviderOptions.find(p => (p.slug || 'none') === slug)
-
-                          return (
-                            <SelectItem key={slug} value={slug}>
-                              {provider?.name || slug}
-                            </SelectItem>
-                          )
-                        })}
-                      </SelectContent>
-                    </Select>
-                    <Select
-                      onValueChange={value =>
+                    />
+                    <SearchableSelect
+                      className="min-w-48"
+                      emptyMessage={m.noResults}
+                      onChange={value =>
                         updateMoaPreset(prev => ({
                           ...prev,
                           reference_models: prev.reference_models.map((s, i) =>
@@ -1243,19 +1237,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                           )
                         }))
                       }
+                      options={withActive(modelsForProvider(slot.provider), slot.model).map(modelSelectOption)}
+                      placeholder={m.searchModel}
                       value={slot.model}
-                    >
-                      <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
-                        <SelectValue placeholder={m.model} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {withActive(modelsForProvider(slot.provider), slot.model).map(model => (
-                          <SelectItem key={model} value={model}>
-                            {model}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    />
                     <Button
                       disabled={currentMoaPreset.reference_models.length <= 1 || applying}
                       onClick={() =>
@@ -1297,56 +1282,35 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
             <ListRow
               below={
                 <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
-                  <Select
-                    onValueChange={value =>
+                  <SearchableSelect
+                    className="min-w-32"
+                    emptyMessage={m.noResults}
+                    onChange={value =>
                       updateMoaPreset(prev => ({
                         ...prev,
                         aggregator: updateMoaSlot(prev.aggregator, { provider: value })
                       }))
                     }
+                    options={moaSlotProviderSelectOptions(currentMoaPreset.aggregator.provider)}
+                    placeholder={m.searchProvider}
                     value={currentMoaPreset.aggregator.provider}
-                  >
-                    <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
-                      <SelectValue placeholder={m.provider} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {withActive(
-                        moaSlotProviderOptions.map(p => p.slug || 'none'),
-                        currentMoaPreset.aggregator.provider
-                      ).map(slug => {
-                        const provider = moaSlotProviderOptions.find(p => (p.slug || 'none') === slug)
-
-                        return (
-                          <SelectItem key={slug} value={slug}>
-                            {provider?.name || slug}
-                          </SelectItem>
-                        )
-                      })}
-                    </SelectContent>
-                  </Select>
-                  <Select
-                    onValueChange={value =>
+                  />
+                  <SearchableSelect
+                    className="min-w-48"
+                    emptyMessage={m.noResults}
+                    onChange={value =>
                       updateMoaPreset(prev => ({
                         ...prev,
                         aggregator: updateMoaSlot(prev.aggregator, { model: value })
                       }))
                     }
+                    options={withActive(
+                      modelsForProvider(currentMoaPreset.aggregator.provider),
+                      currentMoaPreset.aggregator.model
+                    ).map(modelSelectOption)}
+                    placeholder={m.searchModel}
                     value={currentMoaPreset.aggregator.model}
-                  >
-                    <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
-                      <SelectValue placeholder={m.model} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {withActive(
-                        modelsForProvider(currentMoaPreset.aggregator.provider),
-                        currentMoaPreset.aggregator.model
-                      ).map(model => (
-                        <SelectItem key={model} value={model}>
-                          {model}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  />
                 </div>
               }
               description={

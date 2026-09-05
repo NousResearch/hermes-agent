@@ -1217,9 +1217,10 @@ class GatewayShutdownMixin:
     @staticmethod
     def _restart_watcher_env() -> dict:
         """Watcher env minus ``_HERMES_GATEWAY`` (else the CLI's self-restart guard refuses; gateway stays down)."""
+        from gateway.control_plane import scrub_gateway_markers_for_restart_watcher
         from tools.environments.local import build_subprocess_env
         watcher_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
-        watcher_env.pop("_HERMES_GATEWAY", None)
+        scrub_gateway_markers_for_restart_watcher(watcher_env)
         return watcher_env
 
     @staticmethod
@@ -1402,7 +1403,17 @@ class GatewayShutdownMixin:
         self._draining = True
 
         async def _run_restart() -> None:
-            await self._await_active_work_before_restart()
+            drained = await self._await_active_work_before_restart()
+            try:
+                from gateway.control_plane import RESTART_HANDOFF_FILENAME, mark_restart_handoff
+                from gateway.run import _hermes_home
+
+                mark_restart_handoff(
+                    _hermes_home / RESTART_HANDOFF_FILENAME,
+                    outbound_flushed=bool(drained),
+                )
+            except Exception:
+                pass
             # Detached helper only AFTER the after-turn wait, or its drain_timeout+5 deadline fires mid-turn.
             if detached:
                 with _log_suppressed(logging.ERROR, "Failed to launch detached gateway restart helper: %s"):

@@ -234,6 +234,36 @@ class _KanbanDispatcher:
                         conn.close()
         return False
 
+    def ready_running_snapshot(self) -> tuple[int, int, str]:
+        """Count READY and RUNNING tasks across boards for stall detection."""
+        from hermes_cli import kanban_db as kb
+
+        total_ready = 0
+        total_running = 0
+        board_with_ready = ""
+        for slug in self._board_slugs():
+            # Honor dispatch quarantine: a known-corrupt board is not a
+            # READY/RUNNING stall, and reopening it every tick would undo
+            # tick_once_for_board's "stop retrying" contract.
+            if slug in self.disabled_corrupt_boards:
+                continue
+            conn = None
+            try:
+                conn = _kbc().connect(board=slug)
+                ready = len(kb.list_tasks(conn, status="ready") or [])
+                running = len(kb.list_tasks(conn, status="running") or [])
+                total_ready += ready
+                total_running += running
+                if ready and not board_with_ready:
+                    board_with_ready = slug
+            except Exception:
+                continue
+            finally:
+                if conn is not None:
+                    with contextlib.suppress(Exception):
+                        conn.close()
+        return total_ready, total_running, board_with_ready or "default"
+
     def auto_decompose_tick(self, auto_decompose_per_tick: int) -> int:
         """Auto-decompose up to N triage tasks across all boards into ready workgraphs.
 

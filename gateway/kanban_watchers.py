@@ -21,6 +21,7 @@ from gateway.kanban_watchers_common import (
     _release_singleton_lock,
     _resolve_auto_decompose_settings,
     _gc_retention_days,
+    _stamp_dispatcher_lock_owner,
     _to_thread_process_service,
     logger,
 )
@@ -218,13 +219,31 @@ class GatewayKanbanWatchersMixin:
         self._kanban_dispatcher_lock_handle = None
         _lock_path = _kb.kanban_home() / "kanban" / ".dispatcher.lock"
         _lock_handle, _lock_state = _acquire_singleton_lock(_lock_path)
+        self._kanban_dispatcher_lock_path = _lock_path
         if _lock_state == "contended":
-            logger.info("kanban dispatcher: another gateway already holds the dispatcher "
-                        "lock (%s); this gateway will NOT dispatch.", _lock_path)
+            from gateway.control_plane import format_lock_owner, read_dispatcher_lock_owner
+
+            owner = read_dispatcher_lock_owner(_lock_path)
+            logger.info(
+                "kanban dispatcher: another gateway already holds the dispatcher "
+                "lock (%s); owner=%s; this gateway will NOT dispatch.",
+                _lock_path,
+                format_lock_owner(owner),
+            )
             return None
         if _lock_state == "held":
             self._kanban_dispatcher_lock_handle = _lock_handle  # hold for process lifetime
-            logger.info("kanban dispatcher: holding singleton dispatcher lock (%s)", _lock_path)
+            _stamp_dispatcher_lock_owner(
+                _lock_path,
+                profile=self._active_profile_name(),
+                pid=os.getpid(),
+            )
+            logger.info(
+                "kanban dispatcher: holding singleton dispatcher lock (%s) as %s pid=%s",
+                _lock_path,
+                self._active_profile_name(),
+                os.getpid(),
+            )
         else:
             logger.warning("kanban dispatcher: advisory lock unavailable at %s; proceeding "
                            "on config control alone.", _lock_path)
@@ -255,6 +274,9 @@ class GatewayKanbanWatchersMixin:
         bad_ticks = 0
         last_warn_at = 0
         dispatcher = _KanbanDispatcher(_kb, settings)
+        from gateway.control_plane import StalledDispatchTracker, read_dispatcher_lock_owner
+
+        stalled_tracker = StalledDispatchTracker()
 
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
         while self._running:
@@ -294,6 +316,24 @@ class GatewayKanbanWatchersMixin:
                         bad_ticks,
                     )
                     last_warn_at = now
+                try:
+                    ready_n, running_n, board_slug = dispatcher.ready_running_snapshot()
+                    warning = stalled_tracker.observe(
+                        ready=ready_n,
+                        running=running_n,
+                        board=board_slug,
+                        owner=read_dispatcher_lock_owner(
+                            getattr(self, "_kanban_dispatcher_lock_path", None)
+                            or (_kb.kanban_home() / "kanban" / ".dispatcher.lock")
+                        ),
+                    )
+                    if warning:
+                        logger.warning("%s", warning)
+                except Exception:
+                    logger.debug(
+                        "kanban dispatcher: stalled READY/RUNNING snapshot failed",
+                        exc_info=True,
+                    )
             except asyncio.CancelledError:
                 logger.debug("kanban dispatcher: cancelled")
                 self._release_kanban_dispatcher_lock()

@@ -639,6 +639,33 @@ class GatewayNotificationsMixin:
                 )
                 return None
             logger.info("Sent restart notification to %s:%s", platform_str, chat_id)
+            try:
+                from gateway.control_plane import (
+                    RESTART_HANDOFF_FILENAME,
+                    claim_restart_recovery,
+                    load_restart_handoff,
+                    mark_restart_handoff,
+                )
+
+                handoff_path = _hermes_home / RESTART_HANDOFF_FILENAME
+                mark_restart_handoff(
+                    handoff_path,
+                    gateway_online=True,
+                    notify_delivered=True,
+                    sessions_restored=True,
+                )
+                handoff = load_restart_handoff(handoff_path)
+                if not claim_restart_recovery(
+                    handoff,
+                    gateway_online=True,
+                    notify_delivered=True,
+                    sessions_restored=True,
+                ):
+                    logger.warning(
+                        "Restart notification delivered but recovery was not claimed"
+                    )
+            except Exception:
+                logger.debug("Restart handoff recovery update failed", exc_info=True)
             return str(platform_str), str(chat_id), str(thread_id) if thread_id else None
         except Exception as e:
             logger.warning("Restart notification failed: %s", e)

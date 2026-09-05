@@ -337,7 +337,9 @@ def _spawn_hermes_action(
     # the gateway's own restart watcher does.
     # The gateway's own restart watcher already drops it (gateway/run.py); mirror that here (#52470).
     action_env = {**os.environ, "HERMES_NONINTERACTIVE": "1"}
-    action_env.pop("_HERMES_GATEWAY", None)
+    from gateway.control_plane import scrub_gateway_markers_for_restart_watcher
+
+    scrub_gateway_markers_for_restart_watcher(action_env)
     detach = {"creationflags": windows_detach_flags()} if sys.platform == "win32" else {"start_new_session": True}
     proc = subprocess.Popen(
         cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,

@@ -2045,6 +2045,25 @@ class CredentialPool:
                 logger.info("credential pool: marking %s exhausted (status=%s), rotating", _label, status_code)
             self._current_id = None
             next_entry, _pending = self._select_unlocked(refresh=False)
+            if next_entry is not None and next_entry.id == entry.id:
+                # No-recovery guard (#97315): the selection handed back the
+                # very entry that was just marked exhausted — e.g. the codex
+                # auth-store sync adopted fresher tokens from auth.json and
+                # cleared the bench mid-selection, so the sole credential
+                # re-entered rotation within milliseconds of being marked.
+                # Returning it reports a successful recovery without changing
+                # the credential, so the caller retries the same 429 forever
+                # (~2 req/s for hours against an already-throttled account).
+                # Mirror the single-entry guard on the unmatched-identity
+                # branch above: hand back None so the failure surfaces and
+                # fallback/error propagation proceeds.
+                logger.warning(
+                    "credential pool: rotation returned the just-marked entry "
+                    "%s — treating as no-recovery so the failure surfaces",
+                    _label,
+                )
+                self._current_id = None
+                return None
             if next_entry:
                 logger.info("credential pool: rotated to %s", next_entry.label or next_entry.id[:8])
             return next_entry

@@ -4531,6 +4531,15 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         chat_id = await self._dm_target(chat_id, metadata)
         try:
+            # Clear the sticky assistant status before posting an interactive
+            # prompt (#102704, #92202): pause_typing stops future writes but
+            # leaves the last "still working..." line on screen, and Slack
+            # disables the thread's compose box while a status is set. Ordinary
+            # sends clear via stop_typing after post; interactive prompts post
+            # via chat_postMessage and must clear explicitly here so the
+            # question is answerable. _clear_thread_status_quietly is idempotent
+            # and never masks the SendResult.
+            await self._clear_thread_status_quietly(chat_id, metadata)
             text, blocks = build()
             result = await self._post_interactive_blocks(
                 chat_id, text, blocks, metadata, sanitize=sanitize, team_scoped=team_scoped_key)

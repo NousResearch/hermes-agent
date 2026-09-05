@@ -772,8 +772,13 @@ class TurnRunner:
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
             return
+        # Adapters keep editable-message IDs across turns. A bare event type
+        # would make this turn edit an earlier turn's bubble (or another topic's).
+        status_key = event_type
+        if ctx.session_key and ctx.run_generation is not None:
+            status_key = f"{ctx.session_key}:run:{ctx.run_generation}:{event_type}"
         fut = self._schedule(
-            _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),
+            _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, status_key, prepared, ctx._status_thread_metadata),
             f"status_callback ({event_type}) scheduling error",
         )
         if fut is not None and ctx._cleanup_progress:

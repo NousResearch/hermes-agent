@@ -750,6 +750,8 @@ hermes kanban create "<title>" [--body ...] [--assignee <profile>]
                                 [--priority N] [--triage] [--idempotency-key KEY]
                                 [--max-runtime 30m|2h|1d|<seconds>]
                                 [--max-retries N]
+                                [--dispatch-after <ISO8601>]
+                                [--dispatch-window "HH:MM-HH:MM IANA/Timezone"]
                                 [--goal] [--goal-max-turns N]
                                 [--skill <name>]...
                                 [--json]
@@ -763,7 +765,7 @@ hermes kanban reassign <id>... <profile>               # bulk re-assign tasks to
 hermes kanban edit <id> [--title ...] [--body ...]     # edit task title / body / priority in place
         [--priority N]
 hermes kanban promote <id>...                          # move todo/blocked tasks to ready (recovery)
-hermes kanban schedule <id> --at <ISO8601>             # set/clear a task's scheduled_at start time
+hermes kanban gate <id> (--after <ISO8601> | --window "HH:MM-HH:MM IANA/Timezone" | --clear)
 hermes kanban diagnostics [--json]                     # board health snapshot (alias: diag)
 hermes kanban link <parent_id> <child_id>
 hermes kanban unlink <parent_id> <child_id>
@@ -823,15 +825,6 @@ kanban:
   max_in_progress: 2
   auto_promote_children: false
   default_workdir: ~/work/active-project
-```
-
-### Scheduled task starts (`scheduled_at`)
-
-Set `scheduled_at` on a task to delay dispatch until a specific time. The dispatcher skips ready tasks whose `scheduled_at` is in the future and picks them up on the first tick after that timestamp.
-
-```bash
-hermes kanban create "nightly backup audit" \
-  --assignee ops --scheduled-at "2026-06-01T03:00:00Z"
 ```
 
 ### Respawn guard

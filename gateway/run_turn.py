@@ -3493,6 +3493,20 @@ class GatewayTurnMixin:
             event_message_id=next_message_id, channel_prompt=next_channel_prompt,
             message_type=next_message_type,
         )
+        # The in-band queued follow-up bypassed the adapter's message entry (which fires
+        # on_processing_start/complete), so the drained message never got its ack/eyes
+        # reaction. Fire the pair here for the drained event only (#103429).
+        if pending_event is not None:
+            from gateway.platforms.base import ProcessingOutcome
+            _drain_adapter = self._adapter_for_source(next_source) or adapter
+            if _drain_adapter is not None:
+                outcome = (
+                    ProcessingOutcome.SUCCESS
+                    if not followup_result.get("error") and not followup_result.get("interrupted")
+                    else ProcessingOutcome.FAILURE
+                )
+                await _drain_adapter._run_processing_hook("on_processing_start", pending_event)
+                await _drain_adapter._run_processing_hook("on_processing_complete", pending_event, outcome)
         return _preserve_queued_followup_history_offset(result, followup_result)
 
     async def _run_agent_cleanup_turn_tasks(

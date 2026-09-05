@@ -1568,12 +1568,32 @@ export const zh: Translations = {
         disabledTitle: '真实配置文件浏览：已关闭',
         disabledMessage: '配置文件快照将被删除；新会话使用干净的浏览器。',
         failedSave: '无法保存真实配置文件设置',
+        picker: {
+          browserLabel: '浏览器',
+          browserDescription: '代理从哪个已安装的浏览器借用登录信息。',
+          profileLabel: '浏览器配置文件',
+          profileDescription: '该浏览器中的哪个配置文件——其 Cookie 决定代理以谁的身份登录。',
+          systemDefault: '系统默认',
+          systemDefaultNamed: (browser: string) => `系统默认（${browser}）`,
+          lastUsed: '最近使用',
+          lastUsedNamed: (profile: string) => `最近使用（${profile}）`,
+          notInstalled: '未安装',
+          noProfile: '从未启动',
+          loading: '正在查找浏览器…',
+          failedLoad: '无法列出这台电脑上的浏览器',
+          browsingAs: (browser: string, profile: string) => `以 ${browser} · ${profile} 身份浏览`,
+          unsupportedPlatform: (platform: string) =>
+            `真实配置文件浏览需要桌面浏览器，在 ${platform} 上不可用。`,
+          savedTitle: '浏览身份已更新',
+          savedMessage: (target: string) => `新会话将以 ${target} 身份浏览。`
+        },
         prompt: {
           title: '让网站保持登录状态',
-          body: '让 Hermes 使用默认浏览器配置文件的快照进行浏览，网站打开时即已登录。',
+          body: '让 Hermes 使用你的浏览器配置文件快照进行浏览，网站打开时即已登录。',
           bulletSnapshot: 'Cookie 和登录信息会复制到托管快照中。',
           bulletLiveProfile: '绝不会直接打开你的真实浏览器配置文件。',
           bulletLocal: '所有数据都不会离开这台电脑。',
+          bulletTarget: (target: string) => `使用 ${target}——可随时在设置中更改。`,
           dontShowAgain: '不再显示',
           notNow: '暂不',
           enable: '使用我的配置文件'

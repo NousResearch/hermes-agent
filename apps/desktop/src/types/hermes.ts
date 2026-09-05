@@ -1148,6 +1148,48 @@ export interface TerminalBackendsResponse {
   backends: TerminalBackendInfo[]
 }
 
+/** One profile directory inside a browser's user-data dir. `directory` is what
+ *  `browser.real_profile_pin` takes ("Default", "Profile 2"); `name` is the
+ *  display name the user knows it by. */
+export interface RealProfileEntry {
+  directory: string
+  name: string
+  /** The profile an unpinned snapshot would copy (Local State → last_used). */
+  last_used: boolean
+}
+
+/** One Chromium-family browser real-profile browsing could drive. */
+export interface RealProfileBrowser {
+  /** Canonical key written to `browser.real_profile_browser`. */
+  key: string
+  label: string
+  /** Binary present on this host. */
+  installed: boolean
+  /** User-data dir present — a browser can be installed but never launched. */
+  has_profile: boolean
+  is_system_default: boolean
+  data_dir: string
+  profiles: RealProfileEntry[]
+}
+
+/** Shape of `GET /api/tools/browser/real-profile` — read-only discovery for the
+ *  browser/profile picker. `resolved_*` is what a launch would use RIGHT NOW,
+ *  so the UI can name the identity instead of saying "your default browser". */
+export interface RealProfileCandidates {
+  /** False on a platform where real-profile browsing cannot work at all. */
+  supported: boolean
+  platform: string
+  detected_default: null | string
+  detected_unsupported_channel: boolean
+  resolved_browser: null | string
+  resolved_profile: null | string
+  pinned_browser: null | string
+  pinned_profile: null | string
+  /** Fail-closed guidance (bad pin, non-Chromium default, …); null when fine. */
+  error: null | string
+  browsers: RealProfileBrowser[]
+}
+
 /** One model row from a toolset backend's catalog (image/video gen). */
 export interface ToolsetModel {
   id: string

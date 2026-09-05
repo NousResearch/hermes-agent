@@ -407,6 +407,13 @@ DEFAULT_CONFIG = {
         # and retries once; still locked -> stays blocked, no auto-kill. No effect on macOS/Linux
         # (copy-while-running works).
         "real_profile_autoclose": False,
+        # Which browser real-profile browsing drives. Empty = the OS default browser. Set a
+        # key (chrome / chromium / brave / brave-origin / edge) to pin one regardless of the
+        # system default — e.g. two Hermes profiles on one machine driving different browsers.
+        # A key that isn't supported, or whose profile directory doesn't exist, FAILS CLOSED
+        # rather than silently falling back to the default (wrong-principal). Desktop:
+        # Settings -> Capabilities -> Tools -> Browser.
+        "real_profile_browser": "",
         # Pin WHICH source profile directory is snapshotted for real-profile browsing (e.g. "Profile
         # 2"). Empty = browser's last-used profile, which on multi-profile machines can hand the
         # agent the wrong identity. A pin naming a missing directory FAILS CLOSED.

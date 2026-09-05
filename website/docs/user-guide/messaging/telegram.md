@@ -1222,8 +1222,8 @@ This covers the custom fallback transport layer that Hermes uses for Telegram co
 The bot can add emoji reactions to messages as visual processing feedback:
 
 - 👀 when the bot starts processing your message
-- ✅ when the response is delivered successfully
-- ❌ if an error occurs during processing
+- 👍 when the response is delivered successfully
+- 👎 if an error occurs during processing
 
 Reactions are **disabled by default**. Enable them in `config.yaml`:
 
@@ -1239,7 +1239,7 @@ TELEGRAM_REACTIONS=true
 ```
 
 :::note
-Unlike Discord (where reactions are additive), Telegram's Bot API replaces all bot reactions in a single call. The transition from 👀 to ✅/❌ happens atomically — you won't see both at once.
+Unlike Discord (where reactions are additive), Telegram's Bot API replaces all bot reactions in a single call. The transition from 👀 to 👍/👎 happens atomically — you won't see both at once.
 :::
 
 :::tip

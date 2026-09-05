@@ -89,10 +89,36 @@ $script:Ui = $null
 $script:UiStage = "Hermes will open once done."   # until the first gate; matches ui.html
 $script:UiStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
+# Disable QuickEdit/Select mode so console selection cannot pause buffered
+# output replay (#103222). QuickEdit's SELECT blocks Write-Host while the
+# console is in selection state; the buffered replay after the updater child
+# exits then stalls at the first Write-Host until the user clears selection.
+try {
+    Add-Type -Namespace HermesHandoff -Name ConsoleMode -MemberDefinition @'
+[DllImport("kernel32.dll", SetLastError=true)] public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
+[DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
+[DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr GetStdHandle(int nStdHandle);
+'@ -ErrorAction Stop
+    $STD_OUTPUT_HANDLE = -11
+    $STD_INPUT_HANDLE = -10
+    $ENABLE_QUICK_EDIT_MODE = 0x0040
+    $ENABLE_EXTENDED_FLAGS = 0x0080
+    foreach ($h in @($STD_OUTPUT_HANDLE, $STD_INPUT_HANDLE)) {
+        try {
+            $handle = [HermesHandoff.ConsoleMode]::GetStdHandle($h)
+            $mode = [uint32]0
+            if ([HermesHandoff.ConsoleMode]::GetConsoleMode($handle, [ref]$mode)) {
+                $newMode = ($mode -band (-bnot $ENABLE_QUICK_EDIT_MODE)) -bor $ENABLE_EXTENDED_FLAGS
+                [void][HermesHandoff.ConsoleMode]::SetConsoleMode($handle, $newMode)
+            }
+        } catch {}
+    }
+} catch {}
+
 function Write-HandoffLog([string]$Message) {
     $line = "{0:yyyy-MM-ddTHH:mm:ssK} {1}" -f (Get-Date), $Message
     try { Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8 } catch {}
-    Write-Host $line
+    try { Write-Host $line } catch {}
 }
 
 # ── The shim: repo-owned HTML in a chromeless default-browser app window ───

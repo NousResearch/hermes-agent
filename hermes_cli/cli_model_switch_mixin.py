@@ -628,9 +628,27 @@ class CLIModelSwitchMixin:
                     model_list = provider_model_ids(provider_data["slug"]) or model_list
                 except Exception:
                     pass
+            # $/Mtok pricing rows from the same provider catalog the standalone `hermes model`
+            # picker feeds to _prompt_model_selection(pricing=...) (#102990). Purely decorative:
+            # selection resolves bare model ids via _filtered_pairs, never these labels.
+            model_price_rows = None
+            try:
+                slug = (provider_data.get("slug") or "").strip().lower()
+                if slug and model_list:
+                    from hermes_cli.auth_model_picker import _ModelPickerRows
+                    from hermes_cli.models_pricing import get_pricing_for_provider
+                    pricing = get_pricing_for_provider(slug) or {}
+                    if pricing:
+                        model_price_rows = _ModelPickerRows(
+                            list(model_list), pricing,
+                            current_model=str(state.get("current_model") or ""),
+                            sale_chrome=slug == "nous")
+            except Exception:
+                model_price_rows = None
             state.update(
                 stage="model", provider_data=provider_data, model_list=model_list,
-                selected=0, filter="", _filtered_pairs=None)
+                selected=0, filter="", _filtered_pairs=None,
+                _model_price_rows=model_price_rows)
             self._invalidate(min_interval=0.0)
             return
         if stage == "model":
@@ -645,6 +663,7 @@ class CLIModelSwitchMixin:
             if selected == back_idx:
                 state.update(
                     stage="provider", filter="", _filtered_pairs=None,
+                    _model_price_rows=None,
                     selected=next((i for i, p in enumerate(state.get("providers") or [])
                                    if p.get("slug") == provider_data.get("slug")), 0))
                 self._invalidate(min_interval=0.0)

@@ -639,7 +639,19 @@ class CLITuiMixin:
             _query = state.get("filter", "") or ""
             filtered_pairs = self._filter_model_picker_entries(model_list, _query)
             state["_filtered_pairs"] = filtered_pairs
-            model_labels = [e for (_i, e) in filtered_pairs]
+            # Priced catalogs render through the same _ModelPickerRows decorator the standalone
+            # `hermes model` picker uses ($/Mtok + Nous sale chrome). filtered_pairs keep
+            # carrying the bare ids, so the decorated labels never reach model resolution.
+            _model_price_rows = state.get("_model_price_rows")
+            model_labels = []
+            for (_i, e) in filtered_pairs:
+                if _model_price_rows is not None:
+                    try:
+                        model_labels.append(_model_price_rows.label(e))
+                    except Exception:
+                        model_labels.append(e)
+                else:
+                    model_labels.append(e)
             choices = list(model_labels) + ["← Back", "Cancel"]
             if _query:
                 hint = (
@@ -647,6 +659,12 @@ class CLITuiMixin:
                     "— type to narrow, Backspace to clear)")
             elif model_list:
                 hint = f"Select a model ({len(model_list)} available) — type to filter"
+                if _model_price_rows is not None and getattr(_model_price_rows, "has_pricing", False):
+                    hint += " · $/Mtok columns: In/Out"
+                    if getattr(_model_price_rows, "has_cache", False):
+                        hint += "/Cache"
+                    if getattr(_model_price_rows, "any_on_sale", False):
+                        hint += " · ★ = on sale"
             else:
                 hint = "No models listed for this provider. Use Back or Cancel."
         return self._render_scroll_list_panel(

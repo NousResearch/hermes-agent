@@ -1,8 +1,9 @@
 """T6 — route provenance telemetry on result entries, progress payloads, and lifecycle handles.
 
-Contract: every result entry (and SubagentHandle) carries requested_profile / resolved_provider /
-resolved_model / fallback_policy. Legacy (profile-less) runs carry all four as None; profile runs
-carry the SPAWN-TIME route. The pre-existing "model" key stays the child's LIVE model, so
+Contract: profile-run result entries (and SubagentHandle) carry requested_profile /
+resolved_provider / resolved_model / fallback_policy. Legacy (profile-less) runs OMIT all four so
+their entries stay byte-identical to main; profile runs carry the SPAWN-TIME route. The
+pre-existing "model" key stays the child's LIVE model, so
 resolved_model != model is the requested-vs-effective divergence signal when a fallback fires.
 """
 
@@ -34,21 +35,19 @@ def _entry(child):
 
 ROUTE_KEYS = ("requested_profile", "resolved_provider", "resolved_model", "fallback_policy")
 
-# Today's legacy result-entry key set + the four provenance keys. Snapshot of the KEY SET only
-# (values are contract-tested elsewhere) so legacy payload shape stays byte-identical otherwise.
+# Today's legacy result-entry key set on main — EXACTLY this, no provenance keys. Snapshot of the
+# KEY SET only (values are contract-tested elsewhere) so legacy payload shape stays byte-identical.
 LEGACY_ENTRY_KEYS = {
     "task_index", "status", "summary", "api_calls", "duration_seconds", "model", "exit_reason",
     "truncated", "tokens", "tool_trace", "_child_role", "_child_cost_usd", "cost_usd", "cost_status",
-    *ROUTE_KEYS,
 }
 
 
 class TestResultEntryRouteTelemetry(unittest.TestCase):
-    def test_legacy_run_all_none_and_key_set_unchanged(self):
+    def test_legacy_run_omits_route_keys_and_key_set_matches_main(self):
         entry = _entry(_FakeChild())
         for key in ROUTE_KEYS:
-            self.assertIn(key, entry)
-            self.assertIsNone(entry[key])
+            self.assertNotIn(key, entry)
         self.assertEqual(set(entry.keys()), LEGACY_ENTRY_KEYS)
         self.assertEqual(entry["model"], "live-model")
 
@@ -82,9 +81,9 @@ class TestResultEntryRouteTelemetry(unittest.TestCase):
 
 
 class TestChildRouteStamp(unittest.TestCase):
-    def test_stamp_helper_none_for_unstamped_child(self):
+    def test_stamp_helper_empty_for_unstamped_child(self):
         from tools.delegate_tool_child_run import _route_telemetry
-        self.assertEqual(_route_telemetry(object()), {k: None for k in ROUTE_KEYS})
+        self.assertEqual(_route_telemetry(object()), {})
 
 
 class TestHandleRouteTelemetry(unittest.TestCase):

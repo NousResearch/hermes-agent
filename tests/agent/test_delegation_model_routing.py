@@ -298,3 +298,10 @@ class TestCredentialErrorSurfacing:
         msg = str(exc.value)
         assert "small" in msg
         assert "ANTHROPIC_API_KEY is not set" in msg
+
+
+class TestEmptyProfileNames:
+    @pytest.mark.parametrize("bad_name", ["", "   ", "\t"])
+    def test_empty_or_whitespace_profile_name_rejected(self, bad_name):
+        with pytest.raises(ValueError, match="empty or whitespace"):
+            parse_profiles(_cfg({bad_name: dict(SMALL)}))

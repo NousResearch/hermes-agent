@@ -364,8 +364,14 @@ def _resolve_profile_credentials(profile_name: str, cfg: dict) -> dict:
     (actionable, configured names listed) for an unknown profile — before any child construction."""
     from agent.delegation_model_routing import resolve_profile_route
     route = resolve_profile_route(profile_name, cfg)
+    # request_overrides / max_output_tokens carry through identically to the legacy provider branch:
+    # provider request personality from the runtime resolution, merged with explicit
+    # delegation.request_overrides from config.
+    explicit_request_overrides = cfg.get("request_overrides") if isinstance(cfg.get("request_overrides"), dict) else None
     bundle = _credential_bundle(
-        route.model, route.provider, route.base_url, route.api_key, route.api_mode, None, None,
+        route.model, route.provider, route.base_url, route.api_key, route.api_mode,
+        _merge_request_overrides(route.request_overrides, explicit_request_overrides),
+        route.max_output_tokens,
     )
     bundle.update({
         "requested_profile": route.requested_profile,
@@ -385,7 +391,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent, model_profile: Opti
     existed: ``base_url`` set → direct endpoint (``api_key`` None means inherit the parent's key, so providers
     keyed outside OPENAI_API_KEY work); ``provider`` set → full bundle via the runtime provider system (same
     path as CLI/gateway startup); neither → None values, child inherits everything. ``request_overrides`` is
-    honored on every legacy branch. Raises ValueError with a user-facing message."""
+    honored on every branch. Raises ValueError with a user-facing message."""
     from agent.delegation_model_routing import select_profile_name
     profile_name = select_profile_name(model_profile, None, cfg)
     if profile_name:

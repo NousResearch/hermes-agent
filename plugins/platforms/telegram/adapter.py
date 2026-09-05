@@ -12,7 +12,7 @@ import re
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set, Union
 from hermes_cli import setup_platforms
 
 logger = logging.getLogger(__name__)
@@ -552,7 +552,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # truncates to the SAME text, and resending burns flood budget. Dropped on finalize.
         self._last_overflow_preview: Dict[tuple, str] = {}
 
-    def _forget_status_message_id(self, chat_id: str, message_id: str) -> None:
+    def _forget_status_message_id(self, chat_id: Union[str, int], message_id: str) -> None:
         """Drop status-cache rows that point at a deleted/missing Telegram message."""
         chat = telegram_chat_id_key(chat_id)
         mid = str(message_id)

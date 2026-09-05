@@ -2926,6 +2926,7 @@ export const ru = defineLocale({
     connected: 'Подключено',
     featuredPitch: 'Одна подписка, 300+ передовых моделей — рекомендуемый способ запускать Hermes',
     fireworksPitch: 'Прямой API моделей — передовые модели на хостинге Fireworks',
+    bharatRouterPitch: 'India-resident OpenAI-compatible gateway — Krutrim, Sarvam + 140+ global models on one key',
     openRouterPitch: 'Один ключ, сотни моделей — надёжный вариант по умолчанию',
     apiKeyOptions: {
       fireworks: {

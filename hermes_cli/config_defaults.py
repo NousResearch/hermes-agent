@@ -2406,6 +2406,10 @@ OPTIONAL_ENV_VARS = {
         "daemon)", "Actual Computer base URL (leave empty for hosted relay)", None, password=False),
     "FIREWORKS_API_KEY": _prov("Fireworks AI API key", "Fireworks AI API key",
         "https://app.fireworks.ai/settings/users/api-keys"),
+    "BHARATROUTER_API_KEY": _prov(
+        "BharatRouter API key (br-...) — India-resident OpenAI-compatible gateway",
+        "BharatRouter API key", "https://bharatrouter.com/console"),
+    "BHARATROUTER_BASE_URL": _base_url("BharatRouter"),
     "MINIMAX_API_KEY": _prov("MiniMax API key (international)", "MiniMax API key",
         "https://www.minimax.io/"),
     "MINIMAX_BASE_URL": _base_url("MiniMax"),

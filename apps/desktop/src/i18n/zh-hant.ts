@@ -2429,6 +2429,7 @@ export const zhHant = defineLocale({
     connected: '已連線',
     featuredPitch: '一個訂閱，300+ 前沿模型 — 執行 Hermes 的建議方式',
     fireworksPitch: '直接模型 API — Fireworks 託管的前沿模型',
+    bharatRouterPitch: 'India-resident OpenAI-compatible gateway — Krutrim, Sarvam + 140+ global models on one key',
     localModelsTitle: '本地執行模型',
     localModelsPitch: '無需帳號——下載模型，在本機執行',
     openRouterPitch: '一個金鑰，數百個模型 — 穩定的預設選擇',

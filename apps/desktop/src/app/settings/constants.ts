@@ -68,6 +68,15 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
     priority: 1
   },
   {
+    prefix: 'BHARATROUTER_',
+    name: 'BharatRouter',
+    description: 'India-resident OpenAI-compatible gateway (Krutrim, Sarvam + global)',
+    docsUrl: 'https://bharatrouter.com/console',
+    // Aggregator like OpenRouter; priority 2 keeps it near the top but just
+    // below the Fireworks/OpenRouter (priority 1) pair in the name sort.
+    priority: 2
+  },
+  {
     prefix: 'ANTHROPIC_',
     name: 'Anthropic',
     description: 'Claude API access (Sonnet, Opus, Haiku)',

@@ -31,6 +31,7 @@ import type { ModelOptionProvider, OAuthProvider } from '@/types/hermes'
 
 import { DocsLink, FlowPanel, Status } from './flow'
 import {
+  BharatRouterProviderRow,
   FeaturedProviderRow,
   FireworksProviderRow,
   LocalModelsProviderRow,
@@ -40,6 +41,7 @@ import {
 } from './providers'
 
 export {
+  BharatRouterProviderRow,
   FeaturedProviderRow,
   FireworksProviderRow,
   KeyProviderRow,
@@ -81,6 +83,12 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
     name: 'OpenRouter',
     envKey: 'OPENROUTER_API_KEY',
     docsUrl: 'https://openrouter.ai/keys'
+  },
+  {
+    id: 'bharatrouter',
+    name: 'BharatRouter',
+    envKey: 'BHARATROUTER_API_KEY',
+    docsUrl: 'https://bharatrouter.com/console'
   },
   {
     id: 'openai',
@@ -513,6 +521,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
               <ProviderRow key={p.id} onSelect={select} provider={p} />
             ))}
             <OpenRouterProviderRow onClick={() => openKeyForm('OPENROUTER_API_KEY')} />
+            <BharatRouterProviderRow onClick={() => openKeyForm('BHARATROUTER_API_KEY')} />
           </>
         ) : null}
       </div>

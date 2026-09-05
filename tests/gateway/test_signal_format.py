@@ -251,3 +251,50 @@ class TestSignalStreamingPatch:
         from gateway.platforms.signal import SignalAdapter
         assert SignalAdapter.SUPPORTS_MESSAGE_EDITING is False
 
+
+# ---------------------------------------------------------------------------
+# Lone surrogates (#55143)
+# ---------------------------------------------------------------------------
+
+class TestLoneSurrogates:
+    """Lone UTF-16 surrogates (U+D800-U+DFFF) reach ``markdown_to_signal`` from the
+    ``send_message`` tool and from the gateway status path, neither of which passes
+    through the ``final_response`` surrogate chokepoints. ``_utf16_len`` cannot encode
+    them, so the whole Signal send aborted and the reply never reached the user."""
+
+    def test_lone_surrogate_with_formatting_does_not_raise(self):
+        """The regression: without the fix this call raises UnicodeEncodeError
+        inside ``_utf16_len``, before any assertion runs."""
+        text, styles = _m2s("**bold \ud800 text** and `code \udfff here`")
+        assert "\ud800" not in text and "\udfff" not in text
+        assert _style_types(styles) == ["BOLD", "MONOSPACE"]
+
+    def test_lone_surrogate_is_replaced_not_dropped(self):
+        """U+FFFD is one UTF-16 code unit, so offsets after it stay correct."""
+        text, styles = _m2s("\ud800**b**")
+        assert text == "�b"
+        assert styles == ["1:1:BOLD"]
+
+    def test_bare_lone_surrogate_without_formatting(self):
+        text, styles = _m2s("\udfff")
+        assert text == "�"
+        assert styles == []
+
+    @pytest.mark.parametrize("raw,expected_text", [
+        ("**bold**", "bold"),
+        ("*it*", "it"),
+        ("~~s~~", "s"),
+        ("`c`", "c"),
+        ("# H1", "H1"),
+        ("", ""),
+    ])
+    def test_surrogate_free_input_is_unchanged(self, raw, expected_text):
+        """Control: sanitizing must not alter ordinary text."""
+        assert _m2s(raw)[0] == expected_text
+
+    def test_astral_pair_still_counts_as_two_utf16_units(self):
+        """A valid surrogate PAIR is not a lone surrogate and must survive intact,
+        with its two-code-unit width still reflected in the offsets."""
+        text, styles = _m2s("\U0001F389 **b**")
+        assert text == "\U0001F389 b"
+        assert styles == ["3:1:BOLD"]

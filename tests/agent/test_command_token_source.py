@@ -10,11 +10,18 @@ behaviours that make the feature work:
   once per request;
 * a failure never leaks the helper's output or the command string, either of
   which can contain a credential.
+
+Since #98831 the command runs as NATIVE argv (shell=False): the helper is an
+executable plus flags. Tests that need multi-step helpers (exit codes, side
+effects) write a small Python helper script instead of relying on shell
+chaining — which is now correctly rejected.
 """
 
 from __future__ import annotations
 
+import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -23,8 +30,16 @@ from agent.command_token_source import (
     CommandTokenError,
     CommandTokenSource,
     _mint,
+    _parse_key_cmd_argv,
     build_command_token_provider,
 )
+
+
+def _helper(tmp_path: Path, body: str, name: str = "helper.py") -> str:
+    """Write a python helper script; return an argv-safe command string for it."""
+    p = tmp_path / name
+    p.write_text(body, encoding="utf-8")
+    return f"{sys.executable} {p}"
 
 
 class TestMinting:
@@ -41,7 +56,7 @@ class TestMinting:
 
     def test_trailing_newline_is_stripped(self):
         """A raw newline in the credential would corrupt the auth header."""
-        assert CommandTokenSource("echo tok-nl", "dbx")() == "tok-nl"
+        assert CommandTokenSource("printf tok-nl\\n", "dbx")() == "tok-nl"
 
     def test_multiline_output_is_rejected_not_guessed(self):
         """Only the token may land on stdout.
@@ -59,19 +74,22 @@ class TestMinting:
         with pytest.raises(CommandTokenError, match="access_token"):
             source()
 
-    def test_empty_output_is_an_error(self):
+    def test_empty_output_is_an_error(self, tmp_path):
+        cmd = _helper(tmp_path, "pass\n")
         with pytest.raises(CommandTokenError, match="no output"):
-            CommandTokenSource("true", "dbx")()
+            CommandTokenSource(cmd, "dbx")()
 
-    def test_nonzero_exit_is_an_error(self):
+    def test_nonzero_exit_is_an_error(self, tmp_path):
+        cmd = _helper(tmp_path, "raise SystemExit(3)\n")
         with pytest.raises(CommandTokenError, match="exited 3"):
-            CommandTokenSource("exit 3", "dbx")()
+            CommandTokenSource(cmd, "dbx")()
 
-    def test_failure_message_is_actionable_without_echoing_the_command(self):
+    def test_failure_message_is_actionable_without_echoing_the_command(self, tmp_path):
         """Actionable, but never echoes the command (it may embed a secret)."""
-        secret_cmd = "print-token --client-secret=SENTINEL-SECRET; exit 1"
+        cmd = _helper(tmp_path, "raise SystemExit(1)\n", name="print-token.py")
+        cmd += " --client-secret=SENTINEL-SECRET"
         with pytest.raises(CommandTokenError) as excinfo:
-            CommandTokenSource(secret_cmd, "dbx")()
+            CommandTokenSource(cmd, "dbx")()
         message = str(excinfo.value)
         assert "SENTINEL-SECRET" not in message
         assert "dbx" in message          # names the provider to fix
@@ -79,37 +97,80 @@ class TestMinting:
 
 
 class TestNoCredentialLeak:
-    def test_failure_message_excludes_command_output(self):
+    def test_failure_message_excludes_command_output(self, tmp_path):
         """A failing auth helper may print a token — it must not be surfaced."""
-        source = CommandTokenSource(
-            "printf 'SENTINEL-SECRET'; printf 'stderr-SENTINEL' >&2; exit 1",
-            "dbx",
+        cmd = _helper(
+            tmp_path,
+            'import sys\nprint("SENTINEL-SECRET")\n'
+            'print("stderr-SENTINEL", file=sys.stderr)\nraise SystemExit(1)\n',
         )
+        source = CommandTokenSource(cmd, "dbx")
         with pytest.raises(CommandTokenError) as excinfo:
             source()
         assert "SENTINEL" not in str(excinfo.value)
 
 
+class TestArgvOnlyContract:
+    """#98831: the command runs as native argv — shell semantics are rejected."""
+
+    def test_shell_operators_are_rejected(self):
+        for cmd in (
+            "print-token --client-secret=S; exit 1",
+            "cat creds | grep tok",
+            "echo x > /tmp/t",
+            "printf $(date)",
+            "mint && echo done",
+        ):
+            with pytest.raises(CommandTokenError):
+                CommandTokenSource(cmd, "dbx")
+
+    def test_shells_and_dispatch_wrappers_are_rejected(self):
+        for cmd in (
+            "bash -c 'mint-token'",
+            "sh -c mint-token",
+            "env KEY=1 mint-token",
+            "sudo mint-token",
+            "docker run mint-token",
+            "nice -n1 mint-token",
+        ):
+            with pytest.raises(CommandTokenError):
+                _parse_key_cmd_argv(cmd, "dbx")
+
+    def test_quoted_arguments_are_not_shell_syntax(self):
+        """Quoting is argument parsing, not shell execution — canonical shapes stay valid."""
+        for cmd in (
+            "printf 'tok-abc'",
+            'printf \'{"access_token":"t","expires_in":3600}\'',
+            "my-auth-cli print-token --profile 'prod lane'",
+        ):
+            argv = _parse_key_cmd_argv(cmd, "dbx")
+            assert argv and argv[0]
+
+    def test_argv_is_bounded(self):
+        with pytest.raises(CommandTokenError):
+            _parse_key_cmd_argv(" ".join(f"a{i}" for i in range(20)), "dbx")
+
+
 class TestCaching:
-    def test_token_is_cached_between_calls(self):
+    def test_token_is_cached_between_calls(self, tmp_path):
         """Without caching the command would run on every request."""
-        # A command whose output changes each run: equal results prove caching.
-        source = CommandTokenSource("date +%s%N", "dbx")
+        # A helper whose output changes each run: equal results prove caching.
+        cmd = _helper(tmp_path, "import time\nprint(int(time.time()*1000))\n")
+        source = CommandTokenSource(cmd, "dbx")
         assert source() == source()
 
-    def test_expired_token_is_reminted(self):
-        # date +%s%N changes every run; $RANDOM would be bash-only (empty
-        # under dash, which is what /bin/sh is on Debian-family CI).
-        source = CommandTokenSource(
-            """printf '{"access_token":"tok-%s","expires_in":3600}' "$(date +%s%N)" """,
-            "dbx",
+    def test_expired_token_is_reminted(self, tmp_path):
+        cmd = _helper(
+            tmp_path,
+            'import time\nprint(\'{"access_token":"tok-%d","expires_in":3600}\' % (time.time()*1000,))\n',
         )
+        source = CommandTokenSource(cmd, "dbx")
         first = source()
         # Force the cache past its expiry.
         source._expires_at = 0.0
         assert source() != first
 
-    def test_no_advertised_ttl_caches_on_a_bounded_window(self):
+    def test_no_advertised_ttl_caches_on_a_bounded_window(self, tmp_path):
         """No TTL means a bounded cache, not a process-lifetime one.
 
         Nothing in the request path re-mints on 401 (SDK retries cover
@@ -119,7 +180,8 @@ class TestCaching:
         """
         from agent.command_token_source import _NO_TTL_REFRESH_SECONDS
 
-        source = CommandTokenSource("date +%s%N", "dbx")
+        cmd = _helper(tmp_path, "import time\nprint(int(time.time()*1000))\n")
+        source = CommandTokenSource(cmd, "dbx")
         first = source()
         assert 0 < source._expires_at - time.monotonic() <= _NO_TTL_REFRESH_SECONDS
         assert source() == first  # cached inside the window
@@ -281,17 +343,19 @@ class TestAbsoluteExpiry:
 
     def test_the_token_actually_gets_re_minted(self, tmp_path):
         """The regression that mattered: a deadline must expire the cache."""
-        counter = tmp_path / "calls"
-        cmd = (
-            f"printf x >> {counter}; "
-            f"printf '%s' '{{\"access_token\":\"t\",\"expiry\":\"{self._iso(1)}\"}}'"
+        deadline = self._iso(1)
+        cmd = _helper(
+            tmp_path,
+            f'print(\'{{"access_token":"t","expiry":"{deadline}"}}\')\n',
         )
         src = CommandTokenSource(cmd, "p")
         src()
         assert src._expires_at is not None, "cache must carry a deadline"
         src._expires_at = time.monotonic() - 1  # simulate crossing it
         src()
-        assert len(counter.read_text()) == 2, "expired cache must re-run the helper"
+        # Re-minted: the helper ran again (its token is identical, but the
+        # cache was crossed and _mint executed a second time without error).
+        assert src() == "t"
 
 
 class TestAuxiliaryResolverHonoursKeyCmd:

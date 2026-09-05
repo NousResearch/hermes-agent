@@ -1317,6 +1317,8 @@ providers:
 
 Works with any helper that prints a token — `databricks auth token`, `gcloud auth print-access-token`, `az account get-access-token`, `vault read`, or Claude Code-style `apiKeyHelper` scripts.
 
+The command runs as **native argv** (no shell): one executable plus flags. Shell operators (pipes, `;`, `&&`, `$(...)`, redirects), shells (`bash -c ...`), and dispatch wrappers (`env`, `sudo`, `docker`, ...) are rejected at startup with an actionable error — a token helper is not a script. If your helper needs pipelining or substitution, wrap that logic in a script and name the script as the command; quoting arguments (spaces, JSON payloads) is supported and parsed per-argument.
+
 The command must print **only** the token on stdout: either bare, or as JSON with an `access_token` field (`expires_in` is honored; absolute `expiry`/`expiresOn` ISO timestamps too). Multi-line output is rejected rather than guessed at. If no expiry is advertised, the token is re-minted on a bounded window.
 
 Precedence: an explicit `--api-key` flag still wins; otherwise `key_cmd` beats a static `api_key`/`key_env` on the same entry. The minted credential applies to the main agent turn and to auxiliary tasks (title generation, compression, vision, embedding) alike.

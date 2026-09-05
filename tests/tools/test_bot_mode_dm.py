@@ -212,7 +212,7 @@ def _capture_spawn(monkeypatch):
 
 
 def _runner_parts(command):
-    """(mode, dm_file, transport argv) of a runner command; the optional ``--author <json>`` pair is skipped."""
+    """(mode, dm_file, transport argv) of a runner command. The optional ``--author <json>`` pair is skipped."""
     parts = shlex.split(command)
     marker = parts.index("--run-delivery")
     if parts[marker + 1] == "--author":

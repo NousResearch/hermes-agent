@@ -1,8 +1,8 @@
 """User-authorization mixin for ``GatewayRunner``: may this user/chat talk to the agent,
-the per-adapter DM policy, and the unauthorized-DM behavior.
+the per-adapter DM policy, the unauthorized-DM behavior, and the bot loop guard.
 
-``gateway.run`` is never imported at module import time (cycle); the one method that logs
-imports its ``logger`` lazily so records keep the ``"gateway.run"`` name.
+``gateway.run`` is never imported at module import time (cycle). The unauthorized-DM method still
+logs through ``gateway.run``'s logger so its records keep that name.
 """
 
 from __future__ import annotations
@@ -475,23 +475,31 @@ class GatewayAuthorizationMixin:
             self._warned_telegram_group_users_legacy = True
         return source.chat_id in legacy_chat_ids
 
-    def _bot_loop_guard_admits(self, source: SessionSource, adapter_profile: Optional[str]) -> bool:
-        """Count one admitted bot-authored message; False while its conversation is over budget."""
+    def _bot_loop_guard_instance(self) -> BotLoopGuard:
         guard = getattr(self, "_bot_loop_guard", None)
         if guard is None:
             with _BOT_LOOP_GUARD_INIT_LOCK:
                 guard = getattr(self, "_bot_loop_guard", None)
                 if guard is None:
                     guard = self._bot_loop_guard = BotLoopGuard()
+        return guard
+
+    def _bot_loop_guard_conversation(self, source: SessionSource) -> tuple:
+        # One budget per conversation, not per sender pair: a per-pair key would hand N bots N budgets.
         platform = source.platform.value if source.platform else ""
-        # One budget per conversation, not per sender pair: inbound only ever shows the other bots,
-        # so a per-pair key would hand N bots N budgets.
-        allowed, state = guard.admit((adapter_profile or "", platform, str(source.chat_id or "")))
+        return (self._adapter_profile_for_source(source) or "", platform, str(source.chat_id or ""))
+
+    def _admit_bot_message(self, source: SessionSource) -> bool:
+        """Count one authorized bot-authored inbound message. False when it trips the budget or the chat is cooling down.
+        The inbound handler calls this once per message; ``_is_user_authorized`` only peeks because it is asked several times."""
+        if not getattr(source, "is_bot", False):
+            return True
+        allowed, state = self._bot_loop_guard_instance().admit(self._bot_loop_guard_conversation(source))
         if state == "tripped":
             logger.warning(
                 "Bot loop guard is dropping bot messages in %s chat %s: bot %s sent one message too many "
                 "for the window, cooling down (gateway.bot_loop_guard in config.yaml).",
-                platform, source.chat_id, source.user_id,
+                source.platform.value if source.platform else "", source.chat_id, source.user_id,
             )
         return allowed
 
@@ -501,15 +509,14 @@ class GatewayAuthorizationMixin:
         Order: trusted-upstream delegation, chat-scoped group allowlists, ``{PLATFORM}_ALLOW_BOTS``,
         per-platform allow-all, adapter role auth, pairing store, env/config allowlists,
         ``GATEWAY_ALLOW_ALL_USERS``, default deny. A bot-authored message that any of these admits
-        then passes the bot loop guard.
+        is still refused while its chat's loop guard is cooling down.
         """
         if not self._principal_authorized(source, allow_adapter_delegation=allow_adapter_delegation):
             return False
         if not getattr(source, "is_bot", False):
             return True
-        # The guard judges the final verdict: the chat-scoped allowlist admits a bot in an allowlisted
-        # chat before the ALLOW_BOTS block runs, so a guard inside that block would never see it.
-        return self._bot_loop_guard_admits(source, self._adapter_profile_for_source(source))
+        # The guard judges the final verdict: a chat allowlist admits a bot before the ALLOW_BOTS block runs.
+        return not self._bot_loop_guard_instance().blocked(self._bot_loop_guard_conversation(source))
 
     def _principal_authorized(self, source: SessionSource, *, allow_adapter_delegation: bool) -> bool:
         """The allowlist verdict alone, before the bot loop guard."""

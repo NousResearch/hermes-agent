@@ -4055,13 +4055,14 @@ def _sync_cli_session_id_from_agent(cli) -> None:
 
 def _run_quiet_single_query(cli, effective_query):
     """Quiet (-Q) one-shot turn: run, print the response (stderr for errors/session_id), then sys.exit with the automation exit code.
-    The turn's author comes from HERMES_TURN_AUTHOR, which only a bot-to-bot dispatcher sets on this subprocess."""
-    from agent.turn_author import turn_author_from_env
+    The turn's author comes from HERMES_TURN_AUTHOR. Only a bot-to-bot dispatcher sets it, and it is consumed
+    here so tool subprocesses do not inherit it."""
+    from agent.turn_author import take_turn_author_from_env
 
     try:
         result = cli.agent.run_conversation(
             user_message=effective_query, conversation_history=cli.conversation_history,
-            turn_author=turn_author_from_env(),
+            turn_author=take_turn_author_from_env(),
         )
     except KeyboardInterrupt:
         _emit_interrupted_session_end(cli, reason="keyboard_interrupt")

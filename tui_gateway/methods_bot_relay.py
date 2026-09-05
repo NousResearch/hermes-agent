@@ -106,8 +106,7 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
         def _detail(p) -> str:
             return (p.stderr or p.stdout or "").strip()[-500:]
 
-        # The Desktop forwards the envelope's sender fields; the turn's author labels memory only
-        # and grants nothing. Absent fields leave the turn unattributed, as before.
+        # The Desktop forwards the envelope's sender. The author labels memory only and grants nothing.
         from tools.bot_relay import delivery_env, delivery_turn_author
         turn_env = delivery_env(delivery_turn_author(params.get("from_profile"), params.get("from_handle")))
 

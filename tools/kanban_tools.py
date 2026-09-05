@@ -574,7 +574,7 @@ def _handle_complete(args: dict, **kw) -> str:
             # blocks or crashes the run instead of retrying. See #22923.
             return tool_error(
                 f"kanban_complete could not preserve the declared artifacts: {artifact_err}. "
-                f"Your task is still in-flight and its scratch workspace was kept. Fix the "
+                f"Your task is still in-flight and its workspace was kept. Fix the "
                 f"artifact path or storage error, then retry kanban_complete with the same "
                 f"handoff.")
         except kb.HallucinatedCardsError as hall_err:

@@ -2530,7 +2530,7 @@ class HallucinatedCardsError(ValueError):
 
 
 class ArtifactPreservationError(RuntimeError):
-    """Raised when a declared scratch deliverable cannot be preserved."""
+    """Raised when a declared completion deliverable cannot be preserved."""
 
 
 def complete_task(
@@ -2644,7 +2644,7 @@ def _gate_created_cards(
 
 
 def _stage_completion_artifacts(conn: sqlite3.Connection, task_id: str, metadata: dict, now: int) -> None:
-    """Copy scratch artifacts to the attachments dir and record each as an attachment row."""
+    """Copy scratch/worktree artifacts to the attachments dir and record each as an attachment row."""
     _persist_scratch_completion_artifacts(conn, task_id, metadata)
     for stored_path in metadata.pop("_staged_artifacts", []):
         path = Path(stored_path)
@@ -2736,20 +2736,82 @@ def _merge_completion_prose_artifacts(
     return updated
 
 
+def _board_slug_for_connection(conn: sqlite3.Connection) -> Optional[str]:
+    """Board slug whose DB file this connection is open on, if the layout is known.
+
+    Scratch artifact copies infer board from the managed workspace path.
+    Worktree paths live outside that root, so the live connection file is the
+    authority that keeps snapshot bytes on the same board as the attachment rows.
+    """
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+    except sqlite3.Error:
+        return None
+    raw = ""
+    if row is not None:
+        keys = row.keys() if hasattr(row, "keys") else ()
+        if "file" in keys:
+            raw = row["file"] or ""
+        elif len(row) > 2:
+            raw = row[2] or ""
+    if not raw:
+        return None
+    db_path = Path(raw).expanduser()
+    try:
+        db_path = db_path.resolve()
+    except OSError:
+        return None
+    try:
+        parent = db_path.parent
+        if db_path.name == "kanban.db" and parent.parent.resolve() == boards_root().resolve():
+            return _normalize_board_slug(parent.name)
+    except (OSError, ValueError):
+        pass
+    try:
+        # Env-independent default-board path: kanban_db_path() honors the
+        # HERMES_KANBAN_DB pin the dispatcher injects into workers and ignores
+        # board=, so comparing against it would misreport a pinned named-board
+        # connection as 'default'. Build the legacy default location directly.
+        if db_path == (kanban_home() / "kanban.db").expanduser().resolve():
+            return DEFAULT_BOARD
+    except OSError:
+        pass
+    return None
+
+
+def _worktree_completion_workspace(
+    conn: sqlite3.Connection, task_id: str,
+) -> tuple[Optional[Path], Optional[str]]:
+    """Worktree path + board for declared completion artifacts, else ``(None, None)``."""
+    row = conn.execute(
+        "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if not row or row["workspace_kind"] != "worktree" or not row["workspace_path"]:
+        return None, None
+    board = _board_slug_for_connection(conn) or get_current_board()
+    return Path(row["workspace_path"]).expanduser(), board
+
+
 def _persist_scratch_completion_artifacts(
     conn: sqlite3.Connection, task_id: str, metadata: dict,
 ) -> None:
-    """Copy scratch-workspace completion artifacts before cleanup removes them."""
+    """Copy scratch/worktree completion artifacts before cleanup can drop them."""
     raw_artifacts = metadata.get("artifacts")
     if not isinstance(raw_artifacts, (list, tuple)):
         return
 
     workspace = _scratch_workspace(conn, task_id)
-    if workspace is None:
-        return
-    is_managed, board = _managed_scratch_path_info(workspace)
-    if not is_managed:
-        return
+    kind = "scratch"
+    if workspace is not None:
+        is_managed, board = _managed_scratch_path_info(workspace)
+        if not is_managed:
+            return
+    else:
+        workspace, board = _worktree_completion_workspace(conn, task_id)
+        kind = "worktree"
+        if workspace is None:
+            return
 
     try:
         workspace_root = workspace.resolve()
@@ -2785,10 +2847,10 @@ def _persist_scratch_completion_artifacts(
 
         problem = None
         if not src.is_file():
-            problem = f"declared scratch artifact is unavailable or not a regular file: {artifact}"
+            problem = f"declared {kind} artifact is unavailable or not a regular file: {artifact}"
         elif resolved_src.stat().st_size > KANBAN_ATTACHMENT_MAX_BYTES:
             problem = (
-                f"declared scratch artifact exceeds the "
+                f"declared {kind} artifact exceeds the "
                 f"{KANBAN_ATTACHMENT_MAX_BYTES}-byte limit: {artifact}"
             )
         if problem:
@@ -2808,7 +2870,7 @@ def _persist_scratch_completion_artifacts(
             if isinstance(exc, ArtifactPreservationError):
                 raise
             raise ArtifactPreservationError(
-                f"could not preserve declared scratch artifact {artifact}: {exc}"
+                f"could not preserve declared {kind} artifact {artifact}: {exc}"
             ) from exc
         used_destinations.add(dest)
         persisted.append(str(dest.resolve()))
@@ -2829,7 +2891,7 @@ def _copy_capped(src: Path, dest: Path, artifact: str) -> None:
             copied += len(chunk)
             if copied > KANBAN_ATTACHMENT_MAX_BYTES:
                 raise ArtifactPreservationError(
-                    f"declared scratch artifact grew beyond the size limit: {artifact}"
+                    f"declared artifact grew beyond the size limit: {artifact}"
                 )
             destination_file.write(chunk)
 

@@ -183,7 +183,43 @@ def mark_delivered(obligation_id: str) -> None:
 
 
 def mark_failed(obligation_id: str, error: str = "") -> None:
-    _update_state(obligation_id, "failed", error=error)
+    """Record a definitive send rejection.
+
+    #100660: this is the terminal transition for the attempt that was spent,
+    so it must ALSO enforce the cap — a row that reaches MAX_ATTEMPTS through
+    failed sends is abandoned HERE, at the moment the budget is exhausted,
+    rather than waiting for a later sweep. The reporter's incident: Slack 429
+    rejections drove rows to attempts=3, state='failed', and the rows stayed
+    there across restarts because (a) sweep_recoverable only abandons when the
+    owner is dead, and (b) release_runtime_claim DECREMENTS attempts, so the
+    runtime reconnect loop (claim 2->3, release 3->2) could bounce a row under
+    the cap forever without any sweep ever seeing attempts >= MAX. Marking
+    abandonment here closes both escape routes: whatever path incremented
+    attempts to the cap, the row that just definitively failed at the cap
+    leaves the recoverable pool immediately.
+
+    'definitively rejected' still means the redelivery budget is spent — the
+    message content may or may not have reached the user (429 rendered but
+    rejected, etc.), and the abandoned row is retained for operator
+    inspection (_prune keeps it until the retention cutoff), so a
+    genuinely-lost message is still visible in state.db.
+    """
+    now = time.time()
+    with _DB_LOCK, _transaction() as conn:
+        # Abandon when this failure exhausts the budget; otherwise record
+        # the failure. attempts is only incremented at claim time, so
+        # "exhausts" means the current attempts count has already reached the
+        # cap (this send WAS the MAXth attempt).
+        conn.execute(
+            """UPDATE delivery_obligations
+               SET state=CASE
+                       WHEN attempts >= ? THEN 'abandoned'
+                       ELSE 'failed'
+                   END,
+                   updated_at=?, last_error=?
+               WHERE obligation_id=?""",
+            (MAX_ATTEMPTS, now, error[:500] if error else None, obligation_id),
+        )
 
 
 def release_runtime_claim(obligation_id: str, error: str = "") -> bool:

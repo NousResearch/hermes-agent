@@ -112,7 +112,8 @@ def _make_runner_and_captured(monkeypatch, run_still_current=True):
         progress_queue=None,
         _loop_for_step=None,
     )
-    return run_mod.TurnRunner(_StubGatewayRunner(), ctx), captured
+    from gateway.run_turn_runner import TurnRunner
+    return TurnRunner(_StubGatewayRunner(), ctx), captured
 
 
 class TestGatewayFailureNotice:

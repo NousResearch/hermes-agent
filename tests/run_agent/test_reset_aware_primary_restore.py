@@ -96,9 +96,9 @@ def _make_tool_defs(*names):
 
 def _make_agent(fallback_model=None):
     with (
-        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-12345678",
@@ -256,7 +256,7 @@ class TestResetAwareRestoreGate:
 
         agent._credential_pool = _FakePool("custom", next_at=None)
 
-        with patch("run_agent.OpenAI", return_value=MagicMock()):
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             assert agent._restore_primary_runtime() is True
         assert agent._fallback_activated is False
         assert agent.model == original_model
@@ -269,7 +269,7 @@ class TestResetAwareRestoreGate:
 
         agent._credential_pool = _FakePool("custom", next_at=time.time() - 5)
 
-        with patch("run_agent.OpenAI", return_value=MagicMock()):
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             assert agent._restore_primary_runtime() is True
         assert agent._fallback_activated is False
 
@@ -281,7 +281,7 @@ class TestResetAwareRestoreGate:
 
         agent._credential_pool = _FakePool("custom", raise_on_next=True)
 
-        with patch("run_agent.OpenAI", return_value=MagicMock()):
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             assert agent._restore_primary_runtime() is True
         assert agent._fallback_activated is False
 
@@ -310,7 +310,7 @@ class TestResetAwareRestoreGate:
 
         agent._credential_pool = _FakePool("custom", next_at=None)
 
-        with patch("run_agent.OpenAI", return_value=MagicMock()):
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             assert agent._restore_primary_runtime() is True
 
     def test_logs_wait_only_once(self, caplog):

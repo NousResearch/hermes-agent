@@ -86,6 +86,29 @@ class SideloadBody(BaseModel):
     path: str                   # absolute path to a .gguf on this machine
 
 
+class AdvancedPlanBody(BaseModel):
+    """Typed launch preferences for one staged model; never accepts raw llama.cpp flags."""
+    model_id: str
+    context_tokens: int | None = None
+    slots: int = 1
+    kv_cache: str = "q8_0"
+    speculation: str = "auto"
+    mtp_draft_depth: int | None = None
+
+    def request_mapping(self) -> dict[str, object]:
+        return {
+            "context_tokens": self.context_tokens, "slots": self.slots,
+            "kv_cache": self.kv_cache, "speculation": self.speculation,
+            "mtp_draft_depth": self.mtp_draft_depth,
+        }
+
+
+class GatewayPublishBody(BaseModel):
+    alias: str
+    model_id: str
+    mode: str = "agent"  # agent | raw
+
+
 def _human_gb(n: int | float) -> str:
     return f"{n / (1 << 30):.1f} GB"
 
@@ -242,6 +265,30 @@ def _entry_or_404(model_id: str):
     if entry is None:
         raise HTTPException(status_code=404, detail=f"unknown model {model_id}")
     return entry
+
+
+def _advanced_plan(model_id: str, value: object):
+    """Resolve a staged model and calculate a side-effect-free launch plan."""
+    from hermes_cli.local_runtime.advanced import LaunchRequest, plan_launch
+    from hermes_cli.local_runtime.estimator import profile_from_gguf
+    from hermes_cli.local_runtime.gguf import read_gguf_header
+
+    gguf = next((path for path in bootstrap.staged_models()
+                 if _model_id_for(path) == model_id), None)
+    if gguf is None:
+        raise HTTPException(status_code=404, detail=f"{model_id} is not downloaded")
+    with _http_error(422, "unable to inspect model: "):
+        profile = profile_from_gguf(read_gguf_header(gguf))
+    entry = catalog.entry_for_model(model_id)
+    mtp_supported = bool(entry and entry.mtp)
+    default_depth = entry.mtp_draft_depth if entry is not None else 3
+    default = context_policy.initial_window(profile, hardware.probe_budget(planning=True))
+    if isinstance(default, estimator.PhysicsRefusal):
+        raise HTTPException(status_code=422, detail=default.message)
+    request = LaunchRequest.from_mapping(value)
+    return plan_launch(profile, hardware.probe_budget(planning=True), request,
+                       default_context_tokens=default.window, mtp_supported=mtp_supported,
+                       default_mtp_depth=default_depth)
 
 
 def _start_local_server(config: dict, fail_detail: str):
@@ -596,6 +643,98 @@ def local_models_catalog():
     # mid-download model never reads as downloaded.
     staged_ids = set(bootstrap.staged_model_ids())
     return {"models": [_catalog_row(e, budget, recommended_id, recommended_reason, staged_ids) for e in catalog.CATALOG]}
+
+
+@router.post("/api/local-models/advanced/plan")
+def local_models_advanced_plan(body: AdvancedPlanBody):
+    """Preview advanced settings without changing configuration or the running server."""
+    with _http_error(422):
+        return _advanced_plan(body.model_id, body.request_mapping()).to_dict()
+
+
+@router.post("/api/local-models/advanced/apply")
+async def local_models_advanced_apply(body: AdvancedPlanBody):
+    """Persist a validated per-model launch request and regenerate managed presets.
+
+    A busy server is deliberately not bounced underneath live work. The user can retry after its
+    request finishes, which preserves streams and session consistency rather than treating apply
+    as an unsafe best-effort update.
+    """
+    plan = _advanced_plan(body.model_id, body.request_mapping())
+    if not plan.fits:
+        raise HTTPException(status_code=422, detail="; ".join(plan.reasons))
+    sup = bootstrap.get_supervisor()
+    if sup is not None and not _quiet(lambda: sup.is_idle(body.model_id), False):
+        raise HTTPException(status_code=409, detail="model is serving a request; wait for it to become idle before applying")
+    config = config_mod.load_config()
+    section = config.setdefault("local_runtime", {})
+    overrides = section.setdefault("launch_overrides", {})
+    overrides[body.model_id] = plan.request.to_mapping()
+    config_mod.save_config(config)
+    if sup is not None:
+        await asyncio.to_thread(bootstrap.refresh_local_runtime)
+    return {"ok": True, "model_id": body.model_id, "plan": plan.to_dict(),
+            "restarted": sup is not None}
+
+
+def _api_server_config(config: dict) -> dict:
+    """Return the profile-scoped API-server config block without assuming a running gateway."""
+    return config.setdefault("gateway", {}).setdefault("platforms", {}).setdefault("api_server", {})
+
+
+@router.get("/api/local-models/gateway-routes")
+def local_models_gateway_routes():
+    """List only local-model routes owned by this surface; credentials are never returned."""
+    section = _api_server_config(_load_config())
+    rows = []
+    for mode, key in (("agent", "model_routes"), ("raw", "raw_model_routes")):
+        for alias, route in (section.get(key) or {}).items():
+            if not isinstance(route, dict) or str(route.get("provider", "")).lower() not in _LLAMACPP_PROVIDERS:
+                continue
+            rows.append({"alias": str(alias), "model_id": str(route.get("model") or ""), "mode": mode})
+    return {"routes": sorted(rows, key=lambda row: (row["alias"], row["mode"]))}
+
+
+@router.post("/api/local-models/gateway-routes")
+def local_models_gateway_publish(body: GatewayPublishBody):
+    """Register a stable, authenticated gateway alias. Gateway restart is deliberately explicit:
+    changing a config file must not interrupt a live multi-profile gateway process."""
+    alias = (body.alias or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", alias):
+        raise HTTPException(status_code=422, detail="alias must contain letters, numbers, dots, underscores, or hyphens")
+    if body.model_id not in bootstrap.staged_model_ids():
+        raise HTTPException(status_code=404, detail=f"{body.model_id} is not downloaded")
+    mode = (body.mode or "").strip().lower()
+    if mode not in {"agent", "raw"}:
+        raise HTTPException(status_code=422, detail="mode must be agent or raw")
+    config = config_mod.load_config()
+    api = _api_server_config(config)
+    other_key = "raw_model_routes" if mode == "agent" else "model_routes"
+    if alias in (api.get(other_key) or {}):
+        raise HTTPException(status_code=409, detail="alias is already used by the other gateway route type")
+    key = "model_routes" if mode == "agent" else "raw_model_routes"
+    api.setdefault(key, {})[alias] = {"model": body.model_id, "provider": "llamacpp"}
+    config_mod.save_config(config)
+    return {"ok": True, "alias": alias, "model_id": body.model_id, "mode": mode,
+            "restart_required": True}
+
+
+@router.delete("/api/local-models/gateway-routes/{alias}")
+def local_models_gateway_unpublish(alias: str):
+    """Remove only this surface's local alias, leaving all unrelated gateway routes intact."""
+    config = config_mod.load_config()
+    api = _api_server_config(config)
+    removed = False
+    for key in ("model_routes", "raw_model_routes"):
+        routes = api.get(key)
+        route = routes.get(alias) if isinstance(routes, dict) else None
+        if isinstance(route, dict) and str(route.get("provider", "")).lower() in _LLAMACPP_PROVIDERS:
+            del routes[alias]
+            removed = True
+    if not removed:
+        raise HTTPException(status_code=404, detail="local gateway route not found")
+    config_mod.save_config(config)
+    return {"ok": True, "alias": alias, "restart_required": True}
 
 
 # ── runtime install (job) ────────────────────────────────────

@@ -52,8 +52,8 @@ what a hardware upgrade would unlock.
 
 ## How memory management works
 
-Local models live or die by memory placement, so Hermes manages it
-end-to-end and exposes no knobs:
+Local models live or die by memory placement, so Hermes manages the default
+path end-to-end:
 
 - **Models start at a context window that fully fits your GPU** and grow
   toward their native maximum as your conversation needs more room. You
@@ -68,6 +68,20 @@ end-to-end and exposes no knobs:
   window** — growth always comes first.
 - Idle models are unloaded after 15 minutes to free GPU memory; they
   reload automatically on the next message.
+
+### Advanced launch settings
+
+The Local Models screen also has an **Advanced local runtime** section for a
+staged model. It can preview and apply a per-request context window, inference
+slot count, KV-cache type, and supported MTP speculative decoding. Hermes
+prices shared weights once and KV/work buffers per slot before it writes a
+setting. A request that does not fit is rejected; it is never quietly reduced.
+
+The server receives aggregate context (`per-request context × slots`) so each
+slot retains the context selected in the UI. MTP can only be forced for a model
+with a validated Hermes recipe. Applying a changed plan waits for the selected
+model to become idle and restarts the managed runtime only then. Automatic
+window growth remains the default when no explicit context is configured.
 
 ## The status bar
 

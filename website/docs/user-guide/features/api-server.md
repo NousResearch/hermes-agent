@@ -395,6 +395,31 @@ Requests that include an explicit `provider` — and the Hermes-native
 `/v1/runs` and session-chat endpoints — always honor the requested model
 regardless of this flag.
 
+### Managed local model routes
+
+Local Models can save two kinds of profile-scoped aliases under
+`gateway.platforms.api_server`; restarting the gateway activates a saved alias.
+
+```yaml
+gateway:
+  platforms:
+    api_server:
+      model_routes:       # Hermes agent route: tools, sessions, and memory apply
+        local-agent:
+          model: My-Local-GGUF
+          provider: llamacpp
+      raw_model_routes:   # raw /v1/chat/completions forwarding only
+        local-raw:
+          model: My-Local-GGUF
+          provider: llamacpp
+```
+
+Raw routes are limited to a registered managed loopback llama.cpp runtime. They
+do not accept a configured upstream URL and they bypass agent construction,
+tools, memory, and transcript persistence. They support chat completions and
+streaming only. If an alias is present in both mappings, the Hermes agent route
+wins rather than broadening the alias unexpectedly.
+
 Example:
 
 ```json

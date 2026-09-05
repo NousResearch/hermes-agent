@@ -109,10 +109,11 @@ def _approval_event_choices(*, smart_denied: bool, allow_session: bool, allow_pe
 
 
 try:
-    from aiohttp import web
+    from aiohttp import ClientSession, web
     AIOHTTP_AVAILABLE = True
 except ImportError:
     AIOHTTP_AVAILABLE = False
+    ClientSession = None  # type: ignore[assignment,misc]
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
@@ -1129,6 +1130,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")))
         # alias (client "model") -> {model, provider?, api_key? (UPSTREAM, never logged), base_url?}
         self._model_routes: Dict[str, Dict[str, Any]] = self._parse_model_routes(extra.get("model_routes"))
+        # Raw routes are deliberately separate from model_routes: they proxy only a registered
+        # managed local runtime and bypass AIAgent, tools, memory, and transcript persistence.
+        self._raw_model_routes: Dict[str, Dict[str, Any]] = self._parse_raw_model_routes(extra.get("raw_model_routes"))
         # Opt-in bare ``model`` passthrough on OpenAI-compatible surfaces (generic clients
         # hardcode "gpt-4o" etc., hence off by default).
         # Off by default: generic OpenAI clients routinely hardcode model names ("gpt-4o", ...), and
@@ -1734,6 +1738,73 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """Return the model_routes entry for *model_alias*, or None."""
         return self._model_routes.get(model_alias) if isinstance(model_alias, str) else None
 
+    @staticmethod
+    def _parse_raw_model_routes(raw: Any) -> Dict[str, Dict[str, Any]]:
+        """Validate raw local aliases. No URL/key is accepted here: endpoint identity comes from
+        the managed-runtime state file, preventing config from becoming an open proxy."""
+        if not isinstance(raw, dict):
+            return {}
+        routes: Dict[str, Dict[str, Any]] = {}
+        for alias, cfg in raw.items():
+            alias_text = str(alias).strip()
+            if not alias_text or not isinstance(cfg, dict):
+                continue
+            model = str(cfg.get("model") or "").strip()
+            provider = str(cfg.get("provider") or "llamacpp").strip().lower()
+            if not model or provider not in {"llamacpp", "llama.cpp", "llama-cpp"}:
+                logger.warning("api_server raw_model_routes: dropping invalid route %r", alias_text)
+                continue
+            routes[alias_text] = {"model": model, "provider": "llamacpp"}
+        return routes
+
+    def _resolve_raw_route(self, model_alias: Any) -> Optional[Dict[str, Any]]:
+        return self._raw_model_routes.get(model_alias) if isinstance(model_alias, str) else None
+
+    async def _proxy_raw_chat_completion(self, request: "web.Request", body: Dict[str, Any],
+                                         route: Dict[str, Any]) -> "web.Response":
+        """Forward a registered raw local request without constructing an agent.
+
+        The outbound destination is always the managed llama.cpp state endpoint. User-provided
+        headers and URLs never cross this boundary; the gateway's existing bearer auth already
+        protected the inbound route.
+        """
+        from hermes_cli.local_runtime.endpoint import _state_endpoint
+        endpoint = _state_endpoint()
+        if endpoint is None:
+            return _error_response("The registered local runtime is not running.", 503,
+                                   err_type="service_unavailable")
+        base_url = str(endpoint.get("base_url") or "").rstrip("/")
+        api_key = str(endpoint.get("api_key") or "")
+        if not base_url.startswith("http://127.0.0.1:"):
+            return _error_response("The registered local runtime endpoint is unavailable.", 503,
+                                   err_type="service_unavailable")
+        forwarded = dict(body)
+        forwarded["model"] = route["model"]
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        try:
+            assert ClientSession is not None
+            async with ClientSession() as session:
+                async with session.post(f"{base_url}/chat/completions", json=forwarded,
+                                        headers=headers, timeout=300) as upstream:
+                    content_type = upstream.headers.get("Content-Type", "application/json")
+                    if not bool(body.get("stream")):
+                        return web.Response(status=upstream.status, body=await upstream.read(),
+                                            content_type=content_type.split(";", 1)[0])
+                    response = web.StreamResponse(status=upstream.status, headers={"Content-Type": content_type})
+                    await response.prepare(request)
+                    async for chunk in upstream.content.iter_chunked(16 * 1024):
+                        await response.write(chunk)
+                    await response.write_eof()
+                    return response
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("raw local model proxy failed: %s", exc)
+            return _error_response("The registered local runtime could not serve this request.", 502,
+                                   err_type="api_error")
+
     def _stored_session_model(self, session: Any) -> Optional[str]:
         """The model persisted on a session row, minus the virtual alias (replaying
         "hermes-agent" upstream as a provider model id 400s)."""
@@ -2220,6 +2291,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         models.extend(
             _model(alias, route_cfg.get("model", alias), model_name)
             for alias, route_cfg in self._model_routes.items() if alias != model_name)
+        models.extend(
+            _model(alias, route_cfg.get("model", alias), model_name)
+            for alias, route_cfg in self._raw_model_routes.items()
+            if alias != model_name and alias not in self._model_routes)
         return web.json_response({"object": "list", "data": models})
 
     @_require_auth

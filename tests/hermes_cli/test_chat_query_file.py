@@ -34,6 +34,11 @@ def test_chat_parser_accepts_query_file():
     assert args.query is None
 
 
+def test_chat_parser_accepts_machine_result_for_process_adapters():
+    args = _parse(["chat", "--query-file", "-", "--machine-result"])
+    assert args.machine_result is True
+
+
 def test_query_file_reads_hostile_text_verbatim(tmp_path, monkeypatch):
     """The file body must reach args.query byte-identical — no shell pass."""
     f = tmp_path / "dm.txt"

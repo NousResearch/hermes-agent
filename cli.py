@@ -4094,8 +4094,10 @@ def _sync_cli_session_id_from_agent(cli) -> None:
         cli.session_id = cli.agent.session_id
 
 
-def _run_quiet_single_query(cli, effective_query):
+def _run_quiet_single_query(cli, effective_query, machine_result=False):
     """Quiet (-Q) one-shot turn: run, print the response (stderr for errors/session_id), then sys.exit with the automation exit code."""
+    from hermes_cli.machine_result import capture_usage, emit_machine_result, usage_delta
+    usage_before = capture_usage(cli.agent)
     try:
         result = cli.agent.run_conversation(user_message=effective_query, conversation_history=cli.conversation_history)
     except KeyboardInterrupt:
@@ -4125,6 +4127,8 @@ def _run_quiet_single_query(cli, effective_query):
             logger.debug("kanban goal loop failed: %s", _goal_exc)
 
     print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+    if machine_result:
+        emit_machine_result(cli.session_id, usage_delta(usage_before, capture_usage(cli.agent)))
 
     # Exit code 0/1 for automation wrappers. Kanban workers that failed purely on
     # rate-limit/billing exit with the EX_TEMPFAIL sentinel so the dispatcher releases
@@ -4405,7 +4409,7 @@ def _configure_quiet_agent(agent) -> None:
     agent.tool_progress_mode = "off"
 
 
-def _run_single_query_mode(cli, query, image, quiet, oneshot):
+def _run_single_query_mode(cli, query, image, quiet, oneshot, machine_result=False):
     """``-q``/``--image`` entry: seed an interactive session on a TTY, else run the one-shot turn and exit."""
     if _should_seed_interactive(query, image, quiet, oneshot):
         seeded_query, seeded_images = _collect_query_images(query, image)
@@ -4446,7 +4450,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
                     request_overrides=turn_route.get("request_overrides"),
                 ):
                     _configure_quiet_agent(cli.agent)
-                    _run_quiet_single_query(cli, effective_query)
+                    _run_quiet_single_query(cli, effective_query, machine_result)
 
             sys.exit(1)  # credentials or agent init failed
         # No welcome banner (~420 ms cold); session id / resume hint come from _print_exit_summary().
@@ -4456,6 +4460,12 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
         cli._show_security_advisories()
         cli.chat(query, images=single_query_images or None)
         cli._print_exit_summary(clear_screen=False)
+        if machine_result and cli.agent is not None:
+            from hermes_cli.machine_result import emit_machine_result, usage_delta
+            emit_machine_result(
+                cli.session_id,
+                usage_delta(cli._last_turn_usage_before, cli._last_turn_usage_after),
+            )
     finally:
         _finalize_single_query(cli)
 
@@ -4487,6 +4497,7 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    machine_result: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -4572,7 +4583,7 @@ def main(
     _install_single_query_signal_handlers(cli)
 
     if query or image:
-        _run_single_query_mode(cli, query, image, quiet, oneshot)
+        _run_single_query_mode(cli, query, image, quiet, oneshot, machine_result)
         return
     cli.run()
 

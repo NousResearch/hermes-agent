@@ -13,6 +13,7 @@ import tempfile
 import pytest
 
 import tools.delegate_tool as dt
+from tools.delegate_tool_results import _MIN_SUMMARY_CHARS, _parent_summary_char_budget
 
 
 class _FakeCompressor:
@@ -22,9 +23,11 @@ class _FakeCompressor:
 
 
 class _FakeParent:
-    def __init__(self, context_length, used_tokens, max_tokens):
+    def __init__(self, context_length, used_tokens, max_tokens, session_total=None):
         self.context_compressor = _FakeCompressor(context_length, max_tokens)
-        self.session_prompt_tokens = used_tokens
+        # Current prompt size (last call) drives the budget; the cumulative session counter must not.
+        self._last_turn_usage = {"prompt_tokens": used_tokens}
+        self.session_prompt_tokens = session_total if session_total is not None else used_tokens
 
 
 def test_small_summaries_pass_through_untouched():
@@ -76,3 +79,12 @@ def test_empty_results_is_noop():
         [{"task_index": 0, "status": "failed", "summary": None}],
         _FakeParent(131_000, 1_000, 8_000),
     )
+
+
+def test_budget_uses_current_prompt_size_not_the_session_sum():
+    """A long-lived parent has a session sum far past any window while its current prompt is small; the
+    budget must follow the current prompt, otherwise every summary collapses to the floor."""
+    long_lived = _FakeParent(context_length=200_000, used_tokens=30_000, max_tokens=8_000, session_total=25_000_000)
+    fresh = _FakeParent(context_length=200_000, used_tokens=30_000, max_tokens=8_000)
+    assert _parent_summary_char_budget(long_lived, 1) == _parent_summary_char_budget(fresh, 1)
+    assert _parent_summary_char_budget(long_lived, 1) > _MIN_SUMMARY_CHARS

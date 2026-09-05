@@ -5066,6 +5066,37 @@ class TestServeIndexMissingIndex:
         assert "SPA-rebuilt" in resp.text
 
 
+    def test_spa_index_tracks_post_mount_token_override(
+        self, tmp_path, monkeypatch
+    ):
+        """Same invariant as the headless token page, through _serve_index with
+        a real dist: the SPA bootstrap must reflect a post-mount token override.
+        """
+        client, _dist = TestServeIndexMissingIndex._client_with_dist(
+            tmp_path, monkeypatch, write_index=True
+        )
+        import json as _json
+        import re
+        import uuid
+
+        import hermes_cli.web_server as ws
+
+        original = ws._SESSION_TOKEN
+        adopted = uuid.uuid4().hex * 2
+        try:
+            ws._apply_ssh_session_token(adopted)
+            resp = client.get("/chat")
+            assert resp.status_code == 200
+            match = re.search(
+                r'window\.__HERMES_SESSION_TOKEN__\s*=\s*("(?:\\.|[^"\\])*")',
+                resp.text,
+            )
+            assert match, resp.text
+            assert _json.loads(match.group(1)) == adopted
+        finally:
+            ws._apply_ssh_session_token(original)
+
+
 class TestHeadlessServeTokenPage:
     """Headless `hermes serve` must serve the Desktop token handshake page
     at `/` when the dashboard auth gate is off (#94227).
@@ -5124,6 +5155,31 @@ class TestHeadlessServeTokenPage:
             assert resp.status_code == 404
             assert "web UI disabled" in resp.json()["error"]
             assert ws._SESSION_TOKEN not in resp.text
+
+    def test_token_page_tracks_post_mount_token_override(self, monkeypatch):
+        """Mount happens before start_server applies the --ssh-session-token-file
+        token; the served token page must reflect that post-mount override.
+        """
+        import re
+        import uuid
+
+        client, ws = self._headless_client(monkeypatch, gated=False)
+        original = ws._SESSION_TOKEN
+        adopted = uuid.uuid4().hex * 2
+        try:
+            ws._apply_ssh_session_token(adopted)
+            resp = client.get("/")
+            assert resp.status_code == 200
+            match = re.search(
+                r'window\.__HERMES_SESSION_TOKEN__\s*=\s*("(?:\\.|[^"\\])*")',
+                resp.text,
+            )
+            assert match, resp.text
+            import json as _json
+
+            assert _json.loads(match.group(1)) == adopted
+        finally:
+            ws._apply_ssh_session_token(original)
 
 
 class TestHashedAssetCacheHeaders:

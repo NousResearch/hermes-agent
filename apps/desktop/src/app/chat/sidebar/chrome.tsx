@@ -1,6 +1,8 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 
+import { type NewSessionSplitHandler, startNewProjectDrag, startNewSessionDrag } from '@/app/chat/new-session-drag'
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { RowButton } from '@/components/ui/row-button'
@@ -8,6 +10,15 @@ import { Tip } from '@/components/ui/tooltip'
 import { compactNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { $sidebarRowMeta } from '@/store/layout'
+import type { TileDock } from '@/store/session-states'
+
+import {
+  SIDEBAR_ROW_INSET,
+  SIDEBAR_ROW_LABEL,
+  SIDEBAR_ROW_LEAD,
+  SIDEBAR_ROW_MIN_H,
+  SIDEBAR_ROW_PAD_TRAIL
+} from './row-geometry'
 
 // Shared, content-agnostic sidebar chrome — used by both the flat session
 // sections and the project/workspace tree, so it lives outside either to keep
@@ -18,39 +29,79 @@ export function SidebarSectionMeta({ children }: { children: React.ReactNode }) 
   return <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-quaternary)">{children}</span>
 }
 
-// ── Row geometry (session row is canonical — everything composes these) ─────
-//
-// Height lives ONLY on SidebarRowShell (min-h-[1.625rem]). Inset children
-// stretch to fill the cell and center content internally — never items-center
-// on the shell grid, or short clusters (projects) float 1–2px off sessions.
-//
-// `rowPadX` is the BODY's padding: the lead's inset, plus the gap the label
-// keeps from the actions column, both inside the row's click target.
-// `rowPadTrail` is the row's own trailing inset and belongs to the SHELL — the
-// only box containing both the actions column AND the card's in-body cluster,
-// so one class insets every trailing thing a row can render. Owned anywhere
-// else, the age / chips / kebab sit flush on the border box, which is exactly
-// where a working row paints its arc (`.arc-row` has zero standoff) — the ring
-// ran through the text.
+// Row geometry lives in `row-geometry.ts` — see that file for why each class
+// belongs to the box it belongs to. Re-exported here because this module is
+// where callers already look for row chrome.
+export { SIDEBAR_LEAD_ICON_SIZE, SIDEBAR_ROW_CARD_MIN_H, SIDEBAR_TRUNCATED_LEADING } from './row-geometry'
 
-const rowMinH = 'min-h-[1.625rem]'
-const rowPadX = 'pl-2 pr-2'
-const rowPadTrail = 'pr-2'
-const rowGap = 'gap-1.5'
-const rowLead = 'grid size-3.5 shrink-0 place-items-center'
-const rowInset = cn(rowPadX, rowGap, 'flex h-full min-w-0 items-center self-stretch py-0.5')
-// `truncate` is overflow:hidden. `leading-none` (line-height: 1) makes the
-// line box equal the em-square, so glyph ink that sticks out — Segoe UI on
-// Windows is ~1.33em — gets shaved. 1.35 leaves room; the shell still owns
-// row height, so the extra leading just centers.
-export const SIDEBAR_TRUNCATED_LEADING = 'leading-[1.35]' as const
-const rowLabel = cn('min-w-0 truncate text-[0.8125rem] text-(--ui-text-secondary)', SIDEBAR_TRUNCATED_LEADING)
+// The section header's "+" button, hover-revealed (group/section lives on
+// SidebarSectionHeader), mirroring the artifacts/file browser header
+// affordances. focus-visible keeps them keyboard-reachable.
+const HEADER_ACTION_BTN =
+  'text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/section:opacity-100 focus-visible:opacity-100'
 
-/** Inbox-style card (workspace + age, title + preview, model + size). */
-export const SIDEBAR_ROW_CARD_MIN_H = 'min-h-[3.375rem]' as const
-
-/** Codicon size in sidebar row leads — matches the file tree (`tree.tsx`). */
-export const SIDEBAR_LEAD_ICON_SIZE = '0.875rem' as const
+// The sessions section header's "+" — the flat list's top-level new-session
+// control. Also a drag source, the same gesture as the nav's "New session"
+// row: drag it onto a chat zone's tab strip / edge / center to create the
+// session exactly there (stack / split). The pointer drag session owns the
+// gesture — a sub-threshold release falls through to the onClick (ordinary
+// new session), and an engaged drag suppresses that click so it never
+// double-creates. Both paths resolve the session's profile identically: the
+// create path (`openNewSessionTile`) reads `$newChatProfile` at commit, and
+// neither gesture resets it — matching the header "+" click behavior exactly
+// (only the nav "New session" row resets it, since it navigates to the draft
+// composer instead).
+export function SidebarSectionAddButton({
+  ariaLabel,
+  onNewProjectDrag,
+  onNewSessionSplit,
+  onPlainClick
+}: {
+  ariaLabel: string
+  /** Present when this header "+" creates a PROJECT (the project-overview
+   *  mode's "New project" button): dragging it arms where that project should
+   *  start and a valid drop opens the same "New project" dialog. `onArm` also
+   *  receives null so an aborted/deny-zone drag can clear a stale placement. */
+  onNewProjectDrag?: {
+    onArm: (placement: { anchor: string; before?: null | string; cwd?: null | string; dir: TileDock } | null) => void
+  }
+  /** Absent when this header "+" has no session-creating drag semantics
+   *  (e.g. the project-overview mode, where the "+" opens the project
+   *  dialog). Then the button stays click-only unless `onNewProjectDrag` is
+   *  supplied. */
+  onNewSessionSplit?: NewSessionSplitHandler
+  onPlainClick: () => void
+}) {
+  return (
+    <Tip label={ariaLabel}>
+      <Button
+        aria-label={ariaLabel}
+        className={HEADER_ACTION_BTN}
+        onClick={event => {
+          event.stopPropagation()
+          onPlainClick()
+        }}
+        onPointerDown={
+          onNewProjectDrag
+            ? event => {
+                startNewProjectDrag(onNewProjectDrag.onArm, event, { onTap: onPlainClick })
+              }
+            : onNewSessionSplit
+              ? event => {
+                  startNewSessionDrag(placement => {
+                    onNewSessionSplit(placement.dir, { anchor: placement.anchor, before: placement.before })
+                  }, event)
+                }
+              : undefined
+        }
+        size="icon-xs"
+        variant="ghost"
+      >
+        <Codicon name="add" size="0.75rem" />
+      </Button>
+    </Tip>
+  )
+}
 
 /** Vertical stack of rows (gap-px, single column). */
 export function SidebarRowStack({ className, ...props }: React.ComponentProps<'div'>) {
@@ -64,23 +115,55 @@ export function SidebarRowNest({ className, ...props }: React.ComponentProps<'di
 
 /**
  * Chronological date-bucket separator ("Yesterday" / "Last week" / "June") for
- * the session list. One flat row — a small caption plus a hairline rule — so it
- * groups sessions by recency without adding a level of indentation.
+ * the session list. Caption-shaped — a small label plus a hairline — so it
+ * groups sessions by recency without adding a level of indentation. When
+ * `toggle` is set the whole caption collapses the sessions beneath it, same
+ * gesture as a repo header (the hover caret is the tell).
  */
 export function SidebarDateDivider({
   action,
   className,
   label,
+  toggle,
   ...props
-}: React.ComponentProps<'div'> & { action?: React.ReactNode; label: string }) {
+}: React.ComponentProps<'div'> & {
+  action?: React.ReactNode
+  label: string
+  toggle?: { ariaLabel: string; onToggle: () => void; open: boolean }
+}) {
+  const caption = (
+    <span className="shrink-0 text-[0.64rem] font-semibold uppercase tracking-[0.12em] text-(--ui-text-quaternary)">
+      {label}
+    </span>
+  )
+
+  const rule = <span aria-hidden="true" className="h-px min-w-4 flex-1 bg-(--ui-stroke-tertiary)" />
+
   return (
     // group/workspace: a divider heads a group the same way a repo header does,
     // so it borrows the header's hover-revealed "+" verbatim.
     <div className={cn('group/workspace flex select-none items-center gap-2 px-2 pb-0.5 pt-2', className)} {...props}>
-      <span className="shrink-0 text-[0.64rem] font-semibold uppercase tracking-[0.12em] text-(--ui-text-quaternary)">
-        {label}
-      </span>
-      <span aria-hidden="true" className="h-px flex-1 bg-(--ui-stroke-tertiary)" />
+      {toggle ? (
+        <button
+          aria-expanded={toggle.open}
+          aria-label={toggle.ariaLabel}
+          className="flex min-w-0 flex-1 items-center gap-2 bg-transparent text-left"
+          onClick={toggle.onToggle}
+          type="button"
+        >
+          {caption}
+          <DisclosureCaret
+            className="text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
+            open={toggle.open}
+          />
+          {rule}
+        </button>
+      ) : (
+        <>
+          {caption}
+          {rule}
+        </>
+      )}
       {action}
     </div>
   )
@@ -100,7 +183,12 @@ export function SidebarRowShell({
 }: React.ComponentProps<'div'> & { actions?: React.ReactNode; actionsClassName?: string }) {
   return (
     <div
-      className={cn(rowMinH, rowPadTrail, 'grid grid-cols-[minmax(0,1fr)_auto] items-stretch rounded-md', className)}
+      className={cn(
+        SIDEBAR_ROW_MIN_H,
+        SIDEBAR_ROW_PAD_TRAIL,
+        'grid grid-cols-[minmax(0,1fr)_auto] items-stretch rounded-md',
+        className
+      )}
       {...props}
     >
       {children}
@@ -115,12 +203,12 @@ export function SidebarRowShell({
 
 /** Multi-control left cluster (project rows). */
 export function SidebarRowCluster({ className, ...props }: React.ComponentProps<'div'>) {
-  return <div className={cn(rowInset, className)} {...props} />
+  return <div className={cn(SIDEBAR_ROW_INSET, className)} {...props} />
 }
 
 /** Session row main tap target. */
 export function SidebarRowBody({ className, ...props }: React.ComponentProps<'button'>) {
-  return <RowButton className={cn(rowInset, 'bg-transparent text-left', className)} {...props} />
+  return <RowButton className={cn(SIDEBAR_ROW_INSET, 'bg-transparent text-left', className)} {...props} />
 }
 
 /** Tappable label — underline/truncate live on the inner span, not the button. */
@@ -132,19 +220,19 @@ export function SidebarRowLink({
 }: React.ComponentProps<'button'> & { labelClassName?: string }) {
   return (
     <RowButton className={cn('min-w-0 shrink bg-transparent p-0 text-left', className)} {...props}>
-      <span className={cn(rowLabel, labelClassName)}>{children}</span>
+      <span className={cn(SIDEBAR_ROW_LABEL, labelClassName)}>{children}</span>
     </RowButton>
   )
 }
 
 /** Fixed leading column (dot, icon, drag handle). */
 export function SidebarRowLead({ className, ...props }: React.ComponentProps<'span'>) {
-  return <span className={cn(rowLead, className)} {...props} />
+  return <span className={cn(SIDEBAR_ROW_LEAD, className)} {...props} />
 }
 
 /** Standard row label typography. */
 export function SidebarRowLabel({ className, ...props }: React.ComponentProps<'span'>) {
-  return <span className={cn(rowLabel, className)} {...props} />
+  return <span className={cn(SIDEBAR_ROW_LABEL, className)} {...props} />
 }
 
 /** What a group's sessions add up to, for the Show options that count something. */
@@ -156,8 +244,9 @@ export interface SidebarGroupTotals {
 /**
  * Header for a group of sessions that hangs its rows underneath — a project, a
  * profile. Row-shaped rather than caption-shaped (that's {@link SidebarDateDivider},
- * for groupings that only separate), so a group header lines up with the session
- * rows it heads. `toggle` omitted keeps the caret's space with nothing to reveal.
+ * which still collapses, just without a lead glyph), so a group header lines up
+ * with the session rows it heads. `toggle` omitted keeps the caret's space with
+ * nothing to reveal.
  */
 export function SidebarGroupRow({
   actions,

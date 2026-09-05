@@ -795,9 +795,19 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               onRecovered: recoveredId => {
                 if (onRuntimeRecovered) {
                   onRuntimeRecovered(recoveredId)
-                } else if (targetIsCurrentView()) {
-                  activeSessionIdRef.current = recoveredId
-                  setActiveSessionId(recoveredId)
+                } else {
+                  // Publish stored-to-runtime ownership before retrying the
+                  // session-scoped request. The window router needs this
+                  // binding to keep a recovered remote runtime on the gateway
+                  // that owns its durable session.
+                  if (recoverStoredSessionId) {
+                    updateSessionState(recoveredId, state => state, recoverStoredSessionId)
+                  }
+
+                  if (targetIsCurrentView()) {
+                    activeSessionIdRef.current = recoveredId
+                    setActiveSessionId(recoveredId)
+                  }
                 }
               }
             },

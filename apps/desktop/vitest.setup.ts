@@ -37,4 +37,10 @@ if (typeof (globalThis as any).localStorage === 'undefined') {
 // panels (radix menus, refetch chains) when the full suite runs under xdist
 // CPU contention in CI. Success still resolves the instant the node appears;
 // the wider deadline only absorbs a starved runner, killing timing flakes.
-configure({ asyncUtilTimeout: 5000 })
+// 5s proved insufficient on saturated runners (2026-08-31: gateway-settings,
+// messaging, session-unread-tile, toolset-config-panel each tripped a
+// waitFor(mock-called) deadline on runs whose only common factor was load —
+// including a plugins-only commit on main). 12s mirrors the same reasoning
+// as the 15s testTimeout above it while still finishing below it, so a
+// genuinely hung await still surfaces as this assertion, not a test timeout.
+configure({ asyncUtilTimeout: 12_000 })

@@ -1,9 +1,12 @@
 """Loopback shim server for the desktop update hand-off.
 
-Two GET routes: / serves ui.html, /progress serves the status file the
-orchestrator script writes ({"status": "running"|"done"|"error", ...}).
-Exists because a file:// page cannot receive events from a detached
-process. Prints the chosen ephemeral port on stdout, serves until killed.
+Three GET routes: / serves ui.html, /progress serves the status file the
+orchestrator script writes ({"status": "running"|"done"|"error", ...}),
+/favicon.ico serves the app icon so the chromeless browser app window is
+identifiable in the taskbar/window switcher instead of showing a generic
+default. Exists because a file:// page cannot receive events from a
+detached process. Prints the chosen ephemeral port on stdout, serves
+until killed.
 
 `elapsed_seconds` is stamped per request, not read from the status file:
 stages are minutes apart, so a value frozen at the last publish would sit
@@ -19,8 +22,17 @@ import time
 
 html_path, status_path = sys.argv[1], sys.argv[2]
 started_at = float(sys.argv[3]) if len(sys.argv) > 3 else time.time()
+icon_path = sys.argv[4] if len(sys.argv) > 4 else ""
 with open(html_path, "rb") as f:
     HTML = f.read()
+
+ICON = b""
+if icon_path:
+    try:
+        with open(icon_path, "rb") as f:
+            ICON = f.read()
+    except OSError:
+        pass
 
 
 def progress_body():
@@ -46,6 +58,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             ctype = "application/json; charset=utf-8"
         elif self.path == "/":
             body, ctype = HTML, "text/html; charset=utf-8"
+        elif self.path == "/favicon.ico" and ICON:
+            body, ctype = ICON, "image/x-icon"
         else:
             self.send_response(404)
             self.end_headers()

@@ -20,16 +20,34 @@ import { cutSentences, sanitizeTextForSpeech } from './speech-text'
 const PLAYBACK_STALL_MS = 15_000
 
 let currentAudio: HTMLAudioElement | null = null
-// Every live playback registers its barge-in stop here: streaming sessions
-// (kill the WebSocket + AudioContext) and data-URL audio elements (cut
-// playback). A single slot cannot represent two overlapping playbacks — the
-// overwritten session keeps its socket open, keeps scheduling buffers, and
-// its audio resurfaces on a later turn (#91991). Draining the whole set keeps
-// stopVoicePlayback() deterministic no matter how playbacks overlap.
 const liveStops = new Set<() => void>()
+let pauseControls: { pause: () => void | Promise<void>; resume: () => void | Promise<void> } | null = null
 let sequence = 0
 let claimTurnKey: string | null = null
 let inFlight: { done: Promise<boolean>; turnKey: string } | null = null
+
+/** Pause the active transport in place; stopping still discards the playback. */
+export async function toggleVoicePlaybackPaused(): Promise<void> {
+  const state = $voicePlayback.get()
+  const controls = pauseControls
+
+  if (!controls || (state.status !== 'speaking' && state.status !== 'paused')) {
+    return
+  }
+
+  const status = state.status === 'paused' ? 'speaking' : 'paused'
+  setVoicePlaybackState({ ...state, status })
+
+  try {
+    await (status === 'paused' ? controls.pause() : controls.resume())
+  } catch (error) {
+    if (pauseControls === controls && $voicePlayback.get().status === status) {
+      setVoicePlaybackState(state)
+    }
+
+    throw error
+  }
+}
 
 // A shared, lazily-created AudioContext used only to nudge the browser's
 // autoplay state out of "suspended". A wake-word-started voice turn has no
@@ -100,6 +118,7 @@ export function stopVoicePlayback() {
   }
 
   liveStops.clear()
+  pauseControls = null
 
   if (currentAudio) {
     currentAudio.pause()
@@ -249,6 +268,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
 
       settled = true
       liveStops.delete(stop)
+      pauseControls = null
 
       if (playing) {
         playing.pause()
@@ -261,6 +281,23 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
   })
 
   liveStops.add(stop)
+  let paused = false
+  pauseControls = {
+    pause: () => {
+      paused = true
+      playing?.pause()
+    },
+    resume: async () => {
+      paused = false
+
+      try {
+        await playing?.play()
+      } catch (error) {
+        paused = true
+        throw error
+      }
+    }
+  }
 
   const pump = async () => {
     if (synthesizing || settled) {
@@ -303,7 +340,10 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
             playing = audio
             audio.addEventListener('ended', () => resolve(), { once: true })
             audio.addEventListener('error', () => reject(new Error('Playback failed')), { once: true })
-            void audio.play().catch(reject)
+
+            if (!paused) {
+              void audio.play().catch(reject)
+            }
           })
         } catch {
           settle(started ? 'done' : 'fallback')
@@ -391,6 +431,7 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   let settled = false
   let finished = false
   const pendingSends: string[] = []
+  let drainTimer: number | undefined
 
   let settle: (value: 'done' | 'fallback') => void = () => undefined
 
@@ -408,6 +449,9 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
 
       settled = true
       liveStops.delete(stop)
+      pauseControls = null
+
+      window.clearTimeout(drainTimer)
 
       try {
         ws.close()
@@ -433,9 +477,47 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
 
   liveStops.add(stop)
 
+  let paused = false
+  let draining = false
+
   const finishWhenDrained = () => {
+    draining = true
+    window.clearTimeout(drainTimer)
+
+    if (settled || paused) {
+      return
+    }
+
     const remainingMs = context ? Math.max(0, nextStartAt - context.currentTime) * 1_000 : 0
-    window.setTimeout(() => settle('done'), remainingMs + 100)
+
+    if (remainingMs <= 0) {
+      settle('done')
+
+      return
+    }
+
+    drainTimer = window.setTimeout(finishWhenDrained, remainingMs + 100)
+  }
+
+  pauseControls = {
+    pause: async () => {
+      paused = true
+
+      try {
+        await context?.suspend()
+      } catch (error) {
+        paused = false
+        throw error
+      }
+    },
+    resume: async () => {
+      await context?.resume()
+      paused = false
+
+      if (draining) {
+        finishWhenDrained()
+      }
+    }
   }
 
   const schedule = (data: ArrayBuffer) => {
@@ -662,9 +744,14 @@ async function playSpeechDataUrl(
       audio.removeEventListener('error', onError)
       audio.removeEventListener('timeupdate', armStall)
       liveStops.delete(stop)
+      pauseControls = null
     }
 
     const armStall = () => {
+      if ($voicePlayback.get().status === 'paused') {
+        return
+      }
+
       if (stall !== null) {
         window.clearTimeout(stall)
       }
@@ -686,6 +773,21 @@ async function playSpeechDataUrl(
     }
 
     liveStops.add(stop)
+
+    pauseControls = {
+      pause: () => {
+        audio.pause()
+
+        if (stall !== null) {
+          window.clearTimeout(stall)
+          stall = null
+        }
+      },
+      resume: async () => {
+        await audio.play()
+        armStall()
+      }
+    }
 
     audio.addEventListener('ended', onEnded, { once: true })
     audio.addEventListener('error', onError, { once: true })
@@ -813,6 +915,7 @@ async function startSpeechText(text: string, options: VoicePlaybackOptions): Pro
     return played
   } catch (error) {
     if (isCurrent()) {
+      pauseControls = null
       currentAudio = null
       setVoicePlaybackState(currentState('idle'))
     }

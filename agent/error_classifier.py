@@ -643,13 +643,30 @@ def _status_429(c: _Ctx) -> Verdict:
         return _v(_R.upstream_rate_limit, should_fallback=True, error_context=ctx)
     # Quota walls as 429 (Anthropic ``usage_limit_reached``, "quota", billing
     # phrases) are billing ONLY when the body is not itself a rate-limit phrase
-    # ("Rate limit exceeded" contains "limit exceeded") and carries no reset/
-    # retry signal (#93419, #39441).
+    # ("Rate limit exceeded" contains "limit exceeded") (#93419, #39441).
     quota_wall = c.code == "usage_limit_reached" or any(
         p in c.msg for p in ("usage_limit_reached",) + _USAGE_LIMIT_PATTERNS + _BILLING_PATTERNS
     )
     explicit_rate_limit = any(p in c.msg for p in _RATE_LIMIT_PATTERNS)
-    if quota_wall and not explicit_rate_limit and not _has_usage_limit_transient_signal(c.msg, c.body, c.headers):
+    # A 429 whose body is about MONEY, not rate, must not be demoted by an
+    # incidental transient phrase. Providers reuse 429 for a depleted
+    # balance — z.ai answers with "1113 Insufficient balance ... Please
+    # recharge and try again", where "try again" invites the user to
+    # recharge, not to wait out a reset window. Classified as rate_limit,
+    # that earns the 429 cooldown (one hour, or 60s when it is the pool's
+    # only credential via EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS), so the
+    # pool returns to a provider that cannot serve a request until the
+    # balance is topped up. So: an explicit billing phrase outranks the
+    # transient-signal guard, while a mere usage-limit wording still
+    # requires no reset signal — a periodic quota with a real reset window
+    # stays rate_limit. The 402 path already reads money phrases as
+    # billing; this keeps the two statuses agreeing.
+    has_billing = any(p in c.msg for p in _BILLING_PATTERNS)
+    if (
+        quota_wall
+        and not explicit_rate_limit
+        and (has_billing or not _has_usage_limit_transient_signal(c.msg, c.body, c.headers))
+    ):
         return _V_BILLING
     return _V_RATE_LIMIT
 

@@ -1,5 +1,8 @@
 name: Apply aux-headers fix
 on:
+  push:
+    paths:
+      - '.github/workflows/aux-headers-fix.yml'
   workflow_dispatch:
 jobs:
   apply:

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
 import { skinPref, ThemeProvider, useTheme } from './context'
-import { everforestTheme } from './presets'
+import { DEFAULT_SKIN_NAME, everforestTheme } from './presets'
 
 // The live-authoring loop: Hermes writes/edits one skin file and every surface
 // repaints. An in-place edit keeps the NAME — only the palette moves.
@@ -159,5 +159,53 @@ describe('ThemeProvider highlight preview', () => {
 
     act(() => ctx.previewTheme('does-not-exist', 'dark'))
     expect(cssVar('--theme-foreground')).toBe(painted)
+  })
+})
+
+describe('ThemeProvider re-resolves a backend skin at boot', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    __resetBackendSkinSync()
+  })
+
+  afterEach(cleanup)
+
+  let ctx: ReturnType<typeof useTheme>
+
+  function Probe() {
+    ctx = useTheme()
+    return null
+  }
+
+  const renderProbe = () =>
+    render(
+      <ThemeProvider>
+        <Probe />
+      </ThemeProvider>
+    )
+
+  it('paints a stored backend skin once the gateway registers it', () => {
+    // A skin committed in a previous session that only exists on the backend.
+    // "amber" isn't built in, so at boot — before the gateway connects — there
+    // is nothing to resolve the name against yet.
+    skinPref.assign('default', 'amber')
+
+    renderProbe()
+
+    // Until the gateway announces it, the boot paint falls back to the default.
+    // The stored preference has to survive untouched, though.
+    expect(ctx.themeName).toBe(DEFAULT_SKIN_NAME)
+
+    // The gateway connects and registers the skin (seed-only, no explicit apply).
+    act(() =>
+      ingestBackendSkin(
+        { name: 'amber', colors: { background: '#1a0e00', ui_text: '#ffb300', ui_accent: '#ff8f00' } },
+        { apply: false }
+      )
+    )
+
+    // Now the stored name resolves, and the theme repaints to amber.
+    expect(ctx.themeName).toBe('amber')
+    expect(cssVar('--theme-foreground')).toBe('#ffb300')
   })
 })

@@ -264,6 +264,61 @@ class TestFormatKanbanEventText:
         text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
         assert "timed out" in text
 
+    def test_review_requested_surfaces_handoff(self):
+        ev = SimpleNamespace(
+            kind="review_requested",
+            payload={"summary": "implemented parser\ndetails"},
+        )
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "main")
+        assert text is not None
+        assert "t_abc123" in text
+        assert "ready for review" in text
+        assert "implemented parser" in text
+        assert "details" not in text  # only the first handoff line
+
+    def test_changes_requested_includes_reason_and_provenance(self):
+        ev = SimpleNamespace(
+            kind="changes_requested",
+            payload={
+                "reason": "tests missing",
+                "reviewer": "rev",
+                "implementer": "impl",
+            },
+        )
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "main")
+        assert text is not None
+        assert "t_abc123" in text
+        assert "changes/BLOCK" in text
+        assert "tests missing" in text
+        assert "@rev" in text
+        assert "@impl" in text
+
+    def test_changes_requested_defaults_reason_when_absent(self):
+        ev = SimpleNamespace(kind="changes_requested", payload={})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert text is not None
+        assert "reviewer feedback requires changes" in text
+
+    def test_block_loop_detected_routes_to_triage(self):
+        ev = SimpleNamespace(
+            kind="block_loop_detected",
+            payload={"reason": "same failure", "recurrences": 3},
+        )
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "main")
+        assert text is not None
+        assert "TRIAGE" in text
+        assert "same failure" in text
+        assert "3x" in text
+
+    def test_notify_kinds_mirror_gateway_review_lifecycle(self):
+        """The TUI poller must claim the same review-lifecycle kinds the gateway
+        notifier does, or TUI/Desktop sessions never see review parks (#99436).
+        """
+        from tui_gateway.server import _KANBAN_NOTIFY_KINDS
+
+        for kind in ("review_requested", "changes_requested", "block_loop_detected"):
+            assert kind in _KANBAN_NOTIFY_KINDS
+
 
 class TestNotificationPollerLoopKanbanWiring:
     """Drive a real TUI subscription through ``_notification_poller_loop``.

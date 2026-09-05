@@ -842,6 +842,29 @@ def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iteratio
     return kwargs
 
 
+def _inherit_parent_tool_surface(review_agent: Any, agent: Any) -> None:
+    """Copy the parent's advertised tools for a same-model cache-parity fork.
+
+    The parent's array is the last outbound payload: ``agent.tools`` is read
+    directly at request time and is not mutated between review turns because
+    ``_skip_mcp_refresh`` blocks the between-turn MCP refresh. Dispatch remains
+    restricted by the thread whitelist. Copying the whole surface covers every
+    dynamically injected tool (memory-provider, late MCP, and plugin-registered),
+    not just memory tools.
+    """
+    parent_tools = getattr(agent, "tools", None)
+    if not isinstance(parent_tools, (list, tuple)) or not parent_tools:
+        return
+    review_agent.tools = copy.deepcopy(list(parent_tools))
+    review_agent.valid_tool_names = {
+        entry["function"]["name"]
+        for entry in review_agent.tools
+        if isinstance(entry, dict)
+        and isinstance(entry.get("function"), dict)
+        and isinstance(entry["function"].get("name"), str)
+    }
+
+
 def build_cache_parity_fork(
     agent: Any, task_cfg: Optional[Dict[str, Any]] = None, *, max_iterations: int,
     write_origin: str = "background_review",
@@ -887,6 +910,7 @@ def build_cache_parity_fork(
     if not _routed:
         review_agent._cached_system_prompt = agent._cached_system_prompt
         review_agent.session_start = agent.session_start
+        _inherit_parent_tool_surface(review_agent, agent)
     _detach_fork_compression(review_agent)
     # Compaction bounds a single request; this bounds the WHOLE review (checked in
     # conversation_loop via _review_input_budget_exhausted).

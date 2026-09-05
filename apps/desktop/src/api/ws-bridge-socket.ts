@@ -6,13 +6,31 @@
 // The client type is `WebSocketLike = WebSocket` and it drives sockets via
 // addEventListener('open'|'message'|'close'|'error') plus send/close/
 // readyState — BridgedWebSocket mirrors that EventTarget surface exactly.
+//
+// Concurrency/lifecycle invariants (multiple bridged sockets per renderer are
+// NORMAL — primary + per-profile secondaries):
+//   - Every dial carries a client-generated token; events arrive tagged by
+//     token, so socket A's frames can never replay into socket B.
+//   - close() while CONNECTING cancels the main-process dial by token —
+//     a canceled token is never promoted into main's live map.
+//   - The IPC listener is removed on EVERY terminal outcome (open-fail,
+//     remote close, local close) — reconnect cycles don't accumulate them.
 interface BridgeApi {
-  wsBridgeOpen: (url: string) => Promise<{ ok: boolean; id?: number; error?: string }>
-  wsBridgeSend: (id: number, data: string, binary: boolean) => Promise<{ ok: boolean }>
-  wsBridgeClose: (id: number, code?: number, reason?: string) => Promise<{ ok: boolean }>
+  wsBridgeOpen: (url: string, token: string) => Promise<{ ok: boolean; error?: string }>
+  wsBridgeCancel: (token: string) => Promise<{ ok: boolean }>
+  wsBridgeSend: (token: string, data: string, binary: boolean) => Promise<{ ok: boolean }>
+  wsBridgeClose: (token: string, code?: number, reason?: string) => Promise<{ ok: boolean }>
   onWsBridgeEvent: (
-    callback: (id: number, payload: { type: string; data?: string; binary?: boolean; code?: number; reason?: string }) => void
+    callback: (token: string, payload: BridgePayload) => void
   ) => () => void
+}
+
+interface BridgePayload {
+  type: string
+  data?: string
+  binary?: boolean
+  code?: number
+  reason?: string
 }
 
 function bridgeApi(): BridgeApi | null {
@@ -20,7 +38,9 @@ function bridgeApi(): BridgeApi | null {
   return api && typeof api.wsBridgeOpen === 'function' ? (api as BridgeApi) : null
 }
 
-class BridgedWebSocket extends EventTarget {
+let nextToken = 1
+
+export class BridgedWebSocket extends EventTarget {
   readonly CONNECTING = 0
   readonly OPEN = 1
   readonly CLOSING = 2
@@ -29,39 +49,46 @@ class BridgedWebSocket extends EventTarget {
   readyState = 0
   binaryType: 'blob' | 'arraybuffer' = 'arraybuffer'
 
-  private id: number | null = null
-  private readonly removeListener: () => void
-  private pending: Array<{ type: string; data?: string; binary?: boolean; code?: number; reason?: string }> = []
+  private readonly token: string
+  private removeListener: () => void
+  private terminated = false
 
-  constructor(url: string, api: BridgeApi) {
+  constructor(url: string, private readonly api: BridgeApi, token?: string) {
     super()
-    this.removeListener = api.onWsBridgeEvent((id, payload) => {
-      if (this.id === null) {
-        // Event arrived before wsBridgeOpen resolved and assigned our id.
-        // Buffer it — flushed in order once the id lands. Without this an
-        // 'open' racing the id assignment is dropped and the client hangs
-        // in 'connecting' forever.
-        this.pending.push(payload)
-        return
-      }
-      if (id !== this.id) return
+    this.token = token ?? `dial-${nextToken++}-${Math.random().toString(36).slice(2)}`
+    this.removeListener = api.onWsBridgeEvent((token, payload) => {
+      // Events are token-tagged end to end — unrelated sockets' frames are
+      // rejected from the start, including anything arriving before open
+      // resolved (the bridge emits open only after resolving, so ordering
+      // is: open-result promise, then events, all under our token).
+      if (token !== this.token) return
       this.dispatch(payload)
     })
 
-    void api.wsBridgeOpen(url).then(result => {
-      if (!result.ok || result.id === undefined) {
+    void api.wsBridgeOpen(url, this.token).then(result => {
+      if (this.terminated) {
+        // close() raced the dial resolution: if it opened anyway, shut it.
+        if (result.ok) void this.api.wsBridgeClose(this.token)
+        return
+      }
+      if (!result.ok) {
+        this.terminate()
         this.readyState = 3
         this.dispatchEvent(new Event('error'))
         this.dispatchEvent(new CloseEvent('close', { code: 1006, reason: result.error ?? 'bridge dial failed' }))
-        return
       }
-      this.id = result.id
-      for (const payload of this.pending) this.dispatch(payload)
-      this.pending = []
+      // On success the 'open' event arrives over the channel (deferred past
+      // this microtask by the bridge) and flips readyState in dispatch().
     })
   }
 
-  private dispatch(payload: { type: string; data?: string; binary?: boolean; code?: number; reason?: string }): void {
+  private terminate(): void {
+    if (this.terminated) return
+    this.terminated = true
+    this.removeListener()
+  }
+
+  private dispatch(payload: BridgePayload): void {
     switch (payload.type) {
       case 'open':
         this.readyState = 1
@@ -78,6 +105,7 @@ class BridgedWebSocket extends EventTarget {
         this.dispatchEvent(new Event('error'))
         break
       case 'close':
+        this.terminate()
         this.readyState = 3
         this.dispatchEvent(new CloseEvent('close', { code: payload.code ?? 1006, reason: payload.reason ?? '' }))
         break
@@ -85,35 +113,33 @@ class BridgedWebSocket extends EventTarget {
   }
 
   send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
-    if (this.id === null || this.readyState !== 1) return
-    const api = bridgeApi()
-    if (!api) return
+    if (this.readyState !== 1 || this.terminated) return
     if (typeof data === 'string') {
-      void api.wsBridgeSend(this.id, data, false)
+      void this.api.wsBridgeSend(this.token, data, false)
       return
     }
     if (data instanceof ArrayBuffer) {
-      void api.wsBridgeSend(this.id, arrayBufferToBase64(data), true)
+      void this.api.wsBridgeSend(this.token, arrayBufferToBase64(data), true)
       return
     }
     if (ArrayBuffer.isView(data)) {
-      void api.wsBridgeSend(this.id, arrayBufferToBase64(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer), true)
+      void this.api.wsBridgeSend(this.token, arrayBufferToBase64(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer), true)
       return
     }
     // Blob: async read then send.
     void (data as Blob).arrayBuffer().then((buf: ArrayBuffer) => {
-      if (this.id !== null && this.readyState === 1) void api.wsBridgeSend(this.id, arrayBufferToBase64(buf), true)
+      if (this.readyState === 1 && !this.terminated) void this.api.wsBridgeSend(this.token, arrayBufferToBase64(buf), true)
     })
   }
 
   close(code?: number, reason?: string): void {
     if (this.readyState >= 2) return
     this.readyState = 2
-    this.removeListener()
-    if (this.id !== null) {
-      const api = bridgeApi()
-      if (api) void api.wsBridgeClose(this.id, code, reason)
-    }
+    this.terminate()
+    // Cancel covers a still-dialing token; close covers an established one —
+    // main no-ops whichever half doesn't apply, and enforces sender ownership.
+    void this.api.wsBridgeCancel(this.token)
+    void this.api.wsBridgeClose(this.token, code, reason)
     this.readyState = 3
   }
 }

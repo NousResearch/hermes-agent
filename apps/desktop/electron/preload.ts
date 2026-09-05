@@ -29,11 +29,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
   // Remote WS bridge: main-process `ws`-package dials (private-CA trust; see
   // electron/ws-bridge.ts). Events stream back over 'hermes:ws-bridge:event'.
-  wsBridgeOpen: url => ipcRenderer.invoke('hermes:ws-bridge:open', url),
-  wsBridgeSend: (id, data, binary) => ipcRenderer.invoke('hermes:ws-bridge:send', id, data, binary),
-  wsBridgeClose: (id, code, reason) => ipcRenderer.invoke('hermes:ws-bridge:close', id, code, reason),
+  wsBridgeOpen: (url, token) => ipcRenderer.invoke('hermes:ws-bridge:open', url, token),
+  wsBridgeCancel: token => ipcRenderer.invoke('hermes:ws-bridge:cancel', token),
+  wsBridgeSend: (token, data, binary) => ipcRenderer.invoke('hermes:ws-bridge:send', token, data, binary),
+  wsBridgeClose: (token, code, reason) => ipcRenderer.invoke('hermes:ws-bridge:close', token, code, reason),
   onWsBridgeEvent: callback => {
-    const listener = (_event, id, payload) => callback(id, payload)
+    const listener = (_event, token, payload) => callback(token, payload)
     ipcRenderer.on('hermes:ws-bridge:event', listener)
 
     return () => ipcRenderer.removeListener('hermes:ws-bridge:event', listener)

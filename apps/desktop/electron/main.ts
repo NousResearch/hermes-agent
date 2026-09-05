@@ -17914,7 +17914,9 @@ app.whenReady().then(() => {
   // Remote gateway WebSockets dial from the main process via the `ws` package
   // (node:tls honors NODE_EXTRA_CA_CERTS) because Chromium's renderer WS pool
   // ignores --use-system-certificates and undici ignores NODE_EXTRA_CA_CERTS.
-  installWebSocketBridge()
+  // Header resolution is the same main-owned store the renderer webRequest
+  // path uses, so per-connection headers survive the transport move.
+  installWebSocketBridge({ headersForUrl: headersForRemoteRequest })
   // Warm the login-shell PATH resolution immediately so it usually completes
   // before the backend start path awaits the same single-flight promise.
   void ensureLoginShellPath()

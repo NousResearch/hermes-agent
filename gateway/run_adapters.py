@@ -1304,10 +1304,15 @@ class GatewayAdapterLifecycleMixin:
         return _handler
 
     def _make_profile_busy_session_handler(self, profile_name: str):
-        """Stamp an owning adapter's profile before resolving busy policy."""
+        """Stamp an owning adapter's profile, then resolve busy policy under the profile scope
+        (auth runs against the profile's own allowlist, same as the cold-path message handler)."""
+        from gateway.run import _async_profile_runtime_scope
+        profile_home = self._profile_home_or_none(profile_name)
+
         async def _handler(event, _session_key):
             self._stamp_event_profile(event, profile_name)
-            return await self._handle_active_session_busy_message(event, self._session_key_for_source(event.source))
+            async with self._scope_or_null(_async_profile_runtime_scope, profile_home):
+                return await self._handle_active_session_busy_message(event, self._session_key_for_source(event.source))
 
         return _handler
 

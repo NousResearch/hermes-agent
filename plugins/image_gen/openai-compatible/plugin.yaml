@@ -1,0 +1,7 @@
+name: openai-compatible
+version: 1.0.0
+description: "User-configured OpenAI-compatible /v1/images/generations image provider."
+author: Hermes Agent
+kind: backend
+requires_env:
+  - OPENAI_COMPATIBLE_IMAGE_API_KEY

@@ -26,7 +26,7 @@
 #     [-NoUi]               headless (tests); default shows a progress window
 #     [-NoMarkerCleanup]    leave .hermes-update-in-progress in place (tests)
 #
-# SAFETY POSTURE: both preflight gates FAIL CLOSED. A Desktop that never
+# SAFETY POSTURE: all preflight gates FAIL CLOSED. A Desktop that never
 # exits, or a venv shim that never unlocks, aborts the hand-off without
 # mutating the install -- a skipped update is recoverable, a half-updated
 # venv is not. Every exit path (success, abort, crash) writes
@@ -1509,6 +1509,116 @@ try {
         exit $finalCode
     }
     $updateArgs = @("-m", "hermes_cli.main", "update", "--yes", "--gateway", "--force", "--branch", $Branch)
+
+    # -- 3a. Editable-install preflight (FAIL CLOSED on stale finder/origin) --
+    # The editable install can still point at a deleted worktree, and a bare
+    # `import hermes_cli` is not proof that the canonical checkout is healthy:
+    # PYTHONPATH or the inherited cwd can supply a shadow copy. The probe below
+    # therefore returns a durable origin receipt and accepts the import only
+    # when hermes_cli.__file__ resolves beneath this exact $InstallRoot.
+    #
+    # The repair ladder first performs the narrow finder rewrite used by the
+    # update itself (`pip install -e . --no-deps`). If that command fails, or
+    # succeeds without restoring the canonical origin, a second dependency-
+    # aware editable reinstall repairs missing/mismatched dependencies before
+    # we require manual intervention. Both rungs run from $InstallRoot and
+    # through python.exe, never the hermes.exe shim that uv must replace.
+    function Test-HermesCliImportFromInstallRoot {
+        $probeOutput = ""
+        $probeExit = 1
+        try {
+            $probeOutput = (& $pythonExe -c "import base64, pathlib, sys, hermes_cli; root = pathlib.Path(sys.argv[1]).resolve(); module = pathlib.Path(hermes_cli.__file__).resolve(); print('__HERMES_CLI_ORIGIN_B64__=' + base64.b64encode(str(module).encode('utf-8')).decode('ascii')); raise SystemExit(0 if root in module.parents else 13)" $InstallRoot 2>$null | Out-String).Trim()
+            $probeExit = $LASTEXITCODE
+        } catch {
+            Write-HandoffLog "editable install probe threw: $($_.Exception.Message)"
+            return $false
+        }
+
+        [string]$originLine = $probeOutput -split "\r?\n" |
+            Where-Object { $_.StartsWith("__HERMES_CLI_ORIGIN_B64__=") } |
+            Select-Object -Last 1
+        if (-not $originLine) {
+            Write-HandoffLog "editable install probe returned no package-origin receipt (exit $probeExit)"
+            return $false
+        }
+
+        try {
+            $encodedOrigin = $originLine.Substring("__HERMES_CLI_ORIGIN_B64__=".Length).Trim()
+            $modulePath = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($encodedOrigin))
+        } catch {
+            Write-HandoffLog "editable install probe returned an invalid package-origin receipt"
+            return $false
+        }
+
+        if ($probeExit -eq 0) {
+            Write-HandoffLog "editable install probe resolved canonical module: $modulePath"
+            return $true
+        }
+        if ($probeExit -eq 13) {
+            Write-HandoffLog "editable install probe resolved outside install root: $modulePath"
+            return $false
+        }
+        Write-HandoffLog "editable install probe failed (exit $probeExit; origin $modulePath)"
+        return $false
+    }
+
+    function Invoke-EditableInstallRepair([switch]$WithDependencies) {
+        $pipArgs = @("-m", "pip", "install", "-e", ".")
+        $tag = "repair-dependencies"
+        if (-not $WithDependencies) {
+            $pipArgs += "--no-deps"
+            $tag = "repair-finder"
+        }
+
+        $repair = $null
+        Push-Location -LiteralPath $InstallRoot
+        try {
+            $repair = Invoke-HermesStep $pythonExe $pipArgs $tag
+        } catch {
+            Write-HandoffLog "$tag threw: $($_.Exception.Message)"
+        } finally {
+            Pop-Location
+        }
+        return $repair
+    }
+
+    $probeOk = Test-HermesCliImportFromInstallRoot
+    if (-not $probeOk) {
+        Write-HandoffLog "editable install probe failed; repairing editable finder (pip install -e . --no-deps)"
+        Publish-UiProgress "Repairing Hermes install"
+        $finderRepair = Invoke-EditableInstallRepair
+        $finderRepairOk = ($null -ne $finderRepair -and $finderRepair.Code -eq 0)
+        if ($finderRepairOk) {
+            $probeOk = Test-HermesCliImportFromInstallRoot
+        } else {
+            $probeOk = $false
+        }
+
+        if (-not $finderRepairOk -or -not $probeOk) {
+            Write-HandoffLog "finder-only repair did not restore a canonical import; retrying with dependencies"
+            Publish-UiProgress "Repairing Hermes dependencies"
+            $dependencyRepair = Invoke-EditableInstallRepair -WithDependencies
+            $dependencyRepairOk = ($null -ne $dependencyRepair -and $dependencyRepair.Code -eq 0)
+            if ($dependencyRepairOk) {
+                $probeOk = Test-HermesCliImportFromInstallRoot
+            } else {
+                $probeOk = $false
+            }
+
+            if (-not $dependencyRepairOk -or -not $probeOk) {
+                # Exit 7 is terminal at the Desktop boundary: finally writes
+                # ok:false and main.ts surfaces every non-ok hand-off result
+                # in a one-shot error dialog. The update retry below is never
+                # reached after this preflight exit.
+                $finalCode = 7
+                $finalMsg = "Update aborted: the Hermes install's Python environment could not be restored after finder-only and dependency-aware editable reinstalls. Run `hermes doctor` or reinstall Hermes."
+                Write-HandoffLog $finalMsg
+                exit $finalCode
+            }
+        }
+        Write-HandoffLog "editable install repaired; update proceeding"
+    }
+
     # --keep-stash: never re-apply local source edits after the update (they
     # stay parked in git stash). Probe --help first: the flag ships with newer
     # backends and an unknown flag would abort argparse with exit 2, which

@@ -677,7 +677,12 @@ def _resume_lazy(ctx: _Resume) -> dict:
         history = ctx.child_history(repair=True)
     except Exception as e:
         return _err(ctx.rid, 5000, f"resume failed: {e}")
-    record = ctx.record(source, cwd, history, lazy=True, todo_state=_todo_state_from_history(history))
+    # A lazy record upgrades to a real agent on first prompt: pin the stored
+    # runtime now or the deferred build falls back to the profile defaults
+    # (#103498). Empty for fresh watch windows (no row yet — same as before).
+    overrides = _stored_session_runtime_overrides(ctx.found)
+    record = ctx.record(source, cwd, history, overrides, lazy=True,
+                        todo_state=_todo_state_from_history(history))
     if (reused := ctx.claim(sid, record)) is not None:
         return reused
     # A child mid-run emits no session events — liveness comes from the relay registry.
@@ -689,7 +694,7 @@ def _resume_lazy(ctx: _Resume) -> dict:
         display = ctx.child_history(repair=False)
     except Exception:
         logger.debug("child-watch display projection read failed", exc_info=True)
-    return _resume_response(ctx, sid, record, info=_lazy_resume_info(cwd, profile=ctx.profile), display=display,
+    return _resume_response(ctx, sid, record, info=ctx.info(cwd, overrides), display=display,
                             count_source=display, running=running, status="streaming" if running else "idle")
 
 

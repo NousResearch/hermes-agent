@@ -889,6 +889,15 @@ def _deferred_build_agent_kwargs(current: dict, session_db) -> dict:
     else:
         if override := current.get("model_override"):
             kw["model_override"] = override
+        # A stored provider that no longer routes must not take the thinking
+        # level and service tier down with it: those pins are
+        # provider-independent, so they survive while only the routing falls
+        # back (#103498). Explicit create-time pins still win when present.
+        stored = resume_overrides if isinstance(resume_overrides, dict) else {}
+        kw.update({k: v for k, v in (
+            ("reasoning_config_override", stored.get("reasoning_config_override")),
+            ("service_tier_override", stored.get("service_tier_override")))
+            if v is not None})
         kw.update({k: v for k, v in (("reasoning_config_override", current.get("create_reasoning_override")),
                                      ("service_tier_override", current.get("create_service_tier_override")))
                    if v is not None})

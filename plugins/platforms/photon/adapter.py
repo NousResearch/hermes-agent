@@ -21,7 +21,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:  # type checkers see httpx as always-imported; runtime keeps it optional
@@ -1208,22 +1208,31 @@ class PhotonAdapter(BasePlatformAdapter):
         result.raw_response = raw
         return result
 
-    async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
-                   metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        bubbles = [self.format_message(bubble) for bubble in self._outgoing_chunks(content)]
+    async def _deliver_bubbles(
+        self, content: str, send_one: Callable[[str], Awaitable[SendResult]],
+    ) -> SendResult:
+        """Split ``content`` into bubbles and send them in order with ``send_one``.
+
+        Splitting happens before Markdown stripping, so the plain-text kill switch
+        cannot turn blank lines inside a code fence into extra messages. A single
+        bubble returns the sidecar result untouched; a failure mid-way returns the
+        partial-overflow result so callers retry only the undelivered tail.
+        """
+        bubbles = [self.format_message(chunk) for chunk in self._outgoing_chunks(content)]
         if len(bubbles) == 1:
-            return await self._sidecar_send(chat_id, bubbles[0])
+            return await send_one(bubbles[0])
         message_ids: List[str] = []
-        delivered_count = 0
-        for bubble in bubbles:
-            result = await self._sidecar_send(chat_id, bubble)
+        for delivered_count, bubble in enumerate(bubbles):
+            result = await send_one(bubble)
             if not result.success:
-                return self._partial_bubble_result(
-                    result, message_ids, delivered_count, bubbles)
-            delivered_count += 1
+                return self._partial_bubble_result(result, message_ids, delivered_count, bubbles)
             if result.message_id:
                 message_ids.append(str(result.message_id))
         return self._bubble_send_result(message_ids)
+
+    async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
+                   metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        return await self._deliver_bubbles(content, lambda bubble: self._sidecar_send(chat_id, bubble))
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
                            session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
@@ -1419,54 +1428,43 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def _send_with_retry(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                                metadata: Any = None, max_retries: int = 1, base_delay: float = 2.0) -> SendResult:
-        """Deliver each bubble in order under one retry budget per bubble.
-
-        Splitting happens before Markdown stripping, so the plain-text kill switch
-        cannot turn blank lines inside a code fence into extra messages.
-        """
-        chunks = self._outgoing_chunks(content)
-        formatted = [self.format_message(chunk) for chunk in chunks]
+        """Deliver each bubble in order, each under its own retry budget."""
         use_richlinks = _markdown_enabled()
-        message_ids: List[str] = []
-        delivered_count = 0
+        return await self._deliver_bubbles(
+            content,
+            lambda bubble: self._send_bubble_with_retry(
+                chat_id, bubble, max_retries=max_retries, base_delay=base_delay, richlink=use_richlinks),
+        )
 
-        for index, bubble in enumerate(formatted):
-            result = await self._sidecar_send(chat_id, bubble, richlink=use_richlinks)
-            error_str = result.error or ""
-            if not result.success and not self._is_permanent_sidecar_failure(result):
-                is_network = result.retryable or self._is_retryable_error(error_str)
-                if not (not is_network and self._is_timeout_error(error_str)):
-                    if is_network:
-                        for attempt in range(1, max_retries + 1):
-                            delay = base_delay * (2 ** (attempt - 1))
-                            logger.warning(
-                                "[photon] Send failed (attempt %d/%d, retrying in %.1fs): %s",
-                                attempt, max_retries, delay, error_str)
-                            await asyncio.sleep(delay)
-                            result = await self._sidecar_send(
-                                chat_id, bubble, richlink=use_richlinks)
-                            if result.success or self._is_permanent_sidecar_failure(result):
-                                break
-                            error_str = result.error or ""
-                            if not (result.retryable or self._is_retryable_error(error_str)):
-                                break
-                        if not result.success:
-                            logger.error(
-                                "[photon] Failed to deliver bubble after %d retries: %s",
-                                max_retries, error_str)
-                    if not result.success and not self._is_permanent_sidecar_failure(result):
-                        logger.warning(
-                            "[photon] Send failed: %s - retrying plain-text bubble", error_str)
-                        result = await self._sidecar_send(
-                            chat_id, bubble[: self.MAX_MESSAGE_LENGTH], richlink=False, markdown=False)
-            if not result.success:
-                return self._partial_bubble_result(
-                    result, message_ids, delivered_count, formatted)
-            delivered_count = index + 1
-            if result.message_id:
-                message_ids.append(str(result.message_id))
-
-        return self._bubble_send_result(message_ids)
+    async def _send_bubble_with_retry(self, chat_id: str, bubble: str, *, max_retries: int,
+                                      base_delay: float, richlink: bool) -> SendResult:
+        """One bubble: network errors get ``max_retries`` backed-off retries, then anything still
+        failing (except a permanent sidecar failure or a plain non-network timeout) is re-sent as
+        plain text so a rich-link/markdown outage never strands a sendable message."""
+        result = await self._sidecar_send(chat_id, bubble, richlink=richlink)
+        if result.success or self._is_permanent_sidecar_failure(result):
+            return result
+        error_str = result.error or ""
+        is_network = result.retryable or self._is_retryable_error(error_str)
+        if not is_network and self._is_timeout_error(error_str):
+            return result
+        if is_network:
+            for attempt in range(1, max_retries + 1):
+                delay = base_delay * (2 ** (attempt - 1))
+                logger.warning("[photon] Send failed (attempt %d/%d, retrying in %.1fs): %s",
+                               attempt, max_retries, delay, error_str)
+                await asyncio.sleep(delay)
+                result = await self._sidecar_send(chat_id, bubble, richlink=richlink)
+                if result.success or self._is_permanent_sidecar_failure(result):
+                    return result
+                error_str = result.error or ""
+                if not (result.retryable or self._is_retryable_error(error_str)):
+                    break
+            else:
+                logger.error("[photon] Failed to deliver bubble after %d retries: %s", max_retries, error_str)
+        logger.warning("[photon] Send failed: %s - retrying plain-text bubble", error_str)
+        return await self._sidecar_send(
+            chat_id, bubble[: self.MAX_MESSAGE_LENGTH], richlink=False, markdown=False)
 
     async def _post_send(self, path: str, body: Dict[str, Any], *, structured: bool = False) -> SendResult:
         """POST a send-like body and wrap the outcome as a SendResult. ``structured`` carries

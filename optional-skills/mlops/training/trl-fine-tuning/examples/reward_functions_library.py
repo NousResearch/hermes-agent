@@ -139,7 +139,10 @@ def lexical_diversity_reward(completions: Sequence[Any], **kwargs: Any) -> list[
 def no_apology_reward(completions: Sequence[Any], **kwargs: Any) -> list[float]:
     """Reward answers that avoid apology boilerplate."""
     apology_terms = ("sorry", "apologize", "apologies", "i cannot", "i can't")
-    return [0.0 if any(term in text.lower() for term in apology_terms) else 1.0 for text in _texts(completions)]
+    return [
+        0.0 if any(term in text.lower() for term in apology_terms) else 1.0
+        for text in _texts(completions)
+    ]
 
 
 def no_refusal_reward(completions: Sequence[Any], **kwargs: Any) -> list[float]:
@@ -151,7 +154,10 @@ def no_refusal_reward(completions: Sequence[Any], **kwargs: Any) -> list[float]:
         "i can't assist",
         "not able to help",
     )
-    return [0.0 if any(term in text.lower() for term in refusal_terms) else 1.0 for text in _texts(completions)]
+    return [
+        0.0 if any(term in text.lower() for term in refusal_terms) else 1.0
+        for text in _texts(completions)
+    ]
 
 
 # ==================== Format rewards ====================
@@ -162,7 +168,9 @@ def xml_format_reward(completions: Sequence[Any], **kwargs: Any) -> list[float]:
     return [1.0 if _XML_PATTERN.search(text) else 0.0 for text in _texts(completions)]
 
 
-def incremental_xml_format_reward(completions: Sequence[Any], **kwargs: Any) -> list[float]:
+def incremental_xml_format_reward(
+    completions: Sequence[Any], **kwargs: Any
+) -> list[float]:
     """Give partial credit for each required XML tag."""
     rewards = []
     for text in _texts(completions):
@@ -192,7 +200,9 @@ def answer_tag_reward(completions: Sequence[Any], **kwargs: Any) -> list[float]:
     return rewards
 
 
-def no_extra_text_after_answer_reward(completions: Sequence[Any], **kwargs: Any) -> list[float]:
+def no_extra_text_after_answer_reward(
+    completions: Sequence[Any], **kwargs: Any
+) -> list[float]:
     """Reward completions with no trailing text after ``</answer>``."""
     rewards = []
     for text in _texts(completions):
@@ -217,7 +227,9 @@ def json_parse_reward(completions: Sequence[Any], **kwargs: Any) -> list[float]:
     return rewards
 
 
-def markdown_code_block_reward(completions: Sequence[Any], **kwargs: Any) -> list[float]:
+def markdown_code_block_reward(
+    completions: Sequence[Any], **kwargs: Any
+) -> list[float]:
     """Reward completions containing a fenced Markdown code block."""
     return [1.0 if _CODE_BLOCK_RE.search(text) else 0.0 for text in _texts(completions)]
 
@@ -238,10 +250,15 @@ def exact_match_reward(completions: Sequence[Any], **kwargs: Any) -> list[float]
     """Reward exact match between extracted answer and reference answer."""
     texts = _texts(completions)
     references = _reference_values(kwargs, len(texts))
-    return [1.0 if _extract_answer(text) == ref else 0.0 for text, ref in zip(texts, references)]
+    return [
+        1.0 if _extract_answer(text) == ref else 0.0
+        for text, ref in zip(texts, references)
+    ]
 
 
-def case_insensitive_match_reward(completions: Sequence[Any], **kwargs: Any) -> list[float]:
+def case_insensitive_match_reward(
+    completions: Sequence[Any], **kwargs: Any
+) -> list[float]:
     """Reward case-insensitive answer/reference matches."""
     texts = _texts(completions)
     references = _reference_values(kwargs, len(texts))
@@ -313,12 +330,16 @@ def work_shown_reward(completions: Sequence[Any], **kwargs: Any) -> list[float]:
 # ==================== Reward factories ====================
 
 
-def make_regex_reward(pattern: str, reward: float = 1.0, flags: int = 0) -> RewardFunction:
+def make_regex_reward(
+    pattern: str, reward: float = 1.0, flags: int = 0
+) -> RewardFunction:
     """Create a reward function that scores completions matching ``pattern``."""
     compiled = re.compile(pattern, flags)
 
     def regex_reward(completions: Sequence[Any], **kwargs: Any) -> list[float]:
-        return [reward if compiled.search(text) else 0.0 for text in _texts(completions)]
+        return [
+            reward if compiled.search(text) else 0.0 for text in _texts(completions)
+        ]
 
     return regex_reward
 
@@ -327,7 +348,9 @@ def make_keyword_coverage_reward(keywords: Sequence[str]) -> RewardFunction:
     """Create a reward based on the fraction of keywords present."""
     lowered = [keyword.casefold() for keyword in keywords]
 
-    def keyword_coverage_reward(completions: Sequence[Any], **kwargs: Any) -> list[float]:
+    def keyword_coverage_reward(
+        completions: Sequence[Any], **kwargs: Any
+    ) -> list[float]:
         rewards = []
         for text in _texts(completions):
             haystack = text.casefold()
@@ -362,7 +385,9 @@ def make_json_keys_reward(required_keys: Sequence[str]) -> RewardFunction:
 def make_length_range_reward(min_words: int, max_words: int) -> RewardFunction:
     """Create a reward for answers inside a custom word-count range."""
 
-    def custom_length_range_reward(completions: Sequence[Any], **kwargs: Any) -> list[float]:
+    def custom_length_range_reward(
+        completions: Sequence[Any], **kwargs: Any
+    ) -> list[float]:
         rewards = []
         for text in _texts(completions):
             n_words = len(_words(text))
@@ -372,7 +397,9 @@ def make_length_range_reward(min_words: int, max_words: int) -> RewardFunction:
     return custom_length_range_reward
 
 
-def combine_rewards(weighted_rewards: Sequence[tuple[RewardFunction, float]]) -> RewardFunction:
+def combine_rewards(
+    weighted_rewards: Sequence[tuple[RewardFunction, float]],
+) -> RewardFunction:
     """Combine multiple reward functions into one weighted reward function."""
 
     def combined_reward(completions: Sequence[Any], **kwargs: Any) -> list[float]:
@@ -386,11 +413,9 @@ def combine_rewards(weighted_rewards: Sequence[tuple[RewardFunction, float]]) ->
 
 
 # Example bundle for XML-answer math tasks similar to ``basic_grpo_training.py``.
-math_xml_reward = combine_rewards(
-    [
-        (incremental_xml_format_reward, 0.25),
-        (xml_format_reward, 0.5),
-        (numeric_match_reward, 2.0),
-        (work_shown_reward, 0.25),
-    ]
-)
+math_xml_reward = combine_rewards([
+    (incremental_xml_format_reward, 0.25),
+    (xml_format_reward, 0.5),
+    (numeric_match_reward, 2.0),
+    (work_shown_reward, 0.25),
+])

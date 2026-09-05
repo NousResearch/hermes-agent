@@ -17,7 +17,9 @@ LIBRARY_PATH = (
 
 
 def load_library():
-    spec = importlib.util.spec_from_file_location("reward_functions_library", LIBRARY_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "reward_functions_library", LIBRARY_PATH
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -28,7 +30,12 @@ def load_library():
 def test_xml_format_rewards_handle_chat_completion_shape():
     rewards = load_library()
     completions = [
-        [{"role": "assistant", "content": "<reasoning>2+2</reasoning><answer>4</answer>"}],
+        [
+            {
+                "role": "assistant",
+                "content": "<reasoning>2+2</reasoning><answer>4</answer>",
+            }
+        ],
         [{"role": "assistant", "content": "The answer is 4"}],
     ]
 
@@ -45,7 +52,11 @@ def test_numeric_rewards_match_reference_columns():
         "no number here",
     ]
 
-    assert rewards.numeric_match_reward(completions, answer=["42", "42", "42"]) == [1.0, 0.0, 0.0]
+    assert rewards.numeric_match_reward(completions, answer=["42", "42", "42"]) == [
+        1.0,
+        0.0,
+        0.0,
+    ]
     close_scores = rewards.numeric_close_reward(completions, answer=["42", "42", "42"])
     assert close_scores[0] == 1.0
     assert 0.9 < close_scores[1] < 1.0
@@ -59,7 +70,11 @@ def test_reward_factories_create_task_specific_rewards():
     assert keyword_reward(["alpha beta", "alpha", "gamma"]) == [1.0, 0.5, 0.0]
 
     json_keys_reward = rewards.make_json_keys_reward(["answer", "confidence"])
-    assert json_keys_reward(['{"answer": "yes", "confidence": 0.9}', '{"answer": "yes"}', 'nope']) == [
+    assert json_keys_reward([
+        '{"answer": "yes", "confidence": 0.9}',
+        '{"answer": "yes"}',
+        "nope",
+    ]) == [
         1.0,
         0.0,
         0.0,

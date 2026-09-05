@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -290,6 +291,11 @@ _RUN_TMPFS_EXEC = "--tmpfs", "/run:rw,exec,nosuid,size=64m"
 # su). Combined with no-new-privileges the dropped process cannot escalate
 # back. Skipped when --user is passed: the container already starts unprivileged.
 _PRIVDROP_CAP_ARGS = ["--cap-add", "SETUID", "--cap-add", "SETGID"]
+
+# Every ``cleanup()`` worker, independent of terminal_tool's active-env registry (see
+# ``wait_for_all_teardowns``).
+_TEARDOWN_THREADS: set[threading.Thread] = set()
+_TEARDOWN_LOCK = threading.Lock()
 
 _S6_INIT_ENTRYPOINTS = ("/init", "/package/admin/s6-overlay/command/init")
 
@@ -1035,6 +1041,8 @@ class DockerEnvironment(BaseEnvironment):
                     logger.warning(fail_msg, log_id, e)
 
         t = threading.Thread(target=_do_cleanup, daemon=True, name=f"hermes-cleanup-{log_id}")
+        with _TEARDOWN_LOCK:
+            _TEARDOWN_THREADS.add(t)
         t.start()
         self._cleanup_thread = t
         self._container_id = None
@@ -1043,6 +1051,24 @@ class DockerEnvironment(BaseEnvironment):
         # once the container itself is removed.
         if not self._persistent:
             self._remove_bind_dirs()
+
+    @staticmethod
+    def wait_for_all_teardowns(timeout: float = 15.0) -> bool:
+        """Join every in-flight teardown worker, including those of envs the idle reaper already
+        popped out of the active registry (their handles are otherwise unreachable at exit, so
+        ``docker rm`` died with the interpreter and left a stopped container behind — #86317).
+        Re-snapshots each pass: the reaper may start a worker while the drain runs."""
+        deadline = time.monotonic() + timeout
+        while True:
+            with _TEARDOWN_LOCK:
+                _TEARDOWN_THREADS.difference_update({t for t in _TEARDOWN_THREADS if not t.is_alive()})
+                pending = list(_TEARDOWN_THREADS)
+            if not pending:
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            pending[0].join(timeout=remaining)
 
     def wait_for_cleanup(self, timeout: float = 30.0) -> bool:
         """Block up to *timeout* seconds for the cleanup thread (atexit hook). True if it

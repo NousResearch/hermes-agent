@@ -161,10 +161,17 @@ def test_skill_view_dedup_hits_do_not_trip_consecutive_failure_breaker():
     })
 
     assert classify_tool_failure("skill_view", result) == (False, "")
+    decisions = []
     for _ in range(2):
         assert controller.before_call("skill_view", args).action == "allow"
-        assert controller.after_call("skill_view", args, result).action == "allow"
+        decisions.append(controller.after_call("skill_view", args, result))
 
+    # The dedup control result stays outside the failure breaker. The newer
+    # generic no-progress guard may still warn about repeating an unchanged
+    # idempotent result, which is the desired upstream loop protection.
+    assert decisions[0].action == "allow"
+    assert decisions[1].action == "warn"
+    assert decisions[1].code == "idempotent_no_progress_warning"
     assert controller.before_call("skill_view", args).action == "allow"
     assert controller.halt_decision is None
 

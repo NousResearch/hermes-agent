@@ -25,6 +25,8 @@ import {
 
 /** Background-running dot aria-label (from i18n en.ts). */
 const BG_DOT_LABEL = 'Background task running'
+/** Active-child dot aria-label (one child in this scenario). */
+const SUBAGENT_DOT_LABEL = '1 subagent active'
 /** Foreground turn-running dot aria-label. */
 const SESSION_RUNNING_DOT_LABEL = 'Session running'
 /** Finished-unread dot aria-label. */
@@ -143,13 +145,17 @@ test.describe('sidebar states — subagent and background dot coexist', () => {
     restartMockServer()
     fixture = await setupMockBackend({
       extraConfig: DISABLE_AUTO_TITLE,
-      mockServer: { backgroundReleasePath: bgRelease.path },
+      mockServer: {
+        backgroundReleasePath: bgRelease.path,
+        holdFirstCompletionContaining: 'Testing that the background dot updates across sessions.',
+      },
     })
     await waitForAppReady(fixture, 120_000)
   })
 
   test.afterAll(async () => {
     bgRelease.release()
+    fixture?.mock.releaseHeldStream()
     await fixture?.cleanup()
     bgRelease.cleanup()
   })
@@ -171,11 +177,20 @@ test.describe('sidebar states — subagent and background dot coexist', () => {
       { timeout: 15_000 },
     )
 
-    // While the turn is busy the dot-state priority paints the session as
-    // "working" ('Session running') — that claim OUTRANKS 'background', so
-    // polling for the bg dot mid-turn races the turn length against the poll
-    // budget. Wait for the turn to END (final text + running dot cleared),
-    // then assert the background dot as a stable, sentinel-held state.
+    // Hold the child's mock-model response so queued/running state is stable.
+    // The violet dot owns the status mark while the parent's live turn keeps
+    // its arc independently.
+    await fixture.mock.waitForHeldCompletion()
+    const subagentDot = page.locator(`[aria-label="${SUBAGENT_DOT_LABEL}"]`)
+    await expect(subagentDot).toBeVisible()
+    await expect(subagentDot).toHaveAttribute('title', SUBAGENT_DOT_LABEL)
+    await expect(subagentDot).toHaveClass(/bg-\(--ui-purple\)/)
+    await expect(page.locator('.arc-row')).toBeVisible()
+    await page.screenshot({ path: 'test-results/violet-subagent-dot-with-running-arc.png' })
+    fixture.mock.releaseHeldStream()
+
+    // Wait for the turn to END (final text + running arc cleared), then assert
+    // the background dot as a stable, sentinel-held state.
     await page.waitForFunction(
       (text) => (document.body.textContent ?? '').includes(text),
       SIDEBAR_CROSS_TEXTS.finalText,
@@ -199,6 +214,8 @@ test.describe('sidebar states — subagent and background dot coexist', () => {
       .toBeGreaterThan(0)
 
     // Evidence: the background dot is visible while the process runs.
+    await expect(page.locator(`[aria-label="${BG_DOT_LABEL}"]`)).toHaveClass(/bg-\(--ui-purple\)/)
+    await expect(page.locator('.arc-row')).toHaveCount(0)
     await page.screenshot({ path: 'test-results/bg-dot-while-subagent-runs.png' })
 
     // Release the process; the dot should clear on the completion event —

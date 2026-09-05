@@ -37,54 +37,72 @@ import {
   $workingSessionIds
 } from './session-states'
 import { $unreadWriteGuard, UNREAD_WRITE_GUARD_MS } from './session-unread-remote'
-import { $subagentsBySession, activeSubagentCount } from './subagents'
+import { $subagentsBySession } from './subagents'
 
-// Sessions parked in async delegation: the parent turn has ended (busy=false —
-// delegate_task(background=true) returns its handle the moment the children
-// are spawned) while those subagents keep working for minutes. Without this
-// input the sidebar row dropped to a plain idle dot mid-delegation, reading as
-// "done" while work was still running in child sessions. Same runtime→stored
-// bridge and fresh-chat fallback as $backgroundRunningSessionIds:
-// $subagentsBySession is keyed by runtime id, surfaces key on stored ids, and
-// lineageAliases covers whichever tip of the conversation a surface holds.
-let delegatingIds: readonly string[] = []
-export const $delegatingSessionIds = computed(
+// Active subagent count under every id a conversation answers to. The store is
+// keyed by runtime id while surfaces use stored ids; compression can rotate the
+// stored tip again. Deduplicating by child id also prevents a runtime/stored
+// overlap during re-keying from briefly double-counting the same child.
+let activeSubagentCounts: Readonly<Record<string, number>> = {}
+export const $activeSubagentCountBySessionId = computed(
   [$subagentsBySession, $sessionStates, $sessions],
   (bySession, states, sessions) => {
-    const ids = new Set<string>()
+    const idsByAlias = new Map<string, Set<string>>()
 
     for (const [runtimeId, items] of Object.entries(bySession)) {
-      if (activeSubagentCount(items) === 0) {
+      const active = items.filter(item => item.status === 'queued' || item.status === 'running')
+
+      if (!active.length) {
         continue
       }
 
       for (const alias of lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)) {
-        ids.add(alias)
+        const ids = idsByAlias.get(alias) ?? new Set<string>()
+
+        for (const item of active) {
+          ids.add(item.id)
+        }
+
+        idsByAlias.set(alias, ids)
       }
     }
 
-    return (delegatingIds = stableArray(delegatingIds, [...ids]))
+    const next = Object.fromEntries([...idsByAlias].map(([id, childIds]) => [id, childIds.size]))
+
+    return (activeSubagentCounts = stableRecord(activeSubagentCounts, next))
   }
 )
 
-export type SessionDotState = 'background' | 'draft' | 'idle' | 'needs-input' | 'stalled' | 'unread' | 'working'
+// Sessions parked in async delegation: the parent turn has ended while its
+// children keep working. Kept as the membership view for existing consumers;
+// the count map above is the authoritative projection.
+let delegatingIds: readonly string[] = []
+export const $delegatingSessionIds = computed(
+  $activeSubagentCountBySessionId,
+  counts => (delegatingIds = stableArray(delegatingIds, Object.keys(counts)))
+)
+
+export type SessionDotState =
+  'background' | 'draft' | 'idle' | 'needs-input' | 'stalled' | 'subagents' | 'unread' | 'working'
+
+export type SessionLiveTurnState = Extract<SessionDotState, 'needs-input' | 'stalled' | 'working'>
 
 /** The sidebar row's arc. A quiet turn is still authoritatively running, so
  *  `stalled` keeps it; a blocking prompt drops it, because the amber dot is the
  *  louder cue and two treatments at once fight each other. */
-export const showsRunningArc = (state: SessionDotState): boolean => state === 'stalled' || state === 'working'
+export const showsRunningArc = (state?: SessionDotState): boolean => state === 'stalled' || state === 'working'
 
 /** Whether this turn is the session's own, live: brighter title, and the row's
  *  age yields to the actions menu. Wider than the arc — a turn waiting on an
  *  answer has not ended. */
-export const hasLiveTurn = (state: SessionDotState): boolean => showsRunningArc(state) || state === 'needs-input'
+export const hasLiveTurn = (state?: SessionDotState): boolean => showsRunningArc(state) || state === 'needs-input'
 
 /** The buckets the sidebar's status filter and ordering work in. `stalled` and
  *  `background` fold into the state a user would name them. */
 export type SessionStatusBucket = 'draft' | 'idle' | 'needs-input' | 'unread' | 'working'
 
 export const sessionStatusBucket = (state: SessionDotState = 'idle'): SessionStatusBucket =>
-  state === 'stalled' || state === 'background' ? 'working' : state
+  state === 'stalled' || state === 'background' || state === 'subagents' ? 'working' : state
 
 const STATUS_RANK: Record<SessionStatusBucket, number> = {
   'needs-input': 0,
@@ -99,19 +117,46 @@ export const sessionStatusRank = (state?: SessionDotState): number => STATUS_RAN
 
 let dotStates: Readonly<Record<string, SessionDotState>> = {}
 
+// The dot may deliberately describe child activity while the parent's own turn
+// is still live. Keep that turn signal independently so the row arc, brighter
+// title, and status grouping do not disappear behind the violet child dot.
+let liveTurnStates: Readonly<Record<string, SessionLiveTurnState>> = {}
+export const $sessionLiveTurnStateById = computed(
+  [$attentionSessionIds, $workingSessionIds, $stalledSessionIds],
+  (attention, working, stalled) => {
+    const next: Record<string, SessionLiveTurnState> = {}
+
+    for (const id of working) {
+      next[id] = 'working'
+    }
+
+    for (const id of stalled) {
+      if (next[id] === 'working') {
+        next[id] = 'stalled'
+      }
+    }
+
+    for (const id of attention) {
+      next[id] = 'needs-input'
+    }
+
+    return (liveTurnStates = stableRecord(liveTurnStates, next))
+  }
+)
+
 export const $sessionDotStateById = computed(
   [
     $attentionSessionIds,
     $workingSessionIds,
     $stalledSessionIds,
     $backgroundRunningSessionIds,
-    $delegatingSessionIds,
+    $activeSubagentCountBySessionId,
     $unreadFinishedSessionIds,
     $draftSessionIds,
     $sessions,
     $unreadWriteGuard
   ],
-  (attention, working, stalled, background, delegating, unread, draft, sessions, unreadWriteGuard) => {
+  (attention, working, stalled, background, activeSubagents, unread, draft, sessions, unreadWriteGuard) => {
     const next: Record<string, SessionDotState> = {}
 
     const claim = (ids: readonly string[], state: SessionDotState) => {
@@ -158,11 +203,6 @@ export const $sessionDotStateById = computed(
     claim(persistedUnread, 'unread')
 
     claim(background, 'background')
-    // Async delegation: the parent turn has ended but its subagents are still
-    // running, so the session's work continues in child sessions. Same visual
-    // claim as background processes — and it yields to `working` below the
-    // moment the parent turn itself is live (synchronous orchestrator children).
-    claim(delegating, 'background')
     claim(working, 'working')
 
     // Stalled REFINES working rather than rivalling it — the turn is still
@@ -177,6 +217,9 @@ export const $sessionDotStateById = computed(
       }
     }
 
+    // Child work owns the dot even while the parent is working; the separate
+    // live-turn map above preserves the parent's arc and row semantics.
+    claim(Object.keys(activeSubagents), 'subagents')
     claim(attention, 'needs-input')
 
     return (dotStates = stableRecord(dotStates, next))

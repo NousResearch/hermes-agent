@@ -2,6 +2,7 @@
 AIAgent's tools/tool names, preserving the cached tools[] prefix across rebuilds,
 and re-injecting post-build tools."""
 
+import copy
 import logging
 import json
 import threading
@@ -88,7 +89,8 @@ def refresh_agent_mcp_tools(
     rebuilt. Shared by the TUI RPC, gateway reload, late-binding thread and between-turns
     refresh: respects the toolset filter, diffs by tool NAME (a count compare misses an
     equal-size swap), re-injects the memory-provider / context-engine tools ``agent_init``
-    appends after ``get_tool_definitions``, publishes ``(tools, valid_tool_names)`` together.
+    appends after ``get_tool_definitions`` plus guarded session capabilities, and publishes
+    ``(tools, valid_tool_names)`` together.
 
     ``preserve_prefix``: for rebuilds inside a live conversation the tool array is a cached
     request prefix and any moved byte re-prefills the whole history — existing tools keep their
@@ -105,6 +107,7 @@ def refresh_agent_mcp_tools(
     new_names = {_def_name(t) for t in new_defs}
     # Post-build families re-appended on LOCALS only; live attributes untouched until publish.
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
+    _reinject_authorized_dynamic_tools(agent, new_defs, new_names)
     # Registry membership is read OUTSIDE ``_agent_tools_lock``: taking ``registry._lock``
     # under the tools lock would be the first nesting of the two.
     prefix_registered: Optional[set] = None
@@ -164,6 +167,7 @@ def restore_agent_tool_prefix(agent, saved_names: list) -> bool:
     saved_defs = [d for d in map(_saved_def, saved_names) if d is not None]
     registered_names = {entry.name for entry in registry.get_all_entries()}
     merged, merged_names = _merge_preserving_prefix(saved_defs, fresh_defs, registered_names)
+    _reinject_authorized_dynamic_tools(agent, merged, merged_names)
     with _agent_tools_lock:
         if merged == fresh_defs:
             return False
@@ -190,6 +194,21 @@ def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_name
             merged.append(entry)
     merged.extend(fresh.values())
     return merged, {_def_name(t) for t in merged}
+
+
+def _reinject_authorized_dynamic_tools(agent, tools_list: list, name_set: set) -> None:
+    """Re-authorize session capabilities against a staged snapshot before publication."""
+    try:
+        from tools.bot_mode_dm import MESSAGE_AGENT_TOOL_NAME, ensure_message_agent_tool
+
+        tools_list[:] = [entry for entry in tools_list if _def_name(entry) != MESSAGE_AGENT_TOOL_NAME]
+        name_set.discard(MESSAGE_AGENT_TOOL_NAME)
+        staged_agent = copy.copy(agent)
+        staged_agent.tools = tools_list
+        staged_agent.valid_tool_names = name_set
+        ensure_message_agent_tool(staged_agent)
+    except Exception:
+        logger.debug("Dynamic tool re-injection skipped", exc_info=True)
 
 
 def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:

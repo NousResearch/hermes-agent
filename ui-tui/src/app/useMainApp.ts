@@ -922,9 +922,9 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
-      recoverSidRef.current = null
-      turnController.pushActivity('gateway exited · /logs to inspect', 'error')
-      sys('error: gateway exited')
+      recoverSidRef.current = plan.sid ?? recoverSidRef.current
+      turnController.pushActivity('gateway exited · /recover or /logs', 'error')
+      sys('error: gateway exited — recovery limit reached. Run /recover to restart gateway, or /logs to inspect.')
     }
 
     gw.on('event', handler)

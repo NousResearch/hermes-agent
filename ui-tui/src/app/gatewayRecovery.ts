@@ -25,11 +25,12 @@ export function planGatewayRecovery(
   liveSid: null | string,
   recoverSid: null | string,
   attempts: number[],
-  now: number
+  now: number,
+  force: boolean = false
 ): RecoveryPlan {
   const sid = liveSid ?? recoverSid
   const recent = attempts.filter(t => now - t < GATEWAY_RECOVERY_WINDOW_MS)
-  const recover = Boolean(sid) && recent.length < GATEWAY_RECOVERY_LIMIT
+  const recover = Boolean(sid) && (force || recent.length < GATEWAY_RECOVERY_LIMIT)
 
   return { attempts: recover ? [...recent, now] : recent, recover, sid }
 }

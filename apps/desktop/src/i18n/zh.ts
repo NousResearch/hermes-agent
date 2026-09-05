@@ -2409,6 +2409,9 @@ export const zh: Translations = {
     scriptOnlyEditHint: '仅脚本任务（无 AI 提示词）。任务 ID：',
     saveChanges: '保存更改',
     createAction: '创建定时任务',
+    modelSwitcher: '模型',
+    modelUpdated: '模型已更新',
+    changeModel: '更改模型',
     tabs: {
       jobs: '任务',
       blueprints: '蓝图'

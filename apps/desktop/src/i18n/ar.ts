@@ -1633,7 +1633,10 @@ export const ar = defineLocale({
     optional: 'اختياري',
     promptScheduleRequired: 'الرسالة والجدول مطلوبان',
     saveChanges: 'حفظ التغييرات',
-    createAction: 'إنشاء'
+    createAction: 'إنشاء',
+    modelSwitcher: 'النموذج',
+    modelUpdated: 'تم تحديث النموذج',
+    changeModel: 'تغيير النموذج'
   },
   artifacts: {
     search: 'بحث',

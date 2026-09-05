@@ -294,6 +294,13 @@ function CronJobSidebarRow({
       {renderActionItem(kit, { icon: 'watch', key: 'manage', label: c.manage, onSelect: onManage })}
       <kit.Separator />
       {renderActionItem(kit, {
+        icon: 'settings',
+        key: 'change-model',
+        label: c.changeModel,
+        onSelect: onManage
+      })}
+      <kit.Separator />
+      {renderActionItem(kit, {
         icon: 'trash',
         key: 'delete',
         label: t.common.delete,

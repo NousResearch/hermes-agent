@@ -2242,6 +2242,9 @@ export const en: Translations = {
     scriptOnlyEditHint: 'Script-only job (no AI prompt). Job id:',
     saveChanges: 'Save changes',
     createAction: 'Create cron',
+    modelSwitcher: 'Model',
+    modelUpdated: 'Model updated',
+    changeModel: 'Change model',
     tabs: {
       jobs: 'Jobs',
       blueprints: 'Blueprints'

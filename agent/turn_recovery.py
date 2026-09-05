@@ -647,6 +647,7 @@ def nonretryable_client_error_result(
     agent: Any, api_error: Exception, classified: Any, *, status_code: Optional[int],
     api_kwargs: Any, api_messages: Any, messages: List[Dict[str, Any]], conversation_history: Any,
     api_call_count: int, approx_tokens: int, provider: Any, base_url: Any, model: Any,
+    effective_task_id: Any, turn_id: Any,
 ) -> Dict[str, Any]:
     """Terminal path for a non-retryable 4xx once fallback is exhausted: debug dump, flush
     the retry trace, print auth / billing / content-policy / TLS guidance, persist (skipped
@@ -709,6 +710,19 @@ def nonretryable_client_error_result(
         _vlines(agent, "⚠️  Skipping session persistence for large failed session to prevent growth loop.")
     else:
         agent._persist_session(messages, conversation_history)
+    from agent.conversation_loop import _notify_context_engine_terminal
+    _notify_context_engine_terminal(
+        agent,
+        messages,
+        turn_id=turn_id,
+        task_id=effective_task_id,
+        api_call_count=api_call_count,
+        turn_exit_reason=(
+            "content_policy_blocked"
+            if classified.reason == FailoverReason.content_policy_blocked
+            else "provider_terminal_failure"
+        ),
+    )
     if classified.reason == FailoverReason.content_policy_blocked:
         _policy_response = (
             "⚠️  The model provider's safety filter blocked this request "
@@ -739,7 +753,7 @@ def max_retries_exhausted_result(
     agent: Any, api_error: Exception, classified: Any, *, max_retries: int, is_rate_limited: bool,
     error_msg: str, api_kwargs: Any, api_messages: Any, messages: List[Dict[str, Any]],
     conversation_history: Any, api_call_count: int, approx_tokens: int, provider: Any,
-    base_url: Any, model: Any,
+    base_url: Any, model: Any, effective_task_id: Any, turn_id: Any,
 ) -> Dict[str, Any]:
     """Terminal path once retries, transport recovery and fallback all failed: flush the
     trace, emit the billing / rate-limit / generic status, print stream-drop or thinking-timeout
@@ -816,6 +830,15 @@ def max_retries_exhausted_result(
     if api_kwargs is not None:
         agent._dump_api_request_debug(api_kwargs, reason="max_retries_exhausted", error=api_error)
     agent._persist_session(messages, conversation_history)
+    from agent.conversation_loop import _notify_context_engine_terminal
+    _notify_context_engine_terminal(
+        agent,
+        messages,
+        turn_id=turn_id,
+        task_id=effective_task_id,
+        api_call_count=api_call_count,
+        turn_exit_reason="provider_terminal_failure",
+    )
     _billing_block = None
     _billing_unverified = False
     if _is_billing:

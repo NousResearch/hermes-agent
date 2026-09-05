@@ -521,6 +521,15 @@ def handle_content_policy_refusal(
     )
     agent._cleanup_task_resources(effective_task_id)
     agent._persist_session(messages, conversation_history)
+    from agent.conversation_loop import _notify_context_engine_terminal
+    _notify_context_engine_terminal(
+        agent,
+        messages,
+        turn_id=turn_id,
+        task_id=effective_task_id,
+        api_call_count=api_call_count,
+        turn_exit_reason="content_policy_blocked",
+    )
     return RefusalVerdict("return", _content_policy_blocked_result(
         messages, api_call_count, final_response=_refusal_response,
         error_detail=_refusal_text or "model declined (content_filter)",

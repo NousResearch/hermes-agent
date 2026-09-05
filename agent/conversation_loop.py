@@ -1195,11 +1195,22 @@ def _notify_context_engine_turn_complete(
     agent: Any, messages: List[Dict[str, Any]], *, usage: Optional[Dict[str, Any]] = None, logger: Any, **meta: Any
 ) -> None:
     """Notify the active context engine that a user turn has finished (fail-open; the engine
-    gets a copy so it cannot mutate the persisted transcript)."""
+    gets a copy so it cannot mutate the persisted transcript).
+
+    Direct terminal exits use this same helper after persistence. The literal per-turn latch
+    prevents a later finalizer (or a future refactor that routes through it) from delivering
+    the observation twice; setting the latch before plugin code also keeps a throwing hook
+    fail-open without a second attempt.
+    """
+    if getattr(agent, "_context_engine_turn_complete_notified", False) is True:
+        return
     engine = getattr(agent, "context_compressor", None)
     if not _engine_overrides_hook(engine, "on_turn_complete"):
         return
     try:
+        # Latch before invoking plugin code. MagicMock-based test doubles may synthesize
+        # truthy attributes, so only the literal True value counts as already attempted.
+        agent._context_engine_turn_complete_notified = True
         # Structural clones: dict(m) would let a hook write into nested containers of the
         # persisted transcript (#80498).
         engine.on_turn_complete([_clone_message_for_send(m) for m in messages], usage=usage, **meta)
@@ -1208,6 +1219,37 @@ def _notify_context_engine_turn_complete(
             "Context engine on_turn_complete hook failed (session=%s)",
             getattr(agent, "session_id", None) or "-", exc_info=True,
         )
+
+
+def _notify_context_engine_terminal(
+    agent: Any,
+    messages: List[Dict[str, Any]],
+    *,
+    turn_id: Any,
+    task_id: Any,
+    api_call_count: int,
+    failed: bool = True,
+    interrupted: bool = False,
+    turn_exit_reason: str,
+) -> None:
+    """Notify ``on_turn_complete`` for a terminal path that bypasses ``finalize_turn``.
+
+    Callers invoke this only after their existing persistence/cleanup, preserving their
+    result dictionaries and retry behavior. The normal finalizer and this helper share the
+    idempotence guard above.
+    """
+    _notify_context_engine_turn_complete(
+        agent,
+        messages,
+        usage=getattr(agent, "_last_turn_usage", None),
+        logger=logger,
+        turn_id=turn_id,
+        task_id=task_id,
+        api_call_count=api_call_count,
+        interrupted=interrupted,
+        failed=failed,
+        turn_exit_reason=turn_exit_reason,
+    )
 
 
 def _decode_inline_moa_turn(user_message, persist_user_message):
@@ -1461,6 +1503,9 @@ def run_conversation(
     agent._ephemeral_reasoning_off = False
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
+    # Direct terminal exits notify before returning; the normal finalizer uses the same
+    # helper, so reset the idempotence latch at the start of every turn.
+    agent._context_engine_turn_complete_notified = False
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,

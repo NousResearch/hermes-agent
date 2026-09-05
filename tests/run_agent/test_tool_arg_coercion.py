@@ -247,3 +247,39 @@ class TestCoerceToolArgsNested:
         args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
         result = coerce_tool_args("todo_list", args)
         assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}
+
+
+class TestLeadingZeroUnions:
+    """A zero-padded string in a union that also permits ``string`` is a formatted
+    code or id ("007", "0123"), not a number. The union branch returns the first
+    variant that changes the value, and the string variant is a no-op, so the
+    numeric variant always won and silently dropped the zeros. #55369
+    """
+
+    def test_zero_padded_stays_a_string_when_the_union_allows_string(self):
+        assert _coerce_value("007", ["integer", "string"]) == "007"
+        assert _coerce_value("0123", ["string", "integer"]) == "0123"
+
+    def test_sign_prefix_is_looked_through(self):
+        assert _coerce_value("-007", ["integer", "string"]) == "-007"
+        assert _coerce_value("+007", ["integer", "string"]) == "+007"
+
+    def test_all_zeros_is_still_padded(self):
+        assert _coerce_value("00", ["integer", "string"]) == "00"
+
+    def test_pure_numeric_union_still_coerces(self):
+        """No string alternative means the zeros have nowhere to survive; the
+        caller asked for a number, so coercion is still correct."""
+        result = _coerce_value("007", ["integer"])
+        assert result == 7 and isinstance(result, int)
+
+    def test_ordinary_numeric_strings_are_unaffected(self):
+        """Controls: these are not zero-padded and must still coerce."""
+        assert _coerce_value("0", ["integer", "string"]) == 0
+        assert _coerce_value("42", ["integer", "string"]) == 42
+        assert _coerce_value("0.5", ["number", "string"]) == 0.5
+
+    def test_non_string_value_does_not_raise(self):
+        """``schema=None`` lets a non-str reach the union branch; the predicate
+        must not call .strip() on it."""
+        assert _coerce_value(7, ["integer", "string"]) == 7

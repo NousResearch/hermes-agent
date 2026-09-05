@@ -578,10 +578,23 @@ class MemoryManager:
         if provider is None:
             return tool_error(f"No memory provider handles tool '{tool_name}'")
         try:
-            return provider.handle_tool_call(tool_name, args, **kwargs)
+            result = provider.handle_tool_call(tool_name, args, **kwargs)
         except Exception as e:
             logger.error("Memory provider '%s' handle_tool_call(%s) failed: %s", provider.name, tool_name, e)
             return tool_error(f"Memory tool '{tool_name}' failed: {e}")
+        # Providers are documented (MemoryProvider.handle_tool_call) to return
+        # a JSON string. Enforce that here so a structured (dict/list) result
+        # can never be persisted and re-sent as non-string tool content --
+        # OpenAI-compatible providers reject that with a 400 that bricks the
+        # whole conversation and every retry through the fallback chain.
+        if isinstance(result, str):
+            return result
+        try:
+            return json.dumps(result, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return tool_error(
+                f"Memory tool '{tool_name}' returned unserializable result"
+            )
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         self._each_provider("on_turn_start failed", lambda p: p.on_turn_start(turn_number, message, **kwargs))

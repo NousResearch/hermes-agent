@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from agent.memory_provider import MemoryProvider
+
 
 class RecordingMemoryProvider:
     name = "recording"
@@ -168,5 +170,55 @@ def test_core_tool_names_rejected_from_memory_routing_table():
     assert "clarify" not in schema_names
     assert "delegate_task" not in schema_names
     assert "honcho_search" in schema_names
+
+
+class DictReturningProvider(MemoryProvider):
+    """Memory provider that violates the ABC contract by returning dicts."""
+
+    @property
+    def name(self) -> str:
+        return "dict-return"
+
+    def is_available(self) -> bool:
+        return True
+
+    def initialize(self, session_id: str, **kwargs) -> None:
+        pass
+
+    def get_tool_schemas(self):
+        return [
+            {
+                "name": "hybrid_mem_remember",
+                "description": "remember a fact",
+                "parameters": {"type": "object"},
+            }
+        ]
+
+    def handle_tool_call(self, tool_name, args, **kwargs):  # type: ignore[override]
+        # Deliberately violates "must return a JSON string" to exercise the
+        # manager's defensive coercion (see test below).
+        return {"memory_id": "abc123"}
+
+
+def test_memory_handle_tool_call_coerces_non_string_result_to_json():
+    """A provider returning a dict must never yield non-string tool content.
+
+    Regression for the session-bricking bug: a structured tool result was
+    persisted with the _CONTENT_JSON_PREFIX sentinel and then re-sent to
+    OpenAI-compatible providers as dict tool content, which they reject with
+    a 400 ("messages.N.content: Invalid input") that poisoned every retry
+    through the fallback chain.
+    """
+    import json
+
+    from agent.memory_manager import MemoryManager
+
+    mm = MemoryManager()
+    mm.add_provider(DictReturningProvider())
+    assert mm.has_tool("hybrid_mem_remember")
+
+    result = mm.handle_tool_call("hybrid_mem_remember", {"content": "x"})
+    assert isinstance(result, str)
+    assert json.loads(result) == {"memory_id": "abc123"}
 
 

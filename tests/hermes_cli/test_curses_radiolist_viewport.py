@@ -67,6 +67,10 @@ def test_long_description_keeps_selected_choice_and_hint_visible(run_menu, heigh
     assert any("/ search" in row for row in rows)
     choices = [row for row in rows if "model-" in row]
     assert len(choices) >= min(5, height - 4)
+    if height < 12:
+        # No room for any description row: it is dropped entirely, notice included.
+        assert not any("Unavailable model" in row for row in rows)
+        assert not any("more description lines" in row for row in rows)
     if 12 <= height < 50:
         assert any("more description lines" in row for row in rows)
     if height == 50:

@@ -1313,8 +1313,10 @@ class MatrixAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=True)
         last_event_id = None
-        for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
+        for i, chunk in enumerate(self.truncate_message(self.format_message(content), self.max_message_length)):
             msg_content = self._build_text_message_content(chunk)
+            if i == 0:
+                self._apply_formatted_body(msg_content, metadata)
             self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
             try:
                 last_event_id = await self._send_room_message(chat_id, msg_content)
@@ -1379,17 +1381,35 @@ class MatrixAdapter(BasePlatformAdapter):
     async def stop_typing(self, chat_id: str) -> None:
         await self._set_typing(chat_id, 0)
 
-    async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
+    @staticmethod
+    def _apply_formatted_body(content: dict, metadata: Optional[dict]) -> None:
+        if metadata and metadata.get("matrix_formatted_body"):
+            html = _sanitize_matrix_html(str(metadata["matrix_formatted_body"]))
+            if html:
+                content.update(format="org.matrix.custom.html", formatted_body=html)
+
+    async def edit_message(
+        self, chat_id: str, message_id: str, content: str, *, finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Replace a message, returning its original root ID rather than the edit event ID."""
         formatted = self.format_message(content)
         new_content = self._build_text_message_content(formatted)
+        self._apply_formatted_body(new_content, metadata)
         msg_content: Dict[str, Any] = {"msgtype": "m.text", "body": f"* {formatted}", "m.new_content": new_content}
         if "m.mentions" in new_content:
             msg_content["m.mentions"] = new_content["m.mentions"]
         if "formatted_body" in new_content:
             msg_content["format"] = "org.matrix.custom.html"
-            msg_content["formatted_body"] = f'* {new_content["formatted_body"]}'
+            # Only the Tool activity producer opts out; generic rich/approval edits retain "* ".
+            prefix = "" if metadata and metadata.get("matrix_formatted_body_unprefixed") is True else "* "
+            msg_content["formatted_body"] = prefix + new_content["formatted_body"]
         msg_content["m.relates_to"] = {"rel_type": "m.replace", "event_id": message_id}
-        return await self._send_content_event(chat_id, msg_content)
+        result = await self._send_content_event(chat_id, msg_content)
+        if result.success:
+            result.raw_response = {"replacement_event_id": result.message_id}
+            result.message_id = str(message_id)
+        return result
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,

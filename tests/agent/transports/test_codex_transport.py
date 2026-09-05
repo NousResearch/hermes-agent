@@ -58,10 +58,30 @@ class TestCodexBuildKwargs:
         )
         assert kw["model"] == "gpt-5.6-sol"
 
+    def test_gpt_6_astra_preserves_max_reasoning_effort(self, transport):
+        """gpt-6-astra supports max reasoning effort (#103556)."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=messages,
+            tools=[],
+            params={"is_codex_backend": True},
+            reasoning_config={"effort": "max"},
+        )
+        assert kw["reasoning"]["effort"] == "max"
 
+    def test_legacy_gpt_model_clamps_max_to_xhigh(self, transport):
+        """Legacy OpenAI/Codex models without max support clamp to xhigh."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=messages,
+            tools=[],
+            params={"is_codex_backend": True},
+            reasoning_config={"effort": "max"},
+        )
+        assert kw["reasoning"]["effort"] == "xhigh"
 
-
-    def test_cache_key_is_content_addressed_not_session_id(self, transport):
         """prompt_cache_key is content-addressed from the static prefix
         (instructions + tools), not the session_id. This keeps recurring cron
         jobs — whose session_id carries a per-fire timestamp — on a stable warm

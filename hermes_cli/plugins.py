@@ -1747,12 +1747,26 @@ _thread_tool_whitelist = threading.local()
 
 
 @dataclass(frozen=True)
+class _ServeDirective:
+    """A ``pre_tool_call`` ``serve`` directive: supply ``result`` without executing the tool.
+
+    The OBJECT is the discriminator — its presence means "a serve directive was issued",
+    never ``result`` (which may legitimately be ``None``).
+
+    ``result`` is the RAW pre-``transform_tool_result`` value (what a cache plugin
+    observed via ``post_tool_call``); the serve path re-applies ``transform_tool_result``
+    before the value reaches the model so sanitization (e.g. ``security-guidance``) still
+    runs on replayed cache data."""
+    result: Any  # may be None
+
+
+@dataclass(frozen=True)
 class _PreToolCallDirective:
-    action: Optional[str] = None
+    action: Optional[str] = None                 # "block" | "approve" | None (serve sets this None)
     message: Optional[str] = None
     rule_key: Optional[str] = None
     modified_args: Optional[Dict[str, Any]] = None
-    result: Any = None  # ``serve`` directive: the pre-supplied tool result (skip execution)
+    serve: Optional[_ServeDirective] = None      # non-None only when a serve directive won
 
 
 def set_thread_tool_whitelist(
@@ -1772,10 +1786,14 @@ def _get_pre_tool_call_directive_details(
     tool_call_id: str = "", turn_id: str = "", api_request_id: str = "",
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
 ) -> _PreToolCallDirective:
-    """Check ``pre_tool_call`` hooks for ``{"action": "block", "message"}`` (veto; message becomes
-    the tool result) or ``{"action": "approve", "message", "rule_key"?}`` (escalate ANY tool to the
-    human-approval gate; ``rule_key`` picks the ``[a]lways`` allowlist grain). First valid directive
-    wins; irrelevant returns are ignored."""
+    """Resolve ``pre_tool_call`` hooks to one directive under a restriction lattice where
+    ``block`` (veto; message becomes the tool result) > ``approve`` (escalate ANY tool to the
+    human-approval gate; ``rule_key`` picks the ``[a]lways`` allowlist grain) > ``serve``
+    (supply a pre-computed result without executing the tool). The most-restrictive directive
+    wins independent of registration order; ``modify`` is orthogonal and always accumulates.
+    Ties among equal rank break by registration order (first wins). A ``serve`` is valid only
+    when its ``"result"`` KEY is present (``result: null`` is a serve of ``None``); a block
+    without a message is ignored (fail-open)."""
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
@@ -1787,13 +1805,18 @@ def _get_pre_tool_call_directive_details(
         api_request_id=api_request_id, middleware_trace=list(middleware_trace or []),
     )
     modified_args: Optional[Dict[str, Any]] = None
+    best_rank = 0                        # 0=none, 1=serve, 2=approve, 3=block
+    block_message: Optional[str] = None
+    approve_message: Optional[str] = None
+    approve_rule_key: Optional[str] = None
+    serve_directive: Optional[_ServeDirective] = None
+
     for result in hook_results:
         if not isinstance(result, dict):
             continue
         action = result.get("action")
-        # "modify" — transform tool_input before dispatch. Processed before the block/approve gate
-        # so modify directives are visible even when a later hook blocks. Each modify directive
-        # shallow-merges its keys into one accumulated dict built from the original args.
+        # "modify" — transform tool_input before dispatch; orthogonal to the restriction
+        # lattice, so it always accumulates regardless of any block/approve/serve.
         if action == "modify":
             partial = result.get("args")
             if isinstance(partial, dict) and partial:
@@ -1801,13 +1824,14 @@ def _get_pre_tool_call_directive_details(
                                     (args if isinstance(args, dict) else {})), **partial}
             continue
         if action == "serve":
-            # "serve" — supply the tool result without executing the tool (e.g. a
-            # cache hit). ``result`` is the pre-supplied result, returned as-is to
-            # the caller; the tool never runs. A serve without a result key is
-            # ignored (same fail-open posture as a block without a message).
+            # Presence of the "result" KEY (not its value) validates the directive:
+            # {"action":"serve","result":null} is a valid serve of None. Weakest
+            # restriction; keep scanning so a later block/approve still wins.
             if "result" not in result:
                 continue
-            return _PreToolCallDirective(action="serve", result=result["result"], modified_args=modified_args)
+            if best_rank < 1:
+                best_rank, serve_directive = 1, _ServeDirective(result=result["result"])
+            continue
         if action not in ("block", "approve"):
             continue
         message = result.get("message")
@@ -1817,7 +1841,21 @@ def _get_pre_tool_call_directive_details(
             continue
         rule_key = result.get("rule_key") if action == "approve" else None
         rule_key = (rule_key.strip() or None) if isinstance(rule_key, str) else None
-        return _PreToolCallDirective(action=action, message=message, rule_key=rule_key, modified_args=modified_args)
+        rank = 3 if action == "block" else 2
+        if rank > best_rank:               # strict > keeps the first-registered winner on ties
+            best_rank = rank
+            if action == "block":
+                block_message = message
+            else:
+                approve_message, approve_rule_key = message, rule_key
+
+    if best_rank >= 3:
+        return _PreToolCallDirective(action="block", message=block_message, modified_args=modified_args)
+    if best_rank == 2:
+        return _PreToolCallDirective(action="approve", message=approve_message,
+                                     rule_key=approve_rule_key, modified_args=modified_args)
+    if best_rank == 1:
+        return _PreToolCallDirective(serve=serve_directive, modified_args=modified_args)
     return _PreToolCallDirective(modified_args=modified_args)
 
 
@@ -1880,15 +1918,14 @@ def _resolve_block_from_details(
 
 def _dispatch_pre_tool_call_hooks(
     tool_name: str, args: Optional[Dict[str, Any]], **hook_kwargs: Any
-) -> Tuple[Optional[str], Optional[Dict[str, Any]], Any]:
-    """Invoke ``pre_tool_call`` hooks once; return ``(block_message, modified_args, served_result)`` —
+) -> Tuple[Optional[str], Optional[Dict[str, Any]], Optional[_ServeDirective]]:
+    """Invoke ``pre_tool_call`` hooks once; return ``(block_message, modified_args, serve)`` —
     the resolved block/approve message (``None`` to proceed), merged ``modify`` args (``None`` if
-    none), and a ``serve`` directive's pre-supplied result (``None`` if none)."""
+    none), and the winning ``_ServeDirective`` (``None`` if none)."""
     details = _get_pre_tool_call_directive_details(tool_name, args, **hook_kwargs)
     block_msg = _resolve_block_from_details(
         details, tool_name, **{k: hook_kwargs.get(k, "") for k in ("turn_id", "tool_call_id", "session_id")})
-    served = details.result if details.action == "serve" else None
-    return (block_msg, details.modified_args, served)
+    return (block_msg, details.modified_args, details.serve)
 
 
 def get_pre_verify_continue_message(

@@ -707,22 +707,25 @@ def _pre_dispatch_guards(function_name: str, function_args: Dict[str, Any], skip
     # both the block message and modified args. skip=True: caller already fired it.
     if not skip_pre_tool_call_hook:
         block_message: Optional[str] = None
-        served_result: Any = None
+        serve = None                                     # Optional[_ServeDirective]
         try:
             from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
-            block_message, modified_args, served_result = _dispatch_pre_tool_call_hooks(
+            block_message, modified_args, serve = _dispatch_pre_tool_call_hooks(
                 function_name, function_args, middleware_trace=list(middleware_trace), **ids.hook_kwargs(),
             )
             if modified_args is not None:
                 function_args = modified_args
         except Exception as _hook_err:
             logger.debug("pre_tool_call hook error: %s", _hook_err)
-        if served_result is not None:
-            # serve directive: the plugin supplied the tool result (e.g. a cache
-            # hit) — skip execution and emit with status="cached".
-            return function_args, (served_result, "cached", None, None)
+        # block wins over serve (defense-in-depth: the lattice lives in the dispatcher,
+        # but the caller must not re-introduce serve shadowing a block).
         if block_message is not None:
             return function_args, (tool_error(block_message), "blocked", "plugin_block", block_message)
+        if serve is not None:
+            # serve directive: the plugin supplied the RAW tool result (e.g. a cache
+            # hit) — skip execution and emit with status="cached". handle_function_call
+            # re-applies transform_tool_result before returning.
+            return function_args, (serve.result, "cached", None, None)
 
     # ACP/Zed edit approval before any file mutation. The requester is bound
     # via ContextVar only for ACP sessions, so CLI/gateway paths are unaffected.
@@ -860,6 +863,14 @@ def handle_function_call(
         function_args, blocked = _pre_dispatch_guards(function_name, function_args, skip_pre_tool_call_hook, ids, trace)
         if blocked is not None:
             result, status, error_type, error_message = blocked
+            if status == "cached":
+                # serve: the served value is RAW (what a cache plugin observed via
+                # post_tool_call, before transform_tool_result). Re-apply the transform
+                # so sanitization (e.g. security-guidance) still runs before the model
+                # sees replayed cache data.
+                _emit(result, status=status, error_type=error_type, error_message=error_message)
+                transformed = _apply_transform_tool_result_hook(function_name, function_args, result, 0, ids)
+                return "" if transformed is None else transformed
             return _emit(result, status=status, error_type=error_type, error_message=error_message)
 
         # Any non-read/search tool resets the consecutive-read-loop counter.

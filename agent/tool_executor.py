@@ -434,6 +434,7 @@ class _ManagedToolResult:
     middleware_trace: list[dict[str, Any]]
     blocked: bool
     dispatched: bool
+    served: bool = False
 
 
 class _ToolTimeoutResult(str):
@@ -609,20 +610,21 @@ def _blocked_tool_result(agent, ref: _ToolCallRef, *, block_message: Optional[st
 
 
 def _pre_tool_block(agent, ref: _ToolCallRef):
-    """Run ``pre_tool_call`` plugin hooks; returns ``(block_message, final_args)`` with any
-    hook-modified args applied. Hook failures never block."""
+    """Run ``pre_tool_call`` plugin hooks; returns ``(block_message, final_args, serve)``
+    with ``serve: Optional[_ServeDirective]`` and any hook-modified args applied. Hook
+    failures never block."""
     try:
         from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
 
-        block_msg, modified_args, _ = _dispatch_pre_tool_call_hooks(
+        block_msg, modified_args, serve = _dispatch_pre_tool_call_hooks(
             ref.name,
             ref.args,
             **tool_hook_ids(agent, ref.task_id, ref.call_id),
             middleware_trace=list(ref.trace),
         )
-        return block_msg, (ref.args if modified_args is None else modified_args)
+        return block_msg, (ref.args if modified_args is None else modified_args), serve
     except Exception:
-        return None, ref.args
+        return None, ref.args, None
 
 
 def _dispatch_authorized_once(
@@ -649,10 +651,11 @@ def _dispatch_authorized_once(
             callback()
 
     block_message, block_error_type = scope_block, "tool_scope_block"
+    serve = None
     if block_message is None:
         block_error_type = "plugin_block"
         resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731
-        block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)
+        block_message, ref.args, serve = resolve() if authorization_gate is None else authorization_gate.run(resolve)
         state.args = ref.args
 
     guardrail_decision = None
@@ -668,6 +671,24 @@ def _dispatch_authorized_once(
             agent, ref,
             block_message=block_message, block_error_type=block_error_type, guardrail_decision=guardrail_decision,
         )
+
+    if serve is not None:
+        # serve is weakest: it settles here only when no scope/plugin block and no
+        # guardrail fired. The tool does NOT run; emit the terminal post_tool_call with
+        # status="cached" for the RAW served value, re-apply transform_tool_result (the
+        # value is what a cache plugin observed pre-transform), and return the re-
+        # sanitized result. ``None`` normalizes to "" so the downstream pipeline never
+        # sees a null result.
+        _advance_start_order()
+        state.served = True
+        ref.emit_post(agent, serve.result, status="cached", error_type=None,
+                      error_message=None, duration_ms=0)
+        from model_tools import _apply_transform_tool_result_hook, _CallIds
+        result = _apply_transform_tool_result_hook(
+            ref.name, ref.args, serve.result, 0,
+            _CallIds(**tool_hook_ids(agent, ref.task_id, ref.call_id)),
+        )
+        return "" if result is None else result
 
     if ref.name == "memory":
         agent._turns_since_memory = 0
@@ -1617,8 +1638,9 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
     _is_error_result, _ = _detect_tool_failure(ref.name, function_result)
     # Inline-dispatched runtime tools never reach handle_function_call, so the
     # executor owns the one terminal post_tool_call per tool_call_id (the inner
-    # observer is suppressed); also stops an abandoned timeout worker reporting late.
-    if not managed.blocked and not _execution_timed_out:
+    # observer is suppressed); also stops an abandoned timeout worker reporting late,
+    # and a served call (which already emitted status="cached") reporting twice.
+    if not managed.blocked and not managed.served and not _execution_timed_out:
         ref.emit_post(agent, function_result, duration_ms=int(tool_duration * 1000))
     committed = _commit_tool_result(
         agent, messages, ref, function_result,

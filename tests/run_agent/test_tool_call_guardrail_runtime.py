@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from run_agent import AIAgent
+from hermes_cli.plugins import _ServeDirective
 
 
 def _make_tool_defs(*names: str) -> list[dict]:
@@ -383,12 +384,16 @@ def test_serve_directive_skips_dispatch_and_emits_cached():
     with (
         patch(
             "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
-            return_value=(None, None, '{"cached": true}'),
+            return_value=(None, None, _ServeDirective(result='{"cached": true}')),
         ),
         patch("model_tools.registry.dispatch") as dispatch,
         patch(
             "model_tools._emit_post_tool_call_hook",
             side_effect=lambda **kwargs: emitted.append(kwargs),
+        ),
+        patch(
+            "model_tools._apply_transform_tool_result_hook",
+            side_effect=lambda _name, _args, result, _dur, _ids: result,
         ),
     ):
         result = handle_function_call("read_file", {"path": "/x"})
@@ -397,6 +402,302 @@ def test_serve_directive_skips_dispatch_and_emits_cached():
     dispatch.assert_not_called()
     assert emitted[0]["status"] == "cached"
     assert emitted[0]["error_type"] is None
+
+
+def test_serve_null_result_does_not_dispatch():
+    """A serve of ``None`` settles as an empty string without dispatching (the object
+    presence, not the value, is the discriminator)."""
+    from model_tools import handle_function_call
+    emitted = []
+    with (
+        patch(
+            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            return_value=(None, None, _ServeDirective(result=None)),
+        ),
+        patch("model_tools.registry.dispatch") as dispatch,
+        patch(
+            "model_tools._emit_post_tool_call_hook",
+            side_effect=lambda **kwargs: emitted.append(kwargs),
+        ),
+        patch(
+            "model_tools._apply_transform_tool_result_hook",
+            side_effect=lambda _name, _args, result, _dur, _ids: result,
+        ),
+    ):
+        result = handle_function_call("read_file", {"path": "/x"})
+
+    dispatch.assert_not_called()
+    assert emitted[0]["status"] == "cached"
+    assert emitted[0]["result"] is None
+    assert result == ""
+
+
+def test_serve_result_is_re_transformed():
+    """A served result is RAW (what a cache plugin observed pre-transform), so
+    ``transform_tool_result`` re-runs before the model sees the replayed value."""
+    from model_tools import handle_function_call
+    emitted = []
+    with (
+        patch(
+            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            return_value=(None, None, _ServeDirective(result='{"cached": true}')),
+        ),
+        patch("model_tools.registry.dispatch") as dispatch,
+        patch(
+            "model_tools._emit_post_tool_call_hook",
+            side_effect=lambda **kwargs: emitted.append(kwargs),
+        ),
+        patch(
+            "model_tools._apply_transform_tool_result_hook",
+            return_value='{"cached": true, "sanitized": true}',
+        ) as transform,
+    ):
+        result = handle_function_call("read_file", {"path": "/x"})
+
+    dispatch.assert_not_called()
+    transform.assert_called_once()
+    assert result == '{"cached": true, "sanitized": true}'
+    assert emitted[0]["status"] == "cached"
+    assert emitted[0]["result"] == '{"cached": true}'
+
+
+def test_serve_directive_honored_by_concurrent_executor():
+    """The real concurrent executor settles a serve directive without dispatch and
+    re-applies ``transform_tool_result`` on the raw served value."""
+    agent = _make_agent("read_file")
+    tc = _mock_tool_call("read_file", '{"path": "/x"}', "c1")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+    post_calls = []
+    with (
+        patch(
+            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            return_value=(None, None, _ServeDirective(result='{"cached": true}')),
+        ),
+        patch("model_tools.handle_function_call", side_effect=AssertionError("must not run")) as handle,
+        patch(
+            "model_tools._apply_transform_tool_result_hook",
+            return_value='{"cached": true, "sanitized": true}',
+        ) as transform,
+        patch(
+            "model_tools._emit_post_tool_call_hook",
+            side_effect=lambda **kwargs: post_calls.append(kwargs),
+        ),
+    ):
+        agent._execute_tool_calls_concurrent(msg, messages, "task-1")
+
+    handle.assert_not_called()
+    transform.assert_called_once()
+    assert len(messages) == 1
+    assert json.loads(messages[0]["content"]) == {"cached": True, "sanitized": True}
+    cached = [c for c in post_calls if c.get("tool_call_id") == "c1"]
+    assert len(cached) == 1
+    assert cached[0]["status"] == "cached"
+
+
+def test_serve_directive_honored_by_sequential_executor():
+    """The real sequential executor settles a serve directive without dispatch,
+    re-applies ``transform_tool_result``, and emits exactly one terminal post_tool_call."""
+    agent = _make_agent("read_file")
+    tc = _mock_tool_call("read_file", '{"path": "/x"}', "c2")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+    post_calls = []
+    with (
+        patch(
+            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            return_value=(None, None, _ServeDirective(result='{"cached": true}')),
+        ),
+        patch("model_tools.handle_function_call", side_effect=AssertionError("must not run")) as handle,
+        patch(
+            "model_tools._apply_transform_tool_result_hook",
+            return_value='{"cached": true, "sanitized": true}',
+        ) as transform,
+        patch(
+            "model_tools._emit_post_tool_call_hook",
+            side_effect=lambda **kwargs: post_calls.append(kwargs),
+        ),
+    ):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    handle.assert_not_called()
+    transform.assert_called_once()
+    assert len(messages) == 1
+    assert json.loads(messages[0]["content"]) == {"cached": True, "sanitized": True}
+    cached = [c for c in post_calls if c.get("tool_call_id") == "c2"]
+    assert len(cached) == 1
+    assert cached[0]["status"] == "cached"
+
+
+def test_serve_directive_honored_by_invoke_tool():
+    """The runtime helper ``invoke_tool`` settles a serve directive without dispatch,
+    emits the RAW served value to post_tool_call, and re-applies transform_tool_result."""
+    from agent.agent_runtime_helpers import invoke_tool
+    agent = _make_agent("read_file")
+    post_calls = []
+    with (
+        patch(
+            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            return_value=(None, None, _ServeDirective(result='{"cached": true}')),
+        ),
+        patch(
+            "model_tools._apply_transform_tool_result_hook",
+            return_value='{"cached": true, "sanitized": true}',
+        ) as transform,
+        patch(
+            "agent.inline_tool_executors.emit_terminal_post_tool_call",
+            side_effect=lambda *args, **kwargs: post_calls.append(kwargs),
+        ),
+        patch(
+            "agent.inline_tool_executors.resolve_invoke_tool_executor",
+            side_effect=AssertionError("must not run"),
+        ) as resolve,
+    ):
+        result = invoke_tool(
+            agent, "read_file", {"path": "/x"}, "task-1", "c-invoke",
+            skip_tool_request_middleware=True,
+        )
+
+    resolve.assert_not_called()
+    transform.assert_called_once()
+    assert result == '{"cached": true, "sanitized": true}'
+    assert len(post_calls) == 1
+    assert post_calls[0]["status"] == "cached"
+    assert post_calls[0]["result"] == '{"cached": true}'  # RAW value emitted to observers
+
+
+def test_serve_null_result_through_invoke_tool():
+    """A serve of ``None`` through ``invoke_tool`` emits the raw None to observers and
+    returns a normalized ``""`` (no null leaks into the ``-> str`` contract)."""
+    from agent.agent_runtime_helpers import invoke_tool
+    agent = _make_agent("read_file")
+    post_calls = []
+    with (
+        patch(
+            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            return_value=(None, None, _ServeDirective(result=None)),
+        ),
+        patch(
+            "model_tools._apply_transform_tool_result_hook",
+            return_value="",
+        ) as transform,
+        patch(
+            "agent.inline_tool_executors.emit_terminal_post_tool_call",
+            side_effect=lambda *args, **kwargs: post_calls.append(kwargs),
+        ),
+        patch(
+            "agent.inline_tool_executors.resolve_invoke_tool_executor",
+            side_effect=AssertionError("must not run"),
+        ) as resolve,
+    ):
+        result = invoke_tool(
+            agent, "read_file", {"path": "/x"}, "task-1", "c-invoke-null",
+            skip_tool_request_middleware=True,
+        )
+
+    resolve.assert_not_called()
+    transform.assert_called_once()
+    assert result == ""
+    assert len(post_calls) == 1
+    assert post_calls[0]["status"] == "cached"
+    assert post_calls[0]["result"] is None  # RAW None emitted, not ""
+
+
+def test_serve_null_result_through_concurrent_executor():
+    """A serve of ``None`` flows through the real concurrent executor without crashing
+    the downstream result pipeline."""
+    agent = _make_agent("read_file")
+    tc = _mock_tool_call("read_file", '{"path": "/x"}', "c-null-conc")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+    with (
+        patch(
+            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            return_value=(None, None, _ServeDirective(result=None)),
+        ),
+        patch("model_tools.handle_function_call", side_effect=AssertionError("must not run")),
+        patch(
+            "model_tools._apply_transform_tool_result_hook",
+            side_effect=lambda _name, _args, result, _dur, _ids: result,
+        ),
+    ):
+        agent._execute_tool_calls_concurrent(msg, messages, "task-1")
+
+    assert len(messages) == 1
+    assert messages[0]["tool_call_id"] == "c-null-conc"
+    assert messages[0]["content"] == ""
+
+
+def test_serve_null_result_through_sequential_executor():
+    """A serve of ``None`` flows through the real sequential executor without crashing
+    the downstream result pipeline."""
+    agent = _make_agent("read_file")
+    tc = _mock_tool_call("read_file", '{"path": "/x"}', "c-null-seq")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+    with (
+        patch(
+            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            return_value=(None, None, _ServeDirective(result=None)),
+        ),
+        patch("model_tools.handle_function_call", side_effect=AssertionError("must not run")),
+        patch(
+            "model_tools._apply_transform_tool_result_hook",
+            side_effect=lambda _name, _args, result, _dur, _ids: result,
+        ),
+    ):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    assert len(messages) == 1
+    assert messages[0]["tool_call_id"] == "c-null-seq"
+    assert messages[0]["content"] == ""
+
+
+def test_guardrail_before_call_rejection_blocks_serve():
+    """A guardrail ``before_call`` rejection blocks execution even when serve is present."""
+    agent = _make_agent("read_file", config=_hard_stop_config())
+    args = {"path": "/x"}
+    _seed_exact_failures(agent, "read_file", args, count=5)
+    tc = _mock_tool_call("read_file", json.dumps(args), "c-guardrail")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+    with (
+        patch(
+            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            return_value=(None, None, _ServeDirective(result='{"cached": true}')),
+        ),
+        patch("model_tools.handle_function_call", side_effect=AssertionError("must not run")) as handle,
+    ):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    handle.assert_not_called()
+    assert len(messages) == 1
+    assert "repeated_exact_failure_block" in messages[0]["content"]
+
+
+def test_scope_block_suppresses_pre_tool_block_and_prevents_serve():
+    """A scope block short-circuits the plugin pre-tool hooks, so a serve can never win."""
+    agent = _make_agent("read_file")
+    from agent.tool_executor import _run_agent_tool_execution_middleware
+    dispatched = []
+    with (
+        patch("hermes_cli.plugins._dispatch_pre_tool_call_hooks") as hooks,
+        patch("model_tools.handle_function_call", side_effect=AssertionError("must not run")),
+    ):
+        outcome = _run_agent_tool_execution_middleware(
+            agent,
+            function_name="read_file",
+            function_args={"path": "/x"},
+            effective_task_id="task-1",
+            tool_call_id="c-scope",
+            execute=lambda args: dispatched.append(args) or "SHOULD_NOT_RUN",
+            scope_block="'read_file' is out of scope",
+        )
+
+    hooks.assert_not_called()
+    assert outcome.blocked is True
+    assert dispatched == []
+    assert json.loads(outcome.result) == {"error": "'read_file' is out of scope"}
 
 
 def test_default_run_conversation_warns_without_guardrail_halt():

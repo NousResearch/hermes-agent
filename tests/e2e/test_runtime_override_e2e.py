@@ -2,14 +2,22 @@
 
 These drive ``AIAgent.run_conversation`` end-to-end against in-process fake
 wire clients (no network), with hooks registered on the real plugin manager.
-They prove the model/provider/api_mode override contract (issue #23739) on the
-production path:
+They prove the model-only override contract (issue #23739) on the production
+path:
 
-1. P1-1 — the overridden route is authoritative for the wire request built for
+1. P1-1 — the overridden model is authoritative for the wire request built for
    the turn, and the pre-override identity is restored afterwards.
+2. Request-assembly parity — the override is applied BEFORE request assembly /
+   preflight, so the ``llm_request`` middleware and the ``pre_api_request``
+   hook observe the same overridden model as the wire request.
+3. Turn scoping — an override returned for turn 1 does not leak into turn 2:
+   the second turn's wire request returns to the base model.
+4. Fallback handoff — when the overridden route fails and the fallback chain
+   activates, ``consume_runtime_override`` consumes the failed override, so no
+   later retry re-issues a request for the overridden model.
 
 Issue: #23739.  The override no longer accepts endpoint/credential keys, so
-the route override here changes only model/provider/api_mode.
+the route override here changes only the model.
 """
 
 from __future__ import annotations
@@ -26,6 +34,12 @@ if _REPO_ROOT not in sys.path:
 # ── fake wire clients ───────────────────────────────────────────────────────
 
 
+class _SimulatedRateLimit(Exception):
+    """A 429-shaped wire failure the recovery path classifies as rate_limit."""
+
+    status_code = 429
+
+
 def _chat_response(content: str = "ok"):
     """A valid chat.completions response."""
     return SimpleNamespace(
@@ -38,15 +52,20 @@ def _chat_response(content: str = "ok"):
 
 
 class _WireRecorder:
-    """Records every fake client construction and wire request."""
+    """Records every fake client construction and wire request.
 
-    def __init__(self) -> None:
+    ``fail_models``: models whose wire request raises ``_SimulatedRateLimit``
+    (used to force the fallback chain onto the remaining route).
+    """
+
+    def __init__(self, fail_models=()) -> None:
+        self.fail_models = set(fail_models)
         self.openai_clients: list = []      # kwargs per OpenAI client construction
         self.openai_requests: list = []     # kwargs per chat.completions.create
 
     def make_openai(self, **kwargs):
         self.openai_clients.append(kwargs)
-        return _FakeChatClient(self.openai_requests)
+        return _FakeChatClient(self.openai_requests, fail_models=self.fail_models)
 
     def make_anthropic(self, *args, **kwargs):
         return _FakeAnthropicClient()
@@ -63,9 +82,16 @@ class _FakeCompletions:
 
 
 class _FakeChatClient:
-    def __init__(self, sink) -> None:
+    def __init__(self, sink, fail_models=()) -> None:
+        def _handle(kwargs):
+            if kwargs.get("model") in set(fail_models):
+                raise _SimulatedRateLimit(
+                    f"simulated rate limit for {kwargs.get('model')}"
+                )
+            return _chat_response()
+
         self.chat = SimpleNamespace(
-            completions=_FakeCompletions(lambda k: _chat_response(), sink)
+            completions=_FakeCompletions(_handle, sink)
         )
 
     def close(self) -> None:
@@ -86,15 +112,35 @@ class _BundledManifest:
     source = "bundled"
 
 
-def _register_pre_llm_call_hook(manager, callback):
-    """Register a ``pre_llm_call`` callback through the real PluginContext path
-    (bundled => trusted => runtime_override survives the trust gate)."""
+def _register_plugin_callback(manager, kind, name, callback):
+    """Register ``callback`` (hook or middleware) through the real PluginContext
+    path (bundled => trusted => the callback survives the trust gate)."""
     from hermes_cli.plugins import PluginContext
 
     ctx = object.__new__(PluginContext)
     ctx.manifest = _BundledManifest()
     ctx._manager = manager
-    return ctx.register_hook("pre_llm_call", callback)
+    if kind == "hook":
+        return ctx.register_hook(name, callback)
+    if kind == "middleware":
+        return ctx.register_middleware(name, callback)
+    raise ValueError(f"unknown plugin registration kind: {kind!r}")
+
+
+def _register_pre_llm_call_hook(manager, callback):
+    """Register a ``pre_llm_call`` callback through the real PluginContext path
+    (bundled => trusted => runtime_override survives the trust gate)."""
+    return _register_plugin_callback(manager, "hook", "pre_llm_call", callback)
+
+
+def _register_llm_request_middleware(manager, callback):
+    """Register an ``llm_request`` middleware through the real PluginContext path."""
+    return _register_plugin_callback(manager, "middleware", "llm_request", callback)
+
+
+def _register_pre_api_request_hook(manager, callback):
+    """Register a ``pre_api_request`` hook through the real PluginContext path."""
+    return _register_plugin_callback(manager, "hook", "pre_api_request", callback)
 
 
 # ── agent + turn helpers ────────────────────────────────────────────────────
@@ -146,11 +192,7 @@ def test_override_model_and_provider_are_authoritative(monkeypatch):
     recorder = _WireRecorder()
 
     def pre_llm_call(**kw):
-        return {"runtime_override": {
-            "model": "override-model",
-            "provider": "openai",
-            "api_mode": "chat_completions",
-        }}
+        return {"runtime_override": {"model": "override-model"}}
 
     handle = _register_pre_llm_call_hook(manager, pre_llm_call)
     try:
@@ -167,5 +209,142 @@ def test_override_model_and_provider_are_authoritative(monkeypatch):
 
         # The turn restored the pre-override identity.
         assert (agent.model, agent.provider, agent.api_mode) == pre
+    finally:
+        handle.dispose()
+
+
+# ── request-assembly parity: middleware + pre_api_request see the override ──
+
+
+def test_middleware_and_pre_api_request_observe_override_model(monkeypatch):
+    """The override is applied before request assembly/preflight, so the
+    ``llm_request`` middleware and the ``pre_api_request`` hook record the same
+    overridden model the wire request carries."""
+    from hermes_cli.plugins import get_plugin_manager
+
+    manager = get_plugin_manager()
+    recorder = _WireRecorder()
+    observed = {"middleware": [], "pre_api_request": []}
+
+    def pre_llm_call(**kw):
+        return {"runtime_override": {"model": "override-model"}}
+
+    def llm_request_middleware(**kw):
+        observed["middleware"].append(kw.get("model"))
+
+    def pre_api_request(**kw):
+        observed["pre_api_request"].append(kw.get("model"))
+
+    handles = [
+        _register_pre_llm_call_hook(manager, pre_llm_call),
+        _register_llm_request_middleware(manager, llm_request_middleware),
+        _register_pre_api_request_hook(manager, pre_api_request),
+    ]
+    try:
+        agent = _build_agent(monkeypatch, recorder)
+        result = _run_turn(agent)
+
+        assert "ok" in (result.get("final_response") or "")
+        assert recorder.openai_requests, "no OpenAI-wire request recorded"
+        assert recorder.openai_requests[0].get("model") == "override-model"
+
+        assert observed["middleware"], "llm_request middleware never fired"
+        assert all(m == "override-model" for m in observed["middleware"]), (
+            f"middleware observed non-override model(s): {observed['middleware']}"
+        )
+        assert observed["pre_api_request"], "pre_api_request hook never fired"
+        assert all(m == "override-model" for m in observed["pre_api_request"]), (
+            f"pre_api_request observed non-override model(s): "
+            f"{observed['pre_api_request']}"
+        )
+    finally:
+        for handle in handles:
+            handle.dispose()
+
+
+# ── turn scoping: turn 2 restores the base route ────────────────────────────
+
+
+def test_override_is_restored_on_next_turn(monkeypatch):
+    """An override returned for turn 1 does not leak into turn 2: the second
+    turn's wire request uses the base model again."""
+    from hermes_cli.plugins import get_plugin_manager
+
+    manager = get_plugin_manager()
+    recorder = _WireRecorder()
+    state = {"calls": 0}
+
+    def pre_llm_call(**kw):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            return {"runtime_override": {"model": "override-model"}}
+        return {}
+
+    handle = _register_pre_llm_call_hook(manager, pre_llm_call)
+    try:
+        agent = _build_agent(monkeypatch, recorder)
+        first = _run_turn(agent)
+        second = _run_turn(agent)
+
+        assert "ok" in (first.get("final_response") or "")
+        assert "ok" in (second.get("final_response") or "")
+        assert [r.get("model") for r in recorder.openai_requests] == [
+            "override-model", "base-model",
+        ]
+    finally:
+        handle.dispose()
+
+
+# ── fallback handoff: a failed override is consumed, never re-applied ───────
+
+
+def test_failed_override_falls_back_and_is_not_reapplied(monkeypatch):
+    """A wire failure on the overridden route activates the fallback chain; the
+    failed override is consumed (``consume_runtime_override``), so no later
+    retry re-issues a request for the overridden model."""
+    from hermes_cli.plugins import get_plugin_manager
+
+    manager = get_plugin_manager()
+    recorder = _WireRecorder(fail_models={"override-model"})
+
+    def pre_llm_call(**kw):
+        return {"runtime_override": {"model": "override-model"}}
+
+    handle = _register_pre_llm_call_hook(manager, pre_llm_call)
+    try:
+        agent = _build_agent(monkeypatch, recorder)
+        # The overridden route is the primary; the fallback route must stay on
+        # the chat-completions wire so its per-request client is rebuilt through
+        # the recorder (process_bootstrap.OpenAI is patched). api_mode is pinned
+        # because the fallback's re-detection would otherwise flip the stub's
+        # api.openai.com base_url to codex_responses, and the base_url host must
+        # stay a known provider endpoint so context-length resolution does not
+        # probe a live /models route.
+        agent._fallback_chain = [
+            {"provider": "openai", "model": "fallback-model", "api_mode": "chat_completions"}
+        ]
+        agent._fallback_index = 0
+        # Provider/credential resolution is the one remaining network boundary
+        # on the fallback path; swap in a stub whose wire requests still land on
+        # the fake recorder.
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_provider_client",
+            lambda provider, model=None, **kwargs: (
+                SimpleNamespace(api_key="test-key", base_url="https://api.openai.com/v1"),
+                model,
+            ),
+        )
+
+        result = _run_turn(agent)
+
+        assert "ok" in (result.get("final_response") or "")
+        models = [r.get("model") for r in recorder.openai_requests]
+        assert models, "no OpenAI-wire request recorded"
+        assert models[0] == "override-model"
+        assert "fallback-model" in models, f"fallback route never reached; wire models: {models}"
+        fallback_at = models.index("fallback-model")
+        assert "override-model" not in models[fallback_at + 1:], (
+            f"failed override re-applied after the fallback activated: {models}"
+        )
     finally:
         handle.dispose()

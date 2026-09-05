@@ -184,3 +184,12 @@ jobs:
       # reverting one commit, so in-tree code must never depend on them.
       - name: Forbid in-tree use of plugin-compat pointers
         run: python scripts/check_compat_pointers.py
+
+      # Advisory: dropped public names / methods / test defs vs the PR base, printed into the log.
+      # A refactor that silently removes a public symbol breaks plugins that import it; the Sep 2026
+      # decomposition opened with 1,703 such drops that reviewers had to find by hand.
+      - name: Public-surface diff vs base (advisory)
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          python scripts/ci/check_public_surface.py --base "origin/${{ github.base_ref }}" --head HEAD

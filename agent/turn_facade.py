@@ -10,6 +10,7 @@ import uuid
 from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
+from agent.adaptive_reasoning import adaptive_reasoning_turn
 from agent.lazy_forward import forward as _forward
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
@@ -19,6 +20,10 @@ logger = logging.getLogger("run_agent")
 class TurnFacadeMixin:
     """run_conversation()/chat() (see module docstring)."""
 
+    # Opt-in adaptive reasoning: the decorator may adjust reasoning_config for this turn only and
+    # restores the baseline on every exit path. No-op unless agent.adaptive_reasoning is enabled and
+    # no user override is active.
+    @adaptive_reasoning_turn
     def run_conversation(
         self, user_message: Any, system_message: str=None,
         conversation_history: List[Dict[str, Any]]=None, task_id: str=None,

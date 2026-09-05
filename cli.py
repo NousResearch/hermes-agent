@@ -397,6 +397,9 @@ def _cli_config_defaults():
         "agent": {
             "max_turns": 500, "verbose": False, "system_prompt": "", "prefill_messages_file": "",  # max_turns shared with subagents
             "reasoning_effort": "", "service_tier": "",
+            # Opt-in per-turn adjustment of reasoning_effort — see DEFAULT_CONFIG in
+            # hermes_cli/config_defaults.py for details.
+            "adaptive_reasoning": {"enabled": False, "max_effort": "xhigh", "min_effort": ""},
             "personalities": {},  # user overrides merged by name over hermes_cli.personality builtins
         },
         "display": {
@@ -2774,12 +2777,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         from hermes_constants import resolve_reasoning_config
         self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
         # --reasoning wins for this run only (never persisted); unparseable -> warn and ignore.
+        # Explicit user reasoning choices (--reasoning flag, /reasoning <level>) take precedence over
+        # adaptive escalation; the flag is forwarded to the agent as reasoning_user_override at build time.
+        self._session_reasoning_override = False
         if reasoning is not None and str(reasoning).strip():
             _cli_reasoning = _parse_reasoning_config(reasoning)
             if _cli_reasoning is None:
                 logger.warning("Unknown --reasoning '%s', keeping the configured level", reasoning)
             else:
                 self.reasoning_config = _cli_reasoning
+                self._session_reasoning_override = True
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
 
         pr = CLI_CONFIG.get("provider_routing", {}) or {}

@@ -256,7 +256,8 @@ class AIAgent(
         notice_callback: callable = None, notice_clear_callback: callable = None,
         event_callback: Optional[Callable[[str, dict], None]] = None,
         reaction_callback: Optional[Callable[[str], None]] = None,
-        max_tokens: int = None, reasoning_config: Dict[str, Any] = None, service_tier: str = None,
+        max_tokens: int = None, reasoning_config: Dict[str, Any] = None,
+        adaptive_reasoning: Dict[str, Any] = None, service_tier: str = None,
         request_overrides: Dict[str, Any] = None, prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None, user_id: str = None, user_id_alt: str = None, user_name: str = None,
         chat_id: str = None, chat_name: str = None, chat_type: str = None, thread_id: str = None,
@@ -403,6 +404,11 @@ class AIAgent(
         self._user_turn_count = 0
         # Copilot x-initiator: True for the first API call of a user turn, False for tool-loop follow-ups.
         self._is_user_initiated_turn = False
+
+        # Adaptive-reasoning per-session state (continuation inheritance + escalation-notice dedup)
+        # does not carry across session boundaries.
+        self._adaptive_prev_effort = None
+        self._adaptive_last_notified_effort = None
 
         self._transition_context_engine_session(
             old_session_id=old_session_id, new_session_id=getattr(self, "session_id", None),

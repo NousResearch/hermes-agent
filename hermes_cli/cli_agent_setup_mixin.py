@@ -620,24 +620,24 @@ class CLIAgentSetupMixin:
             return False
         session_meta = self._session_db.get_session(self.session_id)
         if not session_meta:
-            self._console_print(f"[bold red]Session not found: {self.session_id}[/]")
+            self._console_print(f"[bold red]Session not found: {_escape(self.session_id)}[/]")
             self._console_print("[dim]Use a session ID from a previous CLI run (hermes sessions list).[/]")
             return False
         session_meta = self._follow_compression_chain(
             session_meta,
             lambda rid: self._console_print(
-                f"[dim]Session {self.session_id} was compressed into "
-                f"{rid}; resuming the descendant with your transcript.[/]"))
+                f"[dim]Session {_escape(self.session_id)} was compressed into "
+                f"{_escape(rid)}; resuming the descendant with your transcript.[/]"))
         resume_limit_error = self._resume_history_limit_error()
         if resume_limit_error:
             self._resume_history_error = resume_limit_error
-            self._console_print(f"[bold red]Cannot resume session:[/] {resume_limit_error}")
+            self._console_print(f"[bold red]Cannot resume session:[/] {_escape(resume_limit_error)}")
             return False
         restored, display_history = self._session_db.get_resume_conversations(self.session_id)
         accent_color = _accent_hex()
         if not restored:
             self._console_print(
-                f"[{accent_color}]Session {self.session_id} found but has no "
+                f"[{accent_color}]Session {_escape(self.session_id)} found but has no "
                 f"messages. Starting fresh.[/]")
             return False
         restored = [m for m in restored if m.get("role") != "session_meta"]
@@ -649,8 +649,8 @@ class CLIAgentSetupMixin:
         msg_count = len([m for m in self._resume_display_history if is_user_originated_turn(m)])
         title_part = f' "{session_meta["title"]}"' if session_meta.get("title") else ""
         self._console_print(
-            f"[{accent_color}]↻ Resumed session [bold]{self.session_id}[/bold]"
-            f"{title_part} "
+            f"[{accent_color}]↻ Resumed session [bold]{_escape(self.session_id)}[/bold]"
+            f"{_escape(title_part)} "
             f"({msg_count} user message{'s' if msg_count != 1 else ''}, "
             f"{len(restored)} total messages)[/]")
         self._restore_session_state(session_meta)

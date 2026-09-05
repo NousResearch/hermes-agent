@@ -1230,6 +1230,11 @@ export interface HermesApiRequest {
   // through the owning connection, not the local profile pool. Omit / '' to
   // keep the legacy profile-routed path; explicit 'local' forces this device.
   connectionId?: string | null
+  // Passive background read that must never cold-start a pooled backend (#103375).
+  // When true and the target profile has no warm pool entry, the main process
+  // fails fast without spawning a child or consuming a pool slot, so background
+  // tile reconciles cannot starve interactive opens.
+  passive?: boolean
 }
 
 export interface HermesNotification {

@@ -22,8 +22,7 @@ def _sse(*chunk_bodies: bytes) -> bytes:
 def _stream_through_relay(tmp_path, monkeypatch, response_body: bytes, *, finalize_before):
     """Stream ``response_body`` through Relay; Relay's finalizer is forced to complete before
     the consumer thread processes the first chunk matching ``finalize_before(chunk)``.
-    Returns ``(hermes_result, relay_llm_end_event, race_forced)``; ``race_forced`` is False when Relay
-    happened to reach its finalizer only after the consumer took that chunk (see the hook below)."""
+    Returns ``(hermes_result, relay_llm_end_event)``."""
     httpx = pytest.importorskip("httpx")
     nemo_relay = pytest.importorskip("nemo_relay")
     openai = pytest.importorskip("openai")
@@ -57,7 +56,6 @@ def _stream_through_relay(tmp_path, monkeypatch, response_body: bytes, *, finali
     relay_finalizer_started = threading.Event()
     allow_relay_finalizer = threading.Event()
     relay_finalizer_finished = threading.Event()
-    forced = []
     run_relay_finalizer = relay_llm.ManagedLlmStream._relay_finalizer
 
     def run_synchronized_relay_finalizer(managed_stream, attempt):
@@ -73,20 +71,28 @@ def _stream_through_relay(tmp_path, monkeypatch, response_body: bytes, *, finali
     count_chunk = chat_completion_helpers._StreamingCall._count_chunk
 
     def count_chunk_after_relay_finalizes(self, diag, chunk):
-        # Relay's producer is pumped by the consumer thread's own event loop (``ManagedLlmStream.
-        # __next__`` -> ``run_until_complete``), so the finalizer can only START inside a consumer
-        # ``next()``. Whether it has started by the time the final chunk is handed over is a loop
-        # scheduling coin flip. When it has, hold it here so it provably completes before the consumer
-        # touches this chunk (the race under test). When it has not, it cannot run until we return;
-        # waiting for it here is a deadlock, not a slow runner (~1 run in 6 locally, and two
-        # unrelated PRs went red on it the same day). Callers repeat until the race materialized.
+        # Relay's producer is pumped by the consumer thread's OWN event loop (``ManagedLlmStream.
+        # __next__`` -> ``run_until_complete``), so the finalizer can only start while that loop runs.
+        # Blocking the consumer thread here and waiting for it therefore deadlocked whenever the loop
+        # had not reached EOF yet (~1 run in 6). Instead: release the finalizer and PUMP THE STREAM'S
+        # LOOP until it has completed, then hand the chunk to the consumer. That is a real
+        # happens-before (finalizer done -> consumer sees chunk) on every schedule, not a retry lottery.
         if finalize_before(chunk):
-            if relay_finalizer_started.is_set():
-                forced.append(True)
-                allow_relay_finalizer.set()
-                assert relay_finalizer_finished.wait(30), "Relay's finalizer did not finish"
-            else:
-                allow_relay_finalizer.set()  # it will start inside the consumer's next ``next()``
+            import asyncio
+
+            stream = self.managed_stream_holder["stream"]
+            allow_relay_finalizer.set()
+            # A schedule probe may hold the provider generator at this chunk until the consumer has
+            # taken it (adverse consumer-first ordering); release it so the pump below can reach EOF.
+            gate = getattr(stream, "_review_gate", None)
+            if gate is not None:
+                gate.set()
+
+            async def finalizer_done():
+                return await asyncio.to_thread(relay_finalizer_finished.wait, 30)
+
+            assert stream._loop.run_until_complete(finalizer_done()), "Relay's finalizer did not finish"
+            assert relay_finalizer_started.is_set()
         return count_chunk(self, diag, chunk)
 
     monkeypatch.setattr(chat_completion_helpers._StreamingCall, "_count_chunk", count_chunk_after_relay_finalizes)
@@ -111,20 +117,7 @@ def _stream_through_relay(tmp_path, monkeypatch, response_body: bytes, *, finali
     ]
     assert len(llm_end_events) == 1
     assert llm_end_events[0].annotated_response is not None
-    return result, llm_end_events[0], bool(forced)
-
-
-def _stream_until_race_forced(tmp_path, monkeypatch, body, *, finalize_before, attempts=12):
-    """Run the stream until Relay's finalizer was provably forced ahead of the consumer at least once;
-    every run's result is returned so callers assert the invariant on all of them."""
-    runs = []
-    for _ in range(attempts):
-        result, llm_end, race_forced = _stream_through_relay(
-            tmp_path, monkeypatch, body, finalize_before=finalize_before)
-        runs.append((result, llm_end))
-        if race_forced:
-            return runs
-    pytest.fail(f"Relay's finalizer never started before the consumer took the chunk in {attempts} runs")
+    return result, llm_end_events[0]
 
 
 def test_openai_stream_usage_reaches_relay_parent_event(tmp_path, monkeypatch):
@@ -134,14 +127,14 @@ def test_openai_stream_usage_reaches_relay_parent_event(tmp_path, monkeypatch):
         b'"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]',
         b'"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}',
     )
-    for result, llm_end in _stream_until_race_forced(
-            tmp_path, monkeypatch, body,
-            finalize_before=lambda chunk: not chunk.choices and getattr(chunk, "usage", None) is not None):
-        assert result.usage is not None
-        assert (result.usage.prompt_tokens, result.usage.completion_tokens, result.usage.total_tokens) == (100, 10, 110)
-        assert llm_end.annotated_response.usage == {
-            "prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110}
-        assert llm_end.annotated_response.message == "done"
+    result, llm_end = _stream_through_relay(
+        tmp_path, monkeypatch, body,
+        finalize_before=lambda chunk: not chunk.choices and getattr(chunk, "usage", None) is not None)
+    assert result.usage is not None
+    assert (result.usage.prompt_tokens, result.usage.completion_tokens, result.usage.total_tokens) == (100, 10, 110)
+    assert llm_end.annotated_response.usage == {
+        "prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110}
+    assert llm_end.annotated_response.message == "done"
 
 
 def test_openai_stream_final_tool_call_delta_reaches_relay_parent_event(tmp_path, monkeypatch):
@@ -154,13 +147,13 @@ def test_openai_stream_final_tool_call_delta_reaches_relay_parent_event(tmp_path
         b'"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"/tmp/x\\"}"}}]},'
         b'"finish_reason":"tool_calls"}]',
     )
-    for result, llm_end in _stream_until_race_forced(
-            tmp_path, monkeypatch, body,
-            finalize_before=lambda chunk: bool(chunk.choices) and chunk.choices[0].finish_reason == "tool_calls"):
-        hermes_call = result.choices[0].message.tool_calls[0]
-        assert (hermes_call.function.name, hermes_call.function.arguments) == ("read_file", '{"path": "/tmp/x"}')
-        assert result.choices[0].finish_reason == "tool_calls"
-        assert llm_end.annotated_response.message is None
-        (relay_call,) = llm_end.annotated_response.tool_calls
-        assert (relay_call["name"], relay_call["arguments"]) == ("read_file", {"path": "/tmp/x"})
-        assert llm_end.annotated_response.finish_reason == "tool_use"
+    result, llm_end = _stream_through_relay(
+        tmp_path, monkeypatch, body,
+        finalize_before=lambda chunk: bool(chunk.choices) and chunk.choices[0].finish_reason == "tool_calls")
+    hermes_call = result.choices[0].message.tool_calls[0]
+    assert (hermes_call.function.name, hermes_call.function.arguments) == ("read_file", '{"path": "/tmp/x"}')
+    assert result.choices[0].finish_reason == "tool_calls"
+    assert llm_end.annotated_response.message is None
+    (relay_call,) = llm_end.annotated_response.tool_calls
+    assert (relay_call["name"], relay_call["arguments"]) == ("read_file", {"path": "/tmp/x"})
+    assert llm_end.annotated_response.finish_reason == "tool_use"

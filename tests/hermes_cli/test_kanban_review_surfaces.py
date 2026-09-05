@@ -283,7 +283,7 @@ def test_cli_reopen_review_is_transition_first_and_redacts_reason(
         assert secret not in comments[0].body
 
 
-def test_goal_mode_review_handoff_cannot_bypass_judge(
+def test_goal_mode_review_handoff_only_rejects_unachievable_judge_verdict(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -313,8 +313,8 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
         tools,
         "judge_goal",
         lambda *args, **kwargs: (
-            "continue",
-            "acceptance evidence is missing",
+            "blocked",
+            "the goal is genuinely unachievable",
             False,
             None,
             False,
@@ -322,11 +322,32 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
     )
     rejected = json.loads(tools._handle_request_review({"summary": "Looks ready."}))
     assert "error" in rejected
-    assert "rejected by judge" in rejected["error"]
+    assert "ruled the goal unachievable" in rejected["error"]
     with kbc.connect() as conn:
         tool_after = kb.get_task(conn, tool_task)
         assert tool_after is not None
         assert tool_after.status == "running"
+
+    # A CONTINUE verdict ("acceptance hasn't happened yet") must NOT reject
+    # the handoff: requesting review IS how a goal-mode worker asks for
+    # acceptance, so demanding prior acceptance is circular (audit
+    # t_91706029). Only the BLOCKED verdict above keeps gate teeth here.
+    monkeypatch.setattr(
+        tools,
+        "judge_goal",
+        lambda *args, **kwargs: (
+            "continue",
+            "final acceptance has not happened yet",
+            False,
+            None,
+            False,
+        ),
+    )
+    handed_off = json.loads(tools._handle_request_review({
+        "summary": "Implemented and verified; ready for review.",
+        "reviewer": "reviewer",
+    }))
+    assert handed_off.get("ok") is True, handed_off
 
     # The shell/CLI path applies the same gate and must not bypass the tool.
     with kbc.connect() as conn:
@@ -352,14 +373,42 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
     monkeypatch.setattr(
         goals,
         "judge_goal",
-        lambda *args, **kwargs: ("continue", "tests are missing", False, None, False),
+        lambda *args, **kwargs: (
+            "blocked",
+            "tests cannot exist for this goal",
+            False,
+            None,
+            False,
+        ),
     )
     output = kc.run_slash(f"request-review {cli_task} --summary 'Looks ready.'")
-    assert "rejected by judge" in output
+    assert "ruled the goal unachievable" in output
     with kbc.connect() as conn:
         cli_after = kb.get_task(conn, cli_task)
         assert cli_after is not None
         assert cli_after.status == "running"
+
+    monkeypatch.setattr(
+        goals,
+        "judge_goal",
+        lambda *args, **kwargs: (
+            "continue",
+            "final acceptance has not happened yet",
+            False,
+            None,
+            False,
+        ),
+    )
+    output = kc.run_slash(
+        f"request-review {cli_task} --summary 'Implemented and verified.' "
+        "--reviewer reviewer"
+    )
+    assert "Requested review" in output
+    with kbc.connect() as conn:
+        cli_after = kb.get_task(conn, cli_task)
+        assert cli_after is not None
+        assert cli_after.status == "review"
+        assert cli_after.assignee == "reviewer"
 
 
 def test_goal_loop_stops_after_reviewer_requests_changes(

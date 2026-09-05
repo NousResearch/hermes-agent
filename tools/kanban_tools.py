@@ -365,17 +365,17 @@ _GOAL_GATE_MESSAGES = {
     "kanban_request_review": {
         "blocked": (
             "Goal review handoff rejected: judge ruled the goal unachievable — {reason}. "
-            "Record the block with kanban_block instead of requesting review."),
-        "continue": (
-            "Goal review handoff rejected by judge: {reason}. Provide acceptance evidence "
-            "matching the card before requesting review.")}}
+            "Record the block with kanban_block instead of requesting review.")}}
 
 
 def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
-    """Goal-mode pre-handoff judge gate: a worker must not complete / request
-    review before acceptance criteria are met. ``blocked`` gets its own
-    guidance; any other non-``done`` verdict gets the ``continue`` guidance.
-    A broken judge fails open (logged) so it cannot permanently wedge work."""
+    """Goal-mode pre-handoff judge gate.
+
+    Completion requires ``done``. Review is itself the acceptance path, so
+    ``kanban_request_review`` rejects only ``blocked`` (unachievable); a
+    ``continue``/``wait`` verdict means the reviewer should decide. A broken
+    judge fails open (logged) so it cannot permanently wedge work.
+    """
     if not task or not task.goal_mode or not _goal_judge_available():
         return
     try:
@@ -385,7 +385,7 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
         logger.warning(
             "goal judge check failed, allowing lifecycle handoff: %s", judge_exc, exc_info=True)
         return
-    if verdict == "done":
+    if verdict == "done" or (tool_name == "kanban_request_review" and verdict != "blocked"):
         return
     key = "blocked" if verdict == "blocked" else "continue"
     raise _Reject(_GOAL_GATE_MESSAGES[tool_name][key].format(reason=reason, tid=tid))

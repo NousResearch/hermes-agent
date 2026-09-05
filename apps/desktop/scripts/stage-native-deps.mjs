@@ -33,6 +33,29 @@ function makeExecutable(filePath) {
   chmodSync(filePath, 0o755)
 }
 
+/**
+ * Recursive directory copy using per-file cpSync.
+ *
+ * Workaround for a Node.js bug on Windows: fs.cpSync({ recursive: true })
+ * crashes the process (STATUS_STACK_BUFFER_OVERRUN, 0xC0000409, no output)
+ * when the source path contains non-ASCII characters — e.g. a user folder
+ * like C:\Users\涂\ or C:\Users\JorgeFigulsGarcía\. Per-file copies sidestep
+ * the buggy path entirely. Semantics are equivalent to cpSync(recursive: true)
+ * for our use case (whole-directory copy, no filtering).
+ */
+function copyDirSyncSafe(srcDir, destDir) {
+  mkdirSync(destDir, { recursive: true })
+  for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
+    const srcPath = join(srcDir, entry.name)
+    const destPath = join(destDir, entry.name)
+    if (entry.isDirectory()) {
+      copyDirSyncSafe(srcPath, destPath)
+    } else if (entry.isFile()) {
+      cpSync(srcPath, destPath)
+    }
+  }
+}
+
 function patchUnixTerminalAsarPaths(destRoot) {
   const filePath = join(destRoot, 'lib', 'unixTerminal.js')
   if (!existsSync(filePath)) return
@@ -96,7 +119,7 @@ function copyBuildRelease(srcDir, destDir) {
   mkdirSync(destDir, { recursive: true })
   for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
     if (entry.isDirectory()) {
-      cpSync(join(srcDir, entry.name), join(destDir, entry.name), { recursive: true })
+      copyDirSyncSafe(join(srcDir, entry.name), join(destDir, entry.name))
       continue
     }
     if (entry.name === 'spawn-helper' || /\.(node|dll|exe)$/.test(entry.name)) {
@@ -261,7 +284,7 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
     mkdirSync(destPrebuild, { recursive: true })
     for (const entry of readdirSync(prebuildDir, { withFileTypes: true })) {
       if (entry.name === 'conpty' && entry.isDirectory()) {
-        cpSync(join(prebuildDir, 'conpty'), join(destPrebuild, 'conpty'), { recursive: true })
+        copyDirSyncSafe(join(prebuildDir, 'conpty'), join(destPrebuild, 'conpty'))
         continue
       }
       if (entry.isFile() && /\.(node|dll|exe)$/.test(entry.name)) {

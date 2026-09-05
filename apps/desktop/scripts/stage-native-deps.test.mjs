@@ -361,6 +361,60 @@ test('validation rejects a staged binary with the wrong platform magic', () => {
   }
 })
 
+test('staging survives non-ASCII source paths (recursive-copy crash workaround)', () => {
+  // Regression for nodejs/node#60447: on Windows, fs.cpSync({ recursive: true })
+  // crashes the process (STATUS_STACK_BUFFER_OVERRUN, 0xC0000409, no output)
+  // when a path contains non-ASCII characters — e.g. a user profile like
+  // C:\Users\涂\. copyDirSyncSafe stages whole directories by per-file copies
+  // instead. The fixture path is deliberately non-ASCII so the pre-fix
+  // recursive cpSync hard-crashes this test on Windows; the deep-copy
+  // assertions pin the recursive-copy contract everywhere.
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'node-pty-测试')
+    const destRoot = join(tmp, 'dest-测试')
+
+    makeFakeNodePty(srcRoot)
+    makeFakeNode(join(srcRoot, 'build', 'Release', 'pty.node'), process.platform)
+
+    // Nested payloads that recursive directory copies must carry over:
+    // a conpty/ subdir inside the host prebuild, and a nested dir under
+    // build/Release (validator only scans *.node, so a nested .node must
+    // carry real platform magic while a plain file proves whole-dir copy).
+    const prebuildDir = join(srcRoot, 'prebuilds', `${process.platform}-${process.arch}`)
+    fs.mkdirSync(join(prebuildDir, 'conpty', 'x64'), { recursive: true })
+    fs.writeFileSync(join(prebuildDir, 'conpty', 'x64', 'conpty.dll'), 'conpty payload')
+    fs.mkdirSync(join(srcRoot, 'build', 'Release', 'sub'), { recursive: true })
+    makeFakeNode(join(srcRoot, 'build', 'Release', 'sub', 'nested.node'), process.platform)
+    fs.writeFileSync(join(srcRoot, 'build', 'Release', 'sub', 'payload.dat'), 'nested payload')
+
+    stageNodePtyInto(srcRoot, destRoot, { platform: process.platform, arch: process.arch })
+
+    assert.equal(
+      existsSync(join(destRoot, 'build', 'Release', 'pty.node')),
+      true,
+      'host build/Release .node must be staged'
+    )
+    assert.equal(
+      existsSync(join(destRoot, 'build', 'Release', 'sub', 'nested.node')),
+      true,
+      'nested build/Release .node must be copied recursively'
+    )
+    assert.equal(
+      existsSync(join(destRoot, 'build', 'Release', 'sub', 'payload.dat')),
+      true,
+      'non-binary files inside a nested build/Release subdirectory must be copied'
+    )
+    assert.equal(
+      existsSync(join(destRoot, 'prebuilds', `${process.platform}-${process.arch}`, 'conpty', 'x64', 'conpty.dll')),
+      true,
+      'conpty prebuild subdirectory must be copied recursively'
+    )
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
 // ─── stageGetWindowsInto tests ──────────────────────────────────────
 
 /** Create a minimal fake get-windows source tree in a temp dir. */

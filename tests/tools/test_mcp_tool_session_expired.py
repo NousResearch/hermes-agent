@@ -48,6 +48,42 @@ def test_is_session_expired_detects_session_not_found():
     assert _is_session_expired_error(RuntimeError("Unknown session: abc123")) is True
 
 
+def test_is_session_expired_detects_browseros_dead_session():
+    """BrowserOS neo reports a stale session with this exact wording."""
+    from tools.mcp_tool_errors import _is_session_expired_error
+
+    exc = RuntimeError(
+        "BrowserOS neo session f7c8ff79-c7ad-423b-a32e-0c6e27dac52b "
+        "is no longer live"
+    )
+    assert _is_session_expired_error(exc) is True
+
+
+def test_is_session_expired_detects_unregistered_mcp_session():
+    """Some MCP servers reject a stale transport session as unregistered."""
+    from tools.mcp_tool_errors import _is_session_expired_error
+
+    exc = RuntimeError(
+        "mcp session 9b4775f9-99d4-4689-b61a-42beed5f000a is not registered"
+    )
+    assert _is_session_expired_error(exc) is True
+
+
+def test_is_session_expired_ignores_session_mention_elsewhere():
+    """A message merely mentioning a session must not read as expiry.
+
+    The id must sit between the stable words; otherwise phrases like a
+    failed handler registration that happen to contain both words would
+    trigger a spurious reconnect."""
+    from tools.mcp_tool_errors import _is_session_expired_error
+
+    exc = RuntimeError(
+        "failed to register tool handler for session cache: "
+        "endpoint is not registered"
+    )
+    assert _is_session_expired_error(exc) is False
+
+
 def test_is_session_expired_traversal_is_budget_bounded():
     """Pathologically long chains stop at the node budget without spinning."""
     import tools.mcp_tool as mcp_mod

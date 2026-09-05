@@ -2744,6 +2744,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
             mcp_names = set((CLI_CONFIG.get("mcp_servers") or {}).keys())
             invalid = [t for t in toolsets if not validate_toolset(t) and t not in mcp_names]
             if invalid:
+                # Plugin toolsets are likewise unknown until discover_plugins()
+                # has populated the registry (_get_platform_tools enables a
+                # newly installed plugin's toolset by default, so it arrives
+                # here before discovery on a cold start). Re-validate after a
+                # one-time discovery pass before declaring anything unknown —
+                # mirror of the TUI gateway's approach (tui_gateway/server.py).
+                try:
+                    from hermes_cli.plugins import discover_plugins
+
+                    discover_plugins()
+                    invalid = [t for t in invalid if not validate_toolset(t)]
+                except Exception:
+                    # A plugin that raises during import must not masquerade
+                    # as a config error, but keep the two failure modes
+                    # distinguishable in the logs (same level as the
+                    # background-discovery failure handler in plugins.py).
+                    logger.warning(
+                        "plugin discovery failed while re-validating toolsets",
+                        exc_info=True,
+                    )
+            if invalid:
                 self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
 
     def _init_checkpoints_and_rules(self, checkpoints, pass_session_id, ignore_rules):

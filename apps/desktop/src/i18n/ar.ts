@@ -402,7 +402,8 @@ export const ar = defineLocale({
       testUnsupported: 'هذا النظام لا يدعم الإشعارات الأصلية.',
       completionSoundTitle: 'صوت الاكتمال',
       completionSoundDesc: 'يُشغّل عند انتهاء دور الوكيل. اختر إعدادا مسبقا وعاينه هنا.',
-      completionSoundPreview: 'معاينة'
+      completionSoundPreview: 'معاينة',
+      completionSoundVolumeTitle: 'مستوى الصوت'
     },
     sections: {
       model: 'النموذج',

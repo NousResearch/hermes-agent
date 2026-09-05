@@ -101,11 +101,19 @@ class SessionTelegramTopicsMixin:
     ``enable``/``bind`` run the migration."""
 
     def _topic_read_one(self, sql: str, params):
-        """``fetchone`` that treats an unmigrated table as None."""
+        """``fetchone`` that treats an unmigrated table as None. A pre-v3 table left by an
+        upgrade (issue #103363) is healed to v3 once and the read retried, so topic mode
+        keeps working on existing installs instead of silently reading as empty."""
         try:
             return self._read_one(sql, params)
-        except sqlite3.OperationalError:
-            return None
+        except sqlite3.OperationalError as exc:
+            if "no such column: profile_name" not in str(exc):
+                return None
+            self.apply_telegram_topic_migration()
+            try:
+                return self._read_one(sql, params)
+            except sqlite3.OperationalError:
+                return None
 
     def apply_telegram_topic_migration(self) -> None:
         """Create Telegram DM topic-mode tables on explicit /topic opt-in. Deliberately NOT
@@ -233,8 +241,18 @@ class SessionTelegramTopicsMixin:
                 "SELECT * FROM telegram_dm_topic_bindings WHERE profile_name = ? AND chat_id = ? ORDER BY updated_at DESC",
                 (profile_name, str(chat_id)),
             )
-        except sqlite3.OperationalError:
-            return []
+        except sqlite3.OperationalError as exc:
+            if "no such column: profile_name" not in str(exc):
+                return []
+            # Same pre-v3 self-heal as _topic_read_one (issue #103363).
+            self.apply_telegram_topic_migration()
+            try:
+                rows = self._read_all(
+                    "SELECT * FROM telegram_dm_topic_bindings WHERE profile_name = ? AND chat_id = ? ORDER BY updated_at DESC",
+                    (profile_name, str(chat_id)),
+                )
+            except sqlite3.OperationalError:
+                return []
         return [dict(row) for row in rows]
 
     def get_telegram_topic_binding_by_session(self, *, session_id: str) -> Optional[Dict[str, Any]]:

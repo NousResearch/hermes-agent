@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setPrimaryGateway, setPrimaryGatewayConnectionId } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $sessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
@@ -30,6 +31,8 @@ beforeEach(() => {
   $hudSession.set(null)
   $sessions.set([])
   $activeGatewayProfile.set('default')
+  setPrimaryGateway({ connectionState: 'open' } as never, 'default')
+  setPrimaryGatewayConnectionId(null)
 })
 
 afterEach(() => {
@@ -67,12 +70,23 @@ describe('openHud profile targeting (#82285)', () => {
     expect(open).toHaveBeenCalledWith({ sessionId: 'abc', profile: 'work' })
   })
 
-  it('uses the active gateway profile when opening without a session', () => {
-    $activeGatewayProfile.set('research')
+  it('carries the active gateway route when opening without a session', () => {
+    $activeGatewayProfile.set('thanos')
+    setPrimaryGatewayConnectionId('vultr-gateway')
 
     openHud()
 
-    expect(open).toHaveBeenCalledWith({ sessionId: null, profile: 'research' })
+    expect(open).toHaveBeenCalledWith({ connectionId: 'vultr-gateway', sessionId: null, profile: 'thanos' })
+  })
+
+  it('carries the active gateway route for a legacy profile-only session', () => {
+    $sessions.set([session({ id: 'abc', profile: 'thanos' })])
+    $activeGatewayProfile.set('thanos')
+    setPrimaryGatewayConnectionId('vultr-gateway')
+
+    openHud('abc')
+
+    expect(open).toHaveBeenCalledWith({ connectionId: 'vultr-gateway', sessionId: 'abc', profile: 'thanos' })
   })
 
   it('normalizes to default for single-profile users', () => {

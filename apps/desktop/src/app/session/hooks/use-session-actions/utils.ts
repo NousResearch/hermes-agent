@@ -1600,13 +1600,11 @@ interface ApplyRuntimeInfoOptions {
 /** Mirror a session's runtime state into the composer atoms the MAIN pane
  *  renders from. Foreground sessions only — see ApplyRuntimeInfoOptions. */
 function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
-  if (state.model !== undefined) {
-    setCurrentModel(state.model)
-  }
-
-  if (state.provider !== undefined) {
-    setCurrentProvider(state.provider)
-  }
+  // NOTE: model and provider are intentionally omitted.
+  // Composer model/provider is sticky UI state (localStorage + manual picks).
+  // Writing session runtime model/provider here made fallback providers sticky across
+  // new sessions (defeating per-turn primary restoration). See #75320.
+  // The model pill reads session runtime via primaryField(state => state.model, $currentModel).
 
   if (state.cwd !== undefined) {
     if (state.cwd) {

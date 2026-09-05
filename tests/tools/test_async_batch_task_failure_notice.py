@@ -46,3 +46,24 @@ def test_notice_is_not_sent_for_a_finished_batch_and_does_not_dedup_against_the_
     notice = {"type": "async_delegation", "delegation_id": "deleg_x", "task_failure_notice": True, "results": [{"task_index": 2}]}
     final = {"type": "async_delegation", "delegation_id": "deleg_x", "is_batch": True, "results": []}
     assert _notification_event_dedup_key(notice) != _notification_event_dedup_key(final)
+
+
+def test_interim_notice_never_claims_or_acknowledges_the_batch_final_row(tmp_path, monkeypatch):
+    """Independent-review witness: a busy parent that drained the notice first acknowledged the FINAL
+    result's durable row, and the consolidated result was never delivered (nor replayed after restart)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
+    notice = {"type": "async_delegation", "delegation_id": "deleg_x", "task_failure_notice": True, "results": [{"task_index": 0}]}
+    final = {"type": "async_delegation", "delegation_id": "deleg_x", "is_batch": True, "results": []}
+    # The notice is a non-durable event: empty token, no row touched.
+    assert ad.claim_event_delivery(notice, "tui-poller") == ""
+    ad.complete_event_delivery(notice, "")
+    assert ad.is_interim_delegation_event(notice) and not ad.is_interim_delegation_event(final)
+
+
+def test_gateway_dedup_identity_separates_notices_from_the_final_and_from_each_other():
+    from gateway.run_notifications import GatewayNotificationsMixin
+    ident = GatewayNotificationsMixin._completion_delivery_identity
+    n0 = {"type": "async_delegation", "delegation_id": "d", "task_failure_notice": True, "results": [{"task_index": 0}]}
+    n1 = {"type": "async_delegation", "delegation_id": "d", "task_failure_notice": True, "results": [{"task_index": 1}]}
+    final = {"type": "async_delegation", "delegation_id": "d", "is_batch": True, "results": []}
+    assert len({ident(n0), ident(n1), ident(final)}) == 3

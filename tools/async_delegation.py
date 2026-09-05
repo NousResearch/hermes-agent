@@ -323,8 +323,17 @@ def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
         return cur.rowcount == 1
 
 
+def is_interim_delegation_event(evt: Dict[str, Any]) -> bool:
+    """An early per-task notice for a batch that is still running. It shares the batch's
+    ``delegation_id`` but is NOT the durable completion: it must never claim, acknowledge or
+    dedup against the final result's row (independent review reproduced exactly that loss)."""
+    return evt.get("type") == "async_delegation" and bool(evt.get("task_failure_notice"))
+
+
 def claim_event_delivery(evt: Dict[str, Any], consumer: str) -> Optional[str]:
-    """Claim a durable delegation event; non-durable events need no token."""
+    """Claim a durable delegation event; non-durable events (and interim notices) need no token."""
+    if is_interim_delegation_event(evt):
+        return ""
     delegation_id = str(evt.get("delegation_id") or "") if evt.get("type") == "async_delegation" else ""
     if not delegation_id:
         return ""

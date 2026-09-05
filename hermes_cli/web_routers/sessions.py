@@ -160,6 +160,54 @@ def _resolve_session_id(db, session_id: str) -> Optional[str]:
         ) from exc
 
 
+def _resolve_session_owner_profile(session_id: str) -> Optional[str]:
+    """Find the served local profile that owns ``session_id`` when a mutation
+    arrives with no profile hint and the id does not resolve in the default
+    store.
+
+    The Desktop renderer's session sync attaches the owning profile only when
+    it can attribute one to the row (see the renderer-side counterpart,
+    PR #99376). For a row outside its active-profile slice the write goes out
+    profile-less; without this fallback it opened the DEFAULT store, resolved
+    nothing, and 404'd — silently from the app's perspective, so a pin
+    resurrected after the unconfirmed-write fence.
+
+    Conservative: returns the owner only when EXACTLY ONE served profile
+    resolves the id (ids are unique per store, but a twin id across two
+    profiles stays ambiguous — never guess). Any error while scanning a
+    sibling store (corrupt, busy) also aborts to None: an unreadable store
+    can neither confirm nor deny ownership, and misrouting a write is worse
+    than leaving the caller's 404 to stand.
+    """
+    from hermes_cli import profiles as profiles_mod
+
+    try:
+        targets = profiles_mod.profiles_to_serve(multiplex=True)
+    except Exception:
+        return None
+    if not targets:
+        return None
+
+    owner: Optional[str] = None
+    for name, _home in targets:
+        if not name or name == "default":
+            continue  # the caller already tried the default store
+        try:
+            db = _open_session_db_for_profile(name, read_only=True)
+        except Exception:
+            return None  # sibling unreadable -> cannot prove single ownership
+        try:
+            if db.resolve_session_id(session_id):
+                if owner is not None:
+                    return None  # ambiguous: two profiles own the id
+                owner = name
+        except Exception:
+            return None
+        finally:
+            db.close()
+    return owner
+
+
 # ``le=100`` on limit: an unbounded limit lets one request drag every session
 # row (plus correlated-subquery preview work) out of SQLite in a single hit.
 @list_router.get("/api/sessions")
@@ -390,19 +438,28 @@ async def search_sessions(
 
 
 @manage_router.post("/api/sessions/bulk-delete")
-async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
+async def bulk_delete_sessions_endpoint(
+    body: BulkDeleteSessions,
+    profile: Optional[str] = Query(None),
+):
     """Delete every session in ``body.ids`` in one transaction (POST: many
     clients refuse a DELETE body).
 
     Per :meth:`SessionDB.delete_sessions`: unknown ids are skipped (``deleted``
     reports what really happened), children are orphaned, active/archived rows
     ARE deleted (hand-picked), on-disk cleanup is left to the next prune.
+
+    The target profile may come from ``body.profile`` or the ``?profile=``
+    query (body wins); the query channel is how the Desktop API client scopes
+    requests in global-remote mode — without it the dashboard's bulk delete
+    silently ran against the DEFAULT profile's store.
     """
     # Hard cap so a runaway selection can't lock the writer for long.
     if len(body.ids) > 500:
         raise HTTPException(status_code=400, detail="ids must contain at most 500 entries")
     deleted = await asyncio.to_thread(
-        _with_db, body.profile, lambda db: db.delete_sessions(body.ids), read_only=False)
+        _with_db, body.profile or profile, lambda db: db.delete_sessions(body.ids),
+        read_only=False)
     return {"ok": True, "deleted": deleted}
 
 
@@ -561,19 +618,37 @@ async def get_session_messages(
             "returned": len(projected_messages)}}
 
 
-@manage_router.delete("/api/sessions/{session_id}")
-async def delete_session_endpoint(session_id: str, profile: Optional[str] = None):
-    def _delete(db):
-        # Already-absent is an idempotent success: the desktop optimistically
-        # removes the row and RESTORES it on any error, so a 404 resurrected
-        # ghost rows (transient empties racing the sidebar snapshot).
+def _delete_session_resolving_owner(session_id: str, profile: Optional[str]) -> dict:
+    """Delete ``session_id`` from the profile's store, falling back to the
+    row's single served owner when the caller sent no profile hint."""
+    db = _open_session_db_for_profile(profile, read_only=False)
+    try:
         sid = _resolve_session_id(db, session_id)
+        if not sid and not profile:
+            # Profile-less delete of a row owned by another served profile
+            # used to report idempotent already_absent WITHOUT deleting it —
+            # the same silent-resurrection class as the PATCH 404. Resolve the
+            # single owner; truly-absent or ambiguous stays idempotent.
+            owner = _resolve_session_owner_profile(session_id)
+            if owner is not None:
+                db.close()
+                db = _open_session_db_for_profile(owner, read_only=False)
+                sid = _resolve_session_id(db, session_id)
         if not sid:
             return {"ok": True, "already_absent": True}
         db.delete_session(sid)
         return {"ok": True}
+    finally:
+        db.close()
 
-    return await asyncio.to_thread(_with_db, profile, _delete, read_only=False)
+
+@manage_router.delete("/api/sessions/{session_id}")
+async def delete_session_endpoint(session_id: str, profile: Optional[str] = None):
+    # Already-absent is an idempotent success: the desktop optimistically
+    # removes the row and RESTORES it on any error, so a 404 resurrected
+    # ghost rows (transient empties racing the sidebar snapshot). When the row
+    # merely lives in another served profile's store, delete it there instead.
+    return await asyncio.to_thread(_delete_session_resolving_owner, session_id, profile)
 
 
 @manage_router.post("/api/sessions/owner-backfill")
@@ -616,13 +691,37 @@ _RENAME_FLAG_SETTERS = (
 
 
 @manage_router.patch("/api/sessions/{session_id}")
-async def rename_session_endpoint(session_id: str, body: SessionRename):
+async def rename_session_endpoint(
+    session_id: str,
+    body: SessionRename,
+    profile: Optional[str] = Query(None),
+):
     """Update ``title`` (empty clears) and/or the flags; ``pinned`` exempts from
-    the auto-archive sweep, ``unread=False`` marks read up to now."""
-    flags = [flag for flag, _ in _RENAME_FLAG_SETTERS]
+    the auto-archive sweep, ``unread=False`` marks read up to now.
 
-    def _update(db):
+    The target profile may come from ``body.profile`` or the ``?profile=``
+    query (body wins); the query channel is how the Desktop API client scopes
+    requests in global-remote mode (``pathWithGlobalRemoteProfile``). With
+    NEITHER set, a session that does not resolve in the default store is
+    looked up across the other served local profiles and the write is routed
+    to its single owner (see :func:`_resolve_session_owner_profile`) instead
+    of 404-ing — the Desktop renderer attaches the owner only when it can
+    attribute the row, and a dropped hint used to silently resurrect pins on
+    the next sync.
+    """
+    flags = [flag for flag, _ in _RENAME_FLAG_SETTERS]
+    effective_profile = body.profile or profile
+    db = _open_session_db_for_profile(effective_profile, read_only=False)
+    try:
         sid = _resolve_session_id(db, session_id)
+        if not sid and not effective_profile:
+            # Profile-less mutation of a row owned by ANOTHER served profile:
+            # resolve the single owner instead of 404-ing in the default store.
+            owner = _resolve_session_owner_profile(session_id)
+            if owner is not None:
+                db.close()
+                db = _open_session_db_for_profile(owner, read_only=False)
+                sid = _resolve_session_id(db, session_id)
         if not sid:
             raise HTTPException(status_code=404, detail=_NOT_FOUND)
         if body.title is None and all(getattr(body, f) is None for f in flags):
@@ -644,8 +743,8 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
                 result[flag] = bool(value)
         result["title"] = db.get_session_title(sid) or ""
         return result
-
-    return _with_db(body.profile, _update, read_only=False)
+    finally:
+        db.close()
 
 
 def _compact_json(obj) -> str:

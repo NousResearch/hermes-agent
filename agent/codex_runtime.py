@@ -4,6 +4,7 @@ AIAgent first: ``run_codex_app_server_turn`` drives one ``codex app-server`` sub
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -15,6 +16,9 @@ from typing import Any, Callable, Dict, List
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 
 logger = logging.getLogger(__name__)
+_codex_watchdog_state_var: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "codex_watchdog_state", default=None
+)
 
 
 def _call_guarded(fn: Callable | None, fail_msg: str, *fail_args: Any, args: tuple = (), kwargs: dict | None = None):
@@ -507,6 +511,28 @@ def _event_field(event: Any, name: str, default: Any = None) -> Any:
     return value if value is not None else default
 
 
+_CODEX_PROGRESS_DELTA_TYPES = frozenset({
+    "response.output_text.delta", "response.reasoning_summary_text.delta", "response.text.delta",
+    "response.audio.delta", "response.function_call_arguments.delta", "response.reasoning_text.delta",
+})
+
+
+def _codex_event_has_content(event: Any) -> bool:
+    """Whether a Codex Responses event carries substantive forward progress.
+
+    Lifecycle/keepalive frames and empty structural deltas prove transport
+    liveness, but do not mean the model has begun producing its response.
+    """
+    event_type = _event_field(event, "type")
+    if event_type in _CODEX_PROGRESS_DELTA_TYPES:
+        return bool(_event_field(event, "delta"))
+    if event_type == "response.output_item.added":
+        item = _event_field(event, "item")
+        return "function_call" in str(_event_field(item, "type") or "") and any(
+            bool(_event_field(item, field)) for field in ("id", "call_id", "name", "arguments"))
+    return False
+
+
 def _raise_stream_error(event: Any) -> None:
     """Raise ``_StreamErrorEvent`` from a ``type=error`` SSE frame. The spec puts code/message/param at the
     top level, but the SDK and several proxies nest them under ``error``; read top-level first, then the envelope."""
@@ -832,7 +858,12 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     # Retirement token for THIS request (installed by ``interruptible_api_call``). A watchdog that kills the
     # connection clears the agent-level token, so a worker still draining frames can tell it was retired.
     # ``None`` = no watchdog; every check passes.
-    request_token = getattr(agent, "_active_codex_stream_request_token", None)
+    watchdog_state = _codex_watchdog_state_var.get()
+    request_token = (
+        watchdog_state.token
+        if watchdog_state is not None
+        else getattr(agent, "_active_codex_stream_request_token", None)
+    )
     # Delta-sink claim for the CURRENT physical attempt (None until the stream opens).
     writer_token = {"value": None}
 
@@ -847,8 +878,24 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         agent._codex_streamed_text_parts.append(text)
         agent._fire_stream_delta(text)
 
-    def _on_event(event: Any) -> None:  # TTFB watchdog and activity touch — once per SSE event.
-        agent._codex_stream_last_event_ts = time.time()
+    def _on_event(event: Any) -> None:  # TTFB/activity touch — once per SSE event.
+        now = time.time()
+        has_progress = _codex_event_has_content(event)
+        reset_progress = False
+        if watchdog_state is not None:
+            with watchdog_state.lock:
+                reset_progress = watchdog_state.retry_started_ts is not None
+                if reset_progress:
+                    watchdog_state.retry_started_ts = None
+                    watchdog_state.last_progress_ts = None
+                watchdog_state.last_event_ts = now
+                if has_progress:
+                    watchdog_state.last_progress_ts = now
+        agent._codex_stream_last_event_ts = now
+        if reset_progress:
+            agent._codex_stream_last_progress_ts = None
+        if has_progress:
+            agent._codex_stream_last_progress_ts = now
         agent._touch_activity("receiving stream response")
 
     def _interrupt_or_superseded() -> bool:
@@ -911,8 +958,15 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     call_role = ("delegated" if getattr(agent, "is_subagent", False)
                  else "fallback" if int(getattr(agent, "_fallback_index", 0) or 0) > 0 else "primary")
     for attempt in range(max_stream_retries + 1):
+        if not _request_is_current():
+            raise TimeoutError("Codex Responses stream request retired before retry")
         if agent._interrupt_requested:
             raise InterruptedError("Agent interrupted before Codex stream retry")
+        if attempt > 0 and watchdog_state is not None and watchdog_state.phase_aware:
+            # A physical reconnect has its own no-event TTFB phase. Its first parsed
+            # event clears this marker and starts a fresh model-progress phase.
+            with watchdog_state.lock:
+                watchdog_state.retry_started_ts = time.time()
         intercepted_events: list = []
         writer_token["value"] = event_stream = None
         try:

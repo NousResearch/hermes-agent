@@ -184,6 +184,26 @@ class TelegramPaperclipBridgeTests(unittest.TestCase):
         self.assertNotIn("internal-token-value", sent_text)
         adapter.handle_message.assert_not_awaited()
 
+    def test_create_a_task_for_phrase_is_natural_intake(self):
+        adapter = FakeAdapter()
+        event = FakeEvent("create a task for Wes to audit the estate")
+        bridge_payload = {
+            "status": "pending",
+            "approval_id": "pending-create-task",
+            "reply": {"text": "Create issue?"},
+        }
+
+        with patch(
+            "plugins.platforms.telegram.paperclip_bridge.post_json",
+            return_value=(200, bridge_payload),
+        ) as post:
+            handled = asyncio.run(maybe_handle_command(adapter, event))
+
+        self.assertTrue(handled)
+        payload = post.call_args.args[1]
+        self.assertEqual(payload["command"], "log")
+        self.assertEqual(payload["message"]["command_text"], "Wes to audit the estate")
+
     def test_bridge_credentials_can_come_from_process_environment(self):
         adapter = FakeAdapter()
         del adapter.config.extra["paperclip_bridge_bearer_token"]

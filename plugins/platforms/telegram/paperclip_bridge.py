@@ -15,7 +15,8 @@ MAX_CALLBACK_BYTES = 64
 SAFE_CALLBACK_TARGET = re.compile(r"^[A-Za-z0-9_.-]{1,48}$")
 NATURAL_JOB_PATTERN = re.compile(
     r"^\s*(?:(?:please|can you|could you|would you)\s+)?"
-    r"log (?:a )?(?:job|task) to\s+(?P<task>\S(?:.*\S)?)\s*$",
+    r"(?:log (?:a )?(?:job|task) to|create (?:a )?(?:job|task) for)\s+"
+    r"(?P<task>\S(?:.*\S)?)\s*$",
     re.IGNORECASE,
 )
 NATURAL_LOG_PATTERN = re.compile(

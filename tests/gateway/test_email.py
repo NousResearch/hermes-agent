@@ -1122,5 +1122,100 @@ class TestSenderAuthentication(unittest.TestCase):
         self.assertFalse(ok, reason)
 
 
+class TestEmailSubjectPrefixAndTaskContext(unittest.TestCase):
+    """Subject prefix config plus task-context subjects for outbound mail."""
+
+    def _make_adapter(self, extra_env=None):
+        from gateway.config import PlatformConfig
+        env = {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }
+        env.update(extra_env or {})
+        with patch.dict(os.environ, env):
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def _sent_subject(self, mock_server):
+        return mock_server.send_message.call_args[0][0]["Subject"]
+
+    def test_prefix_defaults_to_hermes_agent(self):
+        self.assertEqual(self._make_adapter()._subject_prefix, "Hermes Agent")
+
+    def test_prefix_custom_env(self):
+        adapter = self._make_adapter({"EMAIL_SUBJECT_PREFIX": "Nightly"})
+        self.assertEqual(adapter._subject_prefix, "Nightly")
+
+    def test_reply_default_uses_prefix(self):
+        import asyncio
+        adapter = self._make_adapter({"EMAIL_SUBJECT_PREFIX": "Nightly"})
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+            asyncio.run(adapter.send("user@test.com", "hello"))
+            self.assertEqual(self._sent_subject(mock_smtp.return_value), "Re: Nightly")
+
+    def test_metadata_subject_used_verbatim_without_re(self):
+        import asyncio
+        adapter = self._make_adapter()
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+            asyncio.run(adapter.send("user@test.com", "hello", metadata={"subject": "Nightly Backup"}))
+            self.assertEqual(self._sent_subject(mock_smtp.return_value), "Nightly Backup")
+
+    def test_job_name_derives_prefixed_subject(self):
+        import asyncio
+        adapter = self._make_adapter()
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+            asyncio.run(adapter.send("user@test.com", "hello", metadata={"job_name": "Nightly Backup"}))
+            self.assertEqual(self._sent_subject(mock_smtp.return_value), "Hermes Agent: Nightly Backup")
+
+    def test_no_context_keeps_reply_threading(self):
+        import asyncio
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {"subject": "Earlier", "message_id": "<m@t>"}
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+            asyncio.run(adapter.send("user@test.com", "hello", metadata={}))
+            self.assertEqual(self._sent_subject(mock_smtp.return_value), "Re: Earlier")
+
+    def test_standalone_subject_kwarg(self):
+        import asyncio
+        from types import SimpleNamespace
+        from plugins.platforms.email.adapter import _standalone_send as _email_send
+        env = {"EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret",
+               "EMAIL_SMTP_HOST": "smtp.test.com", "EMAIL_SMTP_PORT": "587"}
+        with patch.dict(os.environ, env), patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+            result = asyncio.run(_email_send(
+                SimpleNamespace(token=None, api_key=None, extra={}), "user@test.com", "Hello",
+                subject="Cron Job X"))
+            self.assertTrue(result["success"])
+            self.assertEqual(mock_smtp.return_value.send_message.call_args[0][0]["Subject"], "Cron Job X")
+
+    def test_scheduler_route_metadata_carries_subject(self):
+        from types import SimpleNamespace
+        from gateway.config import Platform
+        from cron.scheduler_delivery import _live_route_metadata
+        t = SimpleNamespace(job={"id": "job1", "name": "Nightly Backup"}, thread_id=None,
+                            platform=Platform.EMAIL, notify_delivery=True, origin_target=False,
+                            origin={}, chat_id="user@test.com", loop=None, runtime_adapter=None)
+        _, route_metadata, _ = _live_route_metadata(t)  # type: ignore[arg-type]
+        self.assertEqual(route_metadata["subject"], "Nightly Backup")
+
+    def test_standalone_sender_without_subject_param_unaffected(self):
+        import asyncio
+        from tools import send_message_senders as _senders
+        async def _plain_sender(pconfig, chat_id, message, thread_id=None):
+            return {"success": True}
+        with patch.object(_senders, "_plugin_standalone_sender",
+                          return_value=(_plain_sender, None)):
+            result = asyncio.run(_senders._registry_standalone_send(
+                "email", object(), "user@test.com", "Hello", subject="Cron Job X"))
+            self.assertTrue(result["success"])
+
+
 if __name__ == "__main__":
     unittest.main()

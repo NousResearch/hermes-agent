@@ -329,7 +329,7 @@ async def _dispatch_on_gateway_loop(runner, make_coro, log_message):
 
 
 async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None, media_files=None,
-                            force_document=False):
+                            force_document=False, subject=None):
     """Live in-process gateway adapter first, else the plugin's ``standalone_sender_fn`` (cron),
     else an error naming both; media uses the adapter's native media APIs under the same rules."""
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
@@ -337,7 +337,8 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
     if adapter is not None:
         try:
             metadata = {**({"thread_id": thread_id} if thread_id else {}),
-                        **({"publish_topic": chat_id} if platform_name == "ntfy" and chat_id else {})} or None
+                        **({"publish_topic": chat_id} if platform_name == "ntfy" and chat_id else {}),
+                        **({"subject": subject} if subject else {})} or None
             if media_files:  # always a dict result, returned as-is below
                 make_coro = lambda: _send_live_adapter_media(  # noqa: E731
                     adapter, chat_id, chunk, media_files, thread_id=thread_id, metadata=metadata,
@@ -365,8 +366,11 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
                           f"connected? For out-of-process delivery (e.g. cron in a separate process), the platform "
                           f"plugin must register a standalone_sender_fn on its PlatformEntry.")}
     try:
+        import inspect as _inspect
+        _sender_params = _inspect.signature(sender).parameters
+        _sender_extra = {"subject": subject} if subject and "subject" in _sender_params else {}
         result = await sender(pconfig, chat_id, chunk, thread_id=thread_id, media_files=media_files,
-                              force_document=force_document)
+                              force_document=force_document, **_sender_extra)
     except asyncio.CancelledError:
         raise
     except Exception as e:
@@ -437,8 +441,9 @@ async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chun
         pconfig, chat_id, chunk, thread_id=thread_id, media_files=media_files if is_last else empty_media, **extra))
 
 
-def _via_adapter_route(p, pc, cid, chunk, media, tid, fd):
-    return _send_via_adapter(p, pc, cid, chunk, thread_id=tid, media_files=media, force_document=fd)
+def _via_adapter_route(p, pc, cid, chunk, media, tid, fd, subject=None):
+    return _send_via_adapter(p, pc, cid, chunk, thread_id=tid, media_files=media, force_document=fd,
+                             subject=subject)
 
 
 # Native-media chunked routes for built-in platforms; media rides on the final chunk, non-final
@@ -469,7 +474,8 @@ _TEXT_SENDERS = {
 _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None,
+                      subject=None):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
@@ -519,7 +525,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 return {"error": f"Plugin send_message handler failed: {e}"}
         # Plugin platform: live gateway adapter if available, else standalone_sender_fn.
         send_one = lambda chunk, is_last: _via_adapter_route(  # noqa: E731
-            platform, pconfig, chat_id, chunk, media_files if is_last else [], thread_id, force_document)
+            platform, pconfig, chat_id, chunk, media_files if is_last else [], thread_id, force_document,
+            subject)
     last_result = await _send_chunks(chunks, send_one)
     if (warning and isinstance(last_result, dict) and last_result.get("success")
             and not last_result.get("media_delivered")):

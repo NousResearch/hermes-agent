@@ -346,6 +346,11 @@ class EmailAdapter(BasePlatformAdapter):
             self._require_authenticated_sender = not _esecret_bool("EMAIL_TRUST_FROM_HEADER", False)
         # Optional authserv-id pinning Authentication-Results to the operator's own server (defeats an injected header sorting first).
         self._authserv_id = (extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")).strip().lower()
+        # Outbound subject prefix: distinguishes Hermes mail in busy inboxes and
+        # keeps spam filters from reading a generic "Hermes Agent" as bot traffic.
+        self._subject_prefix = (
+            _get_secret("EMAIL_SUBJECT_PREFIX", "") or "Hermes Agent"
+        ).strip() or "Hermes Agent"
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
@@ -642,7 +647,37 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an email reply to the given address."""
-        return await self._run_send(self._send_email, (chat_id, content, reply_to), "[Email] Send failed to %s: %s", chat_id)
+        subject = self._task_subject(metadata or {})
+        return await self._run_send(self._send_email, (chat_id, content, reply_to, subject), "[Email] Send failed to %s: %s", chat_id)
+
+    def _task_subject(self, metadata: Dict[str, Any]) -> Optional[str]:
+        """Derive an outbound subject from send metadata, if any.
+
+        An explicit ``subject`` is honored verbatim (no ``Re:`` prefix — that stays
+        reserved for reply threading). Otherwise the first available task-context
+        field (job_name/reason/task/title) is prefixed, so cron deliveries carry
+        the producing job's name instead of a generic default. Returns ``None``
+        when there is no task context and the reply-thread default applies.
+        """
+        override = metadata.get("subject")
+        if override:
+            return str(override)
+        for key in ("job_name", "reason", "task", "title"):
+            value = metadata.get(key)
+            if value:
+                return f"{self._subject_prefix}: {value}"
+        return None
+
+    def _verbatim_subject_msg(self, to_addr: str, body: str, subject: str) -> MIMEMultipart:
+        """Build a fresh (non-reply) message with the subject used exactly as given."""
+        msg = MIMEMultipart()
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
+        for key, value in (("From", self._address), ("To", to_addr), ("Subject", subject),
+                           ("Date", formatdate(localtime=True)), ("Message-ID", msg_id)):
+            msg[key] = value
+        if body:
+            msg.attach(MIMEText(body, "plain", "utf-8"))
+        return msg
 
     def _message_id_domain(self) -> str:
         """Domain for generated Message-IDs; ``localhost`` when EMAIL_ADDRESS lacks ``@``."""
@@ -652,7 +687,7 @@ class EmailAdapter(BasePlatformAdapter):
                    attach_empty_body: bool = False) -> Tuple[MIMEMultipart, str, str]:
         """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``."""
         msg, ctx = MIMEMultipart(), self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
+        subject = ctx.get("subject", self._subject_prefix)
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         original_msg_id = reply_to_msg_id or ctx.get("message_id")
@@ -677,15 +712,33 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
-    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None) -> str:
+    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None,
+                    subject_override: Optional[str] = None) -> str:
         """Send an email via SMTP. Runs in executor thread."""
+        if subject_override:
+            msg = self._verbatim_subject_msg(to_addr, body, subject_override)
+            self._smtp_send(msg)
+            logger.info("[Email] Sent mail to %s (subject: %s)", to_addr, subject_override)
+            return str(msg["Message-ID"])
         msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True)
         self._smtp_send(msg)
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id
 
-    def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]], *, lenient: bool) -> str:
+    def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]], *, lenient: bool,
+                         subject_override: Optional[str] = None) -> str:
         """Send a reply with attachments; *lenient* logs-and-skips unattachable files instead of raising."""
+        if subject_override:
+            msg = self._verbatim_subject_msg(to_addr, body, subject_override)
+            for path, name in files:
+                try:
+                    _attach_file(msg, path, name)
+                except Exception as e:
+                    if not lenient:
+                        raise
+                    logger.warning("[Email] Failed to attach %s: %s", path, e)
+            self._smtp_send(msg)
+            return str(msg["Message-ID"])
         msg, msg_id, _ = self._new_reply(to_addr, body)
         for path, name in files:
             try:
@@ -747,18 +800,20 @@ class EmailAdapter(BasePlatformAdapter):
 
 
 # Plugin glue: register() exposes the platform via the registry; EMAIL_* env → PlatformConfig seeding stays in core.
-async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
+async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False,
+                       subject=None):
     """Out-of-process Email delivery via SMTP (one-shot); standalone_sender_fn contract."""
     extra = getattr(pconfig, "extra", {}) or {}
     address, password = extra.get("address") or _get_secret("EMAIL_ADDRESS", ""), _get_secret("EMAIL_PASSWORD", "")
     smtp_host, smtp_port = extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", ""), _esecret_int("EMAIL_SMTP_PORT", 587)
     smtp_security = _normalize_security(_get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security"), default="tls" if smtp_port == 465 else "starttls")
     smtp_tls_verify = _esecret_bool("EMAIL_SMTP_TLS_VERIFY", is_truthy_value(extra.get("smtp_tls_verify"), default=True))
+    prefix = (_get_secret("EMAIL_SUBJECT_PREFIX", "") or "Hermes Agent").strip() or "Hermes Agent"
     if not all([address, password, smtp_host]):
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
     try:
         msg = MIMEText(message, "plain", "utf-8")
-        for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
+        for key, value in (("From", address), ("To", chat_id), ("Subject", subject or prefix), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
         server.login(address, password)

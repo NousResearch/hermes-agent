@@ -118,6 +118,54 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
   return connection
 }
 
+export interface RetirePooledRemoteAfterDispatchProbeOptions {
+  cancelSshBootstrap: (key: string) => Promise<void> | void
+  currentEntry: () => unknown
+  error: unknown
+  expectedEntry: unknown
+  key: string
+  log: (message: string) => void
+  sourceKind: string
+  stopPoolBackend: (key: string) => Promise<void> | void
+}
+
+/**
+ * Retire one pooled remote descriptor after a failed dispatch probe.
+ *
+ * Stop the pool entry and cancel in-flight SSH bootstrap for that key, and
+ * leave the cached SSH scope state alone. The probe fires on the first miss
+ * with a 2.5s budget, so it cannot tell a transient hiccup from a dead host;
+ * demolishing the scope there discards a working tunnel and a live remote
+ * dashboard that `bootstrapSshConnection` would otherwise reuse. Deciding a
+ * connection is actually gone stays with the cached-connection liveness path
+ * and its multi-strike policy.
+ */
+export async function retirePooledRemoteAfterDispatchProbe({
+  cancelSshBootstrap,
+  currentEntry,
+  error,
+  expectedEntry,
+  key,
+  log,
+  sourceKind,
+  stopPoolBackend
+}: RetirePooledRemoteAfterDispatchProbeOptions): Promise<void> {
+  // A late failure from an old descriptor must never tear down a newer
+  // entry that another caller has already installed.
+  if (currentEntry() !== expectedEntry) {
+    return
+  }
+
+  const detail = error instanceof Error ? error.message : String(error)
+
+  log(`Pooled remote backend "${key}" failed its dispatch probe (${detail}); reconnecting on demand.`)
+  await stopPoolBackend(key)
+
+  if (sourceKind === 'ssh') {
+    await cancelSshBootstrap(key)
+  }
+}
+
 /**
  * Tracks consecutive remote liveness failures independently per gateway.
  * A successful probe clears the streak, and reaching the limit consumes it so

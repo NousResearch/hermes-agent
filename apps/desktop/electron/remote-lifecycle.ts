@@ -38,7 +38,12 @@ const PROTOCOL_VERSION = 1
 const READY_RE = /^HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)/m
 const REMOTE_LOCK_DIR = '~/.hermes/desktop-ssh'
 const SUPPORTED_REMOTE_OS = new Set(['Linux', 'Darwin'])
-const DEFAULT_READY_TIMEOUT_MS = 45_000
+// A cold `hermes serve` on a slow host can take 34–75s to import and announce
+// its ready port (measured on an Intel MacBook; #97264). 45s made the first
+// attempt time out routinely, and the timeout path's socket teardown then
+// poisoned the retry's shared control master. 120s covers the observed
+// cold-spawn window; per-connection `readyTimeoutMs` overrides where needed.
+const DEFAULT_READY_TIMEOUT_MS = 120_000
 const READY_POLL_INTERVAL_MS = 750
 // macOS sshd starts non-interactive shells with a 256-FD soft limit even when
 // the hard limit is unlimited. A Desktop backend can legitimately exceed that

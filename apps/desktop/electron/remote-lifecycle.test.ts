@@ -967,6 +967,32 @@ test('scrapeReadyPort times out and reports a dead spawn', async () => {
   )
 })
 
+test('connect() honors the per-connection ready timeout override (#97264)', async () => {
+  // A cold spawn that never announces its port: the override (not the 120s
+  // default) must bound the wait and surface in the error message.
+  const ssh = fakeSsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/cat .*lock\.json/, ''], // no lockfile
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/python3 -c/, ''], // token file write
+    [/printf '%s\\n'/, ''],
+    [/setsid/, '777\n'],
+    [/kill -0 777/, 'ALIVE'],
+    [/cat .*\.log/, 'still starting...'] // never announces
+  ])
+
+  await assert.rejects(
+    () => connect(connectDeps(ssh, { readyTimeoutMs: 150 })),
+    (err: any) => {
+      assert.equal(err.kind, 'ready-timeout')
+      assert.ok(String(err.message).includes('(150ms)'))
+
+      return true
+    }
+  )
+})
+
 function connectDeps(ssh, over: any = {}) {
   return {
     ssh,

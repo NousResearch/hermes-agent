@@ -84,6 +84,9 @@ test('changed fingerprint waits for old rollback before starting', async () => {
   })
 
   assert.equal(oldLease.signal.aborted, true)
+  // #97264: bootstrap failure teardown gates its transport close on currency
+  // — a superseded attempt must not `ssh -O exit` a socket a successor now owns.
+  assert.equal(oldLease.isCurrent(), false)
   await Promise.resolve()
   assert.deepEqual(events, ['old-start'])
   gate.resolve()

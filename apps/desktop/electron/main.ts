@@ -10603,14 +10603,26 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       probeReuseProof: sshProbeReuseProof,
       adoptServedToken: adoptServedDashboardToken,
       rememberLog: sshRememberLog,
+      readyTimeoutMs: sshConfig.readyTimeoutMs,
       signal: lease.signal
     })
   } catch (error: any) {
     if (created) {
-      try {
-        await ssh.close()
-      } catch {
-        void 0
+      // Only tear down the transport while this attempt is still the
+      // coordinator's current generation. A superseded attempt can be
+      // replaced by a successor that reuses the same control socket — the
+      // coordinator fingerprint is finer-grained than the socket identity
+      // (remoteHermesPath/remoteProfile differ while the socket-hash parts
+      // stay equal) — so this `ssh -O exit` would kill the successor's
+      // master (#97264). From the moment a successor generation exists, the
+      // transport belongs to it (or to the app-quit teardown at
+      // teardownSshConnection / Promise.allSettled([...transports])).
+      if (lease.isCurrent()) {
+        try {
+          await ssh.close()
+        } catch {
+          void 0
+        }
       }
     } else {
       // The cached master was reused but the lifecycle probe against it

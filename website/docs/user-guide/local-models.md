@@ -6,6 +6,8 @@ description: Run models entirely on your own machine — no account, no API key,
 
 # Local Models
 
+![A local workstation running an AI model inside its own compute enclosure.](/img/docs/local-models/hero.png)
+
 Hermes can run open models entirely on your own machine. It downloads and
 manages the inference engine (llama.cpp), picks a curated build for your
 hardware, and handles memory on the default path. You pick a model; Hermes

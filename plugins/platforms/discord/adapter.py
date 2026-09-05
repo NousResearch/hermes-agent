@@ -5579,48 +5579,35 @@ class DiscordAdapter(BasePlatformAdapter):
         session_key: str, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Clarify prompt: one button per choice plus ``✏️ Other`` (text-capture); with no choices the
-        gateway's text-intercept captures the next message. Dict choices (LLMs emit
-        ``[{"description": ...}]``) are unwrapped via ``label``/``description``/``text``/``title``."""
-        def _flatten_choice(c):
-            if c is None:
-                return ""
-            if isinstance(c, str):
-                return c.strip()
-            if isinstance(c, dict):
-                # 'name'/'value' excluded: Discord-component-shaped fields would leak raw enum values.
-                for key in ("label", "description", "text", "title"):
-                    v = c.get(key)
-                    if isinstance(v, str) and v.strip():
-                        return v.strip()
-                return ""
-            if isinstance(c, (list, tuple)):
-                return " ".join(_flatten_choice(x) for x in c).strip()
-            return str(c).strip()
-
+        gateway's text-intercept captures the next message. Choices are normalized with the shared
+        ``tools.clarify_tool._flatten_choice`` (``label``/``description``/``text``/``title``;
+        ``name``/``value`` excluded). The prompt is carried once in self-contained text — no
+        separate embed, so content and embed never duplicate each other."""
         def _build(_channel):
-            embed = discord.Embed(
-                title="❓ Hermes needs your input",
-                description=self._embed_body(str(question or "").strip()),
-                color=discord.Color.orange(),
-            )
-            # 5 buttons × 5 rows = 25; one slot is reserved for "Other".
+            from tools.clarify_tool import _flatten_choice
+            # Discord allows up to 5 buttons per row, 5 rows per view = 25;
+            # one slot is reserved for the "Other" button, so cap at 24.
             clean_choices = [s for s in (_flatten_choice(c) for c in (choices or [])) if s][:24]
+            view = None
             if clean_choices:
-                hint = "Pick one below, or click ✏️ Other to type a custom answer."
-                embed.add_field(name="Choices", value=hint, inline=False)
                 view = ClarifyChoiceView(
                     choices=clean_choices, clarify_id=clarify_id,
                     allowed_user_ids=self._allowed_user_ids,
                     allowed_role_ids=self._allowed_role_ids,
                 )
-            else:
-                hint = "Reply in this channel with your answer."
-                embed.add_field(name="Reply", value=hint, inline=False)
-                view = None
-            content = self._self_contained_prompt_content(
-                "❓ **Hermes needs your input**", str(question or "").strip(), tail=f"\n\n{hint}",
+            # Discord renders content and embeds together, so carrying the full
+            # prompt in both produces a duplicate. Keep the self-contained text
+            # form (which also works when embeds are hidden) and attach only the
+            # interactive view.
+            clarify_tail = (
+                "\n\nPick one below, or click ✏️ Other to type a custom answer."
+                if clean_choices
+                else "\n\nReply in this channel with your answer."
             )
-            send_kwargs = {"content": content, "embed": embed}
+            content = self._self_contained_prompt_content(
+                "❓ **Hermes needs your input**", str(question or "").strip(), tail=clarify_tail,
+            )
+            send_kwargs = {"content": content}
             if view:
                 send_kwargs["view"] = view
             return send_kwargs, view

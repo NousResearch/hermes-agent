@@ -75,11 +75,11 @@ def register(ctx) -> None:
     ctx.register_hook("subagent_start", _on_subagent_start)
     ctx.register_hook("subagent_stop", _on_subagent_stop)
     try:
-        from subagent_handles.sender import register_tools as _register_tools
+        from subagent_handles.status import register_tools as _register_tools
 
         _register_tools(ctx)
     except Exception:
-        logger.debug("subagent_send/cancel tool registration failed", exc_info=True)
+        logger.debug("subagent_handles tool registration failed", exc_info=True)
 
     try:
         _get_persister().restore(registry)

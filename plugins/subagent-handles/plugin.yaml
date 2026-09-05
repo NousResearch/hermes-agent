@@ -1,12 +1,11 @@
 name: subagent-handles
-version: 0.3.0
-description: Subagent handle registry + mid-flight messaging
+version: 0.4.0
+description: Durable subagent handle registry (hooks + restart reconciliation) + read-only handle introspection
 author: michael-anselmi
 license: MIT
 kind: standalone
 provides_tools:
-  - subagent_send
-  - cancel_subagent
+  - subagent_handles
 provides_hooks:
   - subagent_start
   - subagent_stop

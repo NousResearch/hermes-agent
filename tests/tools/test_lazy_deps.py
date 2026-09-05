@@ -12,6 +12,7 @@ call is mocked — we never actually shell out during unit tests.
 
 from __future__ import annotations
 
+import threading
 
 import pytest
 
@@ -155,6 +156,62 @@ class TestEnsure:
         )
         with pytest.raises(ld.FeatureUnavailable, match="still not importable"):
             ld.ensure("test.cache", prompt=False)
+
+    def test_concurrent_ensure_rechecks_after_serialized_install(self, monkeypatch):
+        """Two first-use callers must share one environment mutation."""
+        feature = "test.concurrent"
+        spec = "zzzconcurrent==1.0"
+        monkeypatch.setitem(ld.LAZY_DEPS, feature, (spec,))
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+
+        state_lock = threading.Lock()
+        first_install_started = threading.Event()
+        second_initial_probe = threading.Event()
+        release_first_install = threading.Event()
+        state = {"installed": False, "install_calls": 0}
+
+        def is_satisfied(_spec):
+            with state_lock:
+                installed = state["installed"]
+            if threading.current_thread().name == "second-ensure":
+                second_initial_probe.set()
+            return installed
+
+        def install(_specs, **_kwargs):
+            with state_lock:
+                state["install_calls"] += 1
+                call_number = state["install_calls"]
+            if call_number == 1:
+                first_install_started.set()
+                assert release_first_install.wait(timeout=5)
+            with state_lock:
+                state["installed"] = True
+            return ld._InstallResult(True, "ok", "")
+
+        monkeypatch.setattr(ld, "_is_satisfied", is_satisfied)
+        monkeypatch.setattr(ld, "_venv_pip_install", install)
+        errors = []
+
+        def run_ensure():
+            try:
+                ld.ensure(feature, prompt=False)
+            except BaseException as exc:
+                errors.append(exc)
+
+        first = threading.Thread(target=run_ensure, name="first-ensure")
+        second = threading.Thread(target=run_ensure, name="second-ensure")
+        first.start()
+        assert first_install_started.wait(timeout=5)
+        second.start()
+        assert second_initial_probe.wait(timeout=5)
+        release_first_install.set()
+        first.join(timeout=5)
+        second.join(timeout=5)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert errors == []
+        assert state["install_calls"] == 1
 
 
 # ---------------------------------------------------------------------------

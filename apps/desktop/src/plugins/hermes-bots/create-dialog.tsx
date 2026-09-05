@@ -1345,10 +1345,6 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
         }
       }
 
-      for (const owner of metadataOwners) {
-        await saveBotMeta(owner, groupMembershipPatch(botRosterMeta(owner, allMeta), groupName, true))
-      }
-
       // Persist every machine identity, including today's active source. That
       // member becomes remote after a source switch and cannot rely on the new
       // gateway's name-keyed bot metadata to remain seated in this room.
@@ -1374,9 +1370,29 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
 
         return room
       })
+
+      // Updating the room record makes the Group Chat visible and usable. Bot
+      // metadata is a secondary cross-client projection: a failure here must
+      // not show a retry prompt that would mint a suffixed duplicate.
+      let metadataSyncFailed = false
+
+      for (const owner of metadataOwners) {
+        try {
+          const result = await saveBotMeta(owner, groupMembershipPatch(botRosterMeta(owner, allMeta), groupName, true))
+
+          if (result.serverOutcome === 'failed') {
+            metadataSyncFailed = true
+          }
+        } catch {
+          metadataSyncFailed = true
+        }
+      }
+
       host.notify({
-        kind: 'info',
-        message: b.group.created(groupName, selected.length)
+        kind: metadataSyncFailed ? 'warning' : 'info',
+        message: metadataSyncFailed
+          ? `${b.group.created(groupName, selected.length)}. ${b.group.detailsSyncPending}`
+          : b.group.created(groupName, selected.length)
       })
       onClose()
       onCreated?.(groupName)

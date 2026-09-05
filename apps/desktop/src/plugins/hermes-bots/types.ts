@@ -9,6 +9,8 @@
  * required is a claim that every one of those paths supplies it.
  */
 
+import type { DesktopCommandSettled } from './group-command-receipts'
+
 /**
  * The compact age suffixes the sidebar's session rows render ("now", "m", "h",
  * "d"). Structural rather than an import of core's `Translations`, which the
@@ -168,6 +170,8 @@ export interface GroupMessage {
   at: number
   /** Stable gateway event identity after a hosted-room replay. */
   eventId?: string
+  /** Idempotent user input accepted through a messaging bridge. */
+  external?: boolean
   /** Hosted room scope, never a dispatch route. */
   roomId?: string
   /** Untrusted legacy display metadata; never proof of outgoing intent. */
@@ -198,6 +202,14 @@ export interface GroupChat {
   members?: GroupMember[]
   /** Immutable identity, so a rename doesn't fork the room. */
   roomId?: null | string
+  /** Classic mailbox incarnation; public commitment, never hosted authority. */
+  desktopAuthorityHash?: string
+  /** Private preimage persisted only in Desktop plugin storage. */
+  desktopAuthorityToken?: string
+  /** Conflicting incarnation claims fail closed until the room is recreated. */
+  desktopAuthorityConflict?: true
+  /** Bounded idempotency receipts for messaging commands already settled. */
+  desktopCommandSettled?: DesktopCommandSettled
   running?: boolean
   /** Stable authority installation id for a gateway-hosted room. */
   hosted?: null | string

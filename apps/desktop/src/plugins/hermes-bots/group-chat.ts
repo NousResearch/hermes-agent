@@ -12,6 +12,14 @@
 import { atom, host } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster } from './data'
+import { boundedDesktopCommandSettled } from './group-command-receipts'
+import {
+  classicAuthorityState,
+  classicDesktopAuthority,
+  classicProjectionAuthority,
+  ensureClassicDesktopAuthority,
+  storedClassicDesktopAuthority
+} from './group-desktop-authority'
 import { mergeMemberProjectionIntoRoom, mergeProjectedMemberLists } from './group-member-projection'
 import {
   compactGroupMessageAuthor,
@@ -73,6 +81,8 @@ let groupChatSyncTimer: ReturnType<typeof setTimeout> | null = null
 /** One room inside the bounded ui_meta projection: a compacted log plus the
  *  identity fields, without any of `GroupChat`'s runtime/orchestration state. */
 interface GroupChatSyncRoom {
+  desktopAuthorityHash?: string
+  desktopAuthorityConflict?: true
   continuityMode?: 'desktop' | 'distributed' | 'gateway'
   hosted?: null | string
   hostedEpoch?: null | number
@@ -347,6 +357,7 @@ export function groupChatSyncSnapshot(
     }))
 
     const compact: GroupChatSyncRoom = {
+      ...classicDesktopAuthority(room),
       name: String(name).slice(0, 64),
       ...(typeof room?.roomId === 'string' && room.roomId
         ? {
@@ -462,7 +473,7 @@ function groupChatSyncFallbackKey(entry: GroupMessage) {
   ])
 }
 
-export { groupChatSyncSequence } from './group-message-author'
+export { boundedDesktopCommandSettled } from './group-command-receipts'
 
 function compareGroupChatSyncEntries(left: GroupMessage, right: GroupMessage) {
   const leftSeq = groupChatSyncSequence(left)
@@ -683,6 +694,10 @@ export function mergeGroupChatSyncSnapshots(
     }
 
     rooms[key] = {
+      ...classicDesktopAuthority(
+        { ...classicProjectionAuthority(remoteRoom, key), hosted: remoteRoom?.hosted },
+        { ...classicProjectionAuthority(localRoom, key), hosted: localRoom?.hosted }
+      ),
       ...(identity?.name
         ? {
             name: identity.name
@@ -690,7 +705,7 @@ export function mergeGroupChatSyncSnapshots(
         : {}),
       ...(identity?.roomId || (key.startsWith('id:') ? key.slice(3) : '')
         ? {
-            roomId: identity?.roomId || key.slice(3)
+            roomId: key.startsWith('id:') ? key.slice(3) : identity?.roomId
           }
         : {}),
       log: entries,
@@ -894,6 +909,17 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
 
     rooms[targetName] = {
       ...existing,
+      desktopAuthorityHash: undefined,
+      desktopAuthorityConflict: undefined,
+      ...classicDesktopAuthority(
+        existing,
+        differentRooms
+          ? undefined
+          : {
+              ...classicProjectionAuthority(projected, key),
+              hosted: projected.hosted
+            }
+      ),
       log: bounded.log,
       watermarks: bounded.watermarks,
       sessions: existing.sessions && typeof existing.sessions === 'object' ? existing.sessions : {},
@@ -974,9 +1000,13 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
     }
 
     durable[name] = {
+      ...storedClassicDesktopAuthority(room),
       log: room.log.map(storedHostedUserEvent),
       watermarks: room.watermarks || {},
       sessions: room.sessions || {},
+      sessionOwners: room.sessionOwners || {},
+      holds: room.holds || {},
+      desktopCommandSettled: boundedDesktopCommandSettled(room.desktopCommandSettled),
       stranded: room.stranded || {},
       members: Array.isArray(room.members) ? room.members : [],
       // Immutable room identity: without this, a room merged in via the
@@ -1007,6 +1037,30 @@ export function persistGroupChatRooms(all: Record<string, GroupChat> = $groupCha
     )
   } catch {
     return Promise.resolve()
+  }
+}
+
+/** Mailbox startup cannot advertise private authority before it is durable. */
+export async function persistGroupChatRoomsRequired(
+  all: Record<string, GroupChat> = $groupChats.get(),
+  storage = getPluginCtx()?.storage
+) {
+  if (!storage?.set || !storage?.get) {
+    throw new Error('Group Chat storage unavailable')
+  }
+
+  const durable = durableGroupChatRooms(all)
+  const expected = JSON.stringify(durable)
+  const wasCurrent = all === $groupChats.get()
+  await storage.set('group-chats', durable)
+
+  // PluginStorage.set deliberately swallows write errors. Verify the exact
+  // snapshot, including the private authority and any settlement receipts.
+  if (
+    JSON.stringify(await storage.get('group-chats', null)) !== expected ||
+    (wasCurrent && JSON.stringify(durableGroupChatRooms()) !== expected)
+  ) {
+    throw new Error('Group Chat changes could not be saved. Check available storage and try again.')
   }
 }
 
@@ -1112,10 +1166,21 @@ export async function pullGroupChatServerState(connectionId: string = groupChatS
     deletedRooms: pending?.deletedRooms || []
   })
 
-  $groupChats.set(merged)
-  await persistGroupChatRooms(merged)
+  await adoptGroupChatSyncRooms(merged)
 
   return true
+}
+
+async function adoptGroupChatSyncRooms(rooms: Record<string, GroupChat>) {
+  const authorityChanged = classicAuthorityState(rooms) !== classicAuthorityState($groupChats.get())
+  $groupChats.set(rooms)
+  await persistGroupChatRooms(rooms)
+
+  // A newly learned commitment or conflict must reach the other gateways too.
+  // No changedRooms: equal projections settle without revision ping-pong.
+  if (authorityChanged) {
+    scheduleGroupChatServerSync($groupChats.get())
+  }
 }
 
 function groupChatSyncBackoff(connectionId: string) {
@@ -1209,6 +1274,12 @@ async function flushGroupChatServerSync(connectionId?: string) {
       writeRevision
     })
 
+    // Never advertise a freshly minted commitment that cannot survive reload.
+    // Unlike the optional display cache, this write must not swallow failure.
+    if (Object.values(snapshot.rooms).some(room => room.desktopAuthorityHash || room.desktopAuthorityConflict)) {
+      await persistGroupChatRoomsRequired()
+    }
+
     // Reconnect/startup reconciliation often discovers that the gateway
     // already holds the exact merged projection. Avoid advancing a revision
     // merely because a view reopened.
@@ -1225,8 +1296,7 @@ async function flushGroupChatServerSync(connectionId?: string) {
           deletedRooms: pending?.deletedRooms || []
         })
 
-        $groupChats.set(mergedRooms)
-        await persistGroupChatRooms(mergedRooms)
+        await adoptGroupChatSyncRooms(mergedRooms)
       }
 
       groupChatSyncRetryCounts.delete(id)
@@ -1280,8 +1350,7 @@ async function flushGroupChatServerSync(connectionId?: string) {
         deletedRooms: pending?.deletedRooms || []
       })
 
-      $groupChats.set(mergedRooms)
-      await persistGroupChatRooms(mergedRooms)
+      await adoptGroupChatSyncRooms(mergedRooms)
     }
 
     groupChatSyncRetryCounts.delete(id)
@@ -1546,13 +1615,15 @@ export function updateGroupChat(
     running: false
   }
 
-  const next = mutate({
+  const mutated = mutate({
     ...current,
     log: [...current.log],
     watermarks: {
       ...current.watermarks
     }
   })
+
+  const next = ensureClassicDesktopAuthority(mutated, current)
 
   const bounded = trimGroupChatLog(next.log, next.watermarks)
   next.log = bounded.log
@@ -1573,6 +1644,7 @@ export function updateGroupChat(
       }
 
       durable[name] = {
+        ...storedClassicDesktopAuthority(room),
         log: room.log.map(storedHostedUserEvent),
         watermarks: room.watermarks,
         sessions: room.sessions || {},
@@ -1585,6 +1657,7 @@ export function updateGroupChat(
         // must too — otherwise a window restart silently releases a bot the
         // user explicitly stopped.
         holds: room.holds || {},
+        desktopCommandSettled: boundedDesktopCommandSettled(room.desktopCommandSettled),
         // Source-qualified member descriptors keep the room whole when the
         // active connection changes and today's local members become remote.
         members: Array.isArray(room.members) ? room.members : [],
@@ -1615,6 +1688,48 @@ export function updateGroupChat(
   }
 
   return next
+}
+
+export { groupChatSyncSequence } from './group-message-author'
+
+export function backfillClassicGroupAuthorities(names = Object.keys($groupChats.get())) {
+  let changed = false
+
+  for (const name of names) {
+    const room = $groupChats.get()[name]
+
+    if (!room || room.tombstone) {
+      continue
+    }
+
+    const next = ensureClassicDesktopAuthority(room)
+
+    if (next === room) {
+      continue
+    }
+
+    updateGroupChat(name, () => next, { sync: false })
+    changed = true
+  }
+
+  return changed
+}
+
+let classicAuthorityActivationPending = false
+
+export async function activateClassicGroupAuthorities(names = Object.keys($groupChats.get())) {
+  const changed = backfillClassicGroupAuthorities(names)
+  classicAuthorityActivationPending ||= changed
+
+  if (!classicAuthorityActivationPending) {
+    return false
+  }
+
+  await persistGroupChatRoomsRequired()
+  classicAuthorityActivationPending = false
+  scheduleGroupChatServerSync($groupChats.get())
+
+  return true
 }
 
 /** A #93129 member hold as this file mints it. `GroupHold` models only the
@@ -1673,14 +1788,18 @@ export function appendGroupChatEntry(
   text: string,
   thread?: null | string,
   images?: Attachment[],
-  entryId?: string
+  options: string | { entryId?: string; external?: boolean } = {}
 ): GroupMessage {
+  const entryId = typeof options === 'string' ? options : options.entryId || ''
+  const external = typeof options === 'object' && options.external === true
+
   let entry: GroupMessage = {
     id: entryId || groupChatEntryId(),
     at: Date.now(),
     from,
     text: normalizeGroupChatText(text),
-    thread: thread || 'legacy'
+    thread: thread || 'legacy',
+    ...(external ? { external: true } : {})
   }
 
   if (Array.isArray(images) && images.length) {
@@ -1728,7 +1847,7 @@ export function appendGroupChatEntry(
  *  name: a disbanded-and-recreated group mints a new roomId even when the
  *  display name is identical, so member sessions never resume by title. */
 export function mintGroupRoomId(): string {
-  return `r${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+  return `r${crypto.randomUUID()}`
 }
 
 /** Unique display name for a NEW group. Collisions get a " 2", " 3", …

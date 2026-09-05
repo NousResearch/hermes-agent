@@ -6,14 +6,17 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type * as DataModule from './data'
 import type { HostedRoomProbe } from './hosted-room-runtime'
 import { translateBots } from './i18n-test-helper'
-import type { RosterRow } from './types'
+import type { BotMeta, RosterRow } from './types'
 
 const mocks = vi.hoisted(() => ({
   createAutonomousHostedGroupChat: vi.fn(),
   markHostedRoomLocallyDeleted: vi.fn(),
   notify: vi.fn(),
   probeHostedRoomMembers: vi.fn(),
-  saveBotMeta: vi.fn(async (_owner: unknown, _patch: unknown) => undefined)
+  saveBotMeta: vi.fn(async (_owner: unknown, _patch: unknown) => ({
+    serverOutcome: 'persisted',
+    serverPersisted: true
+  }))
 }))
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
@@ -124,8 +127,10 @@ beforeEach(async () => {
     continuityMode: 'gateway'
   })
 
+  const { $botMeta } = await import('./data')
   const { $groupChats } = await import('./group-chat')
 
+  $botMeta.set({})
   $groupChats.set({})
 })
 
@@ -133,13 +138,13 @@ afterEach(() => {
   cleanup()
 })
 
-async function renderSelectedGroup(rows: RosterRow[] = roster) {
+async function renderSelectedGroup(rows: RosterRow[] = roster, onCreated?: (group: string) => void) {
   const { CreateGroupChatDialog } = await import('./create-dialog')
 
   const Harness = () => {
     const [open, setOpen] = useState(true)
 
-    return <CreateGroupChatDialog onClose={() => setOpen(false)} open={open} roster={rows} />
+    return <CreateGroupChatDialog onClose={() => setOpen(false)} onCreated={onCreated} open={open} roster={rows} />
   }
 
   render(<Harness />)
@@ -412,6 +417,64 @@ describe('automatic Group Chat continuity', () => {
       })
     )
   })
+
+  it.each(['rejects', 'reports failure'] as const)(
+    'finishes a created room when a later Bot details sync %s',
+    async failure => {
+      const onCreated = vi.fn()
+
+      mocks.saveBotMeta.mockImplementationOnce(async (_owner, patch) => {
+        const { $botMeta } = await import('./data')
+
+        $botMeta.set({
+          'host-a::research': patch as BotMeta
+        })
+
+        return {
+          serverOutcome: 'persisted',
+          serverPersisted: true
+        }
+      })
+
+      if (failure === 'rejects') {
+        mocks.saveBotMeta.mockRejectedValueOnce(new Error('VPS restarted during profiles.configure'))
+      } else {
+        mocks.saveBotMeta.mockResolvedValueOnce({
+          serverOutcome: 'failed',
+          serverPersisted: false
+        })
+      }
+
+      const create = await renderSelectedGroup(roster, onCreated)
+
+      fireEvent.change(screen.getByRole('textbox', { name: 'Group name' }), {
+        target: { value: 'Workshop handoff' }
+      })
+      await waitFor(() => expect(create.disabled).toBe(false))
+      await act(async () => {
+        fireEvent.click(create)
+      })
+
+      const { $botMeta } = await import('./data')
+      const { $groupChats } = await import('./group-chat')
+
+      await waitFor(() => expect(onCreated).toHaveBeenCalledWith('Workshop handoff'))
+      expect($botMeta.get()['host-a::research']?.groups).toContain('Workshop handoff')
+      expect($groupChats.get()['Workshop handoff']).toMatchObject({
+        continuityMode: 'gateway',
+        hosted: 'install:studio',
+        members: expect.arrayContaining([
+          expect.objectContaining({ name: 'research' }),
+          expect.objectContaining({ name: 'builder' })
+        ])
+      })
+      expect(screen.queryByText('Could not create the Group Chat. Try again.')).toBeNull()
+      expect(mocks.notify).toHaveBeenCalledWith({
+        kind: 'warning',
+        message: '“Workshop handoff” created with 2 bots. Some Bot details haven’t synced to your other devices.'
+      })
+    }
+  )
 
   it('does not create a competing Desktop room while remote cleanup is uncertain', async () => {
     mocks.createAutonomousHostedGroupChat.mockRejectedValue(

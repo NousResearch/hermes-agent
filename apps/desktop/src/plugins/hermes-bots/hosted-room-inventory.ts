@@ -165,6 +165,13 @@ export function hostedRoomDriverDisplayStatus(
     return { ...replay, kind: 'working', canStop: true }
   }
 
+  const actions = (Array.isArray(driver?.pending_actions) ? driver.pending_actions : []).map(record)
+  const canRetry = actions.some(action => action?.kind === 'retry' && String(action.task_id || ''))
+
+  if (driver?.needs_attention === true || canRetry || actions.some(action => action?.kind === 'approval')) {
+    return { kind: 'needs-attention', canRetry, canStop: false }
+  }
+
   return replay
 }
 

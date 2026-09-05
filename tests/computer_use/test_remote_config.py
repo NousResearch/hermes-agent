@@ -37,7 +37,8 @@ class TestNoConfig:
 
 
 class TestTokenValidation:
-    def test_missing_token_raises(self):
+    def test_missing_token_raises(self, monkeypatch):
+        monkeypatch.delenv("HERMES_CUA_REMOTE_TOKEN", raising=False)
         cfg = {"remote": {"enabled": True, "url": "https://example.com:8443"}}
         with pytest.raises(RuntimeError, match="HERMES_CUA_REMOTE_TOKEN"):
             resolve_remote_cua_config(cfg, permission_mode="standard")
@@ -54,7 +55,8 @@ class TestUrlValidation:
         cfg = {"remote": {"enabled": True, "url": "https://example.com:8443"}}
         result = resolve_remote_cua_config(cfg, permission_mode="standard")
         assert isinstance(result, RemoteCuaConfig)
-        assert result.url == "https://example.com:8443"
+        # Bare-host URLs are normalized to /mcp (the bridge's single route).
+        assert result.url == "https://example.com:8443/mcp"
 
     def test_http_non_loopback_raises(self, valid_token):
         cfg = {"remote": {"enabled": True, "url": "http://example.com:8443"}}
@@ -130,3 +132,27 @@ class TestTokenNotInUrl:
         result = resolve_remote_cua_config(cfg, permission_mode="standard")
         # Token comes from env, not from config — the "token" key in the mapping is ignored.
         assert result.token == "x" * 32
+
+
+class TestUrlPathNormalization:
+    """The bridge serves a single /mcp route; bare-host URLs must not 404."""
+
+    def test_url_without_path_normalizes_to_mcp(self, valid_token):
+        cfg = {"remote": {"enabled": True, "url": "https://example.com:8443"}}
+        result = resolve_remote_cua_config(cfg, permission_mode="standard")
+        assert result.url == "https://example.com:8443/mcp"
+
+    def test_url_with_mcp_path_unchanged(self, valid_token):
+        cfg = {"remote": {"enabled": True, "url": "https://example.com:8443/mcp"}}
+        result = resolve_remote_cua_config(cfg, permission_mode="standard")
+        assert result.url == "https://example.com:8443/mcp"
+
+
+class TestTokenControlChars:
+    """Control characters in the token would corrupt the Authorization header."""
+
+    def test_token_control_chars_rejected(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CUA_REMOTE_TOKEN", "a" * 31 + "\n")
+        cfg = {"remote": {"enabled": True, "url": "https://example.com:8443"}}
+        with pytest.raises(RuntimeError, match="control characters"):
+            resolve_remote_cua_config(cfg, permission_mode="standard")

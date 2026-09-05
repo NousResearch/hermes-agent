@@ -88,7 +88,7 @@ class TestHermesTokenStorage:
         # File exists with correct permissions
         token_path = tmp_path / "mcp-tokens" / "test-server.json"
         assert token_path.exists()
-        data = json.loads(token_path.read_text())
+        data = json.loads(token_path.read_text(encoding="utf-8"))
         assert data["access_token"] == "abc123"
 
     @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
@@ -139,7 +139,7 @@ class TestHermesTokenStorage:
         assert loaded is not None
         assert loaded.token_endpoint_auth_method == "client_secret_post"
         client_path = tmp_path / "mcp-tokens" / "supabase.client.json"
-        assert json.loads(client_path.read_text())["token_endpoint_auth_method"] == "client_secret_post"
+        assert json.loads(client_path.read_text(encoding="utf-8"))["token_endpoint_auth_method"] == "client_secret_post"
 
     def test_client_info_with_secret_and_none_method_is_coerced(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -151,13 +151,13 @@ class TestHermesTokenStorage:
             "client_secret": "secret",
             "redirect_uris": ["http://127.0.0.1:12345/callback"],
             "token_endpoint_auth_method": "none",
-        }))
+        }), encoding="utf-8")
 
         loaded = asyncio.run(HermesTokenStorage("supabase").get_client_info())
 
         assert loaded is not None
         assert loaded.token_endpoint_auth_method == "client_secret_post"
-        assert json.loads(client_path.read_text())["token_endpoint_auth_method"] == "client_secret_post"
+        assert json.loads(client_path.read_text(encoding="utf-8"))["token_endpoint_auth_method"] == "client_secret_post"
 
 
     def test_corrupt_tokens_returns_none(self, tmp_path, monkeypatch):
@@ -166,7 +166,7 @@ class TestHermesTokenStorage:
 
         d = tmp_path / "mcp-tokens"
         d.mkdir(parents=True)
-        (d / "bad-server.json").write_text("NOT VALID JSON{{{")
+        (d / "bad-server.json").write_text("NOT VALID JSON{{{", encoding="utf-8")
 
         import asyncio
         assert asyncio.run(storage.get_tokens()) is None
@@ -242,7 +242,7 @@ class TestBuildOAuthAuth:
         assert tokens.access_token == "access-token"
         token_path = tmp_path / "mcp-tokens" / "supabase.json"
         assert token_path.exists()
-        assert json.loads(token_path.read_text())["access_token"] == "access-token"
+        assert json.loads(token_path.read_text(encoding="utf-8"))["access_token"] == "access-token"
 
     @pytest.mark.asyncio
     async def test_malformed_201_token_response_does_not_expose_body(
@@ -586,8 +586,8 @@ class TestRemoveOAuthTokens:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         d = tmp_path / "mcp-tokens"
         d.mkdir()
-        (d / "myserver.json").write_text("{}")
-        (d / "myserver.client.json").write_text("{}")
+        (d / "myserver.json").write_text("{}", encoding="utf-8")
+        (d / "myserver.client.json").write_text("{}", encoding="utf-8")
 
         remove_oauth_tokens("myserver")
 
@@ -613,15 +613,15 @@ class TestInvalidateTokensOnClientChange:
         info = {"client_id": client_id, "redirect_uris": ["http://localhost:1455/callback"]}
         if client_secret:
             info["client_secret"] = client_secret
-        (d / "chg-server.client.json").write_text(json.dumps(info))
+        (d / "chg-server.client.json").write_text(json.dumps(info), encoding="utf-8")
         (d / "chg-server.json").write_text(json.dumps({
             "access_token": "old-token", "token_type": "Bearer",
-        }))
+        }), encoding="utf-8")
         (d / "chg-server.meta.json").write_text(json.dumps({
             "issuer": "https://idp.example",
             "authorization_endpoint": "https://idp.example/auth",
             "token_endpoint": "https://idp.example/token",
-        }))
+        }), encoding="utf-8")
         return storage, d
 
     def test_changed_client_id_drops_tokens(self, tmp_path, monkeypatch):
@@ -656,7 +656,7 @@ class TestInvalidateTokensOnClientChange:
         d.mkdir(parents=True, exist_ok=True)
         (d / "fresh-server.json").write_text(json.dumps({
             "access_token": "tok", "token_type": "Bearer",
-        }))
+        }), encoding="utf-8")
         _invalidate_tokens_on_client_change(storage, "client-x", None)
         # No recorded client identity -> nothing provably stale.
         assert (d / "fresh-server.json").exists()
@@ -675,7 +675,7 @@ class TestInvalidateTokensOnClientChange:
         assert not (d / "chg-server.json").exists(), (
             "tokens minted under client-a must not survive switch to client-b"
         )
-        info = json.loads((d / "chg-server.client.json").read_text())
+        info = json.loads((d / "chg-server.client.json").read_text(encoding="utf-8"))
         assert info["client_id"] == "client-b"
 
     def test_preregister_flow_same_client_keeps_tokens(self, tmp_path, monkeypatch):
@@ -1056,9 +1056,9 @@ class TestPoisonClientRegistration:
         storage = HermesTokenStorage("srv")
         d = tmp_path / "mcp-tokens"
         d.mkdir(parents=True)
-        (d / "srv.json").write_text('{"access_token": "keep-me"}')
-        (d / "srv.client.json").write_text('{"client_id": "dead"}')
-        (d / "srv.meta.json").write_text('{"token_endpoint": "https://idp/token"}')
+        (d / "srv.json").write_text('{"access_token": "keep-me"}', encoding="utf-8")
+        (d / "srv.client.json").write_text('{"client_id": "dead"}', encoding="utf-8")
+        (d / "srv.meta.json").write_text('{"token_endpoint": "https://idp/token"}', encoding="utf-8")
 
         removed = storage.poison_client_registration()
 
@@ -1067,9 +1067,9 @@ class TestPoisonClientRegistration:
         assert not (d / "srv.client.json").exists()
         assert not (d / "srv.meta.json").exists()
         # Backup of the client file kept for recovery.
-        assert (d / "srv.client.json.bak").read_text() == '{"client_id": "dead"}'
+        assert (d / "srv.client.json.bak").read_text(encoding="utf-8") == '{"client_id": "dead"}'
         # Tokens are intentionally preserved.
-        assert (d / "srv.json").read_text() == '{"access_token": "keep-me"}'
+        assert (d / "srv.json").read_text(encoding="utf-8") == '{"access_token": "keep-me"}'
 
 
 def test_wait_for_callback_port_in_use_reports_clear_error(monkeypatch):

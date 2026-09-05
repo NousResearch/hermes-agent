@@ -26,8 +26,7 @@ def test_manager_isolates_same_named_servers_by_profile_home(tmp_path, monkeypat
             storage._tokens_path().parent.mkdir(parents=True, exist_ok=True)
             storage._tokens_path().write_text(
                 '{"access_token":"%s","token_type":"Bearer","expires_in":3600}'
-                % access_token
-            )
+                % access_token, encoding="utf-8")
         finally:
             reset_hermes_home_override(token)
 
@@ -102,7 +101,7 @@ async def test_disk_watch_invalidates_on_mtime_change(tmp_path, monkeypatch):
     tokens_file.write_text(json.dumps({
         "access_token": "OLD",
         "token_type": "Bearer",
-    }))
+    }), encoding="utf-8")
 
     mgr = MCPOAuthManager()
     provider = mgr.get_or_build_provider("srv", "https://example.com/mcp", None)
@@ -270,8 +269,8 @@ def test_invalid_client_at_token_endpoint_poisons(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     d = tmp_path / "mcp-tokens"
     d.mkdir(parents=True)
-    (d / "srv.client.json").write_text('{"client_id": "dead"}')
-    (d / "srv.meta.json").write_text("{}")
+    (d / "srv.client.json").write_text('{"client_id": "dead"}', encoding="utf-8")
+    (d / "srv.meta.json").write_text("{}", encoding="utf-8")
     provider = _provider_with_token_endpoint(
         tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
     )
@@ -292,7 +291,7 @@ def test_invalid_client_metadata_does_not_trip(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     d = tmp_path / "mcp-tokens"
     d.mkdir(parents=True)
-    (d / "srv.client.json").write_text('{"client_id": "live"}')
+    (d / "srv.client.json").write_text('{"client_id": "live"}', encoding="utf-8")
     provider = _provider_with_token_endpoint(
         tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
     )
@@ -328,7 +327,7 @@ def test_bridge_forwards_requests_and_poisons_on_token_endpoint_400(
     token_ep = "https://idp.example.com/oauth/token"
     d = tmp_path / "mcp-tokens"
     d.mkdir(parents=True)
-    (d / "srv.client.json").write_text('{"client_id": "dead"}')
+    (d / "srv.client.json").write_text('{"client_id": "dead"}', encoding="utf-8")
 
     forwarded = []
 

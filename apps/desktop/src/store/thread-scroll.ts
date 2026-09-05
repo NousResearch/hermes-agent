@@ -1,53 +1,83 @@
-import { atom, type WritableAtom } from 'nanostores'
+import { atom } from 'nanostores'
 
 // "Is the thread parked at the bottom" is owned by use-stick-to-bottom inside
 // ThreadMessageList (the scroll container). That state lives only in that
-// subtree, so ThreadMessageList mirrors it into these atoms for the composer,
+// subtree, so ThreadMessageList mirrors it into these maps for the composer,
 // status stack, and floating jump button — all of which render OUTSIDE the thread.
 //
-// `$threadScrolledUp` dims the composer / status stack; `$threadJumpButtonVisible`
-// shows the floating jump control. Both track `!isAtBottom` today, but stay
-// separate so their thresholds can diverge again without touching consumers.
-//
-// Keep-alive tabs stay mounted with a real layout box, so only the on-screen
-// pane may publish or reset this composer-facing mirror. Jump-to-bottom
-// requests are keyed by session so a click (or an input-request snap) cannot
-// scroll every mounted transcript.
-export const $threadScrolledUp = atom(false)
-export const $threadJumpButtonVisible = atom(false)
+// Maps are keyed by session id so split panes publish independently. A global
+// singleton lit every pane's jump button whenever any sibling scrolled up
+// (#103586). Keep-alive tabs stay mounted with a real layout box, so only the
+// on-screen pane may publish or reset its session's composer-facing mirror.
+// Jump-to-bottom requests are keyed by session so a click (or an input-request
+// snap) cannot scroll every mounted transcript.
+export const $threadScrolledUpBySession = atom<Record<string, boolean>>({})
+export const $threadJumpButtonVisibleBySession = atom<Record<string, boolean>>({})
 
-// Skip no-op writes so subscribers don't churn on every scroll tick.
-const setter = (target: WritableAtom<boolean>) => (value: boolean) => {
-  if (target.get() !== value) {
-    target.set(value)
+function sessionKey(sessionId: string | null | undefined): string {
+  return sessionId ?? ''
+}
+
+function setSessionFlag(
+  target: typeof $threadScrolledUpBySession,
+  sessionId: string | null | undefined,
+  value: boolean
+): void {
+  const key = sessionKey(sessionId)
+  const current = target.get()
+
+  if (Boolean(current[key]) === value) {
+    return
   }
+
+  if (value) {
+    target.set({ ...current, [key]: true })
+    return
+  }
+
+  if (!(key in current)) {
+    return
+  }
+
+  const next = { ...current }
+  delete next[key]
+  target.set(next)
 }
 
-const setScrolledUp = setter($threadScrolledUp)
-const setJumpButtonVisible = setter($threadJumpButtonVisible)
-
-export const setThreadAtBottom = (isAtBottom: boolean) => {
-  setScrolledUp(!isAtBottom)
-  setJumpButtonVisible(!isAtBottom)
+export const setThreadAtBottom = (isAtBottom: boolean, sessionId: string | null = null) => {
+  setSessionFlag($threadScrolledUpBySession, sessionId, !isAtBottom)
+  setSessionFlag($threadJumpButtonVisibleBySession, sessionId, !isAtBottom)
 }
 
-export const resetThreadScroll = () => setThreadAtBottom(true)
+export const resetThreadScroll = (sessionId: string | null = null) => setThreadAtBottom(true, sessionId)
 
-export const publishThreadAtBottom = (isAtBottom: boolean, publisher: { paneVisible: boolean }): void => {
+export const publishThreadAtBottom = (
+  isAtBottom: boolean,
+  publisher: { paneVisible: boolean; sessionId?: string | null }
+): void => {
   if (!publisher.paneVisible) {
     return
   }
 
-  setThreadAtBottom(isAtBottom)
+  setThreadAtBottom(isAtBottom, publisher.sessionId ?? null)
 }
 
-export const resetPublishedThreadScroll = (publisher: { paneVisible: boolean }): void => {
+export const resetPublishedThreadScroll = (publisher: {
+  paneVisible: boolean
+  sessionId?: string | null
+}): void => {
   if (!publisher.paneVisible) {
     return
   }
 
-  resetThreadScroll()
+  resetThreadScroll(publisher.sessionId ?? null)
 }
+
+export const isThreadScrolledUp = (sessionId: string | null | undefined): boolean =>
+  Boolean($threadScrolledUpBySession.get()[sessionKey(sessionId)])
+
+export const isThreadJumpButtonVisible = (sessionId: string | null | undefined): boolean =>
+  Boolean($threadJumpButtonVisibleBySession.get()[sessionKey(sessionId)])
 
 // Cross-component bridge: the jump button lives by the composer, the viewport's
 // `scrollToBottom` lives inside the thread. The bridge registers a handler; the

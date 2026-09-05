@@ -59,17 +59,29 @@ def resolve_repo_root(path: Optional[str]) -> Optional[str]:
     return (result.stdout.strip() or None) if result.returncode == 0 else None
 
 
-def _ensure_gitignore_entry(repo_root: str) -> None:
-    """Best-effort: keep ``.worktrees/`` out of git status."""
-    gitignore = Path(repo_root) / ".gitignore"
+def _ensure_worktrees_excluded(repo_root: str) -> None:
+    """Keep ``.worktrees/`` out of ``git status`` without writing a TRACKED file (#103302).
+
+    Shares :func:`hermes_cli.worktree_ops.ensure_worktrees_excluded` with the ``hermes -w`` path
+    (same bug class, one implementation), passing THIS module's hardened runner so the
+    GHSA-7x36-8jrh-v4pw env/argv hardening still applies: it writes
+    ``$GIT_COMMON_DIR/info/exclude`` instead of appending to the parent's ``.gitignore``.
+    Appending there contradicted this module's own contract — isolation exists so "the parent's
+    checkout stays untouched", and the appended line showed up in the user's ``git status``.
+    """
+    def _out(args, cwd) -> Optional[str]:
+        try:
+            result = _run_git(args, cwd=cwd)
+        except Exception:
+            return None
+        return (result.stdout.strip() or "") if result.returncode == 0 else None
+
     try:
-        existing = gitignore.read_text(encoding="utf-8-sig", errors="replace") if gitignore.exists() else ""
-        if ".worktrees/" not in existing.splitlines():
-            with open(gitignore, "a", encoding="utf-8") as f:
-                sep = "\n" if existing and not existing.endswith("\n") else ""
-                f.write(f"{sep}.worktrees/\n")
-    except Exception as exc:
-        logger.debug("subagent worktree: could not update .gitignore: %s", exc)
+        from hermes_cli.worktree_ops import ensure_worktrees_excluded
+    except Exception as exc:  # pragma: no cover - import-time only
+        logger.debug("subagent worktree: exclude helper unavailable: %s", exc)
+        return
+    ensure_worktrees_excluded(repo_root, git_out=_out)
 
 
 def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[str] = None) -> Optional[Dict[str, str]]:
@@ -82,7 +94,7 @@ def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[st
     wt_path = Path(repo_root) / ".worktrees" / wt_name
     try:
         wt_path.parent.mkdir(parents=True, exist_ok=True)
-        _ensure_gitignore_entry(repo_root)
+        _ensure_worktrees_excluded(repo_root)
         base = _run_git(["rev-parse", "HEAD"], cwd=repo_root)
         base_commit = base.stdout.strip() if base.returncode == 0 else ""
         result = _run_git(["worktree", "add", str(wt_path), "-b", branch, "HEAD"], cwd=repo_root)

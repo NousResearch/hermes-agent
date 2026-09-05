@@ -342,30 +342,74 @@ class TestWorktreeInclude:
         # Should not crash — just skip all lines
 
 
-class TestGitignoreManagement:
-    """Test that .worktrees/ is added to .gitignore."""
+class TestWorktreeIgnoreRule:
+    """``.worktrees/`` is excluded LOCALLY, never by writing the tracked .gitignore (#103302)."""
 
-    def test_adds_to_gitignore(self, git_repo):
-        """Creating a worktree should add .worktrees/ to .gitignore."""
-        # Remove any existing .gitignore
+    def test_ignore_rule_lands_in_info_exclude(self, git_repo):
+        """The real helper ignores ``.worktrees/`` without touching a tracked file.
+
+        Previously it appended to the repo's ``.gitignore``, so every ``hermes -w``
+        session (and every delegated subagent worktree) left the user's checkout
+        dirty. ``$GIT_COMMON_DIR/info/exclude`` is untracked and local-only.
+        """
         gitignore = git_repo / ".gitignore"
         if gitignore.exists():
             gitignore.unlink()
 
-        info = _setup_worktree(str(git_repo))
-        assert info is not None
+        worktree_ops.ensure_worktrees_excluded(str(git_repo))
 
-        # Now manually add .worktrees/ to .gitignore (mirrors cli.py logic)
-        _ignore_entry = ".worktrees/"
-        existing = gitignore.read_text() if gitignore.exists() else ""
-        if _ignore_entry not in existing.splitlines():
-            with open(gitignore, "a") as f:
-                if existing and not existing.endswith("\n"):
-                    f.write("\n")
-                f.write(f"{_ignore_entry}\n")
+        assert not gitignore.exists()
+        assert subprocess.run(
+            ["git", "check-ignore", "-q", ".worktrees/"],
+            cwd=str(git_repo), capture_output=True,
+        ).returncode == 0
+        assert subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(git_repo), capture_output=True, text=True,
+        ).stdout.strip() == ""
 
-        content = gitignore.read_text()
-        assert ".worktrees/" in content
+    def test_second_call_does_not_duplicate_the_rule(self, git_repo):
+        """Idempotent: repeated sessions must not stack identical exclude lines."""
+        worktree_ops.ensure_worktrees_excluded(str(git_repo))
+        worktree_ops.ensure_worktrees_excluded(str(git_repo))
+
+        common = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=str(git_repo), capture_output=True, text=True,
+        ).stdout.strip()
+        exclude_lines = (Path(common) / "info" / "exclude").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        assert exclude_lines.count(".worktrees/") == 1
+
+    def test_existing_gitignore_entry_is_left_alone(self, git_repo):
+        """A repo that already ignores the dir keeps its own rule, byte for byte."""
+        gitignore = git_repo / ".gitignore"
+        gitignore.write_text(".worktrees/\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore"], cwd=str(git_repo), capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "ignore worktrees"], cwd=str(git_repo), capture_output=True
+        )
+
+        worktree_ops.ensure_worktrees_excluded(str(git_repo))
+
+        assert gitignore.read_text(encoding="utf-8") == ".worktrees/\n"
+        common = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=str(git_repo), capture_output=True, text=True,
+        ).stdout.strip()
+        exclude = Path(common) / "info" / "exclude"
+        lines = exclude.read_text(encoding="utf-8").splitlines() if exclude.exists() else []
+        assert ".worktrees/" not in lines
+
+    def test_non_repo_is_a_silent_no_op(self, tmp_path):
+        """Outside a repo there is nothing to exclude — fail-soft, no raise."""
+        plain = tmp_path / "plain"
+        plain.mkdir()
+
+        worktree_ops.ensure_worktrees_excluded(str(plain))
+
+        assert not (plain / ".gitignore").exists()
 
 
 

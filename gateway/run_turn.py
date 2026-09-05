@@ -3378,6 +3378,8 @@ class GatewayTurnMixin:
                     metadata=turn_ctx._status_thread_metadata, event_message_id=turn_ctx.event_message_id,
                     text_already_delivered=_already_streamed,
                     deliver_media=not _delivery_result.get("failed"), stream_consumer=_sc,
+                    # The text send records a delivery-ledger obligation under this key (queued-final-ledger).
+                    session_key=session_key,
                 )
             except Exception as e:
                 logger.warning("Failed to send first response before queued message: %s", e)

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.base import MessageEvent, MessageType, _mark_notify_metadata
 from gateway.session import SessionEntry, SessionSource
 from gateway.run_shutdown import _log_suppressed, _notice_target_key, _send_error, _send_failed
 
@@ -303,8 +303,12 @@ class GatewayNotificationsMixin:
         self, response: str, source: SessionSource, adapter,
         metadata: Optional[Dict[str, Any]] = None, event_message_id: Optional[str] = None,
         text_already_delivered: bool = False, deliver_media: bool = True, stream_consumer=None,
+        session_key: Optional[str] = None,
     ) -> None:
-        """Deliver a queued response using the normal text+attachment split."""
+        """Deliver a queued response using the normal text+attachment split.
+
+        ``session_key`` lets the text send record a delivery-ledger obligation like the normal final
+        send does (see ``_send_queued_final_text``); without it the send stays unledgered."""
         from gateway.run import _strip_response_attachments_for_direct_send
         if not text_already_delivered:
             text_content = _strip_response_attachments_for_direct_send(response, adapter)
@@ -331,7 +335,8 @@ class GatewayNotificationsMixin:
                     except Exception as _qe:
                         logger.debug("Queued-lane reconcile edit failed (%s); falling back to send.", _qe)
                 if not _reconciled:
-                    await adapter.send(source.chat_id, text_content, metadata=metadata)
+                    await self._send_queued_final_text(
+                        adapter, source, text_content, metadata, event_message_id, session_key)
         # Failed turns deliver their (normalized failure) text but must not upload attachments as if
         # they succeeded — mirrors the ``not agent_result.get("failed")`` completed-turn guard.
         if not deliver_media:
@@ -340,6 +345,38 @@ class GatewayNotificationsMixin:
             response, MessageEvent(text="", source=source, message_id=event_message_id), adapter,
             thread_metadata=metadata,
         )
+
+    async def _send_queued_final_text(
+        self, adapter, source: SessionSource, text_content: str, metadata: Optional[Dict[str, Any]],
+        event_message_id: Optional[str], session_key: Optional[str],
+    ):
+        """Send a queued-lane final through the adapter's ledger-bracketed final send.
+
+        This lane used to call ``adapter.send`` bare and discard the result. A final refused here
+        (flood control, a transport that just died) was gone for good: no delivery-ledger row was ever
+        written, so neither the boot sweep nor the runtime redelivery could see it, and the queued
+        follow-up ran as if the answer had landed. The normal final send records the obligation before
+        the send and finalizes it from the result; this routes the queued lane through that same method
+        so both lanes recover the same way. The event carries the inbound message id, so the obligation
+        id matches the one the normal lane would compute for the same turn (idempotent re-record), and
+        the reply is marked notify-worthy like every other user-visible final. Adapters without the
+        base contract (relay doubles, third-party plugins) and sends without a session key keep the
+        plain send. Returns the SendResult, or None when the adapter's send returned nothing
+        (queued-final-ledger)."""
+        bracketed = getattr(adapter, "_send_final_text", None)
+        if session_key and callable(bracketed):
+            results: list = []
+            await bracketed(
+                MessageEvent(text="", source=source, message_id=event_message_id), session_key,
+                text_content, _mark_notify_metadata(metadata), False, 0, results.append)
+            result = results[-1] if results else None
+        else:
+            result = await adapter.send(source.chat_id, text_content, metadata=metadata)
+        if not getattr(result, "success", False):
+            logger.warning(
+                "Queued-lane final send to %s failed: %s", getattr(source, "chat_id", "?"),
+                getattr(result, "error", None) or "no result")
+        return result
 
     def _schedule_update_notification_watch(self) -> None:
         """Ensure a background task is watching for update completion."""

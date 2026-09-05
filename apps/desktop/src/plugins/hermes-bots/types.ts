@@ -139,6 +139,10 @@ export interface GroupMessageAuthor {
   name: string
   /** Connection label, present when the speaker lives on another machine. */
   source?: string
+  /** Relay provenance for a user entry written on the user's behalf by an
+   *  agent in another session (`hermes group send --as "Ada via Discord"`).
+   *  The pane still renders the speaker as "You"; logs/mobile surface it. */
+  via?: string
 }
 
 export interface GroupMessage {

@@ -55,6 +55,7 @@ import {
   updateGroupChat
 } from './group-chat'
 import { groupWorkspaceOwnerKey } from './group-membership'
+import { startGroupRelay, stopGroupRelay } from './group-relay'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
 import { BOTS_LOCALES } from './i18n'
 import { displayName } from './labels'
@@ -105,6 +106,9 @@ export default {
     // The cross-connection relay rides every gateway socket this Desktop
     // holds: roster sync + envelope drain/deliver/reply loops.
     startBotRelay()
+    // `hermes group send` into Desktop-coordinated rooms: drain the gateway's
+    // group_relay outbox and act on the user's behalf (group-relay.ts).
+    startGroupRelay()
 
     // Disabling the plugin (or a hot reload) must actually stop the clock —
     // before this, the rAF loop + 1Hz document scan ran until app restart.
@@ -112,6 +116,7 @@ export default {
       ctx.onDispose(disposeLocales)
       ctx.onDispose(stopFaceClock)
       ctx.onDispose(stopBotRelay)
+      ctx.onDispose(stopGroupRelay)
     }
 
     // @-mention autocomplete: typing "@rese…" in ANY composer offers the

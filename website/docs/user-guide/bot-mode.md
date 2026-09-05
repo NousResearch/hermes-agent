@@ -101,6 +101,10 @@ Groups are standalone rows in the same activity-ordered roster as Bot DMs. A Bot
 - **Not every Bot replies to every message.** Speaking is each member's own choice — a Bot replies only when it has something new to add and passes otherwise, and @-mentioning specific members scopes the round to them. Expect the members you addressed (or whoever has something to say) to speak, and the rest to stay quiet.
 - **Rooms can span machines.** The New Group Chat picker seats Bots from any registered connection; each member's turns run on its own machine, in its own `Group: <name>` session there. Cross-machine members carry a device badge (`dixie · Mac Mini`) in the room and in other members' transcripts, and the disambiguated `@name-device` handle works in room mentions — so same-named agents on two machines never blur together.
 
+### Relaying into a group from another session (`hermes group`)
+
+Any agent session — a Discord thread, the CLI, a Desktop chat — can push a request into a gateway-hosted group **on your behalf** and report the deliberation back: `hermes group send <group> "…" --as "Ada via Discord" --wait`. The relaying agent is not a member; the message lands as a user message with the relay recorded as who sent it, the members deliberate headlessly in the gateway's hosted-room worker, and `--wait` streams their replies until the room settles. Run it in the background and the completion notification carries the replies into the originating session. The same command reaches the Group Chats in the Bots pane (tagged `[desktop]` in `hermes group list`) while the app is open. See [`hermes group`](../reference/cli-commands.md#hermes-group).
+
 ## Bot-to-bot messaging
 
 Bots message each other with attribution, and you can hand work off from any chat:

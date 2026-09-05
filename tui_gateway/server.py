@@ -3208,6 +3208,7 @@ from . import (  # noqa: E402
     compute_host_bridge as _compute_host_bridge, session_workdir as _session_workdir,
     session_lifecycle as _session_lifecycle, session_reaper as _session_reaper,
     methods_browser_control as _methods_browser_control, methods_bot_relay as _methods_bot_relay,
+    methods_group_relay as _methods_group_relay,
     methods_complete as _methods_complete, methods_config as _methods_config,
     methods_config_set as _methods_config_set, methods_images as _methods_images,
     methods_profiles as _methods_profiles, methods_prompt as _methods_prompt, methods_session as _methods_session,
@@ -3221,6 +3222,6 @@ for _m in (
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
-    _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects):
+    _methods_bot_relay, _methods_group_relay, _prompt_turn, _billing_view, _methods_projects):
     _m.register(sys.modules[__name__])
 del _m

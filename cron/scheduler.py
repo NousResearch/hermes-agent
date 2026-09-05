@@ -2883,6 +2883,26 @@ def _save_compose_deliver(
         with fence.side_effect_fence() as owns_delivery:
             if not owns_delivery:
                 raise _FireClaimLostDuringSideEffect
+            # Shutdown publishes the pending interrupt token before contending for this
+            # same fence. Recheck while fenced to close the window after the earlier
+            # delivery-gate check: a plausible response must not escape merely because
+            # shutdown began while we were waiting here.
+            if d.success and _is_interrupted(job["id"], execution_token):
+                d.success = False
+                d.error = (
+                    "Interrupted by gateway shutdown before the run finished "
+                    "(tool subprocess was killed mid-flight)."
+                )
+                d.incident_acked, d.failure_incident_id = _upsert_incident_for_failure(
+                    job, d.error, output_file=output_file)
+                failure_content = (
+                    "" if d.incident_acked
+                    else _summarize_cron_failure_for_delivery(job, d.error)
+                    + _failure_streak_nudge(job))
+                if not failure_content.strip():
+                    d.should_deliver = False
+                    return
+                deliver_content = failure_content
             d.delivery_attempted = True
             d.delivery_error = _deliver_result(
                 job,
@@ -3174,8 +3194,20 @@ def _run_one_job_body(
             and not isinstance(e, _FireClaimLostDuringSideEffect)
             and not _fire_claim_ownership_lost()
         ):
-            delivery_error, delivery_outcome = _deliver_crash_failure(
-                job, _err_text, adapters=adapters, loop=loop)
+            # The ownership probe above is tri-state: None only means
+            # unconfirmed, never permission to emit.  The side-effect
+            # fence is the exactly-once authority for delivery on this
+            # exception path, just as it is on the normal path.
+            with fence.side_effect_fence() as owns_delivery:
+                if owns_delivery:
+                    delivery_error, delivery_outcome = _deliver_crash_failure(
+                        job, _err_text, adapters=adapters, loop=loop)
+                else:
+                    logger.warning(
+                        "Job '%s': skipping exception delivery because "
+                        "fire-claim ownership could not be fenced",
+                        job["id"],
+                    )
         try:
             if not _consume_interrupted_flag(job["id"], execution_token):
                 mark_kwargs = {}

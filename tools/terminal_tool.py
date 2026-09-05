@@ -954,12 +954,13 @@ def _plan_execution(
         # re-sent lower/split/background. Promote to a tracked background process instead; the
         # caller is told in the result. The `&`/nohup/server guidance below stays a refusal: those
         # need the command itself rewritten, which the tool cannot do safely.
+        # The detachment guidance applies whether or not the call is promoted: a promoted `cmd &`
+        # would start a tracked shell that exits at once while its payload runs untracked.
+        guidance = _foreground_background_guidance(command)
+        if guidance:
+            raise _Rejected(_error_json(guidance, status="error"))
         if timeout and timeout > FOREGROUND_MAX_TIMEOUT:
             promoted = timeout
-        else:
-            guidance = _foreground_background_guidance(command)
-            if guidance:
-                raise _Rejected(_error_json(guidance, status="error"))
 
     return _ExecPlan(
         config=config, env_type=env_type, effective_task_id=effective_task_id,
@@ -968,15 +969,25 @@ def _plan_execution(
     )
 
 
+_PROMOTED_NOTE_POLL_ONLY = (
+    "Requested foreground timeout {requested}s exceeds the {cap}s cap, so this command was started as a "
+    "tracked background process instead of being refused. Do NOT re-run it. This session cannot receive "
+    "completion notifications, so poll it with process(action=\"poll\", session_id=...) until it exits."
+)
+
+
 def _with_promoted_note(result_json: str, requested_timeout: int) -> str:
-    """Attach the foreground->background promotion note to a spawn result (unchanged on error)."""
+    """Attach the foreground->background promotion note to a spawn result (unchanged on error). The
+    note only promises a notification when the spawn actually kept notify_on_complete (finite sessions
+    such as one-shot runners cannot route one back; the spawn already said so and cleared the flag)."""
     try:
         data = json.loads(result_json)
     except (TypeError, ValueError):
         return result_json
     if not isinstance(data, dict) or data.get("error"):
         return result_json
-    data["promoted_from_foreground"] = _PROMOTED_NOTE.format(requested=requested_timeout, cap=FOREGROUND_MAX_TIMEOUT)
+    template = _PROMOTED_NOTE if data.get("notify_on_complete") else _PROMOTED_NOTE_POLL_ONLY
+    data["promoted_from_foreground"] = template.format(requested=requested_timeout, cap=FOREGROUND_MAX_TIMEOUT)
     return json.dumps(data, ensure_ascii=False)
 
 
@@ -1181,6 +1192,8 @@ def terminal_tool(
 
         pty_disabled = pty and _command_requires_pipe_stdin(command)
         if plan.promoted_from_foreground_timeout is not None:
+            # Promotion implies notify_on_complete; watch_patterns is a background-only flag the
+            # caller could not have meant for a foreground call, and the two are exclusive anyway.
             background, notify_on_complete, watch_patterns = True, True, None
         if background:
             result = spawn_background_process(

@@ -170,3 +170,26 @@ class TestForegroundMaxTimeoutConstant:
         timeout_desc = TERMINAL_SCHEMA["parameters"]["properties"]["timeout"]["description"]
         assert str(FOREGROUND_MAX_TIMEOUT) in timeout_desc
         assert "background process" in timeout_desc
+
+
+class TestPromotionKeepsTheDetachmentGuard:
+    def test_over_cap_timeout_with_shell_backgrounding_is_still_refused(self):
+        """Independent-review witness: a promoted `cmd &` started a tracked shell that exited at once
+        while the payload ran untracked, defeating the guidance the refusal exists for."""
+        from tools.terminal_tool import terminal_tool
+
+        with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
+             patch("tools.terminal_tool._start_cleanup_thread"):
+            result = json.loads(terminal_tool(command="sleep 5 &", timeout=9999))
+            result2 = json.loads(terminal_tool(command="nohup make test", timeout=9999))
+        assert "'&' backgrounding" in result["error"]
+        assert "nohup" in result2["error"]
+
+    def test_note_does_not_promise_a_notification_the_session_cannot_receive(self):
+        from tools.terminal_tool import _with_promoted_note
+
+        kept = json.loads(_with_promoted_note(json.dumps({"session_id": "proc_x", "error": None, "notify_on_complete": True}), 900))
+        assert "arrives as a notification" in kept["promoted_from_foreground"]
+        dropped = json.loads(_with_promoted_note(json.dumps({"session_id": "proc_x", "error": None, "notify_on_complete": False}), 900))
+        assert "cannot receive completion notifications" in dropped["promoted_from_foreground"]
+        assert "poll" in dropped["promoted_from_foreground"]

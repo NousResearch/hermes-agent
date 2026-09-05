@@ -321,7 +321,7 @@ When you set an explicit auxiliary provider (e.g. `auxiliary.vision.provider: gl
 3. **Main agent provider + model** — last-resort safety net (always tried, even if you didn't write a chain)
 4. **Warn + re-raise** — if every layer fails, Hermes logs `Auxiliary <task>: ... all fallbacks exhausted` at WARNING level and re-raises the original error
 
-Transient HTTP 429 rate limits (`Retry-After: ...`) are treated as request constraints, not capacity problems — they respect your explicit provider choice and do **not** trigger the fallback ladder. Only daily/monthly quota exhaustion, payment errors, and connection failures bypass the explicit-provider gate.
+After same-provider recovery is exhausted, rate limits, payment failures, connection failures, HTTP 408/5xx, and recognized unavailable-model errors can use the configured fallback list. Explicit-provider authentication failures, ordinary bad requests, policy denials, and explicit cancellation do not become permission to change providers.
 
 For users on `provider: auto` (no explicit aux provider), the existing auto-detection chain runs in place of steps 2–3. Its first step is already the main agent model, so `auto` users get the same outcome with zero config.
 
@@ -351,6 +351,20 @@ auxiliary:
 You do **not** need to configure `fallback_chain` to get fallback — the main-agent safety net runs regardless. Use it only when you specifically want a different order than the default.
 
 Each `fallback_chain` entry may also declare its own `timeout` (seconds). Without it, a fallback candidate inherits the task-level timeout — which may be tuned for the primary provider. Declaring a per-entry `timeout` lets a slower-but-reliable fallback (e.g. a large-context summarizer) get the budget it actually needs instead of dying on the primary's clock.
+
+### Recovery after a configured backup request fails
+
+Configured candidates are tried in order when an eligible request failure occurs, in both synchronous and asynchronous auxiliary calls. A failed model deployment does not exclude healthy sibling models. An exhausted credential excludes its sibling candidates for that call. Duplicate deployments are skipped. Once the configured list is exhausted, the last request error is raised; this does not turn a policy denial into discovery of another provider. Existing missing-client and stale-credential resolution layers retain their behavior.
+
+Set `auxiliary.<task>.fallback_total_timeout` to a finite positive number of seconds to bound the recovery phase across configured backups. The budget begins after the primary has failed, caps per-entry timeouts and progress-aware stream ceilings, and prevents starting another inference attempt after expiration. Without this setting, independently configured entry timeouts retain their existing ceilings. Transport-level retries remain subject to their SDK's behavior; this setting is not a promise that an uncooperative remote server stops computing immediately.
+
+```yaml
+auxiliary:
+  vision:
+    fallback_total_timeout: 180
+```
+
+Explicit host cancellation and async task cancellation are propagated immediately; neither starts another backup. Recovery state is request-local, so simultaneous tasks do not share exclusions or deadlines.
 
 ### Provider quota errors that trigger fallback
 

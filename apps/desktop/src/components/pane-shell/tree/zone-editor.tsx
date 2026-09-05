@@ -26,6 +26,7 @@ import { registry } from '@/contrib/registry'
 import { useI18n } from '@/i18n'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
 import { startPointerDrag } from '@/lib/pointer-drag'
+import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 
 import {
@@ -158,24 +159,51 @@ export function ZoneEditor() {
   const zoneAt = (x: number, y: number) =>
     zones.find(z => x >= z.left && x < z.right && y >= z.top && y < z.bottom) ?? null
 
-  const updateSplitPreview = (clientX: number, clientY: number) => {
-    const p = toModelPoint(clientX, clientY)
-    const zone = zoneAt(p.x, p.y)
+  const updateSplitPreview = useCallback(
+    (clientX: number, clientY: number) => {
+      const p = toModelPoint(clientX, clientY)
+      const zone = zoneAt(p.x, p.y)
 
-    if (!zone) {
-      setSplitPreview(null)
+      if (!zone) {
+        setSplitPreview(null)
 
-      return
-    }
+        return
+      }
 
-    const orientation = shift ? 'horizontal' : 'vertical'
-    const raw = orientation === 'horizontal' ? p.y : p.x
-    const position = Math.round(raw / SPLIT_SNAP) * SPLIT_SNAP
+      const orientation = shift ? 'horizontal' : 'vertical'
+      const raw = orientation === 'horizontal' ? p.y : p.x
+      const position = Math.round(raw / SPLIT_SNAP) * SPLIT_SNAP
 
-    setSplitPreview(
-      canSplit(model, zone.index, position, orientation) ? { zoneIndex: zone.index, orientation, position } : null
+      setSplitPreview(
+        canSplit(model, zone.index, position, orientation) ? { zoneIndex: zone.index, orientation, position } : null
+      )
+    },
+    [model, shift, toModelPoint, zoneAt]
+  )
+
+  // rAF gate for hover preview — pointermove fires faster than 60fps, coalesce to one React render per frame.
+  // Reuses lib/raf-coalesce pattern already used in tree-split sash + preview-pane console resize (#100215 single gate).
+  const updateSplitPreviewRef = useRef(updateSplitPreview)
+  updateSplitPreviewRef.current = updateSplitPreview
+  const splitPreviewCoalesceRef = useRef<ReturnType<typeof rafCoalesce<{ x: number; y: number }>> | null>(null)
+  if (splitPreviewCoalesceRef.current === null) {
+    splitPreviewCoalesceRef.current = rafCoalesce(({ x, y }: { x: number; y: number }) =>
+      updateSplitPreviewRef.current(x, y)
     )
   }
+  const onCanvasPointerMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    splitPreviewCoalesceRef.current!.push({ x: e.clientX, y: e.clientY })
+  }, [])
+  const onCanvasPointerLeave = useCallback(() => {
+    const c = splitPreviewCoalesceRef.current
+    if (c) {
+      splitPreviewCoalesceRef.current = rafCoalesce(({ x, y }: { x: number; y: number }) =>
+        updateSplitPreviewRef.current(x, y)
+      )
+    }
+    setSplitPreview(null)
+  }, [])
+  useEffect(() => () => splitPreviewCoalesceRef.current?.finish(), [])
 
   const onCanvasPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 || (e.target as HTMLElement).dataset.resizer !== undefined) {
@@ -183,11 +211,20 @@ export function ZoneEditor() {
     }
 
     e.preventDefault()
+    splitPreviewCoalesceRef.current?.finish()
     setMergeAt(null)
     setSelection([])
 
     const start = toModelPoint(e.clientX, e.clientY)
     let dragged = false
+
+    const selectCoalesce = rafCoalesce((box: SelectBox) => {
+      setSelectBox(box)
+      const picked = zones
+        .filter(z => z.left < box.x1 && z.right > box.x0 && z.top < box.y1 && z.bottom > box.y0)
+        .map(z => z.index)
+      setSelection(mergeClosureIndices(model, picked))
+    })
 
     const onMove = (ev: PointerEvent) => {
       const cur = toModelPoint(ev.clientX, ev.clientY)
@@ -205,28 +242,28 @@ export function ZoneEditor() {
         y1: Math.max(start.y, cur.y)
       }
 
-      setSelectBox(box)
-
-      // Zones intersecting the rubber band, expanded to rectangular closure.
-      const picked = zones
-        .filter(z => z.left < box.x1 && z.right > box.x0 && z.top < box.y1 && z.bottom > box.y0)
-        .map(z => z.index)
-
-      setSelection(mergeClosureIndices(model, picked))
+      selectCoalesce.push(box)
     }
 
     startPointerDrag(onMove, ev => {
+      selectCoalesce.finish()
       setSelectBox(null)
 
       if (!dragged) {
-        // Plain click: split at the previewed line.
-        if (splitPreview) {
-          setModel(m => splitZone(m, splitPreview.zoneIndex, splitPreview.position, splitPreview.orientation))
-          setSplitPreview(null)
+        const p = toModelPoint(ev.clientX, ev.clientY)
+        const zone = zoneAt(p.x, p.y)
+        if (zone) {
+          const orientation = shift ? 'horizontal' : 'vertical'
+          const raw = orientation === 'horizontal' ? p.y : p.x
+          const position = Math.round(raw / SPLIT_SNAP) * SPLIT_SNAP
+          if (canSplit(model, zone.index, position, orientation)) {
+            setModel(m =>
+              canSplit(m, zone.index, position, orientation) ? splitZone(m, zone.index, position, orientation) : m
+            )
+            setSplitPreview(null)
+          }
         }
-
         setSelection([])
-
         return
       }
 
@@ -245,25 +282,32 @@ export function ZoneEditor() {
     const start = horizontal ? e.clientY : e.clientX
     let applied = 0
 
-    const onMove = (ev: PointerEvent) => {
-      const px = (horizontal ? ev.clientY : ev.clientX) - start
-      const total = Math.round((px / (horizontal ? rect.height : rect.width)) * MULTIPLIER)
+    const resizerCoalesce = rafCoalesce((total: number) => {
       const step = total - applied
-
       if (step !== 0) {
         setModel(m => {
           const next = dragResizer(m, index, step)
-
           if (next !== m) {
             applied = total
           }
-
           return next
         })
       }
+    })
+
+    const onMove = (ev: PointerEvent) => {
+      const px = (horizontal ? ev.clientY : ev.clientX) - start
+      const total = Math.round((px / (horizontal ? rect.height : rect.width)) * MULTIPLIER)
+      resizerCoalesce.push(total)
     }
 
-    startPointerDrag(onMove)
+    startPointerDrag(onMove, () => resizerCoalesce.finish())
+    const cancelFlush = () => resizerCoalesce.finish()
+    window.addEventListener('pointercancel', cancelFlush, { capture: true, once: true })
+    window.addEventListener('pointerup', () => window.removeEventListener('pointercancel', cancelFlush, true), {
+      capture: true,
+      once: true
+    })
   }
 
   const merge = () => {
@@ -353,8 +397,8 @@ export function ZoneEditor() {
       <div
         className="relative min-h-0 flex-1 cursor-crosshair overflow-hidden rounded-lg border border-(--ui-stroke-secondary)"
         onPointerDown={onCanvasPointerDown}
-        onPointerLeave={() => setSplitPreview(null)}
-        onPointerMove={e => updateSplitPreview(e.clientX, e.clientY)}
+        onPointerLeave={onCanvasPointerLeave}
+        onPointerMove={onCanvasPointerMove}
         ref={canvasRef}
       >
         {zones.map(zone => {

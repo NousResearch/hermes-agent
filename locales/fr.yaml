@@ -20,6 +20,19 @@ approval:
   blocklist_message: "Cette commande est sur la liste de blocage inconditionnel et ne peut pas être approuvée."
 
 gateway:
+  # Mid-run replies when a message arrives while the agent is busy, and the
+  # long-running heartbeat. {detail} is a pre-formatted " (…)" suffix.
+  busy:
+    steered: "⏩ Message injecté dans l'exécution en cours{detail}. Il arrivera après le prochain appel d'outil."
+    redirected: "↪ Exécution en cours redirigée{detail}. Je tiendrai compte de ta correction."
+    subagent_queued: "⏳ Sous-agent en cours{detail} — ton message est en attente jusqu'à sa fin (/stop annule tout)."
+    compressing_queued: "⏳ Compression du contexte{detail} — ton message est en attente jusqu'à la fin (/stop annule tout)."
+    queued: "⏳ En file pour le prochain tour{detail}. Je répondrai dès que la tâche en cours sera terminée."
+    interrupting: "⚡ Interruption de la tâche en cours{detail}. Je réponds à ton message dans un instant."
+    elapsed: "{minutes} min écoulées"
+    iteration: "itération {current}/{max}"
+    running: "en cours : {tool}"
+    working: "⏳ Je travaille — {minutes} min{detail}"
   approval_expired: "⚠️ Approbation expirée (l'agent n'attend plus). Demandez à l'agent de réessayer."
   draining:         "⏳ Vidage de {count} agent(s) actif(s) avant redémarrage..."
   goal_cleared:     "✓ Objectif effacé."
@@ -456,3 +469,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Base de données de sessions indisponible"
     session_not_found:           "Session introuvable dans la base de données."
     warn_passthrough:            "⚠️ {error}"
+
+# Slash-command descriptions shown in messenger command menus and /help.
+# Commands without an entry keep their English CommandDef.description.
+commands:
+  help: "Afficher les commandes disponibles (/help skills liste les commandes de skills, /help <texte> filtre)"
+  new: "Démarrer une nouvelle session (nouvel ID + historique)"
+  stop: "Arrêter tous les processus en arrière-plan"
+  status: "Afficher la session, le modèle, les tokens et le contexte"
+  resume: "Reprendre une session nommée"
+  sessions: "Parcourir et reprendre les sessions précédentes"
+  model: "Changer de modèle (pour la session ; --global pour persister)"
+  compress: "Compresser le contexte de la conversation ('here [N]' garde les N derniers tours ; --preview montre le plan)"
+  voice: "Activer ou désactiver le mode vocal"

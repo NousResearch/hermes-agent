@@ -665,6 +665,23 @@ def _requires_argument(args_hint: str) -> bool:
     return args_hint.strip().startswith("<")
 
 
+def localized_description(cmd: CommandDef) -> str:
+    """Return the command description in the active UI language.
+
+    Catalog key is ``commands.<name>`` (locales/<lang>.yaml).  Commands without
+    a catalog entry keep their English ``CommandDef.description`` so plugin and
+    rarely-used commands never render as a bare key path.
+    """
+    try:
+        from agent.i18n import has_key, t
+        key = f"commands.{cmd.name}"
+        if has_key(key):
+            return t(key)
+    except Exception:
+        pass
+    return cmd.description
+
+
 def gateway_help_lines() -> list[str]:
     """Generate gateway help text lines from the registry."""
     overrides = _resolve_config_gates()
@@ -680,7 +697,7 @@ def gateway_help_lines() -> list[str]:
                 continue
             alias_parts.append(f"`/{a}`")
         alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
-        lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
+        lines.append(f"`/{cmd.name}{args}` -- {localized_description(cmd)}{alias_note}")
     return lines
 
 
@@ -742,7 +759,7 @@ def telegram_bot_commands(*, include_plugins: bool = True) -> list[tuple[str, st
         # the menu hurts discoverability (issue #24312).
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
-            result.append((tg_name, cmd.description))
+            result.append((tg_name, localized_description(cmd)))
     if include_plugins:
         for name, description, args_hint in _iter_plugin_command_entries():
             if _requires_argument(args_hint):

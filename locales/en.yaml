@@ -1,9 +1,10 @@
 # Hermes static-message catalog -- English (baseline / source of truth)
 #
-# Only user-facing static messages from the CLI approval prompt and a handful
-# of gateway slash-command replies live here.  Agent-generated output, log
-# lines, error tracebacks, tool outputs, and slash-command descriptions stay
-# in English and are NOT translated -- see agent/i18n.py for scope rationale.
+# Only user-facing static messages from the CLI approval prompt, a handful of
+# gateway slash-command replies, the mid-run busy notices and the messenger
+# command-menu descriptions live here.  Agent-generated output, log lines,
+# error tracebacks and tool outputs stay in English and are NOT translated --
+# see agent/i18n.py for scope rationale.
 #
 # Keys are dotted paths; nesting below is purely for readability.  Values may
 # contain {placeholder} tokens for str.format substitution.  When adding a
@@ -30,6 +31,19 @@ approval:
   blocklist_message: "This command is on the unconditional blocklist and cannot be approved."
 
 gateway:
+  # Mid-run replies when a message arrives while the agent is busy, and the
+  # long-running heartbeat. {detail} is a pre-formatted " (…)" suffix.
+  busy:
+    steered: "⏩ Steered into current run{detail}. Your message arrives after the next tool call."
+    redirected: "↪ Redirected current run{detail}. I'll adjust using your correction."
+    subagent_queued: "⏳ Subagent working{detail} — your message is queued for when it finishes (use /stop to cancel everything)."
+    compressing_queued: "⏳ Compressing context{detail} — your message is queued for when it finishes (use /stop to cancel everything)."
+    queued: "⏳ Queued for the next turn{detail}. I'll respond once the current task finishes."
+    interrupting: "⚡ Interrupting current task{detail}. I'll respond to your message shortly."
+    elapsed: "{minutes} min elapsed"
+    iteration: "iteration {current}/{max}"
+    running: "running: {tool}"
+    working: "⏳ Working — {minutes} min{detail}"
   # Messenger replies to slash commands and implicit state changes.
   approval_expired: "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
   draining:         "⏳ Draining {count} active agent(s) before restart..."
@@ -469,3 +483,16 @@ gateway:
     session_db_unavailable_prefix: "Session database not available"
     session_not_found:           "Session not found in database."
     warn_passthrough:            "⚠️ {error}"
+
+# Slash-command descriptions shown in messenger command menus and /help.
+# Commands without an entry keep their English CommandDef.description.
+commands:
+  help: "Show available commands (/help skills lists skill commands, /help <text> filters)"
+  new: "Start a new session (fresh session ID + history)"
+  stop: "Kill all running background processes"
+  status: "Show session, model, token, and context info"
+  resume: "Resume a previously-named session"
+  sessions: "Browse and resume previous sessions"
+  model: "Switch model (session-scoped; --global to persist)"
+  compress: "Compress conversation context (add 'here [N]' to keep recent N turns; --preview shows what would happen)"
+  voice: "Toggle voice mode"

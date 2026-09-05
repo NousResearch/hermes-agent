@@ -20,6 +20,19 @@ approval:
   blocklist_message: "Эта команда находится в безусловном списке блокировки и не может быть одобрена."
 
 gateway:
+  # Mid-run replies when a message arrives while the agent is busy, and the
+  # long-running heartbeat. {detail} is a pre-formatted " (…)" suffix.
+  busy:
+    steered: "⏩ Сообщение передано в текущий запуск{detail}. Агент увидит его после следующего вызова инструмента."
+    redirected: "↪ Текущий запуск перенаправлен{detail}. Учту вашу поправку."
+    subagent_queued: "⏳ Работает субагент{detail} — ваше сообщение в очереди до его завершения (/stop отменяет всё)."
+    compressing_queued: "⏳ Сжимаю контекст{detail} — ваше сообщение в очереди до завершения (/stop отменяет всё)."
+    queued: "⏳ В очереди на следующий ход{detail}. Отвечу, как только закончу текущую задачу."
+    interrupting: "⚡ Прерываю текущую задачу{detail}. Скоро отвечу на ваше сообщение."
+    elapsed: "прошло {minutes} мин"
+    iteration: "итерация {current}/{max}"
+    running: "выполняется: {tool}"
+    working: "⏳ Работаю — {minutes} мин{detail}"
   approval_expired: "⚠️ Срок одобрения истёк (агент больше не ожидает). Попросите агента повторить попытку."
   draining:         "⏳ Ожидание завершения {count} активных агент(ов) перед перезапуском..."
   goal_cleared:     "✓ Цель очищена."
@@ -456,3 +469,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "База данных сеансов недоступна"
     session_not_found:           "Сеанс не найден в базе данных."
     warn_passthrough:            "⚠️ {error}"
+
+# Slash-command descriptions shown in messenger command menus and /help.
+# Commands without an entry keep their English CommandDef.description.
+commands:
+  help: "Показать доступные команды (/help skills — команды навыков, /help <текст> — фильтр)"
+  new: "Начать новый разговор (новая сессия и история)"
+  stop: "Остановить все фоновые процессы"
+  status: "Показать сессию, модель, токены и контекст"
+  resume: "Продолжить сохранённую сессию по имени"
+  sessions: "Список прошлых сессий и возврат к ним"
+  model: "Сменить модель (для сессии; --global — навсегда)"
+  compress: "Сжать контекст разговора ('here [N]' — оставить последние N ходов; --preview — показать план)"
+  voice: "Включить или выключить голосовые ответы"

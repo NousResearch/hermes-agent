@@ -20,6 +20,19 @@ approval:
   blocklist_message: "Bu komut koşulsuz engelleme listesinde ve onaylanamaz."
 
 gateway:
+  # Mid-run replies when a message arrives while the agent is busy, and the
+  # long-running heartbeat. {detail} is a pre-formatted " (…)" suffix.
+  busy:
+    steered: "⏩ Mesaj mevcut çalıştırmaya yönlendirildi{detail}. Bir sonraki araç çağrısından sonra ulaşacak."
+    redirected: "↪ Mevcut çalıştırma yeniden yönlendirildi{detail}. Düzeltmeni dikkate alacağım."
+    subagent_queued: "⏳ Alt ajan çalışıyor{detail} — mesajın bitene kadar kuyrukta (/stop her şeyi iptal eder)."
+    compressing_queued: "⏳ Bağlam sıkıştırılıyor{detail} — mesajın bitene kadar kuyrukta (/stop her şeyi iptal eder)."
+    queued: "⏳ Sonraki tur için kuyruğa alındı{detail}. Mevcut görev bitince yanıtlayacağım."
+    interrupting: "⚡ Mevcut görev kesiliyor{detail}. Mesajına birazdan yanıt vereceğim."
+    elapsed: "{minutes} dk geçti"
+    iteration: "yineleme {current}/{max}"
+    running: "çalışıyor: {tool}"
+    working: "⏳ Çalışıyorum — {minutes} dk{detail}"
   approval_expired: "⚠️ Onay süresi doldu (ajan artık beklemiyor). Ajanın tekrar denemesini isteyin."
   draining:         "⏳ Yeniden başlatmadan önce {count} aktif ajan bekleniyor..."
   goal_cleared:     "✓ Hedef temizlendi."
@@ -456,3 +469,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Oturum veritabanı kullanılamıyor"
     session_not_found:           "Oturum veritabanında bulunamadı."
     warn_passthrough:            "⚠️ {error}"
+
+# Slash-command descriptions shown in messenger command menus and /help.
+# Commands without an entry keep their English CommandDef.description.
+commands:
+  help: "Kullanılabilir komutları göster (/help skills beceri komutlarını listeler, /help <metin> filtreler)"
+  new: "Yeni oturum başlat (yeni oturum kimliği + geçmiş)"
+  stop: "Çalışan tüm arka plan işlemlerini durdur"
+  status: "Oturum, model, token ve bağlam bilgisini göster"
+  resume: "Adı verilen bir oturumu sürdür"
+  sessions: "Önceki oturumlara göz at ve sürdür"
+  model: "Modeli değiştir (oturum için; --global kalıcı yapar)"
+  compress: "Konuşma bağlamını sıkıştır ('here [N]' son N turu korur; --preview planı gösterir)"
+  voice: "Ses modunu aç/kapat"

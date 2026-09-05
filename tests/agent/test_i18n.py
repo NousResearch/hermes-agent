@@ -140,3 +140,30 @@ def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
     assert result.name == "locales"
 
 
+
+
+# ---------------------------------------------------------------------------
+# Command-menu descriptions and busy notices (commands.*, gateway.busy.*)
+# ---------------------------------------------------------------------------
+
+
+def test_has_key_sees_english_fallback(monkeypatch):
+    monkeypatch.setenv("HERMES_LANGUAGE", "ru")
+    i18n.reset_language_cache()
+    assert i18n.has_key("gateway.busy.working")
+    assert i18n.has_key("commands.new")
+    assert not i18n.has_key("commands.no_such_command")
+
+
+def test_localized_description_falls_back_to_english_definition(monkeypatch):
+    from hermes_cli.commands import COMMAND_REGISTRY, localized_description
+
+    by_name = {c.name: c for c in COMMAND_REGISTRY}
+    monkeypatch.setenv("HERMES_LANGUAGE", "ru")
+    i18n.reset_language_cache()
+    assert localized_description(by_name["new"]) != by_name["new"].description
+    # No catalog entry -> the CommandDef text, never a bare key path.
+    assert localized_description(by_name["egress"]) == by_name["egress"].description
+    monkeypatch.setenv("HERMES_LANGUAGE", "en")
+    i18n.reset_language_cache()
+    assert localized_description(by_name["new"]) == by_name["new"].description

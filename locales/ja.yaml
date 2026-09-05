@@ -20,6 +20,19 @@ approval:
   blocklist_message: "このコマンドは無条件ブロックリストに含まれており、承認できません。"
 
 gateway:
+  # Mid-run replies when a message arrives while the agent is busy, and the
+  # long-running heartbeat. {detail} is a pre-formatted " (…)" suffix.
+  busy:
+    steered: "⏩ 現在の実行に割り込みました{detail}。次のツール呼び出しの後に届きます。"
+    redirected: "↪ 現在の実行を方向転換しました{detail}。あなたの修正に合わせて調整します。"
+    subagent_queued: "⏳ サブエージェントが作業中{detail} — 完了までメッセージは待機します（/stop で全て中止）。"
+    compressing_queued: "⏳ コンテキストを圧縮中{detail} — 完了までメッセージは待機します（/stop で全て中止）。"
+    queued: "⏳ 次のターンに待機中{detail}。現在のタスクが終わり次第返信します。"
+    interrupting: "⚡ 現在のタスクを中断します{detail}。まもなくメッセージに返信します。"
+    elapsed: "{minutes} 分経過"
+    iteration: "イテレーション {current}/{max}"
+    running: "実行中: {tool}"
+    working: "⏳ 作業中 — {minutes} 分{detail}"
   approval_expired: "⚠️ 承認の有効期限が切れました（エージェントはもう待機していません）。エージェントに再試行を依頼してください。"
   draining:         "⏳ 再起動前に {count} 個のアクティブエージェントの終了を待っています..."
   goal_cleared:     "✓ 目標をクリアしました。"
@@ -456,3 +469,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "セッションデータベースが利用できません"
     session_not_found:           "データベースにセッションが見つかりません。"
     warn_passthrough:            "⚠️ {error}"
+
+# Slash-command descriptions shown in messenger command menus and /help.
+# Commands without an entry keep their English CommandDef.description.
+commands:
+  help: "利用可能なコマンドを表示（/help skills でスキルコマンド一覧、/help <テキスト> で絞り込み）"
+  new: "新しいセッションを開始（新しいセッション ID と履歴）"
+  stop: "実行中のバックグラウンドプロセスをすべて停止"
+  status: "セッション・モデル・トークン・コンテキスト情報を表示"
+  resume: "名前を付けたセッションを再開"
+  sessions: "過去のセッションを閲覧して再開"
+  model: "モデルを切り替え（セッション内のみ。--global で永続化）"
+  compress: "会話コンテキストを圧縮（'here [N]' で直近 N ターンを保持、--preview で結果を確認）"
+  voice: "音声モードの切り替え"

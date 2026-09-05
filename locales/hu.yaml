@@ -20,6 +20,19 @@ approval:
   blocklist_message: "Ez a parancs a feltétel nélküli tiltólistán van, és nem hagyható jóvá."
 
 gateway:
+  # Mid-run replies when a message arrives while the agent is busy, and the
+  # long-running heartbeat. {detail} is a pre-formatted " (…)" suffix.
+  busy:
+    steered: "⏩ Üzenet beillesztve a futó feladatba{detail}. A következő eszközhívás után érkezik meg."
+    redirected: "↪ A futó feladat átirányítva{detail}. Figyelembe veszem a javításodat."
+    subagent_queued: "⏳ Alügynök dolgozik{detail} — az üzeneted sorban áll, amíg végez (/stop mindent leállít)."
+    compressing_queued: "⏳ Kontextus tömörítése{detail} — az üzeneted sorban áll, amíg végez (/stop mindent leállít)."
+    queued: "⏳ Sorban a következő körre{detail}. Válaszolok, amint a jelenlegi feladat elkészül."
+    interrupting: "⚡ Megszakítom a jelenlegi feladatot{detail}. Hamarosan válaszolok az üzenetedre."
+    elapsed: "{minutes} perc telt el"
+    iteration: "iteráció {current}/{max}"
+    running: "fut: {tool}"
+    working: "⏳ Dolgozom — {minutes} perc{detail}"
   approval_expired: "⚠️ A jóváhagyás lejárt (az ügynök már nem vár). Kérd meg az ügynököt, hogy próbálja újra."
   draining:         "⏳ {count} aktív ügynök befejezésére várunk az újraindítás előtt..."
   goal_cleared:     "✓ A cél törölve."
@@ -456,3 +469,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "A munkamenet-adatbázis nem érhető el"
     session_not_found:           "A munkamenet nem található az adatbázisban."
     warn_passthrough:            "⚠️ {error}"
+
+# Slash-command descriptions shown in messenger command menus and /help.
+# Commands without an entry keep their English CommandDef.description.
+commands:
+  help: "Elérhető parancsok (/help skills a képesség-parancsokat listázza, /help <szöveg> szűr)"
+  new: "Új munkamenet indítása (új azonosító + előzmények)"
+  stop: "Minden futó háttérfolyamat leállítása"
+  status: "Munkamenet, modell, tokenek és kontextus megjelenítése"
+  resume: "Korábban elnevezett munkamenet folytatása"
+  sessions: "Korábbi munkamenetek böngészése és folytatása"
+  model: "Modellváltás (a munkamenetre; --global tartósan)"
+  compress: "Beszélgetési kontextus tömörítése ('here [N]' megtartja az utolsó N kört; --preview előnézet)"
+  voice: "Hangmód be-/kikapcsolása"

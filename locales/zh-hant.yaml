@@ -20,6 +20,19 @@ approval:
   blocklist_message: "此指令位於無條件封鎖清單中，無法被批准。"
 
 gateway:
+  # Mid-run replies when a message arrives while the agent is busy, and the
+  # long-running heartbeat. {detail} is a pre-formatted " (…)" suffix.
+  busy:
+    steered: "⏩ 已插入目前執行{detail}。你的訊息將在下一次工具呼叫後送達。"
+    redirected: "↪ 已重新導向目前執行{detail}。我會依你的更正進行調整。"
+    subagent_queued: "⏳ 子代理工作中{detail} — 你的訊息已排隊，待其完成後處理（/stop 可取消全部）。"
+    compressing_queued: "⏳ 正在壓縮上下文{detail} — 你的訊息已排隊，待其完成後處理（/stop 可取消全部）。"
+    queued: "⏳ 已排隊到下一輪{detail}。目前任務完成後我會回覆。"
+    interrupting: "⚡ 正在中斷目前任務{detail}。我很快會回覆你的訊息。"
+    elapsed: "已用 {minutes} 分鐘"
+    iteration: "第 {current}/{max} 輪"
+    running: "執行中：{tool}"
+    working: "⏳ 工作中 — {minutes} 分鐘{detail}"
   approval_expired: "⚠️ 批准已逾期（代理不再等待）。請讓代理重試。"
   draining:         "⏳ 正在等待 {count} 個活躍代理結束後重新啟動..."
   goal_cleared:     "✓ 目標已清除。"
@@ -456,3 +469,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "工作階段資料庫無法使用"
     session_not_found:           "資料庫中找不到此工作階段。"
     warn_passthrough:            "⚠️ {error}"
+
+# Slash-command descriptions shown in messenger command menus and /help.
+# Commands without an entry keep their English CommandDef.description.
+commands:
+  help: "顯示可用指令（/help skills 列出技能指令，/help <文字> 篩選）"
+  new: "開始新工作階段（新的工作階段 ID 和歷史）"
+  stop: "終止所有執行中的背景程序"
+  status: "顯示工作階段、模型、權杖和上下文資訊"
+  resume: "恢復先前命名的工作階段"
+  sessions: "瀏覽並恢復先前的工作階段"
+  model: "切換模型（僅目前工作階段；--global 永久保存）"
+  compress: "壓縮對話上下文（'here [N]' 保留最近 N 輪；--preview 預覽效果）"
+  voice: "切換語音模式"

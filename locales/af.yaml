@@ -20,6 +20,19 @@ approval:
   blocklist_message: "Hierdie opdrag is op die onvoorwaardelike blokkeerlys en kan nie goedgekeur word nie."
 
 gateway:
+  # Mid-run replies when a message arrives while the agent is busy, and the
+  # long-running heartbeat. {detail} is a pre-formatted " (…)" suffix.
+  busy:
+    steered: "⏩ Boodskap in die huidige lopie ingestuur{detail}. Dit kom ná die volgende hulpmiddel-oproep aan."
+    redirected: "↪ Huidige lopie herlei{detail}. Ek pas aan volgens jou regstelling."
+    subagent_queued: "⏳ Subagent werk{detail} — jou boodskap wag totdat dit klaar is (/stop kanselleer alles)."
+    compressing_queued: "⏳ Konteks word saamgepers{detail} — jou boodskap wag totdat dit klaar is (/stop kanselleer alles)."
+    queued: "⏳ In die tou vir die volgende beurt{detail}. Ek antwoord sodra die huidige taak klaar is."
+    interrupting: "⚡ Onderbreek die huidige taak{detail}. Ek antwoord binnekort op jou boodskap."
+    elapsed: "{minutes} min verstreke"
+    iteration: "iterasie {current}/{max}"
+    running: "besig: {tool}"
+    working: "⏳ Besig — {minutes} min{detail}"
   approval_expired: "⚠️ Goedkeuring het verval (die agent wag nie meer nie). Vra die agent om weer te probeer."
   draining:         "⏳ Wag vir {count} aktiewe agent(e) voor herbegin..."
   goal_cleared:     "✓ Doelwit verwyder."
@@ -456,3 +469,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Sessie-databasis is nie beskikbaar"
     session_not_found:           "Sessie nie in databasis gevind nie."
     warn_passthrough:            "⚠️ {error}"
+
+# Slash-command descriptions shown in messenger command menus and /help.
+# Commands without an entry keep their English CommandDef.description.
+commands:
+  help: "Wys beskikbare opdragte (/help skills lys vaardigheid-opdragte, /help <teks> filter)"
+  new: "Begin 'n nuwe sessie (nuwe sessie-ID + geskiedenis)"
+  stop: "Stop alle lopende agtergrondprosesse"
+  status: "Wys sessie, model, tokens en konteks"
+  resume: "Hervat 'n vooraf benoemde sessie"
+  sessions: "Blaai deur en hervat vorige sessies"
+  model: "Verander model (vir die sessie; --global maak dit permanent)"
+  compress: "Pers gesprekskonteks saam ('here [N]' hou die laaste N beurte; --preview wys die plan)"
+  voice: "Skakel stemmodus aan of af"

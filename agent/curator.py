@@ -30,6 +30,8 @@ DEFAULT_STALE_AFTER_DAYS, DEFAULT_ARCHIVE_AFTER_DAYS = 30, 90
 # The LLM consolidation fork is opt-in; the deterministic inactivity prune
 # (apply_automatic_transitions) always runs when the curator is enabled.
 DEFAULT_CONSOLIDATE = False
+DEFAULT_LOSSY_MERGE_THRESHOLD = 0.40
+
 
 
 # --- .curator_state — persistent scheduler + status ---
@@ -41,7 +43,8 @@ def _state_file() -> Path:
 def load_state() -> Dict[str, Any]:
     base: Dict[str, Any] = {
         "last_run_at": None, "last_run_duration_seconds": None, "last_run_summary": None,
-        "last_run_summary_shown_at": None, "last_report_path": None, "paused": False, "run_count": 0,
+        "last_run_summary_shown_at": None, "last_report_path": None, "last_store_health": None,
+        "paused": False, "run_count": 0,
     }
     path = _state_file()
     try:
@@ -128,6 +131,12 @@ def get_prune_builtins() -> bool:
 def get_consolidate() -> bool:
     """LLM consolidation pass — OFF by default (prune only, no aux-model fork); ``hermes curator run --consolidate`` overrides per invocation."""
     return bool(_load_config().get("consolidate", DEFAULT_CONSOLIDATE))
+
+
+def get_lossy_merge_threshold() -> float:
+    """Minimum retention ratio (added_bytes / absorbed_bytes) for consolidation passes; below this is flagged as lossy (arXiv:2607.26637)."""
+    return _config_number("lossy_merge_threshold", DEFAULT_LOSSY_MERGE_THRESHOLD, float)
+
 
 
 # --- Idle / interval check ---
@@ -249,6 +258,8 @@ CURATOR_DRY_RUN_BANNER = (
     "  • DO NOT call skill_manage with action=patch, create, delete, "
     "write_file, or remove_file.\n"
     "  • skills_list and skill_view are FINE — read as much as you need.\n"
+    "  • Content-preservation rule still applies: evaluate preview merges strictly "
+    "for lossless retention (never propose condensing into one-line summaries).\n"
     "\n"
     "Your output IS the deliverable. Produce the exact same "
     "human-readable summary and structured YAML block you would "
@@ -316,7 +327,12 @@ CURATOR_REVIEW_PROMPT = (
     "a distinct trigger'. Pairwise distinctness is the wrong bar. The "
     "right bar is: 'would a human maintainer write this as N separate "
     "skills, or as one skill with N labeled subsections?' When the "
-    "answer is the latter, merge.\n\n"
+    "answer is the latter, merge.\n"
+    "6. Consolidation MUST be lossless (arXiv:2607.26637). Silently condensing, "
+    "dropping detail, or summarizing multi-line skills into short bullets is "
+    "forbidden. If a sibling's unique knowledge cannot be fully carried into "
+    "the umbrella or demoted to references/, KEEP IT — do not archive it.\n\n"
+
     "How to work — not optional:\n"
     "1. Scan the full candidate list. Identify PREFIX CLUSTERS (skills "
     "sharing a first word or domain keyword). Examples you are likely "
@@ -375,7 +391,15 @@ CURATOR_REVIEW_PROMPT = (
     "the new paths, OR\n"
     "   • archive the entire original skill package unchanged.\n"
     "Never leave archived/demoted instructions pointing at files that were "
-    "left behind under the old skill directory.\n"
+    "left behind under the old skill directory.\n\n"
+    "Content preservation — not optional:\n"
+    "Consolidation must be lossless (arXiv:2607.26637). When absorbing a "
+    "sibling, either (a) carry its full unique content into the umbrella (as a "
+    "labeled section or a `references/<topic>.md` demotion), or (b) do not archive "
+    "it. A one-line summary is NOT absorption. Rule of thumb: if the umbrella + "
+    "its support files could not answer every question the sibling could, the "
+    "merge is incomplete. When in doubt, demote to `references/` verbatim rather "
+    "than summarize.\n"
     "4. Also flag skills whose NAME is too narrow (contains a PR number, "
     "a feature codename, a specific error string, an 'audit' / "
     "'diagnosis' / 'salvage' session artifact). These almost always "
@@ -414,7 +438,8 @@ CURATOR_REVIEW_PROMPT = (
     "Expected output: real umbrella-ification. Process every obvious "
     "cluster. If you end the pass with fewer than 10 archives, you "
     "stopped too early — go back and look at the clusters you left "
-    "alone.\n\n"
+    "alone. However, NEVER archive without lossless absorption — content "
+    "preservation and depth always take precedence over archive counts.\n\n"
     "When done, write a human summary AND a structured machine-readable "
     "block so downstream tooling can distinguish consolidation from "
     "pruning. Format EXACTLY:\n\n"
@@ -607,6 +632,114 @@ def _reconcile_classification(
     return {"consolidated": consolidated, "pruned": pruned}
 
 
+def _skill_package_bytes(skill_dir: Optional[Path]) -> int:
+    """Total byte size of all regular files in a skill package directory."""
+    if not skill_dir:
+        return 0
+    p_dir = Path(skill_dir)
+    if not p_dir.is_dir():
+        return 0
+    total = 0
+    try:
+        for p in p_dir.rglob("*"):
+            if p.is_file():
+                try:
+                    total += p.stat().st_size
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
+
+
+def _find_archived_skill_dir(skill_name: str) -> Optional[Path]:
+    """Locate newest archive directory for *skill_name* under ~/.hermes/skills/.archive/."""
+    try:
+        from tools.skill_usage import _archive_dir
+        archive_root = _archive_dir()
+    except Exception:
+        archive_root = get_hermes_home() / "skills" / ".archive"
+    if not archive_root.exists():
+        return None
+    try:
+        dirs = [p for p in archive_root.rglob("*") if p.is_dir()]
+    except OSError:
+        return None
+    prefix = f"{skill_name}-"
+    candidates = [p for p in dirs if p.name == skill_name] or sorted(
+        [p for p in dirs if p.name.startswith(prefix) and len(p.name) - len(prefix) == 14
+         and p.name[len(prefix):].isdigit()], reverse=True)
+    return candidates[0] if candidates else None
+
+
+def _snapshot_skill_sizes(names: Iterable[str]) -> Dict[str, int]:
+    """Record byte sizes of skill directory packages before mutation."""
+    try:
+        from tools.skill_usage import _find_skill_dir
+    except ImportError:
+        _find_skill_dir = lambda name: get_hermes_home() / "skills" / name
+
+    sizes: Dict[str, int] = {}
+    for name in names:
+        try:
+            d = _find_skill_dir(name)
+            if d is not None and d.is_dir():
+                sizes[name] = _skill_package_bytes(d)
+        except Exception as e:
+            logger.debug("Failed to snapshot skill size for %s: %s", name, e)
+    return sizes
+
+
+def _audit_lossy_merges(
+    consolidated: List[Dict[str, Any]],
+    before_sizes: Optional[Dict[str, int]] = None,
+    threshold: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """Compare absorbed skill package bytes vs bytes added to the umbrella.
+    Flag consolidations where added_bytes < threshold * absorbed_bytes
+    (arXiv:2607.26637 content-preservation audit). Mutates entries with
+    absorbed_bytes, added_bytes, retention_ratio, and lossy flag/warning.
+    Returns the list of flagged lossy entries."""
+    if threshold is None:
+        threshold = get_lossy_merge_threshold()
+    before_sizes = before_sizes or {}
+    lossy_entries = []
+
+    try:
+        from tools.skill_usage import _find_skill_dir
+    except ImportError:
+        _find_skill_dir = lambda name: get_hermes_home() / "skills" / name
+
+    for c in consolidated:
+        name = c.get("name", "")
+        into = c.get("into", "")
+        if not name or not into:
+            continue
+
+        absorbed_bytes = before_sizes.get(name)
+        if absorbed_bytes is None:
+            archived_dir = _find_archived_skill_dir(name)
+            absorbed_bytes = _skill_package_bytes(archived_dir)
+
+        umbrella_dir = _find_skill_dir(into)
+        umbrella_after_bytes = _skill_package_bytes(umbrella_dir)
+        umbrella_before_bytes = before_sizes.get(into, 0)
+        added_bytes = max(0, umbrella_after_bytes - umbrella_before_bytes)
+
+        c["absorbed_bytes"] = absorbed_bytes
+        c["added_bytes"] = added_bytes
+        c["retention_ratio"] = round(added_bytes / absorbed_bytes, 3) if absorbed_bytes > 0 else 1.0
+
+        if absorbed_bytes > 0 and added_bytes < (threshold * absorbed_bytes):
+            c["lossy"] = True
+            c["lossy_warning"] = f"possible lossy merge — review .archive/{name}"
+            lossy_entries.append(c)
+        else:
+            c["lossy"] = False
+
+    return lossy_entries
+
+
 class _RunDiff(NamedTuple):
     after_names: Set[str]
     removed: List[str]
@@ -615,7 +748,10 @@ class _RunDiff(NamedTuple):
     pruned: List[Dict[str, Any]]
 
 
-def _diff_and_classify(before_names: Set[str], after_names: Set[str], tool_calls: List[Dict[str, Any]], model_final: str) -> _RunDiff:
+def _diff_and_classify(
+    before_names: Set[str], after_names: Set[str], tool_calls: List[Dict[str, Any]],
+    model_final: str, before_sizes: Optional[Dict[str, int]] = None,
+) -> _RunDiff:
     """Diff the before/after skill sets and classify every removal: the model's YAML block carries intent + rationale,
     the tool-call heuristic audits for hallucinated umbrellas/omissions, per-delete ``absorbed_into`` beats both."""
     removed, added = sorted(before_names - after_names), sorted(after_names - before_names)
@@ -625,6 +761,7 @@ def _diff_and_classify(before_names: Set[str], after_names: Set[str], tool_calls
         model_block=_parse_structured_summary(model_final), destinations=set(after_names) | set(added),
         absorbed_declarations=_extract_absorbed_into_declarations(tool_calls),
     )
+    _audit_lossy_merges(classification["consolidated"], before_sizes=before_sizes)
     return _RunDiff(after_names, removed, added, classification["consolidated"], classification["pruned"])
 
 
@@ -632,14 +769,18 @@ def _by_name(report: List[Dict[str, Any]]) -> Dict[Any, Dict[str, Any]]:
     return {r.get("name"): r for r in report if isinstance(r, dict)}
 
 
-def _build_rename_summary(*, before_names: Set[str], after_report: List[Dict[str, Any]], tool_calls: List[Dict[str, Any]], model_final: str) -> str:
+def _build_rename_summary(
+    *, before_names: Set[str], after_report: List[Dict[str, Any]],
+    tool_calls: List[Dict[str, Any]], model_final: str,
+    before_sizes: Optional[Dict[str, int]] = None,
+) -> str:
     """The "where did my skills go?" lines appended to the user-visible ``final_summary``; "" when nothing was archived.
     Capped at 10 entries so a big consolidation doesn't flood agent.log (full list is in REPORT.md); the pin hint
     appears only when a consolidation produced an umbrella."""
     after_names = set(_by_name(after_report))
     if not before_names - after_names:
         return ""
-    diff = _diff_and_classify(before_names, after_names, tool_calls, model_final)
+    diff = _diff_and_classify(before_names, after_names, tool_calls, model_final, before_sizes=before_sizes)
     SHOW = 10
     total = len(diff.consolidated) + len(diff.pruned)
     entries = [f"  • {e.get('name', '?')} → {e.get('into', '?')}" for e in diff.consolidated]
@@ -648,10 +789,14 @@ def _build_rename_summary(*, before_names: Set[str], after_report: List[Dict[str
     if total > SHOW:
         lines.append(f"  … and {total - SHOW} more")
     lines.append("full report: hermes curator status")
+    lossy = [e for e in diff.consolidated if e.get("lossy")]
+    if lossy:
+        lines.append(f"  ⚠ {len(lossy)} possible lossy merge(s) — review .archive/ or run: hermes curator status")
     umbrellas = sorted({e.get("into") for e in diff.consolidated if e.get("into")})
     if umbrellas:
         lines.append(f"keep an umbrella stable: hermes curator pin {umbrellas[0]}")
     return "\n".join(lines)
+
 
 
 def _rewrite_cron_refs(consolidated: List[Dict[str, Any]], pruned: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -681,6 +826,7 @@ def _write_file(path: Path, label: str, render: Any) -> None:
 def _write_run_report(
     *, started_at: datetime, elapsed_seconds: float, auto_counts: Dict[str, int], auto_summary: str,
     before_report: List[Dict[str, Any]], before_names: Set[str], after_report: List[Dict[str, Any]], llm_meta: Dict[str, Any],
+    before_sizes: Optional[Dict[str, int]] = None,
 ) -> Optional[Path]:
     """Write run.json + REPORT.md under logs/curator/{YYYYMMDD-HHMMSS}[-N]/ (N disambiguates a crash-rerun in the same
     second). Returns the report dir, or None if it couldn't be created (reporting is best-effort)."""
@@ -696,12 +842,35 @@ def _write_run_report(
         return None
     tool_calls = llm_meta.get("tool_calls", []) or []
     after_by_name, before_by_name = _by_name(after_report), _by_name(before_report)
-    diff = _diff_and_classify(before_names, set(after_by_name), tool_calls, llm_meta.get("final", "") or "")
+    diff = _diff_and_classify(before_names, set(after_by_name), tool_calls, llm_meta.get("final", "") or "", before_sizes=before_sizes)
     states = ((n, (before_by_name.get(n) or {}).get("state"), (after_by_name.get(n) or {}).get("state")) for n in sorted(diff.after_names & before_names))
     transitions = [{"name": n, "from": b, "to": a} for n, b, a in states if b and a and b != a]
     tc_counts: Dict[str, int] = dict(Counter(tc.get("name", "unknown") for tc in tool_calls))
     cron_rewrites = _rewrite_cron_refs(diff.consolidated, diff.pruned)
     jobs_updated = int(cron_rewrites.get("jobs_updated", 0))
+
+    lossy_merges = [
+        {
+            "from": c["name"],
+            "into": c["into"],
+            "absorbed_bytes": c.get("absorbed_bytes", 0),
+            "added_bytes": c.get("added_bytes", 0),
+            "retention_ratio": c.get("retention_ratio", 0.0),
+            "warning": c.get("lossy_warning", f"possible lossy merge — review .archive/{c['name']}"),
+        }
+        for c in diff.consolidated if c.get("lossy")
+    ]
+    absorbed_total = sum(c.get("absorbed_bytes", 0) for c in diff.consolidated)
+    added_total = sum(c.get("added_bytes", 0) for c in diff.consolidated)
+    threshold = get_lossy_merge_threshold()
+    store_health = {
+        "skills_absorbed": len(diff.consolidated),
+        "bytes_archived": absorbed_total,
+        "bytes_retained": added_total,
+        "lossy_merges_count": len(lossy_merges),
+        "threshold": threshold,
+    }
+
     payload = {
         "started_at": started_at.isoformat(), "duration_seconds": round(elapsed_seconds, 2),
         "model": llm_meta.get("model", ""), "provider": llm_meta.get("provider", ""), "auto_transitions": auto_counts,
@@ -709,10 +878,12 @@ def _write_run_report(
             "before": len(before_names), "after": len(diff.after_names), "delta": len(diff.after_names) - len(before_names),
             "archived_this_run": len(diff.removed), "added_this_run": len(diff.added),
             "consolidated_this_run": len(diff.consolidated), "pruned_this_run": len(diff.pruned),
+            "lossy_merges": len(lossy_merges),
             "state_transitions": len(transitions), "cron_jobs_rewritten": jobs_updated, "tool_calls_total": sum(tc_counts.values()),
         },
         "tool_call_counts": tc_counts, "archived": diff.removed, "consolidated": diff.consolidated, "pruned": diff.pruned,
         "pruned_names": [p["name"] for p in diff.pruned], "added": diff.added, "state_transitions": transitions, "cron_rewrites": cron_rewrites,
+        "lossy_merges": lossy_merges, "store_health": store_health,
         "llm_final": llm_meta.get("final", ""), "llm_summary": llm_meta.get("summary", ""),
         "llm_error": llm_meta.get("error"), "tool_calls": llm_meta.get("tool_calls", []),
     }
@@ -732,9 +903,15 @@ def _consolidated_lines(entry: Dict[str, Any]) -> List[str]:
     source = entry.get("source", "")
     if source and source.startswith("tool-call audit"):
         line += f"  _(detected via {source})_"  # model didn't enumerate this one — explains the missing rationale
-    return [line] + ([f"  ⚠ The curator's summary named `{entry['model_claimed_into']}` "
-                      "as the umbrella but that skill doesn't exist post-run; showing the tool-call audit's finding instead."]
-                     if entry.get("model_claimed_into") else [])
+    res = [line]
+    if entry.get("model_claimed_into"):
+        res.append(f"  ⚠ The curator's summary named `{entry['model_claimed_into']}` "
+                   "as the umbrella but that skill doesn't exist post-run; showing the tool-call audit's finding instead.")
+    if entry.get("lossy"):
+        warning = entry.get("lossy_warning", f"possible lossy merge — review .archive/{entry.get('name')}")
+        res.append(f"  ⚠ **{warning}** ({entry.get('added_bytes', 0)} added bytes vs {entry.get('absorbed_bytes', 0)} absorbed bytes)")
+    return res
+
 
 
 def _pruned_lines(entry: Any) -> List[str]:
@@ -780,11 +957,16 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
         f"Model: `{p.get('model') or '(not resolved)'}` via `{p.get('provider') or '(not resolved)'}`  ·  Duration: {dur_label}  ·  "
         f"Agent-created skills: {counts.get('before', 0)} → {counts.get('after', 0)} ({counts.get('delta', 0):+d})\n",
         *([f"> ⚠ LLM pass error: `{error}`\n"] if error else []),
+        *([f"> ⚠ **Lossy-merge audit (arXiv:2607.26637):** {len(p['lossy_merges'])} consolidation(s) "
+           f"added < {int(p.get('store_health', {}).get('threshold', DEFAULT_LOSSY_MERGE_THRESHOLD) * 100)}% of absorbed bytes to their umbrella. "
+           "Review archived originals in `~/.hermes/skills/.archive/` to ensure full depth was retained.\n"]
+          if p.get("lossy_merges") else []),
         "## Auto-transitions (pure, no LLM)\n", f"- checked: {auto.get('checked', 0)}", f"- marked stale: {auto.get('marked_stale', 0)}",
         f"- archived (no LLM, pure time-based staleness): {auto.get('archived', 0)}", f"- reactivated: {auto.get('reactivated', 0)}", "",
         "## LLM consolidation pass\n",
         f"- tool calls: **{counts.get('tool_calls_total', 0)}** (by name: {', '.join(f'{k}={v}' for k, v in sorted(tc_counts.items())) or 'none'})",
-        f"- consolidated into umbrellas: **{counts.get('consolidated_this_run', 0)}**",
+        f"- consolidated into umbrellas: **{counts.get('consolidated_this_run', 0)}**" +
+        (f" (**{counts['lossy_merges']}** flagged as possible lossy merge)" if counts.get("lossy_merges") else ""),
         f"- pruned (archived for staleness): **{counts.get('pruned_this_run', 0)}**", f"- new skills this run: **{counts.get('added_this_run', 0)}**",
         f"- state transitions (active ↔ stale ↔ archived): **{counts.get('state_transitions', 0)}**", "",
     ]
@@ -843,7 +1025,10 @@ def _safe_curated_report() -> List[Dict[str, Any]]:
     return []
 
 
-def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_names: Set[str]) -> tuple:
+def _consolidation_pass(
+    prefix: str, auto_summary: str, dry_run: bool, before_names: Set[str],
+    before_sizes: Optional[Dict[str, int]] = None,
+) -> tuple:
     """The LLM half of a run: fork (unless no candidates), then append the rename map (`old-name → umbrella`) so users
     needn't dig into REPORT.md. Returns ``(final_summary, llm_meta)``; never raises."""
     try:
@@ -866,6 +1051,7 @@ def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_na
         rename_lines = _build_rename_summary(
             before_names=before_names, after_report=skill_usage.curated_report(),
             tool_calls=llm_meta.get("tool_calls", []) or [], model_final=llm_meta.get("final", "") or "",
+            before_sizes=before_sizes,
         )
         if rename_lines:
             final_summary = f"{final_summary}\n{rename_lines}"
@@ -916,8 +1102,9 @@ def run_curator_review(
         # Snapshot skill state BEFORE the LLM pass so the report can diff.
         before_report = _safe_curated_report()
         before_names = set(_by_name(before_report))
+        before_sizes = _snapshot_skill_sizes(before_names)
         if consolidate:
-            final_summary, llm_meta = _consolidation_pass(prefix, auto_summary, dry_run, before_names)
+            final_summary, llm_meta = _consolidation_pass(prefix, auto_summary, dry_run, before_names, before_sizes=before_sizes)
         else:
             # Prune-only run: record it and write a report, but never fork.
             final_summary = f"{prefix}{auto_summary}; llm: skipped (consolidation off)"
@@ -929,9 +1116,18 @@ def run_curator_review(
             report_path = _write_run_report(
                 started_at=start, elapsed_seconds=elapsed, auto_counts=counts, auto_summary=auto_summary,
                 before_report=before_report, before_names=before_names, after_report=_safe_curated_report(), llm_meta=llm_meta,
+                before_sizes=before_sizes,
             )
             if report_path is not None:
                 state2["last_report_path"] = str(report_path)
+                try:
+                    run_json_path = report_path / "run.json"
+                    if run_json_path.exists():
+                        r_data = json.loads(run_json_path.read_text(encoding="utf-8"))
+                        if r_data.get("store_health"):
+                            state2["last_store_health"] = r_data["store_health"]
+                except Exception:
+                    pass
         except Exception as e:
             logger.debug("Curator report write failed: %s", e, exc_info=True)
         save_state(state2)

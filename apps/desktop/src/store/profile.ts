@@ -57,6 +57,11 @@ export const $activeProfile = atom<string>('default')
 // re-fetches on open so a profile created elsewhere shows up.
 export const $profiles = atom<ProfileInfo[]>([])
 
+// Source that produced $profiles. Profile names are only unique inside one
+// connection, so consumers must not paint this cache after the active source
+// changes and before its replacement roster arrives.
+export const $profilesConnectionId = atom<null | string>(null)
+
 export function setActiveProfile(name: string): void {
   $activeProfile.set(name || 'default')
 }
@@ -94,14 +99,18 @@ export function refreshProfiles(): Promise<ProfileInfo[]> {
 
   const flight = (async () => {
     const epoch = profileListEpoch
+    const connectionId = activeGatewayConnectionId()
     const MAX_RETRIES = 2
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         const { profiles } = await getProfiles()
 
-        if (epoch === profileListEpoch) {
-          $profiles.set(profiles)
+        if (epoch === profileListEpoch && connectionId === activeGatewayConnectionId()) {
+          batch(() => {
+            $profiles.set(profiles)
+            $profilesConnectionId.set(connectionId)
+          })
         }
 
         return profiles
@@ -416,6 +425,16 @@ export function prewarmProfileBackend(name: string): void {
   const key = normalizeProfileKey(name)
 
   if (key === normalizeProfileKey($activeGatewayProfile.get())) {
+    return
+  }
+
+  // openGatewayForProfile is the legacy LOCAL-scoped path. When the active
+  // source is a non-local registry connection the rail lists THAT machine's
+  // profiles; pre-warming them here would spawn (and fail) local children for
+  // profile names that only exist remotely.
+  const prewarmConnectionId = activeGatewayConnectionId()
+
+  if (prewarmConnectionId) {
     return
   }
 

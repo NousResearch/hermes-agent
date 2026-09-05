@@ -1785,6 +1785,51 @@ class TestMaxSpawnDepth(unittest.TestCase):
         self.assertTrue(any("below floor 1" in m for m in cm.output))
 
 # =========================================================================
+# load_soul_identity flag
+# =========================================================================
+
+class TestLoadSoulIdentity(unittest.TestCase):
+    """_get_load_soul_identity: config wins, DELEGATE_WITH_SOUL env fallback."""
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_default_false_when_absent(self, mock_cfg):
+        from tools.delegate_tool import _get_load_soul_identity
+        with patch.dict(os.environ):
+            os.environ.pop("DELEGATE_WITH_SOUL", None)
+            self.assertFalse(_get_load_soul_identity())
+
+    @patch("tools.delegate_tool._load_config",
+           return_value={"load_soul_identity": True})
+    def test_true_from_config(self, mock_cfg):
+        from tools.delegate_tool import _get_load_soul_identity
+        self.assertTrue(_get_load_soul_identity())
+
+    @patch("tools.delegate_tool._load_config",
+           return_value={"load_soul_identity": False})
+    def test_false_from_config(self, mock_cfg):
+        from tools.delegate_tool import _get_load_soul_identity
+        self.assertFalse(_get_load_soul_identity())
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_env_fallback_true(self, mock_cfg):
+        from tools.delegate_tool import _get_load_soul_identity
+        with patch.dict(os.environ, {"DELEGATE_WITH_SOUL": "true"}):
+            self.assertTrue(_get_load_soul_identity())
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_env_fallback_false(self, mock_cfg):
+        from tools.delegate_tool import _get_load_soul_identity
+        with patch.dict(os.environ, {"DELEGATE_WITH_SOUL": "false"}):
+            self.assertFalse(_get_load_soul_identity())
+
+    @patch("tools.delegate_tool._load_config",
+           return_value={"load_soul_identity": True})
+    def test_config_wins_over_env(self, mock_cfg):
+        from tools.delegate_tool import _get_load_soul_identity
+        with patch.dict(os.environ, {"DELEGATE_WITH_SOUL": "false"}):
+            self.assertTrue(_get_load_soul_identity())
+
+# =========================================================================
 # role param plumbing
 # =========================================================================
 #

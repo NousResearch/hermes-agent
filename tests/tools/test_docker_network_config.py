@@ -18,45 +18,48 @@ def test_terminal_env_config_reads_docker_network_toggle(monkeypatch):
     assert config["docker_network"] is False
 
 
-def test_sibling_container_config_sites_carry_docker_network():
-    """Every container_config dict that carries docker_run_as_host_user must
-    also carry docker_network — otherwise that code path silently falls back
-    to networked containers while the terminal path honors the lockdown
-    (the probe/exec asymmetry reported on issue #46358).
-    """
-    import ast
-    import inspect
-
+def test_every_sandbox_creator_passes_the_full_container_config(monkeypatch):
+    """The terminal tool, execute_code and the prompt backend-probe must hand ``_create_environment``
+    the SAME container_config keys. Each used to keep a private (key, default) table and drifted:
+    the probe lost ``docker_network`` (bridge-networked probe under lockdown, #46358/#76906/#87995),
+    execute_code lost ``docker_extra_args``/``docker_forward_env``/``docker_env`` (#84027/#100019)."""
+    import agent.prompt_builder as prompt_builder
     import tools.code_execution_tool as code_execution_tool
-    import tools.file_tools as file_tools
+    import tools.terminal_tool_backends as backends
 
-    # file_tools no longer builds its own container_config: it goes through
-    # the shared _create_configured_env, which is what carries docker_network.
-    assert "_create_configured_env(" in inspect.getsource(file_tools)
+    config = {"env_type": "docker", "cwd": "/root", "timeout": 60, "docker_network": False,
+              "docker_extra_args": ["--user", "1009:1009"], "docker_forward_env": ["DATABASE_URL"],
+              "docker_env": {"FOO": "bar"}, "docker_image": "debian:bookworm-slim"}
+    expected = backends._container_config_from_config(config)
+    seen: list = []
 
-    for module in (terminal_tool, code_execution_tool):
-        tree = ast.parse(inspect.getsource(module))
-        sites = 0
-        for node in ast.walk(tree):
-            # Accept a dict literal or a (key, default) pair table that a dict
-            # comprehension is built from.
-            if isinstance(node, ast.Dict):
-                keys = {k.value for k in node.keys if isinstance(k, ast.Constant)}
-            elif isinstance(node, ast.Tuple) and node.elts and all(
-                isinstance(e, ast.Tuple) and len(e.elts) == 2 and isinstance(e.elts[0], ast.Constant)
-                for e in node.elts
-            ):
-                keys = {e.elts[0].value for e in node.elts}
-            else:
-                continue
-            if "docker_run_as_host_user" in keys:
-                sites += 1
-                assert "docker_network" in keys, (
-                    f"{module.__name__} builds a container_config with "
-                    f"docker_run_as_host_user but without docker_network "
-                    f"(line {node.lineno})"
-                )
-        assert sites >= 1, f"expected at least one container_config site in {module.__name__}"
+    class _Env:
+        cwd = "/root"
+
+        def execute(self, *a, **k):
+            return {"output": "", "returncode": 0}
+
+        def cleanup(self, **k):
+            pass
+
+    def _fake_create(**kwargs):
+        seen.append(kwargs["container_config"])
+        return _Env()
+
+    # Both creators late-import their collaborators from terminal_tool / terminal_tool_backends.
+    monkeypatch.setattr(backends, "_create_environment", _fake_create)
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: config)
+    monkeypatch.setattr(terminal_tool, "_select_image", lambda *a, **k: "img")
+    monkeypatch.setattr(terminal_tool, "_resolve_task_host_cwd", lambda *a, **k: None)
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+
+    prompt_builder._run_backend_probe("docker", terminal_tool)
+    code_execution_tool._get_or_create_env("cc-task")
+
+    assert seen == [expected, expected]  # probe, then execute_code
+    assert expected["docker_network"] is False and expected["docker_extra_args"] == ["--user", "1009:1009"]
 
 
 def _reuse_guard_harness(

@@ -39,3 +39,37 @@ def test_genuinely_unbalanced_quoting_still_fails_closed():
 def test_hardline_patterns_unchanged():
     for command in ("rm -rf /", 'echo "$(rm -rf /)"', "sudo shutdown -h now"):
         assert detect_hardline_command(command)[0] is True, command
+
+
+class TestExecutableSubstitutionBodiesStayExecutable:
+    """Bounding the grep lexer removed the old 'malformed' floor; the newline masker must then treat a
+    substitution body inside double quotes as CODE, or a newline-separated hardline command hides as an
+    operand (independent review witness: blocked on main as 'malformed', approved on the first fix)."""
+
+    @pytest.mark.parametrize("cmd", [
+        'echo "$(grep -P \'safe\' /dev/null\nreboot)"',
+        'echo "$(grep x f; reboot)"',
+        'echo "$(grep x f && reboot)"',
+        'echo "$(grep x f | shutdown -h now)"',
+        'echo "$(echo $(grep x f)\nreboot)"',
+        'echo "`grep x f\nreboot`"',
+    ])
+    def test_hardline_command_inside_a_quoted_substitution_blocks_as_itself(self, cmd):
+        blocked, reason = detect_hardline_command(cmd)
+        assert blocked and reason == "system shutdown/reboot"
+
+    def test_public_guard_blocks_without_offering_approval(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
+        from tools.approval import check_dangerous_command
+        calls = []
+        result = check_dangerous_command('echo "$(grep -P \'safe\' /dev/null\nreboot)"', "local",
+                                         approval_callback=lambda *a, **k: calls.append(a) or False)
+        assert result["approved"] is False and "hardline" in result["message"].lower() and calls == []
+
+    @pytest.mark.parametrize("cmd", [
+        "grep -e `echo needle` file",            # backtick OPERAND (opened after the grep) is not a closer
+        "grep -F 'sudo reboot' notes.md",        # data pattern
+        'git commit -m "fix\nsudo reboot handling"',  # quoted data newline
+    ])
+    def test_benign_shapes_stay_allowed(self, cmd):
+        assert detect_hardline_command(cmd) == (False, None)

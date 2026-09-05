@@ -45,6 +45,7 @@ from agent.message_sanitization import (
     sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
 from agent.reasoning_summaries import append_streamed_reasoning_detail, separate_glued_reasoning_blocks
+from agent.repetition_guard import is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -3176,6 +3177,14 @@ class _StreamingCall(StreamingWaitMonitor):
                         arguments = repaired
                     else:
                         has_truncated_tool_args = True
+                # Parseable JSON does not prove that a dropped stream completed its
+                # action. Treat degenerate argument loops as partial calls too.
+                # A provider-confirmed call may legitimately write repetitive data.
+                if finish_reason is None and is_repetition_dominated(arguments):
+                    logger.warning(
+                        "Tool call '%s' has repetition-dominated arguments without a "
+                        "finish_reason; treating as a dropped tool call.", tc["function"]["name"] or "?")
+                    has_truncated_tool_args = True
             elif finish_reason is None:
                 # Name arrived, zero arg bytes, no finish_reason: unflagged this
                 # becomes a "stop" turn executing "{}" with no retry.

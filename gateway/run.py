@@ -1565,6 +1565,38 @@ def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
         multiplex=True, profile_allowlist=getattr(config, "multiplex_profile_allowlist", None)))
 
 
+def _with_active_profile_home(
+    homes: list[tuple[str, "Path"]],
+) -> list[tuple[str, "Path"]]:
+    """Union the process-active profile into a multiplex home list.
+
+    ``profiles_to_serve(multiplex=True)`` always starts with the *default*
+    profile (``~/.hermes``) plus the allowlist. A named-profile gateway
+    (``--profile <name>``) is therefore omitted unless it is allowlisted —
+    and allowlisting it would also start secondary adapters on the same
+    bot token.
+
+    Adapter startup already skips ``active`` and prepends it to
+    ``served_profiles``. Cron must visit that store too, or host jobs sit
+    ``scheduled`` forever while default + allowlist tick empty rooms.
+    """
+    from hermes_cli.profiles import get_active_profile_name, get_profile_dir
+
+    active = get_active_profile_name() or "default"
+    if any(name == active for name, _home in homes):
+        return list(homes)
+    try:
+        active_home = get_profile_dir(active)
+    except Exception:
+        return list(homes)
+    return list(homes) + [(active, active_home)]
+
+
+def _cron_tick_profile_homes(config: object) -> list[tuple[str, "Path"]]:
+    """Profile homes the in-process ticker must visit under multiplex."""
+    return _with_active_profile_home(_multiplex_profile_homes(config))
+
+
 def _enable_multiplex_log_routing(config: object) -> bool:
     """Route agent.log/errors.log/gateway.log records to their owning profile (inert single-profile).
     ``setup_logging(mode="gateway")`` binds file handlers to the launch home, so under multiplexing
@@ -5032,10 +5064,13 @@ def _start_gateway_start_cron_and_housekeeping(runner):
         resolve_cron_scheduler(), multiplex_profiles=multiplex_cron)
     cron_start_kwargs: Dict[str, Any] = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
 
-    # Multiplex: tell the ticker which profile homes to tick, else secondary profiles' jobs never run.
+    # Multiplex: tick secondary profiles (#69377) *and* the named-profile host
+    # store. profiles_to_serve() starts at default plus the allowlist; a
+    # gateway running as --profile <name> would otherwise never visit its own
+    # cron dir. Adapter serve-set stays allowlist-only.
     if isinstance(cron_provider, InProcessCronScheduler) and multiplex_cron:
         try:
-            profile_homes = _multiplex_profile_homes(runner.config)
+            profile_homes = _cron_tick_profile_homes(runner.config)
             if profile_homes:
                 cron_start_kwargs["profile_homes"] = profile_homes
                 # Per-profile adapters so each profile's cron output goes via its own bot, not the default's.

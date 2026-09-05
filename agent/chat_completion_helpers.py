@@ -2356,6 +2356,39 @@ def cleanup_task_resources(agent, task_id: str) -> None:
             if agent.verbose_logging:
                 logger.warning("Failed to cleanup %s for task %s: %s", label, task_id, e)
 
+    # An interrupted turn must end the computer-use session (#81220):
+    # the cua-driver cursor overlay on Linux/X11 is a fullscreen
+    # InputOutput override-redirect window, and leaving the backend alive
+    # after a wedged turn left the overlay mapped over the whole virtual
+    # desktop — swallowing every click outside Hermes until a manual
+    # ``set_agent_cursor_enabled(false)``. Backends are cached under the
+    # tool ``session_id`` (== agent.session_id; see agent/tool_executor.py
+    # dispatch kwargs), NOT the per-turn task_id, so the release must be
+    # keyed the same way or it pops a key that never exists. Gated on the
+    # interrupt flag so normal turns keep the cached
+    # one-backend-per-session behavior (no respawn / re-handshake
+    # mid-conversation). Best-effort, like the VM and browser steps
+    # above: a dead driver socket must not break the rest of the cleanup
+    # chain. The lazy import keeps the narrow core footprint for sessions
+    # that never touch computer use.
+    if not getattr(agent, "_interrupt_requested", False):
+        return
+    session_id = str(getattr(agent, "session_id", "") or "")
+    if not session_id:
+        return
+    try:
+        from tools.computer_use import release_computer_use_session
+
+        release_computer_use_session(session_id)
+    except Exception as e:
+        if agent.verbose_logging:
+            logger.warning(
+                "Failed to release computer-use session for session %s "
+                "after interrupt: %s",
+                getattr(agent, "session_id", None),
+                e,
+            )
+
 
 def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj, *,
     dropped_tool_names=None):

@@ -45,12 +45,43 @@ export interface DiffLineStats {
 
 export function countDiffLineStats(diff: string): DiffLineStats {
   let added = 0
+  let inHunk = false
   let removed = 0
+  const lines = diff.split('\n')
 
-  for (const line of diff.split('\n')) {
-    if (line.startsWith('+') && !line.startsWith('+++')) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+
+    if (line.startsWith('diff --git')) {
+      inHunk = false
+
+      continue
+    }
+
+    if (line.startsWith('@@')) {
+      inHunk = true
+
+      continue
+    }
+
+    if (
+      line.startsWith('--- ')
+      && lines[index + 1]?.startsWith('+++ ')
+      && lines[index + 2]?.startsWith('@@')
+    ) {
+      inHunk = false
+      index += 1
+
+      continue
+    }
+
+    if (line.startsWith('\\')) {
+      continue
+    }
+
+    if (line.startsWith('+') && (inHunk || !line.startsWith('+++'))) {
       added += 1
-    } else if (line.startsWith('-') && !line.startsWith('---')) {
+    } else if (line.startsWith('-') && (inHunk || !line.startsWith('---'))) {
       removed += 1
     }
   }

@@ -319,3 +319,91 @@ test('bufferedOutput without a sentinel still times out (no false positive)', as
 
   await assert.rejects(wait, /Timed out waiting/)
 })
+
+// ---------------------------------------------------------------------------
+// merged-tail seed (#103792): the spawn-time tail holds stdout AND stderr in
+// ONE buffer, so it is not line-accurate. uvicorn logs to stderr in raw
+// chunks, and a chunk that ends without a newline is concatenated straight
+// onto the stdout sentinel that follows it. A `^`-anchored scan then recovers
+// nothing from a backend that announced perfectly, the wait hits its 90s
+// deadline, and a healthy listening backend is killed — while desktop.log
+// (which reads both streams) plainly shows the READY line.
+// ---------------------------------------------------------------------------
+
+test('resolves when a partial stderr line is spliced onto the sentinel in the merged tail (#103792)', async () => {
+  const child = makeFakeChild()
+
+  // No trailing newline on the stderr chunk, exactly as uvicorn emits it.
+  const mergedTail = 'INFO  Started server process [4711]HERMES_BACKEND_READY port=65238\n'
+
+  const port = await waitForDashboardPortAnnouncement(child, {
+    bufferedOutput: () => mergedTail,
+    timeoutMs: 500
+  })
+
+  assert.equal(port, 65238)
+})
+
+test('splice recovery also covers the legacy HERMES_DASHBOARD_READY sentinel', async () => {
+  const child = makeFakeChild()
+
+  const port = await waitForDashboardPortAnnouncement(child, {
+    bufferedOutput: () => 'INFO  Application startup complete.HERMES_DASHBOARD_READY port=65239\n',
+    timeoutMs: 500
+  })
+
+  assert.equal(port, 65239)
+})
+
+test('a spliced sentinel with no trailing newline is still recovered from the tail', async () => {
+  const child = makeFakeChild()
+
+  // The tail is a snapshot: the sentinel's own newline may not have been
+  // flushed into it yet. Line-splitting would drop it; the tail scan must not.
+  const port = await waitForDashboardPortAnnouncement(child, {
+    bufferedOutput: () => 'waiting for application startupHERMES_BACKEND_READY port=65240',
+    timeoutMs: 500
+  })
+
+  assert.equal(port, 65240)
+})
+
+test('the merged-tail scan does not match prose that merely names the sentinel', async () => {
+  const child = makeFakeChild()
+
+  // `port=<digits>` is what makes the token unambiguous. Without it, a log
+  // line discussing the sentinel must never be mistaken for an announcement.
+  const wait = waitForDashboardPort(
+    child,
+    50,
+    () => '',
+    () => 'still waiting for HERMES_BACKEND_READY from the backend\n'
+  )
+
+  await assert.rejects(wait, /Timed out waiting/)
+})
+
+test('the merged-tail scan does not match a longer token ending in the sentinel', async () => {
+  const child = makeFakeChild()
+
+  const wait = waitForDashboardPort(
+    child,
+    50,
+    () => '',
+    () => 'X_HERMES_BACKEND_READY port=1234\n'
+  )
+
+  await assert.rejects(wait, /Timed out waiting/)
+})
+
+test('the LIVE per-line scanner stays line-anchored (splice tolerance is tail-only)', async () => {
+  const child = makeFakeChild()
+
+  const wait = waitForDashboardPort(child, 60)
+  // Live stdout chunks ARE line-accurate for this stream, so a sentinel that
+  // is a suffix of some other line is not an announcement. Loosening this
+  // would let unrelated child output settle the boot on a bogus port.
+  child.stdout.emit('data', 'downloading HERMES_BACKEND_READY port=1234\n')
+
+  await assert.rejects(wait, /Timed out waiting/)
+})

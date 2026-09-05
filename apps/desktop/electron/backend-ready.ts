@@ -5,6 +5,20 @@ import fs from 'node:fs'
 // works against both the headless backend and old/dashboard runtimes.
 const _READY_RE = /^HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)/m
 
+// Same sentinel, matched inside the spawn-time output tail rather than inside
+// a single line. The tail merges stdout AND stderr into one buffer, so it is
+// NOT line-accurate: uvicorn's stderr startup logging is appended in raw
+// chunks, and a chunk that ends without a newline is concatenated directly
+// onto the stdout sentinel that follows it, producing
+// `INFO  Started server process [4711]HERMES_BACKEND_READY port=65238`.
+// A `^`-anchored match then fails on a backend that announced perfectly: the
+// seed below silently recovers nothing, the wait hits its 90s deadline, and a
+// healthy, listening backend is killed while desktop.log plainly shows the
+// READY line (#103792). Guard on a token boundary instead of a line start.
+// `port=<digits>` keeps the token unambiguous, so prose that merely mentions
+// the sentinel cannot match.
+const _READY_IN_MERGED_TAIL_RE = /(?:^|[^0-9A-Z_])HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)/
+
 // The announcement clock starts the instant the backend process is spawned —
 // before uvicorn binds its socket. On a cold install the child must first
 // compile and import the whole `hermes_cli.main` → `web_server` → FastAPI/
@@ -121,9 +135,11 @@ function waitForDashboardPort(
     // Listener is live — now recover a sentinel that was already flushed and
     // consumed before this promise existed. The snapshot is taken AFTER the
     // listener attaches, so no chunk can fall between snapshot and listener.
+    // Scanned with the merged-tail regex, not the line-anchored one: the tail
+    // interleaves both streams and can splice a partial line onto the sentinel.
     if (!done) {
       const alreadyBuffered = bufferedOutput()
-      const m = alreadyBuffered ? alreadyBuffered.match(_READY_RE) : null
+      const m = alreadyBuffered ? alreadyBuffered.match(_READY_IN_MERGED_TAIL_RE) : null
 
       if (m) {
         cleanup()

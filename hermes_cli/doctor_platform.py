@@ -182,7 +182,7 @@ def check_certificates(should_fix: bool = False, issues: "list | None" = None) -
     certifi into THIS interpreter's environment and re-verifying.
     """
     try:
-        from agent.ssl_guard import verify_ca_bundle
+        from agent.ssl_guard import is_fd_exhaustion_error, verify_ca_bundle
         from agent.errors import SSLConfigurationError
     except Exception as e:
         return check_warn("SSL certificate check skipped", str(e))
@@ -193,8 +193,17 @@ def check_certificates(should_fix: bool = False, issues: "list | None" = None) -
         return check_ok("SSL CA certificate bundle is valid")
     except SSLConfigurationError as e:
         first_error = str(e)
+        fd_exhausted = is_fd_exhaustion_error(e)
     except Exception as e:
         return check_warn("SSL certificate check skipped", str(e))
+    if fd_exhausted:
+        check_fail("SSL CA check failed: process is out of file descriptors", first_error)
+        issues.append(
+            "Restart the Hermes process that hit EMFILE (Desktop SSH: quit/reopen "
+            "the app, or kill remote `hermes serve --isolated` so Desktop respawns it). "
+            "Do not reinstall certifi — the CA bundle was not the failure."
+        )
+        return
     check_fail("SSL CA certificate bundle is broken", first_error)
     pip_cmd = f"{sys.executable} -m pip install --force-reinstall certifi"
     if not should_fix:

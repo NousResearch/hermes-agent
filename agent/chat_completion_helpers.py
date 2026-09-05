@@ -1946,9 +1946,13 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
         agent._replace_primary_openai_client(reason="fallback_timeout_apply")
 
 
-def _update_fallback_context_compressor(agent) -> None:
-    """Point compression limits at the fallback model's context window (not the primary's),
-    respecting the explicit model.context_length config override."""
+def _update_fallback_context_compressor(agent, *, context_length: int | None = None) -> None:
+    """Point compression limits at the fallback's actual context window.
+
+    A fallback entry may declare ``context_length`` for a deployment whose
+    configured server window is smaller than the model family's native window.
+    When absent, preserve the existing resolver-based behavior.
+    """
     compressor = getattr(agent, "context_compressor", None)
     if not compressor:
         return
@@ -1957,13 +1961,29 @@ def _update_fallback_context_compressor(agent) -> None:
         agent.model, base_url=agent.base_url,
         api_key=agent.api_key if isinstance(agent.api_key, str) else "",  # callable (Entra ID) → probes need str
         provider=agent.provider,
-        config_context_length=getattr(agent, "_config_context_length", None),
+        config_context_length=context_length,
         custom_providers=getattr(agent, "_custom_providers", None),
     )
     compressor.update_model(  # callable api_key preserved → call_llm
         model=agent.model, context_length=fb_context_length, base_url=agent.base_url,
         api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
     )
+
+
+def _fallback_context_length(entry: dict) -> int | None:
+    """Return a valid deployment-specific fallback context override, if given."""
+    value = entry.get("context_length")
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        context_length = int(value)
+    except (TypeError, ValueError):
+        logger.warning("Fallback context_length=%r is not an integer; using model resolution", value)
+        return None
+    if context_length <= 0:
+        logger.warning("Fallback context_length=%r must be positive; using model resolution", value)
+        return None
+    return context_length
 
 
 def _reresolve_fallback_reasoning_config(agent) -> None:
@@ -2065,9 +2085,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
         old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
 
-        # Clear the per-config context_length override so the fallback model's own context
-        # window is resolved instead of the previous model's stale value.
-        # See #22387.
+        # The primary's config override must never follow a fallback. Keep the
+        # fallback-only deployment window local to the compressor update below:
+        # this attribute is also read by UI preflight paths between turns.
+        fallback_context_length = _fallback_context_length(fb)
         agent._config_context_length = None
         agent.model, agent.provider, agent.requested_provider = fb_model, fb_provider, fb_provider
         agent.base_url, agent.api_mode = fb_base_url, fb_api_mode
@@ -2086,7 +2107,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent._use_prompt_caching, agent._use_native_cache_layout = agent._anthropic_prompt_cache_policy(
             provider=fb_provider, base_url=fb_base_url, api_mode=fb_api_mode, model=fb_model)
         agent._ensure_lmstudio_runtime_loaded()  # LM Studio: preload before probing context length
-        _update_fallback_context_compressor(agent)
+        _update_fallback_context_compressor(
+            agent, context_length=fallback_context_length
+        )
         _reresolve_fallback_reasoning_config(agent)
         _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
         rewrite_prompt_model_identity(agent, fb_model, fb_provider)

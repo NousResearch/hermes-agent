@@ -90,6 +90,7 @@ import {
 } from './browser-windows'
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
+import { readFallbackClipboardPng } from './clipboard-image-fallback'
 import { applyConnectionChange, sshQuitShouldBlock, teardownSshState } from './connection-apply'
 import {
   apiRequestRegistryConnectionId,
@@ -410,6 +411,7 @@ import {
 import { isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
+import { readWaylandClipboardImage } from './wayland-clipboard-image'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
 import {
   registrySshPoolScopeByConnectionId,
@@ -16962,15 +16964,19 @@ ipcMain.handle('hermes:saveClipboardImage', async () => {
     return writeComposerImage(image.toPNG(), '.png')
   }
 
-  // WSL2/WSLg doesn't bridge clipboard *images* from the Windows host to the
-  // Linux clipboard Electron reads, so a host screenshot looks empty above.
-  // Pull it straight off the Windows clipboard via PowerShell as a fallback.
-  if (IS_WSL) {
-    const png = readWslWindowsClipboardImage()
+  // Electron's readImage() misses images some environments don't advertise as
+  // image/png: WSL2/WSLg host screenshots, and Wayland compositors that offer
+  // the payload as application/octet-stream (#85782). The ladder keeps the
+  // WSL reader first and only reaches for wl-paste on Linux.
+  const png = readFallbackClipboardPng({
+    isWsl: IS_WSL,
+    platform: process.platform,
+    readWsl: readWslWindowsClipboardImage,
+    readWayland: readWaylandClipboardImage
+  })
 
-    if (png) {
-      return writeComposerImage(png, '.png')
-    }
+  if (png) {
+    return writeComposerImage(png, '.png')
   }
 
   return ''

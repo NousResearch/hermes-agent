@@ -168,7 +168,7 @@ class TestReloadEnv:
     def test_removes_deleted_known_vars(self, tmp_path):
         """reload_env() removes known Hermes vars not present in .env."""
         env_file = tmp_path / ".env"
-        env_file.write_text("")  # empty .env
+        env_file.write_text("", encoding="utf-8")  # empty .env
         # Pick a known key from OPTIONAL_ENV_VARS
         known_key = next(iter(OPTIONAL_ENV_VARS.keys()))
         with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
@@ -331,6 +331,54 @@ class TestWebServerEndpoints:
             if monitor is not None:
                 monitor.close()
             writer.close()
+
+    def test_get_sessions_retries_page_pinned_and_count_query_locks(self, monkeypatch):
+        """The endpoint retries each safe session-list query boundary."""
+        import sqlite3
+
+        import hermes_state_sessions
+        import hermes_cli.web_routers.sessions as sessions_router
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        _web_server_sessions._last_auto_archive_check.clear()
+        db_path = get_hermes_home() / "state.db"
+        writable = SessionDB(db_path=db_path)
+        writable.create_session("query-lock", source="cli")
+        writable.close()
+        mode_setter = sqlite3.connect(db_path)
+        assert mode_setter.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete"
+        mode_setter.close()
+
+        reader = SessionDB(db_path=db_path, read_only=True)
+        assert reader._conn is not None
+        reader._conn.execute("PRAGMA busy_timeout=0")
+        holder = sqlite3.connect(db_path, isolation_level=None, check_same_thread=False)
+        original_execute = reader._execute_session_list_query
+        phases = []
+
+        def lock_each_phase(query, params, *, phase):
+            phases.append(phase)
+            holder.execute("BEGIN EXCLUSIVE")
+            return original_execute(query, params, phase=phase)
+
+        monkeypatch.setattr(sessions_router, "_maybe_auto_archive_for_profile", lambda _profile: None)
+        monkeypatch.setattr(
+            sessions_router,
+            "_open_session_db_for_profile",
+            lambda *_args, **_kwargs: reader,
+        )
+        monkeypatch.setattr(reader, "_execute_session_list_query", lock_each_phase)
+        monkeypatch.setattr(hermes_state_sessions.time, "sleep", lambda _delay: holder.rollback())
+        try:
+            response = self.client.get("/api/sessions?limit=10&offset=0")
+        finally:
+            holder.close()
+
+        assert response.status_code == 200
+        assert [row["id"] for row in response.json()["sessions"]] == ["query-lock"]
+        assert response.json()["total"] == 1
+        assert phases == ["page", "pinned", "count"]
 
     def test_get_sessions_transient_ioerr_is_503(self, monkeypatch):
         """Busy store, not a gone store: the desktop keeps the list it has."""
@@ -1883,13 +1931,13 @@ class TestWebServerEndpoints:
         # actually received the write.
         env_var = custom_endpoint_key_env("worker-proxy")
 
-        worker_cfg = (worker_home / "config.yaml").read_text()
+        worker_cfg = (worker_home / "config.yaml").read_text(encoding="utf-8")
         assert "worker-proxy" in worker_cfg
         assert env_var in worker_cfg
-        assert "sk-worker-secret" in (worker_home / ".env").read_text()
+        assert "sk-worker-secret" in (worker_home / ".env").read_text(encoding="utf-8")
 
         for leaked in (default_home / "config.yaml", default_home / ".env"):
-            text = leaked.read_text() if leaked.exists() else ""
+            text = leaked.read_text(encoding="utf-8") if leaked.exists() else ""
             assert "worker-proxy" not in text, f"endpoint leaked into default profile ({leaked.name})"
             assert "sk-worker-secret" not in text, f"credential leaked into default profile ({leaked.name})"
 
@@ -5371,7 +5419,9 @@ def test_mount_spa_dynamic_web_dist_recheck(tmp_path, monkeypatch):
 
     # 2. build created dynamically -> 200
     dist.mkdir(parents=True, exist_ok=True)
-    (dist / "index.html").write_text("<html><body>Test</body></html>")
+    (dist / "index.html").write_text(
+        "<html><body>Test</body></html>", encoding="utf-8"
+    )
     res2 = client.get("/")
     assert res2.status_code == 200
     assert "Test" in res2.text

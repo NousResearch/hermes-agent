@@ -4,6 +4,7 @@ counting, delete cascades, and the auto-archive sweep."""
 
 import json
 import logging
+import random
 import re
 import sqlite3
 import time
@@ -22,6 +23,35 @@ from hermes_state_common import (
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
+
+# A read statement can still return SQLITE_BUSY/SQLITE_LOCKED after its own
+# busy_timeout expires. Session listing is a safe, side-effect-free boundary
+# to retry: a fresh statement gets a fresh snapshot, and the bounded jitter
+# avoids sending every sidebar poll back at the writer in lockstep (ENG-1265).
+_SESSION_LIST_LOCK_RETRY_ATTEMPTS = 2
+_SESSION_LIST_LOCK_RETRY_BACKOFF_S = (0.025, 0.075)
+
+
+def _is_sqlite_lock_contention(exc: BaseException) -> bool:
+    """Classify only SQLite BUSY/LOCKED, never unrelated OperationalErrors."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    error_code = getattr(exc, "sqlite_errorcode", None)
+    if isinstance(error_code, int):
+        return error_code & 0xFF in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+    # Older Python builds do not expose sqlite_errorcode. Keep the fallback to
+    # SQLite's lock messages rather than a broad ``"busy" in message`` test.
+    message = str(exc).strip().lower()
+    lock_messages = (
+        "database is locked",
+        "database table is locked",
+        "database schema is locked",
+        "database is busy",
+    )
+    return any(
+        message == marker or message.startswith(f"{marker}:")
+        for marker in lock_messages
+    )
 
 
 def workspace_key(row: Dict[str, Any]) -> Optional[str]:
@@ -241,6 +271,56 @@ _INHERIT_PARENT_ROUTING_SQL = (
 
 class SessionSessionsMixin:
     """Session rows: create/inherit, lifecycle flags, model_config, listing, deletion."""
+
+    def _execute_session_list_query(
+        self, query: str, params: List[Any], *, phase: str
+    ) -> List[sqlite3.Row]:
+        """Execute one list query with bounded BUSY/LOCKED retry telemetry."""
+        started_at = time.monotonic()
+        retry_count = 0
+        while True:
+            with self._read_ctx() as conn:
+                connection_mode = (
+                    "read_only_primary"
+                    if self.read_only
+                    else "pooled_reader"
+                    if conn is not self._conn
+                    else "writer_fallback"
+                )
+                try:
+                    return conn.execute(query, params).fetchall()
+                except sqlite3.OperationalError as exc:
+                    if not _is_sqlite_lock_contention(exc):
+                        raise
+                    wait_duration = time.monotonic() - started_at
+                    if retry_count >= _SESSION_LIST_LOCK_RETRY_ATTEMPTS:
+                        logger.warning(
+                            "session-list SQLite contention exhausted "
+                            "phase=%s retry_count=%d wait_duration=%.3fs "
+                            "connection_mode=%s fallback=%s db=%s",
+                            phase,
+                            retry_count,
+                            wait_duration,
+                            connection_mode,
+                            connection_mode == "writer_fallback",
+                            self.db_path,
+                        )
+                        raise
+                    retry_count += 1
+                    delay = random.uniform(*_SESSION_LIST_LOCK_RETRY_BACKOFF_S)
+                    logger.info(
+                        "session-list SQLite contention retry "
+                        "phase=%s retry_count=%d wait_duration=%.3fs "
+                        "backoff=%.3fs connection_mode=%s fallback=%s db=%s",
+                        phase,
+                        retry_count,
+                        wait_duration,
+                        delay,
+                        connection_mode,
+                        connection_mode == "writer_fallback",
+                        self.db_path,
+                    )
+            time.sleep(delay)
 
     def _own_profile_name(self) -> Optional[str]:
         """The profile owning THIS store, from ``db_path`` alone (``<root>/state.db`` → default,
@@ -1243,7 +1323,10 @@ class SessionSessionsMixin:
                 LIMIT ? OFFSET ?
             """
             params.extend([limit, offset])
-        sessions = [self._list_row(row) for row in self._read_all(query, params)]
+        sessions = [
+            self._list_row(row)
+            for row in self._execute_session_list_query(query, params, phase="page")
+        ]
         # Pinned back-fill runs BEFORE compression projection so a back-filled root
         # projects to its tip like any other row.
         if include_pinned:
@@ -1258,7 +1341,9 @@ class SessionSessionsMixin:
                 {pinned_where}
                 ORDER BY s.started_at DESC
             """
-            for row in self._read_all(pinned_query, base_where_params):
+            for row in self._execute_session_list_query(
+                pinned_query, base_where_params, phase="pinned"
+            ):
                 s = self._list_row(row)
                 if s["id"] not in seen_ids:
                     seen_ids.add(s["id"])
@@ -1374,7 +1459,12 @@ class SessionSessionsMixin:
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived,
         )
-        return self._read_one(f"SELECT COUNT(*) FROM sessions s{_where_sql(where_clauses, ' ')}", params)[0]
+        rows = self._execute_session_list_query(
+            f"SELECT COUNT(*) FROM sessions s{_where_sql(where_clauses, ' ')}",
+            params,
+            phase="count",
+        )
+        return rows[0][0]
 
     def session_count_ge(self, n: int = 1) -> bool:
         """At least N sessions exist (archived included); LIMIT short-circuits session_count()'s scan."""

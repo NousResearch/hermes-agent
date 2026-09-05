@@ -7,7 +7,8 @@ from hermes_state import SessionDB
 
 
 @pytest.mark.parametrize("surface", ["tui", "dashboard", "api", "cli"])
-def test_provisional_is_hidden_until_revealed_without_mutating_history(surface):
+@pytest.mark.parametrize("kind", ["delegation_closeout_provisional", "delegation_waiting"])
+def test_provisional_is_hidden_until_revealed_without_mutating_history(surface, kind):
     from gateway.platforms.api_server import _project_client_message
     from hermes_cli.cli_agent_setup_mixin import _collect_resume_entries
     from hermes_cli.web_routers.sessions import _project_for_display
@@ -17,7 +18,7 @@ def test_provisional_is_hidden_until_revealed_without_mutating_history(surface):
         db.create_session("closeout-display", source="tui")
         db.append_message(
             "closeout-display", "assistant", "Verified final answer",
-            display_kind="delegation_closeout_provisional",
+            display_kind=kind,
             display_metadata={"hidden": True, "work_id": "work", "delivery_id": "delivery"},
         )
         history = db.get_messages_as_conversation("closeout-display")

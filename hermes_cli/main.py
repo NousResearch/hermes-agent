@@ -2262,6 +2262,7 @@ def cmd_update(args):
     # = not SystemExit-shaped, so real exceptions keep their traceback.
     _update_handoff_exit_code: int | None = None
     from hermes_cli.update_cmd import _cmd_update_impl
+    from hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
 
     try:
         _cmd_update_impl(args, gateway_mode=gateway_mode)
@@ -2279,7 +2280,7 @@ def cmd_update(args):
         _finalize_update_receipt(1, f"{type(_update_exc).__name__}: {_update_exc}")
         raise
     else:
-        _finalize_update_receipt(0, "completed at command boundary")
+        _finalize_update_receipt(0, COMMAND_BOUNDARY_STOP_REASON)
         _update_handoff_exit_code = 0
     finally:
         _update_lock.release()

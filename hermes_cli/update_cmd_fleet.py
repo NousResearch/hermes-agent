@@ -79,9 +79,15 @@ def _current_checkout_sha() -> str | None:
 
 def _receipt_looks_unfinished(receipt: dict) -> bool:
     """True when *receipt* is from an update that did not finish cleanly."""
+    from hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
+
     gateway_restart = receipt.get("gateway_restart")
+    # The command-boundary stop reason is what a CLEAN completion stamps (cmd_update's
+    # else-branch); treating it as dirty re-arms the #95294 catch-up on every startup
+    # once HEAD advances past a success receipt's pre-pull plan SHAs (#98022).
+    stop_reason = receipt.get("stop_reason")
     return bool(
-        receipt.get("stop_reason")
+        (stop_reason and stop_reason != COMMAND_BOUNDARY_STOP_REASON)
         or receipt.get("exit_code") not in (0, None)
         or receipt.get("outcome") in ("failed", "partial", "running")
         or (isinstance(gateway_restart, dict) and gateway_restart.get("incomplete"))

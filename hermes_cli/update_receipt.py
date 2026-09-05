@@ -20,6 +20,13 @@ logger = logging.getLogger(__name__)
 
 _RECEIPT_KEEP = 20  # keep the last N receipts per profile home
 
+#: The stop reason ``cmd_update``'s clean-completion boundary stamps on the receipt (its
+#: else-branch finalizer). Distinct from every failure-shaped reason ("sys.exit(1)",
+#: "KeyboardInterrupt: ", …) so ``_receipt_looks_unfinished`` can treat a clean boundary
+#: stop as finished — the boundary net is the FINALIZER OF RECORD for already-up-to-date
+#: runs and for pulls whose inner finalize already fired (exactly-once singleton pop).
+COMMAND_BOUNDARY_STOP_REASON = "completed at command boundary"
+
 # ``hermes update`` is a single-threaded CLI command; a module singleton lets the 7k-line updater
 # record steps from any depth without threading a handle through every helper.
 _current: Optional["UpdateReceipt"] = None

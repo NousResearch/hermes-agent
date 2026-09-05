@@ -27,6 +27,7 @@ from agent.credential_pool import (
 )
 from agent.error_classifier import FailoverReason
 from agent.turn_context import drop_stale_api_content
+from agent.session_persistence import _is_ephemeral_scaffolding
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
@@ -168,6 +169,13 @@ def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_que
     i = 1
     while i < len(messages):
         msg = messages[i]
+
+        # Skip ephemeral scaffolding (synthetic nudges, prefill sentinels, etc.)
+        # so they don't leak into saved trajectories as training data.
+        if _is_ephemeral_scaffolding(msg):
+            i += 1
+            continue
+
         if msg["role"] == "assistant":
             if msg.get("tool_calls"):
                 trajectory.append({"from": "gpt", "value": _trajectory_tool_call_turn(msg)})

@@ -2,7 +2,8 @@
 """Toolset distributions for batch data-generation runs.
 
 A distribution maps toolset names to the % chance each is enabled for a prompt
-(sampled independently, so several toolsets can be active at once).
+(sampled independently, so several toolsets can be active at once). A key may
+be a "+"-grouped compound ("browser+search") that rolls once for all members.
 """
 
 from typing import Dict, List, Optional
@@ -30,10 +31,8 @@ DISTRIBUTIONS = {
     "reasoning": _dist("Heavy research/reasoning distribution with minimal other tools", web=90, file=60, terminal=20),
     "browser_use": _dist("Full browser-based web interaction with search, vision, and page control", browser=100, web=80, vision=70),
     "browser_only": _dist("Only browser automation tools for pure web interaction tasks", browser=100),
-    # browser-use-tasks.jsonl: web_search for finding URLs since Google blocks direct browser searches.
-    # One grouped roll keeps web_search coupled to browser at the original 97%
-    # co-occurrence (browser no longer bundles it since #64503; independent
-    # rolls would drop co-occurrence to ~94%).
+    # browser-use-tasks.jsonl: one grouped roll keeps web_search (for finding URLs) coupled to browser
+    # at the original 97% now that `browser` no longer bundles it (#64503).
     "browser_tasks": _dist(
         "Browser-focused distribution with web_search for finding URLs (Google blocks direct browser searches)",
         **{"browser+search": 97}, vision=12, terminal=15,

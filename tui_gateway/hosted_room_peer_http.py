@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from gateway.hosted_room_attachments import MAX_ATTACHMENT_BYTES
+
 import errno
 import hashlib
 import json
 import logging
 import re
 import socket
+import threading
+from collections import OrderedDict
 import time
 import urllib.error
 import urllib.parse
@@ -18,7 +22,8 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 from gateway.hosted_room_peer import (
-    GatewayRoomCatalog, HostedMemberDispatch, validate_room_link_url)
+    GatewayRoomCatalog, HostedMemberDispatch, validate_room_link_url,
+    attachment_manifest_digest, canonical_attachment_manifest)
 
 
 logger = logging.getLogger(__name__)
@@ -41,7 +46,7 @@ _RECEIPT_SCOPE_FIELDS = (
 _TERMINAL_RUN_STATES = frozenset({"completed", "failed", "interrupted", "cancelled"})
 _ACTIVE_RUN_STATES = frozenset({"queued", "running", "waiting_for_approval", "stopping"})
 _KNOWN_RUN_STATES = _TERMINAL_RUN_STATES | _ACTIVE_RUN_STATES
-_RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event")
+_RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event", "artifacts")
 # Older target gateways wrap these inside the generic dispatch error; normalize locally.
 _LEGACY_DISPATCH_MESSAGE_CODES = (
     ("room grant", "invalid_room_grant"),
@@ -63,6 +68,14 @@ _REAUTHORIZATION_MESSAGES = {
 _BUDGET_MESSAGES = {
     "size": "peer{kind} response exceeded the RoomLink size limit",
     "time": "peer{kind} response exceeded the RoomLink time budget"}
+
+
+_AUTH_PROBE_COOLDOWN_SECONDS = 60.0
+_MAX_AUTH_PROBE_REJECTIONS = 64
+_AUTH_PROBE_ENDPOINTS = frozenset({
+    ("GET", "/v1/room-members/capabilities"),
+    ("POST", "/v1/room-members/grants/refresh"),
+})
 
 
 class _PeerResponseTooLarge(ValueError):
@@ -206,12 +219,24 @@ class PeerRunsHTTPClient:
     """Drive a peer's dedicated group session via scoped async Runs APIs."""
 
     def __init__(
-        self, *, base_url: str, api_key: str, timeout_seconds: float = 30,
+        self, *, base_url: str, api_key: str, target_profile: str | None = None, timeout_seconds: float = 30,
         receipt_db_path: Path | str | None = None, poll_min_seconds: float = 0.1,
         poll_max_seconds: float = 2.0, clock: Callable[[], float] = time.monotonic) -> None:
         base_url, self.transport_security = validate_room_link_url(base_url)
         if api_key and len(api_key) < 16:
             raise ValueError("peer API key is missing or too short")
+        profile = str(target_profile or "").strip()
+        if profile and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", profile) is None:
+            raise ValueError("peer target profile is invalid")
+        self._profile_prefix = (
+            f"/p/{urllib.parse.quote(profile, safe='')}" if profile else ""
+        )
+        scoped = re.search(r"/p/([^/]+)$", urllib.parse.urlsplit(base_url).path)
+        if profile and scoped:
+            if urllib.parse.unquote(scoped.group(1), errors="strict") != profile:
+                raise ValueError("peer target profile does not match the scoped endpoint")
+            # Desktop and saved routes may already include the profile.
+            self._profile_prefix = ""
         self.base_url, self.api_key, self.clock = base_url, api_key, clock
         self.timeout_seconds = float(timeout_seconds)
         self.receipt_db_path = Path(receipt_db_path) if receipt_db_path else None
@@ -225,6 +250,10 @@ class PeerRunsHTTPClient:
         self._recovery_backoff: dict[tuple[str, int], dict[str, Any]] = {}
         self._terminal_receipts: set[tuple[str, int]] = set()
         self._room_scope: dict[str, Any] | None = None
+        self._auth_probe_lock = threading.Lock()
+        self._auth_probe_rejections: OrderedDict[
+            tuple[str, str, str], tuple[float, str, int, str | None, bool]
+        ] = OrderedDict()
 
     def bind_receipt_store(self, db_path: Path | str) -> None:
         """Attach the gateway-wide durable receipt store idempotently."""
@@ -279,24 +308,44 @@ class PeerRunsHTTPClient:
 
     def _request(
         self, path: str, *, method: str = "GET", body: Mapping[str, Any] | None = None,
-        headers: Mapping[str, str] | None = None, room_grant: str | None = None) -> dict[str, Any]:
-        from hermes_cli.urllib_security import open_credentialed_url
+        headers: Mapping[str, str] | None = None, room_grant: str | None = None,
+        reject_redirects: bool = False) -> dict[str, Any]:
         deadline, ambiguous = time.monotonic() + self.timeout_seconds, method == "POST"
         request = urllib.request.Request(
-            f"{self.base_url}{path}", method=method,
+            self._request_url(path), method=method,
             data=None if body is None else json.dumps(body, separators=(",", ":")).encode("utf-8"),
             headers={
                 "Authorization": (
                     f"HermesRoom {room_grant}" if room_grant else f"Bearer {self.api_key}"),
                 "Content-Type": "application/json", "User-Agent": "Hermes-RoomLink/1.0",
                 **(headers or {})})
+        # Cache only scoped authorization probes, keyed by the credential actually sent.
+        auth_probe_key = None
+        if room_grant and (method, path) in _AUTH_PROBE_ENDPOINTS:
+            auth_probe_key = (
+                method, path, hashlib.sha256(request.get_header("Authorization", "").encode()).hexdigest()
+            )
+            self._check_auth_probe_cooldown(auth_probe_key)
         try:
-            with open_credentialed_url(request, timeout=self.timeout_seconds) as response:
+            with _open_roomlink_url(request, timeout=self.timeout_seconds, reject_redirects=reject_redirects) as response:
                 raw = _read_body(
                     response, max_bytes=MAX_PEER_RESPONSE_BYTES, deadline=deadline, kind="",
                     ambiguous=ambiguous)
         except urllib.error.HTTPError as exc:
-            self._raise_http_error(exc, method=method, path=path, deadline=deadline)
+            try:
+                if reject_redirects and exc.code in {301, 302, 303, 307, 308}:
+                    raise PeerRunsHTTPError("peer attachment request refused an HTTP redirect", status_code=exc.code) from exc
+                self._raise_http_error(exc, method=method, path=path, deadline=deadline)
+            except PeerRunsHTTPError as failure:
+                # The classified error also covers bounded-body size/deadline failures.
+                if auth_probe_key is not None and exc.code in {401, 403}:
+                    self._remember_auth_probe_rejection(
+                        auth_probe_key, str(failure), exc.code, failure.error_code,
+                        retryable=failure.retryable,
+                    )
+                raise
+            finally:
+                exc.close()
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             not_admitted = ambiguous and _is_proven_pre_admission_failure(exc)
             raise PeerRunsHTTPError(
@@ -409,15 +458,28 @@ class PeerRunsHTTPClient:
                     "Idempotency-Key": f"room:{checked.task_id}:{checked.execution_generation}"},
                 room_grant=grant)
 
+        replaying_ambiguous = False
         try:
             result = admit()
         except PeerRunsHTTPError as exc:
             if not exc.ambiguous:
                 raise
-            result = admit()
+            replaying_ambiguous = True
+            try:
+                result = admit()
+            except PeerRunsHTTPError as replay_error:
+                raise PeerRunsHTTPError(
+                    str(replay_error),
+                    retryable=exc.retryable or replay_error.retryable,
+                    ambiguous=True,
+                    status_code=replay_error.status_code,
+                    error_code=replay_error.error_code,
+                ) from replay_error
         run_id = str(result.get("run_id") or "")
         if not run_id:
-            raise PeerRunsHTTPError("peer did not return a run id")
+            raise PeerRunsHTTPError(
+                "peer did not return a run id", ambiguous=replaying_ambiguous
+            )
         receipt = {
             "run_id": run_id, "session_id": session_id,
             **{field: getattr(checked, field) for field in _RECEIPT_SCOPE_FIELDS},
@@ -495,14 +557,21 @@ class PeerRunsHTTPClient:
             return []
         status = self._poll_receipt(receipt, grant=grant)
         state = str(status.get("status") or "")
-        if state not in {"completed", "failed", "interrupted"}:
+        if state not in {"completed", "failed", "interrupted", "cancelled"}:
             return []
+        target_interrupted = state in {"interrupted", "cancelled"}
         return [{
             "role": "assistant", "task_id": receipt["task_id"],
             "execution_generation": receipt["execution_generation"],
             "status": "settled" if state == "completed" else "failed",
             "message_id": f"peer-run:{status.get('run_id')}",
-            "content": status.get("output") or status.get("error") or ""}]
+            "content": "" if target_interrupted else status.get("output") or status.get("error") or "",
+            **({
+                "error": "The Group Chat member turn was interrupted on its target gateway.",
+                "reason_code": "target_interrupted",
+            } if target_interrupted else {}),
+            **({"artifacts": status.get("artifacts"), "run_id": status.get("run_id")}
+               if status.get("artifacts") else {})}]
 
     def status(
         self, *, room_id: str, profile: str, session_id: str, grant: str) -> Mapping[str, Any]:
@@ -573,27 +642,69 @@ class PeerRunsHTTPClient:
                     "status_ttl_seconds": status_ttl_seconds})})
 
     def refresh_grant(
-        self, *, grant: str, ttl_seconds: float = 24 * 60 * 60,
-        capability_digest: str | None = None, execution_policy_digest: str | None = None,
+        self,
+        *,
+        grant: str,
+        ttl_seconds: float = 24 * 60 * 60,
+        capability_digest: str | None = None,
+        execution_policy_digest: str | None = None,
     ) -> Mapping[str, Any]:
         """Renew dispatch access only while its frozen authority is unchanged."""
-        refreshed = self._scoped_post(
-            "/v1/room-members/grants/refresh", grant, body={"ttl_seconds": ttl_seconds})
+        self._require_room_grant(grant)
+        refreshed = self._request(
+            "/v1/room-members/grants/refresh",
+            method="POST",
+            body={"ttl_seconds": ttl_seconds},
+            room_grant=grant,
+        )
         replacement = str(refreshed.get("grant") or "")
         if not replacement:
             raise PeerRunsHTTPError("peer returned no refreshed room grant")
-        # Persist only after the target proves the replacement authorizes the scoped endpoint.
-        probe = self.probe(grant=replacement)
-        error = digest_reauthorization_error(
-            GatewayRoomCatalog.from_mapping(probe.get("catalog")),
-            capability_digest=capability_digest, execution_policy_digest=execution_policy_digest)
-        if error is not None:
-            raise error
+        try:
+            # Persist only after the target proves the replacement can authorize
+            # the same scoped capability endpoint.
+            probe = self.probe(grant=replacement)
+            from gateway.hosted_room_peer import GatewayRoomCatalog
+
+            catalog = GatewayRoomCatalog.from_mapping(probe.get("catalog"))
+            if (
+                execution_policy_digest is not None
+                and catalog.execution_policy.policy_digest
+                != execution_policy_digest
+            ):
+                raise PeerRunsHTTPError(
+                    "peer room execution policy needs reauthorization",
+                    status_code=403,
+                    error_code="room_execution_policy_changed",
+                    not_admitted=True,
+                )
+            if (
+                capability_digest is not None
+                and catalog.catalog_digest != capability_digest
+            ):
+                raise PeerRunsHTTPError(
+                    "peer room capabilities need reauthorization",
+                    status_code=403,
+                    error_code="room_capability_catalog_changed",
+                    not_admitted=True,
+                )
+        except Exception:
+            try:
+                self.revoke_grant_exact(grant=replacement)
+            except Exception:
+                logger.warning(
+                    "Could not revoke an unpublished refreshed room grant",
+                    exc_info=True,
+                )
+            raise
         return {**refreshed, "catalog": probe.get("catalog")}
 
     def revoke_grant(self, *, grant: str) -> Mapping[str, Any]:
         """Revoke this grant's exact room/home/target/profile scope."""
-        return self._scoped_post("/v1/room-members/grants/revoke", grant, body={})
+        result = self._scoped_post("/v1/room-members/grants/revoke", grant, body={})
+        if result.get("revoked") is not True:
+            raise PeerRunsHTTPError("peer did not acknowledge grant revocation", retryable=True)
+        return result
 
     def probe(self, *, grant: str) -> Mapping[str, Any]:
         """Verify gateway reachability and the live scoped capability catalog."""
@@ -611,3 +722,408 @@ class PeerRunsHTTPClient:
         if not value or value in {"compat", "compatibility-only"}:
             raise PeerRunsHTTPError("a scoped room grant is required")
         return value
+
+    def revoke_grant_exact(self, *, grant: str) -> Mapping[str, Any]:
+        """Retire a single bearer, never the concurrent room grant replacing it."""
+        self._require_room_grant(grant)
+        result = self._request(
+            "/v1/room-members/grants/revoke-exact",
+            method="POST",
+            body={},
+            room_grant=grant,
+        )
+        if result.get("revoked") is not True:
+            raise PeerRunsHTTPError("peer did not acknowledge exact grant revocation", retryable=True)
+        return result
+
+    def _check_auth_probe_cooldown(self, key: tuple[str, str, str]) -> None:
+        with self._auth_probe_lock:
+            rejected = self._auth_probe_rejections.get(key)
+            if rejected is not None and self.clock() >= rejected[0]:
+                del self._auth_probe_rejections[key]
+                rejected = None
+        if rejected is not None:
+            _, message, status_code, error_code, retryable = rejected
+            raise PeerRunsHTTPError(
+                message, status_code=status_code, error_code=error_code, retryable=retryable
+            )
+
+    def _remember_auth_probe_rejection(
+        self, key: tuple[str, str, str], message: str, status_code: int, error_code: str | None,
+        *, retryable: bool = False,
+    ) -> None:
+        with self._auth_probe_lock:
+            self._auth_probe_rejections[key] = (
+                self.clock() + _AUTH_PROBE_COOLDOWN_SECONDS, message, status_code, error_code, retryable
+            )
+            self._auth_probe_rejections.move_to_end(key)
+            while len(self._auth_probe_rejections) > _MAX_AUTH_PROBE_REJECTIONS:
+                self._auth_probe_rejections.popitem(last=False)
+
+
+    def _put_attachment(
+        self,
+        path: str,
+        *,
+        data: bytes,
+        grant: str,
+    ) -> dict[str, Any]:
+        streamed = len(data) > 10_000_000
+
+        def chunks():
+            view = memoryview(data)
+            for offset in range(0, len(view), 64 * 1024):
+                yield view[offset : offset + 64 * 1024].tobytes()
+
+        request = urllib.request.Request(
+            self._request_url(path),
+            data=chunks() if streamed else data,
+            method="PUT",
+            headers={
+                "Authorization": f"HermesRoom {self._require_room_grant(grant)}",
+                "Content-Type": "application/octet-stream",
+                **({} if streamed else {"Content-Length": str(len(data))}),
+                "User-Agent": "Hermes-RoomLink/1.0",
+            },
+        )
+        deadline = time.monotonic() + self.timeout_seconds
+        try:
+            with _open_roomlink_url(
+                request,
+                timeout=self.timeout_seconds,
+                reject_redirects=True,
+            ) as response:
+                raw = _read_bounded_response(
+                    response,
+                    max_bytes=MAX_PEER_RESPONSE_BYTES,
+                    deadline=deadline,
+                ).decode("utf-8", "replace")
+        except _PeerResponseTooLarge as exc:
+            raise PeerRunsHTTPError(
+                "peer attachment response exceeded the RoomLink size limit",
+                ambiguous=True,
+            ) from exc
+        except _PeerResponseDeadlineExceeded as exc:
+            raise PeerRunsHTTPError(
+                "peer attachment response exceeded the RoomLink time budget",
+                retryable=True,
+                ambiguous=True,
+            ) from exc
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = _read_bounded_response(
+                    exc,
+                    max_bytes=MAX_PEER_ERROR_RESPONSE_BYTES,
+                    deadline=deadline,
+                ).decode("utf-8", "replace")[:500]
+            except Exception:
+                detail = ""
+            error_code = _response_error_code(detail)
+            logger.debug(
+                "Peer RoomLink attachment upload returned HTTP %s (%s)",
+                exc.code,
+                error_code or "no-code",
+            )
+            if exc.code in {301, 302, 303, 307, 308}:
+                raise PeerRunsHTTPError(
+                    "peer attachment upload refused an HTTP redirect",
+                    status_code=exc.code,
+                ) from exc
+            raise PeerRunsHTTPError(
+                f"peer rejected attachment upload with HTTP {exc.code}",
+                retryable=exc.code in {408, 425, 429} or exc.code >= 500,
+                ambiguous=exc.code >= 500,
+                status_code=exc.code,
+                error_code=error_code,
+            ) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise PeerRunsHTTPError(
+                "peer attachment upload is unreachable",
+                retryable=True,
+                ambiguous=not _is_proven_pre_admission_failure(exc),
+                not_admitted=_is_proven_pre_admission_failure(exc),
+            ) from exc
+        try:
+            payload = json.loads(raw)
+        except ValueError as exc:
+            raise PeerRunsHTTPError(
+                "peer returned non-JSON attachment data"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise PeerRunsHTTPError("peer returned a non-object attachment response")
+        return payload
+
+
+    def discard_attachments(
+        self,
+        *,
+        task_id: str,
+        execution_generation: int,
+        grant: str,
+    ) -> Mapping[str, Any]:
+        """Retire one exact terminal batch; repeated calls are harmless."""
+
+        path = (
+            "/v1/room-members/attachments/"
+            f"{urllib.parse.quote(str(task_id), safe='')}/"
+            f"{int(execution_generation)}"
+        )
+        return self._request(
+            path,
+            method="DELETE",
+            room_grant=self._require_room_grant(grant),
+            reject_redirects=True,
+        )
+
+
+    def stage_attachments(
+        self,
+        *,
+        dispatch: Mapping[str, Any],
+        attachments: Sequence[Mapping[str, Any]],
+        grant: str,
+    ) -> Mapping[str, Any]:
+        """Push one complete, digest-bound attachment set before admission."""
+        checked = HostedMemberDispatch.from_mapping(dispatch)
+        self._require_room_grant(grant)
+        payloads: list[tuple[dict[str, Any], bytes]] = []
+        manifest_input: list[dict[str, Any]] = []
+        for raw in attachments:
+            if not isinstance(raw, Mapping):
+                raise PeerRunsHTTPError("attachment payload must be an object")
+            unknown = set(raw) - {
+                "attachment_id",
+                "kind",
+                "name",
+                "size",
+                "mime",
+                "sha256",
+                "data",
+            }
+            if unknown or "data" not in raw:
+                raise PeerRunsHTTPError("attachment payload fields are invalid")
+            data = raw["data"]
+            if not isinstance(data, (bytes, bytearray)):
+                raise PeerRunsHTTPError("attachment data must be bytes")
+            metadata = {key: value for key, value in raw.items() if key != "data"}
+            manifest_input.append(metadata)
+            payloads.append((metadata, bytes(data)))
+        try:
+            manifest = canonical_attachment_manifest(manifest_input)
+        except ValueError as exc:
+            raise PeerRunsHTTPError(str(exc)) from exc
+        digest = attachment_manifest_digest(manifest)
+        if checked.attachment_manifest_digest != digest:
+            raise PeerRunsHTTPError(
+                "attachment manifest does not match the peer dispatch"
+            )
+        for metadata, data in payloads:
+            if (
+                len(data) != int(metadata["size"])
+                or hashlib.sha256(data).hexdigest() != metadata["sha256"]
+            ):
+                raise PeerRunsHTTPError(
+                    "attachment bytes do not match their manifest"
+                )
+        registered = self._request(
+            "/v1/room-members/attachments",
+            method="POST",
+            body={
+                "hosted_room_dispatch": checked.as_mapping(),
+                "attachments": manifest,
+            },
+            room_grant=grant,
+            reject_redirects=True,
+        )
+        result: Mapping[str, Any] = registered
+        for metadata, data in payloads:
+            path = (
+                "/v1/room-members/attachments/"
+                f"{urllib.parse.quote(checked.task_id, safe='')}/"
+                f"{checked.execution_generation}/"
+                f"{urllib.parse.quote(str(metadata['attachment_id']), safe='')}"
+            )
+            try:
+                result = self._put_attachment(path, data=data, grant=grant)
+            except PeerRunsHTTPError as exc:
+                if not exc.ambiguous:
+                    raise
+                result = self._put_attachment(path, data=data, grant=grant)
+        if not result.get("complete"):
+            raise PeerRunsHTTPError("peer attachment batch is incomplete")
+        return {
+            "complete": True,
+            "manifest_digest": digest,
+            "count": len(manifest),
+        }
+
+
+    def read_artifact(
+        self,
+        *,
+        run_id: str,
+        artifact_id: str,
+        grant: str,
+    ) -> bytes:
+        path = (
+            f"/v1/runs/{urllib.parse.quote(run_id, safe='')}/"
+            f"artifacts/{urllib.parse.quote(artifact_id, safe='')}"
+        )
+        request = urllib.request.Request(
+            self._request_url(path),
+            method="GET",
+            headers={
+                "Authorization": f"HermesRoom {self._require_room_grant(grant)}",
+                "User-Agent": "Hermes-RoomLink/1.0",
+            },
+        )
+        deadline = time.monotonic() + self.timeout_seconds
+        try:
+            with _open_roomlink_url(
+                request,
+                timeout=self.timeout_seconds,
+                reject_redirects=True,
+            ) as response:
+                data = _read_bounded_response(
+                    response,
+                    max_bytes=MAX_ATTACHMENT_BYTES,
+                    deadline=deadline,
+                )
+        except _PeerResponseTooLarge as exc:
+            raise PeerRunsHTTPError("peer artifact bytes exceed the size limit") from exc
+        except _PeerResponseDeadlineExceeded as exc:
+            raise PeerRunsHTTPError(
+                "peer artifact download exceeded the RoomLink time budget",
+                retryable=True,
+            ) from exc
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = _read_bounded_response(
+                    exc,
+                    max_bytes=MAX_PEER_ERROR_RESPONSE_BYTES,
+                    deadline=deadline,
+                ).decode("utf-8", "replace")[:500]
+            except _PeerResponseTooLarge as body_exc:
+                raise PeerRunsHTTPError(
+                    "peer artifact error exceeded the RoomLink size limit",
+                    status_code=exc.code,
+                ) from body_exc
+            except _PeerResponseDeadlineExceeded as body_exc:
+                raise PeerRunsHTTPError(
+                    "peer artifact error exceeded the RoomLink time budget",
+                    retryable=True,
+                    status_code=exc.code,
+                ) from body_exc
+            except Exception:
+                detail = ""
+            raise PeerRunsHTTPError(
+                (
+                    "peer artifact download refused an HTTP redirect"
+                    if exc.code in {301, 302, 303, 307, 308}
+                    else f"peer rejected artifact download with HTTP {exc.code}: {detail}"
+                ),
+                retryable=exc.code in {408, 425, 429} or exc.code >= 500,
+                status_code=exc.code,
+                error_code=_response_error_code(detail),
+            ) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise PeerRunsHTTPError(
+                f"peer is unreachable: {exc}",
+                retryable=True,
+            ) from exc
+        if not data:
+            raise PeerRunsHTTPError("peer artifact bytes are invalid")
+        return data
+
+
+    def acknowledge_artifacts(
+        self,
+        *,
+        run_id: str,
+        artifact_ids: Sequence[str],
+        manifest_digest: str,
+        message_event_id: str,
+        grant: str,
+    ) -> Mapping[str, Any]:
+        return self._request(
+            f"/v1/runs/{urllib.parse.quote(run_id, safe='')}/artifacts/ack",
+            method="POST",
+            body={
+                "artifact_ids": list(artifact_ids),
+                "manifest_digest": manifest_digest,
+                "message_event_id": message_event_id,
+            },
+            room_grant=grant,
+            reject_redirects=True,
+        )
+
+
+    def discard_artifacts(
+        self,
+        *,
+        run_id: str,
+        grant: str,
+    ) -> Mapping[str, Any]:
+        return self._request(
+            f"/v1/runs/{urllib.parse.quote(run_id, safe='')}/artifacts/discard",
+            method="POST",
+            body={"reason": "verification_failed"},
+            room_grant=grant,
+            reject_redirects=True,
+        )
+
+
+    def _request_url(self, path: str) -> str:
+        """Keep JSON and binary operations on this client's profile route."""
+        return f"{self.base_url}{self._profile_prefix}{path}"
+
+
+def _open_roomlink_url(
+    request: urllib.request.Request,
+    *,
+    timeout: float,
+    reject_redirects: bool = False,
+):
+    """Open with Hermes proxy/TLS policy and optional no-replay redirects."""
+
+    from hermes_cli import urllib_security
+
+    if not reject_redirects:
+        return urllib_security.open_credentialed_url(request, timeout=timeout)
+
+    def rejecting_opener(_safe_redirect_handler):
+        # Preserve the shared credentialed opener's CA bundle, proxy, TLS,
+        # cookie, and instrumentation policy while rejecting even same-origin
+        # redirects: grants and bytes must never be replayed automatically.
+        policy_opener = urllib_security._secure_opener_from_installed_policy(  # noqa: SLF001
+            request.full_url
+        )
+        for name, value in getattr(
+            policy_opener, "_hermes_initial_addheaders", ()
+        ):
+            if not request.has_header(name):
+                request.add_header(name, value)
+        handlers = [
+            handler
+            for handler in getattr(policy_opener, "handlers", ())
+            if not isinstance(handler, urllib.request.HTTPRedirectHandler)
+        ]
+        handlers.append(_RejectAttachmentRedirects())
+        opener = urllib.request.build_opener(*handlers)
+        opener.addheaders = []
+        return opener
+
+    return urllib_security.open_credentialed_url(
+        request,
+        timeout=timeout,
+        opener_factory=rejecting_opener,
+    )
+
+
+class _RejectAttachmentRedirects(urllib.request.HTTPRedirectHandler):
+    """Never replay scoped grants or attachment bytes to a redirect target."""
+
+    handler_order = 100
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None

@@ -178,6 +178,10 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
 
 
 def _room_permission_for(request: "web.Request") -> str:
+    if request.path.endswith(("/artifacts/ack", "/artifacts/discard")):
+        return "artifact.ack"
+    if "/artifacts/" in request.path:
+        return "artifact.read"
     if request.path.endswith("/stop"):
         return "stop"
     if request.path.endswith("/approval"):
@@ -235,6 +239,12 @@ def _durable_run_status(self, request: "web.Request", run_id: str) -> Dict[str, 
     status = dict(record["status"])
     if status.get("status") not in TERMINAL_STATUSES and not _owner_alive(
         int(record.get("owner_pid") or 0), int(record.get("owner_started") or 0)):
+        if status.get("room_artifact_scope"):
+            from gateway.hosted_room_artifacts import RoomArtifactOutbox, RoomArtifactScope
+            from hermes_constants import get_hermes_home
+
+            RoomArtifactOutbox(get_hermes_home() / "state.db").discard_durably(
+                RoomArtifactScope.from_mapping(status["room_artifact_scope"]))
         status.update(
             status="interrupted", error="The gateway restarted before this run settled.",
             last_event="run.interrupted", updated_at=time.time())
@@ -322,6 +332,8 @@ class _RunLaunch:
     request_profile: Any
     browser_control_principal: Any
     browser_control_transport_family: Any
+    room_persist_user_message: str | None = None
+    room_artifact_publication: bool = False
 
     @property
     def approval_session_key(self) -> str:
@@ -429,7 +441,9 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     created_at = self._run_streams_created[run_id] = time.time()
     self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
     initial_status = self._set_run_status(
-        run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name))
+        run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name),
+        **({"room_artifact_scope": _artifact_scope_mapping(room_dispatch)}
+           if room_dispatch is not None and body.get("_room_artifact_publication") is True else {}))
     if idempotency_key:
         outcome, record = self._run_idempotency_store.reserve(
             idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
@@ -450,7 +464,9 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
-        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get())
+        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
+        room_persist_user_message=(body.get("_room_persist_user_message") if self._room_grant_token(request) else None),
+        room_artifact_publication=room_dispatch is not None and body.get("_room_artifact_publication") is True)
     self._activate_admitted_request()
     task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
     with suppress(TypeError):
@@ -458,6 +474,13 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     if hasattr(task, "add_done_callback"):
         task.add_done_callback(self._background_tasks.discard)
     return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
+
+
+def _artifact_scope_mapping(dispatch):
+    return {key: dispatch[key] for key in (
+        "room_id", "task_id", "execution_generation", "member_id", "target_profile",
+        "home_install_id", "target_install_id", "authority_gateway_id", "authority_epoch",
+    )}
 
 
 def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_server):
@@ -477,6 +500,8 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
     effective_task_id = session_id or run.run_id
     # (token, reset) pairs unwound in the finally block; bound only once each step succeeds.
     resets: list[tuple[Any, Callable]] = []
+    room_artifact_scope = None
+    room_artifacts_finalized = False
     with self._profile_scope(run.request_profile):
         try:
             # Contextvars, not process env: concurrent runs must not share identity.
@@ -490,15 +515,43 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             if session_tokens:
                 resets.append((session_tokens, clear_session_vars))
             if run.agent_kwargs["room_dispatch"] is not None:
+                from gateway.session_context import bind_session_source, reset_session_source
+
+                resets.append((bind_session_source("bot_room"), reset_session_source))
                 policy = RoomExecutionPolicy.from_mapping(run.agent_kwargs["room_execution_policy"] or {})
                 resets.append((bind_room_execution_policy(policy), reset_room_execution_policy))
+            if run.room_artifact_publication:
+                from gateway.hosted_room_artifacts import (
+                    RoomArtifactOutbox, RoomArtifactScope, bind_room_artifact_scope,
+                    reset_room_artifact_scope, terminal_artifact_manifest,
+                )
+                from hermes_constants import get_hermes_home
+                from tools.hosted_room_artifact import ensure_share_group_file_tool
+
+                room_artifact_scope = RoomArtifactScope.from_mapping(_artifact_scope_mapping(run.agent_kwargs["room_dispatch"]))
+                RoomArtifactOutbox(get_hermes_home() / "state.db").discard_superseded(room_artifact_scope)
+                resets.append((bind_room_artifact_scope(room_artifact_scope), reset_room_artifact_scope))
+                ensure_share_group_file_tool(agent, force=True)
             register_gateway_notify(run.approval_session_key, approval_notify)
             # /v1/runs owns its agent lifecycle (no TurnRunner): record process ownership
             # so stop/cancel reaps only the background processes this run created.
             _api_server._publish_turn_process_ownership(agent, effective_task_id)
             r = agent.run_conversation(
                 user_message=run.user_message, conversation_history=run.conversation_history,
-                task_id=effective_task_id)
+                task_id=effective_task_id,
+                **({"persist_user_message": run.room_persist_user_message}
+                   if run.room_persist_user_message is not None else {}))
+            if room_artifact_scope is not None:
+                artifact_db = get_hermes_home() / "state.db"
+                failed = isinstance(r, dict) and (r.get("failed") or r.get("interrupted"))
+                artifacts = None if failed else terminal_artifact_manifest(artifact_db, room_artifact_scope)
+                if failed:
+                    RoomArtifactOutbox(artifact_db).discard_durably(room_artifact_scope)
+                if artifacts is not None:
+                    if not isinstance(r, dict):
+                        r = {"final_response": str(r)}
+                    r["room_artifacts"] = artifacts
+                room_artifacts_finalized = True
         finally:
             # Clear ownership now so a later stop can't reap work this run left running.
             _api_server._clear_turn_process_ownership(agent)
@@ -509,9 +562,14 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             try:
                 unregister_gateway_notify(run.approval_session_key)
             finally:
-                for token, reset in resets:
+                for token, reset in reversed(resets):
                     with suppress(Exception):
                         reset(token)
+                if room_artifact_scope is not None and not room_artifacts_finalized:
+                    try:
+                        RoomArtifactOutbox(get_hermes_home() / "state.db").discard_durably(room_artifact_scope)
+                    except Exception:
+                        logger.warning("failed to discard room artifacts after run error", exc_info=True)
         return r, {key: getattr(agent, attr, 0) or 0 for key, attr in _USAGE_FIELDS}
 
 
@@ -580,6 +638,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         else:
             # Undelivered steer text rides on the terminal event/status for client replay.
             extra = {"pending_steer": result["pending_steer"]} if result.get("pending_steer") else {}
+            if result.get("room_artifacts"):
+                extra["artifacts"] = result["room_artifacts"]
             _finish("completed", extra, output=result.get("final_response", ""), usage=usage)
     except asyncio.CancelledError:
         _finish("cancelled")
@@ -806,6 +866,15 @@ async def _handle_stop_run(self, request: "web.Request", *, _api_server) -> "web
     if err is not None:
         return err
     if status.get("status") in TERMINAL_STATUSES:
+        if status.get("status") != "completed" and status.get("room_artifact_scope"):
+            try:
+                from gateway.hosted_room_artifacts import RoomArtifactOutbox, RoomArtifactScope
+                from hermes_constants import get_hermes_home
+
+                RoomArtifactOutbox(get_hermes_home() / "state.db").discard_durably(
+                    RoomArtifactScope.from_mapping(status["room_artifact_scope"]))
+            except Exception:
+                logger.warning("failed to discard stopped room artifacts for %s", run_id, exc_info=True)
         return web.json_response(status)
     if agent is None and task is None:
         return _json_error(

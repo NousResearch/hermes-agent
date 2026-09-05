@@ -29,13 +29,15 @@ MAX_IDENTIFIER_CHARS = 128
 MAX_PROMPT_BYTES = 128 * 1024
 MAX_RESULT_JSON_BYTES = 256 * 1024
 TERMINAL_TASK_RETENTION_SECONDS = 30 * 24 * 60 * 60
+# Source artifacts retain 30 days of bytes plus a 30-day ACK tombstone.
+ARTIFACT_RETRY_RETENTION_SECONDS = 60 * 24 * 60 * 60
 MAX_RETAINED_TERMINAL_TASKS = 2048
 MAX_TASK_PRUNE_BATCH = 1000
 TASK_STATUSES = frozenset(get_args(TaskStatus))
 TERMINAL_STATUSES = frozenset({"settled", "failed", "cancelled"})
 
 _TASK_PAYLOAD_REQUIRED_FIELDS = frozenset({"target_profile", "prompt", "source_event_seq"})
-_TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({"target_member_id"})
+_TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({"target_member_id", "attachments", "input_context", "recipient_member_ids"})
 _LEASE_COLUMNS = frozenset({
     "room_id", "gateway_id", "authority_epoch", "process_generation", "lease_generation", "expires_at", "acquired_at",
     "updated_at", "released_at"})
@@ -152,12 +154,47 @@ def _task_payload(value: Any) -> tuple[dict[str, Any], str, str]:
     if missing:
         raise DriverValidationError(f"missing payload fields: {', '.join(sorted(missing))}")
     target_profile = _identifier(value["target_profile"], label="target_profile")
-    prompt = text(value["prompt"], error=DriverValidationError, label="prompt", max_bytes=MAX_PROMPT_BYTES, strip=False)
+    prompt = text(
+        value["prompt"],
+        error=DriverValidationError,
+        label="prompt",
+        max_bytes=MAX_PROMPT_BYTES,
+        strip=False,
+    )
     source_event_seq = _bounded_int(
-        value["source_event_seq"], message="source_event_seq must be a positive integer", low=1)
-    normalized = {"target_profile": target_profile, "prompt": prompt, "source_event_seq": source_event_seq}
+        value["source_event_seq"], message="source_event_seq must be a positive integer", low=1
+    )
+    normalized = {
+        "target_profile": target_profile,
+        "prompt": prompt,
+        "source_event_seq": source_event_seq,
+    }
+    if "input_context" in value:
+        from gateway.hosted_room_task_input import validate_task_input
+
+        try:
+            normalized["input_context"] = validate_task_input(value["input_context"])
+        except ValueError as exc:
+            raise DriverValidationError(str(exc)) from exc
     if "target_member_id" in value:
-        normalized["target_member_id"] = _identifier(value["target_member_id"], label="target_member_id")
+        normalized["target_member_id"] = _identifier(
+            value["target_member_id"], label="target_member_id"
+        )
+    if "recipient_member_ids" in value:
+        raw_recipients = value["recipient_member_ids"]
+        if not isinstance(raw_recipients, list) or not 1 <= len(raw_recipients) <= 6:
+            raise DriverValidationError("recipient_member_ids must contain 1-6 members")
+        recipients = [_identifier(item, label="recipient_member_id") for item in raw_recipients]
+        if len(set(recipients)) != len(recipients):
+            raise DriverValidationError("recipient_member_ids must be unique")
+        normalized["recipient_member_ids"] = recipients
+    if "attachments" in value:
+        from gateway.hosted_room_attachments import validate_task_manifest
+
+        attachments = validate_task_manifest(value["attachments"])
+        if not attachments:
+            raise DriverValidationError("attachments must not be empty when present")
+        normalized["attachments"] = attachments
     encoded = compact_json(normalized)
     return normalized, encoded, hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -840,12 +877,37 @@ def prune_published_terminal_tasks(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_policy_publications'").fetchone()
         if publications is None:
             return 0
-        rows = conn.execute("""SELECT t.task_id, t.terminal_at FROM hosted_room_driver_tasks t
+        retries = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_artifact_retries'").fetchone()
+        retry_guard, retry_params = "", ()
+        if retries is not None:
+            retry_columns = {
+                str(row["name"])
+                for row in conn.execute(
+                    "PRAGMA table_info(hosted_room_artifact_retries)"
+                ).fetchall()
+            }
+            retry_age_column = next(
+                (name for name in ("created_at", "updated_at") if name in retry_columns),
+                None,
+            )
+            retry_guard = (
+                "AND NOT EXISTS (SELECT 1 FROM hosted_room_artifact_retries r "
+                "WHERE r.room_id=t.room_id AND r.task_id=t.task_id "
+                "AND r.execution_generation=t.execution_generation"
+            )
+            if retry_age_column is not None:
+                retry_guard += f" AND r.{retry_age_column}>?"
+                retry_params = (now - ARTIFACT_RETRY_RETENTION_SECONDS,)
+            retry_guard += ")"
+        rows = conn.execute(f"""SELECT t.task_id, t.terminal_at FROM hosted_room_driver_tasks t
                 WHERE t.room_id=? AND t.status IN ('settled', 'failed', 'cancelled')
                   AND EXISTS (SELECT 1 FROM hosted_room_policy_publications p
                               WHERE p.room_id=t.room_id AND p.task_id=t.task_id
                                 AND p.kind IN ('turn.settled', 'turn.failed', 'turn.cancelled'))
-                ORDER BY t.terminal_at DESC, t.task_id ASC""", (room_id,)).fetchall()
+                {retry_guard}
+                ORDER BY t.terminal_at DESC, t.task_id ASC""",
+            (room_id, *retry_params)).fetchall()
         cutoff = now - float(retention_seconds)
         candidates = [
             str(row["task_id"]) for index, row in enumerate(rows)
@@ -868,3 +930,68 @@ from pathlib import Path  # noqa: F401,E402
 from contextlib import contextmanager  # noqa: F401,E402
 import re  # noqa: F401,E402
 # ---- END PLUGIN-COMPAT ----
+
+
+def defer_not_admitted_task(
+    db_path: DbPath,
+    attempt: TaskAttempt,
+    *,
+    reason: Any,
+    clock: Clock,
+) -> dict[str, Any]:
+    """Publish a proven pre-admission outage without blocking later members."""
+
+    reason = _identifier(reason, label="defer_reason")
+    result_json = _canonical_json({"reason": reason, "retryable": True})
+    now = _timestamp(clock)
+    with _transaction(db_path) as conn:
+        _require_active_lease(conn, attempt.lease, now=now)
+        row = _load_task(conn, attempt.identity)
+        if (
+            row["status"] == "deferred"
+            and int(row["execution_generation"]) == attempt.execution_generation
+            and int(row["cancel_generation"]) == attempt.cancel_generation
+            and row["result_json"] == result_json
+        ):
+            return _task_from_row(row, idempotent=True)
+        if (
+            row["status"] != "running"
+            or int(row["execution_generation"]) != attempt.execution_generation
+            or int(row["cancel_generation"]) != attempt.cancel_generation
+        ):
+            raise StaleTaskError("running task generation changed during deferral")
+        updated = conn.execute(
+            """UPDATE hosted_room_driver_tasks
+                  SET status='deferred', result_json=?, terminal_at=?, updated_at=?
+                WHERE room_id=? AND task_id=? AND status='running'
+                  AND execution_generation=? AND cancel_generation=?""",
+            (
+                result_json,
+                now,
+                now,
+                attempt.identity.room_id,
+                attempt.identity.task_id,
+                attempt.execution_generation,
+                attempt.cancel_generation,
+            ),
+        )
+        if updated.rowcount != 1:
+            raise StaleTaskError("running task changed during deferral")
+        return _task_from_row(_load_task(conn, attempt.identity))
+
+
+def get_task_for_turn(
+    db_path: DbPath,
+    identity: TaskIdentity,
+) -> dict[str, Any] | None:
+    """Read the immutable admission for a turn, including older payload versions."""
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            """SELECT * FROM hosted_room_driver_tasks
+               WHERE room_id=? AND thread_id=? AND turn_id=?""",
+            (identity.room_id, identity.thread_id, identity.turn_id),
+        ).fetchone()
+        return _task_from_row(row) if row is not None else None
+    finally:
+        conn.close()

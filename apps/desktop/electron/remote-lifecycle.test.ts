@@ -181,6 +181,8 @@ test('POSIX relaunch gate permits absent/dead markers and normalizes named-profi
   assert.match(commands[0], /home\.parent\.name/)
   assert.match(commands[0], /profiles/)
   assert.match(commands[0], /\.hermes-update-in-progress/)
+  assert.match(commands[0], /marker\.unlink/)
+  assert.match(commands[0], /\/proc\/%d\/cmdline/)
 })
 
 test('POSIX relaunch gate rechecks after token upload immediately before process creation', async () => {

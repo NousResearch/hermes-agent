@@ -297,6 +297,11 @@ from pathlib import Path
 home=Path(os.path.expanduser(sys.argv[1]))
 if home.parent.name=='profiles':home=home.parent.parent
 marker=home/'.hermes-update-in-progress'
+def clear():
+    try:marker.unlink()
+    except FileNotFoundError:pass
+    except OSError:pass
+    print('CLEAR');raise SystemExit
 try:
     with marker.open('rb') as stream:raw=stream.read(257)
 except FileNotFoundError:
@@ -316,15 +321,20 @@ except ValueError:
 try:
     os.kill(owner,0)
 except ProcessLookupError:
-    print('CLEAR')
+    clear()
 except PermissionError:
-    print('LIVE:'+str(owner))
+    print('LIVE:'+str(owner));raise SystemExit
 except OSError as error:
-    if error.errno==errno.ESRCH:print('CLEAR')
-    elif error.errno==errno.EPERM:print('LIVE:'+str(owner))
-    else:print('UNCERTAIN')
-else:
-    print('LIVE:'+str(owner))
+    if error.errno==errno.ESRCH:clear()
+    elif error.errno==errno.EPERM:print('LIVE:'+str(owner));raise SystemExit
+    else:print('UNCERTAIN');raise SystemExit
+try:
+    cmd=open('/proc/%d/cmdline'%owner,'rb').read().replace(b'\0',b' ')
+except OSError:
+    cmd=b''
+if cmd and b'update' not in cmd:
+    clear()
+print('LIVE:'+str(owner))
 `
 
 /**

@@ -137,7 +137,9 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
 _PERSISTENCE_DEFAULT_EXPLANATION = (
     "the turn was stopped because session storage could not be "
     "written (the transcript would have been lost on restart). "
-    "Check the state database health (`hermes doctor`), then "
+    "A concurrent session compression or another state database "
+    "write may be responsible. Check the state database health "
+    "(`hermes doctor`) and gateway log, then "
     "send your message again."
 )
 

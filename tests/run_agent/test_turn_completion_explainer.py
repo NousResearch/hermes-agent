@@ -444,3 +444,9 @@ def test_classify_persistence_error_quarantined_handle_is_corrupt() -> None:
     from hermes_state import StateDbCorruptError, classify_persistence_error
 
     assert classify_persistence_error(StateDbCorruptError("quarantined")) == "corrupt"
+
+def test_session_persistence_explanation_includes_concurrent_compression():
+    """Unknown storage failures retain local concurrent-write troubleshooting."""
+    out = AIAgent._format_turn_completion_explanation("session_persistence_failed")
+    assert "concurrent session compression" in out.lower()
+    assert "gateway log" in out.lower()

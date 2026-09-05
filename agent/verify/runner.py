@@ -182,6 +182,24 @@ def _run_start_phase(
     return ReadinessResult(url, ready, status, time.monotonic() - started, error, _tail(output))
 
 
+def _running_compose_containers(root: Path) -> list[str] | None:
+    """Names of currently-running containers for the compose project at *root*,
+    via ``docker compose ps`` (read-only; never mutates anything). ``None`` when the
+    check itself could not run (docker/compose unavailable, or not a compose
+    project here) -- callers must not treat that as "no running containers".
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "ps", "--status", "running", "--format", "{{.Name}}"],
+            cwd=root, capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
 def run_verify(
     root: Path, recipe: Recipe, phases: tuple[str, ...] | list[str] | None = None,
     phase_timeout: float = DEFAULT_PHASE_TIMEOUT, ready_timeout: float = DEFAULT_READY_TIMEOUT,
@@ -189,10 +207,33 @@ def run_verify(
     on_output: Callable[[str], None] | None = None,
 ) -> VerifyResult:
     """Run the selected command phases sequentially, then (unless ``skip_start`` or a
-    phase failed) boot ``recipe.start``, poll readiness, and tear the process group down."""
+    phase failed) boot ``recipe.start``, poll readiness, and tear the process group down.
+
+    A ``compose`` recipe refuses outright when the project already has running
+    containers: ``docker compose build`` + ``up`` replaces them on an image-hash
+    change, destroying any container-local state they carry -- this has caused a
+    real state-loss incident (#103567). The check is best-effort and read-only
+    (``docker compose ps``); when it cannot run at all, verify proceeds rather than
+    blocking on an unrelated environment gap, matching every other recipe kind's
+    behavior when its own tooling is unavailable."""
     root = Path(root)
     selected = tuple(phases) if phases else PHASE_ORDER + ("start",)
     result = VerifyResult(recipe_name=recipe.name)
+
+    if recipe.kind == "compose":
+        running = _running_compose_containers(root)
+        if running:
+            result.phases.append(PhaseResult(
+                phase="build", command=recipe.build[0] if recipe.build else "docker compose build",
+                exit_code=1, duration=0.0, output_tail=(
+                    "Refusing to run: this compose project already has running "
+                    f"container(s) ({', '.join(running)}). `docker compose build` + "
+                    "`up` would replace them on an image-hash change, destroying any "
+                    "container-local state they carry. If you intend to rebuild this "
+                    "live deployment, run `docker compose build`/`up` yourself."
+                ),
+            ))
+            return result
 
     for phase in PHASE_ORDER:
         if phase not in selected:

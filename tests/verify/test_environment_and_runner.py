@@ -4,6 +4,7 @@ import http.server
 import json
 import threading
 import time
+from unittest.mock import MagicMock, patch
 
 from agent.verify.environment import (
     load_manifest,
@@ -109,6 +110,90 @@ class TestRunner:
         recipe = Recipe(name="x", test=["cat marker.txt"])
         result = run_verify(tmp_path, recipe, skip_start=True)
         assert result.ok
+
+
+class TestComposeGuard:
+    """Regression for issue #103567: a compose recipe must refuse to run
+    against a project directory that's already a live compose deployment
+    with running containers -- ``docker compose build`` + ``up`` replaces
+    them on an image-hash change, destroying container-local state (a real
+    incident: a kanban worker's state DB was lost this way)."""
+
+    def _compose_recipe(self):
+        return Recipe(
+            name="docker-compose project", kind="compose",
+            build=["docker compose build"], start="docker compose up",
+            evidence=["Detected docker-compose.yml"],
+        )
+
+    def test_refuses_when_containers_are_running(self, tmp_path, monkeypatch):
+        fake_ps = MagicMock(returncode=0, stdout="myproject-db-1\nmyproject-web-1\n")
+        monkeypatch.setattr("subprocess.run", MagicMock(return_value=fake_ps))
+
+        result = run_verify(tmp_path, self._compose_recipe(), skip_start=True)
+
+        assert not result.ok
+        assert len(result.phases) == 1
+        assert "myproject-db-1" in result.phases[0].output_tail
+        assert "myproject-web-1" in result.phases[0].output_tail
+        assert "Refusing to run" in result.phases[0].output_tail
+
+    def test_does_not_actually_invoke_build_or_start_when_refusing(self, tmp_path, monkeypatch):
+        """The refusal must be a synthetic result -- the real build/start
+        commands (which would trigger the destructive replace) must never
+        actually be spawned."""
+        fake_ps = MagicMock(returncode=0, stdout="myproject-db-1\n")
+        calls: list[list[str] | str] = []
+
+        def tracking_run(cmd, *args, **kwargs):
+            calls.append(cmd)
+            return fake_ps
+
+        monkeypatch.setattr("subprocess.run", tracking_run)
+
+        run_verify(tmp_path, self._compose_recipe(), skip_start=False)
+
+        # Only the read-only "docker compose ps" probe ran -- never
+        # "docker compose build" or "docker compose up" as an actual subprocess.
+        assert len(calls) == 1
+        assert calls[0][:3] == ["docker", "compose", "ps"]
+
+    def test_proceeds_normally_with_no_running_containers(self, tmp_path, monkeypatch):
+        fake_ps = MagicMock(returncode=0, stdout="")
+        monkeypatch.setattr("subprocess.run", MagicMock(return_value=fake_ps))
+
+        with patch("agent.verify.runner._run_phase_command") as mock_phase:
+            mock_phase.return_value = MagicMock(ok=True, phase="build")
+            result = run_verify(tmp_path, self._compose_recipe(), phases=("build",))
+
+        assert mock_phase.called
+
+    def test_proceeds_when_the_docker_probe_itself_is_unavailable(self, tmp_path, monkeypatch):
+        """docker/compose not installed, or this isn't actually a compose
+        project's directory from docker's perspective -- must not block
+        verify on an unrelated environment gap."""
+        monkeypatch.setattr(
+            "subprocess.run",
+            MagicMock(side_effect=FileNotFoundError("docker not found")),
+        )
+
+        with patch("agent.verify.runner._run_phase_command") as mock_phase:
+            mock_phase.return_value = MagicMock(ok=True, phase="build")
+            result = run_verify(tmp_path, self._compose_recipe(), phases=("build",))
+
+        assert mock_phase.called
+
+    def test_non_compose_recipes_are_unaffected(self, tmp_path, monkeypatch):
+        """The guard is scoped to kind == "compose" only -- a Node/Python/etc.
+        recipe must never even check for running compose containers."""
+        probe = MagicMock()
+        monkeypatch.setattr("agent.verify.runner._running_compose_containers", probe)
+        recipe = Recipe(name="x", kind="node", build=["true"])
+
+        result = run_verify(tmp_path, recipe, skip_start=True)
+
+        assert result.ok
+        probe.assert_not_called()
 
     def test_result_to_dict(self, tmp_path):
         recipe = Recipe(name="x", test=["true"])

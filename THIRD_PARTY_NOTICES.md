@@ -3,7 +3,8 @@
 ## TurboFit recipe terminology and planning model
 
 Hermes' advanced local-model planning feature was informed by selected concepts
-from [TurboFit](https://github.com/SouthpawIN/turbofit), source snapshot
+from [TurboFit](https://github.com/SouthpawIN/turbofit), created by
+[sovthpaw](https://github.com/sovthpaw) (SouthpawIN), source snapshot
 `98b45598785c4ca8efe5a5d5ea0835782f4ee007`: model recipe capability labels,
 candidate-versus-evidence status, and the distinction between a per-request
 context and aggregate server capacity.

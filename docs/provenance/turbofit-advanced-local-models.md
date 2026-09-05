@@ -1,7 +1,8 @@
 # TurboFit reuse ledger: advanced local models
 
 This feature selectively adapts ideas and data conventions from
-[`SouthpawIN/turbofit`](https://github.com/SouthpawIN/turbofit), MIT license,
+[`SouthpawIN/turbofit`](https://github.com/SouthpawIN/turbofit), created by
+[sovthpaw](https://github.com/sovthpaw) (SouthpawIN), under the MIT license,
 without importing its runtime controller or Turbohaul lifecycle.
 
 | Source snapshot | Source paths inspected | Hermes use | Treatment |

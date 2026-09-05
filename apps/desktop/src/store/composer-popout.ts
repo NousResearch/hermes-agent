@@ -10,7 +10,9 @@ const POPOUT_GESTURES_ENABLED_STORAGE_KEY = 'hermes.desktop.composerPopout.gestu
 const LEGACY_ENABLED_KEY = 'hermes.desktop.composerPopout.enabled'
 const LEGACY_POSITION_KEY = 'hermes.desktop.composerPopout.position'
 
-const gesturesEnabledAtLoad = storedBoolean(POPOUT_GESTURES_ENABLED_STORAGE_KEY, true)
+// Default off: a 16px upward brush on the docked composer used to peel it into
+// a floating panel (#70422 / #101318). Users who want that can turn the lock off.
+const gesturesEnabledAtLoad = storedBoolean(POPOUT_GESTURES_ENABLED_STORAGE_KEY, false)
 
 /** Where the floating composer's bottom-right corner sits, measured as an inset
  *  from the viewport's bottom/right edges. Anchoring to the bottom-right keeps

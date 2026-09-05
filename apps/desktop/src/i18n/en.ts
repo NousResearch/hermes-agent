@@ -598,8 +598,8 @@ export const en: Translations = {
       tipsReset: (count: number) => `Bring back ${count} closed ${count === 1 ? 'tip' : 'tips'}`,
       toursTitle: 'Guided Tours',
       toursDesc: 'Let Hermes walk you through the app, dimming the screen and spotlighting each step.',
-      composerPopoutTitle: 'Floating Composer',
-      composerPopoutDesc: 'Allow dragging the composer out of its dock. Turn this off to keep it locked at the bottom.',
+      composerPopoutTitle: 'Lock composer to the bottom',
+      composerPopoutDesc: 'Stops the composer from peeling out of the dock when you drag. Turn this off only if you want a floating composer.',
       vibeHeartsTitle: 'Vibe Hearts',
       vibeHeartsDesc:
         'Floating hearts when you say thanks, ily, good bot, or send a heart. Separate from Message Reactions above.',

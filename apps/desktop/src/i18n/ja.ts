@@ -422,8 +422,8 @@ export const ja = defineLocale({
       tipsReset: (count: number) => `閉じた${count}件のヒントを元に戻す`,
       toursTitle: 'ガイドツアー',
       toursDesc: '画面を暗くして各ステップを強調しながら、Hermes がアプリを案内します。',
-      composerPopoutTitle: 'フローティング入力欄',
-      composerPopoutDesc: '入力欄をドックからドラッグして外せるようにします。オフにすると画面下部に固定されます。',
+      composerPopoutTitle: '入力欄を下部に固定',
+      composerPopoutDesc: '入力欄をドラッグしてドックから外せないようにします。フローティング入力欄が必要なときだけオフにしてください。',
       vibeHeartsTitle: 'バイブハート',
       vibeHeartsDesc:
         'ありがとう・愛してる・good bot・ハート絵文字のときに浮かぶハート。上のメッセージリアクションとは別です。',

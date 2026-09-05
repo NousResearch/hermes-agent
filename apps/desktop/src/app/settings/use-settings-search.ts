@@ -180,6 +180,15 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     },
     {
       context: appearanceContext,
+      description: appearance.composerPopoutDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.composerPopout}`,
+      keywords: ['composer', 'dock', 'drag', 'lock', 'floating', 'peel', 'pop out', 'popout'],
+      label: appearance.composerPopoutTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.composerPopout, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
       description: appearance.toolViewDesc,
       icon: Palette,
       id: `setting:${APPEARANCE_SETTING_IDS.toolView}`,

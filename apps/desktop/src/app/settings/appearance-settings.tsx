@@ -15,7 +15,7 @@ import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
-import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
+import { ComposerLockSetting } from './composer-lock-setting'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { notifyError } from '@/store/notifications'
@@ -400,7 +400,6 @@ export function AppearanceSettings() {
   const zoomPercent = useStore($zoomPercent)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
-  const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
   const translucency = useStore($translucency)
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
   const userBubbleTransparency = useStore($userBubbleTransparency)
@@ -801,12 +800,7 @@ export function AppearanceSettings() {
             title={a.introSplashTitle}
           />
 
-          <ToggleRow
-            checked={composerPopoutGesturesEnabled}
-            description={a.composerPopoutDesc}
-            label={a.composerPopoutTitle}
-            onChange={setComposerPopoutGesturesEnabled}
-          />
+          <ComposerLockSetting id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.composerPopout)} />
 
           <ResumeLastSessionSetting />
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 from typing import Callable, Iterable
 
@@ -29,7 +30,7 @@ def resolve_passthrough_env(explicit_forward: Iterable[str] = (),
     check; ``explicit_forward`` entries (docker_forward_env) are an operator opt-in that bypasses
     both. Each value is the routed profile's secret when multiplex is active; a name the active
     scope lacks is returned in the unset set so a shared sandbox cannot leak another profile's
-    value. ``hermes_env_loader`` is a parameter so each backend keeps its own patchable seam.
+    value.
     """
     passthrough_keys: set[str] = set()
     resolve_passthrough_value = None
@@ -56,6 +57,20 @@ def resolve_passthrough_env(explicit_forward: Iterable[str] = (),
         elif multiplex_active and not is_global_env(key) and _SHELL_ENV_NAME_RE.fullmatch(key):
             unset_names.add(key)
     return exec_env, unset_names
+
+
+def prepend_unset(cmd_string: str, names: Iterable[str]) -> str:
+    """Prefix ``cmd_string`` with ``unset`` of the profile-scoped names the remote shell must not see."""
+    names = sorted(names)
+    if not names:
+        return cmd_string
+    return f"unset {' '.join(shlex.quote(n) for n in names)} 2>/dev/null || true\n{cmd_string}"
+
+
+def client_env_with(values: dict[str, str]) -> dict[str, str] | None:
+    """Env for the docker/ssh CLIENT subprocess: forwarded values travel here (owner-readable
+    /proc/*/environ) while the argv carries names only; ``None`` = inherit when nothing to add."""
+    return {**os.environ, **values} if values else None
 
 
 def run_capture(cmd: list[str], *, timeout: float, check: bool = False, env: dict | None = None,

@@ -76,11 +76,6 @@ class TestBuildSSHCommand:
         env = SSHEnvironment(host="h", user="u")
         assert env._build_ssh_command()[-1] == "u@h"
 
-    def _bare_env(self):
-        env = SSHEnvironment.__new__(SSHEnvironment)
-        env.control_socket, env.host, env.user, env.port, env.key_path = "/tmp/hermes-ssh-test.sock", "h", "u", 22, ""
-        return env
-
     def _capture_run_bash(self, monkeypatch, env, cmd="echo ok"):
         captured = {}
 
@@ -97,7 +92,7 @@ class TestBuildSSHCommand:
         provider credentials on the allowlist stay behind; a .env value fills an unset shell var."""
         import tools.env_passthrough as env_passthrough
 
-        env = self._bare_env()
+        env = SSHEnvironment(host="h", user="u")
         monkeypatch.setenv("NEXTCLOUD_URL", "https://next.example")
         monkeypatch.delenv("NEXTCLOUD_PASS", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "sk-must-not-forward")
@@ -119,7 +114,7 @@ class TestBuildSSHCommand:
         import tools.env_passthrough as env_passthrough
 
         monkeypatch.setattr(env_passthrough, "get_all_passthrough", lambda: frozenset())
-        captured = self._capture_run_bash(monkeypatch, self._bare_env())
+        captured = self._capture_run_bash(monkeypatch, SSHEnvironment(host="h", user="u"))
         assert not any(a.startswith("SendEnv=") for a in captured["cmd"])
         assert captured["env"] is None
 

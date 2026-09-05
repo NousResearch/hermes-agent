@@ -28,7 +28,8 @@ from tools.environments.docker_egress import (
     check_forward_env_collisions, merge_egress_env,
 )
 from tools.environments.path_utils import sanitize_task_id_for_path
-from tools.environments.remote_common import bash_argv, load_hermes_env_vars, resolve_passthrough_env, run_capture
+from tools.environments.remote_common import (
+    bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
 
 logger = logging.getLogger(__name__)
 
@@ -760,7 +761,7 @@ class DockerEnvironment(BaseEnvironment):
         live in ``/proc/<pid>/environ`` instead, which is owner/root-only. Returns ``None`` (inherit as
         before) when there is nothing to add.
         """
-        return {**os.environ, **values} if values else None
+        return client_env_with(values)
 
     def _build_init_env_args(self) -> list[str]:
         """Name-only ``-e`` args for init_session so ``export -p`` captures docker_env
@@ -778,9 +779,8 @@ class DockerEnvironment(BaseEnvironment):
         return _name_only_env_args(exec_env)
 
     def _resolve_passthrough_env(self) -> tuple[dict[str, str], set[str]]:
-        """Forwarded values plus scoped names that must be unset; explicit docker_forward_env
-        entries bypass the blocklist (see ``remote_common.resolve_passthrough_env``)."""
-        return resolve_passthrough_env(self._forward_env, hermes_env_loader=lambda: _load_hermes_env_vars())
+        """See ``remote_common.resolve_passthrough_env``; explicit docker_forward_env bypasses the blocklist."""
+        return resolve_passthrough_env(self._forward_env, hermes_env_loader=_load_hermes_env_vars)
 
     def _build_runtime_env_args_with_unsets(self) -> tuple[list[str], tuple[str, ...], dict[str, str]]:
         """Runtime name-only forwarding args, names absent from scope, and the values
@@ -815,10 +815,7 @@ class DockerEnvironment(BaseEnvironment):
         elif self._profile_scoped_passthrough:
             runtime_args, unset_names, env_values = self._build_runtime_env_args_with_unsets()
             cmd.extend(runtime_args)
-        if unset_names:
-            quoted_names = " ".join(shlex.quote(name) for name in unset_names)
-            cmd_string = f"unset {quoted_names} 2>/dev/null || true\n{cmd_string}"
-        cmd += [self._container_id, *bash_argv(cmd_string, login)]
+        cmd += [self._container_id, *bash_argv(prepend_unset(cmd_string, unset_names), login)]
 
         client_env = self._docker_client_env(env_values)
         return _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)

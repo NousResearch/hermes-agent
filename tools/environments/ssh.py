@@ -15,7 +15,8 @@ from tools.environments.base import BaseEnvironment, EnvironmentConnectionError
 from tools.environments.base_output import _popen_bash
 from tools.environments.file_sync import (
     FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
-from tools.environments.remote_common import bash_argv, load_hermes_env_vars, resolve_passthrough_env, run_capture
+from tools.environments.remote_common import (
+    bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
 
 logger = logging.getLogger(__name__)
 
@@ -255,11 +256,10 @@ class SSHEnvironment(BaseEnvironment):
         client's env carries the values, so secrets never enter the remote ``bash -c`` argv. The
         remote sshd must ``AcceptEnv`` them (#14091). Profile-scoped names missing from the active
         scope are unset remotely so a shared host cannot serve another profile's value."""
-        values, unset_names = resolve_passthrough_env(hermes_env_loader=lambda: _load_hermes_env_vars())
-        if unset_names:
-            cmd_string = f"unset {' '.join(shlex.quote(n) for n in sorted(unset_names))} 2>/dev/null || true\n{cmd_string}"
-        cmd = self._build_ssh_command(send_env=sorted(values)) + bash_argv(shlex.quote(cmd_string), login)
-        return _popen_bash(cmd, stdin_data, env={**os.environ, **values}) if values else _popen_bash(cmd, stdin_data)
+        values, unset_names = resolve_passthrough_env(hermes_env_loader=_load_hermes_env_vars)
+        cmd = self._build_ssh_command(send_env=values) + bash_argv(shlex.quote(prepend_unset(cmd_string, unset_names)), login)
+        client_env = client_env_with(values)
+        return _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
 
     def cleanup(self):
         if self._sync_manager:

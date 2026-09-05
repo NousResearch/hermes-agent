@@ -317,7 +317,7 @@ async def test_plain_codes_and_native_room_files_entry(consumer, monkeypatch):
     page = await room_menu["on_choice_selected"](
         "chat", room_menu["choices"][0]["value"]
     )
-    assert {item["label"] for item in page.choices} >= {"Files", "Full reply"}
+    assert {item["label"] for item in page.choices} >= {"View files", "View Bots"}
 
 
 @pytest.mark.asyncio

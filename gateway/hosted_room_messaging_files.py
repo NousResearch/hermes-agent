@@ -232,14 +232,22 @@ class FilesMenu:
         self.room = resolve_room(rooms, reference)
         self.reference = room_reference(self.room)
 
-    def page(self, title, actions):
+    def page(self, title, actions, *, full_width=False):
         self.actions = {}
         self.revision += 1
         choices = []
         for caption, action in actions:
+            if self.event.source.platform.value == "telegram":
+                icon = {"files": "📎", "bots": "🤖"}.get(action[0])
+                if action[0] == "room":
+                    icon = "🕘" if caption == text("activity") else "‹"
+                if action[0] == "groups":
+                    icon, caption = "‹", text("groups")
+                if icon:
+                    caption = f"{icon} {caption}"
             token = f"{self.handle}:{self.revision}:{len(choices)}"
             self.actions[token] = action
-            choices.append({"label": caption, "value": token})
+            choices.append({"label": caption, "value": token, "full_width": full_width})
         return ChoicePage(title[:2048], choices)
 
     def failure(self, exc, action):
@@ -269,7 +277,7 @@ class FilesMenu:
         ])
         return self.page(message, actions)
 
-    async def room_page(self, detail=None):
+    async def room_page(self, detail=None, *, view="room"):
         from gateway.hosted_room_messaging import format_room_detail
 
         current = await self.fresh_room()
@@ -281,17 +289,42 @@ class FilesMenu:
                 room_command=self.command,
                 show_approvals=self.runner._can_approve_group_chats(self.event),
             )
-        self.check()
-        return self.page(
-            detail,
-            [
-                (text("files"), ("files", None)),
-                (text("full_reply"), ("reply", None)),
-                (text("activity"), ("room", None)),
-                (text("bots"), ("bots", None)),
-                (text("back_groups"), ("groups", None)),
-            ],
+        actions = await self.room_content_actions(current)
+        if view != "room":
+            actions.append((text("activity"), ("room", None)))
+        if view != "bots" and current.get("members"):
+            actions.append((text("bots"), ("bots", None)))
+        actions.append((text("back_groups"), ("groups", None)))
+        await self.fresh_room()
+        return self.page(detail, actions)
+
+    async def room_content_actions(self, current):
+        """Only offer content known to exist; navigation never waits on delivery."""
+        from gateway.hosted_room_file_delivery import native_document_limit
+        from gateway.hosted_room_file_lookup import latest_reply
+
+        try:
+            native_document_limit(self.adapter, self.event.source)
+        except Exception:
+            return []
+
+        async def available(function, **kwargs):
+            try:
+                return await asyncio.wait_for(asyncio.to_thread(function, **kwargs), 2)
+            except Exception:
+                return None
+
+        catalog, reply = await asyncio.gather(
+            available(getattr(self.backend, "list_files", None), room=current, profile=self.profile, limit=1),
+            available(lambda **kwargs: latest_reply(self.backend, **kwargs),
+                      room=current, profile=self.profile),
         )
+        actions = []
+        if catalog and (catalog.get("items") or catalog.get("has_more")):
+            actions.append((text("files"), ("files", None)))
+        if reply:
+            actions.append((text("full_reply"), ("reply", None)))
+        return actions
 
     async def files_page(self, cursor=None, *, direction="latest"):
         current = await self.fresh_room()
@@ -729,23 +762,33 @@ class FilesMenu:
                     current,
                     room_command=self.command,
                 )
-                return await self.room_page(detail)
+                return await self.room_page(detail, view="bots")
             if kind == "groups":
-                from gateway.hosted_room_messaging import room_reference
+                from gateway.hosted_room_messaging import format_room_list, room_picker_choices
 
                 self.room = None
                 rooms = await self.fresh_room()
+                choices = await asyncio.to_thread(room_picker_choices, self.backend, rooms)
+                self.check()
+                if not choices:
+                    self.actions = {}
+                    return await asyncio.to_thread(
+                        format_room_list, self.backend, rooms=rooms, rooms_command=self.command,
+                    )
                 return self.page(
-                    text("groups"),
-                    [
-                        (label(room.get("name")), ("bind", room_reference(room)))
-                        for room in rooms[:8]
-                    ]
-                    or [(text("back"), ("groups", None))],
+                    text("groups") + "\n" + t("gateway.group_home.chooser") + "\n"
+                    + text("command_hint", caption=text("groups"),
+                           command=f"`{self.command} list`"),
+                    [(choice["label"], ("bind", choice["value"])) for choice in choices],
+                    full_width=True,
                 )
             if kind == "bind":
+                from gateway.hosted_room_messaging import resolve_room_picker_choice, room_reference
+
                 self.room = None
-                await self.bind(data)
+                rooms = await self.fresh_room()
+                self.room = resolve_room_picker_choice(rooms, data)
+                self.reference = room_reference(self.room)
                 self.pages, self.position, self.query = [], -1, ""
             return await self.room_page()
         except TimeoutError:

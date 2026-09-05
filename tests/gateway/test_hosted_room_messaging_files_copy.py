@@ -38,7 +38,7 @@ async def test_french_native_and_plain_copy_keep_command_values(consumer, monkey
     assert page.title.startswith("Fichiers")
     assert "Rechercher" in [choice["label"] for choice in page.choices]
     plain = menu.plain_files()
-    assert "Réponse complète:" in plain
+    assert "Obtenir la réponse complète:" in plain
     assert "`/group 1 files <text>`" in plain
     assert "`/group 1 reply`" in plain
 
@@ -178,8 +178,8 @@ def test_files_copy_resolves_temporary_config_language(monkeypatch):
     monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
     save_config({"display": {"language": "de"}})
     i18n.reset_language_cache()
-    assert files.text("files") == "Dateien"
-    assert files.text("full_reply") == "Vollständige Antwort"
+    assert files.text("files") == "Dateien ansehen"
+    assert files.text("full_reply") == "Vollständige Antwort abrufen"
 
 
 @pytest.mark.asyncio

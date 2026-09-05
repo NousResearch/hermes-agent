@@ -254,6 +254,7 @@ export function BotsPane() {
   const { t } = useI18n()
   const b = useBots()
   const { data, error, isLoading, refetch } = useRoster()
+
   const gatewayState = useValue(host.state.gateway)
   const gatewayUp = gatewayState === 'open'
   const activeProfile = (useValue(host.state.profile) || 'default').trim() || 'default'
@@ -724,7 +725,7 @@ export function BotsPane() {
   )
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col" data-bot-roster="">
       <div className="flex items-center justify-between gap-2 px-2.5 pt-2.5 pb-1.5">
         <span className="text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary)">
           Bots

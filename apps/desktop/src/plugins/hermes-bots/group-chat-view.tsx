@@ -657,7 +657,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     members.map(b => displayName(b, botRosterMeta(b, allMeta))).join(', ') || 'No bots in this group chat'
 
   const header = (
-    <div className="flex items-center gap-2 px-2.5 pt-2.5 pb-2">
+    <div className="flex items-center gap-2 px-2.5 pt-2.5 pb-2" data-bot-group-header="">
       <Button onClick={() => (onBack ? onBack() : $groupChatWorkspace.set(null))} size="sm" variant="ghost">
         Back
       </Button>
@@ -737,7 +737,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   }
 
   const activityPanel = (
-    <div className="border-b border-(--ui-stroke-secondary)">
+    <div className="border-b border-(--ui-stroke-secondary)" data-bot-group-activity="">
       <div className="flex items-center gap-1">
         <RowButton
           aria-controls={`group-activity:${group}`}
@@ -987,6 +987,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           'group flex items-start gap-2',
           isUser ? 'rounded-md bg-(--chrome-action-hover) px-2 py-1.5' : 'px-2 py-1'
         )}
+        data-bot-group-entry=""
+        data-role={isUser ? 'user' : 'assistant'}
         key={entryKey}
       >
         {appearance ? (
@@ -1023,7 +1025,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             ) : null}
           </div>
           <div
-            className="text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:overflow-x-auto" // The app shell sets user-select: none globally; message bodies opt
+            className="text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:overflow-x-auto" // The app shell sets user-select: none globally; message bodies opt
             // back in so drag-select and ⌘C work in group chat logs.
             data-selectable-text="true"
           >
@@ -1209,6 +1211,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   return (
     <div
       className="relative flex h-full flex-col"
+      data-bot-group-workspace=""
       onDragLeave={event => {
         // Only clear when leaving the room container itself, not when the
         // cursor moves between its children. React types relatedTarget as a
@@ -1240,8 +1243,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         members={members}
       />
       {activityPanel}
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        <div className="grid gap-1.5 px-2.5 pb-2">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" data-bot-group-messages="">
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1.5 px-2.5 pb-2">
           {room.log.length
             ? logChildren
             : [
@@ -1267,7 +1270,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           <div aria-hidden key={'bottom-sentinel'} ref={bottomSentinelRef} />
         </div>
       </div>
-      <div className="border-t border-(--ui-stroke-secondary) p-2">
+      <div className="border-t border-(--ui-stroke-secondary) p-2" data-bot-group-composer="">
         <form
           className="grid gap-0"
           onSubmit={event => {

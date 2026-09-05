@@ -15,6 +15,8 @@
  * bot-initiated sends use `hermes -p <bot> chat --in ~ -c "Bot Chat"`.
  */
 
+import './bot-mode.css'
+
 import { CHAT_EMPTY_AREA, COMPOSER_AREAS, host, PALETTE_AREA, translateNow } from '@hermes/plugin-sdk'
 import type { ChatEmptyProps, PluginContext } from '@hermes/plugin-sdk'
 
@@ -388,7 +390,7 @@ export default {
       // zone's tab strip, so the pane stays reachable while collapsed.
       data: {
         placement: 'left',
-        width: '260px',
+        width: '280px',
         collapsible: true,
         hideOnly: true,
         dock: {
@@ -442,6 +444,13 @@ export default {
       const $sidebarVisible = host.paneVisibility(`${ID}:pane`)
       let unregisterRoutines: null | (() => void) = null
 
+      const syncBotModePresentation = () => {
+        document.documentElement.toggleAttribute(
+          'data-hermes-bot-mode',
+          $botsPaneVisible.get() || Boolean($groupChatWorkspace.get()) || Boolean($openBotChat.get())
+        )
+      }
+
       const syncRoutinesPane = () => {
         if (botChatOwnsWorkspace()) {
           unregisterRoutines ??= registerRoutinesPane()
@@ -464,6 +473,7 @@ export default {
 
       const stopSidebarSync = $sidebarVisible.listen(visible => {
         $botsPaneVisible.set(Boolean(visible))
+        syncBotModePresentation()
 
         if (visible) {
           const group = $groupChatWorkspace.get()
@@ -502,7 +512,12 @@ export default {
         syncRoutinesPane()
       })
 
-      const stopGroupSync = $groupChatWorkspace.listen(syncRoutinesPane)
+      const stopGroupSync = $groupChatWorkspace.listen(() => {
+        syncBotModePresentation()
+        syncRoutinesPane()
+      })
+
+      const stopOpenBotSync = $openBotChat.listen(syncBotModePresentation)
 
       // React on the NEXT tick — a layout notification arrives mid-mutation,
       // and registering/unregistering panes from inside it would re-enter the
@@ -525,6 +540,7 @@ export default {
           ? focusStore.listen(id => {
               $botChatFocused.set(Boolean(id))
               releaseStaleOpenBotChat(id)
+              syncBotModePresentation()
               syncRoutinesPane()
             })
           : null
@@ -591,6 +607,7 @@ export default {
 
       $botsPaneVisible.set(Boolean($sidebarVisible.get()))
       $botChatFocused.set(sessionOwnsWorkspace())
+      syncBotModePresentation()
       // A persisted layout can boot directly into Bot Mode. Reconcile now,
       // then once more after the layout mutation finishes.
       syncRoutinesPane()
@@ -602,8 +619,10 @@ export default {
         ctx.onDispose(() => {
           stopSidebarSync()
           stopGroupSync()
+          stopOpenBotSync()
           stopFocusSync?.()
           stopReclaimSync?.()
+          document.documentElement.removeAttribute('data-hermes-bot-mode')
         })
       }
     } else {

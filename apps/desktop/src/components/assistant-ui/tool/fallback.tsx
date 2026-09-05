@@ -552,6 +552,7 @@ function ToolEntry({ part }: ToolEntryProps) {
       data-slot="tool-block"
       data-tool-open={open ? '' : undefined}
       data-tool-row=""
+      data-tool-view={toolViewMode}
       ref={enterRef}
     >
       <div className={cn(open && 'border-b border-(--ui-stroke-tertiary) px-2 py-1.5')}>

@@ -154,6 +154,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   mocks.botChatOwnsWorkspace.mockReturnValue(false)
   mocks.sessionOwnsWorkspace.mockReturnValue(false)
+  globalThis.document.documentElement.removeAttribute('data-hermes-bot-mode')
 })
 
 afterEach(() => {
@@ -171,10 +172,29 @@ describe('the Bots pane dock', () => {
     const data = harness.find('pane')!.data!
 
     expect(data.dock).toEqual({ enforce: true, pane: 'sessions', pos: 'center' })
+    expect(data.width).toBe('280px')
     // A 'bottom' split was the old workaround for the lone-pane auto-hide trap.
     expect((data.dock as { pos: string }).pos).not.toBe('bottom')
     // No heal token: the invariant runs at every adoption, unconditionally.
     expect(data).not.toHaveProperty('heal')
+
+    harness.dispose()
+  })
+
+  it('keeps the Bot Mode presentation while a collapsed narrow layout still shows a group chat', async () => {
+    const store = paneStores()
+    const harness = recordingContext()
+    const { $groupChatWorkspace } = await import('./group-chat')
+
+    plugin.register(harness.ctx)
+    store(`hermes-bots:pane`).set(true)
+    $groupChatWorkspace.set('Coder, Hermes, Volt')
+    store(`hermes-bots:pane`).set(false)
+
+    expect(globalThis.document.documentElement.hasAttribute('data-hermes-bot-mode')).toBe(true)
+
+    $groupChatWorkspace.set(null)
+    expect(globalThis.document.documentElement.hasAttribute('data-hermes-bot-mode')).toBe(false)
 
     harness.dispose()
   })

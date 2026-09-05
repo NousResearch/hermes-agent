@@ -2727,8 +2727,28 @@ def _save_compose_deliver(
         # Cron silence suppression — see _is_cron_silence_response. Replaces the old `SILENT_MARKER in
         # ...upper()` substring check, which both leaked bracketless near-markers ("SILENT" / "NO_REPLY")
         # and wrongly swallowed a real report that merely quoted "[SILENT]" mid-sentence (#51438, #46917).
-        logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-        d.should_deliver = False
+        # A configured fallback (job-level `silent_fallback` or global `cron.silent_fallback`)
+        # is delivered instead so every scheduled job keeps a visible result.
+        try:
+            silent_cfg = load_config() or {}
+        except Exception:
+            silent_cfg = {}
+        cron_cfg = silent_cfg.get("cron") if isinstance(silent_cfg, dict) else None
+        global_silent_fallback = (
+            cron_cfg.get("silent_fallback") if isinstance(cron_cfg, dict) else None
+        )
+        silent_fallback = str(
+            job.get("silent_fallback") or global_silent_fallback or ""
+        ).strip()
+        if silent_fallback:
+            logger.info(
+                "Job '%s': agent returned %s — delivering configured fallback",
+                job["id"], SILENT_MARKER,
+            )
+            deliver_content = silent_fallback
+        else:
+            logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+            d.should_deliver = False
 
     if d.should_deliver and fence.lost():
         d.should_deliver = False

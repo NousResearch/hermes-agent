@@ -215,7 +215,7 @@ class SessionCompressionMixin:
             parent = conn.execute(
                 """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
                           user_id, session_key, chat_id, chat_type,
-                          thread_id, display_name, origin_json, profile_name
+                          thread_id, display_name, origin_json, profile_name, model_config
                    FROM sessions WHERE id = ?""",
                 (parent_session_id,),
             ).fetchone()
@@ -233,9 +233,19 @@ class SessionCompressionMixin:
                     (parent_session_id,))
             if not messages:
                 raise RuntimeError("Compression child handoff must not be empty")
+            # Runtime steering admissions are newer than the agent's initial
+            # model config. Carry their current durable state in this transaction
+            # so rotation cannot lose a rejected correction or replay an accepted
+            # one. Do not copy unrelated dynamic settings into the child.
+            from hermes_state_sessions import _parse_model_config
+            parent_config = _parse_model_config(parent["model_config"])
+            child_model_config = model_config
+            if "_astra_steering" in parent_config:
+                child_model_config = {**(model_config or {}),
+                                      "_astra_steering": parent_config["_astra_steering"]}
             self._publish_child_session_row(
                 conn, parent, parent_session_id=parent_session_id, child_session_id=child_session_id,
-                source=source, model=model, model_config=model_config, system_prompt=system_prompt,
+                source=source, model=model, model_config=child_model_config, system_prompt=system_prompt,
                 cwd=cwd, profile_name=profile_name)
             total_messages, total_tool_calls = self._insert_message_rows(conn, child_session_id, messages)
             if watermark is not None:

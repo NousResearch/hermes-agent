@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -62,6 +63,13 @@ def _reset_retry_state_after_compaction(agent: Any) -> None:
     agent._last_content_with_tools = None
     agent._last_content_tools_all_housekeeping = False
     agent._mute_post_response = False
+
+
+def _reset_astra_segment_after_compaction(agent: Any) -> None:
+    """Start a fresh Astra cache-compatible effort segment after a committed rewrite."""
+    from agent.turn_iteration_prep import _reset_astra_segment
+
+    _reset_astra_segment(agent)
 
 
 def _blocked_compress_reason(
@@ -135,6 +143,16 @@ def run_turn_start_compaction(
         messages=messages, active_system_prompt=active_system_prompt,
         conversation_history=conversation_history, current_turn_user_idx=current_turn_user_idx,
     )
+    # A resumed agent has no in-memory checkpoint until its durable carrier is read.  Hydrate
+    # it before the preflight duplicate-boundary check so restart cannot issue maintenance twice.
+    with suppress(Exception):
+        from agent.native_compaction import (
+            is_astra_native_compaction_eligible, refresh_astra_compaction_boundary,
+            restore_astra_compaction_state,
+        )
+        if is_astra_native_compaction_eligible(agent):
+            restore_astra_compaction_state(agent, messages)
+            refresh_astra_compaction_boundary(agent, messages)
     _idle_compaction(agent, out, system_message, user_message, effective_task_id)
     _preflight_compression(agent, out, system_message, user_message, effective_task_id)
     return out
@@ -202,6 +220,7 @@ def _idle_compaction(
     # ``_compress_context`` returns the INPUT list object when it skips; only
     # re-baseline and re-anchor after a real compaction.
     if out.messages is not messages:
+        _reset_astra_segment_after_compaction(agent)
         out.conversation_history = conversation_history_after_compression(
             agent, out.messages, out.conversation_history
         )
@@ -219,6 +238,65 @@ def _codex_native_auto_compaction(agent: Any) -> bool:
         ).lower()
         in {"native", "off"}
     )
+
+
+def _run_astra_explicit_compaction(
+    agent: Any, out: CompactionOutcome, system_message: Optional[str],
+) -> bool:
+    """Compact a completed Astra prefix before the next ordinary user request."""
+    from agent.native_compaction import (
+        astra_compaction_prefix_with_row_ids, is_astra_native_compaction_eligible,
+        persist_astra_compaction_result,
+        request_astra_compaction, resolve_compact_threshold,
+    )
+    from agent import turn_context as _tc
+    if not is_astra_native_compaction_eligible(agent):
+        return False
+    if out.current_turn_user_idx != len(out.messages) - 1:
+        return False
+    current = out.messages[out.current_turn_user_idx]
+    if not isinstance(current, dict) or current.get("role") != "user" or current.get("_length_continuation_nudge"):
+        return False
+    if getattr(agent, "_pending_steer", None):
+        return False
+    executor = getattr(agent, "_astra_async_executor", None)
+    if executor is not None and (
+        getattr(executor, "has_pending", False) or getattr(executor, "has_admitted", False)
+    ):
+        return False
+    prefix = out.messages[:out.current_turn_user_idx]
+    if not any(isinstance(msg, dict) and msg.get("role") == "assistant" for msg in prefix):
+        return False
+    compressor = getattr(agent, "context_compressor", None)
+    threshold = resolve_compact_threshold(
+        getattr(agent, "codex_responses_compact_threshold", None),
+        getattr(compressor, "threshold_tokens", None),
+    )
+    if _tc._preflight_request_tokens(agent, out.messages, out.active_system_prompt or "") < threshold:
+        return False
+    prior = getattr(agent, "_astra_native_compaction", None)
+    prior_boundary = prior.get("covered_boundary") if isinstance(prior, dict) else None
+    if isinstance(prior_boundary, dict) and prior_boundary.get("message_count") == len(prefix):
+        return False
+    from agent.conversation_compression import CompressionCommitFence
+    fence = getattr(agent, "_active_compression_commit_fence", None)
+    if not isinstance(fence, CompressionCommitFence):
+        fence = CompressionCommitFence()
+    native_prefix = astra_compaction_prefix_with_row_ids(agent, prefix)
+    if not native_prefix:
+        return False
+    result = request_astra_compaction(
+        agent, native_prefix, system_message=system_message or out.active_system_prompt or "",
+        tools=getattr(agent, "tools", None), commit_fence=fence,
+    )
+    if result is None:
+        return False
+    if not persist_astra_compaction_result(agent, native_prefix, result, commit_fence=fence):
+        return False
+    _clear_overflow_warn(agent)
+    _reset_astra_segment_after_compaction(agent)
+    logger.info("Astra explicit compaction committed at %s messages", len(prefix))
+    return True
 
 
 def _preflight_compression(
@@ -244,6 +322,10 @@ def _preflight_compression(
     _preflight_tokens = _tc._preflight_request_tokens(
         agent, out.messages, out.active_system_prompt or ""
     )
+    # Astra's explicit trigger is the only native mode for this model family. A
+    # failed maintenance request falls through to Hermes' safe local compressor.
+    if _run_astra_explicit_compaction(agent, out, system_message):
+        return
     # getattr guard: compressor doubles and plugin engines lack this method — absence
     # means no snapshot and the finalizer's rollback stays disarmed.
     _snapshot_fn = getattr(_compressor, "snapshot_preflight_display_tokens", None)
@@ -368,6 +450,7 @@ def _run_preflight_passes(
     if _preflight_status:
         agent._emit_status(_preflight_status)
     _max_preflight_passes = max(1, int(getattr(agent, "max_compression_attempts", 3) or 3))
+    _astra_segment_reset = False
     for _pass in range(_max_preflight_passes):
         _preflight_input = out.messages
         _orig_len = len(_preflight_input)
@@ -400,6 +483,9 @@ def _run_preflight_passes(
             _tc._fail_closed_after_preflight_timeout(agent, _preflight_tokens)
             out.blocked = True
             break  # Cannot compress further: neither rows nor tokens moved
+        if not _astra_segment_reset:
+            _reset_astra_segment_after_compaction(agent)
+            _astra_segment_reset = True
         out.conversation_history = conversation_history_after_compression(
             agent, out.messages, out.conversation_history
         )
@@ -454,6 +540,7 @@ def _engine_preflight_maintenance(
     # may no-op; re-baseline/re-anchor only after a REAL compaction.
     if out.messages is not _engine_input:
         out.compressed = True
+        _reset_astra_segment_after_compaction(agent)
         out.conversation_history = conversation_history_after_compression(
             agent, out.messages
         )

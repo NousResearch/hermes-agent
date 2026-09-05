@@ -49,6 +49,32 @@ class TestSteerAcceptance:
         assert agent.steer("go ahead and check the logs") is True
         assert agent._pending_steer == "go ahead and check the logs"
 
+    def test_direct_astra_uses_live_websocket_session(self):
+        agent = _bare_agent()
+        agent.api_mode = "codex_responses"
+        calls = []
+        agent._astra_websocket_session = type(
+            "_AstraSession", (), {"request_steer": lambda self, text: calls.append(text) or True},
+        )()
+
+        assert agent.steer("use the second plan") is True
+        assert calls == ["use the second plan"]
+        assert agent._pending_steer is None
+
+    def test_direct_astra_uncertain_redirect_is_handled_without_interrupt_fallback(self):
+        agent = _bare_agent()
+        agent.api_mode = "codex_responses"
+        agent._astra_websocket_session = type(
+            "_AstraSession", (), {
+                "delivery_uncertain": True,
+                "request_steer": lambda self, text: (_ for _ in ()).throw(ConnectionError("ambiguous")),
+            },
+        )()
+
+        assert agent.redirect("do not duplicate") is True
+        assert agent._interrupt_requested is False
+        assert agent._pending_steer is None
+
 
 
 

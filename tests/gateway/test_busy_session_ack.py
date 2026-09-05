@@ -226,6 +226,28 @@ class TestBusySessionAck:
         assert "Interrupting" not in content
 
     @pytest.mark.asyncio
+    async def test_uncertain_astra_redirect_is_handled_without_interrupt_or_requeue(self):
+        """A native redirect that owns an ambiguous send must stop the busy fallback path."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+        event = _make_event(text="do not send this twice")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent._supports_active_turn_redirect = True
+        agent.redirect.return_value = True
+        runner._running_agents[sk] = agent
+
+        with patch("gateway.platforms.base.merge_pending_message_event") as mock_merge:
+            await runner._handle_active_session_busy_message(event, sk)
+
+        agent.redirect.assert_called_once_with("do not send this twice")
+        agent.interrupt.assert_not_called()
+        mock_merge.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_steer_mode_transcribes_voice_before_injection(self, monkeypatch):
         """A busy voice follow-up is transcribed and steered, never queued."""
         import gateway.run as _gr

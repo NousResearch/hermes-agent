@@ -572,6 +572,36 @@ class GatewaySessionCommandsMixin:
             compressor = tmp_agent.context_compressor
             if not compressor.has_content_to_compress(head):
                 return t("gateway.compress.nothing_to_do")
+            # Direct Astra uses an explicit HTTP trigger over a completed prefix. The
+            # canonical provider window is sidecar-persisted before the gateway updates
+            # its session bookkeeping; failures fall through to local compression.
+            native_result = None
+            if (
+                not partial
+                and head
+                and isinstance(head[-1], dict)
+                and head[-1].get("role") == "assistant"
+            ):
+                from agent.native_compaction import (
+                    astra_compaction_prefix_with_row_ids, is_astra_native_compaction_eligible,
+                    persist_astra_compaction_result, request_astra_compaction,
+                )
+                if is_astra_native_compaction_eligible(tmp_agent):
+                    native_head = astra_compaction_prefix_with_row_ids(tmp_agent, head)
+                    from agent.conversation_compression import CompressionCommitFence
+                    native_fence = CompressionCommitFence()
+                    native_result = await self._run_in_executor_with_context(
+                        lambda: request_astra_compaction(
+                            tmp_agent, native_head, system_message=_sys_prompt, tools=_tools,
+                            commit_fence=native_fence))
+                    if native_result is not None:
+                        if not persist_astra_compaction_result(
+                            tmp_agent, native_head, native_result, commit_fence=native_fence
+                        ):
+                            native_result = None
+            if native_result is not None:
+                await self.async_session_store.update_session(session_entry, last_prompt_tokens=0)
+                return "✅ Astra native context compaction completed."
             # Not a bare run_in_executor: the profile secret scope is a contextvar the default
             # executor hop would drop, failing aux-client credential resolution closed.
             compressed, _ = await self._run_in_executor_with_context(
@@ -585,7 +615,13 @@ class GatewaySessionCommandsMixin:
                 return describe_compression_lock_skip(_lock_skipped)
             if partial and tail:
                 compressed = rejoin_compressed_head_and_tail(compressed, tail)
+            committed_rewrite = (
+                tmp_agent.session_id != session_entry.session_id
+                or bool(getattr(tmp_agent, "_last_compaction_in_place", False))
+            )
             await self._persist_manual_compression(tmp_agent, session_entry, source, compressed)
+            if committed_rewrite:
+                self._arm_astra_segment_reset(session_key)
             finalize_context_engine_compression_notification(tmp_agent, committed=True)
             new_tokens = estimate_request_tokens_rough(compressed, system_prompt=_sys_prompt, tools=_tools)
             summary = summarize_manual_compression(msgs, compressed, approx_tokens, new_tokens,

@@ -1,16 +1,22 @@
-"""Native OpenAI Responses server-side compaction — gpt-5.6 on direct OpenAI routes only.
+"""Native OpenAI Responses server-side compaction for direct OpenAI routes.
 
 ``context_management=[{"type": "compaction", "compact_threshold": N}]`` makes the server
 summarize older context into an opaque ``compaction`` item once the input crosses N tokens.
-Deliberately narrow (live-verified): gpt-5.6 only (5.1/5.2 fail server-side with no
-structured rejection) on api.openai.com or the ChatGPT Codex backend. The local compressor
-stays armed as fallback (native threshold clamped below the local trigger); compaction items
-ride the ``codex_reasoning_items`` sidecar. No transport imports (shared gate, no cycles).
+Automatic ``context_management`` remains limited to the gpt-5.6 family. Direct API-key
+GPT-6 Astra instead uses an explicit final ``compaction_trigger`` maintenance item,
+persisting the returned canonical window before replay. The local compressor stays armed
+as fallback. Transport imports are lazy to keep the shared gate cycle-free.
 """
 
 from __future__ import annotations
 
 import logging
+import copy
+import hashlib
+import json
+import time
+from contextlib import suppress
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
@@ -26,10 +32,21 @@ DEFAULT_COMPACT_THRESHOLD = 200_000
 # Substring match so dated snapshots and variants (gpt-5.6-mini) stay eligible.
 _ELIGIBLE_MODEL_MARKER = "gpt-5.6"
 
+# Durable sidecar key for the explicit Astra path.  The transcript itself remains
+# complete; this is only the provider's canonical wire window and its exact
+# boundary, so a restart can replay it without re-running compaction.
+ASTRA_COMPACTION_METADATA_KEY = "astra_native_compaction"
+ASTRA_COMPACTION_VERSION = 1
+
 
 def is_native_compaction_model(model: Optional[str]) -> bool:
     """True when the model is in the gpt-5.6 family."""
     return _ELIGIBLE_MODEL_MARKER in (model or "").lower()
+
+
+def _is_astra_model(model: Any) -> bool:
+    """Match only the explicit Astra model, including provider-qualified names."""
+    return str(model or "").strip().lower().rsplit("/", 1)[-1] == "gpt-6-astra"
 
 
 def resolve_native_compaction_capabilities(
@@ -118,6 +135,15 @@ def native_compaction_context_management(agent: Any, *, is_codex_backend: bool, 
         return None
     if is_xai_responses or is_github_responses or not is_native_compaction_model(getattr(agent, "model", None)):
         return None
+    # Astra configuration updates invalidate the automatic context-management
+    # contract.  Its explicit maintenance request is scheduled at a completed
+    # turn boundary instead; never put both mechanisms on one request.
+    if (
+        _is_astra_model(getattr(agent, "model", None))
+        and is_direct_openai_route(getattr(agent, "base_url", None))
+        and not is_codex_backend
+    ):
+        return None
     trusted_proxy = bool(getattr(agent, "capabilities", {}).get("openai_native_compaction", False))
     if not trusted_proxy and not is_direct_openai_route(getattr(agent, "base_url", None), is_codex_backend=is_codex_backend):
         return None
@@ -126,6 +152,364 @@ def native_compaction_context_management(agent: Any, *, is_codex_backend: bool, 
     local_trigger = getattr(compressor, "threshold_tokens", None) if compressor is not None else None
     threshold = resolve_compact_threshold(getattr(agent, "codex_responses_compact_threshold", None), local_trigger)
     return [{"type": "compaction", "compact_threshold": threshold}]
+
+
+def _is_direct_astra_agent(agent: Any, *, is_codex_backend: bool = False) -> bool:
+    """Exact direct API-key Astra route (no OAuth, proxy, relay, or delegation)."""
+    from agent.transports.codex import is_astra_reasoning_cache_eligible
+
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    if provider not in {"", "openai", "openai-api"}:
+        return False
+    return is_astra_reasoning_cache_eligible(
+        getattr(agent, "model", None), getattr(agent, "base_url", None),
+        api_mode=getattr(agent, "api_mode", None), api_key=getattr(agent, "api_key", None),
+        auth_mode=getattr(agent, "auth_mode", "api_key"), provider=getattr(agent, "provider", None),
+        is_subagent=getattr(agent, "is_subagent", False), platform=getattr(agent, "platform", None),
+        delegate_depth=getattr(agent, "_delegate_depth", 0),
+        compression_checkpoint_required=getattr(agent, "compression_checkpoint_required", False),
+    ) and not is_codex_backend
+
+
+def is_astra_native_compaction_eligible(agent: Any) -> bool:
+    """Whether the explicit maintenance path may issue a request for *agent*."""
+    return bool(
+        _is_direct_astra_agent(agent)
+        and getattr(agent, "codex_responses_native_compaction", False)
+        and getattr(agent, "compression_enabled", True)
+        and not getattr(agent, "_astra_native_compaction_disabled", False)
+    )
+
+
+def _field(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _json_value(value: Any) -> Any:
+    """Convert an SDK response item without dropping opaque provider fields."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _json_value(v) for k, v in value.items()}
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        try:
+            return _json_value(dump(mode="json", warnings=False))
+        except TypeError:
+            return _json_value(dump())
+        except Exception:
+            return None
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    values = getattr(value, "__dict__", None)
+    return _json_value(values) if isinstance(values, dict) else None
+
+
+def astra_compaction_content_digest(messages: Any) -> Optional[str]:
+    """Hash the covered chat prefix while ignoring local-only sidecar fields.
+
+    Steering is intentionally injected into an existing tool result. A persisted
+    canonical window must therefore be bypassed if that covered result changed after
+    maintenance, including after a restart. Returning ``None`` fails open to the
+    ordinary full-transcript serializer when a fixture contains a non-JSON value.
+    """
+    if not isinstance(messages, list) or not all(isinstance(item, dict) for item in messages):
+        return None
+    comparable = []
+    for message in messages:
+        content = message.get("api_content")
+        if isinstance(content, str) and content:
+            message = {**message, "content": content}
+        comparable.append({
+            key: _json_value(value)
+            for key, value in message.items()
+            if key not in {"_row_id", "api_content", "display_kind", "display_metadata"}
+        })
+    try:
+        encoded = json.dumps(comparable, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    except (TypeError, ValueError):
+        return None
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _valid_astra_window(window: Any) -> bool:
+    """Validate the minimum canonical output needed for durable replay."""
+    if not isinstance(window, list) or not window or not all(isinstance(item, dict) for item in window):
+        return False
+    checkpoints = [item for item in window if item.get("type") == "compaction"]
+    return bool(checkpoints) and all(
+        isinstance(item.get("encrypted_content"), str) and bool(item["encrypted_content"].strip())
+        for item in checkpoints
+    )
+
+
+@dataclass(frozen=True)
+class AstraCompactionResult:
+    """Provider canonical window staged before durable activation."""
+
+    window: List[Dict[str, Any]]
+    covered_boundary: Dict[str, Any]
+    route: str = "direct_openai"
+
+
+def astra_compaction_boundary(messages: Any) -> Dict[str, Any]:
+    """Return a stable, non-content boundary marker for the completed prefix."""
+    prefix = messages if isinstance(messages, list) else []
+    last = prefix[-1] if prefix else {}
+    row_id = last.get("_row_id") if isinstance(last, dict) else None
+    return {
+        "message_count": len(prefix),
+        "last_row_id": row_id if isinstance(row_id, int) and not isinstance(row_id, bool) else None,
+        "last_role": last.get("role") if isinstance(last, dict) else None,
+    }
+
+
+def astra_compaction_prefix_with_row_ids(agent: Any, messages: Any) -> List[Dict[str, Any]]:
+    """Attach durable row ids to a completed prefix without content-based fallback.
+
+    Normal turn history intentionally omits row ids from its wire-facing copy.  Resolve
+    them from the same ordered durable transcript, and reject any positional mismatch so
+    duplicate user text or a concurrent append cannot move a checkpoint carrier.
+    """
+    prefix = messages if isinstance(messages, list) else []
+    if not prefix or not all(isinstance(item, dict) for item in prefix):
+        return []
+    if all(isinstance(item.get("_row_id"), int) and not isinstance(item.get("_row_id"), bool) for item in prefix):
+        return [dict(item) for item in prefix]
+    db = getattr(agent, "_session_db", None) or getattr(agent, "session_db", None)
+    loader = getattr(db, "get_messages_as_conversation", None) if db is not None else None
+    if not callable(loader):
+        return []
+    try:
+        durable = loader(getattr(agent, "session_id", None), include_row_ids=True)
+    except Exception:
+        logger.warning("Astra compaction durable boundary lookup failed", exc_info=True)
+        return []
+    if not isinstance(durable, list) or len(durable) < len(prefix):
+        return []
+    resolved: List[Dict[str, Any]] = []
+    for source, stored in zip(prefix, durable):
+        row_id = stored.get("_row_id") if isinstance(stored, dict) else None
+        if (
+            not isinstance(stored, dict)
+            or not isinstance(row_id, int)
+            or isinstance(row_id, bool)
+            or source.get("role") != stored.get("role")
+            or source.get("content") != stored.get("content")
+        ):
+            return []
+        resolved.append({**source, "_row_id": row_id})
+    return resolved
+
+
+def _maintenance_kwargs(agent: Any, messages: List[Dict[str, Any]], system_message: str, tools: Any) -> dict:
+    """Build the explicit trigger request using the normal Responses serializer."""
+    from agent.transports.codex import ResponsesApiTransport
+    transport = ResponsesApiTransport()
+    reasoning_config = getattr(agent, "reasoning_config", None)
+    if not isinstance(reasoning_config, dict):
+        reasoning_config = {"effort": getattr(agent, "_astra_effective_effort", None)
+                            or getattr(agent, "_astra_base_effort", None) or "low"}
+    kwargs = transport.build_kwargs(
+        model=getattr(agent, "model", "gpt-6-astra"), messages=messages, tools=tools,
+        reasoning_config=reasoning_config,
+        instructions=system_message or "", session_id=getattr(agent, "session_id", None),
+        cache_scope_id=getattr(agent, "_prompt_cache_scope_id", None),
+        base_url=getattr(agent, "base_url", None), api_key=getattr(agent, "api_key", None),
+        auth_mode=getattr(agent, "auth_mode", "api_key"), provider=getattr(agent, "provider", None),
+        api_mode=getattr(agent, "api_mode", "codex_responses"),
+        is_subagent=getattr(agent, "is_subagent", False), platform=getattr(agent, "platform", None),
+        delegate_depth=getattr(agent, "_delegate_depth", 0),
+        compression_checkpoint_required=False, astra_state=getattr(agent, "_astra_reasoning_state", {}),
+        replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
+        context_management=None, astra_configuration_updates=True,
+    )
+    kwargs["input"] = list(kwargs.get("input") or []) + [{"type": "compaction_trigger"}]
+    # Tool schemas stay available to the model's context, but the invisible
+    # maintenance response can never dispatch a tool call.
+    if kwargs.get("tools"):
+        kwargs["tool_choice"] = "none"
+        kwargs["parallel_tool_calls"] = False
+    kwargs.pop("context_management", None)
+    return transport.preflight_kwargs(kwargs, allow_stream=False)
+
+
+def _record_astra_maintenance_usage(agent: Any, response: Any, messages: List[Dict[str, Any]], duration: float) -> None:
+    """Fold invisible maintenance usage once through the normal accounting path."""
+    if not hasattr(agent, "session_api_calls") or not getattr(response, "usage", None):
+        return
+    try:
+        from agent.turn_usage import record_response_usage
+        record_response_usage(
+            agent, response, messages=messages, api_call_count=max(1, int(getattr(agent, "_api_call_count", 0) or 0)),
+            api_duration=duration, compression_attempts=0,
+            max_compression_attempts=int(getattr(agent, "max_compression_attempts", 3) or 3),
+        )
+    except Exception:
+        logger.debug("Astra maintenance usage accounting failed", exc_info=True)
+
+
+def request_astra_compaction(
+    agent: Any, messages: List[Dict[str, Any]], *, system_message: str = "", tools: Any = None,
+    commit_fence: Any = None,
+) -> Optional[AstraCompactionResult]:
+    """Issue one direct HTTP maintenance request and stage its canonical output.
+
+    This function never mutates transcript or executes output tools.  Callers must
+    persist the returned result and activate it only after that write succeeds.
+    """
+    if not is_astra_native_compaction_eligible(agent) or not isinstance(messages, list) or not messages:
+        return None
+    if commit_fence is not None and commit_fence.is_cancelled:
+        return None
+    request = _maintenance_kwargs(agent, messages, system_message, tools)
+    client = None
+    started = time.monotonic()
+    try:
+        create = getattr(agent, "_create_request_openai_client", None)
+        client = create(reason="astra_compaction_maintenance", api_kwargs=request) if callable(create) \
+            else agent._ensure_primary_openai_client(reason="astra_compaction_maintenance")
+        from agent.codex_runtime import _bypass_sdk_request_transform
+        response = client.responses.create(**_bypass_sdk_request_transform(request))
+        status = str(_field(response, "status", "") or "").strip().lower()
+        raw_output = _field(response, "output")
+        output = _json_value(raw_output)
+        if status and status != "completed":
+            raise RuntimeError(f"Astra compaction response incomplete: {status}")
+        if not _valid_astra_window(output):
+            raise RuntimeError("Astra compaction response did not return a compaction checkpoint")
+        _record_astra_maintenance_usage(agent, response, messages, time.monotonic() - started)
+        if commit_fence is not None and commit_fence.is_cancelled:
+            return None
+        return AstraCompactionResult(
+            window=copy.deepcopy(output), covered_boundary=astra_compaction_boundary(messages),
+        )
+    except Exception as exc:
+        status_code = _field(exc, "status_code")
+        if is_native_compaction_rejection(str(exc), status_code=status_code):
+            agent._astra_native_compaction_disabled = True
+        logger.warning("Astra explicit compaction maintenance failed (%s)", type(exc).__name__)
+        return None
+    finally:
+        close = getattr(agent, "_close_request_openai_client", None)
+        if client is not None and callable(close):
+            with suppress(Exception):
+                close(client, reason="request_complete")
+
+
+def persist_astra_compaction_result(
+    agent: Any, messages: List[Dict[str, Any]], result: AstraCompactionResult, *, commit_fence: Any = None,
+) -> bool:
+    """Persist then activate the canonical window behind the compression fence."""
+    if (
+        not isinstance(result, AstraCompactionResult)
+        or result.route != "direct_openai"
+        or not _valid_astra_window(result.window)
+        or not isinstance(result.covered_boundary, dict)
+        or not isinstance(result.covered_boundary.get("message_count"), int)
+        or isinstance(result.covered_boundary.get("message_count"), bool)
+        or result.covered_boundary["message_count"] < 0
+        or result.covered_boundary != astra_compaction_boundary(messages)
+    ):
+        return False
+    db = getattr(agent, "_session_db", None)
+    if db is None:
+        db = getattr(agent, "session_db", None)
+    if db is None:
+        return False
+    prefix = messages if isinstance(messages, list) else []
+    carrier = next((msg for msg in reversed(prefix) if isinstance(msg, dict) and msg.get("role") == "assistant"), None)
+    row_id = carrier.get("_row_id") if carrier else None
+    if not isinstance(row_id, int) or isinstance(row_id, bool):
+        return False
+    metadata = {
+        "version": ASTRA_COMPACTION_VERSION, "window": copy.deepcopy(result.window),
+        "covered_boundary": dict(result.covered_boundary), "route": result.route,
+    }
+    covered_digest = astra_compaction_content_digest(prefix)
+    if not covered_digest:
+        return False
+    metadata["covered_boundary"]["covered_digest"] = covered_digest
+    merge = getattr(db, "merge_message_display_metadata", None)
+    if not callable(merge):
+        return False
+    admitted = False
+    if commit_fence is not None:
+        admitted = bool(commit_fence.begin_commit(getattr(agent, "_hard_interrupt_requested", None)))
+        if not admitted:
+            return False
+    try:
+        try:
+            merged = merge(getattr(agent, "session_id", None), row_id, {ASTRA_COMPACTION_METADATA_KEY: metadata})
+        except Exception:
+            logger.warning("Astra explicit compaction checkpoint persistence failed", exc_info=True)
+            return False
+        if merged != 1:
+            return False
+        state = dict(metadata)
+        state["row_id"] = row_id
+        agent._astra_native_compaction = state
+        agent._astra_native_compaction_boundary = dict(result.covered_boundary)
+        return True
+    finally:
+        if admitted:
+            commit_fence.finish_commit()
+
+
+def restore_astra_compaction_state(agent: Any, messages: Any) -> Optional[dict]:
+    """Restore a validated canonical window from durable message metadata."""
+    if not isinstance(messages, list):
+        return None
+    for message in reversed(messages):
+        metadata = message.get("display_metadata") if isinstance(message, dict) else None
+        state = metadata.get(ASTRA_COMPACTION_METADATA_KEY) if isinstance(metadata, dict) else None
+        if (
+            not isinstance(state, dict)
+            or state.get("version") != ASTRA_COMPACTION_VERSION
+            or state.get("route") != "direct_openai"
+            or not _valid_astra_window(state.get("window"))
+        ):
+            continue
+        boundary = state.get("covered_boundary")
+        if (
+            not isinstance(boundary, dict)
+            or not isinstance(boundary.get("message_count"), int)
+            or isinstance(boundary.get("message_count"), bool)
+            or boundary["message_count"] < 0
+            or boundary.get("last_role") != "assistant"
+            or (
+                boundary.get("last_row_id") is not None
+                and (
+                    not isinstance(boundary.get("last_row_id"), int)
+                    or isinstance(boundary.get("last_row_id"), bool)
+                )
+            )
+        ):
+            continue
+        restored = copy.deepcopy(state)
+        agent._astra_native_compaction = restored
+        return restored
+    return None
+
+
+def refresh_astra_compaction_boundary(agent: Any, messages: Any) -> Optional[dict]:
+    """Resolve the durable row boundary to this in-memory transcript's count."""
+    state = getattr(agent, "_astra_native_compaction", None)
+    if not isinstance(state, dict):
+        state = restore_astra_compaction_state(agent, messages)
+    if not isinstance(state, dict):
+        return None
+    boundary = state.get("covered_boundary") or {}
+    row_id = boundary.get("last_row_id")
+    if isinstance(row_id, int):
+        for index, message in enumerate(messages or []):
+            if isinstance(message, dict) and message.get("_row_id") == row_id:
+                boundary = dict(boundary, message_count=index + 1)
+                state["covered_boundary"] = boundary
+                return state
+    return state
 
 
 # Retention budgets for plaintext user messages / local summaries carried across a native
@@ -315,7 +699,11 @@ def is_native_compaction_rejection(error: Any, status_code: Any = None) -> bool:
     language does not match.
     """
     text = str(error or "").lower()
-    if "context_management" not in text and "compact_threshold" not in text:
+    if (
+        "context_management" not in text
+        and "compact_threshold" not in text
+        and "compaction_trigger" not in text
+    ):
         return False
     try:
         if status_code is not None and int(status_code) != 400:

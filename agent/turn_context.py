@@ -930,6 +930,9 @@ def build_api_messages(
     replayed verbatim."""
     from agent.agent_runtime_helpers import fill_empty_non_final_wire_payload
     from agent.conversation_loop import _clone_message_for_send
+    with suppress(Exception):
+        from agent.native_compaction import refresh_astra_compaction_boundary
+        refresh_astra_compaction_boundary(agent, messages)
 
     api_messages = []
     for idx, msg in enumerate(messages):

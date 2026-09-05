@@ -1412,8 +1412,31 @@ def _build_bedrock_kwargs(agent, api_messages, tools_for_api):
 
 def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
     from agent.codex_responses_adapter import classify_responses_route
-    from agent.native_compaction import native_compaction_context_management
+    from agent.transports.codex import is_astra_reasoning_cache_eligible
+    from agent.native_compaction import (
+        is_astra_native_compaction_eligible, native_compaction_context_management,
+    )
+    from agent.astra_async_tools import is_direct_astra
+    from agent.turn_api_call import _should_stream
     is_codex_backend, is_xai_responses, is_github_responses = classify_responses_route(agent)
+    astra_compaction_enabled = is_astra_native_compaction_eligible(agent)
+    astra_compaction_state = (
+        getattr(agent, "_astra_native_compaction", None)
+        if astra_compaction_enabled else None
+    )
+    astra_state = getattr(agent, "_astra_reasoning_state", None)
+    if not isinstance(astra_state, dict):
+        astra_state = {}
+        agent._astra_reasoning_state = astra_state
+    if not is_astra_reasoning_cache_eligible(
+        getattr(agent, "model", None), getattr(agent, "base_url", None),
+        api_mode=getattr(agent, "api_mode", None), api_key=getattr(agent, "api_key", None),
+        auth_mode=getattr(agent, "auth_mode", "api_key"), provider=getattr(agent, "provider", None),
+        is_subagent=getattr(agent, "is_subagent", False),
+        platform=getattr(agent, "platform", None), delegate_depth=getattr(agent, "_delegate_depth", 0),
+        compression_checkpoint_required=getattr(agent, "compression_checkpoint_required", False),
+    ):
+        astra_state.clear()
     # Native server-side compaction (gpt-5.6 on direct OpenAI / ChatGPT Codex routes
     # only) — None on every other route/model, leaving the request unchanged.
     context_management = native_compaction_context_management(agent, is_codex_backend=is_codex_backend,
@@ -1430,16 +1453,28 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
             tools_for_api, _ = strip_slash_enum(tools_for_api)
         except Exception as exc:
             logger.warning("%s⚠️ Failed to sanitize tool schemas for xAI: %s", getattr(agent, "log_prefix", ""), exc)
-    return agent._get_transport().build_kwargs(model=agent.model,
+    request = agent._get_transport().build_kwargs(model=agent.model,
         messages=agent._prepare_messages_for_non_vision_model(api_messages), tools=tools_for_api,
         reasoning_config=reasoning_config, session_id=getattr(agent, "session_id", None),
         cache_scope_id=cache_scope_id, base_url=agent.base_url, max_tokens=agent.max_tokens,
         timeout=agent._resolved_api_call_timeout(), request_overrides=request_overrides,
+        api_mode=getattr(agent, "api_mode", None), api_key=getattr(agent, "api_key", None),
+        auth_mode=getattr(agent, "auth_mode", "api_key"), is_subagent=getattr(agent, "is_subagent", False),
+        platform=getattr(agent, "platform", None), delegate_depth=getattr(agent, "_delegate_depth", 0),
+        compression_checkpoint_required=getattr(agent, "compression_checkpoint_required", False),
+        astra_state=astra_state,
         provider=getattr(agent, "provider", None), is_github_responses=is_github_responses,
         is_codex_backend=is_codex_backend, is_xai_responses=is_xai_responses,
         github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
         replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
-        context_management=context_management)
+        context_management=context_management,
+        astra_compaction_state=astra_compaction_state,
+        astra_compaction_enabled=astra_compaction_enabled,
+        midstream_executor_active=bool(_should_stream(agent) and is_direct_astra(agent)))
+    if astra_state:
+        agent._astra_base_effort = astra_state.get("base_effort")
+        agent._astra_effective_effort = astra_state.get("effective_effort")
+    return request
 
 
 def _anthropic_max_output_for_model(agent):
@@ -1631,6 +1666,10 @@ def _assistant_tool_call_dict(agent, tool_call, index: int) -> dict:
     tc_dict = {"id": call_id, "call_id": call_id, "response_item_id": response_item_id,
         "type": tool_call.type,
         "function": {"name": tool_call.function.name, "arguments": tool_call.function.arguments}}
+    provider_data = getattr(tool_call, "provider_data", None) or {}
+    if getattr(tool_call, "async", False) is True or getattr(tool_call, "async_", False) is True \
+            or provider_data.get("async") is True:
+        tc_dict["async"] = True
     # Preserve extra_content (Gemini thought_signature) or Gemini 3 thinking
     # models 400 on the next request.
     # Tool-call arguments are intentionally NOT redacted here. This dict enters the in-memory conversation
@@ -2089,6 +2128,14 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         _update_fallback_context_compressor(agent)
         _reresolve_fallback_reasoning_config(agent)
         _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
+        # Fallback is a new issuer/compatible segment. Any Astra-only effort state must
+        # stay with the old route and must not be replayed to the fallback provider.
+        agent._astra_reasoning_state = {}
+        agent._astra_base_effort = None
+        agent._astra_effective_effort = None
+        agent._astra_pending_configuration_update = None
+        agent._astra_segment_base_seed = None
+        agent._astra_force_new_segment = True
         rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
         _buffer_fallback_notice(agent, (

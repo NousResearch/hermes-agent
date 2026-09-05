@@ -31,6 +31,22 @@ logger = logging.getLogger("gateway.run")
 class GatewayBusySessionMixin:
     """Busy-session queueing, slot claims, slash dispatch tables, destructive-slash confirmation."""
 
+    def _should_auto_queue_busy_followup(self, event: MessageEvent) -> bool:
+        """Return whether an ordinary Telegram follow-up should wait for the next turn.
+
+        Telegram users often send multi-part instructions as separate text bubbles
+        or voice notes. Interrupting on each ordinary follow-up aborts in-flight
+        tool and subagent work. Routed profiles deliberately retain their own busy
+        policies, however, so this exception applies only outside multiplexing.
+        """
+        return (
+            getattr(event, "source", None) is not None
+            and event.source.platform == Platform.TELEGRAM
+            and not getattr(event, "internal", False)
+            and not event.get_command()
+            and not getattr(getattr(self, "config", None), "multiplex_profiles", False)
+        )
+
     def _queue_during_drain_enabled(self, busy_input_mode: Optional[str] = None) -> bool:
         # "queue"/"steer" mean messages survive a restart (queued for the new process); "interrupt" drops.
         mode = busy_input_mode or self._busy_input_mode
@@ -531,7 +547,7 @@ class GatewayBusySessionMixin:
     def _compose_busy_ack_message(
         self, event: MessageEvent, now: float, _busy_state, running_agent: Any, *,
         is_steer_mode: bool, is_queue_mode: bool, is_redirect_mode: bool,
-        demoted_for_subagents: bool, demoted_for_compression: bool,
+        demoted_for_subagents: bool, demoted_for_compression: bool, auto_queued_for_platform: bool,
     ) -> str:
         from gateway.run import (
             _AGENT_PENDING_SENTINEL, _hermes_home, _load_gateway_config, _platform_config_key
@@ -572,6 +588,11 @@ class GatewayBusySessionMixin:
             head, tail = "⏳ Subagent working", self._BUSY_DEMOTED_TAIL
         elif is_queue_mode and demoted_for_compression:
             head, tail = "⏳ Compressing context", self._BUSY_DEMOTED_TAIL
+        elif is_queue_mode and auto_queued_for_platform:
+            head, tail = (
+                "⏳ Queued for the next turn",
+                ". I'll respond once the current task finishes. Use /stop to cancel the current task.",
+            )
         elif is_queue_mode:
             head, tail = "⏳ Queued for the next turn", ". I'll respond once the current task finishes."
         else:
@@ -630,10 +651,21 @@ class GatewayBusySessionMixin:
                 return False
             self._queue_or_replace_pending_event(session_key, event)
             return True
+        busy_text_mode = self._effective_busy_text_mode(event.source)
+        auto_queued_for_platform = (
+            effective_mode == "interrupt" and self._should_auto_queue_busy_followup(event)
+        )
+        if auto_queued_for_platform:
+            logger.info(
+                "Demoting Telegram busy follow-up from interrupt to queue for session %s",
+                session_key,
+            )
+            effective_mode = "queue"
         if (
             event.message_type == MessageType.TEXT
-            and self._effective_busy_text_mode(event.source) == "queue"
+            and busy_text_mode == "queue"
             and effective_mode != "steer"
+            and not auto_queued_for_platform
         ):
             return False
 
@@ -684,6 +716,7 @@ class GatewayBusySessionMixin:
             is_queue_mode=is_queue_mode, is_redirect_mode=is_redirect_mode,
             demoted_for_subagents=_steer.demoted_for_subagents,
             demoted_for_compression=_steer.demoted_for_compression,
+            auto_queued_for_platform=auto_queued_for_platform,
         )
         await self._send_busy_ack_reply(event, adapter, message)
         return True

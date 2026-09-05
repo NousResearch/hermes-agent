@@ -16,6 +16,7 @@ with it":
 
 from __future__ import annotations
 
+import os
 import json
 import sys
 import tarfile
@@ -24,10 +25,12 @@ from pathlib import Path
 
 import pytest
 
-# Ensure the worktree (not the stale global clone) is first on sys.path.
-_WORKTREE = Path(__file__).resolve().parents[2]
-if str(_WORKTREE) not in sys.path:
-    sys.path.insert(0, str(_WORKTREE))
+# Skip symlink test on Windows: creating symlinks requires admin privileges
+# (WinError 1314) and is not representative of the actual security logic
+# being tested. The security logic is exercised on POSIX in CI.
+_win32_skip = pytest.mark.skipif(
+    os.name == "nt", reason="symlink creation requires admin on Windows"
+)
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
@@ -318,6 +321,7 @@ def test_traversal_members_are_rejected(member):
         normalize_archive_parts(member)
 
 
+@_win32_skip
 def test_extract_refuses_a_symlink_member(tmp_path):
     payload = tmp_path / "payload"
     payload.mkdir()

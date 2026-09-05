@@ -1,8 +1,8 @@
 name: Apply aux-headers fix
 on:
   push:
-    paths:
-      - '.github/workflows/aux-headers-fix.yml'
+    branches:
+      - temp-aux-chunks
   workflow_dispatch:
 jobs:
   apply:

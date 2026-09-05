@@ -258,7 +258,13 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             context_from=context_from,
             enabled_toolsets=_cron_string_list(body.enabled_toolsets),
             workdir=_cron_optional_text(body.workdir),
-            no_agent=no_agent)
+            no_agent=no_agent,
+            repeat=body.repeat,
+            attach_to_session=body.attach_to_session,
+            monitor_script=_cron_optional_text(body.monitor_script),
+            monitor_url=_cron_optional_text(body.monitor_url),
+            reasoning_effort=_cron_optional_text(body.reasoning_effort),
+            failure_deliver=_cron_optional_text(body.failure_deliver))
     except HTTPException:
         raise
     except Exception as e:

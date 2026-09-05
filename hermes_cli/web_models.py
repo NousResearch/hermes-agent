@@ -294,6 +294,14 @@ class CronJobCreate(BaseModel):
     enabled_toolsets: Optional[List[str]] = None
     workdir: Optional[str] = None
     no_agent: bool = False
+    # Advanced execution settings (Desktop parity with create_job): all optional,
+    # validated by create_job's own normalizers/invariants.
+    repeat: Optional[int] = None
+    attach_to_session: Optional[bool] = None
+    monitor_script: Optional[str] = None
+    monitor_url: Optional[str] = None
+    reasoning_effort: Optional[str] = None
+    failure_deliver: Optional[str] = None
 
 class CronJobUpdate(BaseModel):
     updates: dict

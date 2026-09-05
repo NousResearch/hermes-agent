@@ -2259,6 +2259,50 @@ export const en: Translations = {
       failedLoad: 'Failed to load blueprints',
       emptyTitle: 'No blueprints available',
       emptyDesc: 'No automation blueprints are available on this backend.'
+    },
+    advanced: {
+      toggle: 'Advanced execution settings',
+      repeatLabel: 'Repeat',
+      repeatPlaceholder: 'Empty = forever',
+      repeatInvalid: 'Repeat must be a positive whole number (empty = forever).',
+      skillsLabel: 'Skills',
+      skillsPlaceholder: 'reporter, researcher',
+      workdirLabel: 'Working directory',
+      workdirPlaceholder: '/home/user/project',
+      toolsetsLabel: 'Enabled toolsets',
+      toolsetsPlaceholder: 'web, file',
+      contextFromLabel: 'Context from jobs',
+      contextFromPlaceholder: 'a1b2c3d4e5f6',
+      reasoningLabel: 'Reasoning effort',
+      reasoningNone: 'None (global default)',
+      monitorScriptLabel: 'Monitor script',
+      monitorScriptPlaceholder: '/home/user/bin/check.sh',
+      monitorUrlLabel: 'Monitor URL',
+      monitorUrlPlaceholder: 'https://example.com/status.json',
+      monitorHint: 'A monitor runs before each tick; the agent run is skipped while its output is unchanged. Script and URL are mutually exclusive.',
+      monitorExclusive: 'Pick either a monitor script or a monitor URL, not both.',
+      failureDeliverLabel: 'Failure delivery',
+      failureDeliverPlaceholder: 'Empty = same as Deliver to',
+      attachLabel: 'Attach run to its session',
+      restartHint: 'Advanced settings apply on the next run. Editing never clears values this form does not show.',
+      onValue: 'On',
+      modes: {
+        agent: 'Agent run',
+        monitor: 'Monitor-gated run',
+        script: 'Script-only run'
+      },
+      summary: {
+        attachToSession: 'Session attach',
+        contextFrom: 'Context from',
+        enabledToolsets: 'Toolsets',
+        executionMode: 'Execution',
+        failureDeliver: 'Failure delivery',
+        monitor: 'Monitor',
+        reasoningEffort: 'Reasoning',
+        repeat: 'Repeat',
+        skills: 'Skills',
+        workdir: 'Workdir'
+      }
     }
   },
 

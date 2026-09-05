@@ -2426,6 +2426,50 @@ export const zh: Translations = {
       failedLoad: '加载蓝图失败',
       emptyTitle: '没有可用的蓝图',
       emptyDesc: '此后端上没有可用的自动化蓝图。'
+    },
+    advanced: {
+      toggle: '高级执行设置',
+      repeatLabel: '重复次数',
+      repeatPlaceholder: '留空 = 无限',
+      repeatInvalid: '重复次数必须为正整数（留空 = 无限）。',
+      skillsLabel: '技能',
+      skillsPlaceholder: 'reporter, researcher',
+      workdirLabel: '工作目录',
+      workdirPlaceholder: '/home/user/project',
+      toolsetsLabel: '启用的工具集',
+      toolsetsPlaceholder: 'web, file',
+      contextFromLabel: '上下文来源任务',
+      contextFromPlaceholder: 'a1b2c3d4e5f6',
+      reasoningLabel: '推理强度',
+      reasoningNone: '无（跟随全局默认）',
+      monitorScriptLabel: '监视脚本',
+      monitorScriptPlaceholder: '/home/user/bin/check.sh',
+      monitorUrlLabel: '监视 URL',
+      monitorUrlPlaceholder: 'https://example.com/status.json',
+      monitorHint: '监视器在每次触发前运行；输出未变化时跳过智能体运行。脚本与 URL 互斥。',
+      monitorExclusive: '监视脚本与监视 URL 只能二选一。',
+      failureDeliverLabel: '失败投递',
+      failureDeliverPlaceholder: '留空 = 与“投递到”相同',
+      attachLabel: '将运行附加到其会话',
+      restartHint: '高级设置在下次运行生效。编辑不会清除表单未显示的值。',
+      onValue: '开',
+      modes: {
+        agent: '智能体运行',
+        monitor: '监视门控运行',
+        script: '仅脚本运行'
+      },
+      summary: {
+        attachToSession: '会话附加',
+        contextFrom: '上下文来源',
+        enabledToolsets: '工具集',
+        executionMode: '执行方式',
+        failureDeliver: '失败投递',
+        monitor: '监视器',
+        reasoningEffort: '推理强度',
+        repeat: '重复次数',
+        skills: '技能',
+        workdir: '工作目录'
+      }
     }
   },
 

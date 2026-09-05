@@ -1914,6 +1914,50 @@ export interface Translations {
       emptyTitle: string
       emptyDesc: string
     }
+    advanced: {
+      toggle: string
+      repeatLabel: string
+      repeatPlaceholder: string
+      repeatInvalid: string
+      skillsLabel: string
+      skillsPlaceholder: string
+      workdirLabel: string
+      workdirPlaceholder: string
+      toolsetsLabel: string
+      toolsetsPlaceholder: string
+      contextFromLabel: string
+      contextFromPlaceholder: string
+      reasoningLabel: string
+      reasoningNone: string
+      monitorScriptLabel: string
+      monitorScriptPlaceholder: string
+      monitorUrlLabel: string
+      monitorUrlPlaceholder: string
+      monitorHint: string
+      monitorExclusive: string
+      failureDeliverLabel: string
+      failureDeliverPlaceholder: string
+      attachLabel: string
+      restartHint: string
+      onValue: string
+      modes: {
+        agent: string
+        monitor: string
+        script: string
+      }
+      summary: {
+        attachToSession: string
+        contextFrom: string
+        enabledToolsets: string
+        executionMode: string
+        failureDeliver: string
+        monitor: string
+        reasoningEffort: string
+        repeat: string
+        skills: string
+        workdir: string
+      }
+    }
   }
 
   artifacts: {

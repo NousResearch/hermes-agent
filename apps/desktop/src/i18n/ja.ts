@@ -1934,6 +1934,50 @@ export const ja = defineLocale({
       failedLoad: 'ブレーンプリントの読み込みに失敗しました',
       emptyTitle: '利用できるブレーンプリントはありません',
       emptyDesc: 'このバックエンドで利用できる自動化ブレーンプリントはありません。'
+    },
+    advanced: {
+      toggle: '高度な実行設定',
+      repeatLabel: '繰り返し回数',
+      repeatPlaceholder: '空 = 無制限',
+      repeatInvalid: '繰り返し回数は正の整数で入力してください（空 = 無制限）。',
+      skillsLabel: 'スキル',
+      skillsPlaceholder: 'reporter, researcher',
+      workdirLabel: '作業ディレクトリ',
+      workdirPlaceholder: '/home/user/project',
+      toolsetsLabel: '有効なツールセット',
+      toolsetsPlaceholder: 'web, file',
+      contextFromLabel: '参照元ジョブ',
+      contextFromPlaceholder: 'a1b2c3d4e5f6',
+      reasoningLabel: 'リーズニング強度',
+      reasoningNone: 'なし（全体の既定値）',
+      monitorScriptLabel: 'モニタースクリプト',
+      monitorScriptPlaceholder: '/home/user/bin/check.sh',
+      monitorUrlLabel: 'モニター URL',
+      monitorUrlPlaceholder: 'https://example.com/status.json',
+      monitorHint: 'モニターは各ティックの前に実行され、出力が変わらない間はエージェント実行をスキップします。スクリプトと URL は排他です。',
+      monitorExclusive: 'モニタースクリプトとモニター URL のどちらか一方を選んでください。',
+      failureDeliverLabel: '失敗時の配信先',
+      failureDeliverPlaceholder: '空 =「配信先」と同じ',
+      attachLabel: '実行をそのセッションに紐付ける',
+      restartHint: '高度な設定は次回実行から適用されます。編集でフォームにない値が消えることはありません。',
+      onValue: 'オン',
+      modes: {
+        agent: 'エージェント実行',
+        monitor: 'モニター付き実行',
+        script: 'スクリプトのみ実行'
+      },
+      summary: {
+        attachToSession: 'セッション紐付け',
+        contextFrom: '参照元',
+        enabledToolsets: 'ツールセット',
+        executionMode: '実行方式',
+        failureDeliver: '失敗時の配信先',
+        monitor: 'モニター',
+        reasoningEffort: 'リーズニング',
+        repeat: '繰り返し回数',
+        skills: 'スキル',
+        workdir: '作業ディレクトリ'
+      }
     }
   },
 

@@ -827,7 +827,7 @@ Headed mode does two things:
 1. **Launches Chromium with a visible window** (passes `--headed` to agent-browser in local mode).
 2. **Keeps the window open between turns.** Normally the browser session is cleaned up after every agent reply; in headed mode the per-turn cleanup is skipped so you can watch the agent work, intervene manually (sign-in challenges, CAPTCHAs), and keep login state warm across the conversation.
 
-Idle sessions are still reaped after `browser.inactivity_timeout` (default 120s of no browser activity), and all sessions are closed on shutdown. Headed mode only affects the local browser — cloud sessions (Browserbase) are unaffected.
+Idle sessions are still reaped after `browser.inactivity_timeout` (default 120s of no browser activity), and all sessions are closed on shutdown. A **real-profile** snapshot browser (the extra Chrome/Brave with your logins) is closed on idle, when the chat ends (`/new`, Desktop or dashboard close), and by the orphan sweep if Hermes dies uncleanly — not only when the Hermes process exits. Headed mode only affects the local browser — cloud sessions (Browserbase) are unaffected.
 
 ## Stealth Features
 

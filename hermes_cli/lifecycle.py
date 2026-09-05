@@ -47,6 +47,13 @@ def has_hook(hook_name: str) -> bool:
 def finalize_session(**kwargs: Any) -> List[Any]:
     """Notify observers and hard-close one core-owned Relay conversation."""
     _observe("on_session_finalize", **kwargs)
+    # Chat end / /new / Desktop close — not process exit. Release the snapshot
+    # browser so the next chat is not blocked on SingletonLock (#103591).
+    try:
+        from tools.browser_tool_real_profile import _terminate_real_profile_chrome
+        _terminate_real_profile_chrome()
+    except Exception:
+        logger.debug("real-profile chrome cleanup on session finalize failed", exc_info=True)
 
     session_id = str(kwargs.get("session_id") or "")
     if session_id:

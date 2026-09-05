@@ -39,8 +39,15 @@ def test_finalize_session_closes_core_before_plugin_export(monkeypatch):
     monkeypatch.setattr(relay_runtime, "SESSION_COORDINATOR", coordinator)
     monkeypatch.setattr(relay_runtime, "current_profile_key", lambda: "profile-1")
 
+    terminated = []
+    monkeypatch.setattr(
+        "tools.browser_tool_real_profile._terminate_real_profile_chrome",
+        lambda: terminated.append(True),
+    )
+
     lifecycle.finalize_session(session_id="session-1", platform="cli")
 
+    assert terminated == [True]
     assert [call[0] for call in calls] == ["builtin", "core", "plugin"]
     assert calls[1][1] == {
         "profile_key": "profile-1",

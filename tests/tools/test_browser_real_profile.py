@@ -1044,3 +1044,76 @@ class TestWindowsLockedProfileCopy:
         dst, err = bc.snapshot_real_profile("chrome", src=str(root))
         assert dst is None
         assert err and "login data" in err.lower() and "close" in err.lower()
+
+
+class TestRealProfileSessionCleanup:
+    """#103591: snapshot Brave must die on chat end / idle, and after a crashed owner."""
+
+    def test_cmdline_requires_user_data_dir_on_copy(self):
+        # Daily browser must never match — no --user-data-dir=<snapshot>.
+        copy = "/home/u/.hermes/browser-profile/brave-origin"
+        with patch("psutil.Process") as proc:
+            proc.return_value.cmdline.return_value = [
+                "/opt/brave-origin-bin/brave", "--ozone-platform=wayland"]
+            assert bt_real_profile._cmdline_bound_to_copy_dir(1, copy) is False
+            proc.return_value.cmdline.return_value = [
+                "/opt/brave-origin-bin/brave", f"--user-data-dir={copy}"]
+            assert bt_real_profile._cmdline_bound_to_copy_dir(1, copy) is True
+            # Windows argv uses backslashes; both sides must normalize.
+            win = r"C:\Users\u\.hermes\browser-profile\chrome"
+            proc.return_value.cmdline.return_value = [
+                r"C:\Brave\brave.exe", f"--user-data-dir={win}"]
+            assert bt_real_profile._cmdline_bound_to_copy_dir(1, win) is True
+
+    def test_orphan_reap_skips_live_owner(self, tmp_path, monkeypatch):
+        home = tmp_path / "hh"
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: home)
+        owners = home / "browser-profile" / ".hermes-owners"
+        owners.mkdir(parents=True)
+        rec = {"copy_dir": str(tmp_path / "copy"), "chrome_pid": 4242,
+               "owner_pid": 111, "owner_start_time": 9, "chrome_start_time": 8}
+        (owners / "brave-origin.json").write_text(json.dumps(rec))
+        with patch.object(bt_real_profile, "_pid_is_ours", return_value=True), \
+             patch.object(bt_real_profile, "_kill_snapshot_chrome") as kill:
+            assert bt_real_profile._reap_orphaned_real_profile_browsers() == 0
+            kill.assert_not_called()
+            assert (owners / "brave-origin.json").exists()
+
+    def test_orphan_reap_kills_when_owner_dead(self, tmp_path, monkeypatch):
+        home = tmp_path / "hh"
+        copy = tmp_path / "copy"
+        copy.mkdir()
+        (copy / "SingletonLock").write_text("stale")
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: home)
+        owners = home / "browser-profile" / ".hermes-owners"
+        owners.mkdir(parents=True)
+        rec = {"copy_dir": str(copy), "chrome_pid": 4242,
+               "owner_pid": 111, "owner_start_time": 9, "chrome_start_time": 8}
+        (owners / "brave-origin.json").write_text(json.dumps(rec))
+        with patch.object(bt_real_profile, "_pid_is_ours", return_value=False), \
+             patch.object(bt_real_profile, "_kill_snapshot_chrome", return_value=True) as kill:
+            assert bt_real_profile._reap_orphaned_real_profile_browsers() == 1
+            kill.assert_called_once()
+        assert not (owners / "brave-origin.json").exists()
+        assert not (copy / "SingletonLock").exists()
+
+    def test_terminate_kills_this_process_record_only(self, tmp_path, monkeypatch):
+        import tools.browser_tool as bt
+        home = tmp_path / "hh"
+        copy = tmp_path / "copy"
+        copy.mkdir()
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: home)
+        owners = home / "browser-profile" / ".hermes-owners"
+        owners.mkdir(parents=True)
+        mine = {"copy_dir": str(copy), "chrome_pid": 7, "owner_pid": os.getpid()}
+        other = {"copy_dir": str(tmp_path / "other"), "chrome_pid": 8, "owner_pid": 1}
+        (owners / "chrome.json").write_text(json.dumps(mine))
+        (owners / "other.json").write_text(json.dumps(other))
+        bt._real_profile_cdp_cache["cdp"] = "http://127.0.0.1:1"
+        with patch.object(bt_real_profile, "_kill_snapshot_chrome", return_value=True) as kill, \
+             patch.object(bt_real_profile, "_agent_browser_close_session"):
+            bt_real_profile._terminate_real_profile_chrome()
+        kill.assert_called_once()
+        assert not (owners / "chrome.json").exists()
+        assert (owners / "other.json").exists()
+        assert "cdp" not in bt._real_profile_cdp_cache

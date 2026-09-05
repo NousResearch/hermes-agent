@@ -86,7 +86,7 @@ async def test_current_talk_revocation_before_native_submit_is_enforced(
     await runner._handle_message(event)
     picker = adapter.pages[-1]
     page = ChoicePage(picker["title"], picker["choices"])
-    selected = choice(page, "private.txt" if kind == "file" else "Full reply")
+    selected = choice(page, "private.txt" if kind == "file" else "Get full reply")
     # The actual gateway auth check is still true when the native callback starts.
     assert runner._is_user_authorized_for_source(event.source) is True
     progress = await picker["on_choice_selected"]("42", selected)

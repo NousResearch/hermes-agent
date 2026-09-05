@@ -201,8 +201,20 @@ def resolve_profile_route(name: str, cfg: Optional[dict], parent_agent: Any = No
 
     # Lazy imports (house style — delegate_tool_config.py does the same) to avoid import cycles.
     from hermes_cli.runtime_provider import resolve_runtime_provider
-    runtime = resolve_runtime_provider(
-        requested=spec.provider or None, target_model=spec.model) or {}
+    # Same wrap as the legacy provider branch (tools/delegate_tool_config.py::
+    # _runtime_provider_credentials): AuthError subclasses RuntimeError, and the delegate_task /
+    # lifecycle seams only catch ValueError — anything else would escape as a raw traceback
+    # instead of a clean tool_error.
+    try:
+        runtime = resolve_runtime_provider(
+            requested=spec.provider or None, target_model=spec.model) or {}
+    except Exception as exc:
+        raise ValueError(
+            f"Cannot resolve delegation profile '{key}' "
+            f"(provider '{spec.provider or 'auto'}'): {exc}. "
+            f"Check that the provider is configured (API key set, valid provider name), "
+            f"or fix the entry under delegation.profiles in config.yaml."
+        ) from exc
 
     supports_tools = True
     try:

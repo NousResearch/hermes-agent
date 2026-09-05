@@ -274,3 +274,27 @@ class TestResolveProfileRoute:
     def test_route_fallback_is_immutable_sequence(self, fake_runtime):
         route = resolve_profile_route("small", _cfg({"small": dict(SMALL)}), parent_agent=None)
         assert isinstance(route.fallback, tuple)
+
+
+# ---------------------------------------------------------------------------
+# credential-resolution errors surface as ValueError (clean tool_error seam)
+# ---------------------------------------------------------------------------
+
+class TestCredentialErrorSurfacing:
+    def test_runtime_provider_auth_error_surfaces_as_value_error(self, monkeypatch):
+        """AuthError subclasses RuntimeError, which the delegate_task/lifecycle seams do NOT
+        catch — the resolver must re-raise it as ValueError naming the profile, mirroring the
+        legacy provider branch (tools/delegate_tool_config._runtime_provider_credentials)."""
+        import hermes_cli.runtime_provider as rp
+        from hermes_cli.auth_constants import AuthError
+
+        def _boom(**_kw):
+            raise AuthError("ANTHROPIC_API_KEY is not set", provider="anthropic")
+
+        monkeypatch.setattr(rp, "resolve_runtime_provider", _boom)
+        with pytest.raises(ValueError) as exc:
+            resolve_profile_route("small", _cfg({"small": dict(SMALL)}), parent_agent=None)
+        assert not isinstance(exc.value, RuntimeError)
+        msg = str(exc.value)
+        assert "small" in msg
+        assert "ANTHROPIC_API_KEY is not set" in msg

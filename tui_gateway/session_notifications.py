@@ -111,7 +111,8 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
 
 # Mirror gateway/kanban_watchers.py TERMINAL_KINDS: claim silent kinds (archived/unblocked) too so the cursor advances
 # past them and they can't wedge a later completed/blocked event behind an unclaimed row.
-_KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
+_KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked",
+                        "review_requested", "changes_requested", "block_loop_detected")
 _KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = 5.0
 
 
@@ -220,7 +221,40 @@ def _kb_timed_out(task, payload: dict, title: str) -> str:
     return " timed out (max_runtime=0s); will retry"
 
 
+def _kb_safe_review_reason(value: Any, limit: int = 160) -> str:
+    """Clip/redact reviewer-supplied text, reusing the gateway notifier's helper for parity; fall back to a plain
+    whitespace-collapsed clip if that import is unavailable (keeps the poller import-safe)."""
+    try:
+        from gateway.kanban_watchers_notifier import _safe_review_reason
+    except Exception:
+        return " ".join(("" if value is None else str(value)).split())[:limit]
+    return _safe_review_reason(value, limit)
+
+
+def _kb_review_requested(task, payload: dict, title: str) -> str:
+    handoff = _kb_first_line(payload["summary"], 200) if payload.get("summary") else ""
+    return f" ready for review — {title}{handoff}"
+
+
+def _kb_changes_requested(task, payload: dict, title: str) -> str:
+    reason = _kb_safe_review_reason(payload.get("reason")) or "reviewer feedback requires changes"
+    reviewer = _kb_safe_review_reason(payload.get("reviewer"), 48)
+    implementer = _kb_safe_review_reason(payload.get("implementer"), 48)
+    provenance = f" — reviewer @{reviewer}" if reviewer else ""
+    if implementer:
+        provenance += f" → implementer @{implementer}"
+    return f" review requested changes/BLOCK: {reason}{provenance}"
+
+
+def _kb_block_loop_detected(task, payload: dict, title: str) -> str:
+    rc = f" (blocked {payload['recurrences']}x for the same cause)" if payload.get("recurrences") else ""
+    reason = f": {str(payload.get('reason'))[:160]}" if payload.get("reason") else ""
+    return f" routed to TRIAGE — needs a human decision{rc}{reason}"
+
+
 # kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.
+# The review-lifecycle kinds mirror gateway/kanban_watchers_notifier.py so TUI/Desktop sessions (served only by this
+# poller, no "tui" messaging adapter — #59890) see review parks the gateway already surfaces elsewhere (#99436).
 _KANBAN_EVENT_FORMATTERS = {
     "completed": ("✔", _kb_completed),
     "blocked": ("⏸", lambda t, p, title: " blocked" + (f": {str(p.get('reason'))[:160]}" if p.get("reason") else "")),
@@ -229,6 +263,9 @@ _KANBAN_EVENT_FORMATTERS = {
     "crashed": ("✖", lambda t, p, title: " worker crashed (pid gone); dispatcher will retry"),
     "timed_out": ("⏱", _kb_timed_out),
     "status": ("🔄", lambda t, p, title: f" → {p.get('status') or ''}"),
+    "review_requested": ("👀", _kb_review_requested),
+    "changes_requested": ("🛑", _kb_changes_requested),
+    "block_loop_detected": ("🛑", _kb_block_loop_detected),
 }
 
 

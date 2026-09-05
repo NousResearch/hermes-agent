@@ -4,6 +4,7 @@ import type { Translations } from "@/i18n/types";
 import { Link } from "react-router";
 import { api } from "@/lib/api";
 import type {
+  AgentPluginUpdateResponse,
   HubAgentPluginRow,
   MemoryProviderConfig,
   MemoryProviderField,
@@ -939,6 +940,7 @@ function PluginRowCard(props: PluginRowCardProps) {
 
   const busy = rowBusy === row.name;
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [pendingUpdate, setPendingUpdate] = useState<AgentPluginUpdateResponse | null>(null);
 
   const badgeTone =
     row.runtime_status === "enabled"
@@ -1027,8 +1029,20 @@ function PluginRowCard(props: PluginRowCardProps) {
                 size="sm"
                 onClick={() => {
                   void setRuntimeLoading(row.name, async () => {
-                    await api.updateAgentPlugin(row.name);
-                    showToast(t.pluginsPage.updateGit, "success");
+                    const result = await api.updateAgentPlugin(row.name);
+                    if (result.review_required) {
+                      // Staged: the live plugin is untouched; surface the review
+                      // and require an explicit accept (same token path as the CLI).
+                      setPendingUpdate(result);
+                      return;
+                    }
+                    setPendingUpdate(null);
+                    showToast(
+                      result.unchanged
+                        ? `${row.name} is already up to date`
+                        : t.pluginsPage.updateGit,
+                      "success",
+                    );
                   });
                 }}
               >
@@ -1101,6 +1115,65 @@ function PluginRowCard(props: PluginRowCardProps) {
           <p className="text-xs italic text-text-disabled">
             {t.pluginsPage.noDashboardTab}
           </p>
+        ) : null}
+
+        {pendingUpdate?.review_required ? (
+          <div className="grid gap-3 border border-warning/50 bg-warning/5 p-4 text-xs">
+            <div className="grid gap-1">
+              <p className="font-semibold text-warning">
+                Review required before activating this update
+              </p>
+              <p className="text-text-secondary">
+                The live plugin was NOT changed. Candidate revision{" "}
+                <span className="font-mono">
+                  {pendingUpdate.candidate_revision?.slice(0, 12)}
+                </span>{" "}
+                · content identity{" "}
+                <span className="break-all font-mono text-text-tertiary">
+                  {pendingUpdate.candidate_artifact?.slice(0, 16)}…
+                </span>
+              </p>
+            </div>
+
+            {pendingUpdate.changed_files?.length ? (
+              <div className="max-h-32 overflow-auto border border-border bg-background/40 p-2 font-mono">
+                {pendingUpdate.changed_files.map((file) => (
+                  <div key={file}>{file}</div>
+                ))}
+              </div>
+            ) : null}
+
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button ghost size="sm" disabled={busy} onClick={() => setPendingUpdate(null)}>
+                Keep current version
+              </Button>
+              <Button
+                size="sm"
+                disabled={busy || !pendingUpdate.review_token}
+                onClick={() => {
+                  const reviewToken = pendingUpdate.review_token;
+                  if (!reviewToken) return;
+                  void setRuntimeLoading(row.name, async () => {
+                    const result = await api.updateAgentPlugin(row.name, {
+                      review_token: reviewToken,
+                    });
+                    setPendingUpdate(null);
+                    if (result.accepted) {
+                      showToast(
+                        `${row.name} updated to the reviewed revision; restart Hermes to load it`,
+                        "success",
+                      );
+                    } else {
+                      showToast(result.error ?? "Update was not accepted", "error");
+                    }
+                  });
+                }}
+              >
+                {busy ? <Spinner /> : null}
+                Accept reviewed update
+              </Button>
+            </div>
+          </div>
         ) : null}
       </CardContent>
 

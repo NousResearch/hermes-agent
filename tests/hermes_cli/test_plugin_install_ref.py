@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -128,9 +129,17 @@ def test_exact_ref_installs_old_commit_and_normalizes_uppercase(monkeypatch, tmp
     assert _git(target, "rev-parse", "HEAD") == old_sha
     assert old_sha != new_sha
     assert (target / "marker.txt").read_text() == "old"
-    assert _metadata(home) == {
-        "demo": {"pinned": True, "revision": old_sha, "source": repo.as_uri()}
-    }
+    record = _metadata(home)["demo"]
+    assert record["pinned"] is True
+    assert record["revision"] == old_sha
+    assert record["source"] == repo.as_uri()
+    # Content-consent baseline is recorded atomically at install (G1).
+    consent = record["consent"]
+    # A plain git clone installs with its checkout → canonical git tree id (40 hex).
+    assert consent["identity"] == "git_tree"
+    assert re.fullmatch(r"[0-9a-f]{40}", consent["artifact_id"])
+    assert consent["revision"] == old_sha
+    assert consent["scope"] in ("install", "reinstall")
 
 
 @pytest.mark.parametrize("ref", ["", "main", "abc", "g" * 40, "a" * 39, "a" * 41])
@@ -175,11 +184,16 @@ def test_subdir_pin_records_source_identity_and_installs_requested_tree(
     )
 
     assert (target / "value.txt").read_text() == "old"
-    assert _metadata(home)["nested-demo"] == {
-        "pinned": True,
-        "revision": old_sha,
-        "source": identifier,
-    }
+    record = _metadata(home)["nested-demo"]
+    assert record["pinned"] is True
+    assert record["revision"] == old_sha
+    assert record["source"] == identifier
+    # Content-consent baseline is recorded atomically at install (G1).
+    # A subdir install has no checkout → whole-tree sha256 fallback identity.
+    assert record["consent"]["identity"] == "sha256"
+    assert re.fullmatch(r"[0-9a-f]{64}", record["consent"]["artifact_id"])
+    assert record["consent"]["revision"] == old_sha
+    assert record["consent"]["scope"] in ("install", "reinstall")
 
 
 def test_force_reinstall_does_not_drift_pin_without_explicit_new_ref(

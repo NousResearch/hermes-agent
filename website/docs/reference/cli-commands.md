@@ -1459,7 +1459,7 @@ Unified plugin management — general plugins, memory providers, and context eng
 | *(none)* | Composite interactive UI — general plugin toggles + provider plugin configuration. |
 | `install <identifier> [--force] [--ref COMMIT_SHA]` | Install a plugin from a Git URL, `owner/repo`, or a bare index name. Bare names (no slash) are resolved through the community plugin index to `owner/repo` plus the index-pinned commit; ambiguous names list candidates and exit. `--ref` accepts only a full 40-character commit SHA, installs that exact immutable revision, and overrides any index pin. |
 | `search [term] [--json] [--capability CAP] [--refresh]` | Search the community plugin index (fuzzy match on name/description/tags; omit `term` to browse). Fetched from `plugins.index_url` (default: the NousResearch plugin index), cached under `~/.hermes/cache/` for 24h, falling back to the stale cache and then the bundled seed when offline. Indexed ≠ audited — inclusion is a metadata review only. |
-| `update <name>` | Pull latest changes for an unpinned installed plugin. Pinned plugins must be reinstalled with `--force --ref <new-commit>` to move. |
+| `update <name> [--accept-update]` | Fetch the latest changes for an unpinned installed plugin into a private quarantine tree — the live checkout is never modified before authorization. Any artifact change (canonical git tree identity: bytes, mode, path, type) is reviewed (diff stat, changed files, commits, and added/removed hook/tool registrations; a code change under an unchanged declared `version:` prints a tripwire warning) and requires an explicit accept — interactive sessions confirm with `y`; non-interactive sessions require `--accept-update`; the Dashboard rides the same review-token path. Decline, interrupt, or non-TTY-without-flag leaves the live tree untouched at the last consented revision; only an accepted candidate is promoted atomically (with rollback). Pinned plugins must be reinstalled with `--force --ref <new-commit>` to move. |
 | `remove <name>` (aliases: `rm`, `uninstall`) | Remove an installed plugin. |
 | `enable <name>` | Enable a disabled plugin. |
 | `disable <name>` | Disable a plugin without removing it. |
@@ -1474,9 +1474,14 @@ Provider plugin selections are saved to `config.yaml`:
 - `context.engine` — active context engine (`"compressor"` = built-in default)
 
 General plugin disabled list is stored in `config.yaml` under `plugins.disabled`.
-Git installs also record only their canonical source, exact installed revision, and
-pin status in the profile-local `plugins/.install-metadata.json` sidecar. It does
-not contain plugin config, environment values, secrets, or capability grants.
+Git installs also record their canonical source, exact installed revision, and
+pin status in the profile-local `plugins/.install-metadata.json` sidecar, plus a
+`consent` record per plugin — the artifact identity of the installed tree (for
+git checkouts the canonical git tree id `HEAD^{tree}`, which covers bytes +
+mode + path + type; for non-git/manual trees a sha256 of the whole tree), the
+identity kind, the revision it was granted at, an ISO-8601 timestamp, and the
+grant scope (`install` / `update` / `reinstall`). The sidecar does not contain
+plugin config, environment values, secrets, or capability grants.
 
 See [Plugins](../user-guide/features/plugins.md) and [Build a Hermes Plugin](../developer-guide/plugins/index.md).
 

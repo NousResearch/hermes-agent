@@ -30,8 +30,9 @@ class NousProfile(ProviderProfile):
         if sticky_key:
             body["session_id"] = sticky_key
         provider_preferences = context.get("provider_preferences")
-        if provider_preferences:
-            body["provider"] = provider_preferences
+        # Nous centrally decides routing; sending a `provider` object returns
+        # HTTP 400. Never emit provider routing here (OpenRouter-only feature).
+        # Ignore any passed preferences defensively.
         return body
 
     @staticmethod

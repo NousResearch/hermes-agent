@@ -379,6 +379,11 @@ def _validated_openrouter_provider_sort(raw_sort: Any) -> Optional[str]:
 
 def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
     """Build the validated provider-routing object shared by request paths."""
+    # OpenRouter-only. The Nous endpoint centrally decides routing and returns
+    # HTTP 400 if we send `only`/`ignore`/`order`/`data_collection`/`zdr`/
+    # `require_parameters`/`sort`. Never emit a `provider` object for Nous.
+    if getattr(agent, "provider", None) in {"nous", "nous-portal", "nousresearch"}:
+        return {}
     preferences: Dict[str, Any] = {}
     for key, value in (("only", agent.providers_allowed), ("ignore", agent.providers_ignored),
         ("order", agent.providers_order), ("sort", _validated_openrouter_provider_sort(agent.provider_sort)),

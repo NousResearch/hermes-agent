@@ -1534,20 +1534,41 @@ export function reconcileRegistryDrift(
 
     const target = normalizedSshTarget(ssh)
 
-    const alreadyRegistered = registry.connections.some(
+    const registered = registry.connections.find(
       connection =>
         connection.kind === 'ssh' &&
         normalizedSshTarget(connection) === target &&
         (connection.port ?? 22) === (ssh.port ?? 22)
     )
 
-    if (alreadyRegistered) {
+    const { mode: _mode, ...sshFields } = ssh
+
+    if (registered) {
       // Route is known; if primary names another source, that is the user's
       // Connections-panel choice, not drift.
-      return unchanged
+      //
+      // Known by target is not enough, though: the router tags the live
+      // window by the FULL route identity (matchingConnectionId also compares
+      // keyPath, remoteHermesPath and remoteProfile). A v1 route carrying a
+      // keyPath the registered entry never had resolves to no connectionId,
+      // the renderer treats the untagged window as the unscoped local backend
+      // ("This device") and the roster force-spawns a phantom local child.
+      // Align the registered entry's identity fields with the route the app
+      // actually dials so both sides compare equal.
+      if (matchingConnectionId(registry, { ...ssh, kind: 'ssh' }, 'unique')) {
+        return unchanged
+      }
+
+      const { host: _host, user: _user, port: _port, ...identityFields } = sshFields
+      const aligned: RegistryConnection = { ...registered }
+      delete aligned.keyPath
+      delete aligned.remoteHermesPath
+      delete aligned.remoteProfile
+      Object.assign(aligned, identityFields)
+
+      return { changed: true, registry: upsertConnection(registry, aligned) }
     }
 
-    const { mode: _mode, ...sshFields } = ssh
 
     let entry: RegistryConnection
 

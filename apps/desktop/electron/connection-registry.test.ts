@@ -43,6 +43,7 @@ import {
   updateEligibility,
   upsertConnection
 } from './connection-registry'
+import { matchingConnectionId } from './connection-route-identity'
 
 function emptyRegistry(): ConnectionRegistry {
   return normalizeRegistry(null)
@@ -1671,6 +1672,46 @@ test('drift heal leaves a registry that already knows the v1 SSH route untouched
 
   assert.equal(drifted.changed, false)
   assert.equal(drifted.registry, first.registry)
+})
+
+test('drift heal aligns a registered SSH route whose identity fields drifted from the v1 route', () => {
+  // Same host/user as the registered entry, but the v1 route carries a keyPath
+  // the entry never had. matchingConnectionId compares keyPath too, so the live
+  // window would resolve to no connectionId and be treated as the local device.
+  const first = reconcileRegistryDrift(emptyRegistry(), {
+    mode: 'ssh',
+    remote: { host: 'devbox.example.com', user: 'omar' }
+  })
+
+  assert.equal(first.changed, true)
+
+  const drifted = reconcileRegistryDrift(first.registry, {
+    mode: 'ssh',
+    remote: { host: 'devbox.example.com', user: 'omar', keyPath: '~/.ssh/id_rsa' }
+  })
+
+  assert.equal(drifted.changed, true)
+  const sshEntries = drifted.registry.connections.filter(connection => connection.kind === 'ssh')
+  assert.equal(sshEntries.length, 1)
+  assert.equal(sshEntries[0].keyPath, '~/.ssh/id_rsa')
+  assert.equal(drifted.registry.primary, first.registry.primary)
+  assert.equal(
+    matchingConnectionId(
+      drifted.registry,
+      { host: 'devbox.example.com', user: 'omar', keyPath: '~/.ssh/id_rsa', kind: 'ssh' },
+      'primary'
+    ),
+    sshEntries[0].id
+  )
+
+  // Clearing the keyPath again re-aligns the entry.
+  const cleared = reconcileRegistryDrift(drifted.registry, {
+    mode: 'ssh',
+    remote: { host: 'devbox.example.com', user: 'omar' }
+  })
+
+  assert.equal(cleared.changed, true)
+  assert.equal(cleared.registry.connections.find(connection => connection.kind === 'ssh')?.keyPath, undefined)
 })
 
 test('drift heal respects a deliberate primary pick on a registered SSH route', () => {

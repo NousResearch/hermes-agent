@@ -382,6 +382,25 @@ function beginHydrationBackgroundSync(profile: string): void {
   })
 }
 
+function sessionHydrationSurface(storedSessionId: string) {
+  const mainMatches = $selectedStoredSessionId.get() === storedSessionId
+  const storedTile = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)
+  const tileMatches = $focusedStoredSessionId.get() === storedSessionId || Boolean(storedTile)
+  const focusedTileMatches = $focusedStoredSessionId.get() === storedSessionId
+  const tileRuntimeId = focusedTileMatches ? $focusedRuntimeId.get() : (storedTile?.runtimeId ?? null)
+  const tileState = focusedTileMatches
+    ? $focusedSessionState.get()
+    : tileRuntimeId
+      ? $sessionStates.get()[tileRuntimeId]
+      : undefined
+
+  return {
+    historyPainted: mainMatches ? Boolean($messages.get().length) : tileMatches ? Boolean(tileState?.messages.length) : false,
+    runtimeReady: mainMatches ? Boolean($activeSessionId.get()) : tileMatches ? Boolean(tileRuntimeId) : false,
+    surfaceMatches: mainMatches || tileMatches
+  }
+}
+
 function waitForFocusedSessionHydration({
   expectHistory,
   generation,
@@ -434,25 +453,7 @@ function waitForFocusedSessionHydration({
       }
 
       const profileMatches = !requireActiveProfile || normalizeProfileKey($activeGatewayProfile.get()) === profile
-      const mainMatches = $selectedStoredSessionId.get() === storedSessionId
-      const storedTile = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)
-      const tileMatches = $focusedStoredSessionId.get() === storedSessionId || Boolean(storedTile)
-      const focusedTileMatches = $focusedStoredSessionId.get() === storedSessionId
-      const tileRuntimeId = focusedTileMatches ? $focusedRuntimeId.get() : (storedTile?.runtimeId ?? null)
-
-      const tileState = focusedTileMatches
-        ? $focusedSessionState.get()
-        : tileRuntimeId
-          ? $sessionStates.get()[tileRuntimeId]
-          : undefined
-
-      const runtimeReady = mainMatches ? Boolean($activeSessionId.get()) : tileMatches ? Boolean(tileRuntimeId) : false
-
-      const historyPainted = mainMatches
-        ? Boolean($messages.get().length)
-        : tileMatches
-          ? Boolean(tileState?.messages.length)
-          : false
+      const { historyPainted, runtimeReady, surfaceMatches } = sessionHydrationSurface(storedSessionId)
 
       // Paint-first hydration: for a history-bearing chat, the wake is DONE
       // the moment the persisted transcript is painted on the right session —
@@ -468,7 +469,7 @@ function waitForFocusedSessionHydration({
       // surface is real rather than a stuck loader.
       const hydrated = expectHistory ? historyPainted : runtimeReady
 
-      if ((mainMatches || tileMatches) && hydrated) {
+      if (surfaceMatches && hydrated) {
         if (profileMatches) {
           finish()
 
@@ -946,12 +947,6 @@ export const host = {
         throw new Error('Session open was superseded by a newer selection.')
       }
 
-      if (options.awaitHydration) {
-        // Keep the target-specific overlay visible through transcript hydration,
-        // not merely through the gateway/profile activation that precedes it.
-        $gatewaySwapTarget.set(targetProfile)
-      }
-
       // Only the HYDRATION half retries. Activation already failed its own
       // bounded wait above, and a wedged dial does not get better by dialling
       // again inside the same wake — that is the Retry surface's job.
@@ -990,10 +985,14 @@ export const host = {
           // The route-resume effect only honors the request while the route
           // points at this session, and consumes it alongside any resume the
           // navigation itself triggers, so a redundant request is a no-op.
-          const surfaceHealthy =
-            $selectedStoredSessionId.get() === storedSessionId &&
-            Boolean($activeSessionId.get()) &&
-            (!expectHistory || $messages.get().length > 0)
+          const { historyPainted, runtimeReady, surfaceMatches } = sessionHydrationSurface(storedSessionId)
+          const surfaceHealthy = surfaceMatches && (expectHistory ? historyPainted : runtimeReady)
+
+          if (options.awaitHydration) {
+            // A warm Bot Chat is already painted. Covering it before a forced
+            // transcript refresh produces a full-pane flash on every reopen.
+            $gatewaySwapTarget.set(surfaceHealthy ? null : targetProfile)
+          }
 
           // surfaceHealthy trusts ANY non-empty cached transcript, so it
           // cannot distinguish a fresh transcript from a stale snapshot the

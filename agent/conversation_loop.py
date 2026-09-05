@@ -1387,7 +1387,7 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
     return None
 
 
-def run_conversation(
+def _run_conversation_impl(
     agent,
     user_message: Any,
     system_message: str = None,
@@ -1533,6 +1533,50 @@ def run_conversation(
         # future input can move to a clean session (#98722).
         result.update(error=_COMPRESSION_TIMEOUT_FINAL_RESPONSE, partial=True, compression_exhausted=True)
     return result
+
+
+def run_conversation(
+    agent,
+    user_message: Any,
+    system_message: str = None,
+    conversation_history: List[Dict[str, Any]] = None,
+    task_id: str = None,
+    stream_callback: Optional[callable] = None,
+    persist_user_message: Optional[Any] = None,
+    persist_user_timestamp: Optional[float] = None,
+    persist_user_display_kind: Optional[str] = None,
+    persist_user_display_metadata: Optional[Dict[str, Any]] = None,
+    persist_user_platform_id: Optional[str] = None,
+    moa_config: Optional[dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Run one complete turn under the provider-neutral timing lifecycle."""
+    from agent.turn_timing import finish_turn_timing, start_turn_timing
+
+    subject_message = persist_user_message if persist_user_message is not None else user_message
+    start_turn_timing(agent, subject_message, conversation_history=conversation_history)
+    result = None
+    escaped = None
+    try:
+        result = _run_conversation_impl(
+            agent,
+            user_message,
+            system_message,
+            conversation_history,
+            task_id,
+            stream_callback,
+            persist_user_message,
+            persist_user_timestamp,
+            persist_user_display_kind,
+            persist_user_display_metadata,
+            persist_user_platform_id,
+            moa_config,
+        )
+        return result
+    except BaseException as exc:
+        escaped = exc
+        raise
+    finally:
+        finish_turn_timing(agent, result, escaped)
 
 
 __all__ = ["run_conversation"]

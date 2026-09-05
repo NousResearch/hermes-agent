@@ -5439,7 +5439,7 @@ def test_resume_rebind_cancels_pending_ws_orphan_reap(monkeypatch):
 
 
 def test_claim_or_reuse_live_winner_cancels_pending_reap(monkeypatch):
-    """A resume that reuses the live winner cancels the winner's pending reap."""
+    """The winner's pending reap is cancelled only once guarded reuse is accepted."""
     cancelled = []
 
     class _Timer:
@@ -5472,6 +5472,17 @@ def test_claim_or_reuse_live_winner_cancels_pending_reap(monkeypatch):
         )
 
         assert live == ("winner-sid", winner)
+        assert "winner-sid" in server._pending_ws_reaps
+        assert cancelled == []
+        assert winner["transport"] is server._detached_ws_transport
+
+        transport = object()
+        monkeypatch.setattr(server, "current_transport", lambda: transport)
+        ctx = server._Resume(1, {"omit_messages": True}, "stored-claim")
+        response = server._resume_reuse_live(ctx, *live)
+
+        assert response["result"]["session_id"] == "winner-sid"
+        assert winner["transport"] is transport
         assert "winner-sid" not in server._pending_ws_reaps
         assert len(cancelled) == 1
     finally:

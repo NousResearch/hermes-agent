@@ -445,7 +445,21 @@ def _fetch_codex_account_usage(
     base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
     token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
-    payload = _get_json(_codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0)
+    with httpx.Client(timeout=15.0) as client:
+        response = client.get(_codex_backend_urls(resolved_base_url)[0], headers=_codex_headers(token, account_id))
+        body = getattr(response, "text", "")
+        try:
+            response.raise_for_status()
+        except Exception:
+            return AccountUsageSnapshot(
+                provider="openai-codex",
+                source="usage_api",
+                fetched_at=_utc_now(),
+                unavailable_reason=_codex_usage_unavailable_reason(
+                    response.status_code, body
+                ),
+            )
+        payload = response.json() or {}
     windows = _usage_windows(payload.get("rate_limit") or {}, (("primary_window", "Session"), ("secondary_window", "Weekly")),
                              "used_percent", "reset_at")
     details: list[str] = []

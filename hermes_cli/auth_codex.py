@@ -622,8 +622,8 @@ def _pool_codex_access_token() -> str:
     from hermes_cli.auth import _nonempty_str
     from datetime import datetime
     try:
-        entries = _codex_pool_dicts(_read_codex_pool_entries())
-        if not isinstance(entries, list):
+        entries = list(_codex_pool_dicts(_read_codex_pool_entries()))
+        if not entries:
             return ""
 
         def _parse_timestamp(value: Any) -> Optional[float]:

@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from tools.mcp_tool_common import _core, _parse_boolish
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_errors as _errors
@@ -530,3 +530,72 @@ def get_registered_mcp_server_names() -> set:
     """Server names that registered at least one tool (live, filtered — not config.yaml)."""
     with _core._lock:
         return set(_core._mcp_tool_server_names.values())
+
+
+def _is_mcp_tool_read_only_locked(tool_name: str) -> bool:
+    """Internal helper assuming _core._lock is already held."""
+    server_name = _core._mcp_tool_server_names.get(tool_name)
+    if not server_name:
+        try:
+            from tools.registry import registry
+            toolset = registry.get_toolset_for_tool(tool_name)
+            if toolset and toolset.startswith("mcp-"):
+                server_name = toolset[4:]
+        except Exception:
+            pass
+    if not server_name:
+        return False
+
+    # Read-only utility tools (resources & prompts)
+    from tools.mcp_tool_schema import mcp_prefixed_tool_name
+    for util in ("list_resources", "read_resource", "list_prompts", "get_prompt"):
+        if (
+            tool_name == mcp_prefixed_tool_name(server_name, util)
+            or tool_name == util
+            or tool_name == f"{server_name}_{util}"
+            or tool_name == f"mcp__{server_name}__{util}"
+        ):
+            return True
+
+    hints = _core._tool_read_only_hints.get(server_name, {})
+    if hints.get(tool_name) is True:
+        return True
+    prefix = f"{server_name}_"
+    if tool_name.startswith(prefix):
+        raw_name = tool_name[len(prefix):]
+        if hints.get(raw_name) is True:
+            return True
+    mcp_prefix = f"mcp__{server_name}__"
+    if tool_name.startswith(mcp_prefix):
+        raw_name = tool_name[len(mcp_prefix):]
+        if hints.get(raw_name) is True:
+            return True
+    return False
+
+
+def is_mcp_tool_read_only(tool_name: str) -> bool:
+    """Return True if tool_name is a registered read-only MCP tool."""
+    with _core._lock:
+        return _is_mcp_tool_read_only_locked(tool_name)
+
+
+def get_read_only_mcp_tools(server_or_tool_filter: Optional[Any] = None) -> Set[str]:
+    """Return all currently registered read-only MCP tool names, optionally filtered."""
+    with _core._lock:
+        results: Set[str] = set()
+        filters: Optional[Set[str]] = None
+        if server_or_tool_filter is not None and not isinstance(server_or_tool_filter, bool):
+            if isinstance(server_or_tool_filter, str):
+                filters = {server_or_tool_filter.strip()}
+            elif isinstance(server_or_tool_filter, (list, tuple, set, frozenset)):
+                filters = {str(x).strip() for x in server_or_tool_filter}
+
+        for tool_name, server_name in _core._mcp_tool_server_names.items():
+            if filters is not None:
+                raw_name = tool_name[len(server_name) + 1:] if tool_name.startswith(f"{server_name}_") else tool_name
+                if server_name not in filters and tool_name not in filters and raw_name not in filters:
+                    continue
+            if _is_mcp_tool_read_only_locked(tool_name):
+                results.add(tool_name)
+        return results
+

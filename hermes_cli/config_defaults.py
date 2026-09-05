@@ -1762,6 +1762,11 @@ DEFAULT_CONFIG = {
         # rebound per cell — that runtime boundary is the cross-cell enforcement.
         "kernel_idle_timeout": 1800,
         "max_session_kernels": 4,
+        # Expose read-only MCP tools inside execute_code sandbox via hermes_tools stubs (#97044).
+        # false (default): MCP tools are excluded.
+        # true: all registered read-only MCP tools (readOnlyHint=true) are exposed.
+        # list of strings: opt-in specific servers or tools (e.g. ["linear", "notion_query"]).
+        "expose_mcp_tools": False,
     },
     # Tool Search: deferrable (MCP / non-core plugin) tools are replaced in the model-facing array
     # by tool_search / tool_describe / tool_call bridges and surfaced on demand. Core Hermes tools

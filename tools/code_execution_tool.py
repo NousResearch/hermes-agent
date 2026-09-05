@@ -23,7 +23,7 @@ import tempfile
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from tools.thread_context import propagate_context_to_thread
 from tools.registry import registry, tool_error
@@ -141,12 +141,40 @@ _TOOL_STUBS = {
 }
 
 
+def _sandbox_mcp_tools(enabled_tools: Optional[Any] = None) -> Set[str]:
+    """Resolve read-only MCP tools allowed inside the execute_code sandbox.
+
+    Gated by:
+      1. Config gate: ``code_execution.expose_mcp_tools`` (default: False).
+         Supports boolean (True/False) or a list/tuple of server or tool names.
+      2. Read-only gate: only tools with readOnlyHint=True or read-only utilities.
+      3. Session enabled_tools gate: if enabled_tools is provided, only tools in enabled_tools.
+    """
+    cfg = _load_config()
+    expose = cfg.get("expose_mcp_tools", False)
+    if not expose:
+        return set()
+
+    try:
+        from tools.mcp_tool_discovery import get_read_only_mcp_tools
+        mcp_tools = get_read_only_mcp_tools(server_or_tool_filter=expose)
+    except Exception:
+        mcp_tools = set()
+
+    if enabled_tools is not None:
+        mcp_tools = mcp_tools & set(enabled_tools)
+
+    return mcp_tools
+
+
 def _missing_hermes_tools_import_hint(m, enabled_tools) -> str:
     missing = m.group(1)
     if missing in {"json_parse", "shell_quote", "retry"}:
         return (f"{missing} is a BUILT-IN helper in the sandbox — no import "
                 f"needed. Remove it from the import line and call {missing}(...) directly.")
-    available = sorted(SANDBOX_ALLOWED_TOOLS & set(enabled_tools or SANDBOX_ALLOWED_TOOLS))
+    builtin_avail = SANDBOX_ALLOWED_TOOLS & set(enabled_tools or SANDBOX_ALLOWED_TOOLS)
+    mcp_avail = _sandbox_mcp_tools(enabled_tools)
+    available = sorted(builtin_avail | mcp_avail)
     return (f"'{missing}' is not available inside the execute_code sandbox. "
             f"Importable tools here: {', '.join(available)}. For anything "
             "else, use the normal tool call instead of execute_code.")
@@ -187,14 +215,32 @@ def _sandbox_failure_hint(stderr_text: str, enabled_tools=None) -> Optional[str]
 
 
 def generate_hermes_tools_module(enabled_tools: List[str],
-                                 transport: str = "uds") -> str:
-    """Source of the hermes_tools.py stub module for SANDBOX_ALLOWED_TOOLS ∩ *enabled_tools*.
+                                 transport: str = "uds",
+                                 enabled_mcp_tools: Optional[Set[str]] = None) -> str:
+    """Source of the hermes_tools.py stub module for (SANDBOX_ALLOWED_TOOLS ∪ enabled_mcp_tools) ∩ *enabled_tools*.
     ``transport``: ``"uds"`` (local socket client) or ``"file"`` (file RPC, remote backends)."""
-    header = _FILE_TRANSPORT_HEADER if transport == "file" else _UDS_TRANSPORT_HEADER
-    return header + "\n".join(
+    tools_to_generate = sorted(SANDBOX_ALLOWED_TOOLS & set(enabled_tools))
+    if enabled_mcp_tools is not None:
+        mcp_to_generate = sorted(enabled_mcp_tools & set(enabled_tools))
+    else:
+        mcp_to_generate = sorted(_sandbox_mcp_tools(enabled_tools))
+
+    stubs = [
         f"def {name}({sig}):\n    {doc}\n    return _call({name!r}, {args_expr})\n"
         for name, (sig, doc, args_expr) in sorted(_TOOL_STUBS.items()) if name in set(enabled_tools)
-    )
+    ]
+    for tool_name in mcp_to_generate:
+        if not tool_name.isidentifier():
+            continue
+        stubs.append(
+            f"def {tool_name}(*args, **kwargs):\n"
+            f"    \"\"\"MCP tool {tool_name}.\"\"\"\n"
+            f"    _payload = kwargs if kwargs else (args[0] if args and isinstance(args[0], dict) else {{}})\n"
+            f"    return _call({tool_name!r}, _payload)\n"
+        )
+
+    header = _FILE_TRANSPORT_HEADER if transport == "file" else _UDS_TRANSPORT_HEADER
+    return header + "\n".join(stubs)
 
 
 # ---- Shared helpers section (embedded in both transport headers) ----------
@@ -552,8 +598,14 @@ def _finish_remote_kernel_result(kernel_result: Dict[str, Any], *,
 
 
 def _sandbox_tools_for(enabled_tools: Optional[List[str]]) -> frozenset:
-    """Enabled ∩ SANDBOX_ALLOWED_TOOLS, or every sandbox tool when the intersection is empty."""
-    return frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools or ())) or SANDBOX_ALLOWED_TOOLS
+    """Enabled ∩ (SANDBOX_ALLOWED_TOOLS ∪ _sandbox_mcp_tools), or fallback when the intersection is empty."""
+    mcp_tools = _sandbox_mcp_tools(enabled_tools)
+    if enabled_tools is not None:
+        builtin_tools = set(enabled_tools) & SANDBOX_ALLOWED_TOOLS
+        if not builtin_tools and not mcp_tools:
+            return frozenset(SANDBOX_ALLOWED_TOOLS)
+        return frozenset(builtin_tools | mcp_tools)
+    return frozenset(SANDBOX_ALLOWED_TOOLS | mcp_tools)
 
 
 def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
@@ -813,16 +865,27 @@ _TOOL_DOC_LINES = [
 
 
 def build_execute_code_schema(enabled_sandbox_tools: set = None,
-                              mode: str = None) -> dict:
-    """execute_code schema listing only *enabled_sandbox_tools* — a disabled tool (e.g. web off)
-    must not appear or the model keeps trying it. ``mode`` (None → config) picks the cwd sentence."""
+                              mode: str = None,
+                              enabled_mcp_tools: set = None) -> dict:
+    """execute_code schema listing only *enabled_sandbox_tools* and *enabled_mcp_tools*.
+    ``mode`` (None → config) picks the cwd sentence."""
     if enabled_sandbox_tools is None:
         enabled_sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    if enabled_mcp_tools is None:
+        enabled_mcp_tools = _sandbox_mcp_tools()
     if mode is None:
         mode = _get_execution_mode()
     tool_lines = "\n".join(doc for name, doc in _TOOL_DOC_LINES if name in enabled_sandbox_tools)
-    import_examples = [n for n in ("web_search", "terminal") if n in enabled_sandbox_tools]
-    import_examples = import_examples or sorted(enabled_sandbox_tools)[:2]
+    mcp_note = ""
+    if enabled_mcp_tools:
+        mcp_list = ", ".join(f"{t}(...)" for t in sorted(enabled_mcp_tools))
+        mcp_note = (
+            f"\n\nAlso callable via `from hermes_tools import ...`: {mcp_list} "
+            "(same arguments as the model-visible tools)."
+        )
+    all_enabled = set(enabled_sandbox_tools) | set(enabled_mcp_tools)
+    import_examples = [n for n in ("web_search", "terminal") if n in all_enabled]
+    import_examples = import_examples or sorted(all_enabled)[:2]
     import_str = ", ".join(import_examples) + ", ..." if import_examples else "..."
     if mode == "strict":
         cwd_note = (
@@ -851,7 +914,8 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         "loaded data survive across execute_code calls, so build on earlier "
         "work instead of re-loading it. A timed-out or interrupted call loses that state.\n\n"
         f"Available via `from hermes_tools import ...`:\n\n"
-        f"{tool_lines}\n\n"
+        f"{tool_lines}"
+        f"{mcp_note}\n\n"
         "Limits: 5-minute timeout, max 50 tool calls per call. Stdout over "
         "50KB shows head/tail inline; the FULL text is auto-saved to a file whose path rides in the result.\n\n"
         f"{cwd_note}\n\n"

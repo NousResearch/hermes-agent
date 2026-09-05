@@ -1139,6 +1139,9 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
     return entry
 
 
+LARGE_SKILL_INDEX_THRESHOLD = 40
+
+
 def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     """Read a SKILL.md once -> (is_compatible, frontmatter, description); errors yield (True, {}, "")."""
     try:
@@ -1192,7 +1195,9 @@ def build_skills_system_prompt(
     """Compact skill index for the system prompt.
 
     External dirs (``skills.external_dirs``) are read-only and lose name collisions to local skills.
-    ``compact_categories`` (coding posture) demotes categories to a names-only line — nothing is ever hidden.
+    ``compact_categories`` (coding posture) demotes categories to a names-only line for small catalogs. Large
+    catalogs automatically render as category summaries; ``skills_list(category=...)`` / ``skill_view(name=...)``
+    provide the detailed lazy-loading path.
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
     """
@@ -1276,10 +1281,19 @@ def _render_skills_index(
     """Render the ## Skills block; "" when there is nothing to list."""
     if not skills_by_category:
         return ""
+    total_skill_count = sum(len(entries) for entries in skills_by_category.values())
+    category_index_only = total_skill_count > LARGE_SKILL_INDEX_THRESHOLD
     # Demoted categories collapse to one names-only line. NEVER drop entries — agent-created skills are the
     # model's project memory and it won't rediscover them via skills_list. Nested categories follow their parent.
-    demoted = frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
+    demoted = frozenset(
+        cat for cat in skills_by_category
+        if not category_index_only and cat.split("/", 1)[0] in (compact_categories or frozenset())
+    )
     hidden_note = (
+        "\n(Large skill catalog mode: only categories are shown in the system prompt. "
+        "Call skills_list(category='<category>') to inspect a relevant category, then "
+        "skill_view(name) to load the chosen skill.)"
+    ) if category_index_only else (
         "\n(Categories marked [names only] are outside the current coding "
         "context, so their descriptions are omitted — the skills work "
         "normally and load with skill_view(name) as usual.)"
@@ -1289,6 +1303,14 @@ def _render_skills_index(
     index_lines = []
     for category in sorted(skills_by_category):
         entries = skills_by_category[category]
+        if category_index_only:
+            count = len({name for name, _ in entries})
+            cat_desc = category_descriptions.get(category, "")
+            suffix = f" — {cat_desc}" if cat_desc else ""
+            index_lines.append(
+                f"  {category}: {count} skill{'s' if count != 1 else ''}{suffix}"
+            )
+            continue
         if category in demoted:
             index_lines.append(f"  {category} [names only]: {', '.join(sorted({n for n, _ in entries}))}")
             continue
@@ -1313,6 +1335,8 @@ def _render_skills_index(
         "If a skill has issues, fix it with skill_manage(action='patch').\n"
         "After difficult/iterative tasks, offer to save as a skill. If a skill you loaded was missing steps, "
         "had wrong commands, or needed pitfalls you discovered, update it before finishing.\n"
+        "For large catalogs, the index may show categories only; when a category could match the task, call "
+        "skills_list(category='<category>') before deciding no skill applies.\n"
         "\n"
         "<available_skills>\n"
         + "\n".join(index_lines) + "\n"

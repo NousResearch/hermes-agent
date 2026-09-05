@@ -436,6 +436,53 @@ Adoption only fires until `tab_id` is populated for the session. If the external
 
 When Camofox runs in headed mode (with a visible browser window), it exposes a VNC port in its health check response. Hermes automatically discovers this and includes the VNC URL in navigation responses, so the agent can share a link for you to watch the browser live.
 
+#### npm setup (no Docker required)
+
+You can run Camofox directly with Node.js without Docker:
+
+```bash
+# Clone the Camofox browser server
+git clone https://github.com/jo-inc/camofox-browser
+cd camofox-browser
+
+# Install dependencies and start
+npm install  # Downloads Camoufox ~493MB + GeoIP ~65MB
+npm start    # Server listens on port 9377
+```
+
+This works with the Hermes-managed Node (`~/.local/hermes/node` or `%LOCALAPPDATA%\hermes
+ode`) — no system Node required.
+
+#### Window vs. headless toggle
+
+On a native (non-Docker) install, toggle between windowed and headless mode:
+
+```json
+// camofox.config.json
+{
+  "interactive": {
+    "mode": "desktop"  // Options: "desktop" | "off" | "novnc" | "auto"
+  }
+}
+```
+
+- `desktop`: Visible Camoufox window for manual logins
+- `off`: Headless mode (default)
+
+Restart the server after changing this setting.
+
+#### Login persistence (clean stop required)
+
+Login state is checkpointed only on session close / shutdown. A hard process kill silently discards the login.
+
+**Clean stop procedure:**
+1. Login in desktop mode
+2. Stop cleanly: `curl -X POST http://localhost:9377/stop -H "x-admin-key: <CAMOFOX_ADMIN_KEY>"`
+3. Switch to headless mode
+4. Login survives
+
+Storage state lands in `~/.camofox/profiles/<sha256(userId)>/storage-state.json`.
+
 ### Lightpanda local engine
 
 [Lightpanda](https://lightpanda.io) is an open-source headless browser written from scratch. It starts instantly, runs 9x faster and uses 16x less memory than Chrome, which matters for agents that live on small VMs for long stretches.

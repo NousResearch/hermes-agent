@@ -441,6 +441,31 @@ class ToolRegistry:
         with self._lock:
             return self._merged_tools(scope).get(name)
 
+    def get_registration_origin(
+        self,
+        name: str,
+        *,
+        scope: Optional[str] = None,
+    ) -> Optional[str]:
+        """Return ``host`` or ``plugin`` for the active registration.
+
+        Profile-scoped registrations are owned by the native plugin manager.
+        Global registrations retain the callable-namespace fallback for legacy
+        plugin code that registered directly before the scoped API existed.
+        """
+        active_scope = scope or self.current_scope_key()
+        with self._lock:
+            if name in self._scoped_tools.get(active_scope, {}):
+                return "plugin"
+            entry = self._tools.get(name)
+            if entry is None:
+                return None
+            return (
+                "plugin"
+                if self._plugin_owner_of(entry.handler) is not None
+                else "host"
+            )
+
     def snapshot_registration(
         self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:
         """Local slot state only — no global fallback."""

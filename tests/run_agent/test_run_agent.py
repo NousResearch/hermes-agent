@@ -126,7 +126,11 @@ def test_direct_session_db_flushes_share_marker_claim(agent):
             self.entered = threading.Event()
             self.release = threading.Event()
             self.calls = 0
+            self.token_flushes = 0
             self._lock = threading.Lock()
+
+        def flush_token_counts(self):
+            self.token_flushes += 1
 
         def append_message(self, **kwargs):
             with self._lock:
@@ -178,6 +182,7 @@ def test_direct_session_db_flushes_share_marker_claim(agent):
     assert not normal.is_alive()
     assert not direct.is_alive()
     assert db.rows == ["exactly once"]
+    assert db.token_flushes == 1
 
 
 def test_malformed_memory_config_still_builds_default_store():
@@ -955,6 +960,64 @@ class TestHydrateTodoStore:
         assert agent._todo_store.snapshot()["revision"] == 2
         assert agent._todo_store.read()[0]["id"] == "new"
 
+    @pytest.mark.parametrize("tool_name", ["todo_list", "todo"])
+    def test_history_recovers_canonical_and_legacy_todo_names(self, agent, tool_name):
+        assistant_call = self._assistant_todo_call(call_id="canonical-or-legacy")
+        assistant_call["tool_calls"][0]["function"]["name"] = tool_name
+        history = [
+            assistant_call,
+            {
+                "role": "tool",
+                "tool_call_id": "canonical-or-legacy",
+                "content": json.dumps(
+                    {
+                        "todos": [
+                            {"id": "recover", "content": "Recovered", "status": "pending"}
+                        ],
+                        "revision": 2,
+                    }
+                ),
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        assert agent._todo_store.read() == [
+            {"id": "recover", "content": "Recovered", "status": "pending"}
+        ]
+
+    def test_unrelated_tool_result_does_not_hydrate(self, agent):
+        history = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "unrelated",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "unrelated",
+                "content": json.dumps(
+                    {
+                        "todos": [
+                            {"id": "must-not-recover", "content": "Unrelated", "status": "pending"}
+                        ]
+                    }
+                ),
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        assert not agent._todo_store.has_items()
+
 
 
 
@@ -1693,6 +1756,76 @@ class TestFormatToolsForSystemMessage:
 
 
 class TestExecuteToolCalls:
+    def test_runtime_host_services_use_canonical_tool_executor(self, agent, monkeypatch):
+        from agent.runtime_dispatch import HermesRuntimeHostServices
+        from model_tools import _run_async
+
+        hook_calls = []
+        agent.session_id = "synthetic-session"
+        agent._current_turn_id = "synthetic-turn"
+        agent._current_api_request_id = "synthetic-request"
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+        host = HermesRuntimeHostServices(
+            agent,
+            task_id="synthetic-task",
+            runtime_id="example-runtime",
+        )
+
+        with patch(
+            "model_tools.handle_function_call", return_value="canonical result"
+        ) as dispatch:
+            result = _run_async(host.execute_tool("web_search", {"q": "runtime"}))
+
+        assert result == "canonical result"
+        dispatch.assert_called_once()
+        args, kwargs = dispatch.call_args
+        assert args[:3] == ("web_search", {"q": "runtime"}, "synthetic-task")
+        assert set(kwargs["enabled_tools"]) == agent.valid_tool_names
+        pre_calls = [item for item in hook_calls if item[0] == "pre_tool_call"]
+        post_calls = [item for item in hook_calls if item[0] == "post_tool_call"]
+        assert len(pre_calls) == 1
+        assert len(post_calls) == 1
+        assert post_calls[0][1]["status"] == "ok"
+
+    def test_runtime_host_services_reject_tools_outside_session_scope(self, agent):
+        from agent.runtime_dispatch import HermesRuntimeHostServices, RuntimeExecutionError
+        from model_tools import _run_async
+
+        host = HermesRuntimeHostServices(
+            agent,
+            task_id="synthetic-task",
+            runtime_id="example-runtime",
+        )
+
+        with (
+            patch("run_agent.handle_function_call") as dispatch,
+            pytest.raises(RuntimeExecutionError, match="not available in this session"),
+        ):
+            _run_async(host.execute_tool("terminal", {"command": "pwd"}))
+
+        dispatch.assert_not_called()
+
+    def test_runtime_host_services_observe_interrupt_before_dispatch(self, agent):
+        from agent.runtime_dispatch import HermesRuntimeHostServices
+        from model_tools import _run_async
+
+        agent._interrupt_requested = True
+        host = HermesRuntimeHostServices(
+            agent,
+            task_id="synthetic-task",
+            runtime_id="example-runtime",
+        )
+
+        with patch("run_agent.handle_function_call") as dispatch:
+            result = _run_async(host.execute_tool("web_search", {"q": "runtime"}))
+
+        dispatch.assert_not_called()
+        assert "cancelled" in result.lower()
+
     def test_single_tool_executed(self, agent):
         tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])

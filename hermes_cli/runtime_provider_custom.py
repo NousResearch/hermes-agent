@@ -315,6 +315,18 @@ def is_routable_provider(provider: Optional[str]) -> bool:
     if name.lower() == "custom":
         return False
     try:
+        if not _rp()._provider_config_is_enabled(name.lower()):
+            return False
+    except Exception:
+        return False
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(name.lower())
+        if profile is not None and _rp()._parse_api_mode(getattr(profile, "api_mode", None)) == "agent_runtime":
+            return True
+    except Exception:
+        pass
+    try:
         from hermes_cli.providers import resolve_provider_full
         rp = _rp()
         config = rp.load_config()
@@ -481,6 +493,18 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")
     if not base_url:
         return None
+    configured_mode = rp._parse_api_mode(custom_provider.get("api_mode"))
+    if configured_mode == "agent_runtime":
+        result = {
+            "provider": "custom", "api_mode": configured_mode,
+            "base_url": base_url, "api_key": "",
+            "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
+            "requested_provider": requested_provider,
+        }
+        if target_model or custom_provider.get("model"):
+            result["model"] = target_model or custom_provider["model"]
+        _lift_model_capabilities(custom_provider, result.get("model"), result)
+        return result
     pool_result = rp._try_resolve_from_custom_pool(
         base_url, "custom", custom_provider.get("api_mode"),
         provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),

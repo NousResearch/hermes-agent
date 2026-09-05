@@ -1,9 +1,10 @@
 """Lifecycle-scoped gateway delivery regressions for terminal completions.
 
-The gateway contract here is deliberately narrower than exactly-once: one live
-GatewayRunner suppresses concurrent/replayed copies after successful adapter
-injection, failed injection remains retryable, and durable async-delegation
-state (when available) is acknowledged through its authoritative SQLite API.
+The gateway contract here is deliberately split at the adapter boundary:
+transport delivery remains at-least-once, while durable transcript/display-row
+consumers suppress a replay after their append commits. Failed injection
+remains retryable, and durable async-delegation state (when available) is
+acknowledged through its authoritative SQLite API.
 """
 
 import asyncio
@@ -111,6 +112,96 @@ def test_duplicate_async_queue_replay_injects_once(monkeypatch, isolated_registr
     asyncio.run(runner._async_delegation_watcher(interval=0))
 
     adapter.handle_message.assert_awaited_once()
+
+
+def test_async_injection_carries_stable_delivery_identity(monkeypatch):
+    """Synthetic async turns carry a durable message id across process restarts."""
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    event = _async_event("deleg_stable_identity")
+    event["parent_session_id"] = "synthetic-parent"
+
+    assert asyncio.run(
+        runner._inject_watch_notification("completion", event)
+    ) is True
+
+    delivered = adapter.handle_message.await_args.args[0]
+    assert delivered.message_id == (
+        "async-delegation:deleg_stable_identity:synthetic-parent"
+    )
+    assert delivered.metadata["async_delegation_delivery_id"] == delivered.message_id
+    assert delivered.metadata["gateway_session_id"] == "synthetic-parent"
+
+
+def test_completion_delivery_identity_uses_stable_delivery_id_and_parent():
+    event = _async_event("deleg_identity")
+    event["parent_session_id"] = "synthetic-parent"
+    event["delivery_id"] = (
+        "async-delegation:deleg_identity:synthetic-parent"
+    )
+
+    assert GatewayRunner._completion_delivery_identity(event) == (
+        "async_delegation",
+        "async-delegation:deleg_identity:synthetic-parent",
+        "synthetic-parent",
+    )
+
+
+def test_api_server_delivery_replay_detects_persisted_delegation_row():
+    """A persisted delivery row suppresses a crash-window replay."""
+    event = _async_event("deleg_api_replay")
+    event["origin_session_id"] = "synthetic-api-session"
+    db = SimpleNamespace(get_messages=MagicMock(return_value=[{
+        "role": "user",
+        "display_kind": "async_delegation_complete",
+        "display_metadata": {"delegation_id": "deleg_api_replay"},
+    }]))
+    adapter = SimpleNamespace(_ensure_session_db=MagicMock(return_value=db))
+    runner = object.__new__(GatewayRunner)
+
+    assert asyncio.run(
+        runner._async_delegation_delivery_already_persisted(
+            adapter, "synthetic-api-session", event,
+        )
+    ) is True
+    db.get_messages.assert_called_once_with("synthetic-api-session")
+
+
+def test_api_server_delivery_replay_does_not_append_second_row():
+    """The real api_server injection path is idempotent across a crash window."""
+    event = _async_event("deleg_api_crash_window")
+    event["session_key"] = "synthetic-api-session"
+    event["origin_session_id"] = "synthetic-api-session"
+    rows = []
+
+    def get_messages(_session_id):
+        return list(rows)
+
+    def append_message(*_args, **kwargs):
+        rows.append({
+            "display_kind": kwargs["display_kind"],
+            "display_metadata": kwargs["display_metadata"],
+        })
+
+    db = SimpleNamespace(
+        get_messages=get_messages,
+        append_message=append_message,
+    )
+    adapter = SimpleNamespace(
+        supports_async_delivery=False,
+        _ensure_session_db=lambda: db,
+    )
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.API_SERVER: adapter}
+    runner._build_process_event_source = MagicMock(return_value=None)
+
+    assert asyncio.run(
+        runner._inject_watch_notification("completion", event)
+    ) is True
+    assert asyncio.run(
+        runner._inject_watch_notification("completion", event)
+    ) is True
+    assert len(rows) == 1
 
 
 def test_unroutable_async_event_is_not_requeued_forever(

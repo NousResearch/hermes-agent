@@ -469,6 +469,117 @@ class TestOverridesHaveRoutableProvider:
         )
         assert _overrides_have_routable_provider({}) is False
 
+    def test_registered_agent_runtime_profile_round_trips_until_unloaded(
+        self, monkeypatch
+    ):
+        """A dynamic whole-turn profile stays routable for resume, then
+        becomes stale and is dropped after its plugin unregisters it."""
+        from hermes_cli import config as config_mod
+        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+        from providers import get_provider_profile
+        from providers.base import ProviderProfile
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        manager = PluginManager()
+        manager._discovered = True
+        context = PluginContext(
+            PluginManifest(name="agent-runtime-resume-test"), manager
+        )
+        profile = ProviderProfile(
+            name="agent-runtime-resume-provider",
+            aliases=("agent-runtime-resume-alias",),
+            api_mode="agent_runtime",
+            base_url="runtime://agent-runtime-resume-provider",
+            auth_type="oauth_external",
+        )
+        context.register_provider_profile(profile)
+        monkeypatch.setattr(
+            config_mod,
+            "load_config",
+            lambda: {"providers": {profile.name: {"enabled": True}}},
+        )
+
+        row = {
+            "model": "agent-runtime-resume-model",
+            "billing_provider": profile.name,
+            "model_config": json.dumps(
+                {
+                    "model": "agent-runtime-resume-model",
+                    "provider": profile.name,
+                    "base_url": profile.base_url,
+                    "api_mode": "agent_runtime",
+                }
+            ),
+        }
+        try:
+            assert get_provider_profile(profile.name) is profile
+            overrides = _stored_session_runtime_overrides(row)
+            assert overrides["provider_override"] == profile.name
+            assert overrides["model_override"] == {
+                "model": "agent-runtime-resume-model",
+                "provider": profile.name,
+                "base_url": profile.base_url,
+                "api_mode": "agent_runtime",
+            }
+
+            assert manager.unload("agent-runtime-resume-test") is True
+            assert get_provider_profile(profile.name) is None
+            # With no remaining static config entry for this identity, an
+            # unloaded dynamic profile must stay stale and fail closed.
+            monkeypatch.setattr(config_mod, "load_config", lambda: {})
+            assert rp.is_routable_provider(profile.name) is False
+
+            stale_overrides = _stored_session_runtime_overrides(row)
+            assert "provider_override" not in stale_overrides
+            assert stale_overrides["model_override"]["provider"] is None
+        finally:
+            # Keep the test isolated if an assertion fails before the normal
+            # unload path.
+            manager.unload("agent-runtime-resume-test")
+
+    def test_disabled_agent_runtime_profile_is_dropped_from_resume(self, monkeypatch):
+        """A configured disabled profile must fail the same gate as runtime
+        construction, so resume does not retain its provider override."""
+        from hermes_cli import config as config_mod
+        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+        from providers.base import ProviderProfile
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        manager = PluginManager()
+        manager._discovered = True
+        context = PluginContext(
+            PluginManifest(name="disabled-agent-runtime-resume-test"), manager
+        )
+        profile = ProviderProfile(
+            name="disabled-agent-runtime-provider",
+            api_mode="agent_runtime",
+            base_url="runtime://disabled-agent-runtime-provider",
+        )
+        context.register_provider_profile(profile)
+        monkeypatch.setattr(
+            config_mod,
+            "load_config",
+            lambda: {"providers": {profile.name: {"enabled": False}}},
+        )
+        row = {
+            "model": "disabled-agent-runtime-model",
+            "billing_provider": profile.name,
+            "model_config": json.dumps(
+                {
+                    "model": "disabled-agent-runtime-model",
+                    "provider": profile.name,
+                    "base_url": profile.base_url,
+                    "api_mode": "agent_runtime",
+                }
+            ),
+        }
+        try:
+            overrides = _stored_session_runtime_overrides(row)
+            assert "provider_override" not in overrides
+            assert overrides["model_override"]["provider"] is None
+        finally:
+            manager.unload("disabled-agent-runtime-resume-test")
+
 
 # --- Bot-Mode room plumbing sessions follow the profile's CURRENT config ------
 #
@@ -845,5 +956,3 @@ class TestRuntimeModelConfigDropsStaleKeys:
         config = _runtime_model_config(_agent_like(provider="nous"), None)
 
         assert config == {"model": "deepseek/deepseek-v4-flash-0731", "provider": "nous"}
-
-

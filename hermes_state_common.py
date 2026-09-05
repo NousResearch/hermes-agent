@@ -393,6 +393,48 @@ CREATE TABLE IF NOT EXISTS state_meta (
     value TEXT
 );
 
+-- Provider-neutral whole-turn runtime state.  The payload is deliberately
+-- kept separate from ``sessions``: runtimes may evolve their own state
+-- schema without adding provider-specific columns to the host session row.
+-- A runtime can update its one state envelope for a session, while the
+-- runtime_id dimension keeps independent runtimes isolated on the same
+-- Hermes conversation.
+CREATE TABLE IF NOT EXISTS runtime_session_state (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    runtime_id TEXT NOT NULL,
+    schema_version INTEGER NOT NULL,
+    state_json TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (session_id, runtime_id)
+);
+
+-- Provider-neutral usage receipts are an append-only audit stream.  A
+-- non-secret correlation id may be supplied by a runtime to make retries
+-- idempotent; receipts without one are intentionally never coalesced.
+CREATE TABLE IF NOT EXISTS runtime_usage_receipts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    runtime_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    selected_model TEXT,
+    effective_model TEXT,
+    canonical_model TEXT,
+    model_resolution TEXT NOT NULL DEFAULT 'unknown',
+    billing_mode TEXT NOT NULL,
+    cost_status TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    replay_safe INTEGER NOT NULL DEFAULT 0,
+    correlation_id TEXT,
+    fallback_used INTEGER NOT NULL DEFAULT 0,
+    failure_phase TEXT,
+    recorded_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS gateway_routing (
     scope TEXT NOT NULL DEFAULT '',
     session_key TEXT NOT NULL,
@@ -507,6 +549,13 @@ CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usag
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
+CREATE INDEX IF NOT EXISTS idx_runtime_session_state_runtime
+    ON runtime_session_state(runtime_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_runtime_usage_receipts_session
+    ON runtime_usage_receipts(session_id, runtime_id, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_usage_receipts_correlation
+    ON runtime_usage_receipts(session_id, runtime_id, correlation_id)
+    WHERE correlation_id IS NOT NULL;
 """
 
 # Indexes on later-added columns must run AFTER _reconcile_columns(), or executescript fails on legacy DBs.

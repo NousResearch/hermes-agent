@@ -15,7 +15,10 @@ string sniffing when absent or partial.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Optional
+
+from agent.runtime_api import RuntimeFailure
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,9 @@ LAYER_AUTH = "auth"
 LAYER_BILLING = "billing"
 LAYER_GATEWAY = "gateway"
 LAYER_DISK = "disk"
+LAYER_RUNTIME = "runtime"
+
+_RUNTIME_FAILURE_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,127}$")
 
 # failure_reason → UI layer. Unlisted reasons fall back to LAYER_PROVIDER:
 # every FailoverReason comes from classifying a provider call.
@@ -80,6 +86,15 @@ def _surface(layer: str, code: str, retryable: bool, provider: str = "", model: 
     return {"layer": layer, "code": code, "retryable": bool(retryable), **identity}
 
 
+def _surface_from_runtime_failure(failure: RuntimeFailure, provider: str = "", model: str = "") -> dict:
+    """Project only bounded public fields, never arbitrary runtime error content."""
+    code = failure.code
+    if type(code) is not str or _RUNTIME_FAILURE_CODE_RE.fullmatch(code) is None:
+        return _surface(LAYER_RUNTIME, "runtime_failed", False, provider, model)
+    retryable = failure.retryable if type(failure.retryable) is bool else False
+    return _surface(LAYER_RUNTIME, code, retryable, provider, model)
+
+
 def _disk_full(candidate: Any) -> bool:
     try:
         from hermes_state_errors import is_disk_full_error
@@ -108,7 +123,8 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
             return None
         error_text = str(result.get("error") or "")
         reason = str(result.get("failure_reason") or "").strip()
-        if not error_text and not reason:
+        failure = result.get("failure")
+        if not error_text and not reason and not isinstance(failure, RuntimeFailure):
             return None
         # Disk-full wins outright: the fix (free space) is unrelated to the
         # provider stack; hermes_state owns the pattern list.
@@ -116,6 +132,8 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
             return _surface(LAYER_DISK, "disk_full", False, provider, model)
         if result.get("billing_block") or reason in ("billing", "billing_unverified"):
             return _surface(LAYER_BILLING, reason or "billing", False, provider, model)
+        if isinstance(failure, RuntimeFailure):
+            return _surface_from_runtime_failure(failure, provider, model)
         if not reason:  # failed result without a classified reason (legacy paths)
             drop = _looks_like_stream_drop(error_text)
             return _surface(LAYER_STREAMING if drop else LAYER_PROVIDER, "stream_drop" if drop else "unknown", True, provider, model)
@@ -155,12 +173,3 @@ def build_error_surface_from_exception(exc: BaseException, provider: str = "", m
     except Exception:  # pragma: no cover — never break the error path
         logger.debug("error_surface: exception classification failed", exc_info=True)
         return None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-LAYER_RUNTIME = "runtime"
-# ---- END PLUGIN-COMPAT ----

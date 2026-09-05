@@ -493,6 +493,8 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
                 if session.get("_turn_cancel_requested")
                 else "Session no longer running before the agent was ready")})
             return
+    # Bind the route after deferred construction, before the first provider turn.
+    _persist_live_session_runtime(session)
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind,
         terminal_callback=hosted_terminal_callback)

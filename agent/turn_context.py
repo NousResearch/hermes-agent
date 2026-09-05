@@ -9,13 +9,16 @@ returns a ``TurnContext`` with only the locals the loop reads back.
 from __future__ import annotations
 
 import logging
+import copy
+import hashlib
+import json
 import sys
 import threading
 import time
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Sequence
 
 from agent.conversation_compression import recover_rotated_compression_session
 from agent.iteration_budget import IterationBudget
@@ -90,6 +93,94 @@ def compose_user_api_content(
     if not injections:
         return None
     return content + "\n\n" + "\n\n".join(injections)
+
+
+def compose_effective_system_prompt(
+    active_system_prompt: Any,
+    ephemeral_system_prompt: Any,
+) -> str:
+    """Compose the provider-neutral system prompt for one live turn.
+
+    Both the ordinary provider path and AgentRuntime receive this exact
+    string.  Keeping the join here prevents a runtime turn from silently
+    dropping scoped, per-turn system guidance that the normal request sends.
+    """
+    base = active_system_prompt if isinstance(active_system_prompt, str) else ""
+    ephemeral = (
+        ephemeral_system_prompt
+        if isinstance(ephemeral_system_prompt, str)
+        else ""
+    )
+    if ephemeral:
+        return (base + "\n\n" + ephemeral).strip()
+    return base
+
+
+def build_effective_prompt_messages(
+    messages: Any,
+    *,
+    current_turn_user_idx: int | None = None,
+    ext_prefetch_cache: str = "",
+    plugin_user_context: str = "",
+) -> List[Dict[str, Any]]:
+    """Build the shared provider-neutral message copy for a live request.
+
+    ``api_content`` is the durable byte-fidelity sidecar.  Applying it here
+    means the ordinary provider path and a whole-turn runtime see the same
+    effective user/assistant bytes, while the original transcript remains
+    clean and mutable only by the host.
+    """
+    effective: List[Dict[str, Any]] = []
+    for idx, raw_message in enumerate(messages or ()):
+        if not isinstance(raw_message, Mapping):
+            continue
+        message = copy.deepcopy(dict(raw_message))
+        role = message.get("role")
+        sidecar = message.pop("api_content", None)
+        # These fields are host bookkeeping and are not part of provider or
+        # runtime prompt content.
+        for key in ("display_kind", "display_metadata", "_row_id", "_db_persisted"):
+            message.pop(key, None)
+        if (
+            isinstance(sidecar, str)
+            and sidecar
+            and role in ("user", "assistant")
+        ):
+            message["content"] = sidecar
+        elif (
+            current_turn_user_idx is not None
+            and idx == current_turn_user_idx
+            and role == "user"
+        ):
+            composed = compose_user_api_content(
+                message.get("content", ""),
+                ext_prefetch_cache,
+                plugin_user_context,
+            )
+            if composed is not None:
+                message["content"] = composed
+        effective.append(message)
+    return effective
+
+
+def effective_prompt_sha256(
+    system_prompt: str,
+    messages: Sequence[Mapping[str, Any]],
+) -> str:
+    """Hash the canonical provider-neutral system-plus-history prompt."""
+    try:
+        payload = json.dumps(
+            {
+                "prompt_snapshot": system_prompt if isinstance(system_prompt, str) else "",
+                "messages": messages,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("effective prompt is not canonical JSON") from exc
+    return hashlib.sha256(payload).hexdigest()
 
 
 def substitute_api_content(api_msg: Dict[str, Any]) -> Optional[str]:
@@ -931,45 +1022,17 @@ def build_api_messages(
     from agent.agent_runtime_helpers import fill_empty_non_final_wire_payload
     from agent.conversation_loop import _clone_message_for_send
 
+    effective_prompt_messages = build_effective_prompt_messages(
+        messages, current_turn_user_idx=current_turn_user_idx,
+        ext_prefetch_cache=ext_prefetch_cache, plugin_user_context=plugin_user_context,
+    )
     api_messages = []
-    for idx, msg in enumerate(messages):
-        # Structural clone, NOT msg.copy(): in-place transforms below must not reach
-        # persisted history via nested containers; see _clone_message_for_send.
+    for idx, msg in enumerate(effective_prompt_messages):
         api_msg = _clone_message_for_send(msg)
-        # api_content is bookkeeping (exact bytes sent), never a provider field — pop
-        # it from EVERY outgoing copy. display_* is display-only timeline metadata
-        # (strict OpenAI backends reject unknown keys); _row_id is the durable row id
-        # from _rows_to_conversation and only chat-completions strips underscore keys.
-        _api_content = api_msg.pop("api_content", None)
-        for key in ("display_kind", "display_metadata", "_row_id"):
-            api_msg.pop(key, None)
-
-        # Inject ephemeral context (memory prefetch + pre_llm_call user hooks)
-        # at API time only; `messages` is untouched beyond the api_content stamp.
-        if idx == current_turn_user_idx and msg.get("role") == "user":
-            if isinstance(_api_content, str) and _api_content:
-                # Reuse the prologue's stamp so sidecar and wire cannot drift
-                # and every pass this turn sends identical bytes.
-                api_msg["content"] = _api_content
-            else:
-                # Callers that bypass the prologue stamping: compose live.
-                _composed = compose_user_api_content(
-                    api_msg.get("content", ""), ext_prefetch_cache, plugin_user_context
-                )
-                if _composed is not None:
-                    api_msg["content"] = _composed
-        elif (
-            isinstance(_api_content, str) and _api_content
-            and msg.get("role") in ("user", "assistant")
-        ):
-            # Historical row: replay the exact bytes sent live so the prompt-cache
-            # prefix stays byte-stable. User rows carry the injection sidecar; user
-            # and assistant rows may carry a sanitize-divergence sidecar.
-            api_msg["content"] = _api_content
 
         # Pass reasoning back to the API for ALL assistant messages so multi-turn
         # reasoning context is preserved.
-        agent._copy_reasoning_content_for_api(msg, api_msg)
+        agent._copy_reasoning_content_for_api(messages[idx], api_msg)
         # 'reasoning' is trajectory-only (copied to 'reasoning_content' above);
         # finish_reason is rejected by strict APIs (e.g. Mistral).
         api_msg.pop("reasoning", None)
@@ -995,11 +1058,15 @@ def build_api_messages(
     # Final system message = cached prompt + ephemeral additions (API-time only).
     # Plugin/recall context goes into the user message, never the system prompt: the
     # prompt is built ONCE per session and replayed verbatim (stable cache prefix).
-    effective_system = active_system_prompt or ""
-    if agent.ephemeral_system_prompt:
-        effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+    effective_system = compose_effective_system_prompt(
+        active_system_prompt, getattr(agent, "ephemeral_system_prompt", None)
+    )
     if effective_system:
         api_messages = [{"role": "system", "content": effective_system}] + api_messages
+    try:
+        agent._last_effective_prompt_hash = effective_prompt_sha256(effective_system, effective_prompt_messages)
+    except (TypeError, ValueError):
+        agent._last_effective_prompt_hash = ""
     return api_messages, effective_system
 
 

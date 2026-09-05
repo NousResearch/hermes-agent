@@ -37,6 +37,7 @@ from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
 from agent.turn_final_response import finish_text_response
 from agent.turn_finalizer import finalize_turn
+from agent.turn_runtime import resolve_turn_runtime, run_registered_runtime
 from agent.turn_iteration_prep import (
     announce_api_call,
     apply_retry_restarts,
@@ -1425,6 +1426,17 @@ def run_conversation(
     except Exception:
         logger.debug("per-turn env credential refresh failed", exc_info=True)
 
+    # Resolve the descriptor before compaction. The built-in closure is invoked
+    # only after normal Hermes setup has populated the turn state below.
+    runtime_registration = resolve_turn_runtime(
+        agent,
+        lambda: agent._run_codex_app_server_turn(
+            user_message=s.user_message, original_user_message=s.original_user_message,
+            messages=s.messages, effective_task_id=s.effective_task_id,
+            should_review_memory=s._should_review_memory,
+        ),
+    )
+
     # Per-turn setup: build_turn_context mutates ``agent`` and returns the locals the loop reads.
     try:
         _ctx = build_turn_context(
@@ -1467,14 +1479,8 @@ def run_conversation(
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
     )
-    # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
-    # app-server subprocess (see agent/transports/codex_app_server_session.py).
-    if agent.api_mode == "codex_app_server":
-        return agent._run_codex_app_server_turn(
-            user_message=s.user_message, original_user_message=s.original_user_message,
-            messages=s.messages, effective_task_id=s.effective_task_id,
-            should_review_memory=s._should_review_memory,
-        )
+    if runtime_registration is not None:
+        return run_registered_runtime(agent, runtime_registration, s)
 
     while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         if _run_phase(begin_iteration, agent, s).action == "break":

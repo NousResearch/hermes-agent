@@ -42,6 +42,16 @@ _DEFAULT_MAX_ASYNC_CHILDREN = 3
 _MAX_RETAINED_COMPLETED = 50
 _DURABLE_RETENTION_SECONDS = 7 * 24 * 60 * 60
 _MAX_DURABLE_PENDING = 1000
+
+
+def _completion_delivery_id(delegation_id: Any, parent_session_id: Any = None) -> str:
+    """Stable completion consumer identity, scoped to the spawning parent."""
+    delegation = str(delegation_id or "").strip()
+    parent = str(parent_session_id or "").strip()
+    if not delegation:
+        return ""
+    return f"async-delegation:{delegation}:{parent}" if parent else f"async-delegation:{delegation}"
+
 # Cap retried deliveries so an unroutable row converges to terminal 'dropped'.
 _MAX_DELIVERY_ATTEMPTS = 8
 # Pending completions older than this are dropped on restart replay instead of
@@ -219,7 +229,7 @@ def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
 
 
 def recover_abandoned_delegations() -> int:
-    """Classify records whose owning process disappeared as outcome unknown."""
+    """Classify dead-owner records as unknown without replaying them into a parent."""
     try:
         from gateway.status import _pid_exists, get_process_start_time
     except Exception:
@@ -237,6 +247,7 @@ def recover_abandoned_delegations() -> int:
             task = json.loads(task_json or "{}")
             event = {
                 "type": "async_delegation", "delegation_id": delegation_id, "session_key": session_key,
+                "delivery_id": _completion_delivery_id(delegation_id, parent_id),
                 "origin_ui_session_id": origin_ui, "origin_session_id": origin_sid or "",
                 "parent_session_id": parent_id, "goal": task.get("goal", ""), "goals": task.get("goals"),
                 "context": task.get("context"), "toolsets": task.get("toolsets"), "role": task.get("role"),
@@ -247,7 +258,8 @@ def recover_abandoned_delegations() -> int:
                 **{k: task[k] for k in _ROUTING_KEYS if task.get(k)}}
             result = {"status": "unknown", "summary": None, "error": event["error"]}
             conn.execute("""UPDATE async_delegations SET state='unknown', completed_at=?,
-                   updated_at=?, event_json=?, result_json=?, delivery_state='pending'
+                   updated_at=?, event_json=?, result_json=?, delivery_state='dropped',
+                   delivery_claim=NULL, delivery_claimed_at=NULL
                    WHERE delegation_id=?""", (now, now, json.dumps(event), json.dumps(result), delegation_id))
             recovered += 1
     return recovered
@@ -658,6 +670,7 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
             "duration_seconds": result.get("duration_seconds", round(completed_at - dispatched_at, 2))}
     evt = {
         "type": "async_delegation", "delegation_id": record.get("delegation_id"),
+        "delivery_id": _completion_delivery_id(record.get("delegation_id"), record.get("parent_session_id")),
         # session_key routes back to the originating gateway session; "" => CLI.
         "session_key": record.get("session_key", ""),
         "origin_ui_session_id": record.get("origin_ui_session_id", ""),

@@ -26,6 +26,7 @@ import types
 
 import pytest
 
+from agent.runtime_api import RuntimeFailure, RuntimeFailurePhase
 from tui_gateway import server
 
 
@@ -206,6 +207,48 @@ def test_returned_error_result_carries_error_surface(emits, turn_env):
     snapshot = server._inflight_snapshot(session)
     assert snapshot is not None
     assert snapshot["error_surface"]["layer"] == "provider"
+
+
+def test_returned_runtime_failure_surface_is_retained_for_resume(emits, turn_env):
+    failure = RuntimeFailure(
+        code="runtime_offline",
+        message="private runtime details",
+        phase=RuntimeFailurePhase.BEFORE_VISIBLE_OUTPUT,
+        replay_safe=False,
+        retryable=True,
+    )
+    agent = types.SimpleNamespace(
+        session_id="session-key",
+        provider="claude-agent-sdk",
+        model="claude-fable-5-1",
+        run_conversation=lambda *a, **k: {
+            "final_response": "",
+            "error": "runtime failed",
+            "failed": True,
+            "failure": failure,
+        },
+        clear_interrupt=lambda: None,
+    )
+    session = _session(agent=agent, running=True)
+    server._start_inflight_turn(session, "do the thing")
+
+    server._run_prompt_submit("rid", "sid", session, "do the thing")
+
+    expected = {
+        "layer": "runtime",
+        "code": "runtime_offline",
+        "retryable": True,
+        "provider": "claude-agent-sdk",
+        "model": "claude-fable-5-1",
+    }
+    payload = _events(emits, "message.complete")[0]
+    assert payload["error_surface"] == expected
+
+    snapshot = server._inflight_snapshot(session)
+    assert snapshot is not None
+    assert snapshot["error_surface"] == expected
+    assert "message" not in snapshot["error_surface"]
+    assert "phase" not in snapshot["error_surface"]
 
 
 def test_returned_error_without_reason_omits_no_frame(emits, turn_env):

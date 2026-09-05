@@ -300,6 +300,20 @@ class GatewayTurnMixin:
             if resolved_entry is None:
                 return
             session_entry = resolved_entry
+        async_delivery_id = str(event_metadata.get("async_delegation_delivery_id") or "").strip()
+        if async_delivery_id:
+            # An accepted synthetic turn may replay after an append/ack crash.
+            # Either the pinned parent or its compression tip proves delivery.
+            delivery_session_ids = [session_entry.session_id]
+            if pinned_session_id and pinned_session_id not in delivery_session_ids:
+                delivery_session_ids.append(pinned_session_id)
+            try:
+                for delivery_session_id in delivery_session_ids:
+                    if await self.async_session_store.has_platform_message_id(delivery_session_id, async_delivery_id):
+                        logger.info("Skipping already-persisted async delegation delivery")
+                        return
+            except Exception:
+                logger.debug("Async delegation delivery idempotency lookup failed", exc_info=True)
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
@@ -1636,7 +1650,8 @@ class GatewayTurnMixin:
         # agent_persisted=True (see agent/codex_runtime.py). Reading the flag (default = self._session_db is
         # not None) keeps the persistence contract explicit and lets any future non-persisting runtime opt
         # into a gateway-side write by returning False.
-        agent_persisted = agent_result.get("agent_persisted", self._session_db is not None)
+        _agent_persisted = agent_result.get("agent_persisted")
+        agent_persisted = _agent_persisted if isinstance(_agent_persisted, bool) else self._session_db is not None
         _user_row = self._hmwa_user_transcript_entry(event, prepared, ts)
 
         if is_context_overflow_failure:

@@ -67,6 +67,42 @@ def register_provider(profile: ProviderProfile) -> None:
     _PROVIDER_LIST_CACHE = None
 
 
+def snapshot_registration(name: str) -> ProviderProfile | None:
+    """Return the currently registered canonical provider without discovery."""
+
+    return _REGISTRY.get(name)
+
+
+def restore_registration(
+    name: str,
+    current: ProviderProfile,
+    replacement: ProviderProfile | None,
+) -> bool:
+    """Replace ``current`` only when it still owns the canonical slot.
+
+    Plugin unload uses this identity-conditional inverse so a late provider
+    registration is never removed accidentally. Aliases owned by ``current``
+    are removed before the prior profile is restored.
+    """
+
+    global _PROVIDER_LIST_CACHE
+    if _REGISTRY.get(name) is not current:
+        return False
+
+    _REGISTRY.pop(name, None)
+    for alias, canonical in tuple(_ALIASES.items()):
+        if canonical == name:
+            _ALIASES.pop(alias, None)
+
+    if replacement is not None:
+        _REGISTRY[name] = replacement
+        for alias in replacement.aliases:
+            _ALIASES[alias] = name
+
+    _PROVIDER_LIST_CACHE = None
+    return True
+
+
 def get_provider_profile(name: str) -> ProviderProfile | None:
     """Look up a provider profile by name or alias.
 

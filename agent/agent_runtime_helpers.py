@@ -70,6 +70,197 @@ _UNTERMINATED_TOOL_CALL_PATTERN = re.compile(
 )
 
 
+def _strip_tool_call_blocks(content: str) -> str:
+    """Remove complete tool-call XML blocks from provider text."""
+    for _pattern in _TOOL_CALL_BLOCK_PATTERNS:
+        content = _pattern.sub('', content)
+    return _NAMED_FUNCTION_BLOCK_PATTERN.sub('', content)
+
+
+def _strip_tool_call_tail(content: str) -> str:
+    """Remove orphan tool-call tags and cut-off tool-call tails."""
+    content = _STRAY_TOOL_CALL_CLOSER_PATTERN.sub('', content)
+    return _UNTERMINATED_TOOL_CALL_PATTERN.sub('', content)
+
+
+def strip_tool_call_markup(content: str) -> str:
+    """Remove provider-neutral tool-call markup without touching reasoning.
+
+    Runtime content is passed to the agent's stateful reasoning scrubber
+    immediately afterwards. Keeping reasoning out of this helper preserves
+    split ``<think>`` tags while sharing the same tool-call cleanup as the
+    complete-response sanitizer below.
+    """
+    if not content:
+        return ""
+    if not isinstance(content, str):
+        content = str(content)
+    return _strip_tool_call_tail(_strip_tool_call_blocks(content))
+
+
+class StreamingToolCallMarkupScrubber:
+    """Stream-safe wrapper around :func:`strip_tool_call_markup`.
+
+    Runtime content arrives as deltas, so a cut marker can span events. Keep
+    only a partial tag or an active generic tool block between calls; complete
+    text still goes through the same stateless helper used at persistence.
+    """
+
+    _GENERIC_OPEN_TAG = re.compile(
+        rf"<({'|'.join(_TOOL_CALL_TAG_NAMES)})\b[^>]*>",
+        re.IGNORECASE,
+    )
+    _GENERIC_CLOSE_TAGS = {
+        name: re.compile(rf"</{name}\s*>", re.IGNORECASE)
+        for name in _TOOL_CALL_TAG_NAMES
+    }
+    _ARG_TAG = re.compile(
+        r"</?arg_(?:key|value)\b[^>]*>",
+        re.IGNORECASE,
+    )
+    _PARTIAL_TAG_NAMES = _TOOL_CALL_TAG_NAMES + (
+        "function",
+        "arg_key",
+        "arg_value",
+    )
+    _PARTIAL_TAGS = tuple(
+        prefix
+        for name in _PARTIAL_TAG_NAMES
+        for prefix in (f"<{name}", f"</{name}")
+    )
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._in_generic_block = False
+        self._generic_block_name: str | None = None
+        self._discarded_tail = False
+
+    def reset(self) -> None:
+        self._buffer = ""
+        self._in_generic_block = False
+        self._generic_block_name = None
+        self._discarded_tail = False
+
+    def feed(self, text: str) -> str:
+        if not text or self._discarded_tail:
+            return ""
+        buf = self._buffer + text
+        self._buffer = ""
+        out: list[str] = []
+        while buf:
+            if self._in_generic_block:
+                close = self._GENERIC_CLOSE_TAGS[self._generic_block_name].search(buf)
+                if close is None:
+                    self._buffer = self._hold_partial_suffix(buf)
+                    return "".join(out)
+                buf = buf[close.end():]
+                self._in_generic_block = False
+                self._generic_block_name = None
+                continue
+
+            pair = self._find_generic_pair(buf)
+            if pair is not None:
+                start, end = pair
+                out.append(strip_tool_call_markup(buf[:start]))
+                buf = buf[end:]
+                continue
+
+            opener = self._GENERIC_OPEN_TAG.search(buf)
+            if opener is not None and self._is_boundary(buf, opener.start()):
+                preceding = buf[:opener.start()]
+                # The cut-tail regex consumes the boundary newline before an
+                # unterminated opener; do the same before entering the block.
+                line_start = preceding.rfind("\n")
+                if line_start >= 0 and not preceding[line_start + 1:].strip():
+                    preceding = preceding[:line_start]
+                if preceding:
+                    out.append(strip_tool_call_markup(preceding))
+                self._in_generic_block = True
+                self._generic_block_name = opener.group(1).lower()
+                buf = buf[opener.end():]
+                continue
+
+            arg = self._ARG_TAG.search(buf)
+            if arg is not None:
+                line_start = buf.rfind("\n", 0, arg.start()) + 1
+                line_prefix = buf[line_start:arg.start()]
+                if "<" not in line_prefix:
+                    if line_start:
+                        # Consume the newline that introduces the cut line,
+                        # matching _UNTERMINATED_TOOL_CALL_PATTERN.
+                        out.append(strip_tool_call_markup(buf[:line_start - 1]))
+                    self._discarded_tail = True
+                    return "".join(out)
+
+            held_start = self._partial_tag_start(buf)
+            if held_start is None:
+                out.append(strip_tool_call_markup(buf))
+                return "".join(out)
+            if self._is_boundary(buf, held_start):
+                line_start = buf.rfind("\n", 0, held_start) + 1
+                if line_start and buf[line_start - 1] == "\n":
+                    held_start = line_start - 1
+                else:
+                    held_start = line_start
+            else:
+                # Preserve the line prefix so a split mid-line prose mention
+                # cannot become a block-boundary opener on the next delta.
+                held_start = buf.rfind("\n", 0, held_start) + 1
+            if held_start:
+                out.append(strip_tool_call_markup(buf[:held_start]))
+            self._buffer = buf[held_start:]
+            return "".join(out)
+        return "".join(out)
+
+    def flush(self) -> str:
+        if self._in_generic_block or self._discarded_tail:
+            self.reset()
+            return ""
+        tail = self._buffer
+        self.reset()
+        return strip_tool_call_markup(tail)
+
+    @classmethod
+    def _find_generic_pair(cls, text: str) -> tuple[int, int] | None:
+        best: tuple[int, int] | None = None
+        for name in _TOOL_CALL_TAG_NAMES:
+            opener_pattern = re.compile(
+                rf"<{name}\b[^>]*>", re.IGNORECASE
+            )
+            close_pattern = cls._GENERIC_CLOSE_TAGS[name]
+            for opener in opener_pattern.finditer(text):
+                close = close_pattern.search(text, opener.end())
+                if close is None:
+                    continue
+                candidate = (opener.start(), close.end())
+                if best is None or candidate[0] < best[0]:
+                    best = candidate
+        return best
+
+    @staticmethod
+    def _is_boundary(text: str, index: int) -> bool:
+        line_start = text.rfind("\n", 0, index) + 1
+        return not text[line_start:index].strip()
+
+    @classmethod
+    def _partial_tag_start(cls, text: str) -> int | None:
+        for index in range(max(0, len(text) - 32), len(text)):
+            suffix = text[index:].lower()
+            if any(
+                tag.lower().startswith(suffix) and suffix != tag.lower()
+                for tag in cls._PARTIAL_TAGS
+            ):
+                return index
+        return None
+
+    @classmethod
+    def _hold_partial_suffix(cls, text: str) -> str:
+        match = cls._partial_tag_start(text)
+        if match is None:
+            return ""
+        return text[match:]
+
+
 def _ra():
     """Lazy ``run_agent`` reference for test-patch routing."""
     import run_agent
@@ -2777,25 +2968,34 @@ def _realign_tool_result_names(messages: List[Dict[str, Any]]) -> List[Dict[str,
     #   changes. A no-op for the native Gemini path, which already resolves the same name. A result whose
     #   assistant call frame is missing entirely never reaches here — pass 1 above drops it as an orphan —
     #   so the only results this pass sees are ones whose call name is knowable.
-    call_names: Dict[str, str] = {}
-    for msg in messages:
-        if msg.get("role") == "assistant":
-            for tc in msg.get("tool_calls") or []:
-                # Strip on insert to match the lookup below so padded ids still pair.
-                cid = (_ra().AIAgent._get_tool_call_id_static(tc) or "").strip()
-                nm = _ra().AIAgent._get_tool_call_name_static(tc)
-                if cid and nm:
-                    call_names[cid] = nm
+    # Tool ids can recur on later turns: align only within the local result run.
+    declared_names: Dict[str, tuple[str, frozenset[str]]] = {}
     realigned: List[Tuple[str, str]] = []
     aligned: List[Dict[str, Any]] = []
     for msg in messages:
-        if msg.get("role") == "tool":
-            expected = call_names.get((msg.get("tool_call_id") or "").strip())
+        if msg.get("role") == "assistant":
+            declared_names = {}
+            for tc in msg.get("tool_calls") or []:
+                variants = tool_call_id_variants(tc)
+                nm = _ra().AIAgent._get_tool_call_name_static(tc)
+                if variants and nm:
+                    declared_names[sorted(variants)[0]] = (nm, variants)
+        elif msg.get("role") == "tool":
+            result_variants = tool_result_id_variants(msg.get("tool_call_id"))
+            matched = next(
+                (key for key, (_name, variants) in declared_names.items() if variants & result_variants),
+                None,
+            )
+            expected = None
+            if matched is not None:
+                expected, _variants = declared_names.pop(matched)
             current = msg.get("name")
             # Only rewrite a present, disagreeing name; clean transcripts must stay byte-identical for prompt caching.
             if expected and current and current != expected:
                 msg = {**msg, "name": expected}
                 realigned.append((current, expected))
+        elif msg.get("role") == "user":
+            declared_names = {}
         aligned.append(msg)
     if not realigned:
         return messages

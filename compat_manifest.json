@@ -729,12 +729,6 @@
    "target": "(deleted; BASE body restored)"
   },
   {
-   "facade": "agent.error_surface",
-   "name": "LAYER_RUNTIME",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
    "facade": "agent.estop",
    "name": "os",
    "kind": "import",

@@ -2181,28 +2181,42 @@ export const zhHant = defineLocale({
     images: '圖片…',
     pasteImage: '貼上圖片',
     url: 'URL…',
-    promptSnippets: '提示詞片段…',
+    promptTemplates: '提示詞模板…',
     tipPre: '提示：輸入 ',
     tipPost: ' 以行內參照檔案。',
-    snippetsTitle: '提示詞片段',
-    snippetsDesc: '選擇一個起始提示詞放入輸入框。',
+    templatesTitle: '提示詞模板',
+    templatesDesc: '選擇一個起始提示詞放入輸入框。',
+    templateAdd: '新增模板',
+    templateEdit: '編輯',
+    templateDelete: '刪除',
+    templateMoveUp: '上移',
+    templateMoveDown: '下移',
+    templateReset: '還原預設',
+    templateResetConfirm: '將所有模板還原為三個內建預設值？自訂模板將遺失。',
+    templateLabelPlaceholder: '標籤',
+    templateDescPlaceholder: '描述（選填）',
+    templateTextPlaceholder: '提示詞文字',
+    templateSave: '儲存',
+    templateCancel: '取消',
+    templateEmpty: '還沒有模板。新增一個開始吧。',
+    templateConfirmDelete: '刪除此模板？',
     dropFiles: '拖曳檔案以附加',
     dropSession: '拖曳以連結此聊天',
-    snippets: {
+    templates: {
       codeReview: {
         label: '程式碼審查',
-        description: '審查目前的變更是否有回歸、遺漏的邊緣情況和缺少的測試。',
-        text: '請審查這部分是否有錯誤、回歸和缺少的測試。'
+        description: '檢查近期改動是否有回歸和未覆蓋的邊界情況。',
+        text: '審查我分享的程式碼，指出缺陷、回歸、缺失的測試或有風險的模式。請給出具體行號和修復建議。'
       },
       implementationPlan: {
-        label: '實作計劃',
-        description: '在動程式碼之前先勾勒方案，讓 diff 保持聚焦。',
-        text: '請在修改程式碼前制定一個簡潔的實作計劃。'
+        label: '實作計畫',
+        description: '寫程式前先列出分步方案。',
+        text: '在寫程式之前，先列出這個任務的實作步驟：要改哪些檔案、每個檔案的改法、以及潛在風險和取捨。'
       },
       explainThis: {
         label: '解釋這段',
-        description: '說明所選程式碼的運作方式，並連結到關鍵檔案。',
-        text: '請解釋這是如何運作的，並告訴我關鍵檔案在哪裡。'
+        description: '逐步講解某段程式碼的運作原理。',
+        text: '逐步講解這段程式碼是如何運作的，解釋關鍵設計決策，並指出最重要的檔案和函式。'
       }
     }
   },

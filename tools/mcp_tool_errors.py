@@ -283,6 +283,29 @@ def _is_auth_error(exc: BaseException) -> bool:
     return getattr(exc.response, "status_code", None) == 401 if isinstance(exc, http_types) else True
 
 
+def _connect_failure_reason(exc: BaseException) -> str:
+    """Reduce an MCP connect exception to a credential-safe health reason."""
+    return "auth_required" if _is_auth_error(_unwrap_exception_group(exc)) else "check_failed"
+
+
+class _MCPConnectErrorText(str):
+    """Backward-compatible error text carrying a credential-safe reason."""
+
+    reason: str
+
+    def __new__(cls, message: str, reason: str):
+        value = super().__new__(cls, message)
+        value.reason = reason
+        return value
+
+    def __reduce__(self):
+        return type(self), (str(self), self.reason)
+
+
+def _connect_error_text(message: str, exc: BaseException) -> str:
+    return _MCPConnectErrorText(message, _connect_failure_reason(exc))
+
+
 # Lower-cased substrings meaning the transport session expired / was GC'd (OAuth token still valid).
 # Substrings (lower-cased match) that indicate the MCP server rejected the request because its server-side
 # transport session expired / was garbage-collected. See #13383.

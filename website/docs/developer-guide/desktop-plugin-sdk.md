@@ -206,6 +206,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Layout pane | `PANES_AREA` (`'panes'`) | `title` + `render` + `data: { placement, dock?, width?, height? }` |
 | Full page | `ROUTES_AREA` | `data: { path }` + `render` |
 | Sidebar nav | `SIDEBAR_NAV_AREA` | `data: { path, label, codicon }` |
+| Connection health | `CONNECTION_HEALTH_AREA` | `data: ConnectionHealthProvider` |
 | Status bar | `STATUSBAR_AREAS.left` / `.right` | `render` (or `data` as `StatusbarItem`) |
 | Title bar | `TITLEBAR_AREAS.left` / `.center` / `.right` | `data` as `TitlebarTool`, or a mount-scoped `<Contribute>` |
 | ⌘K palette | `PALETTE_AREA` | `data: PaletteContribution` |
@@ -278,6 +279,46 @@ ctx.registerMany([
 
 `codicon` is a [VS Code codicon](https://microsoft.github.io/vscode-codicons/dist/codicon.html)
 id. Navigate to a route from anywhere with `host.navigate('/my-page')`.
+
+### Connection health
+
+A plugin that owns an external integration can publish a passive health snapshot
+for a Connections-style overview. The provider reports cached or otherwise cheap
+state; registering it must not connect, authenticate, prompt, restart, or probe a
+remote service.
+
+```javascript
+import { CONNECTION_HEALTH_AREA } from '@hermes/plugin-sdk'
+
+ctx.register({
+  id: 'calendar-health',
+  area: CONNECTION_HEALTH_AREA,
+  data: {
+    name: 'Calendar',
+    load: () => [{
+      id: 'calendar',
+      name: 'Calendar',
+      status: 'Connected',
+      reason: 'healthy',
+      checkedAt: Date.now(),
+      staleAfterMs: 60_000,
+      repair: { kind: 'route', path: '/settings?tab=plugins' }
+    }]
+  }
+})
+```
+
+`reason` is one of `healthy`, `auth_required`, `service_unreachable`,
+`permission_required`, `not_installed`, `not_configured`, `stale`, or
+`check_failed`. Repairs are deliberately non-executable: use a plain `message`
+or an internal absolute `route`. The host drops malformed results, unknown
+fields, unsafe repairs, non-finite timestamps, and invalid stale durations.
+
+An overview plugin consumes the registered providers with
+`useConnectionHealthProviders()` and decides when to call `load()`. Provider
+failures should be caught and displayed per provider. Keep credentials and raw
+exception text out of health results; configuration, authentication, and active
+tests remain on the integration's owning surface.
 
 ### Status bar and title bar
 
@@ -895,12 +936,12 @@ not treat this pipeline as a trust boundary.
 |----------|---------|
 | Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
-| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
-| Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |
+| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `CONNECTION_HEALTH_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
+| Area payloads | `RouteContribution`, `SidebarNavContribution`, `ConnectionHealthProvider`, `ConnectionHealthResult`, `ConnectionHealthReason`, `ConnectionHealthRepair`, `RegisteredConnectionHealthProvider`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `contrastRatio`, `readableOn`, `normalizeHex`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText` |
-| Helpers | `cn`, `icons`, `haptic`, `useI18n`, `profileColor`, `profileColorSoft`, `relativeTime`, `fmtDateTime`, `fmtDayTime`, `coarseElapsed`, `evaluateRuntimeReadiness` |
+| Helpers | `cn`, `icons`, `haptic`, `useI18n`, `profileColor`, `profileColorSoft`, `relativeTime`, `fmtDateTime`, `fmtDayTime`, `coarseElapsed`, `evaluateRuntimeReadiness`, `connectionHealthProviders`, `useConnectionHealthProviders` |
 
 The canonical, always-current export list is `apps/desktop/src/sdk/index.ts`.
 

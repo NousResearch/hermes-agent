@@ -1571,6 +1571,16 @@ export { Switch } from '@/components/ui/switch'
 export { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 export { Textarea } from '@/components/ui/textarea'
 export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+export {
+  CONNECTION_HEALTH_AREA,
+  type ConnectionHealthProvider,
+  connectionHealthProviders,
+  type ConnectionHealthReason,
+  type ConnectionHealthRepair,
+  type ConnectionHealthResult,
+  type RegisteredConnectionHealthProvider,
+  useConnectionHealthProviders
+} from '@/contrib/connection-health'
 export type { GatewayEventListener } from '@/contrib/events'
 export type {
   HermesPlugin,

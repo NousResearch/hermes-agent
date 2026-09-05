@@ -112,7 +112,7 @@ def _note_connect_failure(name: str, exc: BaseException) -> str:
     message = _errors._format_connect_error(exc)
     with _core._lock:
         _core._server_connecting.discard(name)
-        _core._server_connect_errors[name] = message
+        _core._server_connect_errors[name] = _errors._connect_error_text(message, exc)
         _record_connect_failure(name)
     return message
 
@@ -245,7 +245,9 @@ def _select_new_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
         stale_cached = [_core._servers[k] for k in servers
                         if k in _core._servers and getattr(_core._servers[k], "session", None) is None]
         _core._server_connecting.update(new_servers)
+        current_scope = _core._mcp_registry_scope()
         for srv_name in new_servers:
+            _core._server_scope_keys[srv_name] = current_scope
             _core._server_connect_errors.pop(srv_name, None)
         # Track which servers opt-in to parallel tool calls (idempotent).
         for srv_name, srv_cfg in servers.items():
@@ -327,7 +329,9 @@ def _run_discovery_pass(new_servers: Dict[str, dict]) -> None:
                                "connecting set: %s", how, len(stale), ", ".join(stale))
                 _core._server_connecting.difference_update(stale)
                 for _sn in stale:
-                    _core._server_connect_errors.setdefault(_sn, f"Connection attempt {how} during discovery")
+                    message = f"Connection attempt {how} during discovery"
+                    _core._server_connect_errors.setdefault(
+                        _sn, _errors._MCPConnectErrorText(message, "check_failed"))
         raise
     finally:
         if _was_interrupted:
@@ -453,16 +457,36 @@ def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
         return bool(server_name and server_name in _core._parallel_safe_servers)
 
 
-def get_mcp_status() -> List[dict]:
-    """Per-server status dicts for banner/TUI: name, transport, tools, connected, disabled,
-    status (connected / disabled / connecting / failed / configured) and error for failed."""
-    configured = _config._load_mcp_config()
+def get_mcp_status(
+    configured: Optional[Dict[str, dict]] = None,
+    *,
+    include_runtime: bool = True,
+) -> List[dict]:
+    """Per-server cached status without initiating connections."""
+    configured = _config._load_mcp_config() if configured is None else dict(configured)
     if not configured:
         return []
+    current_scope = _core._mcp_registry_scope()
     with _core._lock:
-        active_servers = dict(_core._servers)
-        connecting = set(_core._server_connecting)
-        connect_errors = dict(_core._server_connect_errors)
+        scope_keys = dict(_core._server_scope_keys) if include_runtime else {}
+
+        def visible_in_current_scope(name: str) -> bool:
+            if name in scope_keys:
+                return scope_keys[name] == current_scope
+            return current_scope is None
+
+        active_servers = {
+            name: server for name, server in _core._servers.items()
+            if include_runtime and visible_in_current_scope(name)
+        }
+        connecting = {
+            name for name in _core._server_connecting
+            if include_runtime and visible_in_current_scope(name)
+        }
+        connect_errors = {
+            name: error for name, error in _core._server_connect_errors.items()
+            if include_runtime and visible_in_current_scope(name)
+        }
 
     result: List[dict] = []
     for name, cfg in configured.items():
@@ -471,8 +495,13 @@ def get_mcp_status() -> List[dict]:
         live = server is not None and server.session is not None
         status = ("connected" if live else "disabled" if not enabled else "connecting" if name in connecting
                   else "failed" if name in connect_errors else "configured")
+        reason = {
+            "connected": "healthy", "disabled": "not_configured",
+            "connecting": "stale", "configured": "stale",
+        }.get(status, "check_failed")
         entry = {"name": name, "transport": cfg.get("transport", "http") if "url" in cfg else "stdio",
-                 "tools": 0, "connected": False, "disabled": status == "disabled", "status": status}
+                 "tools": 0, "connected": False, "disabled": status == "disabled",
+                 "status": status, "reason": reason}
         if live:
             entry["connected"] = True
             entry["tools"] = (len(server._registered_tool_names) if hasattr(server, "_registered_tool_names")
@@ -480,7 +509,13 @@ def get_mcp_status() -> List[dict]:
             if server._sampling:
                 entry["sampling"] = dict(server._sampling.metrics)
         elif status == "failed":
-            entry["error"] = connect_errors[name]
+            stored_error = connect_errors[name]
+            failure = getattr(server, "_error", None) if server is not None else None
+            failure_reason = getattr(stored_error, "reason", None)
+            if failure_reason is None and isinstance(failure, BaseException):
+                failure_reason = _errors._connect_failure_reason(failure)
+            entry["reason"] = failure_reason or "check_failed"
+            entry["error"] = str(stored_error)
         result.append(entry)
     return result
 

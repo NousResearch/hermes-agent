@@ -581,8 +581,16 @@ def _command_parser_limit_exceeded(command: str) -> bool:
 def _shell_tokens_with_spans(segment: str, start: int):
     """Return shell words as ``(value, start, end, quoted)`` or ``None`` on malformed quoting.
     Deliberately small lexer that never expands shell syntax; it exists to keep source spans (which
-    ``shlex`` does not expose) for deciding which quoted grep operand is data, not another command."""
+    ``shlex`` does not expose) for deciding which quoted grep operand is data, not another command.
+
+    Lexing stops at the end of the simple command that begins at *start*: an unquoted ``;``, ``|``,
+    ``&`` or newline, or the ``)`` / backtick that closes the substitution the command sits inside.
+    Without that, a grep nested as ``"$(grep … | cut …)"`` was lexed together with the enclosing
+    command's closing quote, read as unbalanced quoting, and reported as a hardline block (546
+    blocked turns in one run, every one a false positive; ``sed -n "$(grep -n X f | cut -d: -f1),+3p" f``
+    is the canonical shape)."""
     tokens, value, token_start, quote = [], [], None, None
+    depth = 0  # $(...) nesting opened AFTER start; a closer at depth 0 ends the enclosing substitution
 
     def flush(end: int) -> None:
         raw = segment[token_start:end]
@@ -591,26 +599,39 @@ def _shell_tokens_with_spans(segment: str, start: int):
         inert = (raw.startswith("'") and raw.endswith("'")) or ("='" in raw and raw.endswith("'"))
         tokens.append(("".join(value), token_start, end, inert))
 
+    end_at = len(segment)
     for kind, i, _, _ in _scan_shell(segment, start):
-        if kind == "char" and not quote and segment[i].isspace():
-            if token_start is not None:
-                flush(i)
-                value, token_start = [], None
-            continue
+        ch = segment[i]
+        if kind == "char" and not quote:
+            if ch.isspace() and ch != "\n":
+                if token_start is not None:
+                    flush(i)
+                    value, token_start = [], None
+                continue
+            if segment.startswith("$(", i):
+                depth += 1
+            elif ch == ")" or ch == "`":
+                if depth == 0:
+                    end_at = i
+                    break
+                depth -= 1
+            elif ch in ";|&\n":
+                end_at = i
+                break
         if token_start is None:
             token_start = i
         if kind == "quote":
-            quote = None if quote else segment[i]
+            quote = None if quote else ch
         elif kind == "esc":
             value.append(segment[i + 1])
-        elif segment[i] == "\\" and not quote:
+        elif ch == "\\" and not quote:
             return None  # dangling backslash
         else:
-            value.append(segment[i])
+            value.append(ch)
     if quote:
         return None
     if token_start is not None:
-        flush(len(segment))
+        flush(end_at)
     return tokens
 
 

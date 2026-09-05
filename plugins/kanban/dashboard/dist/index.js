@@ -4073,7 +4073,11 @@
           );
         }),
       ),
-      h(WorkerLogSection, { taskId: t.id, boardSlug: props.boardSlug }),
+      h(WorkerLogSection, {
+        taskId: t.id,
+        boardSlug: props.boardSlug,
+        running: t.status === "running",
+      }),
       h(RunHistorySection, { runs: props.data.runs || [] }),
     );
   }
@@ -4149,20 +4153,29 @@
     );
   }
 
-  // Worker log: loads lazily (one GET on mount), refresh button, tail cap.
+  // Worker log: loads lazily, polls while the drawer is open, and keeps a
+  // manual refresh button for an immediate read.
   function WorkerLogSection(props) {
     const { t } = useI18n();
     const [state, setState] = useState({ loading: false, data: null, err: null });
     const load = useCallback(function () {
-      setState({ loading: true, data: null, err: null });
+      setState(function (prev) {
+        return { loading: !prev.data, data: prev.data, err: null };
+      });
       SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/log?tail=100000`, props.boardSlug))
         .then(function (d) { setState({ loading: false, data: d, err: null }); })
-        .catch(function (e) { setState({ loading: false, data: null, err: String(e.message || e) }); });
+        .catch(function (e) {
+          setState(function (prev) {
+            return { loading: false, data: prev.data, err: String(e.message || e) };
+          });
+        });
     }, [props.taskId, props.boardSlug]);
 
-    // Auto-load when the section mounts; the user opened the drawer so the
-    // cost is one small HTTP round-trip.
-    useEffect(function () { load(); }, [load]);
+    useEffect(function () {
+      load();
+      const interval = window.setInterval(load, props.running ? 3000 : 15000);
+      return function () { window.clearInterval(interval); };
+    }, [load, props.running]);
 
     const data = state.data;
     let body;

@@ -1,4 +1,6 @@
+import asyncio
 import json
+import logging
 import re
 from pathlib import Path
 
@@ -6,6 +8,7 @@ import pytest
 
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent
+from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 from gateway.slash_commands import GatewaySlashCommandsMixin
 from hermes_cli import kanban_db as kb
@@ -65,6 +68,43 @@ class _KanbanSlashRunner(GatewaySlashCommandsMixin):
 
     def _active_profile_name(self):
         return "molly"
+
+
+class _RecordingAdapter:
+    def __init__(self):
+        self.sent = []
+        self.handled = []
+
+    async def send(self, chat_id, text, metadata=None):
+        self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+
+    async def handle_message(self, event):
+        self.handled.append(event)
+
+
+async def _run_one_notifier_tick(monkeypatch, runner):
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(delay):
+        if delay == 5:
+            return None
+        runner._running = False
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    await runner._kanban_notifier_watcher(interval=1)
+
+
+def _make_notifier_runner(adapters):
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._running = True
+    runner.adapters = adapters
+    runner._profile_adapters = {}
+    runner._primary_profile_name = "molly"
+    runner._active_profile_name = lambda: "molly"
+    runner._kanban_sub_fail_counts = {}
+    runner._kanban_dispatcher_lock_handle = object()
+    return runner
 
 
 @pytest.mark.asyncio
@@ -198,3 +238,51 @@ def test_auto_subscribe_preserves_existing_explicit_source_subscription(
     assert source_sub["notifier_profile"] == "operator"
     assert source_sub["delivery_metadata"] == {"explicit": "kept"}
     assert _sub_by_platform(subs, "telegram")["delivery_mode"] == "notify"
+
+
+@pytest.mark.asyncio
+async def test_imessage_policy_delivery_logs_omit_recipient_identifiers(
+    kanban_home_with_telegram_home,
+    monkeypatch,
+    caplog,
+):
+    """New iMessage split route delivers to both targets without logging their recipient IDs."""
+    source = SessionSource(
+        platform=Platform.BLUEBUBBLES,
+        chat_id="synthetic-imessage-recipient",
+        chat_type="dm",
+        user_id="synthetic-imessage-user",
+        thread_id="synthetic-imessage-thread",
+    )
+    event = MessageEvent(
+        text="/kanban create 'policy log redaction task' --assignee stark",
+        source=source,
+    )
+
+    output = await _KanbanSlashRunner()._handle_kanban_command(event)
+    match = re.search(r"Created\s+(t_[0-9a-f]+)\b", output)
+    assert match, output
+    task_id = match.group(1)
+    with kbc.connect_closing() as conn:
+        kb.complete_task(conn, task_id, summary="done")
+
+    telegram = _RecordingAdapter()
+    bluebubbles = _RecordingAdapter()
+    runner = _make_notifier_runner({
+        Platform.TELEGRAM: telegram,
+        Platform.BLUEBUBBLES: bluebubbles,
+    })
+
+    with caplog.at_level(logging.DEBUG, logger="gateway.run"):
+        await _run_one_notifier_tick(monkeypatch, runner)
+
+    assert [delivery["chat_id"] for delivery in telegram.sent] == ["tg-private-home"]
+    assert len(bluebubbles.handled) == 1
+    assert bluebubbles.handled[0].source.chat_id == "synthetic-imessage-recipient"
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "synthetic-imessage-recipient" not in log_text
+    assert "tg-private-home" not in log_text
+    assert "delivered completed event for " in log_text
+    assert f"delivered completed event for {task_id} to telegram on board default" in log_text
+    assert f"woke agent for {task_id} on bluebubbles profile=molly" in log_text

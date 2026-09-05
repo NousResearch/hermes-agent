@@ -54,29 +54,29 @@ async def _run_one_notifier_tick(monkeypatch, runner):
     await runner._kanban_notifier_watcher(interval=1)
 
 
-def _make_runner(adapter):
+def _make_runner(adapter, *, platform=Platform.TELEGRAM):
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._running = True
-    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.adapters = {platform: adapter}
     runner._kanban_sub_fail_counts = {}
     runner._kanban_dispatcher_lock_handle = object()
     return runner
 
 
-def _make_completed_task(delivery_mode):
+def _make_completed_task(delivery_mode, *, platform="telegram", chat_id="chat-1"):
     conn = kbc.connect()
     try:
         tid = kb.create_task(
             conn,
             title="wake ordering task",
             assignee="worker",
-            session_id="agent:main:telegram:dm:chat-1",
+            session_id=f"agent:main:{platform}:dm:{chat_id}",
         )
         kbn.add_notify_sub(
             conn,
             task_id=tid,
-            platform="telegram",
-            chat_id="chat-1",
+            platform=platform,
+            chat_id=chat_id,
             chat_type="dm",
             delivery_mode=delivery_mode,
         )
@@ -125,6 +125,42 @@ def test_wake_only_success_advances_cursor_single_wake(tmp_path, monkeypatch):
         "cursor must advance after a successful wake-only delivery"
     )
     assert runner._kanban_sub_fail_counts == {}
+
+
+def test_wake_only_log_omits_source_recipient_id(tmp_path, monkeypatch, caplog):
+    """Wake logs keep task/platform diagnostics without printing the source chat id."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-log.db"))
+    kb.init_db()
+    source_chat_id = "synthetic-imessage-chat-id"
+    tid = _make_completed_task("wake", platform="bluebubbles", chat_id=source_chat_id)
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter, platform=Platform.BLUEBUBBLES)
+    with caplog.at_level("INFO", logger="gateway.run"):
+        asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert tid in messages
+    assert "bluebubbles" in messages
+    assert source_chat_id not in messages
+
+
+def test_passive_notify_log_omits_telegram_recipient_id(tmp_path, monkeypatch, caplog):
+    """Passive raw-notify logs keep task/platform diagnostics without printing the Telegram chat id."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "notify-log.db"))
+    kb.init_db()
+    private_chat_id = "synthetic-private-telegram-chat-id"
+    tid = _make_completed_task("notify", chat_id=private_chat_id)
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    with caplog.at_level("DEBUG", logger="gateway.run"):
+        asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert tid in messages
+    assert "telegram" in messages
+    assert private_chat_id not in messages
 
 
 def test_wake_only_failure_rewinds_and_redelivers(tmp_path, monkeypatch):

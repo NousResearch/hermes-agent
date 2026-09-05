@@ -542,7 +542,7 @@ class CLIAgentSetupMixin:
                 skip_memory=self.ignore_rules, tool_progress_callback=self._on_tool_progress,
                 tool_start_callback=self._on_tool_start if self._inline_diffs_enabled else None,
                 tool_complete_callback=self._on_tool_complete if self._inline_diffs_enabled else None,
-                stream_delta_callback=self._stream_delta if self.streaming_enabled else None,
+                stream_delta_callback=self._resolve_stream_delta_callback(),
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
                 notice_callback=self._on_notice, notice_clear_callback=self._on_notice_clear,
                 reaction_callback=self._on_reaction)
@@ -587,6 +587,42 @@ class CLIAgentSetupMixin:
             for line in partial_update_hint(e):
                 console.print(line)
             return False
+
+    def _transform_llm_output_hook_active(self) -> bool:
+        """True when a transform_llm_output hook is registered (#102203).
+
+        A mutating hook replaces the final response after streaming has
+        already printed tokens; any post-hoc suffix repair (banner /
+        divergent suffix) leaves garbled output on screen, since the CLI has
+        no way to revoke bytes already rendered. Skip token streaming for
+        those sessions and let run_conversation's final-response Panel
+        branch (cli.py ~17664) print the transformed text once.
+        """
+        try:
+            from cli import logger
+            from hermes_cli.plugins import has_hook
+
+            return has_hook("transform_llm_output")
+        except Exception:  # pragma: no cover - plugin manager may be unavailable
+            try:
+                from cli import logger
+                logger.debug("transform_llm_output hook check failed", exc_info=True)
+            except Exception:
+                pass
+            return False
+
+    def _resolve_stream_delta_callback(self):
+        """Decide the ``stream_delta_callback`` value for ``_init_agent``.
+
+        Extracted as a named method so tests can drive the same wiring
+        decision the production path executes, without duplicating the
+        expression: suppress token streaming whenever a mutating
+        ``transform_llm_output`` hook is registered (#102203)."""
+        if not self.streaming_enabled:
+            return None
+        if self._transform_llm_output_hook_active():
+            return None
+        return self._stream_delta
 
     def _resume_history_limit_error(self, tip_only: bool = False):
         """Return a safe-resume error without materializing transcript rows.

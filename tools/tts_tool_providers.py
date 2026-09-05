@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -51,6 +52,8 @@ DEFAULT_XAI_OPTIMIZE_STREAMING_LATENCY_DEFAULT = 0
 DEFAULT_XAI_TEXT_NORMALIZATION_DEFAULT = False
 DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_GEMINI_TTS_VOICE = "Kore"
+DEFAULT_GEMINI_TTS_TIMEOUT = 120  # seconds; persona + audio-tag pipelines run long
+DEFAULT_GEMINI_TTS_RETRIES = 3  # transient 429/5xx + malformed responses (high-demand spikes)
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 DEFAULT_GEMINI_AUDIO_TAGS = False
 GEMINI_AUDIO_TAG_REWRITE_TASK = "tts_audio_tags"
@@ -150,9 +153,11 @@ def _write_bytes(output_path: str, audio_bytes: bytes) -> str:
 
 
 def _post_json(url: str, payload: Dict[str, Any], headers: Dict[str, str], **extra: Any):
-    """Streaming ``requests.post`` with the shared 60s timeout (body read via the bounded readers)."""
+    """Streaming ``requests.post`` with the shared 60s default timeout (body read via the bounded readers);
+    callers override ``timeout`` for providers whose synthesis runs long (Gemini persona/audio-tag)."""
     import requests
-    return requests.post(url, headers=headers, json=payload, timeout=60, stream=True, **extra)
+    timeout = extra.pop("timeout", 60)
+    return requests.post(url, headers=headers, json=payload, timeout=timeout, stream=True, **extra)
 
 
 # --- Auxiliary-model speech-tag rewrites ---
@@ -595,18 +600,75 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         except Exception:
             version = "0.0.0"
         headers["X-Goog-Api-Client"] = f"hermes-agent/{version}"  # partner-integration guidance
-    response = _post_json(f"{base_url}/models/{model}:generateContent", payload, headers, params={"key": api_key})
-    if response.status_code != 200:
-        raise RuntimeError(f"Gemini TTS API error (HTTP {response.status_code}): {_gemini_error_detail(response)}")
-    try:
-        data = _read_tts_response_json(response, label="Gemini TTS")
-        parts = data["candidates"][0]["content"]["parts"]
-        audio_part = next((p for p in parts if "inlineData" in p or "inline_data" in p), None)
-        if audio_part is None:
-            raise RuntimeError("Gemini TTS response contained no audio data")
-        audio_b64 = (audio_part.get("inlineData") or audio_part.get("inline_data") or {}).get("data", "")
-    except (KeyError, IndexError, TypeError) as e:
-        raise RuntimeError(f"Gemini TTS response was malformed: {e}") from e
+    gemini_timeout = float(
+        (tts_config.get("gemini") or {}).get("timeout")
+        or tts_config.get("timeout")
+        or DEFAULT_GEMINI_TTS_TIMEOUT
+    )
+    gemini_retries = int(
+        (tts_config.get("gemini") or {}).get("retries")
+        or DEFAULT_GEMINI_TTS_RETRIES
+    )
+    # The 3.x preview TTS models are capacity-limited and intermittently
+    # return 429/503 "high demand" or a 200 with an empty/malformed body.
+    # Retry transient failures with short exponential backoff so a spike
+    # doesn't silently drop a voice reply. Note: the backoff ``time.sleep``
+    # (up to ~3s cumulatively for the default retry budget) blocks this
+    # worker thread — acceptable, since TTS synthesis is already a blocking
+    # to_thread call and the total delay is bounded.
+    endpoint = f"{base_url}/models/{model}:generateContent"
+    for attempt in range(max(1, gemini_retries)):
+        response = _post_json(endpoint, payload, headers, params={"key": api_key}, timeout=gemini_timeout)
+        if response.status_code != 200:
+            detail = _gemini_error_detail(response)
+            err_msg = f"Gemini TTS API error (HTTP {response.status_code}): {detail}"
+            # Quota-exhausted 429s are deterministic for the rest of the day:
+            # fail fast so the fallback chain moves on instead of burning backoff.
+            quota_exhausted = (
+                response.status_code == 429 and "quota" in detail.lower()
+            )
+            if (
+                response.status_code in (429, 500, 502, 503, 504)
+                and not quota_exhausted
+                and attempt < gemini_retries - 1
+            ):
+                logger.warning("%s; retrying (%d/%d)", err_msg, attempt + 1, gemini_retries)
+                time.sleep(2 ** attempt)
+                continue
+            raise RuntimeError(err_msg)
+
+        try:
+            data = _read_tts_response_json(response, label="Gemini TTS")
+            cands = data.get("candidates") or []
+            block_reason = None
+            pf = data.get("promptFeedback") or {}
+            if pf.get("blockReason"):
+                block_reason = pf["blockReason"]
+            elif cands and cands[0].get("finishReason") == "SAFETY":
+                block_reason = "SAFETY"
+            if block_reason:
+                # Deterministic refusal — do not retry; the fallback chain
+                # moves on to a provider without content filters.
+                raise RuntimeError(
+                    f"Gemini TTS refused the content (blockReason={block_reason})"
+                )
+            parts = cands[0]["content"]["parts"]
+            audio_part = next((p for p in parts if "inlineData" in p or "inline_data" in p), None)
+            if audio_part is None:
+                raise RuntimeError("Gemini TTS response contained no audio data")
+            inline = audio_part.get("inlineData") or audio_part.get("inline_data") or {}
+            audio_b64 = inline.get("data", "")
+            break
+        except (KeyError, IndexError, TypeError) as e:
+            if attempt < gemini_retries - 1:
+                logger.warning(
+                    "Gemini TTS response was malformed (%s); retrying (%d/%d)",
+                    e, attempt + 1, gemini_retries,
+                )
+                time.sleep(2 ** attempt)
+                continue
+            raise RuntimeError(f"Gemini TTS response was malformed: {e}") from e
+
     if not audio_b64:
         raise RuntimeError("Gemini TTS returned empty audio data")
     return _write_wav_bytes_as(_wrap_pcm_as_wav(base64.b64decode(audio_b64)), output_path)

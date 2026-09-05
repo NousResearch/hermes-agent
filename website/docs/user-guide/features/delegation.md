@@ -537,6 +537,8 @@ delegation:
 
 When `base_url` points at an Anthropic-compatible endpoint — for example a path ending in `/anthropic`, an Azure Foundry Claude route, or a MiniMax `/anthropic` proxy — `api_mode` is auto-detected as `anthropic_messages` so the subagent uses the right wire format without you setting anything. Set `api_mode` explicitly when the auto-detection guess is wrong (rare).
 
+Subagents compress at an absolute cap, `delegation.compression_threshold_tokens` (default `200000`), applied as the lower of it and the child's ratio threshold. A brief-driven, disposable worker on a 1M-window model would otherwise compress at `threshold × window` (850K at 0.85) and re-send a 300–800K prefix on every call; in a 1,393-agent run, 1,373 children never compressed and calls above 200K context carried about 55% of the bill. It is independent of the parent's own threshold and caps the compaction *trigger*, not the request payload. Accepted values: a token count of at least 16000, or `0` to disable the subagent-specific cap; anything else (a bare `true`, `"200k"`) is a config error that falls back to the default with a warning.
+
 `delegation.request_overrides` works on **all three** resolution branches — direct `base_url`, named `provider`, and pure inherit — so it always takes effect. Top-level keys are API kwargs (e.g. `service_tier`); an `extra_body` sub-dict is merged into the request's `extra_body`. Explicit values merge **over** runtime- or parent-derived overrides: explicit top-level keys win, and `extra_body` is deep-merged one level, so a provider's own request personality (e.g. `thinking: {type: disabled}`) survives unless your key redefines it. See [Configuration → Delegation](../configuration.md#delegation) for details.
 
 :::tip

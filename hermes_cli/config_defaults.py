@@ -1216,6 +1216,14 @@ DEFAULT_CONFIG = {
         # {"extra_body": {"provider": {"sort": "throughput"}}}. Explicit values win OVER
         # runtime/parent overrides (extra_body deep-merged 1 level).
         "request_overrides": {},
+        # compression_threshold_tokens: absolute context cap for subagents, applied as the lower of
+        # this and the child's ratio threshold. A brief-driven, disposable worker on a 1M-window
+        # model otherwise compresses at threshold x window (850K at 0.85) and re-sends a 300-800K
+        # prefix on every call: in one 1,393-agent run 1,373 children never compressed and calls
+        # above 200K context carried ~55% of the bill. Independent of the parent's own threshold.
+        # This caps the compaction TRIGGER, not the request payload. A token count >= 16000; 0 disables
+        # the subagent-specific cap. Other values (true, "200k") are config errors: warned, default used.
+        "compression_threshold_tokens": 200000,
         # When delegate_task narrows child toolsets, keep the parent's enabled MCP toolsets (so
         # toolsets=["web"] doesn't strip MCP). false = strict intersection.
         "inherit_mcp_toolsets": True,

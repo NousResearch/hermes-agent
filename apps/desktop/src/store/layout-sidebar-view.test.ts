@@ -5,6 +5,7 @@ import {
   $sidebarOrdering,
   $sidebarRowMeta,
   $sidebarViewCustomized,
+  cycleSidebarGrouping,
   resetSidebarView,
   setSidebarGrouping,
   setSidebarOrdering,
@@ -74,5 +75,22 @@ describe('the sidebar as it ships', () => {
 
     expect($showAllProfiles.get()).toBe(true)
     expect($sidebarGrouping.get()).toBe('profile')
+  })
+
+  it('cycles through every grouping in the filter-menu order', () => {
+    expect($sidebarGrouping.get()).toBe('date')
+
+    cycleSidebarGrouping()
+    expect($sidebarGrouping.get()).toBe('project')
+
+    cycleSidebarGrouping()
+    expect($sidebarGrouping.get()).toBe('status')
+
+    cycleSidebarGrouping()
+    expect($sidebarGrouping.get()).toBe('profile')
+    expect($showAllProfiles.get()).toBe(true)
+
+    cycleSidebarGrouping()
+    expect($sidebarGrouping.get()).toBe('date')
   })
 })

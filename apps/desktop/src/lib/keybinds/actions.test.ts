@@ -31,3 +31,17 @@ describe('session.archive keybind action', () => {
     expect(matches).toHaveLength(1)
   })
 })
+
+describe('view.cycleSidebarGrouping keybind action', () => {
+  it('is an unbound view action with a panel label', () => {
+    const action = keybindAction('view.cycleSidebarGrouping')
+
+    expect(action).toEqual({ id: 'view.cycleSidebarGrouping', category: 'view', defaults: [] })
+    expect(defaultBindings()['view.cycleSidebarGrouping']).toEqual([])
+    expect(en.keybinds.actions['view.cycleSidebarGrouping']).toBe('Cycle session grouping')
+  })
+
+  it('appears exactly once in KEYBIND_ACTIONS', () => {
+    expect(KEYBIND_ACTIONS.filter(action => action.id === 'view.cycleSidebarGrouping')).toHaveLength(1)
+  })
+})

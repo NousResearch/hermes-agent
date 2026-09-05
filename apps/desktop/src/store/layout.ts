@@ -245,6 +245,7 @@ export const $sidebarAgentsGrouped: ReadableAtom<boolean> = computed(
  *  default (Today / Yesterday / Last week dividers). `profile` only means
  *  anything while the sidebar is showing every profile at once. */
 export type SidebarGrouping = 'date' | 'profile' | 'project' | 'status'
+export const SIDEBAR_GROUPING_CYCLE: readonly SidebarGrouping[] = ['date', 'project', 'status', 'profile']
 /** What ranks rows within whatever grouping is active. */
 export type SidebarOrdering = 'cost' | 'created' | 'manual' | 'status' | 'tokens' | 'updated'
 /** The sort keys the menu offers; `manual` is entered by dragging, not picked. */
@@ -623,6 +624,13 @@ export function setSidebarGrouping(grouping: SidebarGrouping) {
   }
 
   $sidebarFlatGrouping.set(grouping)
+}
+
+export function cycleSidebarGrouping() {
+  const currentIndex = SIDEBAR_GROUPING_CYCLE.indexOf($sidebarGrouping.get())
+  const nextIndex = (currentIndex + 1) % SIDEBAR_GROUPING_CYCLE.length
+
+  setSidebarGrouping(SIDEBAR_GROUPING_CYCLE[nextIndex])
 }
 
 export function setSidebarOrdering(ordering: SidebarOrdering) {

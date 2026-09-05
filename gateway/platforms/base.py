@@ -48,20 +48,77 @@ _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 
 
-def transcode_to_ogg_opus(path: str, *, bitrate: str = "32k") -> "str | None":
-    """Best-effort ffmpeg transcode to Ogg/Opus (voip-tuned) for native voice bubbles: a NEW temp
-    ``.ogg`` path (caller cleans up), or None when ffmpeg is missing/fails. Blocking (to_thread)."""
+# Ogg/Opus voice-bubble re-encode defaults (#73508 / #97873): voip-tuned, sized for
+# microphone-grade speech. ``tts.voice_transcode`` in config.yaml overrides them —
+# synthesized TTS voices are already clean full-band audio and sound noticeably better at
+# ``application: audio`` with 48-64k than squeezed through the voip tuning.
+VOICE_TRANSCODE_DEFAULT_BITRATE = "32k"
+VOICE_TRANSCODE_DEFAULT_APPLICATION = "voip"
+VOICE_TRANSCODE_APPLICATIONS = frozenset({"voip", "audio", "lowdelay"})
+_VOICE_TRANSCODE_BITRATE_RE = re.compile(r"^\d+(?:\.\d+)?[kKmM]?$")
+
+
+def voice_transcode_settings() -> "tuple[str, str]":
+    """``(bitrate, application)`` for the Ogg/Opus voice-bubble re-encode.
+
+    Read from ``tts.voice_transcode`` in config.yaml. A missing section, a bitrate that is
+    not an ffmpeg bitrate literal (``32k`` / ``48000`` / ``0.5M``), or an application outside
+    ``voip`` / ``audio`` / ``lowdelay`` falls back to the voip-tuned defaults — a malformed
+    config can degrade nothing: voice delivery keeps working exactly as before.
+    """
+    bitrate, application = VOICE_TRANSCODE_DEFAULT_BITRATE, VOICE_TRANSCODE_DEFAULT_APPLICATION
+    try:
+        from hermes_cli.config import load_config_readonly
+        tts_cfg = load_config_readonly().get("tts")
+        section = tts_cfg.get("voice_transcode") if isinstance(tts_cfg, dict) else None
+    except Exception:
+        logger.debug("voice_transcode config unavailable; using defaults", exc_info=True)
+        return bitrate, application
+    if not isinstance(section, dict):
+        return bitrate, application
+    raw_bitrate = section.get("bitrate")
+    if raw_bitrate is not None:
+        candidate = str(raw_bitrate).strip()
+        if _VOICE_TRANSCODE_BITRATE_RE.match(candidate):
+            bitrate = candidate
+        else:
+            logger.warning(
+                "Ignoring tts.voice_transcode.bitrate=%r (expected an ffmpeg bitrate such as "
+                "'48k'); using %s", raw_bitrate, bitrate)
+    raw_application = section.get("application")
+    if raw_application is not None:
+        candidate = str(raw_application).strip().lower()
+        if candidate in VOICE_TRANSCODE_APPLICATIONS:
+            application = candidate
+        else:
+            logger.warning(
+                "Ignoring tts.voice_transcode.application=%r (expected one of %s); using %s",
+                raw_application, "/".join(sorted(VOICE_TRANSCODE_APPLICATIONS)), application)
+    return bitrate, application
+
+
+def transcode_to_ogg_opus(
+    path: str, *, bitrate: "str | None" = None, application: "str | None" = None,
+) -> "str | None":
+    """Best-effort ffmpeg transcode to Ogg/Opus for native voice bubbles: a NEW temp ``.ogg``
+    path (caller cleans up), or None when ffmpeg is missing/fails. Blocking (to_thread).
+
+    ``bitrate`` / ``application`` default to :func:`voice_transcode_settings` (config.yaml
+    ``tts.voice_transcode``, else the voip-tuned 32k defaults); explicit arguments win."""
     import shutil as _shutil
     ffmpeg = _shutil.which("ffmpeg")
     if not ffmpeg:
         return None
+    cfg_bitrate, cfg_application = voice_transcode_settings()
+    bitrate = bitrate or cfg_bitrate
+    application = application or cfg_application
     fd, ogg_path = tempfile.mkstemp(prefix="voice_transcode_", suffix=".ogg")
     os.close(fd)
     try:
         result = subprocess.run(
             [ffmpeg, "-v", "error", "-y", "-i", str(path),
              "-acodec", "libopus", "-ac", "1", "-b:a", bitrate, "-vbr", "on",
-             "-application", "voip", "-compression_level", "10", ogg_path],
+             "-application", application, "-compression_level", "10", ogg_path],
             capture_output=True, timeout=60, stdin=subprocess.DEVNULL)
         if result.returncode == 0 and os.path.getsize(ogg_path) > 0:
             return ogg_path

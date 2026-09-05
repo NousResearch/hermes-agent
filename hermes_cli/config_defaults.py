@@ -1050,6 +1050,14 @@ DEFAULT_CONFIG = {
             "voice": "default",
             # optional "base_url" key overrides DEEPINFRA_BASE_URL for TTS only
         },
+        # Ogg/Opus re-encode the Telegram / Feishu voice senders apply when the TTS provider
+        # emitted another container (mp3/wav/...). Providers that emit Ogg/Opus natively skip
+        # it. Defaults are the voip tuning from #73508/#97873, sized for microphone speech;
+        # synthesized voices keep more body at "audio" with 48k-64k.
+        "voice_transcode": {
+            "bitrate": "32k",        # ffmpeg -b:a ("48k", "64k", "48000", ...)
+            "application": "voip",   # voip | audio | lowdelay
+        },
     },
 
     "stt": {

@@ -191,7 +191,7 @@ if _mt and _teams_mod.TypingActivityInput is None:
     _teams_mod.TypingActivityInput = _mt.TypingActivityInput
 
 TeamsAdapter = _teams_mod.TeamsAdapter
-TeamsSummaryWriter = _teams_mod.TeamsSummaryWriter
+from plugins.platforms.teams.summary_writer import TeamsSummaryWriter  # noqa: E402
 check_requirements = _teams_mod.check_requirements
 check_teams_requirements = _teams_mod.check_teams_requirements
 validate_config = _teams_mod.validate_config

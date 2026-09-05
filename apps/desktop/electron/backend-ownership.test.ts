@@ -188,6 +188,7 @@ test('startup reap stops at the deadline and preserves the unprocessed records',
     // Each probe is slow enough to blow a 1ms budget after the first entry.
     matchesIdentity: async () => {
       await new Promise(resolve => setTimeout(resolve, 10))
+
       return false
     },
     stop,
@@ -209,6 +210,7 @@ test('startup reap preserves would-be-reaped records when the budget runs out', 
   const ownership = createOwnership(store, {
     matchesIdentity: async () => {
       await new Promise(resolve => setTimeout(resolve, 10))
+
       return true
     },
     stop,

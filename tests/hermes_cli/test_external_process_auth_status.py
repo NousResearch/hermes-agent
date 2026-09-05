@@ -204,7 +204,7 @@ def test_explicit_filter_drops_unverified_external_process_row(tmp_path, monkeyp
 
 
 def test_catalog_sign_in_command_is_a_valid_copilot_invocation():
-    from hermes_cli.web_server import _OAUTH_PROVIDER_CATALOG
+    from hermes_cli.web_server_oauth import _OAUTH_PROVIDER_CATALOG
 
     entry = next(e for e in _OAUTH_PROVIDER_CATALOG if e["id"] == "copilot-acp")
     # `copilot /login` is not a valid invocation — slash-commands only exist
@@ -214,7 +214,7 @@ def test_catalog_sign_in_command_is_a_valid_copilot_invocation():
 
 
 def test_cli_command_reflects_configured_executable(tmp_path, monkeypatch, _clean_copilot_env):
-    from hermes_cli.web_server import _external_process_cli_command
+    from hermes_cli.web_server_oauth import _external_process_cli_command
 
     fake = tmp_path / ("copilot.exe" if os.name == "nt" else "copilot")
     fake.write_text("", encoding="utf-8")
@@ -227,13 +227,13 @@ def test_cli_command_reflects_configured_executable(tmp_path, monkeypatch, _clea
 
 
 def test_cli_command_untouched_for_non_external_providers(_clean_copilot_env):
-    from hermes_cli.web_server import _external_process_cli_command
+    from hermes_cli.web_server_oauth import _external_process_cli_command
 
     assert _external_process_cli_command("nous", "hermes auth add nous") == "hermes auth add nous"
 
 
 def test_cli_command_default_when_no_override(monkeypatch, _clean_copilot_env):
-    from hermes_cli.web_server import _external_process_cli_command
+    from hermes_cli.web_server_oauth import _external_process_cli_command
 
     assert _external_process_cli_command("copilot-acp", "copilot login") == "copilot login"
 

@@ -22,11 +22,13 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 @pytest.fixture
 def conn(tmp_path: Path):
-    db = kb.connect(tmp_path / "kanban.db")
+    db = kbc.connect(tmp_path / "kanban.db")
     try:
         yield db
     finally:
@@ -99,14 +101,14 @@ def test_running_descendant_event_precedes_termination_via_reclaim_helper(
     )
     claimed = kb.claim_task(conn, child_id)
     assert claimed is not None and claimed.status == "running"
-    kb._set_worker_pid(conn, child_id, 424242)
+    kbd._set_worker_pid(conn, child_id, 424242)
 
     kills: list[tuple] = []
 
     def fake_terminate(pid, claim_lock, **kwargs):
         # The audit trail must already be durable when the kill fires:
         # standalone calls commit before terminating.
-        side = kb.connect(tmp_path / "kanban.db")
+        side = kbc.connect(tmp_path / "kanban.db")
         try:
             kinds = [e.kind for e in kb.list_events(side, child_id)]
         finally:
@@ -176,7 +178,7 @@ def test_dashboard_and_db_paths_produce_identical_outcomes(tmp_path, monkeypatch
     client = TestClient(app)
 
     def build_graph(tag: str):
-        with kb.connect() as c:
+        with kbc.connect() as c:
             parent = kb.create_task(c, title=f"{tag}-parent", assignee="planner")
             assert kb.complete_task(c, parent)
             child = kb.create_task(
@@ -195,7 +197,7 @@ def test_dashboard_and_db_paths_produce_identical_outcomes(tmp_path, monkeypatch
     assert r.status_code == 200, r.text
 
     # Surface 2: DB function directly (the single domain implementation).
-    with kb.connect() as c:
+    with kbc.connect() as c:
         with kb.write_txn(c):
             c.execute(
                 "UPDATE tasks SET status = 'todo', completed_at = NULL "
@@ -206,7 +208,7 @@ def test_dashboard_and_db_paths_produce_identical_outcomes(tmp_path, monkeypatch
             c, db_parent, author="dashboard",
         )
 
-    with kb.connect() as c:
+    with kbc.connect() as c:
         def snapshot(tid: str):
             t = kb.get_task(c, tid)
             assert t is not None

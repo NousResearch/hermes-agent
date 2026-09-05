@@ -72,6 +72,14 @@ def _park_rearm_just_above_messages(
     return before
 
 
+def _over_threshold_warnings(caplog) -> list:
+    return [
+        r for r in caplog.records
+        if r.levelno >= logging.WARNING
+        and "over the compression threshold" in r.getMessage()
+    ]
+
+
 def test_billed_basis_over_threshold_defeats_message_only_rearm_lockout() -> None:
     """Over ``threshold_tokens`` on the provider-billed basis, the rearm gate
     must not short-circuit the prune on the message-only estimate alone."""
@@ -125,7 +133,7 @@ def test_no_op_below_the_prune_trigger() -> None:
     the bypass must not turn into over-pruning of small sessions."""
     c = _compressor()
     msgs = _history()
-    c._proactive_prune_rearm_tokens = 0  # fully rearmed; only the trigger gates
+    c.on_session_reset()  # fully rearmed; only the trigger gates
 
     with patch.object(
         c,
@@ -154,21 +162,13 @@ def test_over_threshold_reclamation_no_op_warns_once(caplog) -> None:
         result, pruned = c.prune_tool_results_only(msgs, current_tokens=billed)
     assert (result, pruned) == (msgs, 0)
 
-    warnings = [
-        r for r in caplog.records
-        if r.levelno >= logging.WARNING
-        and "over the compression threshold" in r.getMessage()
-    ]
+    warnings = _over_threshold_warnings(caplog)
     assert warnings, "over-threshold reclamation no-op was silent"
 
     # Same state on the next tool iteration: deduped, not re-logged.
     with caplog.at_level(logging.WARNING, logger="agent.context_compressor"):
         c.prune_tool_results_only(msgs, current_tokens=billed)
-    assert len([
-        r for r in caplog.records
-        if r.levelno >= logging.WARNING
-        and "over the compression threshold" in r.getMessage()
-    ]) == len(warnings)
+    assert len(_over_threshold_warnings(caplog)) == len(warnings)
 
 
 def test_under_threshold_no_op_is_not_warned(caplog) -> None:
@@ -182,19 +182,7 @@ def test_under_threshold_no_op_is_not_warned(caplog) -> None:
         )
 
     assert (result, pruned) == (msgs, 0)
-    assert not [
-        r for r in caplog.records
-        if r.levelno >= logging.WARNING
-        and "over the compression threshold" in r.getMessage()
-    ]
-
-
-def _over_threshold_warnings(caplog) -> list:
-    return [
-        r for r in caplog.records
-        if r.levelno >= logging.WARNING
-        and "over the compression threshold" in r.getMessage()
-    ]
+    assert not _over_threshold_warnings(caplog)
 
 
 def test_lockout_warns_again_after_rearm_reset(caplog) -> None:
@@ -213,9 +201,9 @@ def test_lockout_warns_again_after_rearm_reset(caplog) -> None:
         c.prune_tool_results_only(msgs, current_tokens=billed)
     assert len(_over_threshold_warnings(caplog)) == 1
 
-    # Every path that fully rearms the prune goes through this helper
-    # (compress(), on_session_reset/end, bind_session_state, update_model).
-    c._reset_proactive_prune_rearm()
+    # A public rearm boundary (same helper as compress(), on_session_end,
+    # bind_session_state and update_model): pins the wiring, not just the body.
+    c.on_session_reset()
     assert c._proactive_prune_rearm_tokens == 0
 
     with caplog.at_level(logging.WARNING, logger="agent.context_compressor"):

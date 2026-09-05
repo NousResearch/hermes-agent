@@ -1305,7 +1305,13 @@ export const en: Translations = {
       unarchiveFailed: 'Unarchive failed',
       deleteFailed: 'Delete failed',
       updateDirFailed: 'Could not update default directory',
-      clearDirFailed: 'Could not clear default directory'
+      clearDirFailed: 'Could not clear default directory',
+      pinnedDisplayTitle: 'Pinned threads',
+      pinnedCardRowsTitle: 'Display pinned threads in Inbox style',
+      pinnedCardRowsDesc: 'Render pinned threads as three-line inbox cards instead of compact rows.',
+      pinnedInProjectsTitle: 'Show pinned threads in their project / worktree',
+      pinnedInProjectsDesc:
+        'Also show pinned threads inside the project or worktree they belong to, in addition to the Pinned section.'
     },
     toolsets: {
       loadingConfig: 'Loading configuration',

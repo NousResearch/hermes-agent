@@ -40,6 +40,8 @@ const SIDEBAR_ALL_PROFILES_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.sidebarA
 const SIDEBAR_SORT_KEY_STORAGE_KEY = 'hermes.desktop.sidebarSortKey'
 const SIDEBAR_ROW_META_STORAGE_KEY = 'hermes.desktop.sidebarRowMeta'
 const SIDEBAR_CARD_ROWS_STORAGE_KEY = 'hermes.desktop.sidebarCardRows'
+const SIDEBAR_PINNED_CARD_ROWS_STORAGE_KEY = 'hermes.desktop.sidebarPinnedCardRows'
+const SIDEBAR_PINNED_IN_PROJECTS_STORAGE_KEY = 'hermes.desktop.sidebarPinnedInProjects'
 const SIDEBAR_STATUS_FILTER_STORAGE_KEY = 'hermes.desktop.sidebarStatusFilter'
 const SIDEBAR_SHOW_ARCHIVED_STORAGE_KEY = 'hermes.desktop.sidebarShowArchived'
 const SIDEBAR_PROJECT_FILTER_STORAGE_KEY = 'hermes.desktop.sidebarProjectFilter'
@@ -319,6 +321,26 @@ export const $sidebarCardRows = persistentAtom(SIDEBAR_CARD_ROWS_STORAGE_KEY, fa
 
 export function setSidebarCardRows(on: boolean) {
   $sidebarCardRows.set(on)
+}
+
+/** Opt-in companion to $sidebarCardRows: render the Pinned section's rows as
+ *  the same three-line inbox cards, even though dense pinned rows normally
+ *  stay one-line. Off by default — preserves the deliberate compact Pinned
+ *  section; a user who wants Pinned to look like the inbox turns it on. */
+export const $sidebarPinnedCardRows = persistentAtom(SIDEBAR_PINNED_CARD_ROWS_STORAGE_KEY, false, Codecs.bool)
+
+export function setSidebarPinnedCardRows(on: boolean) {
+  $sidebarPinnedCardRows.set(on)
+}
+
+/** Opt-in override of the "a pinned chat belongs to the Pinned section and
+ *  nowhere else" rule: when on, pinned sessions ALSO stay visible in their
+ *  project/worktree lanes instead of being filtered out of them. The Pinned
+ *  section keeps rendering them either way. Off by default. */
+export const $sidebarPinnedInProjects = persistentAtom(SIDEBAR_PINNED_IN_PROJECTS_STORAGE_KEY, false, Codecs.bool)
+
+export function setSidebarPinnedInProjects(on: boolean) {
+  $sidebarPinnedInProjects.set(on)
 }
 
 /** Order-insensitive: the menu appends in click order, so ['tokens','updated']

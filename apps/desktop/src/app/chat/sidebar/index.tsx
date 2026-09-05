@@ -43,6 +43,8 @@ import {
   $sidebarGrouping,
   $sidebarMessagingOpenIds,
   $sidebarOrdering,
+  $sidebarPinnedCardRows,
+  $sidebarPinnedInProjects,
   $sidebarPinsOpen,
   $sidebarPrDataWanted,
   $sidebarPrFilter,
@@ -373,6 +375,8 @@ export function ChatSidebar({
   const filtersActive = useStore($sidebarFiltersActive)
   const showArchived = useStore($sidebarShowArchived)
   const cardRows = useStore($sidebarCardRows)
+  const pinnedCardRows = useStore($sidebarPinnedCardRows)
+  const pinnedInProjects = useStore($sidebarPinnedInProjects)
   const archivedSessions = useStore($archivedSessions)
   const dotStates = useStore($sessionDotStateById)
   // The active sort key as an id order. The flat list applies it within its
@@ -620,8 +624,12 @@ export function ChatSidebar({
   // anything the active filters exclude, so filtering works the same whether
   // you're looking at the flat list or the lanes.
   const isHiddenFromProjects = useCallback(
-    (session: SessionInfo) => isPinnedSession(session) || (filtersNarrow && !sessionMatchesFilters(session)),
-    [isPinnedSession, filtersNarrow, sessionMatchesFilters]
+    (session: SessionInfo) =>
+      // Pinned chats normally live in the Pinned section and nowhere else.
+      // The opt-in "show pinned in projects" setting keeps them in their
+      // project/worktree lanes too — without it, a pin is still exclusive.
+      (isPinnedSession(session) && !pinnedInProjects) || (filtersNarrow && !sessionMatchesFilters(session)),
+    [isPinnedSession, pinnedInProjects, filtersNarrow, sessionMatchesFilters]
   )
 
   // Full-text search across *all* sessions (not just the loaded page) so 699
@@ -1667,6 +1675,10 @@ export function ChatSidebar({
             {!trimmedQuery && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
+                // Pinned rows stay compact unless the opt-in "Pinned in Inbox
+                // style" setting is on — then they render the same three-line
+                // cards as the flat recents list.
+                card={pinnedCardRows}
                 contentClassName="flex flex-col gap-px rounded-lg pb-2 pt-1"
                 dndSensors={dndSensors}
                 emptyState={<SidebarPinnedEmptyState />}

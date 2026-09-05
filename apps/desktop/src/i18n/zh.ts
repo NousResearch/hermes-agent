@@ -1481,7 +1481,12 @@ export const zh: Translations = {
       unarchiveFailed: '取消归档失败',
       deleteFailed: '删除失败',
       updateDirFailed: '无法更新默认目录',
-      clearDirFailed: '无法清除默认目录'
+      clearDirFailed: '无法清除默认目录',
+      pinnedDisplayTitle: '置顶会话',
+      pinnedCardRowsTitle: '以收件箱样式显示置顶会话',
+      pinnedCardRowsDesc: '将置顶会话渲染为三行收件箱卡片，而不是紧凑的单行。',
+      pinnedInProjectsTitle: '在项目 / 工作树中显示置顶会话',
+      pinnedInProjectsDesc: '除“置顶”区域外，也在其所属的项目或工作树中显示置顶会话。'
     },
     toolsets: {
       loadingConfig: '正在加载配置',

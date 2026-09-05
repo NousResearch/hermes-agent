@@ -218,9 +218,9 @@ def _make_agent():
     from run_agent import AIAgent
 
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI", return_value=MagicMock()),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
     ):
         agent = AIAgent(
             api_key="fx",  # unused — the OpenAI client is mocked below
@@ -291,7 +291,7 @@ class TestRunConversationRecoversFromCorruptImage400:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
             patch("agent.agent_runtime_helpers.time.sleep"),
             patch("agent.model_metadata.get_model_context_length", return_value=200000),
         ):
@@ -382,7 +382,7 @@ class TestRunConversationRecoversFromCorruptImage400:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
             patch("agent.agent_runtime_helpers.time.sleep"),
             patch("agent.model_metadata.get_model_context_length", return_value=200000),
         ):
@@ -447,12 +447,12 @@ class TestCanonicalHistoryIsolation:
         import inspect
         import re as _re
 
-        import agent.conversation_loop as loop_mod
+        import agent.turn_recovery as loop_mod
 
-        src = inspect.getsource(loop_mod)
+        src = inspect.getsource(loop_mod.recover_after_classification)
         # Locate the image_corrupt recovery block and inspect its calls.
         block = _re.search(
-            r"image_corrupt:\n(.*?)\n\s*(?:continue|else)", src, _re.S
+            r"image_corrupt:\n(.*?)\n\s*(?:continue|return|else)", src, _re.S
         )
         assert block is not None, "image_corrupt recovery branch not found"
         body = block.group(1)

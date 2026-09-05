@@ -134,4 +134,22 @@ describe('revisioned snapshots', () => {
     restoreSessionTodosFromSnapshot('s1', snapshot, true)
     expect($todosBySession.get().s1?.[0]?.id).toBe('active')
   })
+
+  it('applies an unversioned update after a revisioned snapshot (tool.start merge)', () => {
+    setSessionTodos('s1', [todo('a', 'pending'), todo('b', 'pending')], 5)
+    setSessionTodos('s1', [todo('a', 'completed'), todo('b', 'pending')])
+
+    expect($todosBySession.get().s1?.[0]?.status).toBe('completed')
+    expect($todoRevisionsBySession.get().s1).toBe(5)
+  })
+
+  it('does not stamp a watermark from an unused empty snapshot', () => {
+    restoreSessionTodosFromSnapshot('s1', { revision: 0, todos: [] }, true)
+
+    expect($todosBySession.get().s1).toBeUndefined()
+    expect($todoRevisionsBySession.get().s1).toBeUndefined()
+
+    setSessionTodos('s1', [todo('a', 'in_progress')])
+    expect($todosBySession.get().s1?.[0]?.id).toBe('a')
+  })
 })

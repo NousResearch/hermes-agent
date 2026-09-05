@@ -4,6 +4,7 @@ import json
 from unittest.mock import patch
 
 from agent.context_compressor import ContextCompressor
+from agent.tool_occurrences import tool_result_metadata_by_index
 
 
 def _assistant(call_id: str, name: str, arguments: dict) -> dict:
@@ -65,3 +66,21 @@ def test_static_fallback_summary_uses_same_occurrence_metadata():
         compressor._build_static_fallback_summary(_reused_id_messages())
 
     assert seen == ["read_file", "terminal"]
+
+
+def test_pressure_tail_demote_keeps_same_occurrence_metadata():
+    compressor = ContextCompressor(model="test/model", quiet_mode=True)
+    messages = _reused_id_messages(long_results=True)
+    metadata = tool_result_metadata_by_index(messages)
+
+    demoted = compressor._pressure_demote_tail(
+        messages,
+        prune_boundary=0,
+        protect_tail_tokens=1,
+        tool_metadata_by_result_idx=metadata,
+        min_prune_chars=100,
+    )
+
+    assert demoted >= 1
+    assert messages[1]["content"].startswith("[read_file]")
+    assert not messages[1]["content"].startswith("[terminal]")

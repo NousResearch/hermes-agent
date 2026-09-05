@@ -137,6 +137,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\nMode actuel : `{mode}`\\n\\nChoisissez une option :"
     choice_fast:           "fast — Priority Processing activé"
     choice_normal:         "normal — traitement standard"
+    choice_auto:           "auto — rapide pendant les premières secondes de chaque tour"
+    choice_cold:           "cold — rapide uniquement au premier tour d'une session"
 
   footer:
     status:                "📎 Pied de page d'exécution : **{state}**\nChamps : `{fields}`\nPlateforme : `{platform}`"

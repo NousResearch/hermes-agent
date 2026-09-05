@@ -1066,16 +1066,16 @@ export const host = {
         }
       }
     } catch (error) {
-      if (
-        options.awaitHydration &&
-        openingStillCurrent() &&
-        error instanceof Error &&
-        error.message.startsWith('Timed out loading ')
-      ) {
+      const wakeFailedWhileCurrent = options.awaitHydration && openingStillCurrent() && error instanceof Error
+
+      const hydrationTimedOut = wakeFailedWhileCurrent && error.message.startsWith('Timed out loading ')
+
+      if (wakeFailedWhileCurrent && (wakePhase === 'activation' || hydrationTimedOut)) {
         const timedOutAt = Date.now()
 
-        console.warn('[bot-wake] hydration timed out', {
+        console.warn(hydrationTimedOut ? '[bot-wake] hydration timed out' : '[bot-wake] activation failed', {
           attempts: wakePhase === 'hydration' ? maxAttempts : 1,
+          error: error.message,
           hydrationWaitMs: wakePhase === 'hydration' ? timedOutAt - profileActiveAt : 0,
           phase: wakePhase,
           profile: targetProfile,
@@ -1085,8 +1085,12 @@ export const host = {
           storedSessionId,
           transcriptPainted: $messages.get().length > 0
         })
-        // Reuse the core stranded-session surface: it renders the explicit
-        // error and Retry button, and the normal resume path clears the latch.
+        // Reuse the core stranded-session surface for BOTH deadline and direct
+        // activation failures (including a saturated local-backend pool). It
+        // renders an explicit failure and Retry button; the normal resume path
+        // clears the latch. Previously only the synthetic hydration timeout
+        // reached this surface, so a real slot rejection cleared neither the
+        // apparent terminal wake state nor a path forward.
         setResumeExhaustedSessionId(storedSessionId)
       }
 

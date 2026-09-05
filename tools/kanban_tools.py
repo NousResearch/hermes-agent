@@ -1056,6 +1056,55 @@ _TOOL_CACHE: dict[tuple[str, str], Optional[str]] = {}
 _PYTEST_CACHE: dict[str, bool] = {}
 
 
+_FOCUSED_TEST_CMD_RE = re.compile(
+    r"pytest\s+(?P<path>[^\s`\"';()][^\s`\"';()]*/[^\s`\"';()]*?)\s+-(?P<flags>[qx])"
+)
+
+
+def _scoped_test_paths_from_body(body: Optional[str], ws_root: Path) -> list[str]:
+    """Parse a per-card scoped pytest command from the card body.
+
+    The pre-review gate's focused-tests rung must honor the card's own scope
+    rather than derive the run set from the worktree diff.  When sibling cards
+    commit onto the shared main while this card works a per-area worktree, the
+    worktree diff is polluted with out-of-scope files (their modules mirror to
+    red baseline tests), and the gate bounces a card whose scoped AC is green
+    on failures it is explicitly forbidden to fix (t_4eea8efe: 9 red
+    ``tests/test_search_backend.py`` cases on a card whose body says "Do NOT
+    modify backend/app/search.py or its scoped tests").
+
+    So: the body is the source of truth for what this card is accountable for.
+    We extract the scoped pytest path from the acceptance criteria — any
+    ``pytest <path> -q`` or ``pytest <path> -x`` invocation in the body (the
+    exact command an AC line names).  Collect them in order of appearance and
+    keep only paths that resolve under the worktree, so a stale/typo'd pointer
+    silently degrades to the diff-derived fallback rather than bouncing.
+
+    Returns an empty list when no per-card command is parseable (the caller
+    falls back to the diff-derived selection, NOT the whole ``tests/`` dir).
+    """
+    root = Path(ws_root).resolve()
+    if not body:
+        return []
+    found: list[str] = []
+    for line in body.splitlines():
+        m = _FOCUSED_TEST_CMD_RE.search(line)
+        if m:
+            found.append(m.group("path"))
+    # De-dupe while preserving order, then keep only paths that exist under
+    # the worktree.
+    seen: set[str] = set()
+    result: list[str] = []
+    for p in found:
+        p = p.strip()
+        if p in seen:
+            continue
+        seen.add(p)
+        if (root / p).is_file():
+            result.append(p)
+    return result
+
+
 def _is_test_py(rel: str) -> bool:
     """True when a root-relative python path is (or lives under) a test file."""
     p = Path(rel)
@@ -1274,7 +1323,14 @@ def _run_pre_review_gate(task: Any) -> Optional[_GateBounce]:
                 return _fail("import/build sanity", build_cmd, rc, out)
 
     # Rung 4: focused tests (least cheap — constructor + execution).
-    tests = _focused_test_paths(str(ws), changed_py)
+    # The run set honors the card's own scope first: parse a per-card
+    # scoped-test command from the body (its AC's pytest invocation, a
+    # ``tests/...`` line).  Only when the body names nothing parseable do we
+    # fall back to the diff-derived selection — never the whole tests/ dir.
+    task_body = getattr(task, "body", None) or ""
+    tests = _scoped_test_paths_from_body(task_body, Path(str(ws)))
+    if not tests:
+        tests = _focused_test_paths(str(ws), changed_py)
     if tests:
         if not _pytest_importable(pypath, str(ws)):
             logger.info(

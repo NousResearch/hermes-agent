@@ -736,3 +736,65 @@ def test_worktree_venv_without_pytest_passes_import_rung(
     assert resp.get("ok") is True, resp
     with kb.connect() as conn:
         assert kb.get_task(conn, tid).status == "review"
+
+
+
+
+# ---------------------------------------------------------------------------
+# 09-06 per-card scoped-test selection: the focused-tests rung must honor the
+# card's own scope rather than derive the run set from the worktree diff
+# (sibling commits onto shared main pollute the diff with out-of-scope red
+# baseline tests — t_4eea8efe / t_058f9fd0 defect).
+# ---------------------------------------------------------------------------
+
+
+def test_scoped_paths_from_body_pytest_command(tmp_path: Path) -> None:
+    """A ``pytest tests/test_ws.py -q`` AC line selects exactly that file."""
+    from tools import kanban_tools as ktools
+
+    ws = tmp_path / "ws"
+    (ws / "tests").mkdir(parents=True)
+    (ws / "tests" / "test_ws.py").write_text("")
+    (ws / "tests" / "test_search_backend.py").write_text("")
+    body = (
+        "## Scope\nMake `tests/test_ws.py` pass.\n\n"
+        "### Acceptance criteria\n"
+        "- `./.venv/bin/python -m pytest tests/test_ws.py -q` exits 0\n"
+        "- Do NOT modify `backend/app/search.py` or its scoped tests.\n"
+    )
+    parsed = ktools._scoped_test_paths_from_body(body, ws)
+    assert parsed == ["tests/test_ws.py"], parsed
+
+
+
+def test_scoped_paths_no_command_falls_back_empty(tmp_path: Path) -> None:
+    """A body with no scoped command yields [] -> diff fallback."""
+    from tools import kanban_tools as ktools
+
+    ws = tmp_path / "ws"
+    (ws / "tests").mkdir(parents=True)
+    (ws / "tests" / "test_other.py").write_text("")
+    assert ktools._scoped_test_paths_from_body("Just build it.", ws) == []
+
+
+def test_scoped_paths_missing_file_degrades_empty(tmp_path: Path) -> None:
+    """A stale pointer (file absent) degrades to [] -> diff fallback."""
+    from tools import kanban_tools as ktools
+
+    ws = tmp_path / "ws"
+    (ws / "tests").mkdir(parents=True)
+    body = "`pytest tests/test_ghost.py -q` exits 0"
+    assert ktools._scoped_test_paths_from_body(body, ws) == []
+
+
+def test_scoped_paths_inline_code_trailing_backtick(tmp_path: Path) -> None:
+    """An inline ``...`` span never yields a bogus trailing-backtick path."""
+    from tools import kanban_tools as ktools
+
+    ws = tmp_path / "ws"
+    (ws / "tests").mkdir(parents=True)
+    (ws / "tests" / "test_ws.py").write_text("")
+    body = "AC: `pytest tests/test_ws.py -q` exits 0"
+    parsed = ktools._scoped_test_paths_from_body(body, ws)
+    assert parsed == ["tests/test_ws.py"], parsed
+    assert all(not p.endswith("`") for p in parsed)

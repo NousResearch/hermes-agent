@@ -380,6 +380,26 @@ def _restart_gateway_after_whatsapp_onboarding(profile: Optional[str] = None) ->
     return _restart_gateway_after(profile, what="WhatsApp onboarding", label="WhatsApp onboarding")
 
 
+def _weixin_qr_manager():
+    """Lazy-import and bind the Weixin QR session manager to the dashboard event loop.
+
+    Fork PR #50044: the QR session manager needs the running event loop to drive
+    the async iLink poll; import lazily and bind on first use so a test's monkeypatch
+    on the owning module still wins.
+    """
+    from gateway.platforms.weixin_qr_session import get_weixin_qr_session_manager
+    import asyncio
+
+    manager = get_weixin_qr_session_manager()
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            manager.set_event_loop(loop)
+    except RuntimeError:
+        pass
+    return manager
+
+
 _TELEGRAM_ONBOARDING_DEFAULT_URL = "https://setup.hermes-agent.nousresearch.com"
 _TELEGRAM_ONBOARDING_USER_AGENT = f"HermesDashboard/{__version__}"
 

@@ -68,6 +68,13 @@ class WhatsAppOnboardingApply(BaseModel):
     allowed_users: Optional[str] = None
     profile: Optional[str] = None
 
+# Fork PR #50044: WeChat web-based QR onboarding (fork-only, absent upstream)
+class WeixinOnboardingStart(BaseModel):
+    profile: Optional[str] = None
+
+
+class WeixinOnboardingApply(BaseModel):
+    profile: Optional[str] = None
 class AudioTranscriptionRequest(BaseModel):
     data_url: str
     mime_type: Optional[str] = None

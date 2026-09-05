@@ -8,10 +8,17 @@
 #
 # Usage:
 #   docker compose -f docker-compose.windows.yml up -d
+# Supported voice architecture for this lane:
+# - Hermes runtime comes from the published GHCR image in this compose file.
+# - Active voice provider and default voice come from mounted data/config.yaml.
+# - edge-tts and piper-tts are runtime-wired packages, not part of a repo-local build lane.
+# - Qwen3-TTS remains a separate host-side sidecar reached via host.docker.internal:17494.
 #
 services:
   gateway:
-    image: nousresearch/hermes-agent:latest
+    # Fork GHCR image — includes Weixin QR onboarding + dashboard auth fixes.
+    # Override with HERMES_FORK_IMAGE to use a different image (e.g. upstream Docker Hub).
+    image: ${HERMES_FORK_IMAGE:-ghcr.io/jzkk720/hermes-agent:latest}
     container_name: hermes
     restart: unless-stopped
     volumes:
@@ -19,10 +26,13 @@ services:
     environment:
       - HERMES_UID=10000
       - HERMES_GID=10000
-    command: ["gateway", "run"]
+      - HERMES_LAZY_INSTALL_TARGET=/opt/data/lazy-packages
+      - GATEWAY_ALLOW_ALL_USERS=true
+    # Voice package availability is currently reinforced at container startup. This does not change the supported runtime lane: the containers still run from the published GHCR image.
+    command: ["sh", "-lc", "(/opt/hermes/.venv/bin/python3 -m pip show edge-tts >/dev/null 2>&1 && /opt/hermes/.venv/bin/python3 -m pip show piper-tts >/dev/null 2>&1) || /opt/hermes/.venv/bin/python3 -m pip install -q edge-tts==7.2.7 piper-tts==1.6.0; exec /opt/hermes/.venv/bin/hermes gateway run"]
 
   dashboard:
-    image: nousresearch/hermes-agent:latest
+    image: ${HERMES_FORK_IMAGE:-ghcr.io/jzkk720/hermes-agent:latest}
     container_name: hermes-dashboard
     restart: unless-stopped
     depends_on:
@@ -32,7 +42,9 @@ services:
     environment:
       - HERMES_UID=10000
       - HERMES_GID=10000
+      - HERMES_LAZY_INSTALL_TARGET=/opt/data/lazy-packages
       - HERMES_DASHBOARD_HOST=0.0.0.0
     ports:
       - "127.0.0.1:9119:9119"
-    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--insecure"]
+    # Voice package availability is currently reinforced at container startup. This does not change the supported runtime lane: the containers still run from the published GHCR image.
+    command: ["sh", "-lc", "(/opt/hermes/.venv/bin/python3 -m pip show edge-tts >/dev/null 2>&1 && /opt/hermes/.venv/bin/python3 -m pip show piper-tts >/dev/null 2>&1) || /opt/hermes/.venv/bin/python3 -m pip install -q edge-tts==7.2.7 piper-tts==1.6.0; exec /opt/hermes/.venv/bin/hermes dashboard --host 0.0.0.0 --port 9119 --no-open --insecure"]

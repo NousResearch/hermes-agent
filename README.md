@@ -3,6 +3,7 @@
 </p>
 
 # Hermes Agent ☤
+
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> | <a href="https://hermes-agent.nousresearch.com/">Hermes Desktop</a>
 </p>
@@ -94,6 +95,7 @@ Expand-Archive $zip "$env:TEMP\uv_x" -Force
 If attestation says "Verification succeeded" and the last line prints `True`, you're good.
 
 **To whitelist Hermes:**
+
 - **Windows Defender:** Run PowerShell as Admin → `Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\hermes\bin"`
 - **Bitdefender:** Add an exception in the Bitdefender console (Protection > Antivirus > Settings > Manage Exceptions)
 - Whitelist the **folder**, not the file hash — Hermes updates `uv` and the hash changes every version
@@ -137,6 +139,12 @@ hermes setup --portal
 That logs you in via OAuth, sets Nous as your provider, and turns on the Tool Gateway. Check what's wired up any time with `hermes portal info`. Full details on the [Tool Gateway docs page](https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-gateway).
 
 You can still bring your own keys per-tool whenever you want — the gateway is per-backend, not all-or-nothing.
+
+### Voice Runtime Model
+
+The supported Docker runtime uses `ghcr.io/jzkk720/hermes-agent:latest` for the Hermes containers.
+Voice provider choice and the default voice come from mounted `data/config.yaml`, while optional voice packages such as `edge-tts` and `piper-tts` are wired in at runtime.
+`Qwen3-TTS` is not baked into the container image; it runs as a separate host-side sidecar reached at `host.docker.internal:17494`.
 
 ---
 

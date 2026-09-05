@@ -621,8 +621,16 @@ async def qr_login(hermes_home: str, *, bot_type: str = "3", timeout_seconds: in
                 print(".", end="", flush=True)
             elif status == "scaned":
                 print("\n已扫码，请在微信里确认...")
-            elif status == "scaned_but_redirect" and status_resp.get("redirect_host"):
-                current_base_url = f"https://{status_resp['redirect_host']}"
+            elif status == "scaned_but_redirect":
+                redirect_host = str(status_resp.get("redirect_host") or "")
+                if redirect_host:
+                    # iLink sometimes returns a redirect_host with the wrong
+                    # domain (e.g. ilinkai.wechat.com instead of
+                    # ilinkai.weixin.qq.com). Always normalise to the canonical
+                    # endpoint to avoid silent session failures.
+                    from gateway.platforms.weixin_qr_session import _normalise_ilink_base_url
+                    candidate = f"https://{redirect_host}"
+                    current_base_url = _normalise_ilink_base_url(candidate)
             elif status == "expired":
                 refresh_count += 1
                 if refresh_count > 3:
@@ -636,9 +644,18 @@ async def qr_login(hermes_home: str, *, bot_type: str = "3", timeout_seconds: in
                     logger.error("weixin: QR refresh failed: %s", exc)
                     return None
             elif status == "confirmed":
+                # iLink sometimes returns a stale/wrong baseurl (e.g.
+                # ilinkai.wechat.com without the .qq.com suffix) in the QR
+                # confirmation response. Always normalise to the canonical
+                # ILINK_BASE_URL to avoid silent session failures caused by
+                # the wrong domain being saved to .env.
+                from gateway.platforms.weixin_qr_session import _normalise_ilink_base_url
                 creds = {
-                    "account_id": str(status_resp.get("ilink_bot_id") or ""), "token": str(status_resp.get("bot_token") or ""),
-                    "base_url": str(status_resp.get("baseurl") or ILINK_BASE_URL), "user_id": str(status_resp.get("ilink_user_id") or "")}
+                    "account_id": str(status_resp.get("ilink_bot_id") or ""),
+                    "token": str(status_resp.get("bot_token") or ""),
+                    "base_url": _normalise_ilink_base_url(str(status_resp.get("baseurl") or ILINK_BASE_URL)),
+                    "user_id": str(status_resp.get("ilink_user_id") or ""),
+                }
                 if not creds["account_id"] or not creds["token"]:
                     logger.error("weixin: QR confirmed but credential payload was incomplete")
                     return None

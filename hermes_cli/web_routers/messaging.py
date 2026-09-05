@@ -24,6 +24,7 @@ from fastapi import APIRouter, HTTPException
 from gateway.status import resolve_gateway_liveness
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path, redact_key
+from hermes_constants import get_hermes_home
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
 from hermes_cli.web_server_messaging import (
@@ -32,7 +33,7 @@ from hermes_cli.web_server_messaging import (
 from hermes_cli.web_routers._common import http_failure
 from hermes_cli.web_models import (
     MessagingPlatformUpdate, TelegramOnboardingApply, TelegramOnboardingStart,
-    WhatsAppOnboardingApply, WhatsAppOnboardingStart,
+    WhatsAppOnboardingApply, WhatsAppOnboardingStart, WeixinOnboardingApply, WeixinOnboardingStart,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -45,6 +46,7 @@ _resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profi
 _restart_gateway_after_whatsapp_onboarding = late("_restart_gateway_after_whatsapp_onboarding", "hermes_cli.web_server_messaging")
 _telegram_onboarding_request_sync = late("_telegram_onboarding_request_sync", "hermes_cli.web_server_messaging")
 _whatsapp_session_path = late("_whatsapp_session_path", "hermes_cli.web_server_messaging")
+_weixin_qr_manager = late("_weixin_qr_manager", "hermes_cli.web_server_messaging")
 _write_platform_enabled = late("_write_platform_enabled", "hermes_cli.web_server_messaging")
 load_env = late("load_env", "hermes_cli.config")
 load_config = late("load_config", "hermes_cli.config")
@@ -752,6 +754,82 @@ async def apply_telegram_onboarding(pairing_id: str, body: TelegramOnboardingApp
 async def cancel_telegram_onboarding(pairing_id: str):
     with _telegram_onboarding_lock:
         _telegram_onboarding_pairings.pop(pairing_id, None)
+    return {"ok": True}
+
+
+# ── Weixin (WeChat personal) web QR onboarding — fork PR #50044 ───────
+# Upstream has CLI QR login but no dashboard onboarding; these routes
+# mirror the Telegram onboarding shape (kept fork-only).
+
+
+@router.post("/api/messaging/weixin/onboarding/start")
+async def start_weixin_onboarding(body: WeixinOnboardingStart, profile: Optional[str] = None):
+    """Start a Weixin QR login session."""
+    effective_profile = body.profile or profile
+    try:
+        with _profile_scope(effective_profile):
+            hermes_home = str(get_hermes_home())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    manager = _weixin_qr_manager()
+    return manager.start_session(hermes_home, profile=effective_profile or "")
+
+
+@router.get("/api/messaging/weixin/onboarding/{session_id}/status")
+async def get_weixin_onboarding_status(session_id: str):
+    """Poll a Weixin QR login session (QR ready / scanned / confirmed / failed)."""
+    manager = _weixin_qr_manager()
+    status = manager.get_status(session_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="WeChat setup session was not found. Start a new setup.")
+    return status
+
+
+@router.post("/api/messaging/weixin/onboarding/{session_id}/apply")
+async def apply_weixin_onboarding(
+    session_id: str, body: WeixinOnboardingApply, profile: Optional[str] = None
+):
+    """Save confirmed Weixin credentials to .env and enable the platform."""
+    manager = _weixin_qr_manager()
+    credentials = manager.get_credentials(session_id)
+    if not credentials:
+        raise HTTPException(status_code=409, detail="WeChat setup is not ready yet. Scan the QR code first.")
+    effective_profile = body.profile or profile
+    session = manager.get_session(session_id)
+    if session and session.profile and effective_profile and session.profile != effective_profile:
+        raise HTTPException(
+            status_code=409,
+            detail="The management profile changed since the QR session was started. "
+            "Please cancel and start a new setup under the correct profile.",
+        )
+    try:
+        with _profile_scope(effective_profile):
+            save_env_value("WEIXIN_ACCOUNT_ID", credentials["account_id"])
+            save_env_value("WEIXIN_TOKEN", credentials["token"])
+            # Defensive: normalise to the canonical iLink endpoint (fork fix).
+            from gateway.platforms.weixin_qr_session import _normalise_ilink_base_url
+            save_env_value("WEIXIN_BASE_URL", _normalise_ilink_base_url(credentials["base_url"]))
+            _write_platform_enabled("weixin", True)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        _log.exception("Weixin onboarding apply failed")
+        raise HTTPException(status_code=500, detail="Failed to save WeChat setup.") from exc
+    manager.cancel_session(session_id)
+    restart_result = _restart_gateway_after(effective_profile, what="Weixin onboarding", label="Weixin onboarding")
+    return {
+        "ok": True, "platform": "weixin", "account_id": credentials["account_id"],
+        "needs_restart": not restart_result["restart_started"], **restart_result,
+    }
+
+
+@router.delete("/api/messaging/weixin/onboarding/{session_id}")
+async def cancel_weixin_onboarding(session_id: str):
+    """Cancel a Weixin QR login session."""
+    manager = _weixin_qr_manager()
+    manager.cancel_session(session_id)
     return {"ok": True}
 
 

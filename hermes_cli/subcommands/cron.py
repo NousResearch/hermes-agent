@@ -2,9 +2,27 @@
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
 
 from hermes_cli.subcommands._shared import add_accept_hooks_flag
+
+
+class _CronActionParser(argparse.ArgumentParser):
+    def __init__(self, *args, intermixed=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._intermixed = intermixed
+
+    def parse_known_args(self, args=None, namespace=None):
+        if not self._intermixed:
+            return super().parse_known_args(args, namespace)
+        # Subparser dispatch calls parse_known_args; intermixed parsing calls it
+        # twice internally, so those passes must use the ordinary implementation.
+        self._intermixed = False
+        try:
+            return self.parse_known_intermixed_args(args, namespace)
+        finally:
+            self._intermixed = True
 
 
 def _flag(parser, *names, help, **kw):
@@ -15,13 +33,16 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     """Attach the ``cron`` subcommand (and its sub-actions) to ``subparsers``."""
     cron_parser = subparsers.add_parser(
         "cron", help="Cron job management", description="Manage scheduled tasks")
-    cron_subparsers = cron_parser.add_subparsers(dest="cron_command")
+    cron_subparsers = cron_parser.add_subparsers(
+        dest="cron_command", parser_class=_CronActionParser)
 
     cron_list = cron_subparsers.add_parser("list", help="List scheduled jobs")
     _flag(cron_list, "--all", help="Include disabled jobs")
 
+    # Ordinary parsing consumes the optional prompt as absent at the first
+    # option after schedule. Only this leaf needs intermixed positionals.
     cron_create = cron_subparsers.add_parser(
-        "create", aliases=["add"], help="Create a scheduled job")
+        "create", aliases=["add"], help="Create a scheduled job", intermixed=True)
     cron_create.add_argument("schedule", help="Schedule like '30m', 'every 2h', or '0 9 * * *'")
     cron_create.add_argument(
         "prompt", nargs="?", help="Optional self-contained prompt or task instruction")

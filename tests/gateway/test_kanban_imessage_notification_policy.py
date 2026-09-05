@@ -154,3 +154,47 @@ def test_kanban_create_tool_from_photon_splits_and_children_inherit_readback(
     assert child_raw["chat_id"] == "tg-private-home"
     assert child_raw["thread_id"] == "42"
     assert child_raw["delivery_mode"] == "notify"
+
+
+def test_auto_subscribe_preserves_existing_explicit_source_subscription(
+    kanban_home_with_telegram_home,
+):
+    """Auto-subscribe may add the raw Telegram pair, but must not rewrite an existing source row."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools.kanban_tools import _maybe_auto_subscribe
+
+    tokens = set_session_vars(
+        platform="photon",
+        chat_id="photon-chat",
+        chat_type="dm",
+        thread_id="photon-thread",
+        user_id="photon-user",
+        profile="molly",
+    )
+    try:
+        with kbc.connect_closing() as conn:
+            task_id = kb.create_task(conn, title="explicit source preserved", assignee="stark")
+            kbn.add_notify_sub(
+                conn,
+                task_id=task_id,
+                platform="photon",
+                chat_id="photon-chat",
+                chat_type="dm",
+                thread_id="photon-thread",
+                user_id="explicit-user",
+                notifier_profile="operator",
+                delivery_mode="notify+wake",
+                delivery_metadata={"explicit": "kept"},
+            )
+            assert _maybe_auto_subscribe(conn, task_id) is True
+            subs = kbn.list_notify_subs(conn, task_id)
+    finally:
+        clear_session_vars(tokens)
+
+    assert len(subs) == 2
+    source_sub = _sub_by_platform(subs, "photon")
+    assert source_sub["delivery_mode"] == "notify+wake"
+    assert source_sub["user_id"] == "explicit-user"
+    assert source_sub["notifier_profile"] == "operator"
+    assert source_sub["delivery_metadata"] == {"explicit": "kept"}
+    assert _sub_by_platform(subs, "telegram")["delivery_mode"] == "notify"

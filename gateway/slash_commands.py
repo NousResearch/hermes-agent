@@ -407,7 +407,7 @@ class GatewaySlashCommandsMixin(
             conn = _kbc.connect(board=requested_board)
             try:
                 for target in kanban_auto_subscribe_targets(source_target):
-                    _kbn.add_notify_sub(conn, task_id=task_id, **target)
+                    _kbn.add_auto_notify_sub(conn, task_id=task_id, **target)
             finally:
                 conn.close()
         await asyncio.to_thread(_sub)

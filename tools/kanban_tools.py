@@ -918,7 +918,7 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
         from hermes_cli import kanban_db as _kb
         from hermes_cli import kanban_db_notify as _kbn
         for target in targets:
-            _kbn.add_notify_sub(conn, task_id=task_id, **target)
+            _kbn.add_auto_notify_sub(conn, task_id=task_id, **target)
         return True
     except Exception as _exc:
         logger.warning(

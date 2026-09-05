@@ -103,11 +103,7 @@ def test_closeout_watcher_injects_typed_metadata_once(
         "delivery_id": "closeout-1",
         "claim_id": "claim-1",
     }
-    assert runner._completion_delivery_identity(_event()) == (
-        "async_delegation_work_closeout",
-        "closeout-1",
-        "",
-    )
+    assert runner._completion_identity_seen(runner._completion_delivery_identity(_event()))
 
 
 def test_gateway_closeout_deduplication_is_scoped_by_profile():
@@ -286,3 +282,57 @@ def test_multiplex_recovery_release_retry_and_close_stay_in_secondary_profile(
         assert conn.execute(
             "SELECT COUNT(*) FROM async_delegation_work_groups"
         ).fetchone()[0] == 0
+
+
+
+@pytest.mark.parametrize("failure_timing", ["before_acceptance_returns", "after_acceptance"])
+def test_failed_accepted_closeout_allows_new_claim_but_not_duplicates(failure_timing):
+    from tools import async_delegation as ad
+
+    runner = _runner(None)
+    runner._classify_completion_target = AsyncMock(return_value="deliver")
+    assert ad.register_work_group_member(
+        work_id="work", owner_turn_id="owner", delegation_id="child",
+        feature_config={"delegation": {"task_scoped_closeout": True}},
+        routing={"origin_session": "telegram-session", "parent_session_id": "parent"},
+        task={"goal": "review", "task_index": 0})
+    ad.persist_group_member_completion("child", {"delegation_id": "child", "status": "completed"},
+                                       {"status": "completed", "summary": "done"})
+    assert ad.seal_work_group("work", "owner")
+    pending = queue.Queue()
+    assert ad._enqueue_claimed_work_group(ad.claim_ready_work_group("work", "first"), target_queue=pending)
+    first = pending.get_nowait()
+    calls = []
+
+    def release(event):
+        assert ad.release_bound_work_group_closeout(
+            "work", 0, event["delivery_id"], event["claim_id"], event["claim_id"])
+
+    async def inject(_text, event, **_kwargs):
+        calls.append(event["claim_id"])
+        assert ad.bind_work_group_closeout_turn(
+            "work", event["delivery_id"], event["claim_id"], event["claim_id"])
+        if event is first:
+            if failure_timing == "before_acceptance_returns":
+                release(event)
+        else:
+            assert ad.close_work_group("work", 0, event["delivery_id"], event["claim_id"], event["claim_id"])
+            assert not ad.close_work_group("work", 0, first["delivery_id"], first["claim_id"], first["claim_id"])
+        return True
+
+    runner._inject_watch_notification = inject
+    assert asyncio.run(runner._deliver_completion_notification("first", first)) is True
+    if failure_timing == "after_acceptance":
+        release(first)
+    assert asyncio.run(runner._deliver_completion_notification("duplicate", first)) is None
+    ad.recover_and_enqueue_work_groups(target_queue=pending)
+    second = pending.get_nowait()
+    assert second["claim_id"] != first["claim_id"]
+    assert second["delivery_id"] == first["delivery_id"]
+    assert asyncio.run(runner._deliver_completion_notification("retry", second)) is True
+    assert asyncio.run(runner._deliver_completion_notification("duplicate", second)) is None
+    assert calls == [first["claim_id"], second["claim_id"]]
+    ad.recover_and_enqueue_work_groups(target_queue=pending)
+    assert pending.empty()
+    with ad._transaction() as conn:
+        assert conn.execute("SELECT state FROM async_delegation_work_groups WHERE work_id='work'").fetchone() == ("closed",)

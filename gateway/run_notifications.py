@@ -1025,7 +1025,10 @@ class GatewayNotificationsMixin:
         if evt_type == "async_delegation_work_closeout":
             delivery_id = str(evt.get("delivery_id") or "")
             profile_home = str(evt.get("_ledger_profile_home") or "")
-            return (evt_type, delivery_id, profile_home) if delivery_id else None
+            # Acceptance only starts an attempt; a failed turn releases its claim.
+            # Recovery reuses delivery_id, while the durable group CAS owns final dedup.
+            claim_id = str(evt.get("claim_id") or "")
+            return (evt_type, delivery_id, (profile_home, claim_id)) if delivery_id else None
         if evt_type == "completion":
             producer_id = str(evt.get("session_id") or "")
             started_at = evt.get("started_at")

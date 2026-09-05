@@ -3,6 +3,7 @@ validation, migration, and the ``hermes config`` command."""
 
 import copy
 import difflib
+import hashlib
 import json
 import logging
 import os
@@ -2385,9 +2386,15 @@ def _parse_env_value(raw_value: str) -> str:
     return value
 
 
-# load_env() memo keyed on (path, mtime, size). Editing .env bumps mtime -> rebuild;
-# invalidate_env_cache() is the explicit knob for writers on coarse-mtime filesystems.
-_env_cache: Optional[Tuple[Tuple[str, Optional[float], Optional[int]], Dict[str, str]]] = None
+# load_env() memo keyed on the file's content digest, not mtime/size: .env holds API
+# keys, and a stat-only key is right for a config cache but wrong for a credential
+# cache -- a dotfile-sync, backup/restore, or `cp -p`-style tool can rewrite the bytes
+# while preserving the mtime, which a stat idiom would never detect (mirrors
+# agent/vertex_adapter.py's _read_sa_file() and hermes_cli/auth.py's
+# _load_global_auth_store(), both fixed for the same reason). The file is a few KB, so
+# hashing it on every miss is negligible. invalidate_env_cache() remains the explicit
+# knob for writers that want to skip the read+hash on their own next load_env() call.
+_env_cache: Optional[Tuple[Tuple[str, Optional[str]], Dict[str, str]]] = None
 
 
 def load_env() -> Dict[str, str]:
@@ -2397,10 +2404,9 @@ def load_env() -> Dict[str, str]:
     env_path = get_env_path()
 
     try:
-        st = env_path.stat()
-        cache_key = (str(env_path), st.st_mtime, st.st_size)
+        cache_key = (str(env_path), hashlib.sha256(env_path.read_bytes()).hexdigest())
     except FileNotFoundError:
-        cache_key = (str(env_path), None, None)
+        cache_key = (str(env_path), None)
     except Exception:
         cache_key = None
     if cache_key is not None and _env_cache is not None and _env_cache[0] == cache_key:

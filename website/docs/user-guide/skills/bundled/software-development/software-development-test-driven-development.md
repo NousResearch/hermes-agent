@@ -16,7 +16,7 @@ TDD: enforce RED-GREEN-REFACTOR, tests before code.
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/software-development\test-driven-development` |
-| Version | `1.1.0` |
+| Version | `1.2.0` |
 | Author | Hermes Agent (adapted from obra/superpowers) |
 | License | MIT |
 | Platforms | linux, macos, windows |
@@ -38,6 +38,24 @@ Write the test first. Watch it fail. Write minimal code to pass.
 **Core principle:** If you didn't watch the test fail, you don't know if it tests the right thing.
 
 **Violating the letter of the rules is violating the spirit of the rules.**
+
+## TDD Starts at the Design Phase (binding)
+
+TDD does not begin when coding begins -- it begins when the PLAN is written.
+Size the artifact to the class (XS skip / 40 lines, S 120, M 400, L/XL 900).
+
+- **A plan, design, or explanation of intended behavior is INCOMPLETE without
+  its tests.** "Tests: will be written" is not a plan section.
+- The plan names the exact failing cases and commands. Coder writes those
+  test files in RED before production code. Planner writes test files into
+  the target repo only for M+ public contracts when the Orchestrator brief
+  explicitly asks. XS mechanical work updates the narrowest existing test
+  or records "no new test: reason".
+- The prose describes the behavior; the named cases pin it. Implementation
+  makes those cases green. A plan that says "tests will be written later"
+  is not saved as a plan.
+- If you cannot name the failing case while writing the plan, the design is
+  not concrete enough -- fix the design, not the process.
 
 ## When to Use
 
@@ -348,7 +366,7 @@ delegate_task(
     3. Write minimal code to pass
     4. Run test to verify it passes
     5. Refactor if needed
-    6. Commit
+    Do not commit. Git is Orchestrator-owned.
 
     Project test command: pytest tests/ -q
     Project structure: [describe relevant files]

@@ -39,6 +39,8 @@ class ToolRoundVerdict:
     failed: Any
     _turn_exit_reason: Any
     truncated_tool_call_retries: Any
+    _pending_verification_response: Any
+    _pending_verification_response_previewed: Any
     result: Optional[Dict[str, Any]] = None
 
 
@@ -47,7 +49,8 @@ def run_tool_round(
     conversation_history: Any, api_call_count: Any, effective_task_id: Any, user_message: Any,
     system_message: Any, active_system_prompt: Any, compression_attempts: Any,
     max_compression_attempts: Any, final_response: Any, failed: Any, _turn_exit_reason: Any,
-    truncated_tool_call_retries: Any,
+    truncated_tool_call_retries: Any, _pending_verification_response: Any,
+    _pending_verification_response_previewed: Any,
 ) -> ToolRoundVerdict:
     """Execute one tool round in the exact original order. Persist-before-execute is a
     durability invariant: resume must see the executed block if a destructive tool restarts
@@ -60,7 +63,10 @@ def run_tool_round(
             action=action, messages=messages, conversation_history=conversation_history,
             active_system_prompt=active_system_prompt, compression_attempts=compression_attempts,
             final_response=final_response, failed=failed, _turn_exit_reason=_turn_exit_reason,
-            truncated_tool_call_retries=truncated_tool_call_retries, result=result,
+            truncated_tool_call_retries=truncated_tool_call_retries,
+            _pending_verification_response=_pending_verification_response,
+            _pending_verification_response_previewed=_pending_verification_response_previewed,
+            result=result,
         )
 
     if not agent.quiet_mode:
@@ -161,8 +167,48 @@ def run_tool_round(
 
     if agent._tool_guardrail_halt_decision is not None:
         decision = agent._tool_guardrail_halt_decision
-        _turn_exit_reason = "guardrail_halt"
         final_response = agent._toolguard_controlled_halt_response(decision)
+        # A controlled halt otherwise looks like a clean rc=0 exit to a Kanban
+        # dispatcher. Reuse the same bounded terminal-tool guard as the text
+        # response path, but keep the state transition inside this phase so the
+        # next API request is assembled from the synthetic user nudge.
+        from agent.turn_stop_gates import _kanban_stop_nudge
+
+        _kanban_nudge = _kanban_stop_nudge(agent, messages)
+        if _kanban_nudge:
+            agent._kanban_stop_nudges = getattr(agent, "_kanban_stop_nudges", 0) + 1
+            agent._tool_guardrail_halt_decision = None
+            append_message(messages, {
+                "role": "assistant",
+                "content": final_response,
+                "_kanban_stop_synthetic": True,
+            })
+            agent._flush_messages_to_session_db(messages, conversation_history)
+            append_message(messages, {
+                "role": "user",
+                "content": _kanban_nudge,
+                "_kanban_stop_synthetic": True,
+            })
+            agent._session_messages = messages
+            _pending_verification_response = final_response
+            _pending_verification_response_previewed = agent._interim_content_was_streamed(
+                final_response or ""
+            )
+            final_response = None
+            _turn_exit_reason = "kanban_guardrail_nudge"
+            logger.info(
+                "kanban stop-loop nudge issued after guardrail halt "
+                "(attempt %d) task=%s",
+                agent._kanban_stop_nudges,
+                getattr(agent, "session_id", None) or "none",
+            )
+            agent._emit_status(
+                f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code} "
+                "- nudging kanban worker to finish"
+            )
+            return _verdict("continue")
+
+        _turn_exit_reason = "guardrail_halt"
         agent._emit_status(f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}")
         append_message(messages, {"role": "assistant", "content": final_response})
         # Emit the halt so it isn't mistaken for a crash; the stream callback is still

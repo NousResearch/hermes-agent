@@ -2849,6 +2849,7 @@ export const ar = defineLocale({
       success: platform => `تم التسليم إلى ${platform}. استأنف هنا في أي وقت.`,
       systemNote: platform => `↻ تم التسليم إلى ${platform} — استأنف هنا في أي وقت.`,
       failed: error => `فشل التسليم: ${error}`,
+      stillRunning: 'لا تزال البوابة تنقل هذه الجلسة. تحقق من الوجهة ولا تعاود التسليم بعد.',
       timedOut: 'انتهت المهلة في انتظار البوابة. هل `hermes gateway` قيد التشغيل؟'
     }
   },

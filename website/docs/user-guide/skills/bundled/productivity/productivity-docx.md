@@ -15,7 +15,7 @@ Create, read, edit, template, and review Word .docx files.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity\docx` |
+| Path | `skills/productivity/docx` |
 | Version | `1.1.0` |
 | Author | Nous Research |
 | License | MIT |

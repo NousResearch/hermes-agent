@@ -15,7 +15,7 @@ Dark-themed SVG architecture/cloud/infra diagrams as HTML.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/creative\architecture-diagram` |
+| Path | `skills/creative/architecture-diagram` |
 | Version | `1.0.0` |
 | Author | Cocoon AI (hello@cocoon-ai.com), ported by Hermes Agent |
 | License | MIT |

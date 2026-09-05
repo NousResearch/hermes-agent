@@ -622,13 +622,22 @@ def _repair_current_checkout(
     # The Windows shim hand-off child is current BY DESIGN; its one job is the pending sync,
     # not venv health — without this it would print "Already up to date!" and skip it.
     handed_off_sync = os.environ.get(_m()._UPDATE_REEXEC_ENV) == "1"
+    # A pending ``.update-incomplete`` marker outranks the probe: the prior install died and
+    # the probe still passes, because an editable install resolves the probed modules against
+    # the new checkout while the venv stays on stale pins (#103532) — reporting success would
+    # strand the venv on old deps with exit 0 and a success receipt.
+    pending_install_marker = _m()._update_marker_path().exists()
     if handed_off_sync:
         print("→ Finishing the dependency install handed off by hermes.exe...")
     elif not healthy:
         print("⚠ Checkout is current, but the venv is unhealthy:")
         print(f"  {detail}")
         print("→ Repairing Python dependencies...")
-    if handed_off_sync or not healthy:
+    elif pending_install_marker:
+        print("⚠ Checkout is current, but a previous dependency install did not finish:")
+        print(f"  pending marker: {_m()._update_marker_path()}")
+        print("→ Repairing Python dependencies...")
+    if handed_off_sync or not healthy or pending_install_marker:
         current_checkout_complete = _repair_venv_on_current_checkout(
             assume_yes=assume_yes, gateway_mode=gateway_mode,
             pre_update_snapshot_id=pre_update_snapshot_id, desktop_dir=desktop_dir,

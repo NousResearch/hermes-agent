@@ -748,7 +748,17 @@ def _route_capture_through_aux_vision(cap: CaptureResult, summary: str, *, visib
 
 # ── Availability check (used by the tool registry check_fn) ─────────────────
 def check_computer_use_requirements() -> bool:
-    """macOS/Windows/Linux + cua-driver binary (or env override). `hermes computer-use doctor` names blocked checks."""
+    """True when remote CUA transport resolves, else macOS/Windows/Linux + cua-driver binary
+    (or env override). `hermes computer-use doctor` names blocked checks."""
+    try:  # remote transport: the bridge host owns the driver, so no local binary is required
+        from tools.computer_use.cua_backend import _computer_use_cfg
+        from tools.computer_use.remote import resolve_remote_cua_config
+        if resolve_remote_cua_config(_computer_use_cfg(), permission_mode="standard") is not None:
+            return True
+    except RuntimeError:  # broken remote config fails closed — the tool stays hidden
+        return False
+    except ImportError:  # tree without the remote module — local rules apply
+        pass
     if sys.platform not in ("darwin", "win32", "linux"):
         return False
     from tools.computer_use.cua_backend_driver import cua_driver_binary_available

@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from agent.system_prompt import build_system_prompt, build_system_prompt_parts
 
 
@@ -533,6 +535,58 @@ class TestSkillsInVolatileBand:
         full = _build(build_system_prompt)
         assert full.index(_CONTEXT) < full.index(_SKILLS)
         assert full.index(_SKILLS) < full.index("Conversation started:")
+
+
+class TestSkillsCatalogModeWiring:
+    """End-to-end: agent.skills_catalog_mode reaches the rendered skills block.
+
+    Pins the empty-sentinel coercion bug — names-only resolves to the empty
+    ALL_SKILL_CATEGORIES frozenset, so a truthiness coercion of the resolved
+    set (``_resolved_cats or None``) would silently drop names-only and render
+    the full catalog with descriptions.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
+    def _populate(self, root):
+        for cat, name in (("social-media", "tweet-stuff"), ("github", "pr-review")):
+            d = root / "skills" / cat / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: Does {name} things in detail\n---\n"
+            )
+
+    def _render(self, monkeypatch, tmp_path, mode):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        self._populate(tmp_path)
+        agent = _make_agent(
+            platform="mattermost",
+            valid_tool_names=["skills_list", "skill_view", "skill_manage"],
+        )
+        cfg = {"agent": {"skills_catalog_mode": mode}}
+        # The skills index lives in the volatile band (see TestSkillsInVolatileBand),
+        # so render the full prompt rather than the stable band alone.
+        with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+            return build_system_prompt(agent)
+
+    def test_names_only_mode_drops_descriptions_end_to_end(self, monkeypatch, tmp_path):
+        stable = self._render(monkeypatch, tmp_path, "names-only")
+        # Names stay visible; descriptions are dropped for EVERY category.
+        assert "tweet-stuff" in stable
+        assert "pr-review" in stable
+        assert "Does tweet-stuff things" not in stable
+        assert "Does pr-review things" not in stable
+
+    def test_full_mode_keeps_descriptions_end_to_end(self, monkeypatch, tmp_path):
+        stable = self._render(monkeypatch, tmp_path, "full")
+        assert "Does tweet-stuff things" in stable
+        assert "Does pr-review things" in stable
 
 
 class TestMemoryProviderSystemPromptGating:

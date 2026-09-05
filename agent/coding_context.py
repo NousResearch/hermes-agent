@@ -407,6 +407,48 @@ def coding_compact_skill_categories(*, platform: Optional[str] = None, cwd: Opti
     return resolve_runtime_mode(platform=platform, cwd=cwd, config=config).compact_skill_categories()
 
 
+def _skills_catalog_mode(config: Optional[dict[str, Any]], platform: Optional[str]) -> str:
+    """Resolve ``agent.skills_catalog_mode`` to ``full|compact|names-only``.
+
+    Precedence (highest wins), all session-fixed inputs:
+      1. Explicit ``agent.skills_catalog_mode`` in ``config``.
+      2. Per-surface default: ``compact`` when the platform is not an
+         interactive coding surface, else ``full``.
+    The empty-string sentinel (``''``) means "no explicit choice — use the
+    per-surface default".
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config
+            config = load_config()
+        except Exception:
+            config = {}
+    raw = ((config or {}).get("agent", {}) or {}).get("skills_catalog_mode", "")
+    mode = str(raw or "").strip().lower()
+    if mode in {"names_only", "namesonly", "names"}:
+        return "names-only"
+    if mode in {"full", "compact", "names-only"}:
+        return mode
+    plat = (platform or "").strip().lower()
+    return "full" if plat in INTERACTIVE_CODING_PLATFORMS else "compact"
+
+
+def resolve_skills_catalog_compaction(*, platform: Optional[str] = None, config: Optional[dict[str, Any]] = None) -> frozenset[str]:
+    """Skill categories to demote to names-only for THIS surface + config.
+
+    Pure function of session-fixed inputs (``platform``, ``config``): cache-safe.
+    Returns ``frozenset()`` for ``full``, the non-coding deny-list for
+    ``compact``, and :data:`ALL_SKILL_CATEGORIES` for ``names-only``.
+    """
+    mode = _skills_catalog_mode(config, platform)
+    if mode == "full":
+        return frozenset()
+    if mode == "names-only":
+        from agent.prompt_builder import ALL_SKILL_CATEGORIES
+        return ALL_SKILL_CATEGORIES
+    return frozenset(_NON_CODING_SKILL_CATEGORIES)
+
+
 # ── git/workspace probe ─────────────────────────────────────────────────────
 
 def _git(cwd: Path, *args: str) -> str:

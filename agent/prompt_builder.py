@@ -1185,6 +1185,26 @@ def _current_session_platform_hint() -> str:
         return ""
 
 
+class _AllSkillCategories(frozenset):
+    """Sentinel: demote EVERY present category to names-only.
+
+    A distinct frozenset subclass (not a magic string) so it flows unchanged
+    through ``compact_categories`` typing and the LRU cache key, while the
+    renderer can identity-check it to short-circuit "all categories demoted".
+    Empty as a set, so it never accidentally matches a real category name.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # stable cache-key token
+        return "ALL_SKILL_CATEGORIES"
+
+
+# Module-level singleton so identity checks (``is``) work across callers and
+# the LRU cache key is a single stable value.
+ALL_SKILL_CATEGORIES = _AllSkillCategories()
+
+
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None, available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None, skills_dir_override: "Path | None" = None,
@@ -1278,7 +1298,11 @@ def _render_skills_index(
         return ""
     # Demoted categories collapse to one names-only line. NEVER drop entries — agent-created skills are the
     # model's project memory and it won't rediscover them via skills_list. Nested categories follow their parent.
-    demoted = frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
+    # The ALL_SKILL_CATEGORIES sentinel short-circuits to "every present category demoted" (names-only mode).
+    if compact_categories is ALL_SKILL_CATEGORIES:
+        demoted = frozenset(skills_by_category)
+    else:
+        demoted = frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
     hidden_note = (
         "\n(Categories marked [names only] are outside the current coding "
         "context, so their descriptions are omitted — the skills work "
@@ -1335,7 +1359,12 @@ def _build_skills_system_prompt_inner(
         str(skills_dir), tuple(str(d) for d in external_dirs), tuple(str(d) for d in project_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
-        _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
+        _platform_hint,
+        tuple(sorted(disabled)),
+        # The names-only sentinel is empty as a set but must key distinctly
+        # from ``full`` (also empty) — its repr provides a stable token.
+        ("__ALL__",) if compact_categories is ALL_SKILL_CATEGORIES
+        else tuple(sorted(compact_categories or ())),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)

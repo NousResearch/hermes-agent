@@ -1176,6 +1176,22 @@ agent:
   #   - "For UI work, don't run tsc/lint until I approve the look."
   #   - "Clean the diff before you commit and push."
 
+  # Skills catalog rendering in the system prompt. Controls how much of the
+  # <available_skills> block is spent on descriptions vs names-only lines.
+  # Never hides a skill: names-only demotion drops the description but keeps
+  # the name visible and loadable via skill_view/skills_list.
+  #   full        - every category keeps full descriptions (default for
+  #                 interactive coding surfaces; today's behaviour)
+  #   compact     - non-coding categories demoted to names-only (default for
+  #                 messaging/chat surfaces; catalog reduction varies with the
+  #                 category mix, ~17.5% measured on the default profile)
+  #   names-only  - every category demoted to names-only (max compaction;
+  #                 opt-in for token-critical high-volume profiles)
+  # Omit (or '') to accept the per-surface default (compact on chat, full on
+  # coding). Overridable per-profile in profiles/<name>/config.yaml. Config
+  # only - no HERMES_* env var. Takes effect next session.
+  # skills_catalog_mode: ''
+
   # When verify-on-stop finds edited code without fresh verification evidence,
   # append guidance for creative UI work (avoid broad tsc/lint/test before visual
   # approval) and clean-diff expectations. Set false to keep that nudge terse.

@@ -1324,6 +1324,7 @@ class TestMatrixSyncLoop:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("initial", [False, True])
     async def test_left_room_real_sdk_membership_and_crypto_cache(self, initial):
+        pytest.importorskip("mautrix.client", reason="Real SDK coverage requires the optional Matrix dependencies")
         from mautrix.client import Client
         from mautrix.client.state_store import MemoryStateStore
         from mautrix.types import EventType, Membership, RoomID, UserID

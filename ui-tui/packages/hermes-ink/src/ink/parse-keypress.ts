@@ -16,11 +16,19 @@ const FN_KEY_RE =
   // eslint-disable-next-line no-control-regex
   /^(?:\x1b+)(O|N|\[|\[\[)(?:(\d+)(?:;(\d+))?([~^$])|(?:1;)?(\d+)?([a-zA-Z]))/
 
-// CSI u (kitty keyboard protocol): ESC [ codepoint [; modifier] u
-// Example: ESC[13;2u = Shift+Enter, ESC[27u = Escape (no modifiers)
-// Modifier is optional - when absent, defaults to 1 (no modifiers)
+// CSI u (kitty keyboard protocol): ESC [ codepoint [; modifier [; event/text]] u
+// Example: ESC[13;2u = Shift+Enter, ESC[27u = Escape (no modifiers).
+// Modifier is optional - when absent, defaults to 1 (no modifiers). Kitty may
+// append associated text or an event type after the modifier.
 // eslint-disable-next-line no-control-regex
-const CSI_U_RE = /^\x1b\[(\d+)(?:;(\d+))?u/
+const CSI_U_RE = /^\x1b\[(\d+)(?:;(\d+)(?:(?:;|:)\d+)*)?u$/
+
+// CSI arrow keys: ESC [ numeric parameters A/B/C/D. The standard form is
+// CSI 1;modifier A/B/C/D, but some terminal/proxy combinations append lock
+// state or event fields, or emit the modifier before the key code (for
+// example ESC[1;2;129D and ESC[129;1D).
+// eslint-disable-next-line no-control-regex
+const CSI_ARROW_RE = /^\x1b\[(\d+(?:;\d+)*)([ABCD])$/
 
 // xterm modifyOtherKeys: ESC [ 27 ; modifier ; keycode ~
 // Example: ESC[27;2;13~ = Shift+Enter. Emitted by Ghostty/tmux/xterm when
@@ -688,6 +696,42 @@ function parseMouseEvent(s: string): ParsedMouse | null {
   }
 }
 
+const CSI_ARROW_NAMES: Record<string, string> = {
+  A: 'up',
+  B: 'down',
+  C: 'right',
+  D: 'left'
+}
+
+function parseCsiArrow(s: string): ParsedKey | null {
+  const match = CSI_ARROW_RE.exec(s)
+
+  if (!match) {
+    return null
+  }
+
+  const params = match[1]!.split(';').map(p => parseInt(p, 10))
+  const keyCodeIndex = params.indexOf(1)
+
+  if (keyCodeIndex === -1) {
+    return null
+  }
+
+  // In the canonical form the key code comes first. For the alternate form
+  // seen in the wild, the key code is second and the modifier comes first.
+  const modifier = params[keyCodeIndex === 0 ? 1 : 0] ?? 1
+  const name = CSI_ARROW_NAMES[match[2]!]
+
+  if (!name || modifier < 1) {
+    return null
+  }
+
+  return {
+    ...createNavKey(s, name, false),
+    ...decodeModifier(modifier)
+  }
+}
+
 function parseKeypress(s: string = ''): ParsedKey {
   let parts
 
@@ -707,9 +751,17 @@ function parseKeypress(s: string = ''): ParsedKey {
 
   key.sequence = key.sequence || s || key.name
 
-  // Handle CSI u (kitty keyboard protocol): ESC [ codepoint [; modifier] u
+  // Handle CSI u (kitty keyboard protocol): ESC [ codepoint [; modifier] u.
+  // Additional fields after the modifier are accepted by CSI_U_RE and are
+  // ignored here because keycodeToName only needs the codepoint.
   // Example: ESC[13;2u = Shift+Enter, ESC[27u = Escape (no modifiers)
   let match: RegExpExecArray | null
+
+  const arrow = parseCsiArrow(s)
+
+  if (arrow) {
+    return arrow
+  }
 
   if ((match = CSI_U_RE.exec(s))) {
     const codepoint = parseInt(match[1]!, 10)
@@ -873,12 +925,6 @@ function parseKeypress(s: string = ''): ParsedKey {
 
     case '\u001b[6~':
       return createNavKey(s, 'pagedown', false)
-
-    case '\u001b[1;5D':
-      return createNavKey(s, 'left', true)
-
-    case '\u001b[1;5C':
-      return createNavKey(s, 'right', true)
   }
 
   return key

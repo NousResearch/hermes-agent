@@ -891,10 +891,7 @@ mod tests {
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].name, "main");
         assert!(rows[0].current);
-        assert_eq!(
-            rows[0].worktree.as_deref(),
-            Some("/var/tmp/hermes-tui-src")
-        );
+        assert_eq!(rows[0].worktree.as_deref(), Some("/var/tmp/hermes-tui-src"));
         assert!(!rows[1].current);
         assert!(rows[1].worktree.is_none());
         assert_eq!(rows[2].worktree.as_deref(), Some("/tmp/other"));

@@ -1442,6 +1442,14 @@ class SessionSessionsMixin:
             delegate_ids = _collect_delegate_child_ids(conn, [session_id])
         return [session_id, *sorted(delegate_ids)]
 
+    def _check_session_delete_guards(self, conn, session_ids) -> None:
+        """Reject deletion under a live turn lease; reclaim stale holders in the delete txn."""
+        for sid in set(session_ids):
+            self._check_transcript_write_guards(
+                conn, sid, None, reject_active_turn_lease=True,
+                allow_closed_compression_parent=True,
+            )
+
     def delete_session(
         self, session_id: str, sessions_dir: Optional[Path] = None,
         expected_delete_ids: Optional[List[str]] = None,
@@ -1458,6 +1466,9 @@ class SessionSessionsMixin:
                 session_id, *_collect_delegate_child_ids(conn, [session_id])
             }:
                 return False
+            self._check_session_delete_guards(
+                conn, [session_id, *_collect_delegate_child_ids(conn, [session_id])]
+            )
             removed_ids.extend(_delete_delegate_children(conn, [session_id]))
             conn.execute(  # orphan remaining children (branches) so FK is satisfied
                 "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,),
@@ -1476,6 +1487,24 @@ class SessionSessionsMixin:
         """Delete *session_id* only if it has no messages, no title and no children; check and delete
         share one transaction so a concurrent flush can't be lost."""
         def _do(conn):
+            candidate = conn.execute(
+                """
+                SELECT 1 FROM sessions
+                WHERE id = ?
+                  AND title IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM messages WHERE messages.session_id = sessions.id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM sessions child
+                      WHERE child.parent_session_id = sessions.id
+                  )
+                """,
+                (session_id,),
+            ).fetchone()
+            if candidate is None:
+                return False
+            self._check_session_delete_guards(conn, [session_id])
             cursor = conn.execute(
                 """
                 DELETE FROM sessions
@@ -1513,6 +1542,9 @@ class SessionSessionsMixin:
             ).fetchall()]
             if not existing:
                 return 0
+            self._check_session_delete_guards(
+                conn, [*existing, *_collect_delegate_child_ids(conn, existing)]
+            )
             ph = _session_ids_placeholders(existing)
             removed_ids.extend(_delete_delegate_children(conn, existing))
             conn.execute(  # orphan children whose parent is in the kill list (FK)
@@ -1551,6 +1583,7 @@ class SessionSessionsMixin:
             ).fetchall()}
             if not session_ids:
                 return 0
+            self._check_session_delete_guards(conn, session_ids)
             conn.execute(
                 "UPDATE sessions SET parent_session_id = NULL "
                 f"WHERE parent_session_id IN ({_session_ids_placeholders(session_ids)})", list(session_ids),

@@ -242,12 +242,22 @@ def admit_durable_turn_lease(
     admission = TurnLeaseAdmission(conversation_history=conversation_history)
     if db is None or not session_id:
         return admission
+    server_history_authoritative = bool(
+        getattr(agent, "_reload_durable_history_after_lease", False)
+        and not getattr(agent, "_preserve_caller_history_on_lease_wait", False)
+    )
     # A fresh session id has no durable transcript to race over, and callers may supply an
     # in-memory seed before the row exists — reloading would erase it. Check the concrete type:
     # MagicMock-style shims accept any attribute without the protocol.
+    durable_session_exists = _durable_session_exists(db, session_id)
+    if server_history_authoritative and not durable_session_exists:
+        admission.early_result = _canonical_session_error(
+            session_id, conversation_history, unavailable=False
+        )
+        return admission
     if (
         getattr(agent, "_persist_disabled", False)
-        or not _durable_session_exists(db, session_id)
+        or not durable_session_exists
         or not callable(getattr(type(db), "acquire_session_turn_lease", None))
     ):
         return admission
@@ -281,17 +291,39 @@ def admit_durable_turn_lease(
     agent._active_session_turn_lease_holder = holder
     agent._active_session_turn_lease_ttl_seconds = LEASE_TTL_SECONDS
     try:
-        if waited:
-            agent._emit_status("Session is free; loading the latest transcript...")
-            # The holder may have compressed/rotated the session while we waited: reload only
-            # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss).
+        refresh_history = waited or server_history_authoritative
+        if refresh_history:
+            if getattr(agent, "_preserve_caller_history_on_lease_wait", False):
+                agent._emit_status("Session is free; preserving caller-provided history...")
+            else:
+                agent._emit_status("Session is free; loading the latest transcript...")
+        if server_history_authoritative:
+            try:
+                canonical_session_still_exists = db.get_session(session_id) is not None
+            except Exception:
+                logger.warning("Could not revalidate canonical session after turn lease", exc_info=True)
+                lease.release()
+                admission.early_result = _canonical_session_error(
+                    session_id, conversation_history, unavailable=True
+                )
+                return admission
+            if not canonical_session_still_exists:
+                lease.release()
+                admission.early_result = _canonical_session_error(
+                    session_id, conversation_history, unavailable=False
+                )
+                return admission
+        if refresh_history:
+            # Another holder may append or rotate after an API handler's preload, including when it
+            # releases before our first acquire attempt. Resolve/reload only after admission.
             latest_session_id = db.resolve_resume_session_id(session_id)
             if latest_session_id:
                 agent.session_id = latest_session_id
                 task_context["session_id"] = latest_session_id
-            admission.conversation_history = db.get_messages_as_conversation(
-                agent.session_id, repair_alternation=True, include_row_ids=True
-            )
+            if not getattr(agent, "_preserve_caller_history_on_lease_wait", False):
+                admission.conversation_history = db.get_messages_as_conversation(
+                    agent.session_id, repair_alternation=True, include_row_ids=True
+                )
         lease.build_threads()
     except BaseException:
         # The façade never saw this lease; release here so an admitted row is not leaked.
@@ -299,6 +331,21 @@ def admit_durable_turn_lease(
         raise
     admission.lease = lease
     return admission
+
+
+def _canonical_session_error(
+    session_id: str, conversation_history, *, unavailable: bool
+) -> Dict[str, Any]:
+    reason = "unavailable" if unavailable else "no longer exists"
+    code = "session_db_unavailable" if unavailable else "session_not_found"
+    return {
+        "final_response": f"Canonical session {reason}; your message was not processed.",
+        "messages": list(conversation_history or []),
+        "api_calls": 0,
+        "completed": False,
+        "failed": True,
+        "error": f"{code}:{session_id}",
+    }
 
 
 def _lease_not_acquired_result(agent, session_id: str, conversation_history) -> Dict[str, Any]:

@@ -3371,6 +3371,8 @@ class GatewayRunner(
         # Secondary-profile busy modes snapshotted at multiplex startup; handlers never reread config.
         self._busy_input_modes_by_profile: Dict[str, str] = {}
         self._busy_text_modes_by_profile: Dict[str, str] = {}
+        self._audio_attachment_channels_by_profile: Dict[str, Dict[str, Any]] = {}
+        self._stt_enabled_by_profile: Dict[str, bool] = {}
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._restart_after_turn_timeout = self._load_restart_after_turn_timeout()
         self._cron_drain_timeout = self._load_cron_drain_timeout()

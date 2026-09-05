@@ -202,12 +202,7 @@ _SHARED_KEYS: tuple = (
     ("allowed_chats", _TELEGRAM, None),
     ("group_allowed_chats", _TELEGRAM, None),
     ("allowed_topics", _TELEGRAM, None),
-    *_plain(
-        "free_response_channels",
-        "transcribe_audio_attachment_channels",
-        "mention_patterns",
-        "exclusive_bot_mentions",
-    ),
+    *_plain("free_response_channels", "mention_patterns", "exclusive_bot_mentions"),
     ("observe_unmentioned_group_messages", _TELEGRAM, None),
     *_plain(
         "dm_policy", "allow_from", "allow_admin_from", "user_allowed_commands",
@@ -242,6 +237,25 @@ def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict) -> dict:
     return bridged
 
 
+def _audio_attachment_channels(yaml_cfg: dict, name: str, gateway_platforms: Any) -> tuple[bool, Any]:
+    """Resolve the audio STT opt in by key presence across platform sections."""
+    yaml_platforms = yaml_cfg.get("platforms")
+    sources = (
+        yaml_cfg.get(name),
+        yaml_platforms.get(name) if isinstance(yaml_platforms, dict) else None,
+        gateway_platforms.get(name) if isinstance(gateway_platforms, dict) else None,
+    )
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        if "transcribe_audio_attachment_channels" in source:
+            return True, source["transcribe_audio_attachment_channels"]
+        extra = source.get("extra")
+        if isinstance(extra, dict) and "transcribe_audio_attachment_channels" in extra:
+            return True, extra["transcribe_audio_attachment_channels"]
+    return False, None
+
+
 def shared_loop_targets(registry) -> list:
     """Built-in platforms plus registered plugin platforms (so plugin authors get shared-key bridging)."""
     targets: list = list(Platform)
@@ -269,6 +283,11 @@ def bridge_platform_shared_keys(
         if not isinstance(platform_cfg, dict):
             continue
         bridged = _bridged_keys(plat, platform_cfg, gw_data)
+        has_audio_channels, audio_channels = _audio_attachment_channels(
+            yaml_cfg, plat.value, gateway_platforms
+        )
+        if has_audio_channels:
+            bridged["transcribe_audio_attachment_channels"] = audio_channels
         has_channel_overrides = "channel_overrides" in platform_cfg
         if has_channel_overrides and isinstance(platform_cfg.get("channel_overrides"), dict):
             plat_data = _dict_slot(platforms_data, plat.value)

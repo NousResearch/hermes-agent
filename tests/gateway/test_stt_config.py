@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import yaml
 
-from gateway.config import GatewayConfig, Platform, load_gateway_config
+from gateway.config import GatewayConfig, Platform, PlatformConfig, load_gateway_config
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionSource
 
@@ -30,6 +30,72 @@ def test_load_gateway_config_bridges_stt_enabled_from_config_yaml(tmp_path, monk
     config = load_gateway_config()
 
     assert config.stt_enabled is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("profile_channels", "profile_stt", "expected_transcript"),
+    [
+        ({"discord": ["profile-stt-channel"]}, False, False),
+        ({"discord": ["profile-stt-channel"]}, True, True),
+        (None, None, False),
+    ],
+    ids=["secondary-disabled", "secondary-enabled", "missing-snapshot"],
+)
+async def test_audio_attachment_stt_uses_source_profile_policy(
+    profile_channels, profile_stt, expected_transcript
+):
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        stt_enabled=True,
+        multiplex_profiles=True,
+        platforms={
+            Platform.DISCORD: PlatformConfig(
+                extra={"transcribe_audio_attachment_channels": ["all"]}
+            )
+        },
+    )
+    runner._primary_profile_name = "primary"
+    runner._audio_attachment_channels_by_profile = {}
+    runner._stt_enabled_by_profile = {}
+    if profile_channels is not None:
+        runner._audio_attachment_channels_by_profile["secondary"] = profile_channels
+        runner._stt_enabled_by_profile["secondary"] = profile_stt
+    runner.adapters = {}
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="profile-stt-channel",
+        user_id="profile-user",
+        profile="secondary",
+    )
+    event = MessageEvent(
+        text="caption",
+        message_type=MessageType.AUDIO,
+        source=source,
+        media_urls=["/tmp/profile-audio.m4a"],
+        media_types=["audio/mp4"],
+    )
+
+    with (
+        patch(
+            "tools.transcription_tools.transcribe_audio",
+            return_value={"success": True, "transcript": "profile transcript"},
+        ) as transcribe,
+        patch("tools.transcription_tools.transcribe_audio_local_fallback") as fallback,
+    ):
+        prepared = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[]
+        )
+
+    if expected_transcript:
+        assert prepared == '"profile transcript"\n\ncaption'
+        transcribe.assert_called_once_with("/tmp/profile-audio.m4a", None, "gateway")
+    else:
+        assert "audio file attachment" in prepared
+        transcribe.assert_not_called()
+    fallback.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -93,5 +159,4 @@ async def test_enrich_message_with_transcription_guards_empty_transcript():
     assert "empty or inaudible" in result
     assert '""' not in result
     assert transcripts == []
-
 

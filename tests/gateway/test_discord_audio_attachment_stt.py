@@ -6,7 +6,10 @@ trusted capture channels, config must be bridged and the gateway must opt those
 attachments into transcription so this path does not regress on update.
 """
 
+import logging
 from unittest.mock import MagicMock
+
+import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig, load_gateway_config
 from gateway.platforms.base import SessionSource
@@ -111,3 +114,49 @@ def test_non_discord_or_missing_platform_config_defaults_to_file_attachment():
     )
 
     assert runner._should_transcribe_audio_attachment(source) is False
+
+
+@pytest.mark.parametrize(
+    ("platform", "channels", "source_ids", "expected", "warning_type"),
+    [
+        (Platform.DISCORD, "ALL", {}, True, None),
+        (Platform.TELEGRAM, [123], {"chat_id": "123"}, True, None),
+        (Platform.DISCORD, ["parent"], {"parent_chat_id": "parent"}, True, None),
+        (Platform.TELEGRAM, ["thread"], {"thread_id": "thread"}, True, None),
+        (Platform.DISCORD, ["*"], {}, False, None),
+        (Platform.DISCORD, {"channel": "voice-channel"}, {}, False, "dict"),
+        (Platform.DISCORD, ["voice-channel", False], {}, False, "bool"),
+    ],
+    ids=["all", "integer", "parent", "thread", "asterisk", "root-type", "element-type"],
+)
+def test_audio_attachment_channel_policy_validates_and_matches(
+    platform, channels, source_ids, expected, warning_type, caplog
+):
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={
+            platform: PlatformConfig(
+                extra={"transcribe_audio_attachment_channels": channels}
+            )
+        }
+    )
+    source = SessionSource(
+        platform=platform,
+        chat_id=source_ids.get("chat_id", "voice-channel"),
+        user_id="user1",
+        parent_chat_id=source_ids.get("parent_chat_id"),
+        thread_id=source_ids.get("thread_id"),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        result = runner._should_transcribe_audio_attachment(source)
+
+    assert result is expected
+    if warning_type:
+        assert any(
+            "transcribe_audio_attachment_channels" in record.message
+            and warning_type in record.message
+            for record in caplog.records
+        )
+    else:
+        assert not caplog.records

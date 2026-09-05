@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.run import GatewayRunner
@@ -101,6 +101,191 @@ class _PendingVoiceAgent:
             "api_calls": 1,
             "interrupted": False,
         }
+
+
+@pytest.mark.asyncio
+async def test_pending_audio_cache_preserves_concurrency_and_snapshot_ownership():
+    runner = _runner()
+    runner.config = GatewayConfig(
+        stt_enabled=True,
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(
+                extra={"transcribe_audio_attachment_channels": ["12345"]}
+            )
+        },
+    )
+    source = _source()
+    event = MessageEvent(
+        text="current caption",
+        message_type=MessageType.AUDIO,
+        source=source,
+        media_urls=["/tmp/old.mp3"],
+        media_types=["audio/mpeg"],
+    )
+    old_entered = threading.Event()
+    old_release = threading.Event()
+    replacement_entered = threading.Event()
+    replacement_release = threading.Event()
+    calls = []
+
+    def transcribe(path, model, context):
+        """Hold old and replacement snapshots independently."""
+        calls.append((path, model, context))
+        if len(calls) == 1:
+            old_entered.set()
+            assert old_release.wait(timeout=5.0)
+            transcript = "old"
+        elif len(calls) == 2:
+            replacement_entered.set()
+            assert replacement_release.wait(timeout=5.0)
+            transcript = "new old"
+        else:
+            transcript = "new attachment"
+        return {"success": True, "transcript": transcript}
+
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+        old_waiter = asyncio.create_task(
+            runner._transcribe_pending_audio_event_once(event, "first caller")
+        )
+        assert await asyncio.to_thread(old_entered.wait, 5.0)
+        cancelled_waiter = asyncio.create_task(
+            runner._transcribe_pending_audio_event_once(event, "cancelled caller")
+        )
+        await asyncio.sleep(0)
+        cancelled_waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled_waiter
+
+        event.media_urls.append("/tmp/new.mp3")
+        event.media_types.append("audio/mpeg")
+        replacement_waiter = asyncio.create_task(
+            runner._transcribe_pending_audio_event_once(event, "replacement caller")
+        )
+        assert await asyncio.to_thread(replacement_entered.wait, 5.0)
+        replacement_task = event._gateway_pending_stt_task
+        old_release.set()
+        old_result = await old_waiter
+        assert event._gateway_pending_stt_task is replacement_task
+
+        shared_waiter = asyncio.create_task(
+            runner._transcribe_pending_audio_event_once(event, "shared caller")
+        )
+        await asyncio.sleep(0)
+        assert len(calls) == 2
+        replacement_release.set()
+        replacement_result, shared_result = await asyncio.gather(
+            replacement_waiter, shared_waiter
+        )
+        prepared = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[]
+        )
+
+    prefix = '"new old"\n\n"new attachment"'
+    assert old_result[0] == '"old"\n\nfirst caller'
+    assert replacement_result[0] == f"{prefix}\n\nreplacement caller"
+    assert shared_result[0] == f"{prefix}\n\nshared caller"
+    assert event._gateway_pending_stt_text == prefix
+    assert prepared == f"{prefix}\n\ncurrent caption"
+    assert "audio file attachment" not in prepared
+    assert calls == [
+        ("/tmp/old.mp3", None, "gateway"),
+        ("/tmp/old.mp3", None, "gateway"),
+        ("/tmp/new.mp3", None, "gateway"),
+    ]
+
+    empty_prefix_event = MessageEvent(
+        text="event caption",
+        message_type=MessageType.AUDIO,
+        source=source,
+        media_urls=["/tmp/empty-prefix.mp3"],
+        media_types=["audio/mpeg"],
+    )
+    empty_prefix_event._gateway_pending_stt_text = ""
+    empty_prefix_event._gateway_pending_stt_transcripts = []
+    empty_prefix_result = await runner._transcribe_pending_audio_event_once(
+        empty_prefix_event, "caller text"
+    )
+    assert empty_prefix_result == ("caller text", [])
+
+    stale_event = MessageEvent(
+        text="stale caption",
+        message_type=MessageType.AUDIO,
+        source=source,
+        media_urls=["/tmp/stale.mp3"],
+        media_types=["audio/mpeg"],
+    )
+    stale_entered = threading.Event()
+    stale_release = threading.Event()
+    stale_calls = []
+
+    def transcribe_stale(path, model, context):
+        """Hold the original snapshot until its media changes."""
+        stale_calls.append((path, model, context))
+        if len(stale_calls) == 1:
+            stale_entered.set()
+            assert stale_release.wait(timeout=5.0)
+        return {"success": True, "transcript": path}
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio", side_effect=transcribe_stale
+    ):
+        stale_waiter = asyncio.create_task(
+            runner._transcribe_pending_audio_event_once(stale_event, "stale caller")
+        )
+        assert await asyncio.to_thread(stale_entered.wait, 5.0)
+        stale_event.media_urls.append("/tmp/fresh.mp3")
+        stale_event.media_types.append("audio/mpeg")
+        stale_release.set()
+        stale_result = await stale_waiter
+        assert not hasattr(stale_event, "_gateway_pending_stt_text")
+        retry_result = await runner._transcribe_pending_audio_event_once(
+            stale_event, "retry caller"
+        )
+
+    assert stale_result[0] == '"/tmp/stale.mp3"\n\nstale caller'
+    assert retry_result[0] == (
+        '"/tmp/stale.mp3"\n\n"/tmp/fresh.mp3"\n\nretry caller'
+    )
+    assert stale_calls == [
+        ("/tmp/stale.mp3", None, "gateway"),
+        ("/tmp/stale.mp3", None, "gateway"),
+        ("/tmp/fresh.mp3", None, "gateway"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_media_only_audio_preserves_pending_clarify_for_normal_routing():
+    from tools import clarify_gateway
+
+    runner = _runner()
+    runner.config = GatewayConfig(
+        stt_enabled=True,
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(
+                extra={"transcribe_audio_attachment_channels": []}
+            )
+        },
+    )
+    runner._prepare_clarify_reply_text = AsyncMock(return_value="")
+    runner._queue_or_replace_pending_event = MagicMock()
+    source = _source()
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.AUDIO,
+        source=source,
+        media_urls=["/tmp/clarify.mp3"],
+        media_types=["audio/mpeg"],
+    )
+    session_key = "telegram:dm:12345"
+    entry = clarify_gateway.register("audio-clarify", session_key, "What next", None)
+    try:
+        result = await runner._hm_clarify_reply(event, source, session_key)
+
+        assert result == ""
+        assert entry.event.is_set() is False
+        runner._queue_or_replace_pending_event.assert_called_once_with(session_key, event)
+    finally:
+        clarify_gateway.clear_session(session_key)
 
 
 def _run_agent_runner(adapter):
@@ -274,5 +459,3 @@ def _voice_event(source, urls):
         media_urls=list(urls),
         media_types=["audio/ogg"] * len(urls),
     )
-
-

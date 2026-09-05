@@ -20,6 +20,11 @@ from tools.computer_use.host_validation import validate_security_allowlists
 _CUA_REMOTE_TOKEN_ENV = "HERMES_CUA_REMOTE_TOKEN"
 _CUA_PERMISSION_MODE_ENV = "CUA_DRIVER_PERMISSION_MODE"
 _CUA_BYPASS_APPROVALS_ENV = "CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"
+# Fail-closed gate: a non-loopback plaintext HTTP bind exposes the bearer token
+# to network observers; HTTPS via a reverse proxy is the production path, and
+# the env var is the explicit "I accept the risk" acknowledgement.
+_BRIDGE_ALLOW_PLAINTEXT_ENV = "HERMES_CUA_BRIDGE_ALLOW_PLAINTEXT"
+_LOOPBACK_BINDS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
 _DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS = 300
 
 
@@ -58,9 +63,12 @@ def _ensure_interactive_session() -> None:
 
 def _build_child_session_context() -> AsyncContextManager[Any]:
     """Build a standard-mode local cua-driver stdio session context."""
-    from tools.computer_use.cua_backend import (
+    # Import from the defining modules: _resolve_mcp_invocation and
+    # cua_driver_install_hint are not facade attributes (in-tree compat
+    # pointers are off-limits), only resolve_cua_driver_cmd is re-exported.
+    from tools.computer_use.cua_backend import cua_driver_child_env
+    from tools.computer_use.cua_backend_driver import (
         _resolve_mcp_invocation,
-        cua_driver_child_env,
         cua_driver_install_hint,
         resolve_cua_driver_cmd,
     )
@@ -74,6 +82,9 @@ def _build_child_session_context() -> AsyncContextManager[Any]:
     child_env.pop(_CUA_REMOTE_TOKEN_ENV, None)
     child_env.pop(_CUA_BYPASS_APPROVALS_ENV, None)
     child_env[_CUA_PERMISSION_MODE_ENV] = "standard"
+    # Security parity with the standalone launcher: the third-party driver
+    # must never phone home from a bridge-spawned session.
+    child_env["CUA_DRIVER_RS_TELEMETRY_ENABLED"] = "0"
 
     return _cua_driver_session_context(
         command=command,
@@ -106,6 +117,30 @@ async def _cua_driver_session_context(
             yield session
 
 
+def _serve_app(app: Any, host: str, port: int) -> None:
+    """Run the bridge app. Tiny seam so tests can monkeypatch without uvicorn."""
+    import uvicorn
+
+    uvicorn.run(app, host=host, port=port, log_level="info")
+
+
+def _ensure_bind_security(bind: str) -> None:
+    """Refuse non-loopback plaintext binds unless explicitly acknowledged.
+
+    The bridge guards a desktop-control session with a bearer token; over
+    plaintext HTTP on a routable interface that token travels in cleartext.
+    Fail closed: HTTPS via a reverse proxy is the supported path, and
+    HERMES_CUA_BRIDGE_ALLOW_PLAINTEXT=1 is the explicit risk acknowledgement.
+    """
+    if bind in _LOOPBACK_BINDS or os.environ.get(_BRIDGE_ALLOW_PLAINTEXT_ENV) == "1":
+        return
+    raise RuntimeError(
+        f"refusing to serve the computer-use bridge over plaintext HTTP on non-loopback bind {bind!r}; "
+        f"terminate TLS with a reverse proxy (recommended) or set {_BRIDGE_ALLOW_PLAINTEXT_ENV}=1 "
+        "to acknowledge that the bearer token may be observed on the network"
+    )
+
+
 def run_host_bridge(
     *,
     allowed_hosts: Sequence[str],
@@ -121,6 +156,7 @@ def run_host_bridge(
     """
     _ensure_interactive_session()
     _validate_standard_permission_environment()
+    _ensure_bind_security(bind)
     hosts, origins = validate_security_allowlists(allowed_hosts, allowed_origins)
     if not 1 <= int(port) <= 65535:
         raise RuntimeError("bridge port must be between 1 and 65535")
@@ -146,7 +182,4 @@ def run_host_bridge(
         allowed_origins=origins,
         session_idle_timeout=_DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS,
     )
-
-    import uvicorn
-
-    uvicorn.run(app, host=bind, port=int(port), log_level="info")
+    _serve_app(app, bind, int(port))

@@ -96,6 +96,11 @@ def _stale_holder(row, now: float) -> bool:
 class SessionMessagesMixin:
     """Message append/replace/rewind, reactions, resume conversations, replay dedupe."""
 
+    _CONTENT_V2_PREFIX = "__HERMES_CONTENT_V2__:"
+    _CONTENT_V2_JSON_PREFIX = _CONTENT_V2_PREFIX + "j:"
+    _CONTENT_V2_STRING_PREFIX = _CONTENT_V2_PREFIX + "s:"
+    _CONTENT_V2_BYTES_PREFIX = _CONTENT_V2_PREFIX + "b:"
+
     def _bump_conversation_generation(self, conn, session_id: str, end_reason: str) -> None:
         """Advance the peer's conversation generation past a boundary, in the txn that writes it. Only
         ``_RESET_END_REASONS`` count (compression continues one conversation). Never derived from session
@@ -111,25 +116,56 @@ class SessionMessagesMixin:
 
     @classmethod
     def _encode_content(cls, content: Any) -> Any:
-        """Serialize list/dict content (multimodal parts) as a sentinel-prefixed JSON string (sqlite3 binds
-        only scalars). Lone UTF-16 surrogates (unsanitized web-scraped tool results) are scrubbed here: left
-        raw, sqlite3 raises UnicodeEncodeError and the session silently stops persisting. Pairs with
-        :meth:`_decode_content`."""
+        """Serialize message content with printable, versioned type tags."""
         if isinstance(content, str):
-            return _sanitize_surrogates(content)
-        if content is None or isinstance(content, (bytes, int, float)):
+            sanitized = _sanitize_surrogates(content.replace("\x00", "\ufffd"))
+            if "\x00" in content or content.startswith(
+                (cls._CONTENT_V2_PREFIX, cls._CONTENT_JSON_PREFIX)
+            ):
+                return cls._CONTENT_V2_STRING_PREFIX + json.dumps(
+                    sanitized, separators=(",", ":")
+                )
+            return sanitized
+        if isinstance(content, bytes):
+            return cls._CONTENT_V2_BYTES_PREFIX + content.hex()
+        if content is None or isinstance(content, (int, float)):
             return content
         try:
-            return cls._CONTENT_JSON_PREFIX + json.dumps(content)  # ensure_ascii escapes surrogates: bindable
+            return cls._CONTENT_V2_JSON_PREFIX + json.dumps(
+                content, separators=(",", ":")
+            )
         except (TypeError, ValueError):
-            return _sanitize_surrogates(str(content))
+            return cls._encode_content(_sanitize_surrogates(str(content)))
 
     @classmethod
     def _decode_content(cls, content: Any) -> Any:
-        """Reverse :meth:`_encode_content`; returns scalars unchanged."""
-        if isinstance(content, str) and content.startswith(cls._CONTENT_JSON_PREFIX):
-            return _json_or(content[len(cls._CONTENT_JSON_PREFIX):], content,
-                "Failed to decode JSON-encoded message content; returning raw string")
+        """Reverse :meth:`_encode_content`; malformed or unknown data remains raw."""
+        if not isinstance(content, str):
+            return content
+        if content.startswith(cls._CONTENT_V2_JSON_PREFIX):
+            decoded = _json_or(
+                content[len(cls._CONTENT_V2_JSON_PREFIX):], None,
+                "Failed to decode V2 structured message content; returning raw string",
+            )
+            return decoded if isinstance(decoded, (list, dict)) else content
+        if content.startswith(cls._CONTENT_V2_STRING_PREFIX):
+            decoded = _json_or(
+                content[len(cls._CONTENT_V2_STRING_PREFIX):], None,
+                "Failed to decode V2 string message content; returning raw string",
+            )
+            return decoded if isinstance(decoded, str) else content
+        if content.startswith(cls._CONTENT_V2_BYTES_PREFIX):
+            payload = content[len(cls._CONTENT_V2_BYTES_PREFIX):]
+            try:
+                decoded = bytes.fromhex(payload)
+            except ValueError:
+                return content
+            return decoded if decoded.hex() == payload else content
+        if content.startswith(cls._CONTENT_JSON_PREFIX):
+            return _json_or(
+                content[len(cls._CONTENT_JSON_PREFIX):], content,
+                "Failed to decode JSON-encoded message content; returning raw string",
+            )
         return content
 
     @staticmethod

@@ -10,6 +10,7 @@ No LLM calls — every shape returns actual DB messages.
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
@@ -144,10 +145,58 @@ def _is_compacted_message(db, message_id) -> bool:
     return _is_compacted_state(_get_message_storage_state(db, message_id))
 
 
+_DATA_URI_RE = re.compile(r"data:([\w.+-]+/[\w.+-]+)?;base64,", re.IGNORECASE)
+
+
+def _flatten_search_content(raw: Any) -> Any:
+    """Collapse multimodal (list) content into text for a search result.
+
+    User turns with an attached photo are stored as OpenAI-style blocks whose
+    ``image_url`` carries the whole picture inline (``data:image/jpeg;base64,…``,
+    5-10 MB each). Hydrating those verbatim made a single hit spill the entire
+    session_search response to disk (14 MB for 12 KB of text) and hid the text
+    the model asked for. Text blocks are kept; media blocks become a short
+    placeholder that names the mime type and the size that was dropped. String
+    content passes through untouched.
+    """
+    if not isinstance(raw, list):
+        return raw
+    parts: List[str] = []
+    for block in raw:
+        if isinstance(block, str):
+            parts.append(block)
+            continue
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type") or ""
+        if btype == "text" and isinstance(block.get("text"), str):
+            parts.append(block["text"])
+            continue
+        payload, mime_hint = "", ""  # largest string under image_url.url / source.data / url / data
+        for holder in (block.get("image_url"), block.get("source"), block):
+            if isinstance(holder, dict):
+                mime_hint = mime_hint or holder.get("media_type") or holder.get("mime_type") or ""
+                for key in ("url", "data"):
+                    val = holder.get(key)
+                    if isinstance(val, str) and len(val) > len(payload):
+                        payload = val
+            elif isinstance(holder, str) and len(holder) > len(payload):
+                payload = holder
+        m = _DATA_URI_RE.match(payload)
+        mime = (m.group(1) if m else None) or mime_hint or btype or "media"
+        if m or len(payload) > 2000:
+            parts.append(f"[{mime} omitted: {len(payload) // 1024} KB inline data]")
+        elif payload:
+            parts.append(f"[{mime}: {payload[:200]}]")
+        else:
+            parts.append(f"[{btype or 'block'} omitted]")
+    return "\n".join(parts)
+
+
 def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None,
                    max_content_len: Optional[int] = None) -> Dict[str, Any]:
     """Slim a message row; keeps ``content`` even when empty (tool-call-only turns)."""
-    content = m.get("content")
+    content = _flatten_search_content(m.get("content"))
     if isinstance(content, str) and "\x1b" in content:  # archived terminal output carries ANSI
         from tools.ansi_strip import strip_ansi
         content = strip_ansi(content)

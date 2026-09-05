@@ -219,6 +219,56 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_start_gateway_preserves_service_restart_fallback_after_aborted_startup(
+    tmp_path, monkeypatch
+):
+    """A legacy service restart without an explicit exit code still exits with EX_TEMPFAIL."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cron_started = False
+
+    class AbortedStartupRunner:
+        def __init__(self, config):
+            self.config = config
+            self.adapters = {}
+            self._running = False
+            self._restart_requested = True
+            self._restart_via_service = True
+            self.should_exit_cleanly = False
+            self.should_exit_with_failure = False
+            self.exit_reason = None
+            self.exit_code = None
+
+        async def start(self):
+            return True
+
+        async def wait_for_shutdown(self):
+            return None
+
+    def fail_if_cron_starts(*args, **kwargs):
+        nonlocal cron_started
+        cron_started = True
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
+    monkeypatch.setattr("gateway.status.write_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
+    monkeypatch.setattr("gateway.run.GatewayRunner", AbortedStartupRunner)
+    monkeypatch.setattr("gateway.run._start_cron_ticker", fail_if_cron_starts)
+    monkeypatch.setattr("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda: None)
+
+    with pytest.raises(SystemExit) as exc:
+        await gateway_run.start_gateway(
+            config=GatewayConfig(), replace=False, verbosity=None
+        )
+
+    assert exc.value.code == GATEWAY_SERVICE_RESTART_EXIT_CODE
+    assert cron_started is False
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("unexpected_signal", "expected_success"),
     [(True, False), (False, True)],
@@ -238,6 +288,7 @@ async def test_start_gateway_classifies_startup_signal_exit(
             self.adapters = {}
             self._running = False
             self._restart_requested = False
+            self._restart_via_service = False
             self.should_exit_cleanly = False
             self.should_exit_with_failure = False
             self.exit_reason = None

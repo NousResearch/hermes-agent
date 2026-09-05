@@ -12,9 +12,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # --help exits before dispatch; this checkout and HOME are disposable.
 @pytest.mark.live_system_guard_bypass
+@pytest.mark.parametrize("writer_present", [False, True])
 @pytest.mark.parametrize("platform", [pytest.param("linux", marks=pytest.mark.linux_only), pytest.param("darwin", marks=pytest.mark.macos_only)])
 @pytest.mark.parametrize("arguments", [["skills", "install", "official/creative/kanban-video-orchestrator", "--help"], ["update", "--help"]])
-def test_writerless_fifo_cli_startup_is_bounded(tmp_path, platform, arguments):
+def test_fifo_cli_startup_is_bounded(tmp_path, platform, arguments, writer_present):
     home = tmp_path / "home"
     profile = home / ".hermes"
     profile.mkdir(parents=True)
@@ -23,6 +24,15 @@ def test_writerless_fifo_cli_startup_is_bounded(tmp_path, platform, arguments):
     before = fifo.stat()
     env = {"HOME": str(home), "HERMES_HOME": str(profile), "PATH": os.defpath,
            "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": str(ROOT)}
+    if writer_present:
+        import threading
+
+        def writer():
+            with fifo.open("wb") as stream:
+                stream.write(b"OPENAI_API_KEY=synthetic-only\n")
+
+        thread = threading.Thread(target=writer, daemon=True)
+        thread.start()
     started = time.monotonic()
     try:
         result = subprocess.run(
@@ -32,9 +42,15 @@ def test_writerless_fifo_cli_startup_is_bounded(tmp_path, platform, arguments):
     except subprocess.TimeoutExpired:
         pytest.fail("CLI startup exceeded watchdog")
     assert "Timeout (0:00:08)" not in result.stderr, result.stderr
-    assert result.returncode != 0
-    assert "credential FIFO" in result.stderr
-    assert "provider" in result.stderr
+    if writer_present:
+        thread.join(2)
+        assert not thread.is_alive()
+        assert result.returncode == 0, result.stderr
+        assert "usage:" in result.stdout.lower()
+    else:
+        assert result.returncode != 0
+        assert "credential FIFO" in result.stderr
+        assert "provider" in result.stderr
     assert time.monotonic() - started < 12
     after = fifo.stat()
     assert (before.st_ino, before.st_mode) == (after.st_ino, after.st_mode)

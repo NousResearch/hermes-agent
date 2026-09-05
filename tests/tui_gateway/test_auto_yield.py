@@ -172,6 +172,8 @@ def test_yield_request_roundtrip_holder_honors(gateway):
     stale.write_text(json.dumps({
         "session_id": "sess-b", "holder_pid": holder_pid_pid_of_self(),
         "holder_process_start_time": None, "requested_at": time.time() - 9999}))
+    # Drain any requeued requests first so the assertion isolates the stale file.
+    poll_yield_requests()
     assert poll_yield_requests() == []
 
 

@@ -862,7 +862,29 @@ class OpenAICompatRoutesMixin:
         if err is not None:
             return err
         result, usage = outcome
-        final_response = _resolve_media_to_data_urls(result.get("final_response", ""))
+        from gateway.platforms.api_server import _openai_error, _redact_api_error_text
+        final_response = _resolve_media_to_data_urls(result.get("final_response") or "")
+        completed, is_partial, is_failed, err_msg = _result_flags(result)
+        if err_msg:
+            err_msg = _redact_api_error_text(err_msg)
+        response_headers = {}
+        if gateway_session_key:
+            response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        # Same hard-fail contract as /v1/chat/completions (#22496): no usable text AND
+        # failed/partial -> 502, never a fake status=completed assistant message.
+        if not final_response and (is_failed or is_partial):
+            err_body = _openai_error(
+                err_msg or "Agent run did not produce a response.", err_type="server_error",
+                code="agent_incomplete")
+            err_body["error"]["hermes"] = {
+                "completed": completed, "partial": is_partial, "failed": is_failed}
+            response_headers["X-Hermes-Completed"] = "false"
+            response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
+            _result_sid = result.get("session_id") if isinstance(result, dict) else None
+            _effective_session_id = (
+                _result_sid if isinstance(_result_sid, str) and _result_sid else session_id)
+            response_headers["X-Hermes-Session-Id"] = _effective_session_id
+            return web.json_response(err_body, status=502, headers=response_headers)
         if not final_response:
             final_response = _redact_api_error_text(result.get("error", "(No response generated)"))
         response_id = f"resp_{uuid.uuid4().hex[:28]}"
@@ -878,20 +900,35 @@ class OpenAICompatRoutesMixin:
         # only the current-turn suffix).
         output_start_index = self._response_messages_turn_start_index(
             conversation_history, user_message, result)
+        if is_failed:
+            response_status = "failed"
+        elif is_partial or not completed:
+            response_status = "incomplete"
+        else:
+            response_status = "completed"
         response_data = {
-            "id": response_id, "object": "response", "status": "completed",
+            "id": response_id, "object": "response", "status": response_status,
             "created_at": created_at, "model": body.get("model", self._model_name),
             "output": self._extract_output_items(result, start_index=output_start_index),
             "usage": _responses_usage_payload(usage)}
+        if is_partial or is_failed or not completed:
+            finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg)
+            response_data["hermes"] = _hermes_extras(
+                completed, is_partial, is_failed, err_msg, finish_reason)
+            if err_msg:
+                response_data["error"] = {"message": err_msg, "type": "server_error"}
         if store:
             self._response_store.put(response_id, {
                 "response": response_data, "conversation_history": full_history,
                 "instructions": instructions, "session_id": _effective_session_id})
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
-        response_headers = {"X-Hermes-Session-Id": _effective_session_id}
-        if gateway_session_key:
-            response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        response_headers["X-Hermes-Session-Id"] = _effective_session_id
+        if is_partial or is_failed or not completed:
+            response_headers["X-Hermes-Completed"] = "false"
+            response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
+            if err_msg:
+                response_headers["X-Hermes-Error"] = _redact_api_error_text(err_msg, limit=200)
         return web.json_response(response_data, headers=response_headers)
 
     async def _handle_get_response(self, request: "web.Request") -> "web.Response":

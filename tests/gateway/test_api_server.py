@@ -2191,6 +2191,66 @@ class TestChatCompletionsAgentIncomplete:
             assert data["error"]["hermes"]["failed"] is True
 
 
+class TestResponsesAgentIncomplete:
+    """Non-streaming POST /v1/responses must not hardcode status=completed on a
+    failed agent run (issue #102921). Mirror /v1/chat/completions #22496."""
+
+    @pytest.mark.asyncio
+    async def test_hard_failure_returns_502_not_completed_message(self, adapter):
+        raw_secret = "sk-api-server-leak-1234567890"
+        mock_result = {
+            "final_response": "",
+            "completed": False,
+            "partial": False,
+            "failed": True,
+            "error": f"HTTP 400: model not supported OPENAI_API_KEY={raw_secret}",
+            "messages": [],
+            "api_calls": 1,
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"input": "hi", "store": True},
+                )
+                assert resp.status == 502
+                data = await resp.json()
+                body = json.dumps(data)
+                completed_hdr = resp.headers.get("X-Hermes-Completed")
+
+        assert data.get("status") != "completed"
+        assert data["error"]["code"] == "agent_incomplete"
+        assert data["error"]["hermes"]["failed"] is True
+        assert raw_secret not in body
+        assert completed_hdr == "false"
+
+    @pytest.mark.asyncio
+    async def test_success_still_completed(self, adapter):
+        mock_result = {
+            "final_response": "hello",
+            "completed": True,
+            "partial": False,
+            "failed": False,
+            "messages": [],
+            "api_calls": 1,
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"input": "hi", "store": False},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["status"] == "completed"
+        assert data["object"] == "response"
+
+
 # ---------------------------------------------------------------------------
 # CORS
 # ---------------------------------------------------------------------------

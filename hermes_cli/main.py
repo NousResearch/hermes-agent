@@ -191,7 +191,7 @@ def _set_process_title() -> None:
 
         setproctitle.setproctitle("hermes")
         return
-    except ImportError:
+    except (ImportError, UnicodeDecodeError):
         pass
 
     import ctypes

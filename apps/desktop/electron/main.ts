@@ -302,6 +302,7 @@ import {
   runPrimaryBackendStartup
 } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
+import { readProcessCommandLineSync } from './process-command-line'
 import {
   assertLocalProfileCanStart,
   decideProfileDeleteAction,
@@ -9651,17 +9652,15 @@ function isHermesProcess(pid) {
 
     return cmdline.includes('hermes')
   } catch {
-    // /proc not available (macOS) — fall back to ps. Use -o args= to inspect
-    // the full command line, not just the process name.  -o comm= would return
-    // "python3" for any Python process, creating false positives.
-    try {
-      const { execSync } = require('child_process')
-      const out = execSync(`ps -p ${pid} -o args=`, { encoding: 'utf8', timeout: 2000 })
-
-      return out.includes('hermes')
-    } catch {
-      return false
-    }
+    // /proc not available (macOS / Windows) — process-table lookup via
+    // process-command-line.ts (PowerShell CIM on Windows, ps elsewhere, no
+    // shell wrapper): on Windows a bare ps string command goes through
+    // cmd.exe and PATH-resolves to unrelated executables such as System32
+    // PS.exe, the legacy planned-shutdown tool (#102660). Full command line
+    // (not just the process name): a name-only probe would return "python3"
+    // for any Python process, creating false positives.
+    const cmdline = readProcessCommandLineSync(pid)
+    return cmdline !== null && cmdline.includes('hermes')
   }
 }
 

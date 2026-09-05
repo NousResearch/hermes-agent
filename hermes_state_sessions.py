@@ -92,6 +92,7 @@ def _session_filter_where(
     *, exclude_children: bool = False, source: str = None, sources: List[str] = None,
     session_key: str = None, exclude_sources: List[str] = None, cwd_prefix: str = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
+    credential_owner: str = None,
 ) -> Tuple[List[str], List[Any]]:
     """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
     hides sub-agent runs and compression continuations but keeps branch/reset children
@@ -112,6 +113,7 @@ def _session_filter_where(
     for clause, values in (
         (f"s.source IN ({_session_ids_placeholders(include_sources)})", include_sources),
         ("s.session_key = ?", [session_key] if session_key else []),
+        ("s.credential_owner = ?", [credential_owner] if credential_owner else []),
         (f"s.source NOT IN ({_session_ids_placeholders(exclude_sources or ())})", exclude_sources or []),
         (_cwd_prefix_clause(cwd_prefix) if cwd_prefix else ("", [])),
         ("s.message_count >= ?", [min_message_count] if min_message_count > 0 else []),
@@ -202,7 +204,7 @@ _SAME_KEY_NAMESPACE_SQL = (
 _UPSERT_KEEP_EXISTING_SQL = ",\n".join(
     f"                       {col} = COALESCE(sessions.{col}, excluded.{col})" for col in (
         "session_key", "chat_id", "chat_type", "thread_id", "parent_session_id", "cwd", "profile_name",
-        "git_repo_root", "origin_json", "display_name",
+        "git_repo_root", "origin_json", "display_name", "credential_owner",
     )
 )
 
@@ -271,6 +273,7 @@ class SessionSessionsMixin:
     def _insert_session_row(
         self, session_id: str, source: str, model: str = None, model_config: Dict[str, Any] = None,
         system_prompt: str = None, user_id: str = None, session_key: Optional[str] = None,
+        credential_owner: Optional[str] = None,
         chat_id: str = None, chat_type: str = None, thread_id: str = None,
         parent_session_id: str = None, cwd: str = None, profile_name: Optional[str] = None,
         git_repo_root: str = None, origin_json: str = None, display_name: str = None,
@@ -307,12 +310,12 @@ class SessionSessionsMixin:
             system_prompt_hash = self._store_system_prompt(conn, system_prompt)
             conn.execute(
                 """INSERT INTO sessions (
-                   id, source, user_id, session_key, chat_id, chat_type, thread_id,
+                   id, source, user_id, credential_owner, session_key, chat_id, chat_type, thread_id,
                    model, model_config, system_prompt, system_prompt_hash,
                    parent_session_id, cwd, profile_name, git_repo_root,
                    origin_json, display_name, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        model = COALESCE(sessions.model, excluded.model),
                        model_config = CASE
@@ -346,7 +349,7 @@ class SessionSessionsMixin:
                        END,
 """ + _UPSERT_KEEP_EXISTING_SQL,
                 (
-                    session_id, source, user_id, session_key, chat_id, chat_type, thread_id, model,
+                    session_id, source, user_id, credential_owner, session_key, chat_id, chat_type, thread_id, model,
                     json.dumps(model_config) if model_config else None, system_prompt_hash,
                     parent_session_id, cwd, profile_name, git_repo_root, origin_json, display_name,
                     time.time(),
@@ -363,6 +366,21 @@ class SessionSessionsMixin:
         """Create (upsert) a session record. Returns the session_id."""
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
+
+    def reserve_session(
+        self, session_id: str, source: str, *, credential_owner: Optional[str] = None
+    ) -> bool:
+        """Atomically insert a bare session row without attaching to an existing ID."""
+        profile_name = self._own_profile_name()
+
+        def _do(conn):
+            return conn.execute(
+                "INSERT OR IGNORE INTO sessions "
+                "(id, source, credential_owner, profile_name, started_at) VALUES (?, ?, ?, ?, ?)",
+                (session_id, source, credential_owner, profile_name, time.time()),
+            ).rowcount == 1
+
+        return bool(self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S))
 
     def ensure_session(self, session_id: str, source: str = "unknown", model: str = None, **kwargs) -> str:
         """Ensure a session row exists (upsert). Accepts optional kwargs."""
@@ -1172,6 +1190,7 @@ class SessionSessionsMixin:
         order_by_last_active: bool = False, include_archived: bool = False, archived_only: bool = False,
         id_query: str = None, search_query: str = None, compact_rows: bool = False,
         include_pinned: bool = False, session_key: str = None, include_hidden: bool = False,
+        credential_owner: str = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
@@ -1180,7 +1199,7 @@ class SessionSessionsMixin:
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
-            archived_only=archived_only, include_archived=include_archived,
+            archived_only=archived_only, include_archived=include_archived, credential_owner=credential_owner,
         )
         if not include_hidden:
             where_clauses.append("s.hidden = 0")
@@ -1442,6 +1461,24 @@ class SessionSessionsMixin:
             delegate_ids = _collect_delegate_child_ids(conn, [session_id])
         return [session_id, *sorted(delegate_ids)]
 
+    def _check_session_delete_guards(self, conn, session_ids) -> None:
+        """Fence only credential-owned deletion targets; legacy rows retain old semantics."""
+        ids = {sid for sid in session_ids if sid}
+        if not ids:
+            return
+        owned_ids = {
+            row["id"] for row in conn.execute(
+                f"SELECT id FROM sessions WHERE id IN ({_session_ids_placeholders(ids)}) "
+                "AND credential_owner IS NOT NULL",
+                list(ids),
+            ).fetchall()
+        }
+        for sid in owned_ids:
+            self._check_transcript_write_guards(
+                conn, sid, None, reject_active_turn_lease=True,
+                allow_closed_compression_parent=True,
+            )
+
     def delete_session(
         self, session_id: str, sessions_dir: Optional[Path] = None,
         expected_delete_ids: Optional[List[str]] = None,
@@ -1458,6 +1495,9 @@ class SessionSessionsMixin:
                 session_id, *_collect_delegate_child_ids(conn, [session_id])
             }:
                 return False
+            self._check_session_delete_guards(
+                conn, [session_id, *_collect_delegate_child_ids(conn, [session_id])]
+            )
             removed_ids.extend(_delete_delegate_children(conn, [session_id]))
             conn.execute(  # orphan remaining children (branches) so FK is satisfied
                 "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,),
@@ -1476,6 +1516,24 @@ class SessionSessionsMixin:
         """Delete *session_id* only if it has no messages, no title and no children; check and delete
         share one transaction so a concurrent flush can't be lost."""
         def _do(conn):
+            candidate = conn.execute(
+                """
+                SELECT 1 FROM sessions
+                WHERE id = ?
+                  AND title IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM messages WHERE messages.session_id = sessions.id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM sessions child
+                      WHERE child.parent_session_id = sessions.id
+                  )
+                """,
+                (session_id,),
+            ).fetchone()
+            if candidate is None:
+                return False
+            self._check_session_delete_guards(conn, [session_id])
             cursor = conn.execute(
                 """
                 DELETE FROM sessions
@@ -1513,6 +1571,9 @@ class SessionSessionsMixin:
             ).fetchall()]
             if not existing:
                 return 0
+            self._check_session_delete_guards(
+                conn, [*existing, *_collect_delegate_child_ids(conn, existing)]
+            )
             ph = _session_ids_placeholders(existing)
             removed_ids.extend(_delete_delegate_children(conn, existing))
             conn.execute(  # orphan children whose parent is in the kill list (FK)
@@ -1551,6 +1612,7 @@ class SessionSessionsMixin:
             ).fetchall()}
             if not session_ids:
                 return 0
+            self._check_session_delete_guards(conn, session_ids)
             conn.execute(
                 "UPDATE sessions SET parent_session_id = NULL "
                 f"WHERE parent_session_id IN ({_session_ids_placeholders(session_ids)})", list(session_ids),

@@ -183,6 +183,7 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
                 or getattr(agent, "_emit_auxiliary_failure", None)
             ),
             main_runtime=main_runtime,
+            expected_credential_owner=getattr(agent, "_credential_owner", None),
             title_callback=getattr(agent, "_on_session_title", None),
             runtime_validator=lambda: (
                 getattr(agent, "model", None) == main_runtime["model"]

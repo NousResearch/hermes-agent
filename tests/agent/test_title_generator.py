@@ -1,5 +1,7 @@
 """Tests for agent.title_generator — auto-generated session titles."""
 
+import threading
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -199,7 +201,8 @@ class TestAutoTitleSession:
                 title_callback=lambda title, source: seen.append((title, source)),
             )
         db.set_auto_title.assert_called_once_with(
-            "sess-1", "Readable Session", source="llm"
+            "sess-1", "Readable Session", source="llm",
+            expected_credential_owner=None,
         )
         # The stage reaches the consumer, so one that spends a rate-limited
         # remote call per title can take this and skip the derived one.
@@ -222,6 +225,26 @@ class TestAutoTitleSession:
         with patch("agent.title_generator.generate_title", return_value="Totally Different"):
             auto_title_session(db, "sess-1", "fix the flaky auth test")
         assert db.get_session_title("sess-1") == "Fix flaky auth test"
+
+    def test_owned_title_dedup_uses_exact_credential_owner_lineage(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session("owner-a-existing", "api_server", credential_owner="owner-a")
+        db.set_session_title("owner-a-existing", "Same")
+        db.create_session("owner-b-existing", "api_server", credential_owner="owner-b")
+        db.set_session_title("owner-b-existing", "Same")
+        db.create_session("owner-a-target", "api_server", credential_owner="owner-a")
+        db.create_session("owner-b-target", "api_server", credential_owner="owner-b")
+
+        with patch("agent.title_generator.generate_title", return_value="Same"):
+            auto_title_session(
+                db, "owner-a-target", "hello", expected_credential_owner="owner-a"
+            )
+            auto_title_session(
+                db, "owner-b-target", "hello", expected_credential_owner="owner-b"
+            )
+
+        assert db.get_session_title("owner-a-target") == "Same #2"
+        assert db.get_session_title("owner-b-target") == "Same #2"
 
 
 
@@ -289,6 +312,7 @@ class TestMaybeAutoTitle:
                 main_runtime=None,
                 title_callback=None,
                 runtime_validator=None,
+                expected_credential_owner=None,
             )
 
     def test_writes_instant_title_before_the_model_runs(self, tmp_path):
@@ -435,6 +459,7 @@ class TestAutoTitleDuplicateHandling:
     def test_dedupes_duplicate_title_via_lineage(self):
         db = MagicMock()
         db.get_session_title_source.return_value = None
+        db.get_session.return_value = {"credential_owner": None}
         # Atomic write path: collision raises ValueError, retry persists.
         db.set_auto_title.side_effect = [ValueError("in use"), True]
         db.get_next_title_in_lineage.return_value = "Debugging Import Error #2"
@@ -449,13 +474,85 @@ class TestAutoTitleDuplicateHandling:
                 "hi",
                 title_callback=lambda title, _source: seen.append(title),
             )
-        db.get_next_title_in_lineage.assert_called_once_with("Debugging Import Error")
+        db.get_next_title_in_lineage.assert_called_once_with(
+            "Debugging Import Error", credential_owner=None
+        )
         assert db.set_auto_title.call_args_list[-1][0] == (
             "sess-1",
             "Debugging Import Error #2",
         )
         # callback fires with the actually-persisted (deduped) title
         assert seen == ["Debugging Import Error #2"]
+
+    def test_owner_aware_title_dedup_internal_typeerror_is_not_retried_unowned(self):
+        db = MagicMock()
+        db.get_session_title_source.return_value = None
+        db.get_session.return_value = {"credential_owner": "owner-a"}
+        db.set_auto_title.side_effect = ValueError("in use")
+        calls = []
+
+        def broken(title, *, credential_owner=None):
+            calls.append((title, credential_owner))
+            raise TypeError("internal bug")
+
+        db.get_next_title_in_lineage = broken
+        with patch("agent.title_generator.generate_title", return_value="Same"):
+            auto_title_session(
+                db, "sess-1", "hi", expected_credential_owner="owner-a"
+            )
+
+        assert calls == [("Same", "owner-a")]
+
+    def test_blocked_owned_title_cannot_write_to_foreign_replacement(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session("target", "api_server", credential_owner="owner-a")
+        entered = threading.Event()
+        release = threading.Event()
+        callback_titles = []
+        lineage_calls = []
+        real_lineage = db.get_next_title_in_lineage
+
+        def blocked_title(*_args, **_kwargs):
+            entered.set()
+            assert release.wait(timeout=5)
+            return "Owner A Secret"
+
+        def tracked_lineage(*args, **kwargs):
+            lineage_calls.append((args, kwargs))
+            return real_lineage(*args, **kwargs)
+
+        db.get_next_title_in_lineage = tracked_lineage
+        real_thread = threading.Thread
+        workers = []
+
+        def recording_thread(*args, **kwargs):
+            worker = real_thread(*args, **kwargs)
+            workers.append(worker)
+            return worker
+
+        with patch("agent.title_generator.apply_instant_title", return_value=None), \
+             patch("agent.title_generator.generate_title", side_effect=blocked_title), \
+             patch("agent.title_generator.threading.Thread", side_effect=recording_thread):
+            maybe_auto_title(
+                db, "target", "owner A opening message", [],
+                expected_credential_owner="owner-a",
+                title_callback=lambda title, source: callback_titles.append((title, source)),
+            )
+            assert entered.wait(timeout=5)
+            assert db.delete_session("target")
+            db.create_session("owner-b-existing", "api_server", credential_owner="owner-b")
+            db.set_session_title("owner-b-existing", "Owner A Secret")
+            db.create_session("target", "api_server", credential_owner="owner-b")
+            release.set()
+            workers[0].join(timeout=5)
+
+        assert not workers[0].is_alive()
+        replacement = db.get_session("target")
+        assert replacement["credential_owner"] == "owner-b"
+        assert replacement["title"] is None
+        assert replacement["title_source"] is None
+        assert callback_titles == []
+        assert lineage_calls == []
 
 
 

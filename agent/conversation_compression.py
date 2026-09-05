@@ -2972,6 +2972,7 @@ def _publish_rotated_compaction(
         require_lease_refresh=lease.holder is not None, lease_ttl_seconds=lease.ttl,
         watermark=(lease.watermark if _foreign_tail_ceiling is not None else None),
         watermark_ceiling=_foreign_tail_ceiling,
+        expected_credential_owner=getattr(agent, "_credential_owner", None),
     )
     # `already_present` stamping is done by run_agent's _sync_persisted_markers;
     # this branch covers inserted/merged only; direct callers must use that wrapper.

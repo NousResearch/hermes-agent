@@ -5644,10 +5644,24 @@ def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
 def _get_task_extra_body(task: str) -> Dict[str, Any]:
     """Shallow copy of ``auxiliary.<task>.extra_body`` with ``reasoning_effort`` folded into
     ``reasoning`` unless one is configured (more specific wins). MoA tasks are excluded: their
-    reasoning depth is per-slot in the preset."""
+    reasoning depth is per-slot in the preset. ``auxiliary.<task>.service_tier`` is a shorthand
+    for the top-level service-tier request field; explicit ``extra_body.service_tier`` wins."""
     task_config = _get_auxiliary_task_config(task)
     raw = task_config.get("extra_body")
     result = dict(raw) if isinstance(raw, dict) else {}
+    if "service_tier" not in result:
+        configured_tier = task_config.get("service_tier")
+        if configured_tier is not None and configured_tier != "":
+            from hermes_constants import parse_service_tier
+            tier = parse_service_tier(configured_tier)
+            # * auto/cold are agent windows, not auxiliary extra_body wire values.
+            if tier in {"flex", "priority"}:
+                result["service_tier"] = tier
+            else:
+                logger.warning(
+                    "auxiliary.%s.service_tier %r is not supported (flex or priority) — ignoring",
+                    task, configured_tier,
+                )
     if "reasoning" in result:
         return result
     effort = task_config.get("reasoning_effort")
@@ -5670,6 +5684,59 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
             task, effort,
         )
     return result
+
+
+def _task_openrouter_provider_order(task: str) -> list:
+    """Normalized ``auxiliary.<task>.providers`` routing order."""
+    task_config = _get_auxiliary_task_config(task)
+    raw_providers = task_config.get("providers")
+    if raw_providers is None:
+        return []
+    if not isinstance(raw_providers, (list, tuple)):
+        logger.warning(
+            "auxiliary.%s.providers must be a list of OpenRouter provider IDs — ignoring", task,
+        )
+        return []
+    providers: list = []
+    for provider in raw_providers:
+        if not isinstance(provider, str) or not provider.strip():
+            logger.warning(
+                "auxiliary.%s.providers contains an empty or non-string provider ID — ignoring", task,
+            )
+            continue
+        normalized = provider.strip()
+        if normalized not in providers:
+            providers.append(normalized)
+    return providers
+
+
+def _apply_task_openrouter_provider_order(
+    *, task: str, extra_body: Dict[str, Any], provider: Optional[str], base_url: Optional[str],
+) -> None:
+    """Apply an auxiliary task's OpenRouter provider-order shorthand in place.
+
+    Light ``call_llm`` tasks never go through the sticky pin — cron/subagents that
+    pass ``providers_order`` still bind a pool on AIAgent, but this path only
+    stamps ``extra_body.provider.order``.
+    """
+    provider_name = str(provider or "").strip().lower()
+    if provider_name != "openrouter" and not base_url_host_matches(str(base_url or ""), "openrouter.ai"):
+        return
+    providers = _task_openrouter_provider_order(task)
+    if not providers:
+        return
+    configured_routing = extra_body.get("provider")
+    if configured_routing is None:
+        extra_body["provider"] = {"order": providers}
+    elif isinstance(configured_routing, dict):
+        routing = dict(configured_routing)
+        routing.setdefault("order", providers)
+        extra_body["provider"] = routing
+    else:
+        logger.warning(
+            "auxiliary.%s.extra_body.provider must be an object to combine with providers — preserving it",
+            task,
+        )
 
 
 # Per-task concurrency limiting: many sessions can spawn unbounded background aux calls, each
@@ -6563,6 +6630,10 @@ def _prepare_aux_request(
             logger.info("Auxiliary %s: using %s (%s)%s",
                          task, request_provider or "auto", final_model or "default",
                          f" at {base_info}" if base_info and "openrouter" not in base_info else "")
+    _apply_task_openrouter_provider_order(
+        task=task or "", extra_body=effective_extra_body,
+        provider=request_provider, base_url=base_info or resolved_base_url,
+    )
     # Client's actual base_url so endpoint-specific temperature overrides work on
     # auto-detected routes (api.moonshot.ai vs api.kimi.com/coding).
     kwargs = _build_call_kwargs(

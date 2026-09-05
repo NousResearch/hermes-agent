@@ -129,6 +129,36 @@ class TestFastChoicePicker:
         assert values == ["fast", "normal", "auto", "cold"]
 
     @pytest.mark.asyncio
+    async def test_fast_picker_title_shows_flex(self, tmp_path, monkeypatch):
+        self._patch_fast_support(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            gateway_run,
+            "_resolve_gateway_model",
+            lambda cfg: "google/gemini-3.7-flash",
+        )
+        monkeypatch.setattr(
+            gateway_run,
+            "_load_gateway_runtime_config",
+            lambda: {
+                "agent": {
+                    "service_tier": "flex",
+                    "service_tier_overrides": {},
+                }
+            },
+        )
+        adapter = _PickerAdapter()
+        runner = _make_runner(adapter)
+        runner._peek_session_state = lambda _key: None
+
+        result = await runner._handle_fast_command(_make_event("/fast"))
+
+        assert result is None
+        title = adapter.calls[0]["title"]
+        assert "flex" in title.lower()
+        assert adapter.calls[0]["choices"][0]["is_current"] is False
+        assert adapter.calls[0]["choices"][1]["is_current"] is False
+
+    @pytest.mark.asyncio
     async def test_fast_picker_selection_is_session_scoped(self, tmp_path, monkeypatch):
         """A bare /fast picker tap applies a session override, not a config write."""
         self._patch_fast_support(monkeypatch, tmp_path)
@@ -143,5 +173,56 @@ class TestFastChoicePicker:
         assert runner._service_tier == "priority"
         assert runner._session_service_tier_overrides
         assert not (tmp_path / "config.yaml").exists()
+
+    @pytest.mark.asyncio
+    async def test_fast_picker_title_uses_persisted_model_after_restart(
+        self, tmp_path, monkeypatch
+    ):
+        """Picker labels resolve the stored /model, not the global default."""
+        import hermes_state
+        from gateway.config import GatewayConfig
+        from gateway.session import SessionStore
+
+        def _raise(*_a, **_k):
+            raise RuntimeError("SQLite disabled in test")
+
+        monkeypatch.setattr(hermes_state, "SessionDB", _raise)
+        source = _make_event("/fast").source
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        entry = store.get_or_create_session(source)
+        store.set_model_override(
+            entry.session_key,
+            {"model": "google/gemini-3.7-flash", "provider": "openrouter"},
+        )
+
+        self._patch_fast_support(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            gateway_run,
+            "_resolve_gateway_model",
+            lambda cfg: "openai/gpt-5",
+        )
+        monkeypatch.setattr(
+            gateway_run,
+            "_load_gateway_runtime_config",
+            lambda: {
+                "agent": {
+                    "service_tier": "priority",
+                    "service_tier_overrides": {
+                        "google/gemini-3.7-flash": "flex",
+                    },
+                }
+            },
+        )
+        adapter = _PickerAdapter()
+        runner = _make_runner(adapter)
+        runner.session_store = SessionStore(
+            sessions_dir=tmp_path, config=GatewayConfig()
+        )
+
+        result = await runner._handle_fast_command(_make_event("/fast"))
+
+        assert result is None
+        title = adapter.calls[0]["title"]
+        assert "flex" in title.lower()
 
 

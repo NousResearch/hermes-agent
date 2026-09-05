@@ -2,7 +2,7 @@
 
 Pipeline: parse flags -> alias resolution -> provider resolution -> credential resolution ->
 normalize model name -> metadata lookup -> build result. Provider switching uses ``--provider``
-exclusively; colons are reserved for OpenRouter variant suffixes (``:free``, ``:extended``)."""
+exclusively; colons are reserved for OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``, ``:nitro``)."""
 
 from __future__ import annotations
 
@@ -944,10 +944,37 @@ def _aggregator_alias_error(
 
 
 def _aggregator_catalog_match(new_model: str, catalog: list) -> str | None:
-    """Exact (case-insensitive) match on full id, then on the bare part after ``vendor/``."""
+    """Exact (case-insensitive) match on full id, then on the bare part after ``vendor/``.
+
+    A ``vendor/model:variant`` request also matches the base catalog slug so
+    OpenRouter routing suffixes (``:nitro``, ``:floor``) resolve without a
+    provider switch.
+    """
+    from hermes_constants import strip_model_variant_suffix
+
     wanted = new_model.lower()
-    return next((mid for mid in catalog if mid.lower() == wanted), None) or next(
-        (mid for mid in catalog if "/" in mid and mid.split("/", 1)[1].lower() == wanted), None)
+    exact = next((mid for mid in catalog if mid.lower() == wanted), None)
+    if exact is not None:
+        return exact
+    variant_base = strip_model_variant_suffix(new_model).lower()
+    variant_base_bare = variant_base.rsplit("/", 1)[-1]
+    if variant_base != wanted:
+        base_hit = next((mid for mid in catalog if mid.lower() == variant_base), None)
+        if base_hit is not None:
+            return new_model
+        bare_hit = next(
+            (
+                mid for mid in catalog
+                if "/" in mid and mid.split("/", 1)[1].lower() == variant_base_bare
+            ),
+            None,
+        )
+        if bare_hit is not None:
+            return new_model
+    return next(
+        (mid for mid in catalog if "/" in mid and mid.split("/", 1)[1].lower() == wanted),
+        None,
+    )
 
 
 def _config_declares_model(
@@ -1136,7 +1163,7 @@ def _route_alias_fallback(st: _Switch, key: str) -> Optional[ModelSwitchResult]:
 
 def _convert_vendor_colon_slug(st: _Switch) -> None:
     """Step c: on an aggregator, ``vendor:model`` -> ``vendor/model``. Only without a slash: with
-    one, the colon is a variant tag (:free, :extended, :fast) that must be preserved."""
+    one, the colon is a variant tag (:free, :extended, :fast, :nitro) that must be preserved."""
     raw_input = st.raw_input
     colon_pos = raw_input.find(":")
     cur_norm = str(st.current_provider).strip().lower()

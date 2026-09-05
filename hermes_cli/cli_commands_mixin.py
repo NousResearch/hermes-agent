@@ -177,8 +177,9 @@ _BUSY_MODE_LONG = {
 
 # /fast argument -> (service_tier value, persisted config value)
 _FAST_TIERS = {
-    "fast": ("priority", "fast"), "on": ("priority", "fast"), "normal": (None, "normal"),
-    "off": (None, "normal"), "auto": ("auto", "auto"), "cold": ("cold", "cold")}
+    "fast": ("priority", "fast"), "on": ("priority", "fast"), "priority": ("priority", "fast"),
+    "flex": ("flex", "flex"), "normal": (None, "normal"), "off": (None, "normal"),
+    "auto": ("auto", "auto"), "cold": ("cold", "cold")}
 
 # /reasoning display toggles: arg -> (attr, value, headline, follow-up note)
 _REASONING_TOGGLES = {
@@ -239,6 +240,43 @@ def _scope_outcome(explicit_global: bool, saved: bool) -> str:
     if explicit_global:
         return "(session only; config save failed)"
     return "(this session — use --global to persist)"
+
+
+def _effective_service_tier_for_fast_status(shell):
+    """Resolve the tier CLI /fast status should display.
+
+    Session /fast pin wins. Unpinned shells re-resolve from config so a
+    per-model overlay (e.g. flex on openai/gpt-5) is visible even when
+    ``shell.service_tier`` still holds the global default.
+    """
+    if getattr(shell, "_service_tier_session_pinned", False) is True:
+        return getattr(shell, "service_tier", None)
+    agent = getattr(shell, "agent", None)
+    model = getattr(agent, "model", None) if agent is not None else None
+    if not isinstance(model, str) or not model:
+        model = getattr(shell, "model", None)
+    try:
+        from hermes_constants import resolve_service_tier_for_model
+
+        cfg = getattr(shell, "config", None)
+        agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else None
+        if isinstance(agent_cfg, dict):
+            return resolve_service_tier_for_model(agent_cfg, model)
+    except Exception:
+        pass
+    return getattr(shell, "service_tier", None)
+
+
+def _fast_status_label(shell) -> str:
+    """Map effective service_tier to CLI /fast status: fast / flex / normal."""
+    current_tier = _effective_service_tier_for_fast_status(shell)
+    if current_tier == "priority":
+        return "fast"
+    if current_tier == "flex":
+        return "flex"
+    if current_tier in {"auto", "cold"}:
+        return current_tier
+    return "normal"
 
 
 def _toggle_target(arg: str, current: bool):
@@ -1932,8 +1970,14 @@ class CLICommandsMixin:
                     quiet_mode=True, verbose_logging=False, session_id=task_id, platform="cli",
                     session_db=self._session_db, reasoning_config=self.reasoning_config,
                     service_tier=self.service_tier,
+                    service_tier_escalation=getattr(self, "_service_tier_escalation_cfg", None),
                     request_overrides=turn_route.get("request_overrides"),
                     **{kw: getattr(self, attr) for kw, attr in _BG_PROVIDER_KWARGS.items()})
+                bg_agent._config_managed_routing_tier = True
+                bg_agent._block_service_tier_escalation = True
+                routing = getattr(self, "_provider_routing", None)
+                if isinstance(routing, dict):
+                    bg_agent._provider_routing_config = routing
                 # Silence raw spinner; route thinking through TUI widget when no foreground agent is active.
                 bg_agent._print_fn = lambda *_a, **_kw: None
 
@@ -2688,16 +2732,26 @@ class CLICommandsMixin:
         feature_name = ("Fast mode" if anthropic is None
                         else "Anthropic Fast Mode" if anthropic else "Priority Processing")
         raw = _command_arg(cmd)
-        usage = _dim_line('Usage: /fast [normal|fast|auto|cold|status] [--global]')
+        usage = _dim_line('Usage: /fast [normal|fast|flex|auto|cold|status] [--global]')
         if not raw or raw.lower() == "status":
-            status = {"priority": "fast", None: "normal"}.get(self.service_tier, self.service_tier)
+            status = _fast_status_label(self)
             return _cp(_accent_line(f"{feature_name}: {status}"), usage)
         arg, explicit_global = _split_scope_flags(raw)
         if arg not in _FAST_TIERS:
             return _cp(_dim_line(f'(._.) Unknown argument: {arg}'), usage)
         self.service_tier, saved_value = _FAST_TIERS[arg]
         self.agent = None  # Force agent re-init with new service-tier config
-        saved = explicit_global and _save("agent.service_tier", saved_value)
+        saved = False
+        if explicit_global:
+            saved = _save("agent.service_tier", saved_value)
+            self._service_tier_session_pinned = False
+            if saved:
+                from cli import CLI_CONFIG
+                CLI_CONFIG.setdefault("agent", {})["service_tier"] = saved_value
+                if isinstance(getattr(self, "config", None), dict):
+                    self.config.setdefault("agent", {})["service_tier"] = saved_value
+        else:
+            self._service_tier_session_pinned = True
         outcome = _scope_outcome(explicit_global, saved)
         _cp(_accent_line(f"✓ {feature_name} set to {saved_value.upper()} {outcome}"))
 

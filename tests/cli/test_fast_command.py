@@ -28,6 +28,7 @@ class TestParseServiceTierConfig(unittest.TestCase):
     def test_fast_maps_to_priority(self):
         self.assertEqual(self._parse("fast"), "priority")
         self.assertEqual(self._parse("priority"), "priority")
+        self.assertEqual(self._parse("flex"), "flex")
 
 
 
@@ -57,6 +58,64 @@ class TestHandleFastCommand(unittest.TestCase):
         printed = " ".join(str(c) for c in mock_cprint.call_args_list)
         self.assertIn("normal", printed)
 
+    def test_status_shows_flex_from_global_tier(self):
+        cli_mod = _import_cli()
+        stub = self._make_cli(service_tier="flex")
+        with (
+            patch.object(cli_mod, "_cprint") as mock_cprint,
+            patch.object(cli_mod, "save_config_value") as mock_save,
+        ):
+            cli_mod.HermesCLI._handle_fast_command(stub, "/fast status")
+
+        mock_save.assert_not_called()
+        status_line = str(mock_cprint.call_args_list[0])
+        self.assertIn("flex", status_line)
+        self.assertNotIn("normal", status_line)
+
+    def test_status_shows_flex_from_per_model_override(self):
+        cli_mod = _import_cli()
+        stub = self._make_cli(service_tier="priority")
+        stub.model = "openai/gpt-5"
+        stub._service_tier_session_pinned = False
+        stub.config = {
+            "agent": {
+                "service_tier": "priority",
+                "service_tier_overrides": {"openai/gpt-5": "flex"},
+            }
+        }
+        with (
+            patch.object(cli_mod, "_cprint") as mock_cprint,
+            patch.object(cli_mod, "save_config_value") as mock_save,
+        ):
+            cli_mod.HermesCLI._handle_fast_command(stub, "/fast status")
+
+        mock_save.assert_not_called()
+        status_line = str(mock_cprint.call_args_list[0])
+        self.assertIn("flex", status_line)
+        self.assertNotIn("normal", status_line)
+
+    def test_status_shows_fast_when_session_pin_beats_per_model_override(self):
+        cli_mod = _import_cli()
+        stub = self._make_cli(service_tier="priority")
+        stub.model = "openai/gpt-5"
+        stub._service_tier_session_pinned = True
+        stub.config = {
+            "agent": {
+                "service_tier": "flex",
+                "service_tier_overrides": {"openai/gpt-5": "flex"},
+            }
+        }
+        with (
+            patch.object(cli_mod, "_cprint") as mock_cprint,
+            patch.object(cli_mod, "save_config_value") as mock_save,
+        ):
+            cli_mod.HermesCLI._handle_fast_command(stub, "/fast status")
+
+        mock_save.assert_not_called()
+        status_line = str(mock_cprint.call_args_list[0])
+        self.assertIn("fast", status_line)
+        self.assertNotIn("flex", status_line)
+        self.assertNotIn("normal", status_line)
 
     def test_normal_argument_clears_service_tier(self):
         cli_mod = _import_cli()
@@ -72,6 +131,32 @@ class TestHandleFastCommand(unittest.TestCase):
         self.assertIsNone(stub.service_tier)
         self.assertIsNone(stub.agent)
 
+    def test_global_fast_updates_in_memory_config_for_next_unpinned_turn(self):
+        cli_mod = _import_cli()
+        stub = self._make_cli(service_tier=None)
+        stub._service_tier_session_pinned = False
+        stub.config = cli_mod.CLI_CONFIG
+        stub.api_key = "k"
+        stub.base_url = "https://openrouter.ai/api/v1"
+        stub.provider = "openrouter"
+        stub.api_mode = "chat_completions"
+        stub.acp_command = None
+        stub.acp_args = []
+        stub._credential_pool = None
+        with (
+            patch.object(cli_mod, "_cprint"),
+            patch.object(cli_mod, "save_config_value", return_value=True) as mock_save,
+            patch.dict(
+                cli_mod.CLI_CONFIG.setdefault("agent", {}),
+                {"service_tier": "", "service_tier_overrides": {}},
+            ),
+        ):
+            cli_mod.HermesCLI._handle_fast_command(stub, "/fast priority --global")
+            mock_save.assert_called_once_with("agent.service_tier", "fast")
+            self.assertFalse(stub._service_tier_session_pinned)
+            self.assertEqual(cli_mod.CLI_CONFIG["agent"]["service_tier"], "fast")
+            route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
+        self.assertEqual(route["request_overrides"], {"service_tier": "priority"})
 
     def test_unsupported_model_does_not_expose_fast(self):
         cli_mod = _import_cli()
@@ -143,6 +228,16 @@ class TestPriorityProcessingModels(unittest.TestCase):
         result = resolve_fast_mode_overrides("gpt-4.1")
         assert result == {"service_tier": "priority"}
 
+    def test_resolve_service_tier_overrides_accepts_openrouter_tiers_without_fast_model_gate(self):
+        from hermes_cli.models import resolve_service_tier_overrides
+
+        assert resolve_service_tier_overrides(
+            "deepseek/deepseek-v4-flash-0731:nitro", "flex", provider="openrouter"
+        ) == {"service_tier": "flex"}
+        assert resolve_service_tier_overrides(
+            "deepseek/deepseek-v4-flash-0731:nitro", "priority", provider="openrouter"
+        ) == {"service_tier": "priority"}
+
 
 
 class TestFastModeRouting(unittest.TestCase):
@@ -176,12 +271,14 @@ class TestFastModeRouting(unittest.TestCase):
         # But request_overrides should be set
         assert route["request_overrides"] == {"service_tier": "priority"}
 
-        # Proxied routes (OpenRouter etc.) strip/400 on the param — never sent.
+        # OpenRouter also forwards the wire tier (no longer stripped as a proxied route).
         stub.base_url = "https://openrouter.ai/api/v1"
         stub.provider = "openrouter"
-        assert cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")["request_overrides"] is None
+        assert cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")["request_overrides"] == {
+            "service_tier": "priority"
+        }
 
-    def test_turn_route_keeps_primary_runtime_when_model_has_no_fast_backend(self):
+    def test_turn_route_injects_openrouter_priority_without_fast_model_gate(self):
         cli_mod = _import_cli()
         stub = SimpleNamespace(
             model="gpt-5.3-codex",
@@ -198,7 +295,25 @@ class TestFastModeRouting(unittest.TestCase):
         route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
 
         assert route["runtime"]["provider"] == "openrouter"
-        assert route.get("request_overrides") is None
+        assert route["request_overrides"] == {"service_tier": "priority"}
+
+    def test_turn_route_injects_flex_for_openrouter_variant(self):
+        cli_mod = _import_cli()
+        stub = SimpleNamespace(
+            model="deepseek/deepseek-v4-flash-0731:nitro",
+            api_key="primary-key",
+            base_url="https://openrouter.ai/api/v1",
+            provider="openrouter",
+            api_mode="chat_completions",
+            acp_command=None,
+            acp_args=[],
+            _credential_pool=None,
+            service_tier="flex",
+        )
+
+        route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
+
+        assert route["request_overrides"] == {"service_tier": "flex"}
 
 
 class TestAnthropicFastMode(unittest.TestCase):

@@ -133,6 +133,7 @@ gateway:
     label_fast:            "FAST"
     label_normal:          "NORMAL"
     status_fast:           "fast"
+    status_flex:           "flex"
     status_normal:         "normal"
     picker_title:          "⚡ **Priority Processing**\\n\\nТекущий режим: `{mode}`\\n\\nВыберите вариант:"
     choice_fast:           "fast — Priority Processing включён"

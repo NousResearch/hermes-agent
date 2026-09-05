@@ -299,6 +299,28 @@ class TestBuildApiKwargsChatCompletionsServiceTier:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["service_tier"] == "priority"
 
+    def test_includes_flex_from_agent_service_tier(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.model = "deepseek/deepseek-v4-flash-0731:nitro"
+        agent.service_tier = "flex"
+        agent.request_overrides = {}
+        messages = [{"role": "user", "content": "hi"}]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert kwargs["service_tier"] == "flex"
+
+    def test_includes_openrouter_priority_without_fast_model_gate(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.model = "deepseek/deepseek-v4-flash-0731:nitro"
+        agent.service_tier = "priority"
+        agent.request_overrides = {}
+        messages = [{"role": "user", "content": "hi"}]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert kwargs["service_tier"] == "priority"
+
 
 
 
@@ -919,6 +941,4 @@ class TestReasoningEffortDefaults:
                             base_url="https://chatgpt.com/backend-api/codex")
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert kwargs["reasoning"]["effort"] == "medium"
-
-
 

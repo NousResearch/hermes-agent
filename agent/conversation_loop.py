@@ -63,6 +63,22 @@ _STALE_MARKER_RE = re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
 _INTERRUPT_SCAFFOLD_MARKER = "[This response was interrupted by a user correction.]"
 
 
+def _try_accept_logical_request(agent: Any) -> None:
+    """Commit a parked TTFT when the outer loop accepts this logical request.
+
+    Used on inject-and-continue paths (history mutated; next API call is a
+    new logical request) as well as the successful tool-call / content
+    accept sites. Outer-loop pure retries must not call this — they keep
+    ``wire_locked`` so the pre-attempt tier stays on the wire.
+    """
+    try:
+        from agent.service_tier_escalation import accept_logical_request
+
+        accept_logical_request(agent)
+    except Exception:
+        pass
+
+
 # One-time wrap-up notice appended when a wall-clock run budget (--run-budget) crosses 80%.
 RUN_BUDGET_WRAPUP_NOTICE = (
     "[SYSTEM NOTICE — run time budget nearly exhausted] Run time budget nearly exhausted. "
@@ -1361,6 +1377,12 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
     Returns a turn result dict when a phase ends the turn, else None once the loop is left
     (success, a restart armed on ``s._retry``, interrupt, or retries exhausted)."""
     while s.retry_count < s.max_retries:
+        try:
+            from agent.service_tier_escalation import begin_logical_request
+
+            begin_logical_request(agent)
+        except Exception:
+            pass
         _ng = _run_phase(nous_rate_limit_guard, agent, s)
         if _ng.action == "return":
             return _ng.result
@@ -1417,6 +1439,12 @@ def run_conversation(
     agent._last_compaction_in_place = agent._last_compression_attempt_recorded = False
     agent._last_compression_attempt_in_place = None
     begin_fast_mode_turn(agent, conversation_history)
+    try:
+        from agent.service_tier_escalation import begin_escalation_turn
+
+        begin_escalation_turn(agent)
+    except Exception:
+        pass
 
     # Adopt ~/.hermes/.env credential/base-url edits made since the last turn — a
     # Settings save updates .env, not this worker's client (#67821). No-op if unchanged.
@@ -1491,6 +1519,12 @@ def run_conversation(
         _run_phase(announce_api_call, agent, s)
 
         s.api_start_time, s.retry_count, s.max_retries = time.time(), 0, agent._api_max_retries
+        try:
+            from agent.sticky_provider_order import apply_sticky_retry_budget
+
+            s.max_retries = apply_sticky_retry_budget(agent, s.max_retries)
+        except Exception:
+            pass
         s._retry, s.finish_reason, s.response, s.api_kwargs = TurnRetryState(), "stop", None, None
         s.api_request_id = agent._current_api_request_id = f"{s.turn_id}:api:{s.api_call_count}"
 

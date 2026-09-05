@@ -273,9 +273,16 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "quiet_mode": True, "verbose_logging": False,
         "provider_require_parameters": g("provider_require_parameters", False), "session_id": task_id,
         "reasoning_config": g("reasoning_config") or _load_reasoning_config(str(g("model", "") or "")),
-        "service_tier": g("service_tier") or _load_service_tier(),
+        "service_tier": g("service_tier") or _load_service_tier(str(g("model", "") or "")),
+        "service_tier_escalation": _load_service_tier_escalation(),
         "request_overrides": dict(g("request_overrides", {}) or {}),
         "platform": "tui", "session_db": _get_db(), "fallback_model": fallback}
+
+
+def _stamp_background_agent(agent) -> None:
+    """Mark a detached TUI background agent as config-managed and escalation-gated."""
+    agent._config_managed_routing_tier = True
+    agent._block_service_tier_escalation = True
 
 
 def _ephemeral_preview_agent_kwargs(agent, task_id: str) -> dict:

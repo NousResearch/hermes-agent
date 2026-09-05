@@ -140,4 +140,24 @@ def test_fast_auto_and_cold_parse_and_slash_command(monkeypatch):
     }
     route_stub.base_url = "https://openrouter.ai/api/v1"
     route_stub.provider = "openrouter"
-    assert cli_mod.HermesCLI._resolve_turn_agent_config(route_stub, "hi")["request_overrides"] is None
+    assert cli_mod.HermesCLI._resolve_turn_agent_config(route_stub, "hi")["request_overrides"] == {
+        "service_tier": "priority"
+    }
+
+
+def test_aiagent_preserves_auto_and_cold_service_tier():
+    from run_agent import AIAgent
+
+    for mode in ("auto", "cold"):
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.openai.com/v1",
+            model="gpt-5.4",
+            provider="openai",
+            platform="cli",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            service_tier=mode,
+        )
+        assert agent.service_tier == mode

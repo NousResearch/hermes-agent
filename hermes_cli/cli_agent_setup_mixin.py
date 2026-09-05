@@ -371,16 +371,17 @@ class CLIAgentSetupMixin:
 
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Effective model/runtime config for one turn — always the session's primary
-        provider. With `/fast` on (service_tier == "priority") attach request_overrides;
-        auto/cold tiers are applied per request by agent.fast_mode instead."""
-        from hermes_cli.models import resolve_fast_mode_overrides
+        provider. ``priority`` / ``flex`` attach request_overrides; auto/cold tiers are
+        applied per request by agent.fast_mode instead."""
+        from hermes_cli.models import resolve_service_tier_overrides
         runtime = _current_runtime(self)
         route = {"model": self.model, "runtime": runtime, "signature": _route_signature(self.model, runtime)}
         overrides = None
-        if getattr(self, "service_tier", None) == "priority":
+        if getattr(self, "service_tier", None) in {"priority", "flex"}:
             try:
-                overrides = resolve_fast_mode_overrides(
-                    route["model"], provider=runtime["provider"], base_url=runtime["base_url"])
+                overrides = resolve_service_tier_overrides(
+                    route["model"], self.service_tier,
+                    provider=runtime["provider"], base_url=runtime["base_url"])
             except Exception:
                 pass
         route["request_overrides"] = overrides
@@ -474,8 +475,8 @@ class CLIAgentSetupMixin:
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
         """Build the agent on first use; when resuming, restore history from SQLite.
         Returns True on success."""
-        from cli import ChatConsole, _cprint, _prepare_deferred_agent_startup, logger
-        from run_agent import AIAgent
+        from cli import ChatConsole, CLI_CONFIG, _cprint, _prepare_deferred_agent_startup, logger
+        from cli import AIAgent
         if self.agent is not None:
             return True
 
@@ -503,6 +504,22 @@ class CLIAgentSetupMixin:
         try:
             runtime = runtime_override or _current_runtime(self)
             effective_model = model_override or self.model
+            from hermes_constants import (
+                apply_provider_routing_to_agent,
+                provider_routing_constructor_kwargs, resolve_service_tier_escalation_config,
+                resolve_service_tier_for_model,
+            )
+            routing = getattr(self, "_provider_routing", None)
+            if not isinstance(routing, dict):
+                routing = CLI_CONFIG.get("provider_routing") or {}
+            agent_cfg = CLI_CONFIG.get("agent") if isinstance(CLI_CONFIG.get("agent"), dict) else {}
+            if getattr(self, "_service_tier_session_pinned", False):
+                resolved_tier = self.service_tier
+            else:
+                resolved_tier = resolve_service_tier_for_model(agent_cfg, effective_model)
+            escalation_cfg = getattr(self, "_service_tier_escalation_cfg", None)
+            if escalation_cfg is None:
+                escalation_cfg = resolve_service_tier_escalation_config(agent_cfg)
             # -q never builds the prompt_toolkit app, so the clarify modal can't be
             # answered — answer headless instead of polling until clarify_timeout.
             clarify_callback = (
@@ -523,12 +540,10 @@ class CLIAgentSetupMixin:
                 tool_progress_mode=getattr(self, "tool_progress_mode", "all"),
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
-                reasoning_config=self.reasoning_config, service_tier=self.service_tier,
-                request_overrides=request_overrides, providers_allowed=self._providers_only,
-                providers_ignored=self._providers_ignore, providers_order=self._providers_order,
-                provider_sort=self._provider_sort,
-                provider_require_parameters=self._provider_require_params,
-                provider_data_collection=self._provider_data_collection,
+                reasoning_config=self.reasoning_config, service_tier=resolved_tier,
+                service_tier_escalation=escalation_cfg,
+                request_overrides=request_overrides,
+                **provider_routing_constructor_kwargs(routing, effective_model),
                 openrouter_min_coding_score=self._openrouter_min_coding_score,
                 session_id=self.session_id, platform="cli", session_db=self._session_db,
                 clarify_callback=clarify_callback,
@@ -546,6 +561,23 @@ class CLIAgentSetupMixin:
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
                 notice_callback=self._on_notice, notice_clear_callback=self._on_notice_clear,
                 reaction_callback=self._on_reaction)
+            routing_raw = getattr(self, "_provider_routing_raw", None)
+            if not isinstance(routing_raw, dict):
+                routing_raw = routing
+            apply_provider_routing_to_agent(self.agent, routing_raw, effective_model)
+            _agent_cfg = getattr(self, "config", None)
+            if isinstance(_agent_cfg, dict):
+                _agent_cfg = _agent_cfg.get("agent")
+            if isinstance(_agent_cfg, dict):
+                self.agent._agent_config = _agent_cfg
+            self.agent._service_tier_session_pinned = bool(
+                getattr(self, "_service_tier_session_pinned", False)
+            )
+            self.agent._config_managed_routing_tier = True
+            try:
+                self.agent._provider_routing_config = routing if isinstance(routing, dict) else {}
+            except Exception:
+                pass
             # Reference for atexit memory-provider shutdown: ``_run_cleanup`` in cli.py
             # reads ``cli._active_agent_ref``, so this MUST write the ``cli`` module's
             # global — a ``global`` statement here would bind this module's namespace.

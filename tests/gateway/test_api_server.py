@@ -3087,3 +3087,223 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="s2", gateway_session_key="ch")
         assert captured[1]["model"] == "anthropic/claude-opus-4.6"
+
+
+# ---------------------------------------------------------------------------
+# Request-scoped model_options.service_tier survives fallback/restore
+# ---------------------------------------------------------------------------
+
+_API_PRIMARY = "google/gemini-3.7-flash"
+_API_FALLBACK = "qwen/qwen3.8-27b"
+
+
+class _RateLimitError(Exception):
+    status_code = 429
+
+    def __init__(self):
+        super().__init__("Error code: 429 - rate limit exceeded")
+        self.response = types.SimpleNamespace(headers={})
+        self.body = {"error": {"message": "rate limit exceeded"}}
+
+
+def _conversation_response(content: str):
+    msg = types.SimpleNamespace(content=content, tool_calls=None)
+    choice = types.SimpleNamespace(message=msg, finish_reason="stop")
+    return types.SimpleNamespace(choices=[choice], model="test/model", usage=None)
+
+
+def _write_api_tier_config(fallback_tier="flex"):
+    import yaml
+    from hermes_constants import get_hermes_home
+
+    payload = {
+        "model": {"default": _API_PRIMARY, "provider": "openrouter"},
+        "agent": {
+            "service_tier": "flex",
+            "service_tier_overrides": {
+                _API_PRIMARY: "flex",
+                _API_FALLBACK: fallback_tier,
+            },
+            "service_tier_escalation": {
+                "enabled": True,
+                "ttft_threshold_seconds": 8.0,
+                "consecutive_slow_requests": 1,
+            },
+        },
+    }
+    path = get_hermes_home() / "config.yaml"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    return path
+
+
+def _patch_real_create_agent(monkeypatch, fallback_model=_API_FALLBACK):
+    """Stub _create_agent I/O while keeping the real AIAgent constructor."""
+    monkeypatch.setattr(
+        "gateway.run._resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "openrouter",
+            "api_key": "sk-test",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: _API_PRIMARY)
+    monkeypatch.setattr(
+        "gateway.run.GatewayRunner._load_fallback_model",
+        staticmethod(
+            lambda: [
+                {
+                    "provider": "openrouter",
+                    "model": fallback_model,
+                    "base_url": "https://openrouter.ai/api/v1",
+                    "api_mode": "chat_completions",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        "gateway.run.GatewayRunner._load_reasoning_config",
+        staticmethod(lambda model="": {}),
+    )
+    monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 8)
+    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+    monkeypatch.setattr("run_agent.get_tool_definitions", lambda *a, **k: [])
+    monkeypatch.setattr("run_agent.check_toolset_requirements", lambda *a, **k: {})
+    monkeypatch.setattr("run_agent.OpenAI", MagicMock())
+
+
+def _run_fallback_conversation(agent, captured=None):
+    """Primary 429s on the first captured call; later primary calls succeed."""
+    if captured is None:
+        captured = []
+    agent.client = MagicMock()
+    agent._cached_system_prompt = "You are helpful."
+    agent._use_prompt_caching = False
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    agent._api_max_retries = 1
+
+    def fake_api_call(api_kwargs, on_first_delta=None, **_kwargs):
+        captured.append(
+            {
+                "model": agent.model,
+                "service_tier": api_kwargs.get("service_tier"),
+            }
+        )
+        if agent.model == _API_PRIMARY and len(captured) == 1:
+            raise _RateLimitError()
+        return _conversation_response("ok")
+
+    mock_fb = MagicMock()
+    mock_fb.base_url = "https://openrouter.ai/api/v1"
+    mock_fb.api_key = "fb-key"
+    mock_fb._custom_headers = None
+    mock_fb.default_headers = None
+
+    with (
+        patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call),
+        patch.object(agent, "_interruptible_streaming_api_call", side_effect=fake_api_call),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+        patch("run_agent.OpenAI", return_value=MagicMock()),
+        patch("agent.agent_runtime_helpers.time.sleep"),
+        patch("agent.conversation_loop.time.sleep"),
+        patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_fb, _API_FALLBACK),
+        ),
+        patch(
+            "hermes_cli.model_normalize.normalize_model_for_provider",
+            side_effect=lambda m, p: m,
+        ),
+        patch("agent.model_metadata.get_model_context_length", return_value=200000),
+    ):
+        result = agent.run_conversation("hello")
+    return result, captured
+
+
+class TestRequestScopedServiceTierSurvivesFallback:
+    """API model_options.service_tier is request-scoped and must outlive fallback."""
+
+    def test_create_agent_pins_explicit_request_tier(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self._service_tier_session_pinned = False
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        agent = adapter._create_agent(
+            session_id="s1",
+            model_options={"service_tier": "priority"},
+        )
+        assert captured["service_tier"] == "priority"
+        assert agent._service_tier_session_pinned is True
+        assert agent._config_managed_routing_tier is True
+
+        captured.clear()
+        unpinned = adapter._create_agent(session_id="s2")
+        assert "service_tier" not in captured
+        assert unpinned._service_tier_session_pinned is False
+        assert unpinned._config_managed_routing_tier is True
+
+    def test_priority_survives_fallback_to_flex_model(self, monkeypatch):
+        from agent.service_tier_escalation import escalation_is_active
+
+        _write_api_tier_config(fallback_tier="flex")
+        _patch_real_create_agent(monkeypatch)
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        agent = adapter._create_agent(
+            session_id="api-session",
+            requested_model=_API_PRIMARY,
+            model_options={"service_tier": "priority"},
+        )
+        assert agent._service_tier_session_pinned is True
+        assert agent.service_tier == "priority"
+        assert escalation_is_active(agent) is False
+
+        captured = []
+        result, captured = _run_fallback_conversation(agent, captured)
+        assert result["completed"] is True
+        assert len(captured) >= 2
+        assert captured[0]["model"] == _API_PRIMARY
+        assert captured[0]["service_tier"] == "priority"
+        assert captured[1]["model"] == _API_FALLBACK
+        assert captured[1]["service_tier"] == "priority"
+        assert agent._service_tier_session_pinned is True
+        assert escalation_is_active(agent) is False
+
+        agent._rate_limited_until = 0
+        result, captured = _run_fallback_conversation(agent, captured)
+        assert result["completed"] is True
+        assert captured[-1]["model"] == _API_PRIMARY
+        assert captured[-1]["service_tier"] == "priority"
+
+    def test_explicit_normal_omits_wire_tier_on_fallback(self, monkeypatch):
+        _write_api_tier_config(fallback_tier="flex")
+        _patch_real_create_agent(monkeypatch)
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        agent = adapter._create_agent(
+            session_id="api-session",
+            requested_model=_API_PRIMARY,
+            model_options={"service_tier": "normal"},
+        )
+        assert agent._service_tier_session_pinned is True
+        assert agent.service_tier is None
+
+        result, captured = _run_fallback_conversation(agent)
+        assert result["completed"] is True
+        assert len(captured) >= 2
+        assert captured[0]["model"] == _API_PRIMARY
+        assert captured[0]["service_tier"] is None
+        assert captured[1]["model"] == _API_FALLBACK
+        assert captured[1]["service_tier"] is None

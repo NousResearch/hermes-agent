@@ -290,13 +290,39 @@ def _mirror_prompt(sid, session, agent, arg) -> None:
         agent._cached_system_prompt = None
 
 
-_FAST_TIERS = {"fast": "priority", "on": "priority", "normal": None, "off": None, "auto": "auto", "cold": "cold"}
+_FAST_TIERS = {
+    "fast": "priority", "on": "priority", "priority": "priority",
+    "flex": "flex", "normal": None, "off": None, "auto": "auto", "cold": "cold",
+}
 
 
 def _mirror_fast(sid, session, agent, arg) -> None:
+    raw = (arg or "").strip().lower()
+    if raw in {"", "status"}:
+        if agent:
+            _emit("session.info", sid, _session_info(agent, session))
+        return
+    if raw not in _FAST_TIERS:
+        return
+    tier = _FAST_TIERS[raw]
+    if session is not None:
+        session["create_service_tier_override"] = "" if tier is None else tier
     if agent:
-        if arg.lower() in _FAST_TIERS:
-            agent.service_tier = _FAST_TIERS[arg.lower()]
+        agent.service_tier = tier
+        agent._service_tier_session_pinned = True
+        current = {
+            k: v for k, v in (getattr(agent, "request_overrides", {}) or {}).items()
+            if k not in ("service_tier", "speed")
+        }
+        extra = {}
+        if tier in {"priority", "flex"}:
+            from hermes_cli.models import resolve_service_tier_overrides
+            extra = resolve_service_tier_overrides(
+                getattr(agent, "model", None), tier,
+                provider=getattr(agent, "provider", None),
+                base_url=getattr(agent, "base_url", None),
+            ) or {}
+        agent.request_overrides = {**current, **extra}
         _emit("session.info", sid, _session_info(agent, session))
 
 

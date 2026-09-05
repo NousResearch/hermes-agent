@@ -950,20 +950,20 @@ class TurnRunner:
     def _build_fresh_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations,
                            reasoning_config, pr, skip_context_files):
         from gateway.run import _checkpoint_agent_kwargs
+        from hermes_constants import provider_routing_constructor_kwargs
         ctx = self._ctx
         runner = self._runner
         src = ctx.source
-        return ctx.AIAgent(
+        agent = ctx.AIAgent(
             model=turn_route["model"], **turn_route["runtime"], **_checkpoint_agent_kwargs(ctx.user_config),
             max_iterations=max_iterations, quiet_mode=True, verbose_logging=False,
             enabled_toolsets=ctx.enabled_toolsets, disabled_toolsets=ctx.disabled_toolsets,
             ephemeral_system_prompt=combined_ephemeral or None,
             prefill_messages=runner._prefill_messages or None,
             reasoning_config=reasoning_config, service_tier=runner._service_tier,
+            service_tier_escalation=runner._load_service_tier_escalation(),
             request_overrides=turn_route.get("request_overrides"),
-            providers_allowed=pr.get("only"), providers_ignored=pr.get("ignore"), providers_order=pr.get("order"),
-            provider_sort=pr.get("sort"), provider_require_parameters=pr.get("require_parameters", False),
-            provider_data_collection=pr.get("data_collection"),
+            **provider_routing_constructor_kwargs(pr, turn_route["model"]),
             session_id=ctx.session_id, platform=platform_key,
             user_id=src.user_id, user_id_alt=src.user_id_alt, user_name=src.user_name,
             chat_id=src.chat_id, chat_name=src.chat_name, chat_type=src.chat_type, thread_id=src.thread_id,
@@ -976,6 +976,8 @@ class TurnRunner:
             # Keep the persona even with minimal context: soul identity is one small file.
             load_soul_identity=True,
         )
+        agent._config_managed_routing_tier = True
+        return agent
 
     def _resolve_turn_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr):
         """Reuse this session's cached AIAgent (frozen system prompt + tool schemas → prompt cache
@@ -1106,6 +1108,31 @@ class TurnRunner:
         agent.notice_clear_callback = None  # sends can't be retracted
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
+        from hermes_constants import apply_provider_routing_to_agent
+        from gateway.run import _multiplex_profiles_active
+        from gateway.session_state import SERVICE_TIER_UNSET
+        pr_raw = getattr(runner, "_provider_routing", None)
+        if _multiplex_profiles_active(runner):
+            pr_raw = runner._load_provider_routing()
+        apply_provider_routing_to_agent(
+            agent, pr_raw if isinstance(pr_raw, dict) else {}, turn_route.get("model") or "",
+        )
+        try:
+            from agent.service_tier_escalation import bind_service_tier_escalation
+            escalation_cfg = getattr(runner, "_service_tier_escalation", None)
+            if _multiplex_profiles_active(runner) or escalation_cfg is None:
+                escalation_cfg = runner._load_service_tier_escalation()
+            bind_service_tier_escalation(agent, escalation_cfg)
+        except Exception:
+            pass
+        peek = getattr(runner, "_peek_session_state", None)
+        _t_state = peek(ctx.session_key) if callable(peek) and ctx.session_key else None
+        agent._service_tier_session_pinned = (
+            _t_state is not None
+            and getattr(getattr(_t_state, "conversation", None), "service_tier_override", SERVICE_TIER_UNSET)
+            is not SERVICE_TIER_UNSET
+        )
+        agent._config_managed_routing_tier = True
         self._merge_turn_request_overrides(agent, turn_route)
         # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never
         # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.
@@ -1632,12 +1659,20 @@ class TurnRunner:
             )
         except Exception as exc:
             return {"final_response": f"⚠️ Provider authentication failed: {exc}", "messages": [], "api_calls": 0, "tools": []}
+        from gateway.run import _multiplex_profiles_active
         pr = runner._provider_routing
+        if _multiplex_profiles_active(runner):
+            pr = runner._load_provider_routing()
         reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)
         runner._reasoning_config = reasoning_config
-        runner._service_tier = runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key)
+        service_tier = runner._resolve_session_service_tier(
+            source=ctx.source, session_key=ctx.session_key, model=model,
+        )
+        runner._service_tier = service_tier
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
-        turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
+        turn_route = runner._resolve_turn_agent_config(
+            ctx.message, model, runtime_kwargs, service_tier=service_tier,
+        )
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )

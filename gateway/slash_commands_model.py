@@ -25,6 +25,8 @@ logger = logging.getLogger("gateway.run")  # log-record parity with gateway/run.
 _FAST_SELECTIONS = {
     "fast": ("priority", "fast", "gateway.fast.label_fast"),
     "on": ("priority", "fast", "gateway.fast.label_fast"),
+    "priority": ("priority", "fast", "gateway.fast.label_fast"),
+    "flex": ("flex", "flex", None),
     "normal": (None, "normal", "gateway.fast.label_normal"),
     "off": (None, "normal", "gateway.fast.label_normal"),
     "auto": ("auto", "auto", None),
@@ -728,19 +730,37 @@ class GatewayModelCommandsMixin:
     async def _handle_fast_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /fast — the CLI Priority Processing toggle; session-scoped unless ``--global``
         (persists agent.service_tier, parity with /model)."""
-        from gateway.run import _load_gateway_config, _resolve_gateway_model
+        from gateway.run import _load_gateway_config
         from hermes_cli.models import model_supports_fast_mode
 
         # The /reasoning parser strips --global (any position) and normalizes unicode dashes.
         args, persist_global = self._parse_reasoning_command_args(event.get_command_args().strip().lower())
-        session_key = self._session_key_for_source(event.source)
-        self._service_tier = self._resolve_session_service_tier(session_key=session_key)
-        if not model_supports_fast_mode(_resolve_gateway_model(_load_gateway_config())):
+        # Normalize the source (Telegram DM topic recovery) before deriving
+        # the override key so storage matches the key the next message turn
+        # reads — same fix as /model and /reasoning (#30479).
+        source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
+        session_key = self._session_key_for_source(source)
+        user_config = _load_gateway_config()
+        model = self._resolve_session_effective_model(
+            source=source, session_key=session_key, user_config=user_config,
+        )
+        self._service_tier = self._resolve_session_service_tier(session_key=session_key, model=model)
+        is_status = not args or args == "status"
+        if (
+            not is_status
+            and args in {"fast", "on", "priority"}
+            and not model_supports_fast_mode(model)
+        ):
             return t("gateway.fast.not_supported")
         if args and args != "status":
             return self._apply_fast_selection(session_key, args, persist=persist_global)
-        mode = "fast" if self._service_tier == "priority" else (self._service_tier or "normal")
-        status = {"fast": t("gateway.fast.status_fast"), "normal": t("gateway.fast.status_normal")}.get(mode, mode)
+        current_tier = self._service_tier
+        if current_tier == "priority":
+            status = t("gateway.fast.status_fast")
+        elif current_tier == "flex":
+            status = t("gateway.fast.status_flex")
+        else:
+            status = t("gateway.fast.status_normal") if current_tier in {None, "normal"} else str(current_tier)
 
         async def _on_fast_choice(_chat_id: str, value: str) -> str:
             return self._apply_fast_selection(session_key, value, persist=persist_global)
@@ -750,7 +770,11 @@ class GatewayModelCommandsMixin:
             session_key,
             title=t("gateway.fast.picker_title", mode=status),
             choices=[
-                {"value": v, "label": t(f"gateway.fast.choice_{v}"), "is_current": mode == v}
+                {"value": v, "label": t(f"gateway.fast.choice_{v}"), "is_current": (
+                    (v == "fast" and current_tier == "priority")
+                    or (v == "normal" and current_tier not in {"priority", "flex", "auto", "cold"})
+                    or (v == current_tier)
+                )}
                 for v in ("fast", "normal", "auto", "cold")
             ],
             on_choice_selected=_on_fast_choice,

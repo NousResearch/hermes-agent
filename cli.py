@@ -271,16 +271,14 @@ def _parse_reasoning_config(effort) -> dict | None:
 
 
 def _parse_service_tier_config(raw: str) -> str | None:
-    """Parse a persisted fast-mode preference: None, "priority", "auto", or "cold"."""
+    """Parse a persisted fast-mode preference (None, priority, flex, auto, cold)."""
+    from hermes_constants import SERVICE_TIER_DISABLED_VALUES, parse_service_tier
+
+    parsed = parse_service_tier(raw)
     value = str(raw or "").strip().lower()
-    if not value or value in {"normal", "default", "standard", "off", "none"}:
-        return None
-    if value in {"fast", "priority", "on"}:
-        return "priority"
-    if value in {"auto", "cold"}:
-        return value
-    logger.warning("Unknown service_tier '%s', ignoring", raw)
-    return None
+    if parsed is None and value and value not in SERVICE_TIER_DISABLED_VALUES:
+        logger.warning("Unknown service_tier '%s', ignoring", raw)
+    return parsed
 
 
 # terminal.<key> -> TERMINAL_<KEY> env var. Container-resource keys apply to docker,
@@ -2782,15 +2780,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
                 logger.warning("Unknown --reasoning '%s', keeping the configured level", reasoning)
             else:
                 self.reasoning_config = _cli_reasoning
-        self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
+        from hermes_constants import (
+            resolve_provider_routing_for_model, resolve_service_tier_escalation_config,
+            resolve_service_tier_for_model,
+        )
+
+        _agent_cfg = CLI_CONFIG.get("agent") if isinstance(CLI_CONFIG.get("agent"), dict) else {}
+        self._service_tier_session_pinned = False
+        self.service_tier = resolve_service_tier_for_model(_agent_cfg, self.model)
+        self._service_tier_escalation_cfg = resolve_service_tier_escalation_config(_agent_cfg)
 
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
-        self._provider_sort = pr.get("sort")
-        self._providers_only = pr.get("only")
-        self._providers_ignore = pr.get("ignore")
-        self._providers_order = pr.get("order")
-        self._provider_require_params = pr.get("require_parameters", False)
-        self._provider_data_collection = pr.get("data_collection")
+        self._provider_routing = pr if isinstance(pr, dict) else {}
+        self._provider_routing_raw = self._provider_routing
+        _pr = resolve_provider_routing_for_model(self._provider_routing, self.model)
+        self._provider_sort = _pr.get("sort")
+        self._providers_only = _pr.get("only")
+        self._providers_ignore = _pr.get("ignore")
+        self._providers_order = _pr.get("order")
+        self._provider_require_params = _pr.get("require_parameters", False)
+        self._provider_data_collection = _pr.get("data_collection")
 
         # OpenRouter Pareto Code router coding-score floor; out-of-range = unset.
         _raw_score = (CLI_CONFIG.get("openrouter", {}) or {}).get("min_coding_score")

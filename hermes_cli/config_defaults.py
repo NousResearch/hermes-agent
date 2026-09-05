@@ -11,7 +11,12 @@ def _aux(timeout, *, reasoning_effort=True, **extra):
     reasoning_effort=False omits that key (MoA blocks configure depth per slot);
     ``extra`` keys are appended after the standard ones.
     """
-    d = {"provider": "auto", "model": "", "base_url": "", "api_key": "", "timeout": timeout, "extra_body": {}}
+    d = {
+        "provider": "auto", "model": "", "base_url": "", "api_key": "",
+        "timeout": timeout, "extra_body": {},
+        "service_tier": "",  # * OpenRouter/OpenAI-compatible service tier: flex | priority
+        "providers": [],  # * Ordered OpenRouter upstream provider IDs for this task
+    }
     if reasoning_effort:
         d["reasoning_effort"] = ""
     d.update(extra)
@@ -239,6 +244,19 @@ DEFAULT_CONFIG = {
         # Model name (any reasonable spelling) -> effort level; overrides agent.reasoning_effort
         # when the current model matches. Edit in config.yaml (no CLI support: dots in keys).
         "reasoning_overrides": {},
+
+        # Per-model service-tier overlay (exact API model id). Takes
+        # precedence over agent.service_tier; a session /fast pin still wins.
+        # Edit directly in config.yaml (no CLI support due to dots in keys).
+        "service_tier_overrides": {},
+
+        # Opt-in per-turn OpenRouter service-tier climb on slow TTFT.
+        # Off by default. Does not persist; resets at each user turn.
+        "service_tier_escalation": {
+            "enabled": False,
+            "ttft_threshold_seconds": 8.0,
+            "consecutive_slow_requests": 1,
+        },
         # Preserve assistant `reasoning_content` on history replay. Echo families (DeepSeek,
         # Kimi/Moonshot, Xiaomi MiMo) are auto-detected by provider name/base-URL host; custom
         # providers and OpenAI-compatible gateways proxying them are not. Set `reasoning_echo: true`
@@ -714,6 +732,8 @@ DEFAULT_CONFIG = {
             "api_key": "",
             "timeout": 30,
             "extra_body": {},
+            "service_tier": "",  # * OpenRouter/OpenAI-compatible service tier: flex | priority
+            "providers": [],  # * Ordered OpenRouter upstream provider IDs for this task
             "reasoning_effort": "",
             "language": "",
         },

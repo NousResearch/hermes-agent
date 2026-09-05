@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -408,6 +409,132 @@ _ROUTING_FILTER_DEFAULTS = (
 
 _NOUS_PROVIDERS = frozenset({"nous", "nous-portal", "nousresearch"})
 
+
+def _parent_provider_routing_snapshot(parent_agent) -> Optional[dict]:
+    """Return the parent's raw ``provider_routing`` dict, or None if unset."""
+    raw = getattr(parent_agent, "_provider_routing_config", None)
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    logger.warning(
+        "parent _provider_routing_config is %s, not a dict; treating as missing",
+        type(raw).__name__,
+    )
+    return None
+
+
+def _copy_provider_routing_snapshot(raw: dict) -> dict:
+    """Deep-copy the routing snapshot so nested overlay mutations stay local."""
+    return copy.deepcopy(raw)
+
+
+def _copy_provider_filter(value):
+    """Copy list filters so the child does not share the parent's list object."""
+    if isinstance(value, list):
+        return list(value)
+    return value
+
+
+def _canonical_delegation_provider(name) -> Optional[str]:
+    """Return a comparable provider id, or None when *name* is empty."""
+    raw = str(name or "").strip()
+    if not raw:
+        return None
+    lowered = raw.lower()
+    if lowered.startswith("custom:"):
+        suffix = raw.split(":", 1)[1].strip().lower()
+        return f"custom:{suffix}" if suffix else None
+    if lowered == "custom":
+        return "custom"
+    try:
+        from hermes_cli.models import normalize_provider
+
+        return normalize_provider(raw)
+    except Exception:
+        return lowered
+
+
+def _is_same_delegation_provider(override_provider, parent_provider) -> bool:
+    """True only when both sides are non-empty and canonicalize to the same id."""
+    left = _canonical_delegation_provider(override_provider)
+    right = _canonical_delegation_provider(parent_provider)
+    if not left or not right:
+        return False
+    if left == "custom" or right == "custom":
+        return False
+    return left == right
+
+
+def _is_genuine_provider_override(override_provider, parent_agent) -> bool:
+    """True when *override_provider* names a different provider than the parent."""
+    if not override_provider:
+        return False
+    return not _is_same_delegation_provider(
+        override_provider, getattr(parent_agent, "provider", None)
+    )
+
+
+def _stamp_child_provider_routing(child, snapshot: Optional[dict], model: str) -> None:
+    """Install the parent's routing snapshot and bind a fresh sticky pool."""
+    raw = _copy_provider_routing_snapshot(snapshot) if snapshot is not None else None
+    try:
+        child._provider_routing_config = raw
+    except Exception as exc:
+        logger.warning("Could not stamp child _provider_routing_config: %s", exc)
+    if raw is not None:
+        try:
+            child._config_managed_routing_tier = True
+        except Exception as exc:
+            logger.warning("Could not mark child routing as config-managed: %s", exc)
+    try:
+        from agent.sticky_provider_order import bind_sticky_order
+        from hermes_constants import resolve_provider_routing_for_model
+
+        bind_sticky_order(
+            child,
+            resolve_provider_routing_for_model(raw, model) if raw is not None else None,
+        )
+    except Exception as exc:
+        logger.warning("Could not bind sticky provider order on child: %s", exc)
+
+
+def _apply_child_model_routing(rt: Dict[str, Any], parent_agent, override_provider, effective_model):
+    """Re-resolve OpenRouter filters for the child's model; return (stamp, snapshot)."""
+    parent_routing_snapshot = _parent_provider_routing_snapshot(parent_agent)
+    stamp_child_routing = False
+    if _is_genuine_provider_override(override_provider, parent_agent):
+        for attr, default in _ROUTING_FILTER_DEFAULTS:
+            rt[attr] = default
+        rt["provider_data_collection"] = rt.get("provider_data_collection") or ""
+        return False, parent_routing_snapshot
+    from hermes_constants import provider_routing_constructor_kwargs
+
+    same_routing_model = (
+        str(effective_model or "").strip()
+        == str(getattr(parent_agent, "model", None) or "").strip()
+    )
+    if not same_routing_model:
+        if parent_routing_snapshot is not None:
+            routing_kwargs = provider_routing_constructor_kwargs(
+                parent_routing_snapshot, effective_model
+            )
+            rt["providers_allowed"] = _copy_provider_filter(routing_kwargs["providers_allowed"])
+            rt["providers_ignored"] = _copy_provider_filter(routing_kwargs["providers_ignored"])
+            rt["providers_order"] = _copy_provider_filter(routing_kwargs["providers_order"])
+            rt["provider_sort"] = routing_kwargs["provider_sort"]
+            rt["provider_require_parameters"] = routing_kwargs["provider_require_parameters"]
+            rt["provider_data_collection"] = routing_kwargs["provider_data_collection"] or ""
+        else:
+            for attr, default in _ROUTING_FILTER_DEFAULTS:
+                rt[attr] = default
+            rt["provider_data_collection"] = ""
+        stamp_child_routing = True
+    elif parent_routing_snapshot is not None:
+        stamp_child_routing = True
+    return stamp_child_routing, parent_routing_snapshot
+
+
 def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
@@ -487,12 +614,12 @@ def _resolve_child_runtime(
         "reasoning_config": child_reasoning,
         # Inherit the parent's fallback chain EXCEPT under a pinned provider: a mid-run 429/auth failure must not
         # silently reroute the quiet child onto the parent's fallbacks. Predictability > liveness for explicit pins.
-        "fallback_model": None if override_provider else (getattr(parent_agent, "_fallback_chain", None) or None),
+        "fallback_model": None if _is_genuine_provider_override(override_provider, parent_agent) else (getattr(parent_agent, "_fallback_chain", None) or None),
         "openrouter_min_coding_score": getattr(parent_agent, "openrouter_min_coding_score", None),
         # Routing filters reset to their defaults under a pinned provider (see _ROUTING_FILTER_DEFAULTS).
-        **{a: d if override_provider else getattr(parent_agent, a, d) for a, d in _ROUTING_FILTER_DEFAULTS},
+        **{a: d if _is_genuine_provider_override(override_provider, parent_agent) else getattr(parent_agent, a, d) for a, d in _ROUTING_FILTER_DEFAULTS},
     }
-    if not override_provider:
+    if not _is_genuine_provider_override(override_provider, parent_agent):
         kwargs["provider_data_collection"] = kwargs["provider_data_collection"] or ""
     child_max_tokens = override_max_tokens if override_max_tokens is not None else getattr(parent_agent, "max_tokens", None)
     if isinstance(child_max_tokens, int):

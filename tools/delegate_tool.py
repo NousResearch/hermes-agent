@@ -32,6 +32,8 @@ from tools.delegate_tool_config import (  # noqa: F401
     _get_max_spawn_depth, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
     _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
     _resolve_child_runtime, _resolve_delegation_credentials, _subagent_auto_approve, _subagent_auto_deny,
+    _apply_child_model_routing, _is_same_delegation_provider,
+    _parent_provider_routing_snapshot, _stamp_child_provider_routing,
 )
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
 from tools.delegate_tool_progress import (  # noqa: F401
@@ -164,6 +166,9 @@ def _build_child_agent(
         override_max_tokens=override_max_tokens, override_acp_command=override_acp_command,
         override_acp_args=override_acp_args,
     )
+    stamp_child_routing, parent_routing_snapshot = _apply_child_model_routing(
+        rt, parent_agent, override_provider, rt.get("model"),
+    )
     if override_request_overrides is not None:
         # honored whenever set, incl. the inherit branch where
         # _resolve_delegation_credentials already merged OVER the parent's
@@ -194,6 +199,8 @@ def _build_child_agent(
                     from hermes_state_registry import release_or_close
                     release_or_close(child_session_db)
             raise
+    if stamp_child_routing:
+        _stamp_child_provider_routing(child, parent_routing_snapshot, rt.get("model"))
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     if child_session_db is not None:
         child._owns_session_db = True  # released by the child's close(), never by the parent

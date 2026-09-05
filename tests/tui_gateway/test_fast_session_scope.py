@@ -19,10 +19,14 @@ Contract under test:
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import yaml
+
 import tui_gateway.server as server
+from hermes_constants import get_hermes_home
 
 FAST_OVERRIDES = {"service_tier": "priority"}
 
@@ -124,3 +128,161 @@ class TestConfigGetFastSessionScope:
         with patch.object(server, "_load_service_tier", return_value="priority"):
             resp = _get({"key": "fast"})
         assert resp["result"]["value"] == "fast"
+
+
+class TestFastSlashSyncsRequestOverrides:
+    def test_config_set_fast_then_slash_normal_drops_tier_keys(self) -> None:
+        from agent.chat_completion_helpers import _effective_request_overrides
+
+        agent = _agent()
+        session = {"session_key": "k1", "agent": agent}
+        with patch.dict(server._sessions, {"s1": session}, clear=False), \
+                patch.object(server, "_write_config_key"), \
+                patch.object(server, "_persist_live_session_runtime"), \
+                patch.object(server, "_emit"), \
+                patch.object(server, "_session_info", return_value={}):
+            _set({"key": "fast", "session_id": "s1", "value": "fast"})
+            assert _effective_request_overrides(agent).get("service_tier") == "priority"
+            server._mirror_slash_side_effects("s1", session, "/fast off")
+        wire = _effective_request_overrides(agent)
+        assert "service_tier" not in wire
+        assert "speed" not in wire
+
+
+def _reset_tui_cfg_cache() -> None:
+    server._cfg_cache = None
+    server._cfg_mtime = None
+    server._cfg_path = None
+
+
+def _write_service_tier_cfg(*, global_tier, overrides) -> None:
+    payload = {
+        "agent": {
+            "service_tier": global_tier,
+            "service_tier_overrides": overrides,
+        }
+    }
+    (get_hermes_home() / "config.yaml").write_text(
+        yaml.safe_dump(payload), encoding="utf-8"
+    )
+    _reset_tui_cfg_cache()
+
+
+class TestLazySessionHonorsPerModelTier:
+    """Pre-build (agent=None) /fast must use the session model overlay."""
+
+    def test_get_and_toggle_use_per_model_normal_not_global_priority(self) -> None:
+        model = "openai/gpt-5"
+        _write_service_tier_cfg(
+            global_tier="priority",
+            overrides={model: "normal"},
+        )
+        session = {
+            "session_key": "k-lazy-normal",
+            "agent": None,
+            "model_override": {"model": model, "provider": "openai"},
+        }
+        with patch.dict(server._sessions, {"s-lazy-n": session}, clear=False), \
+                patch.object(server, "_hermes_home", get_hermes_home()), \
+                patch.object(server, "_write_config_key") as write_key, \
+                patch(
+                    "hermes_cli.models.resolve_fast_mode_overrides",
+                    return_value=FAST_OVERRIDES,
+                ):
+            got = _get({"key": "fast", "session_id": "s-lazy-n"})
+            status = _set(
+                {"key": "fast", "session_id": "s-lazy-n", "value": "status"}
+            )
+            toggled = _set(
+                {"key": "fast", "session_id": "s-lazy-n", "value": "toggle"}
+            )
+        assert got["result"]["value"] == "normal"
+        assert status["result"]["value"] == "normal"
+        assert toggled["result"]["value"] == "fast"
+        assert session["create_service_tier_override"] == "priority"
+        write_key.assert_not_called()
+
+    def test_get_and_toggle_use_per_model_flex_when_global_empty(self) -> None:
+        model = "openai/gpt-5"
+        _write_service_tier_cfg(
+            global_tier="",
+            overrides={model: "flex"},
+        )
+        session = {
+            "session_key": "k-lazy-flex",
+            "agent": None,
+            "model_override": {"model": model, "provider": "openai"},
+        }
+        with patch.dict(server._sessions, {"s-lazy-f": session}, clear=False), \
+                patch.object(server, "_hermes_home", get_hermes_home()), \
+                patch.object(server, "_write_config_key") as write_key:
+            got = _get({"key": "fast", "session_id": "s-lazy-f"})
+            status = _set(
+                {"key": "fast", "session_id": "s-lazy-f", "value": "status"}
+            )
+            toggled = _set(
+                {"key": "fast", "session_id": "s-lazy-f", "value": "toggle"}
+            )
+        assert got["result"]["value"] == "flex"
+        assert status["result"]["value"] == "flex"
+        assert toggled["result"]["value"] == "normal"
+        assert session["create_service_tier_override"] == ""
+        write_key.assert_not_called()
+
+    def test_scalar_model_override_uses_per_model_overlay(self) -> None:
+        model = "openai/gpt-5"
+        _write_service_tier_cfg(
+            global_tier="priority",
+            overrides={model: "flex"},
+        )
+        session = {
+            "session_key": "k-scalar",
+            "agent": None,
+            "model_override": model,
+        }
+        with patch.dict(server._sessions, {"s-scalar": session}, clear=False), \
+                patch.object(server, "_hermes_home", get_hermes_home()), \
+                patch.object(server, "_write_config_key") as write_key:
+            got = _get({"key": "fast", "session_id": "s-scalar"})
+            status = _set(
+                {"key": "fast", "session_id": "s-scalar", "value": "status"}
+            )
+        assert got["result"]["value"] == "flex"
+        assert status["result"]["value"] == "flex"
+        write_key.assert_not_called()
+
+    def test_lazy_named_profile_reads_own_tier(self) -> None:
+        model = "openai/gpt-5"
+        launch = get_hermes_home()
+        _write_service_tier_cfg(
+            global_tier="priority",
+            overrides={},
+        )
+        other = Path(launch).parent / "named-profile-fast"
+        other.mkdir(parents=True, exist_ok=True)
+        (other / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "agent": {
+                        "service_tier": "",
+                        "service_tier_overrides": {model: "flex"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        session = {
+            "session_key": "k-named",
+            "agent": None,
+            "profile_home": str(other),
+            "model_override": model,
+        }
+        with patch.dict(server._sessions, {"s-named": session}, clear=False), \
+                patch.object(server, "_hermes_home", launch), \
+                patch.object(server, "_write_config_key"):
+            got = _get({"key": "fast", "session_id": "s-named"})
+            status = _set(
+                {"key": "fast", "session_id": "s-named", "value": "status"}
+            )
+        assert got["result"]["value"] == "flex"
+        assert status["result"]["value"] == "flex"

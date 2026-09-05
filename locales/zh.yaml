@@ -133,6 +133,7 @@ gateway:
     label_fast:            "FAST"
     label_normal:          "NORMAL"
     status_fast:           "fast"
+    status_flex:           "flex"
     status_normal:         "normal"
     picker_title:          "⚡ **优先处理**\\n\\n当前模式：`{mode}`\\n\\n请选择："
     choice_fast:           "fast — 开启优先处理"

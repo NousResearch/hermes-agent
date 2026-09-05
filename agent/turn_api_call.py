@@ -86,9 +86,32 @@ def perform_api_call(
                 sanitize_harmony_tokens=agent._is_codex_backend(),
             )
         if _use_streaming:
-            return agent._interruptible_streaming_api_call(
-                next_api_kwargs, on_first_delta=_stop_spinner
+            from agent.service_tier_escalation import (
+                begin_request_ttft,
+                end_request_ttft,
+                finish_request_ttft,
+                note_non_observation,
             )
+
+            obs = begin_request_ttft(agent)
+            try:
+                result = agent._interruptible_streaming_api_call(
+                    next_api_kwargs, on_first_delta=_stop_spinner
+                )
+                finish_request_ttft(
+                    agent,
+                    obs,
+                    interrupted=bool(getattr(agent, "_interrupt_requested", False)),
+                )
+                return result
+            except Exception:
+                note_non_observation(agent)
+                raise
+            finally:
+                end_request_ttft(agent, obs)
+        from agent.service_tier_escalation import note_non_observation
+
+        note_non_observation(agent)
         from agent import relay_llm
 
         return relay_llm.execute(

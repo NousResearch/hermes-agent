@@ -1715,9 +1715,77 @@ def _load_reasoning_config(model: str = "") -> dict | None:
 _SERVICE_TIER_ALIASES = {"fast": "priority", "priority": "priority", "on": "priority", "auto": "auto", "cold": "cold"}
 
 
-def _load_service_tier() -> str | None:
-    raw = str((_load_cfg().get("agent") or {}).get("service_tier", "") or "").strip().lower()
-    return _SERVICE_TIER_ALIASES.get(raw)
+def _load_service_tier(model: str = "") -> str | None:
+    """Per-model ``agent.service_tier_overrides`` wins over global ``agent.service_tier``.
+
+    ``auto`` / ``cold`` stay first-class global windows (main's fast-mode).
+    ``resolve_service_tier_for_model`` maps them; ``_auto_cold_tier_fallback``
+    is defensive if that parse returns None. An explicit per-model ``normal``
+    must not fall through to those globals.
+    """
+    from hermes_constants import resolve_service_tier_for_model
+
+    agent_cfg = (_load_cfg().get("agent") or {})
+    if not isinstance(agent_cfg, dict):
+        agent_cfg = {}
+    resolved = resolve_service_tier_for_model(agent_cfg, model)
+    if resolved is not None:
+        return resolved
+    return _auto_cold_tier_fallback(agent_cfg, model)
+
+
+def _auto_cold_tier_fallback(agent_cfg: dict, model: str = "") -> str | None:
+    """Recover ``auto`` / ``cold`` after ``resolve_service_tier_for_model`` returns None."""
+    overrides = agent_cfg.get("service_tier_overrides")
+    model_key = str(model or "")
+    if isinstance(overrides, dict) and model_key and model_key in overrides:
+        raw_override = str(overrides[model_key] or "").strip().lower()
+        return raw_override if raw_override in {"auto", "cold"} else None
+    raw = str(agent_cfg.get("service_tier", "") or "").strip().lower()
+    return _SERVICE_TIER_ALIASES.get(raw) if raw in {"auto", "cold"} else None
+
+
+def _session_model_for_service_tier(session) -> str:
+    """Model id ``_make_agent`` would use for this session's tier overlay."""
+    if session:
+        session_override = session.get("model_override")
+        if isinstance(session_override, str):
+            model = session_override.strip()
+            if model:
+                return model
+        elif isinstance(session_override, dict):
+            model = str(session_override.get("model") or "").strip()
+            if model:
+                return model
+    return _resolve_model()
+
+
+def _lazy_session_service_tier(session) -> str | None:
+    """Unpinned effective tier for a pre-build session."""
+    # Bound ``_session_profile_runtime_scope`` (server globals) — do not import the
+    # unbound copy from tui_gateway.model_switch (it cannot see set_hermes_home_override).
+    with _session_profile_runtime_scope(session or {}):
+        return _load_service_tier(_session_model_for_service_tier(session))
+
+
+def _fast_status_value(tier) -> str:
+    """Map a resolved service_tier to the ``config.get/set fast`` status label."""
+    if tier == "priority":
+        return "fast"
+    if tier == "flex":
+        return "flex"
+    if tier in {"auto", "cold"}:
+        return tier
+    return "normal"
+
+
+def _load_service_tier_escalation():
+    from hermes_constants import resolve_service_tier_escalation_config
+
+    agent_cfg = (_load_cfg().get("agent") or {})
+    if not isinstance(agent_cfg, dict):
+        agent_cfg = {}
+    return resolve_service_tier_escalation_config(agent_cfg)
 
 
 def _load_provider_routing() -> dict:
@@ -2267,6 +2335,7 @@ def _make_agent(
     if synthetic is not None:
         return synthetic
     from run_agent import AIAgent
+    from hermes_constants import apply_provider_routing_to_agent, provider_routing_constructor_kwargs
     # MCP discovery runs in a daemon thread (a dead server can't freeze the shell); the agent snapshots its tool
     # list once, so briefly wait for in-flight discovery. Dashboard /api/ws uses mcp_startup; TUI stdio uses entry.
     for _mod in ("hermes_cli.mcp_startup", "tui_gateway.entry"):
@@ -2286,21 +2355,23 @@ def _make_agent(
         verbose_logging=False,  # DEBUG agent logging; independent of tool_progress_mode
         reasoning_config=(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
-        service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
+        service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(model),
+        service_tier_escalation=_load_service_tier_escalation(),
         enabled_toolsets=_load_enabled_toolsets(platform),
-        # OpenRouter provider_routing prefs (gateway + CLI parity).
-        providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
-        provider_sort=_pr.get("sort"), provider_require_parameters=_pr.get("require_parameters", False),
-        provider_data_collection=_pr.get("data_collection"), platform=platform, session_id=session_id or key,
+        **provider_routing_constructor_kwargs(_pr, model),
+        platform=platform, session_id=session_id or key,
         session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
         **_agent_cbs(sid))
+    apply_provider_routing_to_agent(agent, _pr, model)
     if context_cwd_is_launch_artifact is None:
         with _sessions_lock:
             context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(_sessions.get(sid))
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
+    agent._config_managed_routing_tier = True
+    agent._service_tier_session_pinned = service_tier_override is not None
     return agent
 
 

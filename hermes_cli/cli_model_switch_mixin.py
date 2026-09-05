@@ -144,8 +144,8 @@ def _commit_model_switch(
     typed path additionally records the one-turn restore snapshot."""
     from cli import HermesCLI, _cprint
     old_model = cli.model
-    snapshot = cli._snapshot_model_runtime() if one_turn else None
-    if not cli._stage_and_swap_model(result, old_model):
+    snapshot = HermesCLI._snapshot_model_runtime(cli) if one_turn else None
+    if not HermesCLI._stage_and_swap_model(cli, result, old_model):
         return
     if not picker:
         cli._pending_one_turn_model_restore = snapshot
@@ -595,7 +595,46 @@ class CLIModelSwitchMixin:
                     f"  ⚠ Model switch to {result.new_model} failed ({exc}); "
                     f"staying on {old_model}.")
                 return False
+        from cli import HermesCLI
+        HermesCLI._sync_shell_routing_and_service_tier(self, result.new_model)
         return True
+
+    def _sync_shell_routing_and_service_tier(self, model: str) -> None:
+        """Keep CLI shell routing and service_tier aligned with *model*.
+
+        Background AIAgent construction reads these shell fields, and ``/fast status``
+        reads ``self.service_tier``. A session pin (``/fast``) is preserved; otherwise the
+        effective tier comes from the agent after ``switch_model``, or the per-model resolver.
+        """
+        from hermes_constants import (
+            resolve_provider_routing_for_model, resolve_service_tier_for_model,
+        )
+        raw = getattr(self, "_provider_routing_raw", None)
+        if not isinstance(raw, dict):
+            cfg = getattr(self, "config", None) or {}
+            raw = getattr(self, "_provider_routing", None) or cfg.get("provider_routing") or {}
+            self._provider_routing_raw = raw if isinstance(raw, dict) else {}
+        pr = resolve_provider_routing_for_model(
+            self._provider_routing_raw if isinstance(self._provider_routing_raw, dict) else {},
+            model,
+        )
+        self._provider_sort = pr.get("sort")
+        self._providers_only = pr.get("only")
+        self._providers_ignore = pr.get("ignore")
+        self._providers_order = pr.get("order")
+        self._provider_require_params = pr.get("require_parameters", False)
+        self._provider_data_collection = pr.get("data_collection")
+        agent = getattr(self, "agent", None)
+        if getattr(self, "_service_tier_session_pinned", False):
+            if agent is not None:
+                self.service_tier = getattr(agent, "service_tier", self.service_tier)
+            return
+        if agent is not None:
+            self.service_tier = getattr(agent, "service_tier", self.service_tier)
+            return
+        cfg = getattr(self, "config", None) or {}
+        agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+        self.service_tier = resolve_service_tier_for_model(agent_cfg, model)
 
     def _apply_model_switch_result(
         self, result, persist_global: bool, custom_providers=None) -> None:

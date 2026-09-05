@@ -497,7 +497,7 @@ class CLISessionMixin:
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
         from cli import (
-            CLI_CONFIG, _parse_reasoning_config, _parse_service_tier_config,
+            CLI_CONFIG, _parse_reasoning_config,
             _sync_process_session_id, datetime)
         old_session_id = self.session_id
         _boundary_snapshot = None
@@ -541,14 +541,51 @@ class CLISessionMixin:
         # Re-derive model/provider and service tier from config.yaml so a session-only switch never leaks
         # into the next session (#48055, #23131).
         self._pending_one_turn_model_restore = None
-        self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
+        self._service_tier_session_pinned = False
         _reset_model_to_config_default(self, silent)
+        from hermes_constants import (
+            apply_provider_routing_to_agent, resolve_provider_routing_for_model,
+            resolve_service_tier_escalation_config, resolve_service_tier_for_model,
+        )
+        _agent_cfg = CLI_CONFIG.get("agent") if isinstance(CLI_CONFIG.get("agent"), dict) else {}
+        _new_model = getattr(self, "model", "") or ""
+        self.service_tier = resolve_service_tier_for_model(_agent_cfg, _new_model)
+        self._service_tier_escalation_cfg = resolve_service_tier_escalation_config(_agent_cfg)
+        _pr_raw = getattr(self, "_provider_routing_raw", None)
+        if not isinstance(_pr_raw, dict):
+            _pr_raw = getattr(self, "_provider_routing", None) or CLI_CONFIG.get("provider_routing") or {}
+            self._provider_routing_raw = _pr_raw if isinstance(_pr_raw, dict) else {}
+        _pr = resolve_provider_routing_for_model(
+            self._provider_routing_raw if isinstance(self._provider_routing_raw, dict) else {},
+            _new_model,
+        )
+        self._provider_sort = _pr.get("sort")
+        self._providers_only = _pr.get("only")
+        self._providers_ignore = _pr.get("ignore")
+        self._providers_order = _pr.get("order")
+        self._provider_require_params = _pr.get("require_parameters", False)
+        self._provider_data_collection = _pr.get("data_collection")
         _sync_process_session_id(self.session_id)
 
         if self.agent:
             self.agent.session_id = self.session_id
             self.agent.session_start = self.session_start
             self.agent.reasoning_config = self.reasoning_config
+            self.agent.service_tier = self.service_tier
+            self.agent._service_tier_session_pinned = False
+            with contextlib.suppress(Exception):
+                from agent.agent_runtime_helpers import sync_request_overrides_service_tier
+                sync_request_overrides_service_tier(self.agent)
+            with contextlib.suppress(Exception):
+                from agent.service_tier_escalation import bind_service_tier_escalation
+                bind_service_tier_escalation(self.agent, self._service_tier_escalation_cfg)
+            apply_provider_routing_to_agent(
+                self.agent,
+                getattr(self, "_provider_routing_raw", None) or getattr(self, "_provider_routing", None),
+                _new_model,
+            )
+            if isinstance(_agent_cfg, dict):
+                self.agent._agent_config = _agent_cfg
             self.agent.reset_session_state()
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = 0

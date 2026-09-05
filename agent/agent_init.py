@@ -40,7 +40,7 @@ from agent.tool_guardrails import (
 from hermes_cli.config import cfg_get
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, parse_service_tier, resolve_provider_routing_for_model, strip_model_variant_suffix
 from utils import base_url_host_matches, is_truthy_value
 
 # Same logger name as run_agent so caplog/patches on "run_agent" see our records.
@@ -245,6 +245,7 @@ def _normalized_custom_base_url(value: Any) -> str:
 
 def _custom_provider_model_matches(agent_model: str, entry: Dict[str, Any]) -> bool:
     agent_model_norm = str(agent_model or "").strip().lower()
+    base_model_norm = strip_model_variant_suffix(agent_model_norm).lower()
     # Multi-model entries (`providers.<name>.models` mapping / legacy `models:` list):
     # matching ANY catalog entry counts, else a provider whose `model` differs from the
     # session model drops its extra_body (e.g. OpenAI service_tier) → wrong billing tier.
@@ -253,7 +254,15 @@ def _custom_provider_model_matches(agent_model: str, entry: Dict[str, Any]) -> b
     if catalog and agent_model_norm in catalog:
         return True
     provider_model = str(entry.get("model", "") or "").strip().lower()
-    return (not provider_model and not catalog) or provider_model == agent_model_norm
+    if not provider_model and not catalog:
+        return True
+    if provider_model == agent_model_norm:
+        return True
+    if base_model_norm != agent_model_norm:
+        if catalog and base_model_norm in catalog:
+            return True
+        return provider_model == base_model_norm
+    return False
 
 
 def _custom_provider_extra_body_for_agent(
@@ -2193,6 +2202,7 @@ def init_agent(
     event_callback: Optional[Callable[[str, dict], None]] = None,
     reaction_callback: Optional[Callable[[str], None]] = None, max_tokens: int = None,
     reasoning_config: Dict[str, Any] = None, service_tier: str = None,
+    service_tier_escalation: Dict[str, Any] = None,
     request_overrides: Dict[str, Any] = None, prefill_messages: List[Dict[str, Any]] = None,
     platform: str = None, user_id: str = None, user_id_alt: str = None, user_name: str = None,
     chat_id: str = None, chat_name: str = None, chat_type: str = None, thread_id: str = None,
@@ -2223,6 +2233,21 @@ def init_agent(
     _params = locals()
     for _name in _PASSTHROUGH_PARAMS:
         setattr(agent, _name, _params[_name])
+    agent.service_tier = parse_service_tier(service_tier)
+    # * Session /fast (or surface) pin; per-model overlay must not replace it.
+    agent._service_tier_session_pinned = False
+    # * Opt-in: fallback/restore may re-apply config routing/tier. Surfaces
+    #   that resolve from config.yaml set this True after construction.
+    #   Programmatic / SDK AIAgent() stays False (constructor values win).
+    agent._config_managed_routing_tier = False
+    from agent.service_tier_escalation import bind_service_tier_escalation
+
+    bind_service_tier_escalation(agent, service_tier_escalation)
+    # * Batch runner and gateway background tasks set this True so an
+    # accidentally enabled escalation config cannot climb the ladder.
+    agent._block_service_tier_escalation = False
+    agent._provider_routing_config = None
+    agent._agent_config = None
     for _name in _GATEWAY_IDENTITY_PARAMS:
         setattr(agent, f"_{_name}", _params[_name])
     # Shared iteration budget: parent creates, children inherit.
@@ -2285,6 +2310,31 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+    if isinstance(_agent_cfg, dict):
+        _agent_section = _agent_cfg.get("agent")
+        if isinstance(_agent_section, dict):
+            agent._agent_config = _agent_section
+        _pr_section = _agent_cfg.get("provider_routing")
+        if isinstance(_pr_section, dict):
+            agent._provider_routing_config = _pr_section
+
+    # * Opt-in sticky pin from provider_routing. Constructors that pass
+    # providers_order without apply_provider_routing_to_agent (cron,
+    # subagent, CLI background, batch) still get the feature. apply()
+    # rebinds on /model and fallback resync; same-order bind keeps
+    # active_index.
+    try:
+        from agent.sticky_provider_order import bind_sticky_order
+
+        bind_sticky_order(
+            agent,
+            resolve_provider_routing_for_model(
+                getattr(agent, "_provider_routing_config", None),
+                getattr(agent, "model", "") or "",
+            ),
+        )
+    except Exception:
+        pass
 
     _apply_display_config(agent, _agent_cfg, platform)
     _init_memory(agent, _agent_cfg, skip_memory, platform)

@@ -98,7 +98,13 @@ def _match_in_catalog(
 
     if query in set(pool):
         return _Match(exact=True)
-    auto = get_close_matches(query, pool, n=1, cutoff=0.9) if auto_correct else []
+    from hermes_cli.models import _requested_has_unknown_variant_suffix
+
+    auto = (
+        []
+        if (not auto_correct or _requested_has_unknown_variant_suffix(query))
+        else get_close_matches(query, pool, n=1, cutoff=0.9)
+    )
     if auto:
         return _Match(corrected=_show(auto[0]))
     suggestions = get_close_matches(suggest_query, pool, n=3, cutoff=suggest_cutoff)
@@ -451,8 +457,13 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
         from hermes_cli.providers import is_official_openai_host
 
         listing_authoritative = is_official_openai_host(req.base_url)
-    if not listing_authoritative and _m._model_in_provider_catalog(
-        (variant_base or req.lookup).lower(), _m._provider_keys(req.normalized)
+    if not listing_authoritative and (
+        _m._model_in_provider_catalog(
+            (variant_base or req.lookup).lower(), _m._provider_keys(req.normalized)
+        )
+        or _m._model_in_provider_catalog(
+            req.lookup.lower(), _m._provider_keys(req.normalized)
+        )
     ):
         return _accept_with_note(f"Note: `{req.requested}` was not found in the live /v1/models listing "
                                  "but exists in the curated catalog — accepted.")

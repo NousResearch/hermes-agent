@@ -44,6 +44,17 @@ from hermes_cli.fallback_config import get_fallback_chain
 # Per-session AIAgent cache bounds (agents are heavy); see _enforce_agent_cache_cap/_session_expiry_watcher.
 _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
+
+
+def _multiplex_profiles_active(runner) -> bool:
+    """Whether this runner is a profile multiplexer.
+
+    Uses ``is True`` so MagicMock ``config`` attributes in tests do not
+    look like multiplex mode and accidentally reload launch YAML.
+    """
+    return getattr(getattr(runner, "config", None), "multiplex_profiles", False) is True
+
+
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 # Telegram connect proves a real getUpdates round trip; must cover polling-start deadlines + readiness.
 _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT = 180.0
@@ -2798,6 +2809,15 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
         return model_cfg
     elif isinstance(model_cfg, dict):
         return model_cfg.get("default") or model_cfg.get("model") or ""
+    return ""
+
+
+def _resolve_gateway_model_provider(config: dict | None = None) -> str:
+    """Read ``model.provider`` from config without resolving credentials."""
+    cfg = config if config is not None else _load_gateway_config()
+    model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+    if isinstance(model_cfg, dict):
+        return str(model_cfg.get("provider") or "").strip()
     return ""
 
 

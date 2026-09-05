@@ -145,10 +145,16 @@ class GatewayAgentCacheMixin:
         state = self._peek_session_state(session_key)
         return state.conversation.model_override if state else None
 
-    def _rehydrate_session_model_override(self, session_key: str) -> None:
+    def _rehydrate_session_model_override(
+        self, session_key: str, *, resolve_credentials: bool = True,
+    ) -> None:
         """Lazily restore a persisted /model override after a gateway restart: non-secret parts
         (model/provider/base_url) are written through on /model and read back on first use; api_key
-        is never persisted and is re-resolved. No-op when an in-memory override or nothing exists."""
+        is never persisted and is re-resolved. No-op when an in-memory override or nothing exists.
+
+        ``resolve_credentials=False`` restores identity only (``/fast`` status must not
+        trigger provider credential lookup).
+        """
         from gateway.run import _resolve_runtime_agent_kwargs_for_provider
         store = getattr(self, "session_store", None)
         if self._session_model_override(session_key) is not None or store is None:
@@ -162,7 +168,7 @@ class GatewayAgentCacheMixin:
             return
         override: Dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
         provider = persisted.get("provider")
-        if provider:
+        if provider and resolve_credentials:
             # Re-resolve credentials for the persisted provider. On failure (e.g. credentials removed
             # since the switch) keep the credential-less override — _resolve_session_agent_runtime
             # falls back to env resolution and layers model/provider.

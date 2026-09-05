@@ -3202,7 +3202,14 @@ _SCHEMA_DEFINED_DICT_KEYS = frozenset({
     # MCP server template / dynamic auth dicts
     "sessions", "checkpoints",
     # Plugin enable/disable lists + index_url override; absent from DEFAULT_CONFIG.
-    "plugins"})
+    "plugins",
+    # OpenRouter provider pass-through dict — open-ended flat keys
+    # (sort, order, only, ignore, require_parameters, data_collection,
+    # plus future OpenRouter fields) and user-defined models.<model id>.
+    # Absent from DEFAULT_CONFIG (written only when used), so listed
+    # here for `hermes config set provider_routing ...` validation.
+    "provider_routing",
+})
 
 # Top-level keys that can be ANY user-supplied name.
 _DYNAMIC_TOP_LEVEL_KEYS = frozenset({

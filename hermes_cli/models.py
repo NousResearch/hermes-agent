@@ -996,6 +996,65 @@ def resolve_fast_mode_overrides(
     return {"speed": "fast"} if _is_anthropic_fast_model(model_id) else {"service_tier": "priority"}
 
 
+def _requested_has_unknown_variant_suffix(model_id: str) -> bool:
+    """True when *model_id* is ``vendor/model:suffix`` and not a routing variant.
+
+    Fuzzy auto-correction (``get_close_matches`` cutoff 0.9) silently
+    rewrites the request to the closest catalog id. A short typo such as
+    ``x-ai/grok-4.6:x`` is closer than 0.9 to ``x-ai/grok-4.6`` and would
+    be accepted as that base. Catalog SKUs (``:free``) match by exact
+    membership before this runs; remaining unknown suffixes are invalid.
+    """
+    from hermes_constants import strip_model_variant_suffix
+
+    raw = str(model_id or "").strip()
+    if strip_model_variant_suffix(raw) == raw:
+        return False
+    return _openrouter_variant_base(raw) is None
+
+
+def resolve_service_tier_overrides(
+    model_id: Optional[str],
+    service_tier: Optional[str],
+    *,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> dict[str, Any] | None:
+    """Return request overrides for a normalized service-tier preference.
+
+    OpenRouter accepts both ``flex`` and ``priority`` as top-level request
+    fields for every supported model. Elsewhere, ``priority`` retains the
+    existing model-aware /fast mapping: OpenAI models receive
+    ``service_tier`` while supported Anthropic models receive ``speed``.
+    """
+    from hermes_constants import parse_service_tier
+
+    tier = parse_service_tier(service_tier)
+    if tier == "flex":
+        return {"service_tier": "flex"}
+    if tier == "priority" and _is_openrouter_service_tier_route(
+        provider, base_url
+    ):
+        return {"service_tier": "priority"}
+    if tier == "priority":
+        return resolve_fast_mode_overrides(model_id, provider=provider, base_url=base_url)
+    return None
+
+
+def _is_openrouter_service_tier_route(
+    provider: Optional[str], base_url: Optional[str]
+) -> bool:
+    """Return whether a request route uses OpenRouter's service-tier API."""
+    provider_name = str(provider or "").strip()
+    if provider_name and normalize_provider(provider_name) == "openrouter":
+        return True
+    if not base_url:
+        return False
+    from utils import base_url_host_matches
+
+    return base_url_host_matches(base_url, "openrouter.ai")
+
+
 def _first_exchangeable_copilot_token(raw_tokens) -> str:
     """Exchange stored GitHub tokens in order; the first that validates AND exchanges wins (every
     entry is tried so a later valid token survives an earlier malformed one)."""

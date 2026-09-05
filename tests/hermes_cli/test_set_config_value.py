@@ -575,6 +575,49 @@ class TestValidateConfigKey:
         assert not is_known, "Sub-key typo under a known top-level key must still be flagged"
 
 
+class TestProviderRoutingSchema:
+    """provider_routing is a schema-known open dict, absent from DEFAULT_CONFIG.
+
+    OpenRouter pass-through: flat keys are provider-defined, and
+    models.<model id> is user-defined. The validator must accept the
+    section and any path below it so ``hermes config set provider_routing``
+    does not emit a false unknown-key warning.
+    """
+
+    @pytest.mark.parametrize("key", [
+        "provider_routing",
+        "provider_routing.sort",
+        "provider_routing.models.some-model.order",
+    ])
+    def test_known_open_paths_pass(self, key):
+        from hermes_cli.config import _validate_config_key
+        assert _validate_config_key(key) == (True, None)
+
+    def test_typo_top_level_is_unknown(self):
+        """A misspelled top-level key must still fail — the open-dict
+        acceptance is not a prefix wildcard."""
+        from hermes_cli.config import _validate_config_key
+        is_known, _suggestion = _validate_config_key("provider_routnig")
+        assert not is_known
+
+    def test_set_json_without_force_writes_and_stays_quiet(
+        self, _isolated_hermes_home, capsys
+    ):
+        """``hermes config set provider_routing '<json>'`` without --force
+        must write the mapping and must not warn that the key is unknown."""
+        import yaml
+
+        set_config_value(
+            "provider_routing",
+            '{"sort": "throughput", "order": ["anthropic"]}',
+        )
+
+        assert "not a recognized config key" not in capsys.readouterr().out
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["provider_routing"]["sort"] == "throughput"
+        assert saved["provider_routing"]["order"] == ["anthropic"]
+
+
 # ---------------------------------------------------------------------------
 # display.skin → touch the skin file (live re-affirm broadcast)
 # ---------------------------------------------------------------------------

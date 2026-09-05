@@ -170,11 +170,15 @@ def _cfg_get_fast(params):
     # global key (a pre-build session keeps its pin in create_service_tier_override).
     session = _sessions.get(params.get("session_id", "")) or {}
     agent = session.get("agent")
-    tier = (getattr(agent, "service_tier", None) if agent is not None
-            else session.get("create_service_tier_override"))
-    if tier is None:
+    if session and session.get("create_service_tier_override") is not None:
+        tier = session["create_service_tier_override"] or None
+    elif agent is not None:
+        tier = getattr(agent, "service_tier", None)
+    elif session:
+        tier = _lazy_session_service_tier(session)
+    else:
         tier = _load_service_tier()
-    return {"value": "fast" if tier == "priority" else "normal"}
+    return {"value": _fast_status_value(tier)}
 
 
 def _cfg_get_thinking_mode(params):

@@ -296,11 +296,43 @@ model:
 #   # Try providers in this order (overrides default load balancing)
 #   # order: ["anthropic", "google", "together"]
 #
+#   # Pin one slug from order across requests so prompt cache stays
+#   # warm. OpenRouter disables its own sticky routing when you set a
+#   # manual order; without this pin, providers can hop every request.
+#   # Opt-in (default: off). Rotates on timeout / overload / 5xx and
+#   # walks every slug before model fallback for those errors. 429 and
+#   # empty/invalid responses keep the pin and follow the normal
+#   # retry/fallback path (they do not walk the pool). Resets to the
+#   # first slug after ttl_seconds idle between requests. Live only
+#   # for api_mode chat_completions on native OpenRouter. Nous Portal
+#   # is excluded (Portal ignores or rejects the provider object).
+#   # Not live for @preset/ models, :nitro/:floor variants, custom:
+#   # endpoints, anthropic_messages, codex_responses, other api_modes,
+#   # or direct providers. Cron reads this order from config. Batch
+#   # does not load provider_routing from config — sticky applies
+#   # there only when providers_order is passed on the CLI.
+#   # sticky_order:
+#   #   enabled: true            # default: false
+#   #   ttl_seconds: 600         # default: 600
+#
 #   # Require providers to support all parameters in your request
 #   # require_parameters: true
 #
 #   # Data policy: "allow" (default) or "deny" to exclude providers that may store data
 #   # data_collection: "deny"
+#
+#   # Per-model routing overrides (optional). When the active model exactly
+#   # matches a key below, its keys win over the flat ones above — per key,
+#   # not as a whole block: keys you don't list fall through to the flat
+#   # defaults. Applies on every surface (CLI, messaging gateway, TUI and
+#   # Desktop) and is re-resolved on a mid-session /model switch.
+#   # NOTE: model ids contain dots, so dotted `config set` cannot reach them --
+#   # set the section as a whole JSON blob or edit YAML directly.
+#   models:
+#     google/gemini-3.7-flash:
+#       only: ["google-ai-studio"]   # hard-pin this model to one provider
+#     z-ai/glm-5.3-flash:
+#       order: ["z-ai/fp8"]          # soft preference, fallbacks allowed
 
 # =============================================================================
 # OpenRouter Response Caching (only applies when using OpenRouter)
@@ -1207,6 +1239,30 @@ agent:
   #   "claude-opus-4.6": "high"           # bare model name also works
   #   "deepseek/deepseek-v4-pro": "xhigh" # dots and dashes are interchangeable
   reasoning_overrides: {}
+
+  # Service tier (OpenRouter): "flex" (cheaper, slower) or "priority".
+  # Empty / "normal" / "default" = no tier field is sent on requests.
+  # A session /fast pin always wins over config values.
+  # service_tier: "flex"
+
+  # Per-model service tier overrides (optional dict, exact model id match).
+  # Precedence: session /fast pin > per-model override > service_tier above.
+  # NOTE: no `hermes config set` support for this key -- edit YAML directly.
+  # service_tier_overrides:
+  #   "google/gemini-3.7-flash": "flex"
+  service_tier_overrides: {}
+
+  # Opt-in per-turn service tier escalation (OpenRouter streaming requests).
+  # When time-to-first-token exceeds ttft_threshold_seconds on
+  # consecutive_slow_requests requests in a row within one turn, the agent
+  # climbs one tier (flex -> default -> priority) for the REST of that turn;
+  # the next user message starts again at the configured tier. Never applies
+  # while a session /fast pin is active, nor to cron jobs, batch runs,
+  # subagents, or background tasks.
+  # service_tier_escalation:
+  #   enabled: true                    # default: false (opt-in)
+  #   ttft_threshold_seconds: 8.0
+  #   consecutive_slow_requests: 1
 
   # Fast mode (OpenAI Priority Processing / xAI Grok 4.6 / Anthropic Fast Mode
   # on Opus 4.8+). Premium pricing; only sent to first-party endpoints.

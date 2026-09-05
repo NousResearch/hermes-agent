@@ -958,8 +958,10 @@ def _(rid, params: dict) -> dict:
 
     def body():
         from run_agent import AIAgent
-        result = AIAgent(**_background_agent_kwargs(session["agent"], task_id)).run_conversation(
-            user_message=text, task_id=task_id)
+        bg_agent = AIAgent(**_background_agent_kwargs(session["agent"], task_id))
+        bg_agent._config_managed_routing_tier = True
+        bg_agent._block_service_tier_escalation = True
+        result = bg_agent.run_conversation(user_message=text, task_id=task_id)
         return _final_response_text(result)
 
     return _spawn_side_agent(rid, session, task_id, parent, "background.complete", body)
@@ -1054,9 +1056,12 @@ def _(rid, params: dict) -> dict:
         result = AIAgent(
             **_ephemeral_preview_agent_kwargs(session["agent"], task_id),
             **_preview_restart_callbacks(parent, task_id),
-        ).run_conversation(
+        )
+        result._config_managed_routing_tier = True
+        result._block_service_tier_escalation = True
+        conv = result.run_conversation(
             user_message=prompt, task_id=task_id, conversation_history=parent_history or None)
-        return _final_response_text(result)
+        return _final_response_text(conv)
 
     def cleanup():
         with contextlib.suppress(Exception):

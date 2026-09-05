@@ -40,6 +40,10 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+# Sentinel: omitted service_tier falls back to the launch snapshot on the runner.
+# Explicit None is a session pin to normal and must not reread self._service_tier.
+_TURN_SERVICE_TIER_FROM_RUNNER = object()
+
 
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
@@ -156,11 +160,129 @@ class GatewayTurnMixin:
 
         return model, runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_session_effective_model(
+        self,
+        *,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
+        user_config: Optional[dict] = None,
+        runtime_model: str = "",
+        fallback_provider: str = "",
+        persist_last_resolved: bool = False,
+    ) -> str:
+        """Resolve the model the next agent turn would use (identity only, no credentials)."""
+        from gateway.run import (
+            _get_channel_override, _resolve_gateway_model,
+        )
+        from hermes_cli.model_switch import resolve_effective_model
+
+        resolved_session_key = session_key
+        if not resolved_session_key and source is not None:
+            try:
+                resolved_session_key = self._session_key_for_source(source)
+            except Exception:
+                resolved_session_key = None
+
+        override = None
+        if resolved_session_key:
+            self._rehydrate_session_model_override(
+                resolved_session_key, resolve_credentials=False,
+            )
+            override_state = self._peek_session_state(resolved_session_key)
+            override = (
+                override_state.conversation.model_override if override_state else None
+            )
+
+        channel = None
+        cfg = getattr(self, "config", None)
+        if cfg and source is not None:
+            chat_id = str(source.chat_id) if source.chat_id else ""
+            thread_id = (
+                str(source.thread_id) if getattr(source, "thread_id", None) else None
+            )
+            parent_id = (
+                str(source.parent_chat_id)
+                if getattr(source, "parent_chat_id", None)
+                else None
+            )
+            channel = _get_channel_override(
+                cfg, source.platform, chat_id, thread_id=thread_id, parent_id=parent_id,
+            )
+
+        model = resolve_effective_model(
+            override, channel, runtime_model or _resolve_gateway_model(user_config),
+        )
+        return self._complete_session_model_identity(
+            model, channel=channel, user_config=user_config,
+            fallback_provider=fallback_provider, session_key=resolved_session_key,
+            persist_last_resolved=persist_last_resolved,
+        )
+
+    def _complete_session_model_identity(
+        self,
+        model: str,
+        *,
+        channel=None,
+        user_config: Optional[dict] = None,
+        fallback_provider: str = "",
+        session_key: Optional[str] = None,
+        persist_last_resolved: bool = False,
+    ) -> str:
+        """Fill empty model identity from provider catalog, then last-known-good."""
+        from gateway.run import _resolve_gateway_model_provider
+
+        model = str(model or "").strip()
+        if not model:
+            ch_provider = ""
+            if channel is not None:
+                ch_provider = str(getattr(channel, "provider", None) or "").strip()
+            provider = (
+                ch_provider
+                or str(fallback_provider or "").strip()
+                or _resolve_gateway_model_provider(user_config)
+            )
+            if provider:
+                with suppress(Exception):
+                    from hermes_cli.models import get_default_model_for_provider
+                    model = get_default_model_for_provider(provider) or ""
+                    if model:
+                        logger.info(
+                            "No model configured — defaulting to %s for provider %s",
+                            model, provider,
+                        )
+        if not model:
+            _lr_state = self._peek_session_state(session_key) if session_key else None
+            _lr_star = self._peek_session_state("*")
+            _recovered = (
+                (_lr_state.conversation.last_resolved_model if _lr_state else "")
+                or (_lr_star.conversation.last_resolved_model if _lr_star else "")
+            )
+            if _recovered:
+                if persist_last_resolved:
+                    logger.warning(
+                        "Empty model resolved for session=%s — recovering "
+                        "last-known-good model %s (config read likely returned "
+                        "empty; see #35314)", session_key or "", _recovered,
+                    )
+                model = _recovered
+        elif persist_last_resolved:
+            if session_key:
+                self._session_state(session_key).conversation.last_resolved_model = model
+            self._session_state("*").conversation.last_resolved_model = model
+        return model
+
+    def _resolve_turn_agent_config(
+        self, user_message: str, model: str, runtime_kwargs: dict,
+        service_tier=_TURN_SERVICE_TIER_FROM_RUNNER,
+    ) -> dict:
         """Effective model/runtime config for one turn. With `/fast` priority on, fast-mode
-        ``request_overrides`` are deep-merged OVER the per-provider ones so both reach the model."""
+        ``request_overrides`` are deep-merged OVER the per-provider ones so both reach the model.
+
+        *service_tier* is the already-resolved session value. When omitted, fall back to
+        ``self._service_tier`` for tests and slash handlers that still set the launch snapshot —
+        production turn paths pass a local so concurrent sessions cannot reread a shared field.
+        """
         from gateway.run import _deep_merge_request_overrides
-        from hermes_cli.models import resolve_fast_mode_overrides
         # Tests bind this method onto bare namespaces, so no class-level tables here.
         runtime = {
             k: runtime_kwargs.get(k) for k in (
@@ -179,13 +301,17 @@ class GatewayTurnMixin:
                 runtime["api_mode"], runtime["command"], tuple(runtime["args"]),
             ),
         }
-        if getattr(self, "_service_tier", None) != "priority":
+        if service_tier is _TURN_SERVICE_TIER_FROM_RUNNER:
+            service_tier = getattr(self, "_service_tier", None)
+        if service_tier not in {"priority", "flex"}:
             # None / auto / cold: the bounded window is applied per request by agent.fast_mode.
             route["request_overrides"] = base_request_overrides
             return route
         try:
-            overrides = resolve_fast_mode_overrides(
-                route["model"], provider=runtime["provider"], base_url=runtime["base_url"],
+            from hermes_cli.models import resolve_service_tier_overrides
+            overrides = resolve_service_tier_overrides(
+                route["model"], service_tier,
+                provider=runtime["provider"], base_url=runtime["base_url"],
             )
         except Exception:
             overrides = None
@@ -2013,8 +2139,8 @@ class GatewayTurnMixin:
 
         Under multiplexing config/skills/memory resolve to the source profile's home AND credentials
         come from its secret scope (never process-global ``os.environ``)."""
-        from gateway.run import _profile_runtime_scope
-        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+        from gateway.run import _multiplex_profiles_active, _profile_runtime_scope
+        if _multiplex_profiles_active(self):
             return _profile_runtime_scope(self._resolve_profile_home_for_source(source))
         return nullcontext()
 
@@ -2095,6 +2221,7 @@ class GatewayTurnMixin:
             _checkpoint_agent_kwargs, _current_max_iterations, _load_gateway_config,
             _platform_config_key,
         )
+        from hermes_constants import provider_routing_constructor_kwargs
         from run_agent import AIAgent
         media_urls = media_urls or []
         media_types = media_types or []
@@ -2117,12 +2244,18 @@ class GatewayTurnMixin:
 
             platform_key = _platform_config_key(source.platform)
             enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
+            from gateway.run import _multiplex_profiles_active
             pr = self._provider_routing
+            if _multiplex_profiles_active(self):
+                pr = self._load_provider_routing()
             max_iterations = _current_max_iterations()
             reasoning_config = self._resolve_session_reasoning_config(source=source, model=model)
             self._reasoning_config = reasoning_config
-            self._service_tier = self._resolve_session_service_tier(source=source)
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            service_tier = self._resolve_session_service_tier(source=source, model=model)
+            self._service_tier = service_tier
+            turn_route = self._resolve_turn_agent_config(
+                prompt, model, runtime_kwargs, service_tier=service_tier,
+            )
 
             # Enrich the prompt with image descriptions (same as the main flow).
             enriched_prompt = prompt
@@ -2148,13 +2281,9 @@ class GatewayTurnMixin:
                     disabled_toolsets=disabled_toolsets,
                     reasoning_config=reasoning_config,
                     service_tier=self._service_tier,
+                    service_tier_escalation=self._load_service_tier_escalation(),
                     request_overrides=turn_route.get("request_overrides"),
-                    providers_allowed=pr.get("only"),
-                    providers_ignored=pr.get("ignore"),
-                    providers_order=pr.get("order"),
-                    provider_sort=pr.get("sort"),
-                    provider_require_parameters=pr.get("require_parameters", False),
-                    provider_data_collection=pr.get("data_collection"),
+                    **provider_routing_constructor_kwargs(pr, turn_route["model"]),
                     session_id=task_id,
                     platform=platform_key,
                     **{k: getattr(source, k) for k in (
@@ -2165,6 +2294,8 @@ class GatewayTurnMixin:
                     # See #60955.
                     fallback_model=self._refresh_fallback_model(),
                 )
+                agent._config_managed_routing_tier = True
+                agent._block_service_tier_escalation = True
                 try:
                     return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)
                 finally:

@@ -60,6 +60,13 @@ def test_make_agent_passes_resolved_provider():
         assert call_kwargs.kwargs["api_mode"] == "anthropic_messages"
 
 
+def test_load_service_tier_accepts_flex():
+    import tui_gateway.server as server
+
+    with patch.object(server, "_load_cfg", return_value={"agent": {"service_tier": "flex"}}):
+        assert server._load_service_tier() == "flex"
+
+
 def test_probe_config_health_flags_null_sections():
     """Bare YAML keys (`agent:` with no value) parse as None and silently
     drop nested settings; probe must surface them so users can fix."""

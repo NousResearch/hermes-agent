@@ -386,7 +386,80 @@ def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
         ("data_collection", agent.provider_data_collection)):
         if value:
             preferences[key] = value
-    return preferences
+    try:
+        from agent.sticky_provider_order import (
+            apply_sticky_order_to_preferences,
+            maybe_warn_nitro_floor_order,
+        )
+
+        preferences = apply_sticky_order_to_preferences(agent, preferences)
+        maybe_warn_nitro_floor_order(agent, preferences)
+        return preferences
+    except Exception:
+        return preferences
+
+
+def _effective_request_overrides(agent) -> Dict[str, Any]:
+    """Return request overrides with the agent's service tier applied.
+
+    Baseline order: ``effective_request_overrides`` (auto/cold fast windows)
+    then explicit ``service_tier`` / ``speed`` from that result win over
+    ``agent.service_tier`` mapped through ``resolve_service_tier_overrides``.
+    Per-turn TTFT escalation overlays last and may replace or omit
+    ``service_tier`` for this request; it never mutates the canonical
+    ``agent.request_overrides`` / ``agent.service_tier`` baseline. While an
+    outer-retry of the same logical request is in flight, the overlay uses
+    the pre-attempt snapshot rather than a not-yet-accepted climb.
+    """
+    overrides = effective_request_overrides(agent)
+    if "service_tier" not in overrides and "speed" not in overrides:
+        try:
+            from hermes_cli.models import resolve_service_tier_overrides
+
+            tier_overrides = resolve_service_tier_overrides(
+                getattr(agent, "model", None),
+                getattr(agent, "service_tier", None),
+                provider=getattr(agent, "provider", None),
+                base_url=getattr(agent, "base_url", None),
+            )
+        except Exception:
+            tier_overrides = None
+        if tier_overrides:
+            overrides.update(tier_overrides)
+    try:
+        from agent.service_tier_escalation import apply_escalation_to_overrides
+
+        return apply_escalation_to_overrides(agent, overrides)
+    except Exception:
+        return overrides
+
+
+def _apply_effective_overrides_to_summary_kwargs(agent, summary_kwargs: dict) -> None:
+    """Copy main-loop request overrides onto the iteration-limit summary call.
+
+    There is no separate ``auxiliary.summary`` tier. The summary is still
+    part of the same turn, so it must carry the effective
+    ``service_tier`` (including a TTFT climb) the conversation loop uses.
+
+    Chat-completions only. ``anthropic_messages`` does not put
+    ``service_tier`` on the wire (main loop maps overrides to
+    ``fast_mode`` only); its summary ``_ant_kw`` is built the same way.
+    """
+    try:
+        overrides = _effective_request_overrides(agent)
+    except Exception:
+        return
+    if not overrides:
+        return
+    extra_override = overrides.get("extra_body")
+    if isinstance(extra_override, dict):
+        merged = dict(summary_kwargs.get("extra_body") or {})
+        merged.update(extra_override)
+        if merged:
+            summary_kwargs["extra_body"] = merged
+    for key, value in overrides.items():
+        if key != "extra_body":
+            summary_kwargs[key] = value
 
 
 def _prompt_cache_scope_for_agent(agent) -> "str | None":
@@ -1548,7 +1621,7 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
         tools_for_api = agent.tools
     # The one place request_overrides are consumed: static /fast values are already pinned
     # in agent.request_overrides; auto/cold windows layer the fast override per request.
-    request_overrides = effective_request_overrides(agent)
+    request_overrides = _effective_request_overrides(agent)
     if agent.api_mode == "anthropic_messages":
         return _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides)
     if agent.api_mode == "bedrock_converse":
@@ -2089,6 +2162,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         _update_fallback_context_compressor(agent)
         _reresolve_fallback_reasoning_config(agent)
         _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
+        try:
+            from agent.agent_runtime_helpers import resync_per_model_routing_and_tier
+
+            resync_per_model_routing_and_tier(agent)
+        except Exception:
+            logger.debug(
+                "Fallback %s: per-model routing/tier resync failed",
+                agent.model,
+                exc_info=True,
+            )
         rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
         _buffer_fallback_notice(agent, (
@@ -2175,6 +2258,13 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
 
 def _managed_summary_call(agent, api_request_id: str, request, callback, *, retry_count: int):
     from agent import relay_llm
+
+    try:
+        from agent.sticky_provider_order import note_sticky_attempt
+
+        note_sticky_attempt(agent)
+    except Exception:
+        pass
     return relay_llm.execute_current(
         request, callback,
         name=str(getattr(agent, "provider", "") or "provider"), model_name=str(getattr(agent, "model", "") or ""),
@@ -2213,6 +2303,11 @@ def _iteration_summary_chat_kwargs(agent, api_messages: list) -> dict:
         summary_kwargs["reasoning_effort"] = lm_reasoning_effort
 
     # Merge the profile's canonical body even when routing is unset (e.g. required Portal tags).
+    # * Summary is its own logical request: apply idle TTL (and reset the per-request
+    # rotation budget) before prefs rebuild.
+    with contextlib.suppress(Exception):
+        from agent.sticky_provider_order import begin_sticky_logical_request
+        begin_sticky_logical_request(agent)
     provider_preferences = _provider_preferences_for_agent(agent)
     profile_extra_body = {}
     with contextlib.suppress(Exception):
@@ -2239,6 +2334,7 @@ def _iteration_summary_chat_kwargs(agent, api_messages: list) -> dict:
                 extra_body["plugins"] = [{"id": "pareto-router", "min_coding_score": _ps}]
     if extra_body:
         summary_kwargs["extra_body"] = extra_body
+    _apply_effective_overrides_to_summary_kwargs(agent, summary_kwargs)
     return summary_kwargs
 
 
@@ -2321,6 +2417,17 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
     except Exception as e:
         logger.warning("Failed to get summary response: %s", e)
+        # * Rotate the pin on timeout/overloaded/server_error so the next request
+        # leaves the unhealthy slug. rate_limit/empty/invalid keep the pin.
+        with contextlib.suppress(Exception):
+            from agent.error_classifier import classify_api_error
+            from agent.sticky_provider_order import rotate_sticky_on_classified_error
+            classified = classify_api_error(
+                e,
+                provider=str(getattr(agent, "provider", "") or ""),
+                model=str(getattr(agent, "model", "") or ""),
+            )
+            rotate_sticky_on_classified_error(agent, classified.reason)
         final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
     finally:
         from agent import relay_llm
@@ -2771,6 +2878,12 @@ class _StreamingCall:
         )
 
     def _fire_first_delta(self):
+        try:
+            from agent.service_tier_escalation import mark_ttft_first_delta
+
+            mark_ttft_first_delta(self.agent)
+        except Exception:
+            pass
         if not self.first_delta_fired["done"] and self.on_first_delta:
             self.first_delta_fired["done"] = True
             self._quiet(self.on_first_delta)
@@ -2869,6 +2982,12 @@ class _StreamingCall:
             self.agent._create_request_openai_client(reason="chat_completion_stream_request", api_kwargs=stream_kwargs))
         self.last_chunk_time["t"] = time.time()
         self.agent._touch_activity("waiting for provider response (streaming)")
+        try:
+            from agent.service_tier_escalation import mark_ttft_send
+
+            mark_ttft_send(self.agent)
+        except Exception:
+            pass
         return request_client.chat.completions.create(**stream_kwargs)
 
     def _chat_stream_created(self, raw_stream: Any) -> None:
@@ -3008,6 +3127,12 @@ class _StreamingCall:
                 _flush_pending_stream_text()
                 for tc_delta in delta_tool_calls:
                     name = tool_calls.feed(tc_delta)
+                    try:
+                        from agent.service_tier_escalation import mark_ttft_first_delta
+
+                        mark_ttft_first_delta(self.agent)
+                    except Exception:
+                        pass
                     if name is not None:
                         self._emit_tool_started(name)
                         # Lets the stub-builder warn if streaming dies before the args

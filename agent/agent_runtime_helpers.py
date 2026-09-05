@@ -1188,6 +1188,13 @@ def restore_primary_runtime(agent) -> bool:
                     f"✅ Primary model restored: {agent.model} via {agent.provider}; "
                     f"fallback {previous_model} via {previous_provider} is no longer active."
                 )
+        try:
+            resync_per_model_routing_and_tier(agent)
+        except Exception:
+            logger.debug(
+                "restore_primary_runtime: per-model routing/tier resync failed",
+                exc_info=True,
+            )
         return True
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)
@@ -2140,12 +2147,31 @@ def switch_model(
     try:
         from hermes_constants import resolve_reasoning_config
         from hermes_cli.config import load_config as _sm_load_config
-        agent.reasoning_config = resolve_reasoning_config(_sm_load_config() or {}, agent.model)
+        _reasoning_cfg = _sm_load_config() or {}
+        agent.reasoning_config = resolve_reasoning_config(_reasoning_cfg, agent.model)
         logger.info(
             "switch_model: reasoning_config resolved for %s: %s", agent.model, agent.reasoning_config
         )
+        if not isinstance(getattr(agent, "_provider_routing_config", None), dict):
+            _raw_pr = _reasoning_cfg.get("provider_routing") or {}
+            if isinstance(_raw_pr, dict):
+                agent._provider_routing_config = _raw_pr
+        if not isinstance(getattr(agent, "_agent_config", None), dict):
+            _agent_cfg = _reasoning_cfg.get("agent")
+            if isinstance(_agent_cfg, dict):
+                agent._agent_config = _agent_cfg
     except Exception as _reasoning_err:
         logger.debug("switch_model: could not re-resolve reasoning_config: %s", _reasoning_err)
+    try:
+        resync_per_model_routing_and_tier(agent)
+    except Exception:
+        logger.debug("switch_model: per-model routing/tier resync failed", exc_info=True)
+    try:
+        from agent.service_tier_escalation import reset_escalation_for_model_switch
+
+        reset_escalation_for_model_switch(agent)
+    except Exception:
+        logger.debug("switch_model: service_tier_escalation reset failed", exc_info=True)
     # Invalidate the cached system prompt so it rebuilds next turn.
     agent._cached_system_prompt = None
     # Publish the destination capability map only after every runtime setup above has succeeded.
@@ -2162,6 +2188,108 @@ def switch_model(
         old_model, old_provider, new_model, new_provider,
     )
     _persist_switch_billing_route(agent)
+
+
+def sync_request_overrides_service_tier(agent) -> dict:
+    """Align ``request_overrides`` tier keys with the agent's effective tier.
+
+    Rewrites only ``service_tier`` / ``speed`` to the model-aware wire form
+    from ``resolve_service_tier_overrides``. When effective tier is ``None``,
+    both keys are removed. Every other override key is left untouched.
+    Does not mutate escalation state; per-request overlay still happens in
+    ``_effective_request_overrides``.
+    """
+    raw = getattr(agent, "request_overrides", None)
+    current = dict(raw) if isinstance(raw, dict) else {}
+    current.pop("service_tier", None)
+    current.pop("speed", None)
+    try:
+        from hermes_cli.models import resolve_service_tier_overrides
+
+        mapped = resolve_service_tier_overrides(
+            getattr(agent, "model", None),
+            getattr(agent, "service_tier", None),
+            provider=getattr(agent, "provider", None),
+            base_url=getattr(agent, "base_url", None),
+        )
+    except Exception:
+        mapped = None
+    if mapped:
+        current.update(mapped)
+    try:
+        agent.request_overrides = current
+    except Exception:
+        pass
+    return current
+
+
+def resync_per_model_routing_and_tier(agent) -> None:
+    """Re-apply provider routing and effective tier for the live ``agent.model``.
+
+    Used by automatic fallback and primary restore. Does not call
+    ``switch_model`` and does not reset TTFT escalation. Session-pinned
+    ``agent.service_tier`` is kept; only the wire form (``service_tier`` vs
+    ``speed``) is rewritten for the active provider.
+
+    No-op unless the agent opted in via ``_config_managed_routing_tier``.
+    Programmatic ``AIAgent(...)`` callers keep constructor routing/tier.
+    """
+    # * Explicit True only — MagicMock / missing attr must not resync
+    #   (would clobber constructor overrides on embedded / SDK agents).
+    if getattr(agent, "_config_managed_routing_tier", False) is not True:
+        return
+    from hermes_constants import (
+        apply_provider_routing_to_agent,
+        resolve_service_tier_for_model,
+    )
+
+    raw_pr = getattr(agent, "_provider_routing_config", None)
+    agent_cfg = getattr(agent, "_agent_config", None)
+    loaded_cfg = None
+    # * Prefer the construction-time snapshot. Multiplex inbound turns
+    #   build AIAgent inside _profile_runtime_scope, so _agent_config is
+    #   already that profile. load_config() here is last-resort and uses
+    #   the currently scoped HERMES_HOME — wrong if the profile scope
+    #   already ended (do not rely on it for multiplex).
+    if not isinstance(raw_pr, dict) or not isinstance(agent_cfg, dict):
+        try:
+            from hermes_cli.config import load_config as _resync_load_config
+
+            loaded_cfg = _resync_load_config() or {}
+        except Exception:
+            loaded_cfg = {}
+        if not isinstance(raw_pr, dict):
+            raw_pr = loaded_cfg.get("provider_routing") or {}
+        if not isinstance(agent_cfg, dict):
+            loaded_agent = loaded_cfg.get("agent")
+            agent_cfg = loaded_agent if isinstance(loaded_agent, dict) else {}
+            try:
+                agent._agent_config = agent_cfg
+            except Exception:
+                pass
+    if not isinstance(raw_pr, dict):
+        raw_pr = {}
+    if not isinstance(agent_cfg, dict):
+        agent_cfg = {}
+
+    model_id = str(getattr(agent, "model", None) or "")
+    apply_provider_routing_to_agent(agent, raw_pr, model_id)
+    # * Only an explicit True pin is a session /fast lock. MagicMock and
+    #   missing attrs must not freeze the primary overlay onto a fallback.
+    if getattr(agent, "_service_tier_session_pinned", False) is not True:
+        agent.service_tier = resolve_service_tier_for_model(agent_cfg, model_id)
+    sync_request_overrides_service_tier(agent)
+    # * Rebase the TTFT ladder on the live model's effective tier after
+    #   service_tier is settled. Preserves climbed rungs / streak.
+    try:
+        from agent.service_tier_escalation import rebase_escalation_runtime
+
+        rebase_escalation_runtime(agent, getattr(agent, "service_tier", None))
+    except Exception:
+        logger.debug(
+            "resync_per_model_routing_and_tier: escalation rebase failed",
+            exc_info=True,
+        )
 
 
 def _pre_tool_block_message(agent, function_name, function_args, effective_task_id, tool_call_id, middleware_trace):

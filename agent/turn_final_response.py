@@ -98,6 +98,8 @@ def finish_text_response(
 
     agent._empty_content_retries = 0
     agent._thinking_prefill_retries = 0
+    from agent.conversation_loop import _try_accept_logical_request
+    _try_accept_logical_request(agent)
     # Surface the one-shot fallback switch notice before dropping the retry buffer so a
     # provider/model switch stays visible on success.
     agent._emit_pending_fallback_notice()

@@ -38,6 +38,12 @@ class TestModelMatches:
         e = _entry(models={"GPT-5.6-Terra": {}})
         assert _custom_provider_model_matches("gpt-5.6-terra", e)
 
+    def test_catalog_base_slug_matches_model_variant(self):
+        e = _entry(models={"deepseek/deepseek-v4-flash-0731": {}})
+        assert _custom_provider_model_matches(
+            "deepseek/deepseek-v4-flash-0731:nitro", e
+        )
+
 
 class TestExtraBodyResolution:
     def test_multi_model_provider_yields_extra_body(self):

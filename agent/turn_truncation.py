@@ -374,10 +374,11 @@ def continue_codex_incomplete(
     checkpoint) and, when a bare retry would be byte-identical, a user-role nudge — only
     after an assistant row, to preserve role alternation. Returns ``None`` to continue
     the turn loop, or the terminal ``partial`` result once retries are exhausted."""
-    from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
+    from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE, _try_accept_logical_request
 
     agent._codex_incomplete_retries += 1
     n = agent._codex_incomplete_retries
+    _codex_history_mutated = False
 
     interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
     interim_has_content = bool((interim_msg.get("content") or "").strip())
@@ -417,6 +418,7 @@ def continue_codex_incomplete(
         else:
             append_message(messages, interim_msg)
             agent._emit_interim_assistant_message(interim_msg)
+            _codex_history_mutated = True
 
     if n < 3:
         # If the interim has nothing the Responses converter will replay, a bare retry is
@@ -432,6 +434,7 @@ def continue_codex_incomplete(
                 # Alternation guard: the nudge may only follow an assistant row.
                 if not _already_nudged and _last_msg.get("role") == "assistant":
                     append_message(messages, {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE})
+                    _codex_history_mutated = True
         if not agent.quiet_mode:
             agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({n}/3)")
         # Spinner/heartbeat notice: these retries can take minutes and otherwise look
@@ -448,6 +451,8 @@ def continue_codex_incomplete(
             f"↻ model returned reasoning with no final answer — asking it to continue ({n}/3)"
         )
         agent._session_messages = messages
+        if _codex_history_mutated:
+            _try_accept_logical_request(agent)
         return None
 
     agent._codex_incomplete_retries = 0

@@ -4,6 +4,7 @@ Import-safe, stdlib-only — importable from anywhere without circular-import ri
 """
 
 import contextlib
+import math
 import os
 import re
 import shutil
@@ -11,6 +12,7 @@ import stat
 import sys
 from contextvars import ContextVar, Token
 from pathlib import Path
+from typing import NamedTuple
 
 _profile_fallback_warned: bool = False
 _UNSET = object()
@@ -873,6 +875,240 @@ def apply_subprocess_home_env(env: dict[str, str]) -> None:
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
 
+SERVICE_TIER_DISABLED_VALUES = frozenset(
+    {"normal", "default", "standard", "off", "none"}
+)
+# * auto/cold are bounded fast-mode windows on agent.service_tier, not OpenRouter wire values.
+SERVICE_TIER_BOUNDED_VALUES = frozenset({"auto", "cold"})
+_SERVICE_TIER_ALIASES = {
+    "fast": "priority",
+    "on": "priority",
+    "priority": "priority",
+    "flex": "flex",
+    "auto": "auto",
+    "cold": "cold",
+}
+
+
+class ServiceTierEscalationConfig(NamedTuple):
+    """Validated ``agent.service_tier_escalation`` settings (opt-in TTFT ladder)."""
+
+    enabled: bool = False
+    ttft_threshold_seconds: float = 8.0
+    consecutive_slow_requests: int = 1
+
+
+DEFAULT_SERVICE_TIER_ESCALATION = ServiceTierEscalationConfig()
+
+
+def resolve_service_tier_escalation_config(agent_cfg) -> ServiceTierEscalationConfig:
+    """Parse ``agent.service_tier_escalation`` with safe defaults.
+
+    Invalid values log a warning and fall back to the matching default
+    (disabled / 8.0s / 1). Missing or non-dict sections return the
+    disabled default without raising.
+    """
+    defaults = DEFAULT_SERVICE_TIER_ESCALATION
+    if not isinstance(agent_cfg, dict):
+        return defaults
+    raw = agent_cfg.get("service_tier_escalation")
+    if raw is None:
+        return defaults
+    if not isinstance(raw, dict):
+        import logging
+        logging.getLogger(__name__).warning(
+            "Invalid agent.service_tier_escalation (expected mapping), "
+            "using disabled defaults",
+        )
+        return defaults
+
+    enabled, enabled_ok = _coerce_escalation_enabled(raw.get("enabled", False))
+    if not enabled_ok:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Invalid agent.service_tier_escalation.enabled %r, defaulting to false",
+            raw.get("enabled"),
+        )
+
+    threshold, threshold_ok = _coerce_escalation_threshold(
+        raw.get("ttft_threshold_seconds", defaults.ttft_threshold_seconds),
+    )
+    if not threshold_ok:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Invalid agent.service_tier_escalation.ttft_threshold_seconds %r, "
+            "defaulting to %s",
+            raw.get("ttft_threshold_seconds"),
+            defaults.ttft_threshold_seconds,
+        )
+
+    consecutive, consecutive_ok = _coerce_escalation_consecutive(
+        raw.get("consecutive_slow_requests", defaults.consecutive_slow_requests),
+    )
+    if not consecutive_ok:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Invalid agent.service_tier_escalation.consecutive_slow_requests %r, "
+            "defaulting to %s",
+            raw.get("consecutive_slow_requests"),
+            defaults.consecutive_slow_requests,
+        )
+
+    return ServiceTierEscalationConfig(
+        enabled=enabled,
+        ttft_threshold_seconds=threshold,
+        consecutive_slow_requests=consecutive,
+    )
+
+
+def _coerce_escalation_enabled(value) -> tuple[bool, bool]:
+    """Return ``(enabled, valid)``. Invalid → ``(False, False)``."""
+    if isinstance(value, bool):
+        return value, True
+    if isinstance(value, (int, float)) and value in (0, 1) and not isinstance(value, bool):
+        return bool(value), True
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "yes", "on", "1"}:
+            return True, True
+        if normalized in {"false", "no", "off", "0", ""}:
+            return False, True
+    if value is None:
+        return False, True
+    return False, False
+
+
+def _coerce_escalation_threshold(value) -> tuple[float, bool]:
+    """Return ``(seconds, valid)``. Must be a finite number ``> 0``."""
+    # * bool is a subclass of int; float(True) == 1.0 must not count as valid.
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return DEFAULT_SERVICE_TIER_ESCALATION.ttft_threshold_seconds, False
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return DEFAULT_SERVICE_TIER_ESCALATION.ttft_threshold_seconds, False
+    if not math.isfinite(parsed) or parsed <= 0:
+        return DEFAULT_SERVICE_TIER_ESCALATION.ttft_threshold_seconds, False
+    return parsed, True
+
+
+def _coerce_escalation_consecutive(value) -> tuple[int, bool]:
+    """Return ``(count, valid)``. Must be an integer ``>= 1``."""
+    if isinstance(value, bool):
+        return DEFAULT_SERVICE_TIER_ESCALATION.consecutive_slow_requests, False
+    try:
+        parsed_float = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return DEFAULT_SERVICE_TIER_ESCALATION.consecutive_slow_requests, False
+    if not math.isfinite(parsed_float) or parsed_float != int(parsed_float):
+        return DEFAULT_SERVICE_TIER_ESCALATION.consecutive_slow_requests, False
+    parsed = int(parsed_float)
+    if parsed < 1:
+        return DEFAULT_SERVICE_TIER_ESCALATION.consecutive_slow_requests, False
+    return parsed, True
+
+
+class StickyOrderConfig(NamedTuple):
+    """Validated ``provider_routing.sticky_order`` settings (opt-in pin)."""
+
+    enabled: bool = False
+    ttl_seconds: float = 600.0
+
+
+DEFAULT_STICKY_ORDER = StickyOrderConfig()
+
+
+def resolve_sticky_order_config(routing_dict) -> StickyOrderConfig:
+    """Parse ``provider_routing.sticky_order`` with safe defaults.
+
+    Invalid values log a warning and fall back to the matching default
+    (disabled / 600s). Missing or non-dict sections return the disabled
+    default without raising. This section is passthrough config — defaults
+    live here, not in ``DEFAULT_CONFIG``.
+    """
+    defaults = DEFAULT_STICKY_ORDER
+    if not isinstance(routing_dict, dict):
+        return defaults
+    raw = routing_dict.get("sticky_order")
+    if raw is None:
+        return defaults
+    if not isinstance(raw, dict):
+        import logging
+        logging.getLogger(__name__).warning(
+            "Invalid provider_routing.sticky_order (expected mapping), "
+            "using disabled defaults",
+        )
+        return defaults
+
+    enabled, enabled_ok = _coerce_escalation_enabled(raw.get("enabled", False))
+    if not enabled_ok:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Invalid provider_routing.sticky_order.enabled %r, defaulting to false",
+            raw.get("enabled"),
+        )
+
+    ttl, ttl_ok = _coerce_sticky_order_ttl(
+        raw.get("ttl_seconds", defaults.ttl_seconds),
+    )
+    if not ttl_ok:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Invalid provider_routing.sticky_order.ttl_seconds %r, "
+            "defaulting to %s",
+            raw.get("ttl_seconds"),
+            defaults.ttl_seconds,
+        )
+
+    return StickyOrderConfig(enabled=enabled, ttl_seconds=ttl)
+
+
+def _coerce_sticky_order_ttl(value) -> tuple[float, bool]:
+    """Return ``(seconds, valid)``. Must be a finite number ``> 0``."""
+    # * bool is a subclass of int; float(True) == 1.0 must not count as valid.
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return DEFAULT_STICKY_ORDER.ttl_seconds, False
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return DEFAULT_STICKY_ORDER.ttl_seconds, False
+    if not math.isfinite(parsed) or parsed <= 0:
+        return DEFAULT_STICKY_ORDER.ttl_seconds, False
+    return parsed, True
+
+
+def parse_service_tier(value) -> str | None:
+    """Normalize a configured service-tier preference.
+
+    Wire values: ``priority`` (aliases ``fast`` / ``on``) and OpenRouter
+    ``flex``. Bounded fast-mode windows: ``auto`` and ``cold`` — stored on
+    ``agent.service_tier`` and applied per request by ``agent.fast_mode``,
+    not sent as OpenRouter ``service_tier``. Empty, normal, and unrecognized
+    values return ``None`` so callers can keep their current default or
+    report a configuration warning.
+    """
+    normalized = str(value or "").strip().lower()
+    if not normalized or normalized in SERVICE_TIER_DISABLED_VALUES:
+        return None
+    return _SERVICE_TIER_ALIASES.get(normalized)
+
+
+def strip_model_variant_suffix(model: str) -> str:
+    """Return the base slug for catalog and config matching.
+
+    A suffix such as ``:nitro`` is a model variant only when it follows a
+    vendor/model-style slug.  Bare colon-bearing identifiers remain untouched
+    so direct-provider model names and custom routing identifiers retain their
+    exact wire representation.
+    """
+    raw = str(model or "").strip()
+    stem, separator, suffix = raw.rpartition(":")
+    if separator and stem and suffix and "/" in stem and "/" not in suffix:
+        return stem
+    return raw
+
+
+
 def parse_reasoning_effort(effort) -> dict | None:
     """Parse a reasoning effort level into a config dict.
 
@@ -909,6 +1145,11 @@ def _canonical_model_variants(model: str) -> list[str]:
         dashed, dotted = s.replace('.', '-'), s.replace('-', '.')
         _add(s, dashed, dotted, _dash_to_dot(s), _dot_to_dash(s), _dash_to_dot(dashed), _dot_to_dash(dotted))
     _add_with_derivatives(model)
+    # * A configured base slug applies to its provider-routed variants, but
+    # * exact variant-specific entries above keep precedence.
+    variant_base = strip_model_variant_suffix(model)
+    if variant_base != model:
+        _add_with_derivatives(variant_base)
     parts = model.split('/')
     if len(parts) >= 2:  # bare model (strip provider/aggregator prefix)
         _add_with_derivatives(parts[-1])
@@ -965,6 +1206,174 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
         import logging
         logging.getLogger(__name__).warning("Unknown reasoning_effort '%s', using default (medium)", effort)
     return result
+
+
+def provider_routing_model_ids_match(key, request) -> bool:
+    """True when overlay *key* applies to the requested model id.
+
+    Asymmetric (left is a ``models.`` key, right is the live model id):
+
+    - exact API ids match
+    - a variant request (``base:suffix``) matches a base key
+    - a variant request does not match a different variant key
+      (``:floor`` ≠ ``:nitro``)
+    - a base request does not match a variant key
+    - same-vendor spelling variants match only among base slugs, so
+      ``google/x`` is never treated as ``openai/x``
+    """
+    a = str(key or "").strip()
+    b = str(request or "").strip()
+    if a == b:
+        return True
+    if not a or not b:
+        return False
+    a_base = strip_model_variant_suffix(a)
+    b_base = strip_model_variant_suffix(b)
+    a_variant = a_base != a
+    # * Distinct SKUs: :floor key must not apply to a :nitro request,
+    # and a :free key must not apply to a base request.
+    if a_variant:
+        return False
+    if a_base == b_base:
+        return True
+    a_vendor = a_base.split("/", 1)[0] if "/" in a_base else ""
+    b_vendor = b_base.split("/", 1)[0] if "/" in b_base else ""
+    if a_vendor != b_vendor:
+        return False
+    return a_base in _canonical_model_variants(b_base)
+
+
+def _provider_routing_overlay_for_model(overlay_root: dict, model: str):
+    """Return the ``models.<key>`` overlay dict for *model*, or None.
+
+    Exact key wins. A variant request may fall back to a base key; it
+    never inherits another variant SKU's overlay.
+    """
+    model_key = str(model or "")
+    if not model_key:
+        return None
+    exact = overlay_root.get(model_key)
+    if isinstance(exact, dict):
+        return exact
+    for key, value in overlay_root.items():
+        if not isinstance(value, dict):
+            continue
+        if provider_routing_model_ids_match(str(key), model_key):
+            return value
+    return None
+
+
+def resolve_provider_routing_for_model(routing, model: str = "") -> dict:
+    """Return wire-ready provider routing for *model* (no ``models`` key).
+
+    Flat keys on ``provider_routing`` are the defaults. When ``models`` has an
+    entry for *model* (exact API id, then a variant request falling back to
+    a base key — never another variant SKU), each listed overlay key
+    replaces the corresponding flat key independently; omitted overlay keys
+    fall through to the flat value. ``models`` itself is never part of the
+    result — it is not a valid OpenRouter ``extra_body.provider`` field.
+    """
+    if not isinstance(routing, dict):
+        return {}
+    resolved = {key: value for key, value in routing.items() if key != "models"}
+    overlay_root = routing.get("models")
+    if not isinstance(overlay_root, dict):
+        return resolved
+    model_key = str(model or "")
+    if not model_key:
+        return resolved
+    overlay = _provider_routing_overlay_for_model(overlay_root, model_key)
+    if not isinstance(overlay, dict):
+        return resolved
+    for overlay_key, overlay_value in overlay.items():
+        if overlay_key == "models":
+            continue
+        resolved[overlay_key] = overlay_value
+    return resolved
+
+
+def provider_routing_constructor_kwargs(routing, model: str = "") -> dict:
+    """Map resolved provider_routing keys onto AIAgent constructor names."""
+    resolved = resolve_provider_routing_for_model(routing, model)
+    return {
+        "providers_allowed": resolved.get("only"),
+        "providers_ignored": resolved.get("ignore"),
+        "providers_order": resolved.get("order"),
+        "provider_sort": resolved.get("sort"),
+        "provider_require_parameters": resolved.get("require_parameters", False),
+        "provider_data_collection": resolved.get("data_collection"),
+    }
+
+
+def apply_provider_routing_to_agent(agent, routing, model: str = "") -> dict:
+    """Store raw routing on *agent* and apply the per-model overlay attrs.
+
+    Returns the constructor-kwargs dict that was written onto the agent.
+    """
+    raw = routing if isinstance(routing, dict) else {}
+    try:
+        agent._provider_routing_config = raw
+    except Exception:
+        pass
+    kwargs = provider_routing_constructor_kwargs(raw, model)
+    for name, value in kwargs.items():
+        try:
+            setattr(agent, name, value)
+        except Exception:
+            pass
+    # * Bind after attrs are written so the pool reads resolved order/only.
+    try:
+        from agent.sticky_provider_order import bind_sticky_order
+
+        bind_sticky_order(agent, resolve_provider_routing_for_model(raw, model), model=model)
+    except Exception:
+        pass
+    return kwargs
+
+
+def resolve_service_tier_for_model(agent_cfg, model: str = "") -> str | None:
+    """Resolve effective service tier: per-model override, else global.
+
+    Session pins are applied by callers *before* this function. Values go
+    through :func:`parse_service_tier` (``flex`` / ``priority`` / ``auto`` /
+    ``cold``; ``normal`` / ``default`` / empty → ``None``). An invalid
+    per-model value logs a warning and falls back to ``agent.service_tier``;
+    an invalid global value logs a warning and returns ``None``.
+    """
+    if not isinstance(agent_cfg, dict):
+        agent_cfg = {}
+
+    overrides = agent_cfg.get("service_tier_overrides")
+    model_key = str(model or "")
+    if isinstance(overrides, dict) and model_key and model_key in overrides:
+        raw_override = overrides[model_key]
+        parsed_override = parse_service_tier(raw_override)
+        if parsed_override is not None:
+            return parsed_override
+        normalized = str(raw_override or "").strip().lower()
+        if not normalized or normalized in SERVICE_TIER_DISABLED_VALUES:
+            return None
+        import logging
+        logging.getLogger(__name__).warning(
+            "Unknown service_tier override '%s' for model '%s', "
+            "falling back to agent.service_tier",
+            raw_override,
+            model_key,
+        )
+
+    raw_global = agent_cfg.get("service_tier", "")
+    parsed_global = parse_service_tier(raw_global)
+    if parsed_global is not None:
+        return parsed_global
+    normalized_global = str(raw_global or "").strip().lower()
+    if not normalized_global or normalized_global in SERVICE_TIER_DISABLED_VALUES:
+        return None
+    import logging
+    logging.getLogger(__name__).warning(
+        "Unknown service_tier '%s', ignoring",
+        raw_global,
+    )
+    return None
 
 
 def is_termux() -> bool:

@@ -156,6 +156,7 @@ gateway:
     label_fast:            "سريع"
     label_normal:          "عادي"
     status_fast:           "fast"
+    status_flex:           "flex"
     status_normal:         "normal"
     picker_title:          "⚡ **المعالجة ذات الأولوية**\n\nالوضع الحالي: `{mode}`\n\nاختر خيارًا:"
     choice_fast:           "fast — المعالجة ذات الأولوية مُفعّلة"

@@ -2114,6 +2114,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             _checkpoint_agent_kwargs, _current_max_iterations, _resolve_runtime_agent_kwargs,
             _resolve_gateway_model, _load_gateway_config, GatewayRunner)
         from hermes_cli.tools_config import _get_platform_tools
+        from hermes_constants import provider_routing_constructor_kwargs
         # RuntimeError is caught ONLY here (sole provider-auth raiser); the typed subclass keeps
         # run_conversation() errors distinct.
         try:
@@ -2157,9 +2158,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "fallback_model": None if confirmed_runtime_lock else GatewayRunner._load_fallback_model(),
             "reasoning_config": request_reasoning_config,
             "gateway_session_key": gateway_session_key}
+        agent_kwargs.update(provider_routing_constructor_kwargs(
+            GatewayRunner._load_provider_routing(), model,
+        ))
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)
+        agent._config_managed_routing_tier = True
+        if request_service_tier is not _REQUEST_OPTION_MISSING:
+            # * Request-scoped model_options.service_tier is a surface pin:
+            #   the value survives fallback/restore; wire form still remaps.
+            agent._service_tier_session_pinned = True
         route_source = (
             "session_model_lock" if confirmed_runtime_lock
             else "session_model_override" if session_override

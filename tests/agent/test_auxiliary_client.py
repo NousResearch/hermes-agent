@@ -2448,6 +2448,110 @@ class TestStaleBaseUrlWarning:
 
 
 class TestAuxiliaryTaskExtraBody:
+    def test_explicit_extra_body_route_controls_win_over_task_shortcuts(self):
+        from agent.auxiliary_client import (
+            _apply_task_openrouter_provider_order,
+            _get_task_extra_body,
+        )
+
+        config = {
+            "auxiliary": {
+                "vision": {
+                    "service_tier": "flex",
+                    "providers": ["google-ai-studio/flex"],
+                    "extra_body": {
+                        "service_tier": "priority",
+                        "provider": {"order": ["explicit-provider"]},
+                    },
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "hermes_cli.config.load_config_readonly", return_value=config
+        ):
+            body = _get_task_extra_body("vision")
+            _apply_task_openrouter_provider_order(
+                task="vision",
+                extra_body=body,
+                provider="openrouter",
+                base_url="https://openrouter.ai/api/v1",
+            )
+
+        assert body == {
+            "service_tier": "priority",
+            "provider": {"order": ["explicit-provider"]},
+        }
+
+    def test_task_auto_service_tier_is_not_copied_to_extra_body(self, caplog):
+        from agent.auxiliary_client import _get_task_extra_body
+
+        config = {"auxiliary": {"vision": {"service_tier": "auto"}}}
+
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "hermes_cli.config.load_config_readonly", return_value=config
+        ), caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            body = _get_task_extra_body("vision")
+
+        assert "service_tier" not in body
+        assert any("not supported" in rec.message for rec in caplog.records)
+
+    def test_task_provider_shortcut_is_ignored_off_openrouter(self):
+        from agent.auxiliary_client import _apply_task_openrouter_provider_order
+
+        config = {"auxiliary": {"vision": {"providers": ["google-ai-studio/flex"]}}}
+        body = {}
+
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "hermes_cli.config.load_config_readonly", return_value=config
+        ):
+            _apply_task_openrouter_provider_order(
+                task="vision",
+                extra_body=body,
+                provider="anthropic",
+                base_url="https://api.anthropic.com",
+            )
+
+        assert body == {}
+
+    def test_openrouter_task_shortcuts_apply_service_tier_and_provider_order(self):
+        client = MagicMock()
+        client.base_url = "https://openrouter.ai/api/v1"
+        response = MagicMock()
+        client.chat.completions.create.return_value = response
+
+        config = {
+            "auxiliary": {
+                "session_search": {
+                    "provider": "openrouter",
+                    "model": "google/gemini-3.5-flash-lite",
+                    "service_tier": "flex",
+                    "providers": ["google-ai-studio/flex"],
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "hermes_cli.config.load_config_readonly", return_value=config
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "google/gemini-3.5-flash-lite"),
+        ), patch(
+            "agent.auxiliary_client._effective_provider_for_client",
+            return_value="openrouter",
+        ):
+            result = call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["service_tier"] == "flex"
+        assert kwargs["extra_body"]["provider"] == {
+            "order": ["google-ai-studio/flex"]
+        }
+
     def test_sync_call_merges_task_extra_body_from_config(self):
         client = MagicMock()
         client.base_url = "https://api.example.com/v1"

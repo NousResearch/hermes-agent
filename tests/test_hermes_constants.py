@@ -23,9 +23,11 @@ from hermes_constants import (
     is_container,
     node_tool_runnable,
     parse_reasoning_effort,
+    parse_service_tier,
     reset_hermes_home_override,
     secure_parent_dir,
     set_hermes_home_override,
+    strip_model_variant_suffix,
     with_hermes_node_path,
 )
 
@@ -404,6 +406,237 @@ class TestParseReasoningEffort:
         assert documented.issubset(set(VALID_REASONING_EFFORTS))
 
 
+class TestServiceTierParsing:
+    def test_parses_flex_and_priority_aliases(self):
+        assert parse_service_tier("flex") == "flex"
+        assert parse_service_tier("priority") == "priority"
+        assert parse_service_tier("fast") == "priority"
+
+    def test_omits_disabled_and_unknown_values(self):
+        assert parse_service_tier("default") is None
+        assert parse_service_tier("not-a-tier") is None
+
+    def test_preserves_bounded_auto_and_cold_windows(self):
+        assert parse_service_tier("auto") == "auto"
+        assert parse_service_tier("COLD") == "cold"
+
+
+class TestResolveProviderRoutingForModel:
+    """Per-model overlay is per-key; ``models`` never appears in the result."""
+
+    def _routing(self):
+        return {
+            "sort": "throughput",
+            "only": ["foo"],
+            "ignore": ["bar"],
+            "models": {
+                "google/gemini-3.7-flash": {
+                    "only": ["google-ai-studio"],
+                },
+                "qwen/qwen3.8-27b": {
+                    "order": ["reka/fp8"],
+                },
+            },
+        }
+
+    def test_per_model_key_wins_others_fall_through(self):
+        from hermes_constants import resolve_provider_routing_for_model
+
+        resolved = resolve_provider_routing_for_model(
+            self._routing(), "google/gemini-3.7-flash"
+        )
+        assert resolved["only"] == ["google-ai-studio"]
+        assert resolved["sort"] == "throughput"
+        assert resolved["ignore"] == ["bar"]
+        assert "order" not in resolved
+        assert "models" not in resolved
+
+    def test_unrelated_model_is_pure_flat(self):
+        from hermes_constants import resolve_provider_routing_for_model
+
+        resolved = resolve_provider_routing_for_model(self._routing(), "openai/gpt-5")
+        assert resolved == {"sort": "throughput", "only": ["foo"], "ignore": ["bar"]}
+
+    def test_empty_models_is_noop(self):
+        from hermes_constants import resolve_provider_routing_for_model
+
+        routing = {"sort": "price", "models": {}}
+        assert resolve_provider_routing_for_model(routing, "any/model") == {
+            "sort": "price",
+        }
+
+    def test_missing_or_non_dict_routing(self):
+        from hermes_constants import resolve_provider_routing_for_model
+
+        assert resolve_provider_routing_for_model(None, "x") == {}
+        assert resolve_provider_routing_for_model("oops", "x") == {}
+
+
+class TestResolveServiceTierForModel:
+    def test_per_model_wins_over_global(self):
+        from hermes_constants import resolve_service_tier_for_model
+
+        assert resolve_service_tier_for_model(
+            {
+                "service_tier": "priority",
+                "service_tier_overrides": {"google/gemini-3.7-flash": "flex"},
+            },
+            "google/gemini-3.7-flash",
+        ) == "flex"
+
+    def test_default_and_normal_map_to_none(self):
+        from hermes_constants import resolve_service_tier_for_model
+
+        assert resolve_service_tier_for_model(
+            {"service_tier": "priority", "service_tier_overrides": {"m": "default"}},
+            "m",
+        ) is None
+        assert resolve_service_tier_for_model(
+            {"service_tier": "normal"},
+            "other",
+        ) is None
+
+    def test_global_auto_and_cold_are_preserved(self):
+        from hermes_constants import resolve_service_tier_for_model
+
+        assert resolve_service_tier_for_model({"service_tier": "auto"}, "m") == "auto"
+        assert resolve_service_tier_for_model({"service_tier": "cold"}, "m") == "cold"
+
+    def test_per_model_auto_does_not_fall_back_to_global_priority(self):
+        from hermes_constants import resolve_service_tier_for_model
+
+        assert resolve_service_tier_for_model(
+            {
+                "service_tier": "priority",
+                "service_tier_overrides": {"m": "auto"},
+            },
+            "m",
+        ) == "auto"
+
+    def test_per_model_normal_does_not_fall_through_to_global_auto(self):
+        from hermes_constants import resolve_service_tier_for_model
+
+        assert resolve_service_tier_for_model(
+            {
+                "service_tier": "auto",
+                "service_tier_overrides": {"m": "normal"},
+            },
+            "m",
+        ) is None
+
+    def test_invalid_override_warns_and_falls_back(self, caplog):
+        import logging
+        from hermes_constants import resolve_service_tier_for_model
+
+        with caplog.at_level(logging.WARNING, logger="hermes_constants"):
+            result = resolve_service_tier_for_model(
+                {
+                    "service_tier": "flex",
+                    "service_tier_overrides": {"m": "turbo-max"},
+                },
+                "m",
+            )
+        assert result == "flex"
+        assert "turbo-max" in caplog.text
+
+
+class TestResolveServiceTierEscalationConfig:
+    def test_missing_section_is_disabled(self):
+        from hermes_constants import resolve_service_tier_escalation_config
+
+        cfg = resolve_service_tier_escalation_config({})
+        assert cfg.enabled is False
+        assert cfg.ttft_threshold_seconds == 8.0
+        assert cfg.consecutive_slow_requests == 1
+
+    def test_valid_opt_in(self):
+        from hermes_constants import resolve_service_tier_escalation_config
+
+        cfg = resolve_service_tier_escalation_config(
+            {
+                "service_tier_escalation": {
+                    "enabled": True,
+                    "ttft_threshold_seconds": 4.5,
+                    "consecutive_slow_requests": 3,
+                },
+            },
+        )
+        assert cfg.enabled is True
+        assert cfg.ttft_threshold_seconds == 4.5
+        assert cfg.consecutive_slow_requests == 3
+
+    def test_invalid_values_warn_and_use_defaults(self, caplog):
+        import logging
+        from hermes_constants import resolve_service_tier_escalation_config
+
+        with caplog.at_level(logging.WARNING, logger="hermes_constants"):
+            cfg = resolve_service_tier_escalation_config(
+                {
+                    "service_tier_escalation": {
+                        "enabled": "sometimes",
+                        "ttft_threshold_seconds": -1,
+                        "consecutive_slow_requests": 0,
+                    },
+                },
+            )
+        assert cfg.enabled is False
+        assert cfg.ttft_threshold_seconds == 8.0
+        assert cfg.consecutive_slow_requests == 1
+        assert "service_tier_escalation" in caplog.text
+
+    def test_bool_threshold_and_consecutive_warn_and_default(self, caplog):
+        import logging
+        from hermes_constants import resolve_service_tier_escalation_config
+
+        with caplog.at_level(logging.WARNING, logger="hermes_constants"):
+            cfg = resolve_service_tier_escalation_config(
+                {
+                    "service_tier_escalation": {
+                        "enabled": True,
+                        "ttft_threshold_seconds": True,
+                        "consecutive_slow_requests": True,
+                    },
+                },
+            )
+        assert cfg.enabled is True
+        assert cfg.ttft_threshold_seconds == 8.0
+        assert cfg.consecutive_slow_requests == 1
+        assert "ttft_threshold_seconds" in caplog.text
+        assert "consecutive_slow_requests" in caplog.text
+
+    def test_non_finite_threshold_and_consecutive_warn_and_default(self, caplog):
+        import logging
+        from hermes_constants import resolve_service_tier_escalation_config
+
+        non_finite = (float("inf"), float("-inf"), float("nan"))
+        for enabled in (True, False):
+            for value in non_finite:
+                caplog.clear()
+                with caplog.at_level(logging.WARNING, logger="hermes_constants"):
+                    cfg = resolve_service_tier_escalation_config(
+                        {
+                            "service_tier_escalation": {
+                                "enabled": enabled,
+                                "ttft_threshold_seconds": value,
+                                "consecutive_slow_requests": value,
+                            },
+                        },
+                    )
+                assert cfg.enabled is enabled
+                assert cfg.ttft_threshold_seconds == 8.0
+                assert cfg.consecutive_slow_requests == 1
+                assert "ttft_threshold_seconds" in caplog.text
+                assert "consecutive_slow_requests" in caplog.text
+
+
+class TestModelVariantSuffixes:
+    def test_strips_only_vendor_model_variant_suffixes(self):
+        assert strip_model_variant_suffix(
+            "deepseek/deepseek-v4-flash-0731:nitro"
+        ) == "deepseek/deepseek-v4-flash-0731"
+        assert strip_model_variant_suffix("ollama:latest") == "ollama:latest"
+
+
 class TestResolvePerModelReasoningEffort:
     """Tests for resolve_per_model_reasoning_effort() — spelling-tolerant
     per-model override lookup from agent.reasoning_overrides dict.
@@ -449,6 +682,26 @@ class TestResolvePerModelReasoningEffort:
         overrides = {"claude-opus-4.5": "high", "claude-opus-4-5": "xhigh"}
         result = resolve_per_model_reasoning_effort("claude-opus-4.5", overrides)
         assert result == {"enabled": True, "effort": "high"}
+
+    def test_base_slug_applies_to_model_variant(self):
+        from hermes_constants import resolve_per_model_reasoning_effort
+
+        model = "deepseek/deepseek-v4-flash-0731:nitro"
+        assert resolve_per_model_reasoning_effort(
+            model, {"deepseek/deepseek-v4-flash-0731": "high"}
+        ) == {"enabled": True, "effort": "high"}
+
+    def test_variant_specific_override_wins_over_base_slug(self):
+        from hermes_constants import resolve_per_model_reasoning_effort
+
+        model = "deepseek/deepseek-v4-flash-0731:nitro"
+        assert resolve_per_model_reasoning_effort(
+            model,
+            {
+                "deepseek/deepseek-v4-flash-0731": "high",
+                model: "low",
+            },
+        ) == {"enabled": True, "effort": "low"}
 
 
 
@@ -514,6 +767,21 @@ class TestReasoningOverridesDefaultConfig:
         from hermes_cli.config import DEFAULT_CONFIG
         assert "reasoning_overrides" in DEFAULT_CONFIG["agent"]
         assert DEFAULT_CONFIG["agent"]["reasoning_overrides"] == {}
+
+
+    def test_default_config_has_service_tier_overrides_key(self):
+        """DEFAULT_CONFIG['agent'] contains 'service_tier_overrides' as an empty dict."""
+        from hermes_cli.config import DEFAULT_CONFIG
+        assert "service_tier_overrides" in DEFAULT_CONFIG["agent"]
+        assert DEFAULT_CONFIG["agent"]["service_tier_overrides"] == {}
+
+    def test_default_config_has_service_tier_escalation_disabled(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        section = DEFAULT_CONFIG["agent"]["service_tier_escalation"]
+        assert section["enabled"] is False
+        assert section["ttft_threshold_seconds"] == 8.0
+        assert section["consecutive_slow_requests"] == 1
 
 
     def test_spelling_tolerant_lookup_works_with_user_config(self):

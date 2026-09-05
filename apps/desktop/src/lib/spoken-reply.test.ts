@@ -98,6 +98,16 @@ describe('adoptSpokenReplySession', () => {
     adoptSpokenReplySession(null, 'session-created')
 
     expect(spokenReplyOf('session-created')?.id).toBe('a1')
+    // Moved, not copied: the next new chat (null session again) starts clean.
+    expect(spokenReplyOf(null)).toBeNull()
+  })
+
+  it('does not overwrite an anchor the created session already has', () => {
+    markAssistantIdSpoken(null, [assistant('a1')], 'a1')
+    markAssistantIdSpoken('session-created', [assistant('a1'), assistant('a2')], 'a2')
+    adoptSpokenReplySession(null, 'session-created')
+
+    expect(spokenReplyOf('session-created')?.id).toBe('a2')
   })
 
   it('does not leak a spoken anchor from one real session into another', () => {

@@ -24,7 +24,7 @@ import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/stor
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
 import { $pinnedSessionIds } from '@/store/layout'
-import { $activeGatewayProfile, $newChatProfile, $newChatRoute, $profiles, ensureGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, $gatewaySwapTarget, $newChatProfile, $newChatRoute, $profiles, ensureGatewayProfile } from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
   $activeSessionId,
@@ -727,6 +727,7 @@ describe('createBackendSessionForSend profile routing', () => {
     cleanup()
     $newChatProfile.set(null)
     $newChatRoute.set(null)
+    $gatewaySwapTarget.set(null)
     $activeGatewayProfile.set('default')
     $projectScope.set(ALL_PROJECTS)
     $projectTree.set([])
@@ -761,6 +762,16 @@ describe('createBackendSessionForSend profile routing', () => {
 
     expect(params).toMatchObject({ profile: 'analyst' })
   })
+  it('keeps the pending profile switch as the new-chat target', async () => {
+    const params = await createWith(() => {
+      $activeGatewayProfile.set('coder')
+      $newChatProfile.set(null)
+      $gatewaySwapTarget.set('analyst')
+    })
+
+    expect(params).toMatchObject({ profile: 'analyst' })
+  })
+
 
   it('passes the default profile for single-profile users (backend resolves it to launch)', async () => {
     const params = await createWith(() => {

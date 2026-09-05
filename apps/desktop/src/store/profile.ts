@@ -326,7 +326,9 @@ export function resolveNewChatOwnerRoute(forProfile?: string): AgentProfileRoute
     return explicit
   }
 
-  const intentProfile = forProfile ? normalizeProfileKey(forProfile) : $newChatProfile.get()
+  const intentProfile = forProfile
+    ? normalizeProfileKey(forProfile)
+    : ($newChatProfile.get() || $gatewaySwapTarget.get())
 
   const connectionId = (
     (intentProfile

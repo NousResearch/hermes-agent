@@ -1,0 +1,1 @@
+grep -n "def _emit_post_tool_call_hook" "C:/Users/Admin/AppData/Local/hermes/hermes-agent/model_tools.py"; sed -n "$(grep -n 'def _emit_post_tool_call_hook' 'C:/Users/Admin/AppData/Local/hermes/hermes-agent/model_tools.py' | cut -d: -f1),+45p" "C:/Users/Admin/AppData/Local/hermes/hermes-agent/model_tools.py"

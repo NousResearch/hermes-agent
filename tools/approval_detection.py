@@ -174,9 +174,16 @@ def detect_hardline_command(command: str) -> tuple:
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION)
     normalized = _normalize_command_for_detection(command)
-    _, malformed_grep = _grep_safe_detection_variant(normalized)
+    # Malformed quoting fails closed only when BOTH parses fail. The RAW command is ground truth:
+    # normalization is a detection aid, and its escape-stripping/deobfuscation rewrites can corrupt
+    # quoting that the shell itself accepts — blocking on that alone blocks benign commands. The
+    # hardline patterns below still run over every detection variant, so detection coverage is
+    # unchanged. See P-0060.
+    _, malformed_grep = _grep_safe_detection_variant(command)
     if malformed_grep:
-        return (True, _MALFORMED_EXEC_DESCRIPTION)
+        _, malformed_grep = _grep_safe_detection_variant(normalized)
+    if malformed_grep:
+        return (True, _UNPARSABLE_COMMAND_DESCRIPTION)
     for command_variant in _command_detection_variants(command):
         variant_lower = command_variant.lower()
         masked_lower: str | None = None
@@ -563,6 +570,7 @@ _BASH_SHORT_OPTION_LETTERS = frozenset("ilrsDcabefhkmnptuvxBCEHPTOo")
 _MAX_DETECTION_COMMAND_CHARS, _MAX_SEPARATOR_FREE_COMMAND_CHARS, _MAX_DETECTION_SEGMENTS = 128_000, 4_096, 25_000
 _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
 _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payload"
+_UNPARSABLE_COMMAND_DESCRIPTION = "command could not be parsed for safety review"
 _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION = "stop/restart hermes gateway via shell-spliced verb (kills running agents)"
 
 
@@ -578,11 +586,13 @@ def _command_parser_limit_exceeded(command: str) -> bool:
     return sum(command.count(char) for char in ";&|\n") >= _MAX_DETECTION_SEGMENTS
 
 
-def _shell_tokens_with_spans(segment: str, start: int):
+def _shell_tokens_with_spans(segment: str, start: int, start_quote: str | None = None):
     """Return shell words as ``(value, start, end, quoted)`` or ``None`` on malformed quoting.
     Deliberately small lexer that never expands shell syntax; it exists to keep source spans (which
-    ``shlex`` does not expose) for deciding which quoted grep operand is data, not another command."""
-    tokens, value, token_start, quote = [], [], None, None
+    ``shlex`` does not expose) for deciding which quoted grep operand is data, not another command.
+    *start_quote* seeds the lexer's quote state when *start* sits mid-word inside an enclosing
+    quote (the command-word walk enters a grep mid-string, so the lexer never saw the opener)."""
+    tokens, value, token_start, quote = [], [], None, start_quote
 
     def flush(end: int) -> None:
         raw = segment[token_start:end]
@@ -626,7 +636,21 @@ def _quoted_grep_pattern_spans(command: str) -> tuple[list[tuple[int, int]], boo
         for start, _, word in _iter_shell_command_word_spans(segment):
             if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() not in {"grep", "egrep"}:
                 continue
-            tokens = _shell_tokens_with_spans(segment, start)
+            # The command-word walk enters the grep mid-string, so the tail lexer never saw the
+            # enclosing quote. Pre-scan the segment from offset 0 up to this word to recover the
+            # quote state the tail scan starts in (P-0060): steps entirely before *start* hand
+            # their closing quote state forward; a step straddling *start* (a $(...), ${...} or
+            # backslash escape spanning the boundary) keeps its own quote state, which is the
+            # state the tail scan resumes with.
+            seed_quote = None
+            for kind, i, j, quote in _scan_shell(segment, 0, len(segment)):
+                if i >= start:
+                    break  # step belongs to the tail lexer
+                seed_quote = quote
+                if j <= start:
+                    continue
+                break  # straddling step (subst/esc): its quote wins
+            tokens = _shell_tokens_with_spans(segment, start, start_quote=seed_quote)
             if tokens is None:
                 return [], True
             args, pattern_indexes = tokens[1:], []

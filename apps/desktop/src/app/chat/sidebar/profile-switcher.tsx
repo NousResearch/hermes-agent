@@ -1038,6 +1038,9 @@ function RestSquare({
   const hue = color ?? 'var(--ui-text-quaternary)'
   const [pickerOpen, setPickerOpen] = useState(false)
   const label = p.fleet.onGateway(agent.profile, agent.connectionLabel)
+  // Hover-intent prewarm on the SAME (connectionId, profile) pool key the click
+  // dials (see prewarmProfileBackend).
+  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(agent.profile, agent.connectionId)
 
   const pickColor = (next: null | string) => {
     onRecolor(next)
@@ -1061,6 +1064,8 @@ function RestSquare({
                     data-profile={agent.profile}
                     data-slot="profile-rail-rest-square"
                     onClick={onSelect}
+                    onPointerEnter={startPrewarm}
+                    onPointerLeave={cancelPrewarm}
                     style={{ backgroundColor: profileColorSoft(hue, 22), color: color ?? undefined }}
                     type="button"
                   >

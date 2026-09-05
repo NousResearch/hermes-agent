@@ -1,4 +1,4 @@
-import { LOCAL_CONNECTION_ID } from '@hermes/shared'
+import { LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
 import { atom, batch, computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
@@ -412,16 +412,17 @@ const PREWARM_MIN_INTERVAL_MS = 60_000
 
 const prewarmedAt = new Map<string, number>()
 
-export function prewarmProfileBackend(name: string): void {
+export function prewarmProfileBackend(name: string, connectionId: null | string = null): void {
   const key = normalizeProfileKey(name)
+  const scopeKey = connectionId ? registryBackendScopeKey(connectionId, key) : key
 
-  if (key === normalizeProfileKey($activeGatewayProfile.get())) {
+  if (scopeKey === registryBackendScopeKey(null, normalizeProfileKey($activeGatewayProfile.get()))) {
     return
   }
 
   const now = Date.now()
 
-  if (now - (prewarmedAt.get(key) ?? 0) < PREWARM_MIN_INTERVAL_MS) {
+  if (now - (prewarmedAt.get(scopeKey) ?? 0) < PREWARM_MIN_INTERVAL_MS) {
     return
   }
 
@@ -436,8 +437,14 @@ export function prewarmProfileBackend(name: string): void {
     return
   }
 
-  prewarmedAt.set(key, now)
-  openGatewayForProfile(key).catch(() => undefined)
+  prewarmedAt.set(scopeKey, now)
+
+  // Registry-scoped scopes must prewarm the SAME (connectionId, profile) pool
+  // key the click dials — a profile-only prewarm lands on a different pool key
+  // and the click pays the full cold spawn anyway. openGatewayForAgent routes
+  // to openGatewayForProfile when the scope is the primary (or null id), so
+  // legacy hover prewarms keep their exact behavior.
+  openGatewayForAgent(connectionId, key).catch(() => undefined)
 }
 
 let gatewaySwitch: Promise<void> | null = null

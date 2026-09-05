@@ -30,6 +30,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // Registry-scoped fresh WS URL: { connectionId, profile } → result shape of
   // getGatewayWsUrl, minted against that connection's backend.
   getGatewayWsUrlFor: payload => ipcRenderer.invoke('hermes:gateway:ws-url-for', payload),
+  // Coalesced registry variant: pass the descriptor already validated by
+  // getConnectionFor in the same switch to skip the redundant dispatch probe.
+  getGatewayWsUrlForValidated: payload => ipcRenderer.invoke('hermes:gateway:ws-url-for-validated', payload),
   // Union agent roster across every registered connection.
   getAgentRoster: () => ipcRenderer.invoke('hermes:agents:roster'),
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),

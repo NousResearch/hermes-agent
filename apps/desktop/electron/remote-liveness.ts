@@ -1,4 +1,15 @@
 export const REMOTE_LIVENESS_TIMEOUT_MS = 10_000
+
+// Liveness probes must never ride a cached response or a pooled keep-alive
+// socket: Chromium/electron net can hand back a stale cached 200 (masking a
+// dead backend) and node's keep-alive agent can surface a stale pooled socket
+// as a transport error (counting backend death that isn't). Probes therefore
+// always request a fresh, single-use connection.
+export const REMOTE_LIVENESS_PROBE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+  'Cache-Control': 'no-store',
+  Pragma: 'no-cache',
+  Connection: 'close'
+})
 // Dispatch is synchronous user intent: a cached descriptor must prove its
 // forwarded endpoint is alive before it can be returned. Keep this probe much
 // shorter than the background liveness budget so a dead tunnel reconnects
@@ -74,6 +85,8 @@ interface EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection extends
   probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
   reconnect: () => Promise<TConnection>
   retire: (error: unknown) => Promise<void> | void
+  tracker?: RemoteLivenessTracker
+  remoteBaseUrl?: null | string
 }
 
 /**
@@ -83,15 +96,31 @@ interface EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection extends
  * prevent a late probe from tearing down a replacement installed by another
  * caller. The caller should single-flight this function per cached promise so
  * concurrent dispatches share one retire/reconnect sequence.
+ *
+ * A single probe failure is not backend death: when a tracker (and base URL)
+ * are supplied, one in-place retry is attempted and the failure is recorded on
+ * the shared per-base-URL streak. Only a failing retry — or a streak that
+ * already reached the failure limit — retires the descriptor; a retry success
+ * records success on the streak, keeping the pool warm across transient
+ * keep-alive socket loss.
  */
 export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection extends RemoteConnectionDescriptor>({
   connectionPromise,
   currentConnectionPromise,
   probe,
   reconnect,
-  retire
+  retire,
+  tracker,
+  remoteBaseUrl
 }: EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection>): Promise<TConnection> {
   let connection: TConnection
+
+  const recordFailure = (error: unknown): void => {
+    if (tracker && remoteBaseUrl) {
+      tracker.recordFailure(remoteBaseUrl.replace(/\/+$/, ''))
+    }
+    void error
+  }
 
   try {
     connection = await connectionPromise
@@ -103,12 +132,42 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
     await probe(connection, '/api/status', {
       timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
     })
+
+    if (tracker && remoteBaseUrl) {
+      tracker.recordSuccess(remoteBaseUrl.replace(/\/+$/, ''))
+    }
   } catch (error) {
-    if (currentConnectionPromise() === connectionPromise) {
-      await retire(error)
+    if (currentConnectionPromise() !== connectionPromise) {
+      return reconnect()
     }
 
-    return reconnect()
+    recordFailure(error)
+
+    // One in-place retry before retire+redial: a single probe failure is
+    // frequently a stale keep-alive socket, not backend death.
+    try {
+      await probe(connection, '/api/status', {
+        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+      })
+
+      if (tracker && remoteBaseUrl) {
+        tracker.recordSuccess(remoteBaseUrl.replace(/\/+$/, ''))
+      }
+
+      if (currentConnectionPromise() !== connectionPromise) {
+        return reconnect()
+      }
+
+      return connection
+    } catch (retryError) {
+      if (currentConnectionPromise() !== connectionPromise) {
+        return reconnect()
+      }
+
+      recordFailure(retryError)
+      await retire(retryError)
+      return reconnect()
+    }
   }
 
   if (currentConnectionPromise() !== connectionPromise) {

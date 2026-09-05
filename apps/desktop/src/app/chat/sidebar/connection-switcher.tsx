@@ -15,6 +15,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import type { DesktopRegistryConnection } from '@/global'
+import { useProfilePrewarm } from './use-profile-prewarm'
 import { useI18n } from '@/i18n'
 import {
   CONNECTION_SEARCH_THRESHOLD,
@@ -32,13 +33,41 @@ import {
   $pendingConnectionId,
   initializeConnectionsRegistry,
   refreshConnectionsRegistry,
-  selectConnection
+  selectConnection,
+  $lastProfileByConnection
 } from '@/store/connections'
 import { closeFindBar } from '@/store/find-in-page'
 import { notifyError } from '@/store/notifications'
 import { isAuxiliaryWindow, isPeerInstanceWindow } from '@/store/windows'
 
 import { ConnectionGlyph } from './connection-glyph'
+
+// One dropdown row per connection — its own component so each row can own a
+// hover-intent prewarm timer targeting that connection's registry-scoped primary
+// backend (the same (connectionId, primary-profile) pool key the click dials).
+function ConnectionSwitcherRow({
+  connection,
+  searchable
+}: {
+  connection: DesktopRegistryConnection
+  searchable: boolean
+}) {
+  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(
+    $lastProfileByConnection.get()[connection.id] ?? 'default',
+    connection.id
+  )
+
+  return (
+    <DropdownMenuRadioItem
+      className={cn('min-w-0', searchable && dropdownMenuRow)}
+      onPointerEnter={startPrewarm}
+      onPointerLeave={cancelPrewarm}
+      value={connection.id}
+    >
+      <ConnectionLabel connection={connection} />
+    </DropdownMenuRadioItem>
+  )
+}
 
 export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: boolean; onConnect: () => void }) {
   const { t } = useI18n()
@@ -226,13 +255,7 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
               </div>
             ) : (
               displayedConnections.map(connection => (
-                <DropdownMenuRadioItem
-                  className={cn('min-w-0', searchable && dropdownMenuRow)}
-                  key={connection.id}
-                  value={connection.id}
-                >
-                  <ConnectionLabel connection={connection} />
-                </DropdownMenuRadioItem>
+                <ConnectionSwitcherRow connection={connection} key={connection.id} searchable={searchable} />
               ))
             )}
           </DropdownMenuRadioGroup>

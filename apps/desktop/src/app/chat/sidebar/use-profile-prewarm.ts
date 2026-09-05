@@ -12,10 +12,15 @@ const PREWARM_DWELL_MS = 120
  * after a short hover dwell (see prewarmProfileBackend in store/profile).
  * Consumers merge these with their own pointer handlers.
  */
-export function useProfilePrewarm(profile: string | null | undefined) {
+export function useProfilePrewarm(
+  profile: string | null | undefined,
+  connectionId: null | string = null
+) {
   const timer = useRef<null | number>(null)
   const profileRef = useRef(profile)
   profileRef.current = profile
+  const connectionIdRef = useRef(connectionId)
+  connectionIdRef.current = connectionId
 
   const cancelPrewarm = useCallback(() => {
     if (timer.current != null) {
@@ -30,7 +35,7 @@ export function useProfilePrewarm(profile: string | null | undefined) {
     cancelPrewarm()
     timer.current = window.setTimeout(() => {
       timer.current = null
-      prewarmProfileBackend(profileRef.current || 'default')
+      prewarmProfileBackend(profileRef.current || 'default', connectionIdRef.current)
     }, PREWARM_DWELL_MS)
   }, [cancelPrewarm])
 

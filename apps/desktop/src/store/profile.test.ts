@@ -9,6 +9,7 @@ import type { ProfileInfo } from '@/types/hermes'
 const ensureGatewayForProfile = vi.fn(async () => undefined)
 const ensureGatewayForAgent = vi.fn(async () => undefined)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
+const openGatewayForAgent = vi.fn(async (_connectionId: null | string, _profile: string) => undefined)
 const openSecondaryCount = vi.fn(() => 0)
 const $gateway = atom<unknown>({ id: 'live-socket', connectionState: 'open' })
 const resetStarmapGraph = vi.fn()
@@ -17,6 +18,7 @@ vi.mock('@/store/gateway', () => ({
   $gateway,
   ensureGatewayForAgent,
   ensureGatewayForProfile,
+  openGatewayForAgent,
   openGatewayForProfile,
   openSecondaryCount
 }))
@@ -70,6 +72,7 @@ const getConnection = vi.fn<(profile?: string | null) => Promise<HermesConnectio
 beforeEach(() => {
   getConnection.mockReset()
   ensureGatewayForProfile.mockClear()
+  openGatewayForAgent.mockClear()
   openGatewayForProfile.mockClear()
   openSecondaryCount.mockReturnValue(0)
   $gateway.set({ id: 'live-socket', connectionState: 'open' })
@@ -158,7 +161,7 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
   it('opens the gateway (spawn + connect, no activation) for a non-active profile', () => {
     prewarmProfileBackend('warm-basic')
 
-    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-basic')
+    expect(openGatewayForAgent).toHaveBeenCalledWith(null, 'warm-basic')
     // Pre-warm must never activate — that's the click's job.
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
   })
@@ -176,13 +179,13 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
     prewarmProfileBackend('warm-throttle-a')
     prewarmProfileBackend('warm-throttle-b')
 
-    const calls = openGatewayForProfile.mock.calls.map(([name]) => name)
+    const calls = openGatewayForAgent.mock.calls.map(([, name]) => name)
     expect(calls.filter(name => name === 'warm-throttle-a')).toHaveLength(1)
     expect(calls.filter(name => name === 'warm-throttle-b')).toHaveLength(1)
   })
 
   it('swallows spawn failures — error UX belongs to the real switch', () => {
-    openGatewayForProfile.mockRejectedValueOnce(new Error('spawn failed'))
+    openGatewayForAgent.mockRejectedValueOnce(new Error('spawn failed'))
 
     expect(() => prewarmProfileBackend('warm-failing')).not.toThrow()
   })
@@ -195,7 +198,7 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
 
     prewarmProfileBackend('warm-saturated')
 
-    expect(openGatewayForProfile).not.toHaveBeenCalled()
+    expect(openGatewayForAgent).not.toHaveBeenCalled()
   })
 
   it('pre-warms while pool slots are free', () => {
@@ -203,7 +206,7 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
 
     prewarmProfileBackend('warm-slot-free')
 
-    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-slot-free')
+    expect(openGatewayForAgent).toHaveBeenCalledWith(null, 'warm-slot-free')
   })
 
   it('follows the live pool-limit atom, not a hard-coded cap', () => {
@@ -214,14 +217,14 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
 
     prewarmProfileBackend('warm-raised-cap')
 
-    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-raised-cap')
+    expect(openGatewayForAgent).toHaveBeenCalledWith(null, 'warm-raised-cap')
 
     // And lowering the cap re-engages the guard at the new boundary.
     $poolLimits.set({ idleMs: 600_000, maxBackends: 2 })
 
     prewarmProfileBackend('warm-lowered-cap')
 
-    expect(openGatewayForProfile).not.toHaveBeenCalledWith('warm-lowered-cap')
+    expect(openGatewayForAgent).not.toHaveBeenCalledWith(null, 'warm-lowered-cap')
   })
 })
 

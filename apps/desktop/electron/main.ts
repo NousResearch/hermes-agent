@@ -330,6 +330,7 @@ import * as remoteLifecycle from './remote-lifecycle'
 import {
   attachPowerResumeRemoteRevalidation,
   ensureHealthyPooledRemoteBackendForDispatch,
+  REMOTE_LIVENESS_PROBE_HEADERS,
   RemoteLivenessTracker,
   RemoteRevalidationCoordinator,
   revalidatePooledRemoteBackends,
@@ -11622,8 +11623,11 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
       ensureHealthyPooledRemoteBackendForDispatch({
         connectionPromise,
         currentConnectionPromise: () => backendPool.get(key)?.connectionPromise || null,
-        probe: (connection, requestPath, options) => fetchJsonForBackend(connection, requestPath, options),
+        probe: (connection, requestPath, options) =>
+          fetchJsonForBackend(connection, requestPath, { ...options, headers: { ...REMOTE_LIVENESS_PROBE_HEADERS, ...(options as any)?.headers } }),
         reconnect: () => ensureRegistryBackend(id, profile),
+        tracker: remoteLiveness,
+        remoteBaseUrl: existing.remoteBaseUrl ?? null,
         retire: async (error: any) => {
           // A late failure from an old descriptor must never tear down a newer
           // entry that another caller has already installed.
@@ -14777,7 +14781,8 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
         connectionPromise,
         currentConnectionPromise: () => backendConnectionState.getPromise(),
         log: rememberLog,
-        probe: (connection, path, options) => fetchJsonForBackend(connection, path, options),
+        probe: (connection, path, options) =>
+          fetchJsonForBackend(connection, path, { ...options, headers: { ...REMOTE_LIVENESS_PROBE_HEADERS, ...(options as any)?.headers } }),
         resetConnection: () => resetHermesConnection({ soft: true }),
         tracker: remoteLiveness
       }),
@@ -14808,7 +14813,8 @@ function revalidatePool() {
   return revalidatePooledRemoteBackends({
     entries: backendPool.entries(),
     log: rememberLog,
-    probe: (connection, path, options) => fetchJsonForBackend(connection, path, options),
+    probe: (connection, path, options) =>
+      fetchJsonForBackend(connection, path, { ...options, headers: { ...REMOTE_LIVENESS_PROBE_HEADERS, ...(options as any)?.headers } }),
     stopBackend: stopPoolBackend,
     tracker: remoteLiveness
   })
@@ -14843,7 +14849,8 @@ function revalidateSuspectPoolAfterResume() {
     revalidateSuspectPooledRemoteBackends({
       entries: backendPool.entries(),
       log: rememberLog,
-      probe: (connection, path, options) => fetchJsonForBackend(connection, path, options),
+      probe: (connection, path, options) =>
+      fetchJsonForBackend(connection, path, { ...options, headers: { ...REMOTE_LIVENESS_PROBE_HEADERS, ...(options as any)?.headers } }),
       rebuild: poolKey => redialPoolBackendAfterResume(poolKey),
       retire: async poolKey => {
         await stopPoolBackend(poolKey)
@@ -15669,6 +15676,47 @@ ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
   return gatewayWsUrlIpcResult(() => registryGatewayWsUrlHandler(payload))
 })
 
+// Coalesced variant (#193231): the renderer resolved the descriptor through
+// 'hermes:connection:for' moments earlier in the same profile switch. When the
+// payload carries that exact validated descriptor (same connectionId/profile),
+// reuse it instead of re-running ensureRegistryBackend's dispatch probe —
+// halving the round-trips per switch without weakening identity checks (the
+// descriptor still must match the requested scope).
+ipcMain.handle('hermes:gateway:ws-url-for-validated', async (_event, payload) => {
+  return gatewayWsUrlIpcResult(() => {
+    const { connectionId, profile, validatedConnection } =
+      payload && typeof payload === 'object' ? (payload as any) : ({} as any)
+
+    if (
+      validatedConnection &&
+      typeof validatedConnection === 'object' &&
+      typeof validatedConnection.wsUrl === 'string' &&
+      validatedConnection.wsUrl &&
+      String(validatedConnection.connectionId ?? '') === String(connectionId ?? '') &&
+      String(validatedConnection.profile ?? '') === String(profile ?? '')
+    ) {
+      const { connectionId: _vid, profile: _vp, ...descriptor } = validatedConnection
+      return registryGatewayWsUrlHandlerFromDescriptor(descriptor, { connectionId, profile })
+    }
+
+    return registryGatewayWsUrlHandler({ connectionId, profile })
+  })
+})
+
+function registryGatewayWsUrlHandlerFromDescriptor(
+  descriptor: Record<string, unknown>,
+  scope: { connectionId: unknown; profile: unknown }
+): Promise<string> {
+  const handler = createRegistryGatewayWsUrlHandler({
+    ensureBackend: async () => descriptor as unknown as Awaited<ReturnType<typeof ensureRegistryBackend>>,
+    mintTicket: mintGatewayWsTicket,
+    buildTicketUrl: buildGatewayWsUrlWithTicket,
+    rememberHeaders: rememberRemoteWsHeaders
+  })
+
+  return handler({ connectionId: scope.connectionId, profile: scope.profile })
+}
+
 // Transactional update for a Desktop-managed SSH install. Unlike the generic
 // fleet fan-out below, this path owns the remote serve lifecycle: it gates new
 // dials, drains only exact Desktop-owned processes, runs the launcher outside
@@ -15817,7 +15865,7 @@ async function getJsonForBackend(descriptor, path, opts: any = {}) {
 async function fetchJsonForBackend(
   descriptor,
   path,
-  opts: { method?: string; body?: unknown; upload?: unknown; timeoutMs?: number } = {}
+  opts: { method?: string; body?: unknown; upload?: unknown; timeoutMs?: number; headers?: Record<string, string> } = {}
 ) {
   const url = `${descriptor.baseUrl}${path}`
 

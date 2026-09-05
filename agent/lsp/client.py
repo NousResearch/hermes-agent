@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 from urllib.parse import quote, unquote
 
+from agent.subprocess_utils import create_subprocess
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 from agent.lsp.protocol import (
@@ -214,7 +215,7 @@ class LSPClient:
             # the gateway's pgid and mcp_tool's orphan sweeper can killpg() the TUI parent with it.
             # windows_hide_flags() suppresses the console window a .cmd shim would flash from a
             # console-less host (CREATE_NO_WINDOW; 0 on POSIX).
-            self._proc = await asyncio.create_subprocess_exec(
+            self._proc = await create_subprocess(
                 cmd[0], *cmd[1:],
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 env={**os.environ, **(self._env or {})}, cwd=self._cwd,
@@ -229,8 +230,23 @@ class LSPClient:
     async def _drain_stderr(self) -> None:
         if self._proc is None or self._proc.stderr is None:
             return
+        stderr = self._proc.stderr
         try:
-            while line := await self._proc.stderr.readline():
+            while True:
+                try:
+                    line = await stderr.readline()
+                except ValueError:
+                    # StreamReader.readline() translates LimitOverrunError to
+                    # ValueError after discarding the oversized buffer. Continue
+                    # draining so a pathological stderr line cannot leave the
+                    # pipe unread and block the server.
+                    logger.warning(
+                        "[%s] stderr: line exceeded stream limit, discarding",
+                        self.server_id,
+                    )
+                    continue
+                if not line:
+                    break
                 if text := line.decode("utf-8", errors="replace").rstrip():
                     logger.debug("[%s] stderr: %s", self.server_id, text[:1000])
         except (asyncio.CancelledError, OSError):

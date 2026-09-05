@@ -668,6 +668,30 @@ hermes config set memory.provider memori
 hermes memory setup
 ```
 
+### MnemoStack
+
+Self-hosted hybrid memory: vector, lexical, temporal and graph retrieval over your own Qdrant, either as a shared service or as a local library. Turns are captured verbatim with their event time, so temporal recall ("what did we discuss last week") and freshness ranking both work on ordinary conversation rather than only on documents indexed by hand.
+
+| | |
+|---|---|
+| **Best for** | Self-hosted memory with hybrid retrieval and a real tenant boundary |
+| **Requires** | `pip install hermes-mnemostack` + a [mnemostack](https://github.com/udjin-labs/mnemostack) service or local Qdrant |
+| **Data storage** | Self-hosted — your Qdrant, optionally behind your own `mnemostack serve` deployment |
+| **Cost** | Free (self-hosted, no vendor) |
+
+**Tools (3):** `mnemostack_search` (hybrid recall), `mnemostack_remember` (store an explicit fact), `mnemostack_forget` (soft retraction — irreversible deletion is deliberately operator-only)
+
+**Two transports:** `remote` talks to a `mnemostack serve --auth` deployment, where the tenant is resolved from the service key and is therefore a real authorization boundary. `local` uses mnemostack as a library against your own Qdrant, where profile scoping is isolation but **not** an authorization boundary (same machine, same trust domain).
+
+**Setup:**
+```bash
+pip install hermes-mnemostack
+hermes-mnemostack install   # only on Hermes releases without entry-point discovery
+hermes memory setup mnemostack
+```
+
+`hermes-mnemostack doctor` reports what configuration is in effect, whether Hermes would activate the provider, and whether the service on the other end is reachable and healthy — including whether the extra `install` step is needed here, which it answers by running Hermes's own discovery rather than by comparing version numbers. It is read-only and never prints the API key.
+
 ---
 
 ## Provider Comparison
@@ -683,6 +707,7 @@ hermes memory setup
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud/Self-hosted | Free/Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
+| **MnemoStack** | Self-hosted | Free | 3 | `hermes-mnemostack` + mnemostack service or Qdrant | Hybrid vector/lexical/temporal/graph + event-time capture |
 
 ## Profile Isolation
 
@@ -692,6 +717,7 @@ Each provider's data is isolated per [profile](/user-guide/profiles):
 - **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file
+- **Self-hosted service providers** (MnemoStack in `remote` mode) resolve the tenant from the service key, so isolation is enforced by the service rather than asserted by the client
 
 ## Building a Memory Provider
 

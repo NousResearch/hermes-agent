@@ -56,9 +56,14 @@ def test_sandbox_artifact_is_fetched_but_credentials_and_symlinks_to_them_are_no
     assert remote_env.fetched == ["/home/agent/out/report.txt", "/home/agent/out/report.txt"]
 
 
-def test_local_backend_does_not_fetch(monkeypatch, tmp_path):
+def test_local_backend_and_strict_mode_do_not_fetch(monkeypatch, tmp_path, remote_env):
+    """Strict mode keeps its recency gate: a fetched copy would land in an allowlisted root and skip it."""
+    monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
+    assert BasePlatformAdapter.filter_media_delivery_paths([("/home/agent/out/report.txt", False)]) == []
+    monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT")
     monkeypatch.setattr(media_fetch, "_active_remote_env", lambda: None)
     assert BasePlatformAdapter.filter_media_delivery_paths([(str(tmp_path / "nope.txt"), False)]) == []
+    assert remote_env.fetched == []
 
 
 class _ScriptedEnv(BaseEnvironment):

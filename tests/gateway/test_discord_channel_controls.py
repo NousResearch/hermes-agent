@@ -10,6 +10,18 @@ import pytest
 from gateway.config import PlatformConfig
 
 
+class FakeRateLimited(Exception):
+    def __init__(self, retry_after):
+        self.retry_after = retry_after
+        super().__init__(f"Too many requests. Retry in {retry_after:.2f} seconds.")
+
+
+class FakeHTTP429(Exception):
+    def __init__(self):
+        self.response = SimpleNamespace(status=429, headers={})
+        super().__init__("HTTP 429")
+
+
 def _ensure_discord_mock():
     """Install a mock discord module when discord.py isn't available."""
     if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
@@ -228,9 +240,7 @@ async def test_auto_thread_rate_limit_notice_includes_retry_delay_without_fallba
     monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
 
-    rate_limit = RuntimeError("Too many requests")
-    monkeypatch.setattr(adapter, "_is_discord_rate_limit", lambda error: error is rate_limit)
-    monkeypatch.setattr(adapter, "_extract_discord_retry_after", lambda error: 286.02)
+    rate_limit = FakeRateLimited(286.02)
 
     channel = FakeTextChannel(channel_id=800)
 
@@ -267,11 +277,12 @@ async def test_auto_thread_fallback_rate_limit_stops_retries_and_explains_delay(
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
 
     direct_error = RuntimeError("temporary connection failure")
-    rate_limit = RuntimeError("Too many requests")
-    monkeypatch.setattr(adapter, "_is_discord_rate_limit", lambda error: error is rate_limit)
-    monkeypatch.setattr(adapter, "_extract_discord_retry_after", lambda error: 60.0)
+    rate_limit = FakeRateLimited(60.0)
 
-    seed_message = SimpleNamespace(create_thread=AsyncMock(side_effect=rate_limit))
+    seed_message = SimpleNamespace(
+        create_thread=AsyncMock(side_effect=rate_limit),
+        delete=AsyncMock(),
+    )
     channel = FakeTextChannel(channel_id=800)
     channel.send.side_effect = [seed_message, None]
     message = make_message(channel=channel, content="hello")
@@ -282,11 +293,37 @@ async def test_auto_thread_fallback_rate_limit_stops_retries_and_explains_delay(
     adapter.handle_message.assert_not_awaited()
     message.create_thread.assert_awaited_once()
     seed_message.create_thread.assert_awaited_once()
+    seed_message.delete.assert_awaited_once()
     assert channel.send.await_count == 2
     notice = channel.send.await_args_list[-1].args[0]
     assert "discord is temporarily rate-limiting" in notice.lower()
     assert "1m" in notice
     assert "not processed" in notice.lower()
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_rate_limit_without_retry_after_does_not_invent_delay(
+    adapter, monkeypatch,
+):
+    """A 429 without retry metadata should say 'later' rather than fabricate a wait."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    channel = FakeTextChannel(channel_id=800)
+    message = make_message(channel=channel, content="hello")
+    message.create_thread = AsyncMock(side_effect=FakeHTTP429())
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+    channel.send.assert_awaited_once()
+    assert channel.send.await_args is not None
+    notice = channel.send.await_args.args[0]
+    assert "try again later" in notice.lower()
+    assert "1m" not in notice
 
 
 # ── config.py bridging ───────────────────────────────────────────────

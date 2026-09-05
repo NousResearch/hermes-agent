@@ -1143,26 +1143,21 @@ def test_disabled_composite_debugging_prunes_constituent_platform_toolsets():
     assert "web" not in enabled
 
 
-def test_disabled_composite_debugging_matches_runtime_tool_definitions():
-    """CLI inspection surfaces should list the same tools the agent receives."""
-    from model_tools import get_tool_definitions
+def test_disabled_composite_display_matches_runtime_tool_selection():
+    """Display/runtime parity: a toolset is listed as enabled iff the agent keeps
+    at least one of its tools after the runtime's tool-level subtraction."""
+    from model_tools import _select_tool_names
+    from toolsets import resolve_toolset
 
     config = {
         "platform_toolsets": {"cli": ["hermes-cli"]},
         "agent": {"disabled_toolsets": ["debugging"]},
     }
-    enabled = sorted(_get_platform_tools(config, "cli", include_default_mcp_servers=False))
-    summary_tools = {
-        t["function"]["name"]
-        for t in get_tool_definitions(
-            enabled_toolsets=enabled,
-            disabled_toolsets=["debugging"],
-            quiet_mode=True,
-        )
-    }
-    assert "terminal" not in summary_tools
-    assert "read_file" not in summary_tools
-    assert "web_search" not in summary_tools
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    runtime = _select_tool_names(sorted(enabled), ["debugging"], quiet_mode=True)
+
+    for name in ("terminal", "file", "web", "vision", "skills"):
+        assert (name in enabled) == bool(set(resolve_toolset(name)) & runtime), name
 
 
 @_requires_recently_shipped

@@ -2443,7 +2443,14 @@ def _relay_sync_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
-    callback = create or (lambda request: client.chat.completions.create(**request))
+    # The progress hook is installed per task, so every attempt for that
+    # task must go through _create_with_progress — including auxiliary
+    # retries and provider fallbacks. Defaulting at this seam covers every
+    # call site that predates the hook or forgets to thread create= through
+    # (18 of 24 today); call sites that pass their own create= keep it.
+    if create is None:
+        create = lambda request: _create_with_progress(client, request)
+    callback = create
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
     # transaction on hard cancel without touching the shared client.
@@ -2462,7 +2469,14 @@ async def _relay_async_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
-    callback = create or (lambda request: client.chat.completions.create(**request))
+    # The progress hook is installed per task, so every attempt for that
+    # task must go through _create_with_progress — including auxiliary
+    # retries and provider fallbacks. Defaulting at this seam covers every
+    # call site that predates the hook or forgets to thread create= through
+    # (18 of 24 today); call sites that pass their own create= keep it.
+    if create is None:
+        create = lambda request: _create_with_progress(client, request)
+    callback = create
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return await callback(kwargs)

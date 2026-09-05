@@ -54,6 +54,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes login` / `logout` | **Deprecated** — use `hermes auth` instead. |
 | `hermes send` | Send a one-shot message to a configured messaging platform (Telegram, Discord, Slack, Signal, SMS, …). Useful from shell scripts, cron jobs, CI hooks, and monitoring daemons — no agent loop, no LLM. |
 | `hermes peer` | Register peer Hermes gateways on other machines and DM their agents' canonical Bot Chats (`hermes peer dm <peer>[/<agent>] "…"`). The transport behind cross-machine bot-to-bot messaging. |
+| `hermes group` | Relay a user request into a gateway-hosted Group Chat from any session and stream the members' replies back (`hermes group send <group> "…" --wait`). |
 | `hermes secrets` | Manage external secret sources (currently Bitwarden Secrets Manager) for pulling API keys at process startup instead of from `~/.hermes/.env`. |
 | `hermes migrate` | Diagnose and (optionally) rewrite `config.yaml` to replace references to retired models or deprecated settings (e.g. `migrate xai`). |
 | `hermes status` | Show agent, auth, and platform status. |
@@ -483,6 +484,52 @@ cross-machine teammates without SOUL edits. See
 [Bot Mode](../user-guide/bot-mode.md).
 
 Exit codes: `0` on success, `1` on delivery/peer failure, `2` on usage errors.
+
+## `hermes group`
+
+```bash
+hermes group list [--json]
+hermes group create <name> --member <profile> --member <profile> [...] [--json]
+hermes group send <group> ["message"] [--thread ID] [--as LABEL] [--wait] [--timeout SECONDS] [--event-id KEY] [--json]
+hermes group log <group> [--since SEQ] [--json]
+```
+
+Relay a user's request into a **gateway-hosted Group Chat from any session**
+and bring the deliberation back. The caller acts *as the user* — it is a
+relay, not a room member, so no membership is needed: the message lands as a
+user message with the relaying profile and `--as` label recorded as who
+relayed it. Member turns run headlessly in the gateway's hosted-room worker
+(`hermes gateway` or the Desktop backend must be running).
+
+`send --wait` streams each committed member reply as `@handle: text` and
+exits when the room reports the discussion settled or bounded. Run it in the
+background from an agent session and the completion output carries the
+replies — the same handoff shape as `hermes -p <agent> chat -q`:
+
+```
+terminal(command='hermes group send DevTeam "Plan the release checklist" --as "Pax via Discord" --wait',
+         background=True, notify=True)
+```
+
+| Subcommand | Description |
+|--------|-------------|
+| `list` | Hosted groups on this machine with members and whether this gateway manages them. |
+| `create <name> --member …` | Create a hosted group of 2–6 local profiles (`default` is addressed as `hermes`). |
+| `send <group> [message]` | Append a user message (argument or stdin). The thread follows the session (see below); `--thread` overrides (sanitized to `[A-Za-z0-9._:-]`); `--event-id` makes retries idempotent; `--wait` follows the deliberation. |
+| `log <group>` | Print the committed transcript (`User (<label>)` / `@handle` lines) from `--since`. |
+
+Threads follow the **relaying session**: the first `send` from a session
+starts a new room thread, later sends from the same session
+(`$HERMES_SESSION_ID`, which Hermes sets for every tool an agent spawns, or
+`--session`) continue it, and a different session gets its own thread.
+`--new-thread` starts over; `--thread` overrides for that send only. A room
+keeps only the latest pending user message per thread.
+
+Exit codes: `0` settled/bounded, `1` error, `2` usage, `3` timeout (replies
+received so far are already printed), `4` superseded by a room stop. A room
+stop is room-wide — it cancels every pending user turn in every thread,
+including a relay's — so `4` is correct even when the stop targeted another
+thread.
 
 ## `hermes secrets`
 

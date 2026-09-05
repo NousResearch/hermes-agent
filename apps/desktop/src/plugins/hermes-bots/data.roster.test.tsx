@@ -158,6 +158,16 @@ describe('no union roster', () => {
     )
   })
 
+  it('keeps a local gateway unannotated when the union lookup fails', async () => {
+    const rows = await mergedRoster(
+      { profiles: [{ name: 'default' }, { name: 'brokkr' }] },
+      null,
+      'local'
+    )
+
+    expect(identities(rows)).toEqual(['undefined:default', 'undefined:brokkr'])
+  })
+
   it('appends nothing when the union is empty', async () => {
     const rows = await mergedRoster(
       { profiles: [{ last_session: { id: 's1', last_active: 1 }, name: 'default' }] },

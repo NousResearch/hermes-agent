@@ -12,6 +12,8 @@
 
 import { isElementInHiddenPane, queryAllVisible, queryVisible } from '@/components/pane-shell/pane-visibility'
 import { $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
+import { subscribePreviewAnnotateHandoff } from '@/lib/preview-annotate/handoff'
+import { dataUrlToBlob } from '@/lib/preview-annotate/pack'
 
 import type { InlineRefInput } from './inline-refs'
 import { RICH_INPUT_SLOT } from './rich-editor'
@@ -329,6 +331,33 @@ export const requestComposerSubmit = (
 
   return true
 }
+
+// A popped-out Browser is a separate renderer, so its Comment Mode cannot use
+// this file's window-local CustomEvent bus directly. The source renderer pins
+// an exact target + surface id before opening the pop-out; accept the batch only
+// while that exact surface is still visible. Never fall through to `active`.
+subscribePreviewAnnotateHandoff(async request => {
+  if (request.destination.kind !== 'composer') {
+    return null
+  }
+
+  const { surfaceId, target } = request.destination
+  const typedTarget = target as ComposerTarget
+  const surface = queryVisible<HTMLElement>(`[data-composer-target="${cssEscape(typedTarget)}"]`)
+
+  if (!surface || surface.dataset.composerSurfaceId !== surfaceId) {
+    return { error: 'The original chat composer is no longer visible.', ok: false }
+  }
+
+  for (const image of request.images) {
+    requestComposerAttachImages([dataUrlToBlob(image.dataUrl)], { target: typedTarget })
+  }
+
+  requestComposerInsert(request.prompt, { mode: 'block', target: typedTarget })
+  requestComposerFocus(typedTarget)
+
+  return { ok: true }
+})
 
 export const onComposerSubmitRequest = (handler: (detail: SubmitDetail) => void) =>
   subscribe<SubmitDetail>(SUBMIT_EVENT, handler)

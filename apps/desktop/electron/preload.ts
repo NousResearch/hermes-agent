@@ -36,6 +36,15 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   openSessionInTerminal: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openInTerminal', sessionId, opts),
   openWindow: () => ipcRenderer.invoke('hermes:window:openInstance'),
   openBrowserWindow: tabId => ipcRenderer.invoke('hermes:window:openBrowser', tabId),
+  previewAnnotate: {
+    send: payload => ipcRenderer.send('hermes:preview-annotate:relay', payload),
+    onMessage: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:preview-annotate:relay', listener)
+
+      return () => ipcRenderer.removeListener('hermes:preview-annotate:relay', listener)
+    }
+  },
   onBrowserPopoutClosed: callback => {
     const listener = (_event, tabId) => callback(tabId)
     ipcRenderer.on('hermes:browser-popout:closed', listener)

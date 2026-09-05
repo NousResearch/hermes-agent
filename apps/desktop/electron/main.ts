@@ -14905,6 +14905,20 @@ ipcMain.handle('hermes:window:openBrowser', async (_event, tabId) => {
   return { ok: true }
 })
 
+// Browser Comment Mode handoff between renderer windows. The Browser pop-out
+// and the chat that opened it are separate renderers; packaged `file://`
+// windows must not depend on BroadcastChannel origin semantics. Main only
+// relays opaque payloads to the other Hermes windows. Destination validation
+// and ACK correlation remain renderer-side, so a stale target still fails
+// closed rather than falling through to another composer.
+ipcMain.on('hermes:preview-annotate:relay', (event, payload) => {
+  for (const other of BrowserWindow.getAllWindows()) {
+    if (!other.isDestroyed() && other.webContents.id !== event.sender.id) {
+      other.webContents.send('hermes:preview-annotate:relay', payload)
+    }
+  }
+})
+
 // Hand a session to the user's OWN terminal emulator, running the TUI against
 // it (`hermes --tui --resume <id>`). Not the in-app terminal pane: the point is
 // to continue the chat in the terminal they already live in.

@@ -43,3 +43,30 @@ export function reconnectBackoffDelayMs(attempt: number, options: ReconnectBacko
 
   return Math.random() * ceiling
 }
+
+/**
+ * Attempt counter to carry into the next reconnect schedule after a socket
+ * closed.
+ *
+ * The counter resets only on REAL SERVICE PROOF: the closing socket
+ * generation delivered at least one parsed JSON-RPC frame (the gateway.ready
+ * readiness ack, an RPC response, an event). Resetting on `state === 'open'`
+ * alone defeats the backoff entirely against a backend that ACCEPTS sockets
+ * but cannot serve them — a cold boot grinding through its skill scan, or a
+ * starved event loop. Every dial "succeeds", resets the counter, dies
+ * seconds later, and redials at the attempt-0 ceiling: a sub-second
+ * reconnect storm that both hammers the struggling backend and re-cancels
+ * whatever it was loading (#94769's flicker family; the
+ * "conn:local::default dial failed" storms).
+ *
+ * A temporal heuristic (socket stayed open N seconds) is NOT proof either:
+ * a degraded-but-open socket outlives any window without ever serving, and
+ * would reset the ladder right back into the amplification it exists to
+ * stop. Service proof is binary and observable — the transport either
+ * delivered a frame this generation or it did not.
+ */
+export function reconnectAttemptAfterClose(previousAttempt: number, servedProof: boolean): number {
+  const safePrevious = Number.isFinite(previousAttempt) ? Math.max(0, Math.floor(previousAttempt)) : 0
+
+  return servedProof ? 0 : safePrevious
+}

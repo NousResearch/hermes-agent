@@ -105,6 +105,15 @@ export class JsonRpcGatewayClient {
   private pending = new Map<GatewayRequestId, PendingCall>()
   private socket: WebSocketLike | null = null
   private state: ConnectionState = 'idle'
+  /**
+   * When the CURRENT socket generation last delivered a parsed JSON-RPC frame
+   * (readiness ack, RPC response, event, heartbeat reply); 0 while it has
+   * served nothing. Reaching `open` proves only that the backend ACCEPTS
+   * connections — this is the client-side "real service proof" that it can
+   * actually SERVE them, consumed by the reconnect-backoff reset and the
+   * liveness force-close policy. Reset at each dial (connect()).
+   */
+  private lastServedAt = 0
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private heartbeatSequence = 0
   private lastInboundAt = 0
@@ -153,6 +162,21 @@ export class JsonRpcGatewayClient {
     return this.state
   }
 
+  /** In-flight request() calls still awaiting a response on this socket. */
+  get pendingRequestCount(): number {
+    return this.pending.size
+  }
+
+  /**
+   * When the current socket generation last delivered a parsed JSON-RPC frame
+   * — an RPC response, the gateway.ready readiness ack, any event — or null
+   * when it has served nothing yet. A non-null value is proof the backend can
+   * SERVE this connection, not merely accept it.
+   */
+  get lastServedAtMs(): null | number {
+    return this.lastServedAt || null
+  }
+
   async connect(wsUrl: string): Promise<void> {
     // Refuse garbage; WebSocket coerces non-strings into
     // `ws://<origin>/[object%20Object]` (#68250 stale-emit boot loop).
@@ -186,6 +210,9 @@ export class JsonRpcGatewayClient {
 
     const socket = this.options.socketFactory?.(wsUrl) ?? new WebSocket(wsUrl)
     this.socket = socket
+    // Service proof is per socket generation: a fresh dial has served nothing
+    // yet, whatever the previous generation delivered.
+    this.lastServedAt = 0
     this.stopHeartbeat()
 
     socket.addEventListener('message', message => {
@@ -438,6 +465,10 @@ export class JsonRpcGatewayClient {
     } catch {
       return
     }
+
+    // Any parsed frame — response, readiness ack, event, heartbeat reply —
+    // is real service proof for this socket generation.
+    this.lastServedAt = Date.now()
 
     if (frame.id !== undefined && frame.id !== null) {
       const call = this.pending.get(frame.id)

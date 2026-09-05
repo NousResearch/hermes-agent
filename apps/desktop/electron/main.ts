@@ -3695,6 +3695,11 @@ async function claimBackendChild(child, command, profile, nonce, outputTail: Bac
 
     child.hermesBackendIdentity = identity
 
+    // A profile owns exactly one backend per app instance; the replacement
+    // policy, its logging, and its never-throw posture live behind the
+    // ownership module boundary.
+    await backendOwnership.retireReplacedSiblings(identity, rememberLog)
+
     return identity
   } catch (error) {
     stopBackendChild(child)

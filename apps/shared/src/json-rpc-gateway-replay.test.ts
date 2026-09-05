@@ -334,3 +334,72 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     client.close()
   })
 })
+
+describe('JsonRpcGatewayClient service proof (#99178: real service proof, both directions)', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = []
+    sockets = FakeWebSocket.instances as unknown as FakeWebSocket[]
+  })
+
+  it('an open socket that has served nothing carries no proof', async () => {
+    const client = makeClient()
+    const p = client.connect('ws://x')
+    sockets[0].open()
+    await p
+
+    // Acceptance is not service: open alone must not read as served.
+    expect(client.lastServedAtMs).toBe(null)
+    expect(client.pendingRequestCount).toBe(0)
+    client.close()
+  })
+
+  it('any parsed frame — event or RPC response — is service proof', async () => {
+    const client = makeClient()
+    const p = client.connect('ws://x')
+    sockets[0].open()
+    await p
+
+    sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready' } })
+    expect(typeof client.lastServedAtMs).toBe('number')
+    client.close()
+  })
+
+  it('service proof is per socket generation: a fresh dial starts unproven', async () => {
+    const client = makeClient()
+    const p1 = client.connect('ws://x')
+    sockets[0].open()
+    await p1
+    sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready' } })
+    expect(typeof client.lastServedAtMs).toBe('number')
+
+    client.close()
+
+    const p2 = client.connect('ws://x')
+
+    // The new generation has served nothing, whatever the last one delivered.
+    expect(client.lastServedAtMs).toBe(null)
+    sockets[1].open()
+    await p2
+    expect(client.lastServedAtMs).toBe(null)
+    client.close()
+  })
+
+  it('pendingRequestCount tracks in-flight RPCs until their responses land', async () => {
+    const client = makeClient()
+    const p = client.connect('ws://x')
+    sockets[0].open()
+    await p
+
+    const request = client.request('session.resume', { session_id: 's1' }, 0)
+    expect(client.pendingRequestCount).toBe(1)
+
+    const sent = sockets[0].lastRequest()
+    sockets[0].serverFrame({ jsonrpc: '2.0', id: sent.id, result: { ok: true } })
+
+    await request
+    expect(client.pendingRequestCount).toBe(0)
+    // The response was served by this generation.
+    expect(typeof client.lastServedAtMs).toBe('number')
+    client.close()
+  })
+})

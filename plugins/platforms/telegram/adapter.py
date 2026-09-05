@@ -4503,7 +4503,112 @@ class TelegramAdapter(BasePlatformAdapter):
             size_text = f"{int(file_size or 0) / (1024 * 1024):.1f} MB"
         except (TypeError, ValueError):
             size_text = "unknown size"
-        return f"[Telegram {label} skipped: file size {size_text} exceeds the {limit_mb} MB limit. Ask the user to send a smaller file.]"
+        return (
+            f"[Telegram {label} was not cached by the Bot API gateway: file size "
+            f"{size_text} exceeds its {limit_mb} MB limit. Check any configured "
+            "recovery route before asking the user to resend.]"
+        )
+
+    @staticmethod
+    def _telegram_route_values(route: Dict[str, Any], key: str) -> set[str]:
+        raw = route.get(key)
+        if raw in (None, ""):
+            return set()
+        values = raw if isinstance(raw, (list, tuple, set)) else [raw]
+        return {str(value) for value in values if value not in (None, "")}
+
+    def _telegram_oversize_recovery_skill(self, event: MessageEvent) -> Optional[str]:
+        """Resolve an authenticated, profile-scoped oversized-media skill route."""
+        source = getattr(event, "source", None)
+        if source is None:
+            return None
+        metadata = getattr(event, "metadata", None)
+        if not isinstance(metadata, dict):
+            metadata = {}
+            event.metadata = metadata
+        route_chat_id = str(getattr(source, "chat_id", "") or "")
+        route_thread_id = str(getattr(source, "thread_id", "") or "")
+        route_user_id = str(
+            metadata.get("telegram_transport_sender_user_id")
+            or getattr(source, "user_id", "")
+            or ""
+        )
+        route_profile = str(
+            metadata.get("telegram_route_profile")
+            or self._session_key_profile(source)
+            or "default"
+        )
+
+        for route in self.config.extra.get("auto_skill_routes", []) or []:
+            if not isinstance(route, dict):
+                continue
+            raw_match = route.get("match")
+            match = raw_match if isinstance(raw_match, dict) else {}
+            if not bool(match.get("oversize_media")):
+                continue
+            route_users = self._telegram_route_values(route, "users")
+            route_profiles = self._telegram_route_values(route, "profiles")
+            if not route_users or not route_profiles:
+                continue
+            predicates = (("chats", route_chat_id), ("threads", route_thread_id))
+            if any(
+                (allowed := self._telegram_route_values(route, key)) and value not in allowed
+                for key, value in predicates
+            ):
+                continue
+            if route_user_id not in route_users or route_profile not in route_profiles:
+                continue
+            skill = str(route.get("skill") or "").strip().lstrip("/")
+            if skill:
+                return skill
+        return None
+
+    def _mark_telegram_media_too_large(
+        self, event: MessageEvent, source: Any, label: str,
+    ) -> None:
+        """Attach a trusted recovery target and force a configured skill route."""
+        max_bytes = int(getattr(self, "_max_doc_bytes", 20 * 1024 * 1024) or 20 * 1024 * 1024)
+        file_size = getattr(source, "file_size", None)
+        note = self._telegram_media_too_large_note(label, file_size, max_bytes)
+        metadata = getattr(event, "metadata", None)
+        if not isinstance(metadata, dict):
+            metadata = {}
+            event.metadata = metadata
+        event_source = getattr(event, "source", None)
+        metadata["telegram_media_recovery"] = {
+            "chat_id": str(getattr(event_source, "chat_id", "") or ""),
+            "message_id": str(getattr(event, "message_id", "") or ""),
+            "thread_id": str(getattr(event_source, "thread_id", "") or ""),
+            "sender_user_id": str(
+                metadata.get("telegram_transport_sender_user_id")
+                or getattr(event_source, "user_id", "")
+                or ""
+            ),
+            "media_label": label,
+            "file_size": int(file_size or 0),
+            "bot_api_limit": max_bytes,
+        }
+
+        skill = self._telegram_oversize_recovery_skill(event)
+        original = (event.text or "").strip()
+        if skill and not event.is_command():
+            target = metadata["telegram_media_recovery"]
+            event.auto_skill = None
+            metadata["preserve_command_args"] = True
+            event.preprocess_skill_command_before_busy = True
+            event.text = (
+                f"/{skill} Recover the exact oversized Telegram {label} through the "
+                "configured canonical recovery path. The trusted transport target is "
+                f"chat_id={target['chat_id']}, message_id={target['message_id']}, "
+                f"thread_id={target['thread_id'] or 'none'}, "
+                f"sender_user_id={target['sender_user_id']}, "
+                f"file_size={target['file_size']} bytes. Do not ask for a smaller "
+                "file until canonical recovery has been attempted."
+            )
+            if original:
+                event.text += f"\n\nOriginal user text:\n{original}"
+            return
+        event.text = self._append_observed_note(original, note)
 
     @staticmethod
     def _int_or_zero(value: Any) -> int:
@@ -5852,7 +5957,7 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             allowed, note = self._telegram_media_size_allowed(source, label)
             if not allowed:
-                event.text = self._append_observed_note(event.text, note or "")
+                self._mark_telegram_media_too_large(event, source, label)
                 logger.info("[Telegram] Skipped oversized user %s (size=%s)", kind, getattr(source, "file_size", None))
                 await self.handle_message(event)
                 return True
@@ -5900,9 +6005,10 @@ class TelegramAdapter(BasePlatformAdapter):
             display = original_filename or doc_mime or ext or 'unknown'
             # Size check before the image branch so image documents can't bypass the limit.
             if not doc.file_size or doc.file_size > self._max_doc_bytes:
+                self._mark_telegram_media_too_large(event, doc, "document")
                 logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
-                return await self._dispatch_with_text(
-                    event, f"The document is too large or its size could not be verified. Maximum: {self._max_doc_bytes // (1024 * 1024)} MB.")
+                await self.handle_message(event)
+                return True
             # Screenshots/photos sent as documents take the image cache + batching path.
             if ext in _TELEGRAM_IMAGE_EXTENSIONS or doc_mime.startswith("image/"):
                 file_obj = await doc.get_file()
@@ -6287,6 +6393,10 @@ class TelegramAdapter(BasePlatformAdapter):
             message_id=str(message.message_id), platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
             channel_prompt=resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None),
+            metadata={
+                "telegram_transport_sender_user_id": str(source.user_id or ""),
+                "telegram_route_profile": str(self._session_key_profile(source) or "default"),
+            },
             timestamp=message.date)
 
     # -- Message reactions (processing lifecycle) --

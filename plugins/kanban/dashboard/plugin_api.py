@@ -1511,7 +1511,78 @@ def auto_describe_profile(profile_name: str, payload: DescribeAutoBody):
     return {"ok": bool(outcome.ok), "profile": outcome.profile_name, "reason": outcome.reason, "description": outcome.description}
 
 
-# --- Decompose (built-in decomposer fan-out) ----------------------------------
+@router.get("/profiles/{profile_name}/skills")
+def list_profile_skills(profile_name: str):
+    """Return the skills installed for the named profile.
+
+    Consumed by the task-creation forms (dashboard + desktop kanban) to
+    offer a skills dropdown scoped to the chosen assignee. Each name is the
+    skill directory's full path relative to the profile's ``skills/`` dir
+    (``_org/<id>/`` mirrors stripped to their in-mirror path, matching the
+    runtime loader) so a picked value round-trips through ``--skills``
+    preload and ``skill_view()`` lookup unchanged.
+    """
+    try:
+        from agent.skill_utils import iter_skill_index_files
+        from hermes_cli import profiles as profiles_mod
+
+        canon = profiles_mod.normalize_profile_name(profile_name)
+        # A profile name is a URL path parameter reaching the filesystem here,
+        # so validate BEFORE resolving: normalize alone only lowercases/strips
+        # and would happily pass `../../etc` through to get_profile_dir.
+        profiles_mod.validate_profile_name(canon)
+        if canon == "default":
+            from hermes_constants import get_hermes_home  # type: ignore
+
+            profile_dir = Path(get_hermes_home())
+        else:
+            profile_dir = profiles_mod.get_profile_dir(canon)
+        if not profile_dir.is_dir():
+            raise HTTPException(status_code=404, detail=f"profile '{profile_name}' not found")
+
+        skills_dir = profile_dir / "skills"
+        if not skills_dir.is_dir():
+            return {"profile": canon, "skills": []}
+
+        names: list[str] = []
+        for md in iter_skill_index_files(skills_dir, "SKILL.md"):
+            try:
+                rel = md.relative_to(skills_dir)
+            except ValueError:
+                continue
+            parts = list(rel.parts[:-1])  # drop the SKILL.md filename
+            if not parts:
+                continue
+            # Org mirrors list under their in-mirror path (the runtime's
+            # skill loader strips the `_org/<org_id>/` prefix — see
+            # agent.prompt_builder._build_skill_entry — so a picked value
+            # resolves the same way here as in the worker's session).
+            if parts[0] == "_org" and len(parts) >= 3:
+                parts = parts[2:]
+                if not parts:
+                    continue
+            # The FULL path relative to skills_dir (org prefix stripped),
+            # e.g. ``mlops/evaluation/evaluating-llms-harness``. This is the
+            # exact identifier ``skill_view()`` resolves, so a picked value
+            # round-trips through the worker's ``--skills`` preload. (A
+            # 2-part flattening like profile_describer would break 3-level
+            # skills: ``mlops/models/audiocraft`` → ``mlops/audiocraft``
+            # resolves to nothing.)
+            names.append("/".join(parts))
+        names.sort()
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        # normalize/validate rejection (e.g. traversal characters, empty name)
+        raise HTTPException(status_code=404, detail=f"profile '{profile_name}' not found") from exc
+    except Exception:
+        # Log server-side; never echo the raw exception to API consumers.
+        log.exception("failed to list profile skills for %r", profile_name)
+        raise HTTPException(status_code=500, detail="failed to list profile skills")
+    return {"profile": canon, "skills": names}
+
+
+# --- Decompose (built-in decomposer fan-out) ---
 
 class DecomposeBody(BaseModel):
     author: Optional[str] = None

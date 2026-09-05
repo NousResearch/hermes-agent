@@ -1228,6 +1228,130 @@ def test_specify_happy_path(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# GET /profiles/{name}/skills — assignee-scoped skills dropdown source
+# ---------------------------------------------------------------------------
+
+
+def _make_skills(home: Path, *paths: str) -> None:
+    """Write SKILL.md files under ``<home>/skills/<path>/``."""
+    for rel in paths:
+        skill_dir = home / "skills" / rel
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {rel.split('/')[-1]}\ndescription: test skill\n---\nbody\n",
+            encoding="utf-8",
+        )
+
+
+def test_profile_skills_lists_default_home_skills(kanban_home, client):
+    # The 'default' profile resolves to HERMES_HOME itself, so skills land
+    # directly under <home>/skills/.
+    _make_skills(kanban_home, "translation", "devops/labfinder-ci-pipelines",
+                "devops/labfinder-eks-investigation")
+    r = client.get("/api/plugins/kanban/profiles/default/skills")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["profile"] == "default"
+    # Each name is the full skill-dir path relative to skills/ — the exact
+    # identifier skill_view() resolves, so a picked value round-trips
+    # through the worker's --skills preload.
+    assert data["skills"] == [
+        "devops/labfinder-ci-pipelines",
+        "devops/labfinder-eks-investigation",
+        "translation",
+    ]
+
+
+def test_profile_skills_keeps_deep_category_paths(kanban_home, client):
+    # 3-level skills must keep their full path — a 2-part flattening
+    # (``mlops/models/audiocraft`` → ``mlops/audiocraft``) would produce
+    # an identifier that resolves to nothing.
+    _make_skills(kanban_home, "mlops/models/audiocraft")
+    r = client.get("/api/plugins/kanban/profiles/default/skills")
+    assert r.status_code == 200
+    assert r.json()["skills"] == ["mlops/models/audiocraft"]
+
+
+def test_profile_skills_empty_when_none_installed(kanban_home, client):
+    r = client.get("/api/plugins/kanban/profiles/default/skills")
+    assert r.status_code == 200
+    assert r.json()["skills"] == []
+
+
+def test_profile_skills_support_dirs_excluded(kanban_home, client):
+    # references/ inside an actual skill dir must not surface as a skill
+    # (progressive-disclosure support path), and neither should an _org
+    # mirror entry without the token-gating .active_org marker.
+    _make_skills(kanban_home, "devops/labfinder-ci-pipelines")
+    skill = kanban_home / "skills" / "devops" / "labfinder-ci-pipelines"
+    (skill / "references").mkdir(parents=True)
+    (skill / "references" / "SKILL.md").write_text("not a skill\n", encoding="utf-8")
+    (kanban_home / "skills" / "_org" / "acme" / "shared").mkdir(parents=True)
+    (kanban_home / "skills" / "_org" / "acme" / "shared" / "SKILL.md").write_text(
+        "mirror\n", encoding="utf-8"
+    )
+    r = client.get("/api/plugins/kanban/profiles/default/skills")
+    assert r.status_code == 200
+    assert r.json()["skills"] == ["devops/labfinder-ci-pipelines"]
+
+
+def test_profile_skills_lists_active_org_mirror(kanban_home, client):
+    # With the sync-client-written .active_org marker, the active org's mirror
+    # resolves — same gating and same in-mirror naming as the runtime loader
+    # (agent.prompt_builder strips the `_org/<org_id>/` prefix).
+    (kanban_home / "skills" / "_org" / "acme").mkdir(parents=True)
+    (kanban_home / "skills" / "_org" / ".active_org").write_text("acme", encoding="utf-8")
+    _make_skills(kanban_home, "_org/acme/shared-translation",
+                "_org/acme/research/org-research")
+    r = client.get("/api/plugins/kanban/profiles/default/skills")
+    assert r.status_code == 200
+    # Mirror skills list under their in-mirror path (org prefix stripped,
+    # matching the runtime loader).
+    assert r.json()["skills"] == ["research/org-research", "shared-translation"]
+
+
+def test_profile_skills_404_unknown_profile(kanban_home, client):
+    r = client.get("/api/plugins/kanban/profiles/does-not-exist/skills")
+    assert r.status_code == 404
+    assert "not found" in r.json()["detail"]
+
+
+def test_profile_skills_rejects_traversal_names(kanban_home, client):
+    # normalize alone only lowercases/strips — it would happily pass `../../etc`
+    # through to get_profile_dir. validate_profile_name must gate the URL
+    # parameter before it reaches the filesystem; rejection reads as 404.
+    for bad in ("..", "../..", "../../etc", "a/b", "a%2Fb", ".hidden", "UPPER"):
+        r = client.get(f"/api/plugins/kanban/profiles/{bad}/skills")
+        assert r.status_code == 404, f"{bad!r} should be rejected, got {r.status_code}"
+
+
+def test_profile_skills_rejects_empty_name(kanban_home, client):
+    # normalize raises ValueError on whitespace-only input; the endpoint
+    # maps that to 404 rather than a 500.
+    r = client.get("/api/plugins/kanban/profiles/%20/skills")
+    assert r.status_code == 404
+
+
+def test_profile_skills_500_does_not_leak_paths(kanban_home, client, monkeypatch):
+    # The generic 500 detail must not echo the exception (which can carry
+    # internal paths) — log it server-side, return a fixed string. The
+    # endpoint imports iter_skill_index_files at call time
+    # (`from agent.skill_utils import ...`), so patching the module
+    # attribute intercepts the next request.
+    from agent import skill_utils as skill_utils_mod
+
+    def _explode(*args, **kwargs):
+        raise RuntimeError("secret path /Users/atlmapper/boom")
+
+    monkeypatch.setattr(skill_utils_mod, "iter_skill_index_files", _explode)
+    _make_skills(kanban_home, "translation")
+    r = client.get("/api/plugins/kanban/profiles/default/skills")
+    assert r.status_code == 500
+    assert "boom" not in r.json()["detail"]
+    assert r.json()["detail"] == "failed to list profile skills"
+
+
+# ---------------------------------------------------------------------------
 # Final result visibility for Done cards
 # ---------------------------------------------------------------------------
 

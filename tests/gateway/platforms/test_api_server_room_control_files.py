@@ -12,7 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway import hosted_room_controls as controls, hosted_rooms
 from gateway.hosted_room_control_client import RoomControlHTTPClient
 from gateway.hosted_room_file_contract import FileAccessError
-from gateway.hosted_room_messaging import MessagingRoomBackend
+from gateway.hosted_room_messaging import MessagingRoomBackend, list_messaging_rooms
 from gateway.platforms import api_server_room_controls
 from gateway.platforms import api_server_room_control_files
 from tests.gateway.test_hosted_room_file_access import file_state, publish
@@ -62,6 +62,7 @@ def peer_backend(state, url):
         db,
         room_id="room-1",
         member_id="peer",
+        target_profile="reviewer",
         home_url=url,
         authority_gateway_id=state.authority,
         authority_epoch=1,
@@ -124,6 +125,43 @@ async def test_real_http_and_messaging_backend_return_exact_user_and_bot_files(
         with pytest.raises(FileAccessError) as error:
             await asyncio.to_thread(backend.list_files, room=room)
         assert error.value.code == "file_access_denied"
+
+
+@pytest.mark.asyncio
+async def test_remote_files_outlive_the_admission_reservation(file_api):
+    state = file_api
+    item = publish(state, "overnight.md", b"durable room file")
+    state.backend.service.status = lambda _room_id: {
+        "working": False,
+        "blocked": False,
+        "counts": {},
+    }
+    async with TestServer(state.app) as server:
+        backend, link = peer_backend(state, str(server.make_url("")))
+        with sqlite3.connect(backend.db_path) as conn:
+            conn.execute(
+                "UPDATE hosted_room_peer_reservations SET expires_at=1"
+            )
+
+        summary = await asyncio.to_thread(RoomControlHTTPClient(link).summary)
+        assert summary["room"]["room_id"] == "room-1"
+        named_rooms = list_messaging_rooms(backend, profile="reviewer")
+        assert [room["room_id"] for room in named_rooms] == ["room-1"]
+        room = named_rooms[0]
+
+        page = await asyncio.to_thread(
+            backend.list_files, room=room, profile="reviewer"
+        )
+        assert [entry["attachment_id"] for entry in page["items"]] == [
+            item["attachment_id"]
+        ]
+        stored = await asyncio.to_thread(
+            backend.read_file,
+            room=room,
+            event_id=item["event_id"],
+            attachment_id=item["attachment_id"],
+        )
+        assert stored.data == b"durable room file"
 
 
 @pytest.mark.asyncio

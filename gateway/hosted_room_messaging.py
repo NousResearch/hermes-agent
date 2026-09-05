@@ -183,14 +183,7 @@ def list_messaging_rooms(
     for link in peer_links:
         if link.room_id in hosted_ids or link.room_id in remote_ids:
             continue
-        if profile != "default" and not hosted_room_controls.peer_reservation_matches(
-            service.db_path,
-            room_id=link.room_id,
-            member_id=link.member_id,
-            target_profile=profile,
-            authority_gateway_id=link.authority_gateway_id,
-            authority_epoch=link.authority_epoch,
-        ):
+        if profile != "default" and link.target_profile != profile:
             continue
         remote_ids.add(link.room_id)
         remote.append({

@@ -47,6 +47,7 @@ def _seed_controls(db, room_id, *, now):
         db,
         room_id=room_id,
         member_id="member-1",
+        target_profile="reviewer",
         home_url="https://home.example.test",
         authority_gateway_id="gateway-1",
         authority_epoch=1,

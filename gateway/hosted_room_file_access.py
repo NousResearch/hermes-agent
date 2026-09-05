@@ -10,7 +10,6 @@ from __future__ import annotations
 import hmac
 import json
 import math
-import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
@@ -242,26 +241,14 @@ def _remote_link(backend, room, profile):
             "authority_gateway_id"
         ) or link.authority_epoch != room.get("authority_epoch"):
             raise FileAccessError("file_access_denied")
-        with controls._transaction(backend.db_path) as conn:
-            rows = conn.execute(
-                """SELECT target_profile FROM hosted_room_peer_reservations
-                    WHERE room_id=? AND member_id=? AND authority_gateway_id=?
-                      AND authority_epoch=? AND expires_at>? AND revoked_at IS NULL
-                      AND (?='default' OR target_profile=?) LIMIT 2""",
-                (
-                    link.room_id,
-                    link.member_id,
-                    link.authority_gateway_id,
-                    link.authority_epoch,
-                    time.time(),
-                    profile,
-                    profile,
-                ),
-            ).fetchall()
-        if len(rows) != 1:
+        # An unbound legacy link remains valid for default-owner status, but
+        # Files fails with the existing re-registration guidance.
+        if link.target_profile is None:
             raise FileAccessError("file_access_denied")
-        target_profile = identifier(rows[0]["target_profile"])
-        if not controls.peer_reservation_matches(
+        target_profile = identifier(link.target_profile)
+        if profile != "default" and profile != target_profile:
+            raise FileAccessError("file_access_denied")
+        if controls.peer_reservation_is_revoked(
             backend.db_path,
             room_id=link.room_id,
             member_id=link.member_id,

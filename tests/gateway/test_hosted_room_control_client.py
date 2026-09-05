@@ -62,6 +62,7 @@ def _link(url: str) -> StoredPeerRoomControl:
     return StoredPeerRoomControl(
         room_id="room-1",
         member_id="member-peer",
+        target_profile="reviewer",
         home_url=url,
         transport_security="loopback",
         authority_gateway_id="install:home",
@@ -131,6 +132,7 @@ def test_stored_peer_revoke_contacts_home_before_erasing_bearer(tmp_path, monkey
         db,
         room_id="room-1",
         member_id="member-peer",
+        target_profile="reviewer",
         room_name="Planning",
         member_count=2,
         home_url="https://home.example.test",

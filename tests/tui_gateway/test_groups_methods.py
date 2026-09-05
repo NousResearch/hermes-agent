@@ -1270,6 +1270,7 @@ def test_reciprocal_control_link_is_scoped_to_the_live_peer_reservation(
     ).links
     assert links[0].room_id == "room-control"
     assert links[0].home_url == "https://home.example.test/hermes"
+    assert links[0].target_profile == "ops"
     assert control_calls == [("summary", "room-control")]
 
     revoked = _result(

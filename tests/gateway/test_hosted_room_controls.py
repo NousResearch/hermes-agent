@@ -52,6 +52,7 @@ def _issue(db, *, room_id="room-1", member_id="member-1", now=20):
 
 def _save(db, token, *, room_id="room-1", member_id="member-1", **overrides):
     values = {
+        "target_profile": "reviewer",
         "home_url": "https://home.example.test",
         "authority_gateway_id": HOME,
         "authority_epoch": 1,
@@ -407,11 +408,76 @@ def test_peer_control_link_requires_the_exact_live_roomlink_reservation(tmp_path
         **{**claims, "member_id": "member-2"},
         now=30,
     )
+    hosted_rooms.reserve_peer_room(
+        db,
+        claims={**claims, "target_profile": "writer"},
+        expires_at=100,
+        now=20,
+    )
+    assert not controls.peer_reservation_matches(db, **claims, now=30)
     assert not controls.peer_reservation_matches(
         db,
         **claims,
         now=100,
     )
+
+
+def test_peer_target_profile_persists_and_migrates_only_exact_unrevoked_binding(
+    tmp_path,
+):
+    token = secrets.token_urlsafe(controls.TOKEN_BYTES)
+    fresh = tmp_path / "fresh.db"
+    assert _save(fresh, token).link.target_profile == "reviewer"
+    with pytest.raises(controls.HostedRoomControlConflictError):
+        _save(
+            fresh,
+            token,
+            target_profile="writer",
+            allow_rotation=True,
+            now=30,
+        )
+
+    cases = (
+        ("expired", (("reviewer", 20),), False, "reviewer"),
+        ("revoked", (("reviewer", 20),), True, None),
+        (
+            "ambiguous",
+            (("reviewer", 20), ("writer", 20)),
+            False,
+            None,
+        ),
+        ("reassigned", (("writer", 30),), False, None),
+        ("missing", (), False, None),
+    )
+    for name, reservations, revoked, expected in cases:
+        db = tmp_path / f"{name}.db"
+        _save(db, token)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "ALTER TABLE hosted_room_peer_controls DROP COLUMN target_profile"
+            )
+        for profile, created_at in reservations:
+            hosted_rooms.reserve_peer_room(
+                db,
+                claims={
+                    "room_id": "room-1",
+                    "member_id": "member-1",
+                    "target_profile": profile,
+                    "authority_gateway_id": HOME,
+                    "authority_epoch": 1,
+                },
+                expires_at=100,
+                now=created_at,
+            )
+        if revoked:
+            with sqlite3.connect(db) as conn:
+                conn.execute(
+                    "UPDATE hosted_room_peer_reservations SET revoked_at=30"
+                )
+
+        loaded = controls.load_peer_control_links(db, now=200).links
+        assert len(loaded) == 1
+        assert loaded[0].target_profile == expected
 
 
 def test_peer_expiry_and_revocation_are_durable_and_idempotent(tmp_path):

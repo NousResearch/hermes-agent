@@ -435,6 +435,7 @@ def test_participant_gateway_lists_reads_and_controls_remote_room(
         db,
         room_id="remote-room",
         member_id="reviewer",
+        target_profile="reviewer",
         room_name="Release planning",
         member_count=2,
         home_url="https://home.example.test",

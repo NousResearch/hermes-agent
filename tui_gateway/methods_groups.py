@@ -784,6 +784,7 @@ def _(rid, params: dict) -> dict:
             default_db_path(),
             room_id=params.get("room_id"),
             member_id=params.get("member_id"),
+            target_profile=profile,
             home_url=params.get("home_url"),
             authority_gateway_id=params.get("authority_gateway_id"),
             authority_epoch=int(params.get("authority_epoch") or 0),

@@ -169,6 +169,7 @@ def host(mode="ok", *, catalog=False, redirect_to=None):
     link = StoredPeerRoomControl(
         room_id="room-1",
         member_id="peer",
+        target_profile="reviewer",
         home_url=f"http://127.0.0.1:{server.server_port}",
         transport_security="loopback",
         authority_gateway_id="install:home",

@@ -96,6 +96,7 @@ class StoredPeerRoomControl:
 
     room_id: str
     member_id: str
+    target_profile: str | None
     home_url: str
     transport_security: str
     authority_gateway_id: str
@@ -293,6 +294,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         """CREATE TABLE IF NOT EXISTS hosted_room_peer_controls (
             room_id TEXT NOT NULL,
             member_id TEXT NOT NULL,
+            target_profile TEXT NOT NULL,
             room_name TEXT NOT NULL,
             member_count INTEGER NOT NULL CHECK (member_count BETWEEN 1 AND 64),
             home_url TEXT NOT NULL,
@@ -362,6 +364,7 @@ def _schema_is_current(conn: sqlite3.Connection) -> bool:
         and {
             "room_id",
             "member_id",
+            "target_profile",
             "room_name",
             "member_count",
             "home_url",
@@ -399,6 +402,52 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             """ALTER TABLE hosted_room_control_tokens
                ADD COLUMN request_id TEXT NOT NULL DEFAULT 'legacy'"""
         )
+    peer = {
+        row[1] for row in conn.execute("PRAGMA table_info(hosted_room_peer_controls)")
+    }
+    if peer and "target_profile" not in peer:
+        conn.execute(
+            "ALTER TABLE hosted_room_peer_controls ADD COLUMN target_profile TEXT"
+        )
+        reservations = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(hosted_room_peer_reservations)"
+            )
+        }
+        if {
+            "room_id",
+            "member_id",
+            "target_profile",
+            "authority_gateway_id",
+            "authority_epoch",
+            "revoked_at",
+            "created_at",
+        }.issubset(reservations):
+            # Expiry ends operational grant authority, not the signed identity
+            # claims. Recover only one exact, never-revoked profile binding;
+            # missing or reassigned history stays NULL and Files fails closed.
+            conn.execute(
+                """UPDATE hosted_room_peer_controls
+                      SET target_profile = (
+                          SELECT CASE
+                                     WHEN COUNT(*)=1
+                                      AND MIN(reservation.authority_gateway_id)=
+                                          hosted_room_peer_controls.authority_gateway_id
+                                      AND MIN(reservation.authority_epoch)=
+                                          hosted_room_peer_controls.authority_epoch
+                                     THEN MIN(reservation.target_profile)
+                                     ELSE NULL
+                                 END
+                            FROM hosted_room_peer_reservations AS reservation
+                           WHERE reservation.room_id=hosted_room_peer_controls.room_id
+                             AND reservation.member_id=hosted_room_peer_controls.member_id
+                             AND reservation.revoked_at IS NULL
+                             AND reservation.created_at<=
+                                 hosted_room_peer_controls.created_at
+                      )
+                    WHERE target_profile IS NULL"""
+            )
 
 
 def _connect(db_path: Path | str) -> sqlite3.Connection:
@@ -755,6 +804,10 @@ def revoke_home_control_token_value(
 def _peer_link_from_row(row: sqlite3.Row) -> StoredPeerRoomControl:
     room_id = _identifier(row["room_id"], label="room_id")
     member_id = _identifier(row["member_id"], label="member_id")
+    try:
+        target_profile = _identifier(row["target_profile"], label="target_profile")
+    except HostedRoomControlError:
+        target_profile = None
     authority_gateway_id = _identifier(
         row["authority_gateway_id"], label="authority_gateway_id"
     )
@@ -779,6 +832,7 @@ def _peer_link_from_row(row: sqlite3.Row) -> StoredPeerRoomControl:
     return StoredPeerRoomControl(
         room_id=room_id,
         member_id=member_id,
+        target_profile=target_profile,
         home_url=home_url,
         transport_security=transport_security,
         authority_gateway_id=authority_gateway_id,
@@ -799,6 +853,7 @@ def save_peer_control_link(
     *,
     room_id: Any,
     member_id: Any,
+    target_profile: Any,
     home_url: Any,
     authority_gateway_id: Any,
     authority_epoch: Any,
@@ -813,6 +868,7 @@ def save_peer_control_link(
 
     room_id = _identifier(room_id, label="room_id")
     member_id = _identifier(member_id, label="member_id")
+    target_profile = _identifier(target_profile, label="target_profile")
     home_url, transport_security = _normalize_home_url(home_url)
     authority_gateway_id = _identifier(
         authority_gateway_id, label="authority_gateway_id"
@@ -857,27 +913,31 @@ def save_peer_control_link(
                 stored.home_url == home_url
                 and stored.authority_gateway_id == authority_gateway_id
                 and stored.authority_epoch == authority_epoch
+                and stored.target_profile in {None, target_profile}
             ):
                 raise HostedRoomControlConflictError(
                     "control link conflicts with stored authority"
                 )
+            binding_profile = stored.target_profile is None
             rotating = not same_token or stored.expires_at != expires_at
-            if rotating and allow_rotation is not True:
+            if (binding_profile or rotating) and allow_rotation is not True:
                 raise HostedRoomControlConflictError(
                     "control link conflicts with stored authority"
                 )
             if (
-                rotating
+                binding_profile
+                or rotating
                 or stored.room_name != room_name
                 or stored.member_count != member_count
             ):
                 conn.execute(
                     """UPDATE hosted_room_peer_controls
-                          SET room_name=?, member_count=?, control_token=?,
+                          SET target_profile=?, room_name=?, member_count=?, control_token=?,
                               expires_at=?, status='active', revoked_at=NULL,
                               quarantine_reason=NULL, updated_at=?
                         WHERE room_id=? AND member_id=?""",
                     (
+                        target_profile,
                         room_name,
                         member_count,
                         control_token,
@@ -894,7 +954,9 @@ def save_peer_control_link(
                         (room_id, member_id),
                     ).fetchone()
                 )
-            return PeerRoomControlSave(link=stored, idempotent=not rotating)
+            return PeerRoomControlSave(
+                link=stored, idempotent=not binding_profile and not rotating
+            )
 
         count = conn.execute(
             "SELECT COUNT(*) FROM hosted_room_peer_controls WHERE status='active'"
@@ -903,15 +965,16 @@ def save_peer_control_link(
             raise HostedRoomControlError("stored control link limit reached")
         conn.execute(
             """INSERT INTO hosted_room_peer_controls(
-                   room_id, member_id, room_name, member_count,
+                   room_id, member_id, target_profile, room_name, member_count,
                    home_url, transport_security,
                    authority_gateway_id, authority_epoch, control_token,
                    status, created_at, updated_at, expires_at, revoked_at,
                    quarantine_reason
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, NULL, NULL)""",
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, NULL, NULL)""",
             (
                 room_id,
                 member_id,
+                target_profile,
                 room_name,
                 member_count,
                 home_url,
@@ -1100,19 +1163,56 @@ def peer_reservation_matches(
         ).fetchone()
         if table is None:
             return False
+        rows = conn.execute(
+            """SELECT target_profile, authority_gateway_id, authority_epoch
+                 FROM hosted_room_peer_reservations
+                WHERE room_id=? AND member_id=?
+                  AND expires_at>? AND revoked_at IS NULL LIMIT 2""",
+            (
+                room_id,
+                member_id,
+                timestamp,
+            ),
+        ).fetchall()
+    return bool(
+        len(rows) == 1
+        and str(rows[0]["target_profile"]) == target_profile
+        and str(rows[0]["authority_gateway_id"]) == authority_gateway_id
+        and int(rows[0]["authority_epoch"]) == authority_epoch
+    )
+
+
+def peer_reservation_is_revoked(
+    db_path: Path | str,
+    *,
+    room_id: Any,
+    member_id: Any,
+    target_profile: Any,
+    authority_gateway_id: Any,
+    authority_epoch: Any,
+) -> bool:
+    """Preserve an explicit RoomLink scope revocation after grant expiry."""
+
+    values = (
+        _identifier(room_id, label="room_id"),
+        _identifier(member_id, label="member_id"),
+        _identifier(target_profile, label="target_profile"),
+        _identifier(authority_gateway_id, label="authority_gateway_id"),
+        _authority_epoch(authority_epoch),
+    )
+    with _transaction(db_path) as conn:
+        table = conn.execute(
+            """SELECT 1 FROM sqlite_master
+                WHERE type='table' AND name='hosted_room_peer_reservations'"""
+        ).fetchone()
+        if table is None:
+            return False
         row = conn.execute(
             """SELECT 1 FROM hosted_room_peer_reservations
                 WHERE room_id=? AND member_id=? AND target_profile=?
                   AND authority_gateway_id=? AND authority_epoch=?
-                  AND expires_at>? AND revoked_at IS NULL""",
-            (
-                room_id,
-                member_id,
-                target_profile,
-                authority_gateway_id,
-                authority_epoch,
-                timestamp,
-            ),
+                  AND revoked_at IS NOT NULL""",
+            values,
         ).fetchone()
     return row is not None
 

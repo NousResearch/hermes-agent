@@ -235,7 +235,7 @@ def test_classic_is_typed_unsupported_without_creating_a_hosted_mirror(file_stat
     assert hosted_rooms.list_rooms(state.db) == before
 
 
-def test_remote_resolution_requires_live_exact_profile_reservation(
+def test_remote_resolution_requires_persisted_profile_and_active_control(
     file_state, tmp_path
 ):
     state = file_state
@@ -255,6 +255,7 @@ def test_remote_resolution_requires_live_exact_profile_reservation(
         db,
         room_id="room-1",
         member_id="peer",
+        target_profile="reviewer",
         home_url="http://127.0.0.1:9",
         authority_gateway_id=state.authority,
         authority_epoch=1,
@@ -269,7 +270,21 @@ def test_remote_resolution_requires_live_exact_profile_reservation(
         backend.list_files(room=room, profile="ops")
     assert error.value.code == "file_access_denied"
     with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE hosted_room_peer_controls SET target_profile=''")
+    with pytest.raises(FileAccessError) as error:
+        backend.list_files(room=room)
+    assert error.value.code == "file_access_denied"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE hosted_room_peer_controls SET target_profile='reviewer'"
+        )
         conn.execute("UPDATE hosted_room_peer_reservations SET revoked_at=1")
+    with pytest.raises(FileAccessError) as error:
+        backend.list_files(room=room)
+    assert error.value.code == "file_access_denied"
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE hosted_room_peer_reservations SET revoked_at=NULL")
+    controls.revoke_peer_control_links(db, room_id="room-1", member_id="peer")
     with pytest.raises(FileAccessError) as error:
         backend.list_files(room=room)
     assert error.value.code == "file_access_denied"

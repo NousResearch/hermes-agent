@@ -1031,6 +1031,115 @@ def test_run_codex_stream_returns_terminal_response_when_post_terminal_drain_fai
     )
 
 
+def test_run_codex_stream_abandons_a_drain_that_never_returns(monkeypatch, caplog):
+    """Regression test for issue #103864 (follow-up to #74310 / PR #74348).
+
+    #74348 stopped a drain that *raises* from discarding an already-billed
+    response. A relay that sends every frame through ``response.completed``
+    and then neither closes the connection nor emits ``[DONE]`` instead makes
+    the drain block forever, so the idle watchdog kills the call from outside
+    this frame and the completed response is discarded and retried anyway.
+    The drain must be abandoned on a deadline and the terminal response
+    returned, opening exactly ONE physical request.
+    """
+    import logging
+    import threading
+
+    agent = _build_agent(monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_DRAIN_TIMEOUT_SECONDS", "0.3")
+
+    message_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="All done.")],
+    )
+    usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
+    released = threading.Event()
+    entered_drain = threading.Event()
+
+    class _WedgedStream(_FakeCreateStream):
+        """Blocks on the pull after ``response.completed`` — the relay is
+        holding the socket open with nothing left to send."""
+
+        closed = False
+
+        def __iter__(self):
+            yield from super().__iter__()
+            entered_drain.set()
+            released.wait(30)  # released by close(); never by data arriving
+
+        def close(self):
+            type(self).closed = True
+            released.set()
+
+    events = [
+        SimpleNamespace(type="response.output_item.done", item=message_item),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(
+                status="completed", usage=usage, id="resp_wedged_drain_1"
+            ),
+        ),
+    ]
+
+    calls = {"count": 0}
+
+    def _fake_create(**kwargs):
+        calls["count"] += 1
+        return _WedgedStream(events)
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    with caplog.at_level(logging.WARNING, logger="agent.codex_runtime"):
+        response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert entered_drain.wait(5), "the drain never reached the wedged pull"
+    # The completed response is returned; no second physical request.
+    assert calls["count"] == 1
+    assert response.status == "completed"
+    assert response.usage is usage
+    assert response.id == "resp_wedged_drain_1"
+    # The stream was closed so the socket is released.
+    assert _WedgedStream.closed
+    assert any(
+        "held the SSE connection open" in record.message for record in caplog.records
+    )
+
+
+def test_run_codex_stream_drain_timeout_zero_skips_the_drain(monkeypatch):
+    """``stream_drain_timeout_seconds: 0`` skips the post-terminal drain."""
+    agent = _build_agent(monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_DRAIN_TIMEOUT_SECONDS", "0")
+
+    message_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="All done.")],
+    )
+    drained = {"pulled": False}
+
+    class _CountingStream(_FakeCreateStream):
+        def __iter__(self):
+            yield from super().__iter__()
+            drained["pulled"] = True
+
+    events = [
+        SimpleNamespace(type="response.output_item.done", item=message_item),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(status="completed", usage=None, id="resp_no_drain"),
+        ),
+    ]
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **kw: _CountingStream(events))
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.id == "resp_no_drain"
+    assert not drained["pulled"], "drain ran despite a 0 budget"
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))

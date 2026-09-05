@@ -3,6 +3,7 @@ from __future__ import annotations
 import textwrap
 
 from hermes_cli.timeouts import (
+    get_provider_drain_timeout,
     get_provider_request_timeout,
     get_provider_stale_timeout,
 )
@@ -10,6 +11,40 @@ from hermes_cli.timeouts import (
 
 def _write_config(tmp_path, body: str) -> None:
     (tmp_path / "config.yaml").write_text(textwrap.dedent(body), encoding="utf-8")
+
+
+def test_get_provider_drain_timeout_reads_config_and_keeps_zero(monkeypatch, tmp_path):
+    """``stream_drain_timeout_seconds`` resolves per-model over per-provider, and 0 survives.
+
+    Zero means "skip the post-terminal drain entirely" (#103864), so unlike the
+    other timeouts it must NOT be folded into ``None`` by the >0 coercion.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    _write_config(tmp_path, """\
+        providers:
+          anyrouter:
+            stream_drain_timeout_seconds: 3.5
+            models:
+              gpt-6-astra:
+                stream_drain_timeout_seconds: 0
+          openrouter:
+            request_timeout_seconds: 77
+        """)
+    import importlib
+
+    from hermes_cli import config as cfg_mod
+    importlib.reload(cfg_mod)
+    from hermes_cli import timeouts as to_mod
+    importlib.reload(to_mod)
+
+    # Per-model 0 wins over the provider's 3.5 and is preserved as 0.0.
+    assert to_mod.get_provider_drain_timeout("anyrouter", "gpt-6-astra") == 0.0
+    # Another model on the same provider inherits the provider value.
+    assert to_mod.get_provider_drain_timeout("anyrouter", "gpt-5.6-sol") == 3.5
+    # Unset -> None so the caller falls back to env/default.
+    assert to_mod.get_provider_drain_timeout("openrouter", "openai/gpt-4o-mini") is None
+    assert to_mod.get_provider_drain_timeout("", None) is None
 
 
 

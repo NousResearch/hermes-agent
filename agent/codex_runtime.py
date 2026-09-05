@@ -7,12 +7,15 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from hermes_cli.timeouts import get_provider_drain_timeout
+from utils import env_float
 
 logger = logging.getLogger(__name__)
 
@@ -894,6 +897,29 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                            "received; returning the completed response instead of retrying. %s error=%s",
                            agent._client_log_context(), exc)
 
+    def _drain_for_finalizer_bounded(event_stream: Any) -> None:
+        # #103864: a relay that sends every frame through ``response.completed`` and then neither closes
+        # the connection nor emits ``[DONE]`` makes the drain above block in ``ssl.read()`` forever. The
+        # idle watchdog then kills the call from outside this frame, so #74348's ``except`` never runs and
+        # the completed, already-billed response is discarded and retried anyway. Bound the drain on a
+        # daemon thread: it is a courtesy to Relay's finalizer, never a correctness requirement.
+        budget = get_provider_drain_timeout(agent.provider, model)
+        if budget is None:
+            budget = env_float("HERMES_CODEX_DRAIN_TIMEOUT_SECONDS", 2.0)
+        if budget <= 0:
+            return
+        worker = threading.Thread(target=_drain_for_finalizer, args=(event_stream,),
+                                  name="codex-post-terminal-drain", daemon=True)
+        worker.start()
+        worker.join(budget)
+        if worker.is_alive():
+            # Close so the socket is released; the daemon thread dies with the process if that
+            # does not unblock it. ``_close_event_stream`` runs again in the ``finally`` (idempotent).
+            logger.warning("Codex Responses relay held the SSE connection open past its terminal frame "
+                           "(no [DONE], no close) for >%.1fs; abandoning the drain and returning the "
+                           "completed response. %s", budget, agent._client_log_context())
+            _close_event_stream(event_stream)
+
     def _close_event_stream(event_stream: Any) -> None:
         close_fn = getattr(event_stream, "close", None)  # None while connect never succeeded
         try:
@@ -954,7 +980,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 _log_failure(exc)
                 raise
             if not agent._interrupt_requested:
-                _drain_for_finalizer(event_stream)
+                _drain_for_finalizer_bounded(event_stream)
             if final.status in {"incomplete", "failed"}:
                 logger.warning("Codex Responses stream terminal status=%s "
                                "(incomplete_details=%s, error=%s, streamed_chars=%d). %s",

@@ -595,6 +595,23 @@ export async function runGroupChatMemberTurn(
   try {
     return await runGroupChatMemberTurnLeased(group, member, prompt, thread, images)
   } finally {
+    // A normal return/throw means this renderer observed the terminal state, so
+    // its active recovery marker is no longer needed. If the renderer dies,
+    // this finally never runs and the durable marker lets the next window
+    // harvest the backend reply instead of submitting the work twice.
+    const memberKey = groupMemberKey(member)
+    updateGroupChat(group, room => {
+      const marker = room.stranded?.[memberKey]
+
+      if (typeof marker === 'object' && marker?.active) {
+        const next = { ...(room.stranded || {}) }
+
+        delete next[memberKey]
+        room.stranded = next
+      }
+
+      return room
+    })
     releaseTurnLease()
   }
 }
@@ -642,6 +659,18 @@ async function runGroupChatMemberTurnLeased(
   } catch {
     /* lazy session — zero messages */
   }
+
+  // Persist the in-flight baseline before submitting. Renderer reloads and
+  // gateway re-homes destroy the JavaScript poll loop, not the backend turn;
+  // this marker lets the next window resume by harvesting that exact session.
+  updateGroupChat(group, room => {
+    room.stranded = {
+      ...(room.stranded || {}),
+      [memberKey]: { active: true, before, thread }
+    }
+
+    return room
+  })
 
   // Stage this delta's attachments into the member's session so the model
   // receives the actual payload with the prompt — the same attach RPCs the

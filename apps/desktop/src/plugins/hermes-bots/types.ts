@@ -172,10 +172,12 @@ export interface GroupChat {
    *  `{ name }`, and the sweep re-validates the route before trusting one. */
   sessionOwners?: Record<string, Partial<RosterRow>>
   sessions?: Record<string, string | true>
-  stranded?: Record<string, number | { before: number; thread?: string }>
+  stranded?: Record<string, number | { active?: boolean; before: number; thread?: string }>
   syncRevision?: number
   /** Left behind when a room is disbanded, so sync can't resurrect it. */
   tombstone?: boolean
+  /** Durable thread whose serial drive has not settled yet. */
+  pendingThread?: string
   /** Read when ordering rooms; no write site in the plugin today. */
   pinned?: boolean
   /** How far each `<thread>::<member>` has read into `log`. Required: unlike

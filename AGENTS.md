@@ -202,7 +202,8 @@ hermes-agent/
 │   └── builtin_hooks/    # Always-registered gateway hooks (extension point; none shipped)
 ├── plugins/              # memory/, context_engine/, model-providers/, kanban/, image_gen/, ...
 ├── skills/               # Built-in skills (by category)   optional-skills/: shipped, not active
-├── ui-tui/               # Ink (React) terminal UI — `hermes --tui`
+├── ui-tui/               # Ink (React) terminal UI — `hermes --tui` (default)
+├── crates/tui/           # Opt-in native (ratatui) TUI — `hermes --tui --native`
 ├── tui_gateway/          # Python JSON-RPC backend for TUI + Desktop — server.py + methods_*.py
 ├── apps/desktop/         # Electron desktop app (+ apps/shared JSON-RPC client)   web/: dashboard SPA
 ├── acp_adapter/          # ACP server (VS Code / Zed / JetBrains)
@@ -411,7 +412,7 @@ extract, not to regex around it.
 | `gateway/` | `gateway/AGENTS.md` | Adapters, two message guards, streaming contract, background notifications, gateway vs desktop lifecycle, token locks, scoped secrets |
 | `tools/`, `toolsets.py`, `model_tools.py` | `tools/AGENTS.md` | Adding tools, registry, toolsets, delegation, cross-tool references, backends |
 | `plugins/`, `hermes_cli/plugins*.py` | `plugins/AGENTS.md` | Plugin kinds, native compat contract, in-tree policy, Sep-2026 compat window |
-| `tui_gateway/`, `ui-tui/` | `tui_gateway/AGENTS.md` | Process model, JSON-RPC transport, key surfaces, slash flow, dev commands |
+| `tui_gateway/`, `ui-tui/`, `crates/tui/` | `tui_gateway/AGENTS.md` | Process model, JSON-RPC transport, key surfaces, slash flow, native opt-in, dev commands |
 | `web/`, `hermes_cli/web_routers/` | `web/AGENTS.md` | Dashboard embeds the real TUI; what React may and may not rebuild |
 | `apps/desktop/` | `apps/desktop/AGENTS.md`, `apps/desktop/src/AGENTS.md` | Desktop judgment guide; `serve` backend, slash palette curation, Bot Mode canonical chat |
 | `skills/`, `optional-skills/`, `agent/curator*.py` | `skills/AGENTS.md` | Frontmatter, HARDLINE authoring standards, curator |

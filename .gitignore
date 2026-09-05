@@ -119,6 +119,9 @@ apps/desktop/.staging-*/
 web/public/fonts/
 web/public/ds-assets/
 
+# Native TUI (ratatui) build artifacts
+crates/tui/target/
+
 # Release script temp files
 .release_notes.md
 mini-swe-agent/

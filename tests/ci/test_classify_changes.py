@@ -182,6 +182,14 @@ CASES = {
         ["apps/bootstrap-installer/src/main.tsx"],
         _lanes(frontend=True),
     ),
+    "native tui crate → rust": (
+        ["crates/tui/src/main.rs"],
+        _lanes(python=True, rust=True),
+    ),
+    "native tui cargo.toml → rust": (
+        ["crates/tui/Cargo.toml"],
+        _lanes(python=True, rust=True),
+    ),
     # Unknown top-level file keeps Python on rather than risk a silent skip.
     "unknown toplevel → python": (["Makefile"], _lanes(python=True)),
     "mixed docs+python → python": (["README.md", "agent/x.py"], _lanes(python=True, scan=True)),

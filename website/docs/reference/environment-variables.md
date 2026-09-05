@@ -875,6 +875,8 @@ Unset the variable or remove it from `.env` to restore normal writes (still subj
 | Variable | Description |
 |----------|-------------|
 | `HERMES_TUI` | Launch the [TUI](../user-guide/tui.md) instead of the classic CLI when set to `1`. Equivalent to passing `--tui`. |
+| `HERMES_TUI_NATIVE` | Set to `1` to opt into the experimental native (ratatui) TUI instead of Ink. Equivalent to `hermes --tui --native`. Ink remains the default; the dashboard PTY embed ignores this. |
+| `HERMES_TUI_NATIVE_BIN` | Absolute path to a `hermes-tui-native` binary. When unset, Hermes looks up `hermes-tui-native` on `PATH`. |
 | `HERMES_TUI_DIR` | Path to a prebuilt `ui-tui/` directory (must contain `dist/entry.js` and populated `node_modules`). Used by distros and Nix to skip the first-launch `npm install`. |
 | `HERMES_TUI_RESUME` | Resume a specific TUI session by ID on launch. When set, `hermes --tui` skips forging a fresh session and picks up the named session instead — useful for re-attaching after a disconnect or terminal crash. |
 | `HERMES_TUI_THEME` | Force the TUI color theme: `light`, `dark`, or a raw 6-character background hex (e.g. `ffffff` or `1a1a2e`). When unset, Hermes auto-detects using `COLORFGBG` and terminal background queries; this variable overrides detection on terminals (Ghostty, Warp, iTerm2, etc.) that don't set `COLORFGBG`. |

@@ -127,11 +127,14 @@ _DESKTOP_UPDATER_FILES = {
     "pyproject.toml",
 }
 
-# Rust crates — currently just the Tauri bootstrap installer (Hermes-Setup).
-# These live under ``apps/``, so before this lane existed a ``.rs`` edit matched
-# ``frontend`` and nothing more: the TypeScript matrix built, cargo never ran,
-# and the crate's unit tests had never executed in CI at all.
-_RUST_PATHS = ("apps/bootstrap-installer/src-tauri/",)
+# Rust crates — Tauri bootstrap installer (Hermes-Setup) and the opt-in native
+# TUI. The installer lives under ``apps/``, so before this lane existed a
+# ``.rs`` edit matched ``frontend`` and nothing more. ``crates/tui/`` is a
+# second cargo package and must take the same lane.
+_RUST_PATHS = (
+    "apps/bootstrap-installer/src-tauri/",
+    "crates/tui/",
+)
 _RUST_FILENAMES = {"Cargo.toml", "Cargo.lock"}
 
 def _is_docs(p: str) -> bool:

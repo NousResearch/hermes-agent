@@ -23,7 +23,7 @@ Hermes is a large repository, and most contributions touch exactly one subsystem
 | Egress firewall | `agent/proxy_sources/iron_proxy.py` | [Egress Internals](egress-internals.md) |
 | ACP (IDE integration) | `acp_adapter/` | [ACP Internals](acp-internals.md) |
 | Desktop app | `apps/desktop/` | [Desktop Plugin SDK](desktop-plugin-sdk.md), [Worktree UI Development](worktree-ui-dev.md) |
-| TUI | `ui-tui/`, `tui_gateway/` | [Worktree UI Development](worktree-ui-dev.md) |
+| TUI | `ui-tui/`, `crates/tui/`, `tui_gateway/` | [TUI](../user-guide/tui.md), [Worktree UI Development](worktree-ui-dev.md) |
 | Docs site | `website/` | [Contributing](contributing.md) |
 | Tests | `tests/`, `tests-js/` | [Contributing → Before Submitting](contributing.md#before-submitting) |
 

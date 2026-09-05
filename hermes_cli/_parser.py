@@ -62,6 +62,7 @@ Examples:
     hermes                        Start interactive chat
     hermes chat -q "Hello"        Single query mode
     hermes --tui                  Launch the modern TUI (or set display.interface: tui)
+    hermes --tui --native         Opt-in native (ratatui) TUI; Ink stays the default
     hermes --cli                  Force the classic REPL (overrides display.interface: tui)
     hermes -c                     Resume the most recent session
     hermes -c "my project"        Resume a session by name (latest in lineage)
@@ -172,6 +173,8 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
               help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)")
     inherited(parser, "--dev", dest="tui_dev", action="store_true", default=False,
               help="With --tui: run TypeScript sources via tsx (skip dist build)")
+    inherited(parser, "--native", action="store_true", default=False,
+              help="With --tui: opt-in native (ratatui) client; Ink stays the default")
 
 
 def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
@@ -272,6 +275,8 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
               help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)")
     inherited(chat_parser, "--dev", dest="tui_dev", action="store_true", default=SUPPRESS,
               help="With --tui: run TypeScript sources via tsx (skip dist build)")
+    inherited(chat_parser, "--native", action="store_true", default=SUPPRESS,
+              help="With --tui: opt-in native (ratatui) client; Ink stays the default")
     return chat_parser
 
 

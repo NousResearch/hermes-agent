@@ -111,11 +111,13 @@ class TestClarifyDictChoices:
         assert _flatten_choice({"label": "Short", "description": "Long"}) == "Short"
 
 
-    def test_flatten_accepts_value_only_dict(self):
-        assert _flatten_choice({"value": "Use OAuth"}) == "Use OAuth"
+    def test_flatten_drops_value_only_dict(self):
+        """Lone 'value' is component-shaped, not user-facing — drop it."""
+        assert _flatten_choice({"value": "Use OAuth"}) == ""
 
-    def test_flatten_unwraps_serialized_json_value(self):
-        assert _flatten_choice('{"value": "Use OAuth"}') == "Use OAuth"
+    def test_flatten_drops_serialized_value_only_dict(self):
+        """Serialized value-only JSON is also component-shaped — drop it."""
+        assert _flatten_choice('{"value": "Use OAuth"}') == ""
 
     def test_flatten_unwraps_serialized_json_description(self):
         assert _flatten_choice('{"description": "Use API key"}') == "Use API key"

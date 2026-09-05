@@ -73,21 +73,40 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
       continue
     }
 
-    // Prefer the backend-supplied provider label/id so the Keys tab groups by
-    // the same identity the CLI picker uses; fall back to the prefix guess.
-    const name = info.provider_label?.trim() || info.provider?.trim() || providerGroup(key)
+    // A shared credential (for example DASHSCOPE_API_KEY) can belong to more
+    // than one built-in route. Expand its provider profiles into card-scoped
+    // rows while keeping the same env-var key for save/remove operations.
+    const scopedInfos = info.provider_profiles?.length
+      ? info.provider_profiles.map(profile => ({
+          ...info,
+          description: profile.description || info.description,
+          provider: profile.provider,
+          provider_label: profile.provider_label,
+          provider_primary: profile.primary,
+          url: profile.url ?? info.url
+        }))
+      : [info]
 
-    if (name === 'Other') {
-      continue
+    for (const scopedInfo of scopedInfos) {
+      // Prefer the backend-supplied provider label/id so the Keys tab groups by
+      // the same identity the CLI picker uses; fall back to the prefix guess.
+      const name = scopedInfo.provider_label?.trim() || scopedInfo.provider?.trim() || providerGroup(key)
+
+      if (name === 'Other') {
+        continue
+      }
+
+      buckets.set(name, [...(buckets.get(name) ?? []), [key, scopedInfo]])
     }
-
-    buckets.set(name, [...(buckets.get(name) ?? []), [key, info]])
   }
 
   const groups: ProviderKeyGroup[] = []
 
   for (const [name, entries] of buckets) {
-    const primary = entries.find(([k, i]) => !i.advanced && isKeyVar(k, i)) ?? entries.find(([k, i]) => isKeyVar(k, i))
+    const primary =
+      entries.find(([k, i]) => i.provider_primary && isKeyVar(k, i)) ??
+      entries.find(([k, i]) => !i.advanced && isKeyVar(k, i)) ??
+      entries.find(([k, i]) => isKeyVar(k, i))
 
     if (!primary) {
       continue

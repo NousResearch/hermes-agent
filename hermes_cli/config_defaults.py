@@ -2659,6 +2659,10 @@ OPTIONAL_ENV_VARS = {
     "MATTERMOST_FREE_RESPONSE_CHANNELS": _msg(
         "Comma-separated Mattermost channel IDs where bot responds without @mention",
         "Free-response channel IDs (comma-separated)", None),
+    "MATTERMOST_THREAD_CONTEXT": _msg(
+        "Seed prior thread posts into context on the first turn the bot is drawn into an "
+        "existing thread: on (default) or off.",
+        "Seed thread history on first turn (on/off)", None),
     "MATRIX_HOMESERVER": _msg("Matrix homeserver URL (e.g. https://matrix.example.org)",
         "Matrix homeserver URL", "https://matrix.org/ecosystem/servers/"),
     "MATRIX_ACCESS_TOKEN": _msg("Matrix access token (preferred over password login)",

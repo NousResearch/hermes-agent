@@ -61,7 +61,7 @@ import { ChatSwapOverlay, ChatSyncBadge } from './chat-swap-overlay'
 import { ChatBar, ChatBarFallback } from './composer'
 import { requestComposerInsert } from './composer/focus'
 import { droppedFileInlineRefs } from './composer/inline-refs'
-import { ComposerSurfaceProvider, useComposerScope, useComposerSurfaceId } from './composer/scope'
+import { ComposerScopeProvider, ComposerSurfaceProvider, useComposerScope, useComposerSurfaceId } from './composer/scope'
 import type { ChatBarState } from './composer/types'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { type DragKind, useFileDropZone } from './hooks/use-file-drop-zone'
@@ -457,6 +457,46 @@ const ChatViewContent = memo(function ChatViewContent({
   const selectedSessionId = useStore(view.$storedId)
   const sessions = useStore($sessions)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
+  const connection = useStore($connection)
+  const connectionId = connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')
+
+  // Bot Mode keeps chrome on the launch profile (`keepAllProfilesScope`) while
+  // the chat's ownerRoute names the Bot. Prefer that owner for voice TTS so
+  // playback matches the Bot's own profile config (#100864). Tiles already
+  // stamp owner* onto ComposerScope; primary surfaces resolve the hint here.
+  const ownerHint = selectedSessionId
+    ? (getSessionOwnerHint(
+        selectedSessionId,
+        connectionId ? { connectionId, profile: activeGatewayProfile } : undefined
+      ) ?? getSessionOwnerHint(selectedSessionId))
+    : undefined
+
+  const voiceOwnerScope = useMemo(() => {
+    if (composerScope.ownerProfile || composerScope.ownerConnectionId) {
+      return composerScope
+    }
+
+    const ownerProfile =
+      ownerHint?.targetProfile || ownerHint?.profile || modelOptionsProfile || undefined
+    const ownerConnectionId = ownerHint?.connectionId || modelOptionsOwnerConnectionId || undefined
+
+    if (!ownerProfile && !ownerConnectionId) {
+      return composerScope
+    }
+
+    return {
+      ...composerScope,
+      ...(ownerConnectionId ? { ownerConnectionId } : {}),
+      ...(ownerProfile ? { ownerProfile } : {})
+    }
+  }, [
+    composerScope,
+    modelOptionsOwnerConnectionId,
+    modelOptionsProfile,
+    ownerHint?.connectionId,
+    ownerHint?.profile,
+    ownerHint?.targetProfile
+  ])
 
   // Durable composer/queue scope (lineage root) so auto-compression tip rotation
   // does not wipe an in-progress draft or orphan /queue entries. For the
@@ -643,6 +683,7 @@ const ChatViewContent = memo(function ChatViewContent({
   const overlayKind: DragKind = dragKind === 'files' ? 'files' : sessionDragging && !sessionEdgeHover ? 'session' : null
 
   return (
+    <ComposerScopeProvider value={voiceOwnerScope}>
     <div
       className={cn(
         'relative isolate flex h-full min-w-0 flex-col overflow-hidden bg-(--ui-chat-surface-background)',
@@ -773,5 +814,6 @@ const ChatViewContent = memo(function ChatViewContent({
         )}
       </ChatRuntimeBoundary>
     </div>
+    </ComposerScopeProvider>
   )
 })

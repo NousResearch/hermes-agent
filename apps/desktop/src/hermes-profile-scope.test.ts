@@ -80,4 +80,12 @@ describe('backend action helpers are profile-scoped', () => {
       expect(call[0].profile).toBe('jarvis')
     }
   })
+
+  it('lets speakText pin a Bot owner profile over the ambient active profile (#100864)', () => {
+    setApiRequestProfile('launch-profile')
+
+    void speakText('hello', { profile: 'bot-rachel' })
+
+    expect(lastProfile()).toBe('bot-rachel')
+  })
 })

@@ -11,6 +11,7 @@ import { type FC, type ReactNode, useCallback, useMemo, useState } from 'react'
 import { useInRouterContext, useNavigate } from 'react-router'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { useComposerScope } from '@/app/chat/composer/scope'
 import { SETTINGS_ROUTE } from '@/app/routes'
 import { ChangedFilesCard } from '@/components/assistant-ui/thread/changed-files-card'
 import {
@@ -686,6 +687,7 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
   const copy = t.assistant.thread
   const voicePlayback = useStore($voicePlayback)
   const view = useSessionView()
+  const { ownerConnectionId, ownerProfile } = useComposerScope()
   const sessionId = useStore(view.$runtimeId)
 
   const readAloudStatus =
@@ -705,12 +707,17 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
     }
 
     try {
-      await playSpeechText(text, { messageId, source: 'read-aloud' })
+      await playSpeechText(text, {
+        messageId,
+        source: 'read-aloud',
+        ...(ownerProfile ? { profile: ownerProfile } : {}),
+        ...(ownerConnectionId ? { connectionId: ownerConnectionId } : {})
+      })
       markAssistantIdSpoken(sessionId, view.$messages.get(), messageId)
     } catch (error) {
       notifyError(error, copy.readAloudFailed)
     }
-  }, [copy.readAloudFailed, getText, messageId, sessionId, view.$messages])
+  }, [copy.readAloudFailed, getText, messageId, ownerConnectionId, ownerProfile, sessionId, view.$messages])
 
   return (
     <TooltipIconButton

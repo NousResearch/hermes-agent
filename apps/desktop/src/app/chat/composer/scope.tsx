@@ -25,8 +25,13 @@ export interface ComposerScope {
   attachments: ComposerAttachmentScope
   /** This scope's transcript. Read it imperatively (input-history browse) to
    *  keep streaming out of the composer's renders; subscribe only off-render
-   *  (auto-speak) where the reply edge is the whole point. */
+   *  (auto-speak) where the reply edge is the whole path. */
   $messages: ReadableAtom<ChatMessage[]>
+  /** Bot / tile owner registry connection for voice TTS routing (#100864). */
+  ownerConnectionId?: string
+  /** Bot / tile owner profile for voice TTS routing (#100864). Falls back to
+   *  the ambient active gateway profile when omitted. */
+  ownerProfile?: string
   /** Focus-bus routing key (`'main'` | `'tile:<id>'`). */
   target: ComposerTarget
 }

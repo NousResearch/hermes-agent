@@ -184,9 +184,13 @@ export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<Aud
   })
 }
 
-export function speakText(text: string): Promise<AudioSpeakResponse> {
+export function speakText(
+  text: string,
+  scope?: { connectionId?: null | string; profile?: null | string }
+): Promise<AudioSpeakResponse> {
   return hermesApi<AudioSpeakResponse>({
-    ...profileScoped(),
+    ...profileScoped(scope?.profile),
+    ...(scope?.connectionId ? { connectionId: scope.connectionId } : {}),
     path: '/api/audio/speak',
     method: 'POST',
     body: { text },

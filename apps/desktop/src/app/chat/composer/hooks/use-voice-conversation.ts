@@ -39,6 +39,8 @@ interface VoiceConversationOptions {
   /** Awaited right before the mic is opened. Used to let the wake-word listener
    *  fully release the capture device first, so the two never contend. */
   beforeMicOpen?: () => Promise<void> | void
+  /** Bot / tile owner TTS scope. Overrides ambient active gateway profile. */
+  voiceScope?: { connectionId?: string; profile?: string }
 }
 
 /** How long a barge-triggered interrupt may take to settle before we submit
@@ -55,7 +57,8 @@ export function useVoiceConversation({
   onTranscribeAudio,
   pendingResponse,
   consumePendingResponse,
-  beforeMicOpen
+  beforeMicOpen,
+  voiceScope
 }: VoiceConversationOptions) {
   const { t } = useI18n()
   const voiceCopy = t.notifications.voice
@@ -92,11 +95,17 @@ export function useVoiceConversation({
   }, [onStopWord])
 
   const beforeMicOpenRef = useRef(beforeMicOpen)
+  const voiceScopeRef = useRef(voiceScope)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     beforeMicOpenRef.current = beforeMicOpen
   }, [beforeMicOpen])
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    voiceScopeRef.current = voiceScope
+  }, [voiceScope])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -459,7 +468,10 @@ export function useVoiceConversation({
         // this is a safety net for read-aloud-style entries into the loop.
         ensureBargeMonitor()
 
-        const playback = playSpeechText(response.text, { source: 'voice-conversation' })
+        const playback = playSpeechText(response.text, {
+          source: 'voice-conversation',
+          ...voiceScopeRef.current
+        })
         // playSpeechText performs its normal cleanup synchronously before
         // returning. Capture the sequence after that internal increment so
         // only a later, external stop suppresses the next listen cycle.
@@ -500,7 +512,10 @@ export function useVoiceConversation({
       ensureBargeMonitor()
 
       void (async () => {
-        const session = await startSpeechStream({ source: 'voice-conversation' })
+        const session = await startSpeechStream({
+          source: 'voice-conversation',
+          ...voiceScopeRef.current
+        })
 
         // The session may resolve after the loop moved on (barge, disable).
         if (responseIdRef.current !== responseId) {

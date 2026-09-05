@@ -26,6 +26,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 # _resolve_request_profile result for a /p/<profile>/ prefix this gateway does not serve (-> 404);
 # distinct from None (no prefix / multiplexing off -> default profile).
@@ -140,6 +141,30 @@ from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 
 
 logger = logging.getLogger(__name__)
+
+
+def _is_managed_loopback_url(value: str) -> bool:
+    """Accept only the bare managed-runtime loopback origin.
+
+    A string-prefix check would accept a URL such as
+    ``http://127.0.0.1:18434@remote.example`` where the actual host is remote.
+    The state file is normally Hermes-owned, but this boundary must remain safe
+    if it is stale or tampered with because its API key is forwarded below.
+    """
+    try:
+        parsed = urlsplit(value)
+        return (
+            parsed.scheme == "http"
+            and parsed.hostname == "127.0.0.1"
+            and parsed.port is not None
+            and parsed.username is None
+            and parsed.password is None
+            and parsed.path in ("", "/")
+            and not parsed.query
+            and not parsed.fragment
+        )
+    except ValueError:
+        return False
 
 
 def _browser_controller_ws_sender(ws, loop, *, wait_timeout: float = 10.0):
@@ -1775,7 +1800,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                                    err_type="service_unavailable")
         base_url = str(endpoint.get("base_url") or "").rstrip("/")
         api_key = str(endpoint.get("api_key") or "")
-        if not base_url.startswith("http://127.0.0.1:"):
+        if not _is_managed_loopback_url(base_url):
             return _error_response("The registered local runtime endpoint is unavailable.", 503,
                                    err_type="service_unavailable")
         forwarded = dict(body)

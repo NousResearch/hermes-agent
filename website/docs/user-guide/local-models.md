@@ -7,9 +7,9 @@ description: Run models entirely on your own machine — no account, no API key,
 # Local Models
 
 Hermes can run open models entirely on your own machine. It downloads and
-manages the inference engine (llama.cpp), picks the right build of each
-model for your hardware, and handles memory so you never configure context
-sizes, GPU layers, or quantization. You pick a model; Hermes does the rest.
+manages the inference engine (llama.cpp), picks a curated build for your
+hardware, and handles memory on the default path. You pick a model; Hermes
+does the rest.
 
 Nothing leaves your computer: no account, no API key, and no network access
 after a model is downloaded.
@@ -40,12 +40,11 @@ download anything. Each row shows:
   grow to.
 - The download size of the build selected for your hardware.
 
-Models ship in several quality grades (quantizations). Hermes picks the
-highest-quality build that runs fully on your GPU; machines with less
-memory get a more compact build of the same model with the same
-guarantees. Below 4-bit the quality loss is too severe, so Hermes never
-offers builds smaller than that — a machine that can't run the 4-bit
-build spilled to system RAM simply can't run that model.
+The curated catalog selects one reviewed quantization for each model. To
+choose another quantization, use **Find more models** and select the GGUF
+file you want; Hermes shows its separate fit estimate before downloading.
+The catalog does not offer variants below 4-bit because their quality loss is
+usually too severe for the supported path.
 
 Models that don't fit stay visible with the reason, so you always know
 what a hardware upgrade would unlock.
@@ -73,14 +72,14 @@ path end-to-end:
 
 The Local Models screen also has an **Advanced local runtime** section for a
 staged model. It can preview and apply a per-request context window, inference
-slot count, KV-cache type, and supported MTP speculative decoding. Hermes
+slot count, `Q8_0` or `F16` KV cache, and supported MTP speculative decoding. Hermes
 prices shared weights once and KV/work buffers per slot before it writes a
 setting. A request that does not fit is rejected; it is never quietly reduced.
 
 The server receives aggregate context (`per-request context × slots`) so each
 slot retains the context selected in the UI. MTP can only be forced for a model
 with a validated Hermes recipe. Applying a changed plan waits for the selected
-model to become idle and restarts the managed runtime only then. Automatic
+managed runtime to become idle and restarts it only then. Automatic
 window growth remains the default when no explicit context is configured.
 
 ## The status bar
@@ -128,6 +127,12 @@ local_runtime:
   backend: auto      # auto | cuda | metal | vulkan | hip | cpu
   tag: b10362        # pinned llama.cpp release; Hermes updates it with
                      # each release after re-validation
+  launch_overrides:  # optional per-staged-model advanced settings
+    My-Local-GGUF:
+      context_tokens: 65536
+      slots: 2
+      kv_cache: q8_0 # q8_0 | f16
+      speculation: auto # auto | off | mtp (mtp requires a validated recipe)
 ```
 
 Models and runtime builds live under the Hermes home directory

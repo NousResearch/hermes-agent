@@ -2548,6 +2548,16 @@ class TestRawLocalModelRoutes:
             assert response.status == 200
         assert captured["route"]["model"] == "Qwen-Local"
 
+    def test_raw_proxy_accepts_only_a_bare_ipv4_loopback_origin(self):
+        from gateway.platforms.api_server import _is_managed_loopback_url
+
+        assert _is_managed_loopback_url("http://127.0.0.1:18434")
+        assert _is_managed_loopback_url("http://127.0.0.1:18434/")
+        assert not _is_managed_loopback_url("http://127.0.0.1:18434@remote.example")
+        assert not _is_managed_loopback_url("http://localhost:18434")
+        assert not _is_managed_loopback_url("https://127.0.0.1:18434")
+        assert not _is_managed_loopback_url("http://127.0.0.1:18434/v1")
+
 
 
 class TestModelRoutesModelsEndpoint:

@@ -45,6 +45,10 @@ _JOBS_LOCK = threading.Lock()
 # One quickstart at a time: the job sequences installs, downloads, a server bounce and a config write — two
 # racing runs would interleave all four. Held for the job's lifetime, released in the worker.
 _QUICKSTART_LOCK = threading.Lock()
+# Applying an advanced plan regenerates the shared router preset file and can
+# restart the one managed server. Reject a second click while that transaction
+# is in flight rather than letting two config snapshots race each other.
+_ADVANCED_APPLY_LOCK = threading.Lock()
 _LLAMACPP_PROVIDERS = ("llamacpp", "llama.cpp", "llama-cpp")
 _SPLIT_PART_RE = r"-\d{5}-of-\d{5}"
 # One TCP stream to a CDN rarely fills a fast line; 8 ranged connections into a preallocated file saturate gigabit.
@@ -660,21 +664,28 @@ async def local_models_advanced_apply(body: AdvancedPlanBody):
     request finishes, which preserves streams and session consistency rather than treating apply
     as an unsafe best-effort update.
     """
-    plan = _advanced_plan(body.model_id, body.request_mapping())
-    if not plan.fits:
-        raise HTTPException(status_code=422, detail="; ".join(plan.reasons))
-    sup = bootstrap.get_supervisor()
-    if sup is not None and not _quiet(lambda: sup.is_idle(body.model_id), False):
-        raise HTTPException(status_code=409, detail="model is serving a request; wait for it to become idle before applying")
-    config = config_mod.load_config()
-    section = config.setdefault("local_runtime", {})
-    overrides = section.setdefault("launch_overrides", {})
-    overrides[body.model_id] = plan.request.to_mapping()
-    config_mod.save_config(config)
-    if sup is not None:
-        await asyncio.to_thread(bootstrap.refresh_local_runtime)
-    return {"ok": True, "model_id": body.model_id, "plan": plan.to_dict(),
-            "restarted": sup is not None}
+    if not _ADVANCED_APPLY_LOCK.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="another advanced local-model update is in progress")
+    try:
+        plan = _advanced_plan(body.model_id, body.request_mapping())
+        if not plan.fits:
+            raise HTTPException(status_code=422, detail="; ".join(plan.reasons))
+        sup = bootstrap.get_supervisor()
+        # A refresh replaces the one router process, so checking only the
+        # selected model could still cut off work running on another resident
+        # model. The supervisor's no-argument form checks every child.
+        if sup is not None and not _quiet(sup.is_idle, False):
+            raise HTTPException(status_code=409, detail="the local runtime is serving a request; wait for it to become idle before applying")
+        config = config_mod.load_config()
+        section = config.setdefault("local_runtime", {})
+        overrides = section.setdefault("launch_overrides", {})
+        overrides[body.model_id] = plan.request.to_mapping()
+        config_mod.save_config(config)
+        restarted = await asyncio.to_thread(bootstrap.refresh_local_runtime) if sup is not None else False
+        return {"ok": True, "model_id": body.model_id, "plan": plan.to_dict(),
+                "restarted": restarted}
+    finally:
+        _ADVANCED_APPLY_LOCK.release()
 
 
 def _api_server_config(config: dict) -> dict:

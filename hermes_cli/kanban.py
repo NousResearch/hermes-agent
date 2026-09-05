@@ -10,12 +10,13 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import shlex
+import shutil
 import sys
 import time
 from pathlib import Path
-from typing import Optional
-
+from typing import Any, Optional
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
@@ -1027,18 +1028,54 @@ def _cmd_promote(args: argparse.Namespace) -> int:
     return 0 if not failed else 1
 
 
+_TASK_ID_RE = re.compile(r"^t_[A-Za-z0-9]+$")
+
+
+def _normalize_archive_args(
+    ids: list[str],
+    reason: Optional[str],
+) -> tuple[list[str], Optional[str]]:
+    """Normalize archive args and support the historical positional reason.
+
+    ``archive`` used to accept ``nargs='*'`` task ids only. When users typed
+    ``archive t_abc 'done for now'``, argparse treated the reason as another
+    task id, yielding a misleading ``cannot archive done for now`` error after
+    successfully archiving the real task. Keep bulk task-id archiving intact,
+    but interpret ``<one task id> <free-form words>`` as a legacy positional
+    reason and prefer the explicit ``--reason`` flag going forward.
+    """
+    if len(ids) <= 1:
+        return ids, reason
+    first, rest = ids[0], ids[1:]
+    if not _TASK_ID_RE.match(first):
+        return ids, reason
+    rest_are_task_ids = [_TASK_ID_RE.match(item) is not None for item in rest]
+    if all(rest_are_task_ids):
+        return ids, reason
+    if not any(rest_are_task_ids):
+        if reason:
+            return [], reason
+        return [first], " ".join(rest).strip() or None
+    return [], reason
+
+
 def _cmd_archive(args: argparse.Namespace) -> int:
     ids = list(args.task_ids or [])
     purge_ids = list(getattr(args, "purge_ids", None) or [])
+    reason = (getattr(args, "reason", None) or "").strip() or None
     if ids and purge_ids:
         return _err("choose either task_ids to archive or --rm archived task_ids")
     if not ids and not purge_ids:
         return _err("at least one task_id is required")
+    if ids and not purge_ids:
+        ids, reason = _normalize_archive_args(ids, reason)
+        if not ids:
+            return 1
     with kbc.connect_closing() as conn:
         if purge_ids:
             return _bulk_apply(purge_ids, lambda tid: kb.delete_archived_task(conn, tid), lambda tid: f"Deleted {tid}",
                                lambda tid: f"cannot delete {tid} (must already be archived)")
-        return _bulk_apply(ids, lambda tid: kb.archive_task(conn, tid),
+        return _bulk_apply(ids, lambda tid: kb.archive_task(conn, tid, reason=reason),
                            lambda tid: f"Archived {tid}", lambda tid: f"cannot archive {tid}")
 
 

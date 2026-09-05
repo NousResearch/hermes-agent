@@ -784,6 +784,20 @@ export const zhHant = defineLocale({
       set: '設定',
       clear: '清除'
     },
+    mobilePairing: {
+      title: 'Hermes 行動伴侶',
+      description: '將 iPhone 伴侶與這個 Hermes 閘道配對。手機使用相同的代理、設定檔、工作階段、記憶和技能，不會啟動另一個代理。',
+      show: '顯示配對碼',
+      retry: '再試一次',
+      hide: '隱藏配對碼',
+      refresh: '重新整理配對碼',
+      scan: '在 iPhone 上開啟 Hermes 並掃描此配對碼。',
+      expires: '為了安全，配對碼會在兩分鐘後隱藏。請勿分享，它可以存取你的閘道。',
+      qrAlt: 'Hermes 行動伴侶配對 QR 碼',
+      publicUrlRequired: '請將 dashboard.public_url 設定為可連到此閘道的私有 HTTPS 位址後再試。不能使用 localhost 或一般 HTTP。',
+      tokenRequired: '此連線無法簽發可重複使用的本機閘道權杖。請切換到使用權杖驗證的 Hermes 閘道。',
+      failed: 'Hermes 無法建立行動配對碼。請確認閘道已連線後再試。'
+    },
     gateway: {
       loading: '正在載入閘道設定...',
       unavailableTitle: '閘道設定不可用',

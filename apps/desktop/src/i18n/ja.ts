@@ -805,6 +805,20 @@ export const ja = defineLocale({
       set: '設定',
       clear: 'クリア'
     },
+    mobilePairing: {
+      title: 'Hermes モバイルコンパニオン',
+      description: 'iPhone コンパニオンをこの Hermes ゲートウェイとペアリングします。同じエージェント、プロファイル、セッション、メモリ、スキルを使い、別のエージェントは起動しません。',
+      show: 'ペアリングコードを表示',
+      retry: 'もう一度試す',
+      hide: 'コードを隠す',
+      refresh: 'コードを更新',
+      scan: 'iPhone で Hermes を開き、このコードをスキャンしてください。',
+      expires: '安全のため、コードは2分後に隠れます。ゲートウェイへのアクセス権を与えるため、共有しないでください。',
+      qrAlt: 'Hermes モバイルコンパニオンのペアリング QR コード',
+      publicUrlRequired: 'dashboard.public_url に、このゲートウェイへ到達できるプライベート HTTPS アドレスを設定してから再試行してください。localhost と HTTP は使用できません。',
+      tokenRequired: 'この接続では再利用可能なローカルゲートウェイトークンを発行できません。トークン認証の Hermes ゲートウェイへ切り替えてください。',
+      failed: 'モバイル用ペアリングコードを作成できませんでした。ゲートウェイ接続を確認して再試行してください。'
+    },
     gateway: {
       loading: 'ゲートウェイ設定を読み込み中...',
       unavailableTitle: 'ゲートウェイ設定は利用できません',

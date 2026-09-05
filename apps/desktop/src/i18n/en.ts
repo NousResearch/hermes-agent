@@ -848,6 +848,23 @@ export const en: Translations = {
       scopesRestored: (profiles: string) => `Restored profiles: ${profiles}`,
       scopeNotRestored: (profile: string, error: string) => `Profile “${profile}” not restored: ${error}`
     },
+    mobilePairing: {
+      title: 'Hermes mobile companion',
+      description:
+        'Pair the iPhone companion with this exact Hermes gateway. The phone uses the same agents, profiles, sessions, memory, and skills; it does not start another agent.',
+      show: 'Show pairing code',
+      retry: 'Try again',
+      hide: 'Hide code',
+      refresh: 'Refresh code',
+      scan: 'On iPhone, open Hermes and scan this code.',
+      expires: 'For safety, this code is hidden after two minutes. Keep it private: it grants access to your gateway.',
+      qrAlt: 'Hermes mobile companion pairing QR code',
+      publicUrlRequired:
+        'Set dashboard.public_url to a private HTTPS address that reaches this gateway, then try again. Localhost and plain HTTP cannot be paired.',
+      tokenRequired:
+        'This connection cannot issue a reusable local gateway token. Switch to a token-authenticated Hermes gateway to pair the phone.',
+      failed: 'Hermes could not create a mobile pairing code. Check that the gateway is connected and try again.'
+    },
     gateway: {
       loading: 'Loading gateway settings...',
       unavailableTitle: 'Gateway settings unavailable',

@@ -722,6 +722,20 @@ export interface Translations {
       scopesRestored: (profiles: string) => string
       scopeNotRestored: (profile: string, error: string) => string
     }
+    mobilePairing: {
+      title: string
+      description: string
+      show: string
+      retry: string
+      hide: string
+      refresh: string
+      scan: string
+      expires: string
+      qrAlt: string
+      publicUrlRequired: string
+      tokenRequired: string
+      failed: string
+    }
     gateway: {
       loading: string
       unavailableTitle: string

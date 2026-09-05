@@ -1045,6 +1045,20 @@ export const zh: Translations = {
       scopesRestored: (profiles: string) => `已恢复的 profile：${profiles}`,
       scopeNotRestored: (profile: string, error: string) => `Profile“${profile}”未恢复：${error}`
     },
+    mobilePairing: {
+      title: 'Hermes 移动伴侣',
+      description: '将 iPhone 伴侣与此 Hermes 网关配对。手机使用相同的智能体、配置、会话、记忆和技能，不会启动另一个智能体。',
+      show: '显示配对码',
+      retry: '重试',
+      hide: '隐藏配对码',
+      refresh: '刷新配对码',
+      scan: '在 iPhone 上打开 Hermes 并扫描此配对码。',
+      expires: '为保障安全，配对码会在两分钟后隐藏。请勿分享，它可以访问你的网关。',
+      qrAlt: 'Hermes 移动伴侣配对二维码',
+      publicUrlRequired: '请将 dashboard.public_url 设置为能访问此网关的私有 HTTPS 地址，然后重试。不能使用 localhost 或普通 HTTP。',
+      tokenRequired: '此连接无法签发可重复使用的本地网关令牌。请切换到使用令牌认证的 Hermes 网关。',
+      failed: 'Hermes 无法创建移动配对码。请确认网关已连接，然后重试。'
+    },
     gateway: {
       loading: '正在加载网关设置...',
       unavailableTitle: '网关设置不可用',

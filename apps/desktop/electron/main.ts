@@ -91,6 +91,7 @@ import {
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
 import { applyConnectionChange, sshQuitShouldBlock, teardownSshState } from './connection-apply'
+import { decodedPathIfMissing } from './decoded-path-fallback'
 import {
   apiRequestRegistryConnectionId,
   authModeFromStatus,
@@ -6178,7 +6179,13 @@ async function previewFileTarget(rawTarget, baseDir) {
   const ext = path.extname(resolved).toLowerCase()
 
   if (!fileExists(resolved)) {
-    return null
+    const decoded = decodedPathIfMissing(resolved)
+
+    if (decoded && fileExists(decoded)) {
+      resolved = decoded
+    } else {
+      return null
+    }
   }
 
   ;({ resolvedPath: resolved } = await resolveReadableFileForIpc(resolved, { purpose: 'Preview target' }))

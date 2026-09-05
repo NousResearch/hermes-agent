@@ -227,3 +227,74 @@ def test_redeem_missing_credentials_reports_unavailable(monkeypatch):
 
     assert result.status == "unavailable"
     assert "hermes auth" in result.message
+
+
+def test_ollama_usage_windows_from_usage_api(monkeypatch):
+    payload = {
+        "activity": {
+            "cost": "1.25000",
+            "period": {"type": "last_4_weeks"},
+            "models": [],
+        },
+        "limits": {
+            "session": {"usage": 0.08, "models": [{"name": "glm-5.3", "request_count": 99}]},
+            "weekly": {
+                "usage": 0.04,
+                "models": [
+                    {"name": "glm-5.3", "request_count": 649},
+                    {"name": "glm-5.3-flash", "request_count": 628},
+                ],
+            },
+        },
+    }
+    calls = []
+
+    def fake_runtime(**kwargs):
+        return {"api_key": "k-ollama", "base_url": "https://ollama.com/v1"}
+
+    monkeypatch.setattr(account_usage, "resolve_runtime_provider", fake_runtime)
+    monkeypatch.setattr(
+        account_usage.httpx, "Client", lambda **kw: _FakeClient(calls, payload)
+    )
+    snapshot = account_usage.fetch_account_usage("ollama-cloud")
+    assert snapshot is not None and snapshot.provider == "ollama-cloud"
+    assert calls and calls[0]["url"] == "https://ollama.com/api/usage"
+    labels = [w.label for w in snapshot.windows]
+    assert labels == ["Session (rolling)", "Weekly"]
+    assert snapshot.windows[0].used_percent == pytest.approx(8.0)
+    assert snapshot.windows[1].used_percent == pytest.approx(4.0)
+    assert "glm-5.3 x99" in (snapshot.windows[0].detail or "")
+    assert any("PAYG activity" in d and "$1.25" in d for d in snapshot.details)
+
+
+def test_ollama_usage_missing_windows_yields_empty_snapshot(monkeypatch):
+    calls = []
+
+    def fake_runtime(**kwargs):
+        return {"api_key": "k-ollama", "base_url": "https://ollama.com"}
+
+    monkeypatch.setattr(account_usage, "resolve_runtime_provider", fake_runtime)
+    monkeypatch.setattr(
+        account_usage.httpx, "Client", lambda **kw: _FakeClient(calls, {})
+    )
+    snapshot = account_usage.fetch_account_usage("ollama-cloud")
+    assert snapshot is not None
+    assert snapshot.windows == () and snapshot.details == ()
+    assert not snapshot.available
+
+
+def test_ollama_usage_non_numeric_cost_is_ignored(monkeypatch):
+    calls = []
+
+    def fake_runtime(**kwargs):
+        return {"api_key": "k-ollama", "base_url": "https://ollama.com/v1"}
+
+    monkeypatch.setattr(account_usage, "resolve_runtime_provider", fake_runtime)
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda **kw: _FakeClient(calls, {"limits": {"session": {"usage": 0.5}}, "activity": {"cost": None}}),
+    )
+    snapshot = account_usage.fetch_account_usage("ollama-cloud")
+    assert snapshot is not None
+    assert snapshot.details == ()

@@ -471,6 +471,8 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     with session["history_lock"]:
         st.history = list(session["history"])
         st.history_version = int(session.get("history_version", 0))
+        if session.pop("handoff_history_refresh", False):
+            agent._reload_history_after_handoff = True
     cwd = _session_cwd(session)
     _register_session_cwd(session)
     cols = session.get("cols", 80)

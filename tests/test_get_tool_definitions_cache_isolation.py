@@ -108,3 +108,41 @@ class TestQuietModeCacheIsolation:
             assert [future.result(timeout=2) for future in futures] == [[], []]
 
         assert len(model_tools._tool_defs_cache) == model_tools._TOOL_DEFS_CACHE_MAX
+
+
+class TestCronSessionCacheDimension:
+    """Regression tests: the quiet_mode cache key must vary with cron-session
+    state (HERMES_CRON_SESSION, a per-task ContextVar set only while a cron
+    job's own agent turn is running), not just toolset/config fingerprint.
+
+    Without this, the FIRST quiet_mode call for a given toolset fingerprint
+    (often a non-cron probe, since a long-lived gateway serves many session
+    types) permanently caches its check_fn-filtered tool list for every LATER
+    call with the same fingerprint — including genuinely cron-scoped calls
+    where HERMES_CRON_SESSION is bound and should unlock cronjob_manage.
+    Confirmed via a live deployment: cronjob_manage silently unavailable to
+    every cron job for the gateway process's entire lifetime.
+    """
+
+    def test_cron_session_and_non_cron_session_get_distinct_cache_entries(self):
+        from gateway.session_context import _VAR_MAP
+
+        var = _VAR_MAP["HERMES_CRON_SESSION"]
+
+        # Call 1: no cron session bound (e.g. an interactive/gateway probe).
+        model_tools.get_tool_definitions(enabled_toolsets=["cronjob"], quiet_mode=True)
+        assert len(model_tools._tool_defs_cache) == 1
+
+        # Call 2: identical toolset args, but HERMES_CRON_SESSION is now bound.
+        token = var.set("1")
+        try:
+            model_tools.get_tool_definitions(enabled_toolsets=["cronjob"], quiet_mode=True)
+        finally:
+            var.reset(token)
+
+        assert len(model_tools._tool_defs_cache) == 2, (
+            "a cron-session call reused a non-cron-session cache entry for the "
+            "same toolset fingerprint — cronjob_manage-style check_fns that key "
+            "off HERMES_CRON_SESSION will silently vanish for every cron job "
+            "after the first tool-list computation of the gateway's lifetime."
+        )

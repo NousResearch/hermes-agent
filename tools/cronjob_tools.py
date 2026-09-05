@@ -60,7 +60,7 @@ from tools.cronjob_job_args import (
     _validate_context_from_refs,
     _validate_cron_base_url,
     _validate_cron_script_path)
-from tools.registry import registry, tool_error
+from tools.registry import no_cache_check_fn, registry, tool_error
 
 
 def _dumps(payload: Dict[str, Any]) -> str:
@@ -983,14 +983,28 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
 }
 
 
+@no_cache_check_fn
 def check_cronjob_requirements() -> bool:
-    """Available in interactive CLI mode and gateway/messaging platforms (the scheduler is
-    internal; no crontab needed). Flags must be explicitly truthy via ``env_var_enabled``."""
-    from utils import env_var_enabled
+    """Available in interactive CLI mode, gateway/messaging platforms (the scheduler is
+    internal; no crontab needed), and a running cron job's own agent session (self-chaining
+    via schedule updates, e.g. ship-task's reschedule-self pattern). Flags must be explicitly
+    truthy via ``env_var_enabled``; HERMES_CRON_SESSION is a per-task ContextVar (set by
+    cron/scheduler.py's session-context binding), not a real os.environ var, so it needs
+    ``get_session_env`` rather than ``env_var_enabled`` to be visible here.
+
+    Not check_fn-cached: the registry's ~30s TTL cache is keyed by (fn, profile) with no
+    session-type dimension, so a single-profile process (the common case — multiplexing is
+    opt-in) shares ONE cache slot across every session type. A non-cron probe evaluating
+    False within the last 30s would poison a genuinely-cron session's own check right after
+    HERMES_CRON_SESSION binds — this function is cheap (env/ContextVar reads only, no I/O),
+    so correctness matters far more than the cache's throughput win here."""
+    from utils import env_var_enabled, is_truthy_value
+    from gateway.session_context import get_session_env
     return (
         env_var_enabled("HERMES_INTERACTIVE")
         or env_var_enabled("HERMES_GATEWAY_SESSION")
         or env_var_enabled("HERMES_EXEC_ASK")
+        or is_truthy_value(get_session_env("HERMES_CRON_SESSION"))
     )
 
 
